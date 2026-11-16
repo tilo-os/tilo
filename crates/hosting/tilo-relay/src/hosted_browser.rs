@@ -181,8 +181,31 @@ pub const RECONNECT: Duration = Duration::from_secs(30);
 /// How long the person's answer to one page action stays good for running
 /// it: their confirmation of that invocation, not a standing grant.
 pub const WITNESS_LIFETIME: u64 = 5 * 60 * 1_000_000_000;
-/// How long a page action's question waits for the person.
-pub const ANSWER_WAIT: Duration = Duration::from_secs(2 * 60);
+/// The waits before a host asks again for a workspace it could not name yet
+/// ([`HostedBrowsers::ready_workspace_name`]).
+const NOT_READY_WAITS: [Duration; 4] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+];
+
+/// How long a page action's question waits for the person: as long as the
+/// window holds what it asks about (`apps/browser`, whose engine lets a
+/// request wait ten minutes at most), less a margin, so an answer always
+/// finds the request still held. Every device of the person is asked, and
+/// told again by a notification when no Tilo of theirs is open.
+pub const ANSWER_WAIT: Duration = Duration::from_secs(9 * 60);
+
+/// The phase of a page action that waits for the person's answer.
+pub const WAITING_FOR_PERSON: &str = "waiting_for_person";
+/// What a caller following such a page action is told while it waits.
+pub const WAITING_MESSAGE: &str =
+    "waiting for the person to approve it in Tilo, on any of their devices; it runs once they do";
+/// What a caller is told when the person did not answer while the window
+/// could hold what the action reached.
+pub const UNANSWERED: &str = "the person didn't answer in 9 minutes, so nothing was sent and \
+     the page stays as it was filled; run the action again to ask them again";
 /// `answer_wait` in nanoseconds.
 fn answer_wait_ns(answer_wait: Duration) -> u64 {
     u64::try_from(answer_wait.as_nanos()).unwrap_or(u64::MAX)
@@ -423,9 +446,18 @@ impl Stage {
     /// asks how it went.
     fn state(&self, invocation: tilo_actions::InvocationId) -> InvocationUpdate {
         match self {
-            Self::Running | Self::Asking | Self::Allowed => {
-                InvocationUpdate::Accepted { invocation }
-            }
+            Self::Running | Self::Allowed => InvocationUpdate::Accepted { invocation },
+            // Said to the caller as what it waits on, so an agent following
+            // it tells whoever it works for to look at their device rather
+            // than guess why nothing happens.
+            Self::Asking => InvocationUpdate::Progress {
+                invocation,
+                sequence: 0,
+                phase: WAITING_FOR_PERSON.to_owned(),
+                completed: None,
+                total: None,
+                message: Some(WAITING_MESSAGE.to_owned()),
+            },
             Self::Over(update) => update.clone(),
         }
     }
@@ -1232,6 +1264,21 @@ impl HostedBrowsers {
     /// The UUID of the workspace this host carries as `workspace_id`, when it
     /// serves one: what a page action and an session's device name it by.
     #[must_use]
+    /// [`Self::workspace_name`], asked again a few times with a growing
+    /// wait while this host is not ready to name it yet (it is still starting,
+    /// or the workspace is still being bound here): an open that comes a moment
+    /// early is placed, not refused. Blocks, so only off the runtime's threads,
+    /// as placing does.
+    pub fn ready_workspace_name(&self, workspace_id: WorkspaceId) -> Option<String> {
+        for wait in NOT_READY_WAITS {
+            if let Some(name) = self.workspace_name(workspace_id) {
+                return Some(name);
+            }
+            std::thread::sleep(wait);
+        }
+        self.workspace_name(workspace_id)
+    }
+
     pub fn workspace_name(&self, workspace_id: WorkspaceId) -> Option<String> {
         let (runtime, workspaces) = {
             let authority = self.authority.lock_recover();
@@ -1760,7 +1807,9 @@ impl Asked {
                     })
             }
             Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::NotPermitted),
-            Err(_) => Err(ActionHostError::confirmation_required()),
+            Err(_) => Err(ActionHostError::Unavailable {
+                reason: UNANSWERED.to_owned(),
+            }),
         }
     }
 }
@@ -2036,7 +2085,7 @@ pub fn placed(
                 caller.clone(),
                 move |browsers, record| {
                     let placed = browsers
-                        .workspace_name(workspace_id)
+                        .ready_workspace_name(workspace_id)
                         .ok_or_else(|| "this host serves no such workspace".to_owned())
                         .and_then(|workspace| browsers.place(&workspace, workspace_id, record));
                     match placed {
@@ -2155,8 +2204,8 @@ fn place_record(
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
     let placement = browsers
-        .workspace_name(workspace_id)
-        .ok_or_else(|| "The workspace isn't ready yet. Try again in a minute.".to_owned())
+        .ready_workspace_name(workspace_id)
+        .ok_or_else(|| "The workspace isn't ready yet. Open it again in a minute.".to_owned())
         .and_then(|workspace| browsers.place(&workspace, workspace_id, record));
     match placement {
         Ok(_) => message,
@@ -2240,7 +2289,7 @@ pub fn placed_linux_app(
                 caller.clone(),
                 move |browsers, record| {
                     let placed = browsers
-                        .workspace_name(workspace_id)
+                        .ready_workspace_name(workspace_id)
                         .ok_or_else(|| {
                             AppRefusal::Words("this host serves no such workspace".to_owned())
                         })
@@ -2270,9 +2319,11 @@ pub fn placed_linux_app(
         return message;
     };
     let placement = browsers
-        .workspace_name(workspace_id)
+        .ready_workspace_name(workspace_id)
         .ok_or_else(|| {
-            AppRefusal::Words("The workspace isn't ready yet. Try again in a minute.".to_owned())
+            AppRefusal::Words(
+                "The workspace isn't ready yet. Open it again in a minute.".to_owned(),
+            )
         })
         .and_then(|workspace| browsers.place_app(&workspace, workspace_id, &record, launch));
     match placement {

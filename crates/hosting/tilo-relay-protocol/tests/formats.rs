@@ -370,14 +370,15 @@ compute = false
         assert!(postcard_hex(&CertifyOpen::Approver(Hello::new(cert, [7; 32]))).starts_with("01"));
 
         // A member's approval, whole: the tag, the root, the time, the command
-        // and the root's signature as 64 bytes.
+        // and the root's signature as 64 bytes, then no device: the root signed.
         let member = MemberApproval {
             user_public_key: [1; 32],
             issued_at_ns: 2,
             request: ApproverRequest::ListPending,
             signature: [3; 64],
+            device: None,
         };
-        let encoded = format!("02{}0200{}{}", "01".repeat(32), "40", "03".repeat(64));
+        let encoded = format!("02{}0200{}{}00", "01".repeat(32), "40", "03".repeat(64));
         assert_eq!(postcard_hex(&CertifyOpen::Member(member.clone())), encoded);
         let CertifyOpen::Member(decoded) = from_postcard_hex::<CertifyOpen>(&encoded) else {
             panic!("a member's opener decodes as one");

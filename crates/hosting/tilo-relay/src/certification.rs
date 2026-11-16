@@ -35,16 +35,19 @@ use crate::auth::{self, HandshakeTrust};
 use crate::certify::{
     AWAIT_PENDING_NS, ApproverDecision, ApproverReply, ApproverRequest, CertifyOpen, CertifyReply,
     ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, MAX_PENDING_CERTIFICATIONS, MemberApproval,
-    PendingCertification, PendingConfirmation, PendingDelegate,
+    PendingCertification, PendingConfirmation, PendingDelegate, PushSubscription,
 };
 use crate::frame::{read_frame, read_frame_or_eof, write_frame};
 use crate::handshake::{EndpointTrust, LiveIdentity};
+use crate::workspace_access;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_relay_protocol::certify::DEVICE_LABEL_TAKEN;
 use tilo_relay_protocol::delegation::{DelegateProposal, Delegation};
 
 /// How long a final answer may wait for the requester to read it.
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
+/// The most people remembered as watching for their questions.
+const MAX_WATCHED: usize = 65_536;
 
 /// One request, and its answer once an approver gave it. A decided request
 /// stays until its requester collected the answer or it expired, so an
@@ -108,6 +111,33 @@ pub(crate) trait StandInApprover: Send + Sync {
     fn approved(&self, request: &CertificationRequest);
 }
 
+/// What tells a person, outside every Tilo of theirs, that a question waits
+/// for them: their browsers' push subscriptions ([`crate::web_push`]).
+pub trait QuestionNotifier: Send + Sync {
+    /// The key a browser subscribes with.
+    fn push_key(&self) -> Vec<u8>;
+    /// Keep `subscription` as one of `person`'s browsers.
+    ///
+    /// # Errors
+    /// Why it was not kept.
+    fn subscribe(&self, person: &[u8; 32], subscription: PushSubscription) -> Result<(), String>;
+    /// Tell `person` that `question` waits for them.
+    fn notify(
+        &self,
+        person: [u8; 32],
+        question: PendingConfirmation,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+}
+
+/// How long a question waits before a person no device of theirs is
+/// watching for is told outside Tilo: a device that is open hears of it
+/// first, within its next look.
+const NOTIFY_AFTER: Duration = Duration::from_secs(4);
+/// How recently a device of the person must have looked for their
+/// questions to count as watching: a page looks every two seconds, a
+/// desktop more often.
+const WATCHING: Duration = Duration::from_secs(8);
+
 /// The certification ALPN handler.
 #[derive(Clone)]
 pub struct CertificationProtocol {
@@ -130,6 +160,10 @@ pub struct CertificationProtocol {
     /// waiting for its person's requests to change
     /// ([`ApproverRequest::AwaitPending`]) wakes on.
     moved: Arc<watch::Sender<u64>>,
+    /// Tells a person who has no Tilo open that a question waits for them.
+    notifier: Arc<std::sync::OnceLock<Arc<dyn QuestionNotifier>>>,
+    /// When a device of each person last looked for their questions.
+    watched: Arc<Mutex<HashMap<[u8; 32], std::time::Instant>>>,
 }
 
 impl std::fmt::Debug for CertificationProtocol {
@@ -161,6 +195,68 @@ impl CertificationProtocol {
             stand_in: Arc::default(),
             records: Arc::default(),
             moved: Arc::new(watch::Sender::new(0)),
+            notifier: Arc::default(),
+            watched: Arc::default(),
+        }
+    }
+
+    /// Name what tells a person outside Tilo that a question waits for them.
+    /// Named once; a later call keeps the first.
+    pub fn set_notifier(&self, notifier: Arc<dyn QuestionNotifier>) {
+        let _ = self.notifier.set(notifier);
+    }
+
+    /// Whether a device of `person` looked for their questions lately.
+    fn watching(&self, person: &[u8; 32]) -> bool {
+        self.watched
+            .lock_recover()
+            .get(person)
+            .is_some_and(|at| at.elapsed() < WATCHING)
+    }
+
+    /// Tell `person` outside Tilo that `question` waits, unless a device of
+    /// theirs is watching for it or it was answered first.
+    fn notify_later(&self, person: [u8; 32], question: PendingConfirmation) {
+        let Some(notifier) = self.notifier.get().cloned() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let protocol = self.clone();
+        runtime.spawn(async move {
+            tokio::time::sleep(NOTIFY_AFTER).await;
+            let open = protocol
+                .asked()
+                .get(&question.id)
+                .is_some_and(|entry| entry.open(unix_now_ns()));
+            if open && !protocol.watching(&person) {
+                notifier.notify(person, question).await;
+            }
+        });
+    }
+
+    /// A push subscription of `person`'s, or the key to make one with.
+    fn push(&self, person: &[u8; 32], request: ApproverRequest) -> ApproverReply {
+        let notifier = self.notifier.get();
+        match request {
+            ApproverRequest::PushKey => ApproverReply::PushKey(
+                notifier
+                    .map(|notifier| notifier.push_key())
+                    .unwrap_or_default(),
+            ),
+            ApproverRequest::Notify(subscription) => match notifier {
+                None => ApproverReply::Refused {
+                    reason: "this host notifies nobody".into(),
+                },
+                Some(notifier) => match notifier.subscribe(person, subscription) {
+                    Ok(()) => ApproverReply::Decided,
+                    Err(reason) => ApproverReply::Refused { reason },
+                },
+            },
+            _ => ApproverReply::Refused {
+                reason: "not a push request".into(),
+            },
         }
     }
 
@@ -238,6 +334,7 @@ impl CertificationProtocol {
                 return Err("too many questions are waiting for an answer".into());
             }
             let (answer, receiver) = watch::channel(None);
+            self.notify_later(person, question.clone());
             asked.insert(
                 id,
                 Asked {
@@ -306,6 +403,9 @@ impl CertificationProtocol {
                 ApproverReply::Confirmations(self.questions(&user, now_ns))
             }
             ApproverRequest::Answer { id, answer } => self.answer(&user, id, answer, now_ns),
+            request @ (ApproverRequest::PushKey | ApproverRequest::Notify(_)) => {
+                self.push(&user, request)
+            }
             ApproverRequest::DelegateProposals => {
                 refused("a member approves only their own device requests")
             }
@@ -506,14 +606,37 @@ impl CertificationProtocol {
         }
     }
 
-    /// One approver command from a member's root, answered once.
+    /// Whether `cert` is a device a person's questions reach: one of their
+    /// own (no agent's key, no stand-in), unrevoked here, of a person this
+    /// host serves. The host's own person answers through their admitting
+    /// devices alone ([`Self::serve_approver`]): its other devices include
+    /// the hosted environments that hold the windows being asked about.
+    async fn answers_questions(&self, cert: &DeviceCert) -> bool {
+        cert.user_public_key != self.identity.user_public_key
+            && workspace_access::person_device(cert)
+            && !self
+                .revocations()
+                .is_revoked(&cert.user_public_key, &cert.device_public_key)
+            && self.admits(cert.user_public_key).await
+    }
+
+    /// One approver command from a member's root, or from a device of theirs
+    /// about the questions they are asked, answered once.
     async fn serve_member(
         &self,
         connection: &Link,
         mut send: LinkSend,
         approval: MemberApproval,
     ) -> Result<(), AcceptError> {
-        let reply = if self.admits(approval.user_public_key).await {
+        let device_may = match &approval.device {
+            None => true,
+            Some(cert) => self.answers_questions(cert).await,
+        };
+        let reply = if !device_may {
+            ApproverReply::Refused {
+                reason: "this device answers no question here".into(),
+            }
+        } else if self.admits(approval.user_public_key).await {
             if let ApproverRequest::AwaitPending { known } = &approval.request
                 && approval.verify(unix_now_ns()).is_ok()
             {
@@ -603,11 +726,14 @@ impl CertificationProtocol {
         mut recv: tilo_relay_client::link::LinkRecv,
         hello: auth::Hello,
     ) -> Result<(), AcceptError> {
-        // Only the owner's devices that may admit devices approve, checked
-        // before the relay signs anything for the approver.
-        self.identity
+        // The owner's devices that may admit devices approve everything;
+        // any other device of a person this host serves answers only that
+        // person's questions. Checked before the relay signs anything for
+        // the approver: the certificate first, then whose device it is.
+        let peer = self
+            .identity
             .authenticate_hello(
-                EndpointTrust::Fixed(HandshakeTrust::OwnerDeviceAdmitters),
+                EndpointTrust::Fixed(HandshakeTrust::AnyCertifiedDevice),
                 &hello,
                 &mut recv,
                 &mut send,
@@ -615,18 +741,49 @@ impl CertificationProtocol {
             )
             .await
             .map_err(|error| io(&error))?;
+        let owner = peer.user_public_key == self.identity.user_public_key
+            && peer.cert.capabilities.can_admit_devices;
+        if !owner && !self.answers_questions(&peer.cert).await {
+            return Err(io(&"this device approves nothing here"));
+        }
         while let Some(frame) = read_frame_or_eof(&mut recv, MAX_CERTIFY_FRAME_BYTES)
             .await
             .map_err(|error| io(&error))?
         {
             let request: ApproverRequest =
                 postcard::from_bytes(&frame).map_err(|error| io(&error))?;
-            let reply = self.decide(request, unix_now_ns(), &self.identity.user_public_key);
+            let reply = if owner {
+                self.decide(request, unix_now_ns(), &self.identity.user_public_key)
+            } else {
+                self.answer_for_device(&peer.user_public_key, request, unix_now_ns())
+            };
             write_frame(&mut send, &encode(&reply)?)
                 .await
                 .map_err(|error| io(&error))?;
         }
         finish(connection, send).await
+    }
+
+    /// A command from a device of `person` (not the host's own): their
+    /// questions, and their answer to one; nothing of pairing.
+    fn answer_for_device(
+        &self,
+        person: &[u8; 32],
+        request: ApproverRequest,
+        now_ns: u64,
+    ) -> ApproverReply {
+        match request {
+            ApproverRequest::Confirmations => {
+                ApproverReply::Confirmations(self.questions(person, now_ns))
+            }
+            ApproverRequest::Answer { id, answer } => self.answer(person, id, answer, now_ns),
+            request @ (ApproverRequest::PushKey | ApproverRequest::Notify(_)) => {
+                self.push(person, request)
+            }
+            _ => ApproverReply::Refused {
+                reason: "only the person's root pairs devices".into(),
+            },
+        }
     }
 
     /// Answer pending request `digest` with the stand-in's certificate, as
@@ -670,8 +827,16 @@ impl CertificationProtocol {
         self.moved();
     }
 
-    /// Every question still waiting for its answer.
+    /// Every question still waiting for `person`'s answer: a device of
+    /// theirs looked for them now.
     fn questions(&self, person: &[u8; 32], now_ns: u64) -> Vec<PendingConfirmation> {
+        {
+            let mut watched = self.watched.lock_recover();
+            if watched.len() >= MAX_WATCHED {
+                watched.retain(|_, at| at.elapsed() < WATCHING);
+            }
+            watched.insert(*person, std::time::Instant::now());
+        }
         self.asked()
             .values()
             .filter(|entry| entry.open(now_ns) && entry.person == *person)
@@ -703,6 +868,10 @@ impl CertificationProtocol {
 
     /// Answer `request` from an approver of `approver`'s root, who decides
     /// only requests naming that root.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match over every approver command, each answered where it reads"
+    )]
     fn decide(&self, request: ApproverRequest, now_ns: u64, approver: &[u8; 32]) -> ApproverReply {
         let refused = |reason: &str| ApproverReply::Refused {
             reason: reason.into(),
@@ -730,6 +899,9 @@ impl CertificationProtocol {
             }
             ApproverRequest::Answer { id, answer } => {
                 self.answer(&self.identity.user_public_key, id, answer, now_ns)
+            }
+            request @ (ApproverRequest::PushKey | ApproverRequest::Notify(_)) => {
+                self.push(&self.identity.user_public_key, request)
             }
             ApproverRequest::Decide {
                 request_digest,
@@ -999,6 +1171,7 @@ mod confirmation_tests {
             issued_at_ns,
             request,
             signature: member.sign(&message).to_bytes(),
+            device: None,
         }
     }
 

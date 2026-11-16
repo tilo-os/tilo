@@ -565,7 +565,7 @@ pub(crate) fn decide_in(
 /// device of theirs: it comes in by the delegation that bounds it, never as
 /// the person. Nor is the stand-in itself, which approves devices and
 /// reaches no workspace.
-pub(crate) fn person_device(cert: &tilo_user_identity::DeviceCert) -> bool {
+pub fn person_device(cert: &tilo_user_identity::DeviceCert) -> bool {
     cert.capabilities.agent.is_none()
         && !cert.capabilities.stand_in
         && cert

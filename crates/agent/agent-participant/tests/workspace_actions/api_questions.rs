@@ -68,6 +68,21 @@ async fn answered_by_page(
     root: &SigningKey,
     answer: ConfirmationAnswer,
 ) -> (Value, Seen) {
+    let page = MemberQuestions {
+        host,
+        root,
+        device: None,
+    };
+    answered_on(mcp, page, answer).await
+}
+
+/// [`answered_by_page`], from wherever `host` reaches the person's questions:
+/// a page holding their root, a page or computer paired to them.
+async fn answered_on(
+    mcp: &mut Mcp<'_>,
+    mut host: impl tilo_relay_client::questions::QuestionHost,
+    answer: ConfirmationAnswer,
+) -> (Value, Seen) {
     let seen = Seen::default();
     let (answered, mut answers) = mpsc::unbounded_channel();
     let mut person = Person {
@@ -75,8 +90,7 @@ async fn answered_by_page(
         answered,
         seen: seen.clone(),
     };
-    let mut page = MemberQuestions { host, root };
-    let session = answer_questions(&mut page, &mut person, &mut answers, || {
+    let session = answer_questions(&mut host, &mut person, &mut answers, || {
         tokio::time::sleep(Duration::from_millis(50))
     });
     tokio::pin!(session);
@@ -97,15 +111,16 @@ async fn answered_by_page(
     (reply, seen)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_door() {
-    let on_relay = api_on_relay(ISSUER).await;
-    let api = Arc::clone(&on_relay.api);
-    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_relay, &ada, &page, "Visa backend").await;
+/// Ada's workspace for a customer, with one book on its shelf and the agent
+/// her backend minted a key for there: the agent's MCP session.
+async fn agent_with_a_book<'a>(
+    on_relay: &'a super::api_on_relay::OnRelay,
+    ada: &SigningKey,
+) -> Mcp<'a> {
+    let page = enrol(ada, "Ada's browser", DeviceCapabilities::member());
+    let key = approved_key(on_relay, ada, &page, "Visa backend").await;
     let mut account = Mcp {
-        api: &api,
+        api: &on_relay.api,
         path: "/mcp".into(),
         token: key,
         session: None,
@@ -129,7 +144,7 @@ async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_door() 
         .unwrap_or_else(|| panic!("a key is minted: {minted}"))
         .to_owned();
     let mut agent = Mcp {
-        api: &api,
+        api: &on_relay.api,
         path: format!("/w/{workspace}/mcp"),
         token,
         session: None,
@@ -144,6 +159,87 @@ async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_door() 
                    "shared": false}),
         )
         .await;
+    agent
+}
+
+/// The person's root is in one tab, and they are elsewhere: on a phone paired
+/// to them, whose page holds only its own device key, and on a computer paired
+/// to them, whose session keeps an approver connection with the relay. Each is
+/// asked what the agent waits on, and its answer is the person's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_paired_to_the_person_answers_what_the_agent_asks() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let mut agent = agent_with_a_book(&on_relay, &ada).await;
+
+    // A phone paired to Ada: its page signs with its own key, as her device.
+    let phone = enrol(&ada, "Ada's phone", DeviceCapabilities::member());
+    let host = MemberApprover::new(on_relay.relay_host());
+    let on_phone = MemberQuestions {
+        host: &host,
+        root: &phone.key,
+        device: Some(&phone.cert),
+    };
+    let (refused, seen) =
+        Box::pin(answered_on(&mut agent, on_phone, ConfirmationAnswer::Deny)).await;
+    assert!(
+        refused["result"]["isError"] == true && refused.to_string().contains("did not allow"),
+        "the phone's refusal fails the call: {refused}"
+    );
+    let asked = seen.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "the phone was asked once: {asked:?}");
+    assert_eq!(asked[0].action_label, "Remove from library");
+
+    // A key that is no device of hers (an agent's) is no approver.
+    let agents_key = enrol(
+        &ada,
+        "Visa backend",
+        DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::AllWorkspaces),
+    );
+    let mut as_agent = MemberQuestions {
+        host: &host,
+        root: &agents_key.key,
+        device: Some(&agents_key.cert),
+    };
+    assert!(
+        tilo_relay_client::questions::QuestionHost::confirmations(&mut as_agent)
+            .await
+            .is_err(),
+        "an agent's key reads no question of its person's"
+    );
+
+    // A computer paired to Ada, which cannot admit devices: its approver
+    // session lists and answers her questions.
+    let computer = enrol(&ada, "Ada's laptop", DeviceCapabilities::member());
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .unwrap();
+    let approver = tilo_relay_client::Approver::connect(
+        &endpoint,
+        on_relay.hosted.relay.node_addr(),
+        computer.cert.clone(),
+        &computer.key,
+        &tilo_user_identity::RevocationList::new(),
+    )
+    .await
+    .expect("a paired computer opens an approver session for its person");
+    let (allowed, seen) = Box::pin(answered_on(
+        &mut agent,
+        approver,
+        ConfirmationAnswer::AllowOnce,
+    ))
+    .await;
+    assert_eq!(allowed["result"]["isError"], false, "it ran: {allowed}");
+    assert_eq!(seen.asked.lock().unwrap().len(), 1);
+    host.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_door() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let mut agent = agent_with_a_book(&on_relay, &ada).await;
 
     // Ada's tab holds her root: it is her approver at the relay.
     let host = MemberApprover::new(on_relay.relay_host());

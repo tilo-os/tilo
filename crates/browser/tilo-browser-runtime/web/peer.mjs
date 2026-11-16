@@ -1100,9 +1100,15 @@ async function connect({
     /** Issue an invitation to the workspace (`workspaces.rs`): resolves to its
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),
-    /** Answer what this person's agents on the host ask them, as the root
-     * custody `root` the page holds, over this session (`agent-questions.mjs`). */
-    answerAgentQuestions: root => peer.answerAgentQuestions(root),
+    /** Answer what this person's agents on the host ask them, over this
+     * session (`agent-questions.mjs`): as the root custody `root` where the
+     * page holds it, else with this session's own device key, as a device
+     * paired to the person answers. */
+    answerAgentQuestions: root => peer.answerAgentQuestions(root ?? custodyForWasm),
+    /** The key the host pushes with, and keeping this browser's push
+     * subscription there (`web-push.mjs`), as `root` or this session's key. */
+    pushKey: root => peer.pushKey(root ?? custodyForWasm),
+    notifyAt: (root, endpoint, p256dh, auth) => peer.notifyAt(root ?? custodyForWasm, endpoint, p256dh, auth),
     /** This person's new devices waiting at the host, paired with the root
      * the page holds over this session (`PairingHost`: `pending`, `answer`). */
     pairing: () => peer.pairing(),

@@ -39,6 +39,12 @@ use menus::{MENU_ROWS, decode_context_items, decode_extension_menu};
 use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
 
+/// How long the engine holds a page's departure for an answer: the longest it
+/// lets one wait (`apps/browser/chromium/src/departures.h`). Browser answers
+/// within it ([`crate::webview::HeldRequest`]), and a person asked on another
+/// device needs the time to get to it.
+const HOLD_WAIT_MS: u64 = 600_000;
+
 const MAX_OWNED_NAVIGATIONS: usize = 32;
 const FIRST_POPUP: u32 = 1 << 30;
 /// Longest address a page can have: Chromium's own limit (`url::kMaxURLChars`), in bytes.
@@ -1390,7 +1396,7 @@ impl ChromiumEngine {
         }
         if self
             .tx
-            .push(json!({"op":"hold_departures","tab":self.tab}))
+            .push(json!({"op":"hold_departures","tab":self.tab,"wait_ms":HOLD_WAIT_MS}))
             .is_err()
         {
             shared.holds_told.store(false, Ordering::Release);

@@ -51,7 +51,11 @@ use ui::webview::{AnsweredBy, HeldKind, HeldRequest, PageActor};
 
 use super::{BrowserWidget, WebViewCommand, action_failed};
 
-pub(crate) const HELD_WAIT: std::time::Duration = std::time::Duration::from_secs(2 * 60);
+/// How long a hold waits for its answer: a little less than the engine holds it (ten
+/// minutes, the most it lets a request wait), and a little more than the person's host asks
+/// them, so their answer always finds the request still held. They may be asked on another
+/// device, or by a notification, and need the time to get there.
+pub(crate) const HELD_WAIT: std::time::Duration = std::time::Duration::from_secs(9 * 60 + 30);
 /// The most held requests one window asks the person about at once; one more is turned
 /// away. A page that posts in a loop meets the same bound as one that opens tabs.
 const MAX_HELD: usize = 8;

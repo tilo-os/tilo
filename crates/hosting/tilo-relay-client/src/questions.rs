@@ -73,18 +73,26 @@ impl QuestionHost for Approver {
     }
 }
 
-/// A host's questions to the member whose root a page holds: each command
-/// signed by that root, asked where `host` reaches the host (the page's own
-/// session).
+/// A host's questions to a member, from a page of theirs: each command
+/// signed by their root where the page holds it, else by the page's own
+/// device (`device`, its certificate), asked where `host` reaches the host
+/// (the page's own session).
 pub struct MemberQuestions<'a, H> {
     pub host: &'a H,
+    /// What signs: the person's root, or the device `device` certifies.
     pub root: &'a dyn DeviceSigner,
+    /// The page's device certificate when `root` is that device's key.
+    pub device: Option<&'a tilo_user_identity::DeviceCert>,
 }
 
 impl<H: MemberHost> QuestionHost for MemberQuestions<'_, H> {
     async fn confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
-        let approval =
-            crate::pairing::member_approval(self.root, ApproverRequest::Confirmations).await?;
+        let approval = crate::pairing::member_approval_as(
+            self.root,
+            self.device,
+            ApproverRequest::Confirmations,
+        )
+        .await?;
         match self.host.ask(&approval).await? {
             ApproverReply::Confirmations(asked) => Ok(asked),
             ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
@@ -99,11 +107,58 @@ impl<H: MemberHost> QuestionHost for MemberQuestions<'_, H> {
         id: [u8; 32],
         answer: ConfirmationAnswer,
     ) -> Result<(), CertifyError> {
-        let approval =
-            crate::pairing::member_approval(self.root, ApproverRequest::Answer { id, answer })
-                .await?;
+        let approval = crate::pairing::member_approval_as(
+            self.root,
+            self.device,
+            ApproverRequest::Answer { id, answer },
+        )
+        .await?;
         // A refusal says the question is gone: answered, withdrawn or expired.
         self.host.ask(&approval).await.map(drop)
+    }
+}
+
+impl<H: MemberHost> MemberQuestions<'_, H> {
+    /// The key the host signs its pushes with, which a browser subscribes
+    /// with; empty where the host pushes nothing.
+    ///
+    /// # Errors
+    /// The host was not reached, or refused.
+    pub async fn push_key(&self) -> Result<Vec<u8>, CertifyError> {
+        let approval =
+            crate::pairing::member_approval_as(self.root, self.device, ApproverRequest::PushKey)
+                .await?;
+        match self.host.ask(&approval).await? {
+            ApproverReply::PushKey(key) => Ok(key),
+            ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
+            _ => Err(CertifyError::Denied(
+                "the host answered something else".into(),
+            )),
+        }
+    }
+
+    /// Have the host push this browser (`subscription`) a word when an
+    /// agent waits for the person and no Tilo of theirs is open.
+    ///
+    /// # Errors
+    /// The host was not reached, or did not keep it.
+    pub async fn notify_at(
+        &self,
+        subscription: tilo_relay_protocol::certify::PushSubscription,
+    ) -> Result<(), CertifyError> {
+        let approval = crate::pairing::member_approval_as(
+            self.root,
+            self.device,
+            ApproverRequest::Notify(subscription),
+        )
+        .await?;
+        match self.host.ask(&approval).await? {
+            ApproverReply::Decided => Ok(()),
+            ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
+            _ => Err(CertifyError::Denied(
+                "the host answered something else".into(),
+            )),
+        }
     }
 }
 

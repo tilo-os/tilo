@@ -1369,6 +1369,20 @@ async fn a_page_action_the_person_allows_runs_once_and_the_page_answers_it() {
         ReceiptStatus::Accepted
     );
     let question = asked(&mut approver).await;
+    // While the person is asked, a caller following it is told so.
+    caller
+        .send(to_host(WS, fixture.home, frame(observe(id))))
+        .unwrap();
+    let waiting = update_of(next(&caller, "caller").await).expect("the caller's invocation");
+    assert!(
+        matches!(
+            &waiting.update,
+            tilo_actions::InvocationUpdate::Progress { phase, message: Some(message), .. }
+                if phase == tilo_relay::hosted_browser::WAITING_FOR_PERSON
+                    && message.contains("waiting for the person")
+        ),
+        "a follower hears it waits for the person: {waiting:?}"
+    );
     approver
         .answer(question.id, ConfirmationAnswer::AllowOnce)
         .await
@@ -1464,10 +1478,13 @@ async fn a_question_nobody_answers_ends_a_page_action_refused() {
     let tilo_actions::InvocationUpdate::Failed { error, .. } = ended else {
         panic!("a question nobody answers ends it failed: {ended:?}");
     };
-    assert_eq!(
-        error.code,
-        ActionHostError::confirmation_required().code(),
-        "the refusal says the person's answer is needed"
+    // Said as what happened and what to do, never as a bare refusal: the
+    // agent tells whoever it works for, and asks again.
+    assert!(
+        error
+            .message
+            .contains(tilo_relay::hosted_browser::UNANSWERED),
+        "the agent is told the person did not answer, and how to ask again: {error:?}"
     );
     assert_eq!(seen.lock().unwrap().len(), 1, "the window saw it once");
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 0, "nothing ran");

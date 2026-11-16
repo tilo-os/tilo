@@ -20,15 +20,19 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 
 
 class Person:
     """The person the page made, answering for themselves."""
 
-    def __init__(self, approver: str, root: str, host: str, check=None) -> None:
+    def __init__(self, approver: str, root: str, host: str, check=None, device: str | None = None) -> None:
         self.approver = approver
         self.root = root
         self.host = host
+        # A device paired to the person, which holds no root: it answers as
+        # that device (`tilo-approve pair` made it).
+        self.device = device
         self.asked: list[dict] = []
         self._check = check or (lambda condition, what: _raise(condition, what))
         self._check(
@@ -47,8 +51,9 @@ class Person:
         return asyncio.ensure_future(self._start(answer, within))
 
     async def _start(self, answer: str, within: int) -> asyncio.subprocess.Process:
+        device = ["--device", self.device] if self.device else []
         return await asyncio.create_subprocess_exec(
-            self.approver, "next", "--root", self.root, "--relay", self.host,
+            self.approver, "next", "--root", self.root, "--relay", self.host, *device,
             "--answer", answer, "--within", str(within),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
@@ -92,6 +97,16 @@ class Person:
 
     def answered(self) -> int:
         return len(self.asked)
+
+    def paired(self, directory: str, label: str = "Phone") -> "Person":
+        """A device paired to this person, certified by their root and holding
+        none of it, kept in `directory`: it answers as a phone of theirs
+        does."""
+        subprocess.run(
+            [self.approver, "pair", "--root", self.root, "--device", directory, "--label", label],
+            check=True, capture_output=True,
+        )
+        return Person(self.approver, self.root, self.host, check=self._check, device=directory)
 
 
 def _raise(condition: object, what: str) -> None:

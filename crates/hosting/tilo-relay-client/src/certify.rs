@@ -305,7 +305,8 @@ impl Approver {
             ApproverReply::Refused { reason } => Err(codec(&reason)),
             ApproverReply::Decided
             | ApproverReply::DelegateProposals(_)
-            | ApproverReply::Confirmations(_) => Err(codec(&"unexpected approver reply")),
+            | ApproverReply::Confirmations(_)
+            | ApproverReply::PushKey(_) => Err(codec(&"unexpected approver reply")),
         }
     }
 
@@ -317,7 +318,8 @@ impl Approver {
             ApproverReply::Refused { reason } => Err(codec(&reason)),
             ApproverReply::Decided
             | ApproverReply::Pending(_)
-            | ApproverReply::Confirmations(_) => Err(codec(&"unexpected approver reply")),
+            | ApproverReply::Confirmations(_)
+            | ApproverReply::PushKey(_) => Err(codec(&"unexpected approver reply")),
         }
     }
 
@@ -329,7 +331,8 @@ impl Approver {
             ApproverReply::Refused { reason } => Err(codec(&reason)),
             ApproverReply::Decided
             | ApproverReply::Pending(_)
-            | ApproverReply::DelegateProposals(_) => Err(codec(&"unexpected approver reply")),
+            | ApproverReply::DelegateProposals(_)
+            | ApproverReply::PushKey(_) => Err(codec(&"unexpected approver reply")),
         }
     }
 

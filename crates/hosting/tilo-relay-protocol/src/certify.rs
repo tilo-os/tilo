@@ -158,22 +158,34 @@ pub const MEMBER_APPROVAL_LABEL: &[u8] = b"tilo member approval v1\0";
 /// How far a [`MemberApproval`]'s time may be from the host's clock.
 pub const MEMBER_APPROVAL_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
 
-/// An approver command from a member's root ([`CertifyOpen::Member`]): only
+/// An approver command from a member ([`CertifyOpen::Member`]): only
 /// [`ApproverRequest::ListPending`] and [`ApproverRequest::AwaitPending`]
 /// (that member's own requests), [`ApproverRequest::Decide`] (one of them), [`ApproverRequest::Confirmations`]
 /// (what the host asks that member about actions run for them) and
 /// [`ApproverRequest::Answer`] (to one of those) are answered.
+///
+/// Their root signs it, or one of their own devices does ([`Self::device`]):
+/// a question an agent puts to the person reaches every device of theirs,
+/// whichever holds the root, so any of them answers it. A device signs only
+/// [`ApproverRequest::Confirmations`], [`ApproverRequest::Answer`],
+/// [`ApproverRequest::PushKey`] and [`ApproverRequest::Notify`]; pairing
+/// stays the root's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberApproval {
-    /// The member's root, which signs.
+    /// The member's root: the signer, or the root `device` chains to.
     pub user_public_key: [u8; 32],
     /// When it was signed, Unix-epoch nanoseconds.
     pub issued_at_ns: u64,
     /// The command.
     pub request: ApproverRequest,
-    /// Root Ed25519 signature over [`Self::signed_message`].
+    /// Ed25519 signature over [`Self::signed_message`]: the root's, or the
+    /// device's when `device` names one.
     #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
+    /// The device of the member that signed instead of their root: its
+    /// certificate, under `user_public_key`.
+    #[serde(default)]
+    pub device: Option<DeviceCert>,
 }
 
 impl MemberApproval {
@@ -195,12 +207,37 @@ impl MemberApproval {
     }
 
     /// Check the signature, and that it was signed within the allowed skew
-    /// of `now_ns`.
+    /// of `now_ns`. A device's command must be one a device may sign, from a
+    /// certificate of the member's that holds at `now_ns` and is no agent's.
+    /// Whether that device is revoked is the host's to check.
     pub fn verify(&self, now_ns: u64) -> Result<(), &'static str> {
         if self.issued_at_ns.abs_diff(now_ns) > MEMBER_APPROVAL_SKEW_NS {
             return Err("the approval is too old or from the future");
         }
-        let key = ed25519_dalek::VerifyingKey::from_bytes(&self.user_public_key)
+        let signer = match &self.device {
+            None => self.user_public_key,
+            Some(cert) => {
+                if !matches!(
+                    self.request,
+                    ApproverRequest::Confirmations
+                        | ApproverRequest::Answer { .. }
+                        | ApproverRequest::PushKey
+                        | ApproverRequest::Notify(_)
+                ) {
+                    return Err("only the person's root pairs devices");
+                }
+                if cert.user_public_key != self.user_public_key {
+                    return Err("the device is another person's");
+                }
+                if cert.capabilities.agent.is_some() {
+                    return Err("an agent's key answers no question for its person");
+                }
+                tilo_user_identity::verify_device_cert_at(cert, now_ns)
+                    .map_err(|_| "the device's certificate does not hold")?;
+                cert.device_public_key
+            }
+        };
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&signer)
             .map_err(|_| "the approval names no valid root")?;
         let message = Self::signed_message(&self.user_public_key, self.issued_at_ns, &self.request)
             .map_err(|_| "the approval cannot be encoded")?;
@@ -208,7 +245,7 @@ impl MemberApproval {
             &message,
             &ed25519_dalek::Signature::from_bytes(&self.signature),
         )
-        .map_err(|_| "the approval is not signed by its root")
+        .map_err(|_| "the approval is not signed by its root or device")
     }
 }
 
@@ -254,6 +291,50 @@ pub enum ApproverRequest {
     AwaitPending {
         known: Vec<[u8; 32]>,
     },
+    /// The key this host signs its pushes with ([`ApproverReply::PushKey`]):
+    /// what a browser subscribes with before [`Self::Notify`].
+    PushKey,
+    /// Push the person a word in this browser when an agent waits for them
+    /// and no Tilo of theirs is open: the browser's push subscription.
+    Notify(PushSubscription),
+}
+
+/// Where a browser takes pushes, as its `PushManager` subscribed
+/// (RFC 8030, RFC 8291): its push service's address for it, its key and its
+/// auth secret.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushSubscription {
+    /// The push service's `https` address for this browser.
+    pub endpoint: String,
+    /// The browser's P-256 key, uncompressed (65 bytes).
+    #[serde(with = "serde_bytes")]
+    pub p256dh: Vec<u8>,
+    /// The browser's auth secret (16 bytes).
+    #[serde(with = "serde_bytes")]
+    pub auth: Vec<u8>,
+}
+
+impl PushSubscription {
+    /// The longest push service address taken.
+    pub const MAX_ENDPOINT: usize = 1024;
+
+    /// Whether this is a subscription a host can push to: an `https`
+    /// address of bounded length, a key and an auth secret of their sizes.
+    ///
+    /// # Errors
+    /// What is wrong with it.
+    pub fn check(&self) -> Result<(), &'static str> {
+        if !self.endpoint.starts_with("https://") || self.endpoint.len() > Self::MAX_ENDPOINT {
+            return Err("a push subscription names an https address");
+        }
+        if self.p256dh.len() != 65 || self.p256dh.first() != Some(&4) {
+            return Err("a push subscription carries the browser's P-256 key");
+        }
+        if self.auth.len() != 16 {
+            return Err("a push subscription carries a 16-byte auth secret");
+        }
+        Ok(())
+    }
 }
 
 /// The longest a host holds [`ApproverRequest::AwaitPending`] before it
@@ -408,6 +489,9 @@ pub enum ApproverReply {
     DelegateProposals(Vec<PendingDelegate>),
     /// Every question an agent is waiting on.
     Confirmations(Vec<PendingConfirmation>),
+    /// The key this host signs its pushes with, the uncompressed P-256
+    /// point a browser subscribes with; empty where it pushes nothing.
+    PushKey(Vec<u8>),
 }
 
 #[cfg(test)]
@@ -425,6 +509,7 @@ mod tests {
             issued_at_ns,
             request,
             signature: root.sign(&message).to_bytes(),
+            device: None,
         }
     }
 

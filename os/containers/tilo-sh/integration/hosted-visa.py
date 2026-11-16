@@ -22,7 +22,9 @@ agent take there, with the person's answering device held by the check
      of the filled form;
   e. a second form instance is submitted: the person is asked exactly once,
      names the submission, and allows it; the same call returns, and the page
-     shows its receipt and reference (`read-page`);
+     shows its receipt and reference (`read-page`); then a third is allowed on
+     a phone paired to the person, which holds no root (`tilo-approve pair`):
+     the person is asked on whichever of their devices they are at;
   f. a click on the submit button is held and asked the same way; the question
      names what leaves, just as the submission's did;
   g. a reviewer who joined by invitation reads the agent's run in History;
@@ -558,6 +560,19 @@ async def fill_phase(report: dict[str, object]) -> int:
         check(RECEIPT in json.dumps(receipt), "the page shows the application was received")
         check("TV-" in json.dumps(receipt), f"the page shows the reference it made ({json.dumps(receipt)[:300]})")
         report["receipt"] = True
+
+        say("e2. the person is on their phone, paired to them and holding no root, and allows a submission there")
+        phone = person.paired(os.path.join(OUT, "phone"))
+        submit = await fill(page)
+        asked = phone.begin("allow")
+        began = time.perf_counter()
+        run = await outcome(page.do("submit-page", element=submit))
+        report["phone_allow_seconds"] = round(time.perf_counter() - began, 2)
+        check("released" in json.dumps(run), f"the submission ran once the person allowed it on their phone ({run})")
+        questions = await phone.settle(asked)
+        check(len(questions) == 1, f"the phone was asked exactly once ({questions})")
+        check_leaves(questions[0], "a submission answered on a phone")
+        person.asked.extend(questions)
         # The page the person allowed the submission of shows its receipt,
         # and so does the page on their shell.
         seen = await asyncio.to_thread(shell.wait, "change", 60)

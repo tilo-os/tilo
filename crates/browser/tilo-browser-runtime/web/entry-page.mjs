@@ -18,6 +18,7 @@
  */
 import {AdmissionError} from './admission.mjs';
 import {answerAgentQuestions} from './agent-questions.mjs';
+import {notifyThisBrowser} from './web-push.mjs';
 import {doorCopy, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './door-wait-list.mjs';
@@ -1430,7 +1431,13 @@ export async function startEntryPage({mode}) {
     identityActions = attachIdentity();
     // A page holding the person's root is asked what their agents here
     // need them to allow, as their native devices are.
-    answerAgentQuestions({peer: page.peer, identity: currentIdentity()});
+    const answering = answerAgentQuestions({peer: page.peer, identity: currentIdentity()});
+    // And told of a question with no Tilo open, once they let the site notify them.
+    if (answering) {
+      const identity = currentIdentity();
+      void notifyThisBrowser({peer: page.peer,
+        root: identity?.userPublicKey && identity.userPublicKey === page.peer?.userPublicKey ? identity : undefined});
+    }
     // The first screen (first-run.mjs) sets an agent up through this tab's
     // root and signs in with an agent, both through a login code its host
     // makes, and signs in with a passkey, once the page can.

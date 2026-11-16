@@ -109,6 +109,7 @@ fn approval(root: &SigningKey, request: ApproverRequest) -> MemberApproval {
         issued_at_ns,
         request,
         signature: root.sign(&message).to_bytes(),
+        device: None,
     }
 }
 

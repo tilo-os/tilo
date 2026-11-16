@@ -133,7 +133,13 @@ export function createTabAttention({window: win = globalThis, storage = safeStor
     try { declined = storage?.getItem(DECLINED_KEY) === '1'; } catch { /* no storage: ask */ }
     if (!shouldOffer({permission, declined, attention: {...attention, finished: attention.finished ?? []}})) return;
     offer = showOffer(doc, {
-      allow: () => { offer?.remove(); void win.Notification.requestPermission?.(); },
+      allow: () => {
+        offer?.remove();
+        void Promise.resolve(win.Notification.requestPermission?.()).then(answer => {
+          // The page subscribes to pushes now (web-push.mjs).
+          if (answer === 'granted') win.dispatchEvent?.(new win.Event('tilo-notifications-allowed'));
+        }).catch(() => {});
+      },
       decline: () => { offer?.remove(); try { storage?.setItem(DECLINED_KEY, '1'); } catch { /* kept for this page only */ } },
     });
   }
@@ -173,7 +179,7 @@ function showOffer(doc, {allow, decline}) {
     padding: '14px 16px', borderRadius: '12px', background: '#1d1f24', color: '#eef0f4', font: '14px system-ui,sans-serif',
     boxShadow: '0 12px 40px rgba(0,0,0,.45)', display: 'flex', flexDirection: 'column', gap: '10px'});
   const text = doc.createElement('p');
-  text.textContent = 'Get a notification when an agent needs you or finishes, or someone mentions you, while Tilo is in another tab.';
+  text.textContent = 'Get a notification when an agent needs you, even with Tilo closed, and when one finishes or someone mentions you.';
   Object.assign(text.style, {margin: '0', lineHeight: '1.4'});
   const row = doc.createElement('div');
   Object.assign(row.style, {display: 'flex', gap: '8px', justifyContent: 'flex-end'});

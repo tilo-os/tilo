@@ -1,9 +1,10 @@
 //! Questions this person's agents on their workspace hosts put to them.
 //! An agent a host runs for the person never confirms an action its grants leave to them by its own
-//! word: the host asks the person's approving devices about that one invocation. This device, when
-//! it may admit devices (it holds the person's root custody), keeps an approver session with each
-//! host it connects to, puts every question on the session's question sheet, and sends the answer
-//! back. A question that is withdrawn or expires takes its sheet away.
+//! word: the host asks the person's devices about that one invocation. This device, when it is one
+//! of the person's own (no agent's key), keeps an approver session with each host it connects to,
+//! puts every question on the session's question sheet, and sends the answer back: the person is
+//! asked on whichever of their devices they are at. A question that is withdrawn or expires, or
+//! that another of their devices answered, takes its sheet away.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -44,10 +45,13 @@ impl Answering {
 }
 
 impl Approvers for Answering {
-    /// Answer `host` 's questions from now on, when this device may: a device that cannot admit
-    /// devices is no approver, and its host refuses it.
+    /// Answer `host` 's questions from now on, when this device may: an agent's key is no device
+    /// of the person's and answers nothing for them. A host this device's person has nothing at
+    /// refuses the session, which is tried again later.
     fn start(&mut self, endpoint: &Endpoint, host: EndpointAddr, identity: &HostIdentity) {
-        if !identity.device_cert.capabilities.can_admit_devices
+        let capabilities = &identity.device_cert.capabilities;
+        if capabilities.agent.is_some()
+            || capabilities.stand_in
             || self
                 .sessions
                 .get(&host.id)

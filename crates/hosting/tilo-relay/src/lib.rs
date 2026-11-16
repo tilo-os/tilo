@@ -105,6 +105,8 @@ pub mod release_people;
 pub mod state_lock;
 #[cfg(feature = "web")]
 pub mod web;
+#[cfg(feature = "web")]
+pub mod web_push;
 #[cfg(feature = "agents")]
 pub mod workspace_bots;
 pub mod workspace_join;

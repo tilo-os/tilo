@@ -21094,6 +21094,7 @@ dependencies = [
  "postcard",
  "rand 0.10.3",
  "rcgen",
+ "ring",
  "runtime-fs",
  "runtime-identity",
  "rustix 1.1.6",

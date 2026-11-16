@@ -132,6 +132,14 @@ pub(super) fn answer_of(value: &Value) -> Value {
             // Still running: the invocation id follows it, and the same call
             // with the same id asks again where it went.
             answer.insert("status".into(), "pending".into());
+            // What it waits on, when the host says: the person's answer, say.
+            if let Some(message) = value
+                .pointer("/update/message")
+                .and_then(Value::as_str)
+                .filter(|message| !message.trim().is_empty())
+            {
+                answer.insert("waiting_for".into(), message.into());
+            }
         }
     }
     if let Some(edited) = value.get("edited_by_person") {
@@ -215,7 +223,14 @@ pub(super) fn outcome(value: &Value) -> Reply {
                 .get("invocation_id")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let mut text = format!("pending {id}: still running");
+            // What it waits on, where the host said (the person's answer,
+            // say), else that it runs.
+            let doing = value
+                .pointer("/update/message")
+                .and_then(Value::as_str)
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or("still running");
+            let mut text = format!("pending {id}: {doing}");
             // A run in a shell says what it printed so far as it prints it.
             if let Some(tail) = value
                 .pointer("/update/value/tail")

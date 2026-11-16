@@ -1706,6 +1706,29 @@ pub struct WasmPeer {
     speaking_workspace: RefCell<Option<String>>,
 }
 
+impl WasmPeer {
+    /// What signs a question command of this session's: `custody`, the
+    /// person's root where the page holds it, else this session's own
+    /// device key with its certificate.
+    fn question_signer(
+        &self,
+        custody: &JsValue,
+    ) -> Result<(PageSigner, Option<DeviceCert>), JsError> {
+        use tilo_relay_client::DeviceSigner as _;
+        let signer = PageSigner::from_js(custody)?;
+        let key = signer.device_public_key();
+        if key == self.reporter_cert.user_public_key {
+            Ok((signer, None))
+        } else if key == self.reporter_cert.device_public_key {
+            Ok((signer, Some(self.reporter_cert.clone())))
+        } else {
+            Err(js_error(
+                "the page asks with the person's root or its own device key",
+            ))
+        }
+    }
+}
+
 /// A page peer's record store, and the profile store it lives in when it has one.
 type KeptPeer = (Arc<dyn PeerStore>, Option<Rc<durable_store::MemoryStore>>);
 
@@ -2038,14 +2061,70 @@ impl WasmPeer {
     }
 
     /// Answer what this person's agents on this session's host ask them,
-    /// over this session, as the person whose root custody the page holds
-    /// (`root`), on the question sheet over the desktop. Once per session.
+    /// over this session, on the question sheet over the desktop: with
+    /// `custody`, the person's root custody where the page holds it, else
+    /// this session's own device key. Once per session.
     ///
     /// # Errors
-    /// `root` is no custody.
+    /// `custody` is no custody, or neither the person's root nor this
+    /// session's device key.
     #[wasm_bindgen(js_name = answerAgentQuestions)]
-    pub fn answer_agent_questions(&self, root: &JsValue) -> Result<(), JsError> {
-        crate::questions::answer_agent_questions(self.id, root)
+    pub fn answer_agent_questions(&self, custody: &JsValue) -> Result<(), JsError> {
+        crate::questions::answer_agent_questions(self.id, custody, &self.reporter_cert)
+    }
+
+    /// The key this session's host signs its pushes with, which the page's
+    /// browser subscribes with: empty where the host pushes nothing. Asked
+    /// as `custody` (the person's root, or this session's device key).
+    ///
+    /// # Errors
+    /// Rejects when `custody` is neither, or the host refuses.
+    #[wasm_bindgen(js_name = pushKey)]
+    pub async fn push_key(&self, custody: JsValue) -> Result<Vec<u8>, JsError> {
+        let (signer, device) = self.question_signer(&custody)?;
+        let host = tilo_session_client::member_host(&self.handle);
+        tilo_relay_client::questions::MemberQuestions {
+            host: &host,
+            root: &signer,
+            device: device.as_ref(),
+        }
+        .push_key()
+        .await
+        .map_err(js_error)
+    }
+
+    /// Have this session's host push this browser a word when an agent waits
+    /// for the person and no Tilo of theirs is open: the browser's push
+    /// subscription (its `endpoint`, and its `p256dh` and `auth` keys as
+    /// `getKey` reads them), asked as `custody`.
+    ///
+    /// # Errors
+    /// Rejects for a malformed subscription, when `custody` is neither the
+    /// person's root nor this session's device key, or the host refuses.
+    #[wasm_bindgen(js_name = notifyAt)]
+    pub async fn notify_at(
+        &self,
+        custody: JsValue,
+        endpoint: String,
+        p256dh: Vec<u8>,
+        auth: Vec<u8>,
+    ) -> Result<(), JsError> {
+        let subscription = tilo_relay_protocol::certify::PushSubscription {
+            endpoint,
+            p256dh,
+            auth,
+        };
+        subscription.check().map_err(js_error)?;
+        let (signer, device) = self.question_signer(&custody)?;
+        let host = tilo_session_client::member_host(&self.handle);
+        tilo_relay_client::questions::MemberQuestions {
+            host: &host,
+            root: &signer,
+            device: device.as_ref(),
+        }
+        .notify_at(subscription)
+        .await
+        .map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = preAdmit)]

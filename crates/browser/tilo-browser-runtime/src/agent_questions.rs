@@ -1,6 +1,7 @@
-//! What a person's agents on a workspace host ask them, on a page holding
-//! their root: the approver session a native session keeps
-//! ([`tilo_relay_client::questions`]), signed by the root the page holds, and
+//! What a person's agents on a workspace host ask them, on a page of theirs:
+//! the approver session a native session keeps
+//! ([`tilo_relay_client::questions`]), signed by the root the page holds or,
+//! on a page paired to them, by the page's own device key, and
 //! each question on the native question sheet over the desktop
 //! ([`tilo_sheets::portal`]), in its words. Allow once runs that one
 //! invocation, Deny refuses it; a question the host withdraws, or that
@@ -8,7 +9,7 @@
 //! notification says an agent waits (the person did not cause it).
 //!
 //! This is the page's code for it, reached only through
-//! [`crate::questions::QuestionsCode`] so that a page which holds no root
+//! [`crate::questions::QuestionsCode`] so that a page which is asked nothing
 //! never fetches the session or the workspace transport it reaches the host
 //! over.
 
@@ -25,6 +26,7 @@ use wasm_bindgen::prelude::*;
 use crate::browser::sleep_ms;
 use crate::over_page::OverSheet;
 use crate::peer::PageSigner;
+use tilo_user_identity::DeviceCert;
 
 /// How often the page asks a host for new questions.
 const POLL_MS: u32 = 2_000;
@@ -45,16 +47,29 @@ thread_local! {
 }
 
 /// Answer what the person's agents on the host of the page's session `peer`
-/// (`WasmPeer::id`) ask them, as the person whose root custody the page holds
-/// (`root`) — the same rule as a native device's: a page without the root is
-/// no approver, and the host refuses it. Every question and answer goes over
-/// that session's own endpoint; the page dials nothing else for them. Once
-/// per session, until it closes; asking again does nothing.
+/// (`WasmPeer::id`, whose device `cert` certifies) ask them, with `custody`:
+/// the person's root where the page holds it, else the session's own device
+/// key, as any device of theirs answers — the person is asked wherever they
+/// are. Every question and answer goes over that session's own endpoint; the
+/// page dials nothing else for them. Once per session, until it closes;
+/// asking again does nothing.
 ///
 /// # Errors
-/// `root` is no custody.
-pub(crate) fn answer_for_root(peer: u32, root: &JsValue) -> Result<(), JsError> {
-    let root = PageSigner::from_js(root)?;
+/// `custody` is no custody, or neither the person's root nor the session's
+/// device key.
+pub(crate) fn answer_as(peer: u32, custody: &JsValue, cert: &DeviceCert) -> Result<(), JsError> {
+    use tilo_relay_client::DeviceSigner as _;
+    let signer = PageSigner::from_js(custody)?;
+    let key = signer.device_public_key();
+    let device = if key == cert.user_public_key {
+        None
+    } else if key == cert.device_public_key {
+        Some(cert.clone())
+    } else {
+        return Err(JsError::new(
+            "the page answers with the person's root or its own device key",
+        ));
+    };
     if crate::peer_sync::handle_of(peer).is_none()
         || !PEERS.with_borrow_mut(|peers| peers.insert(peer))
     {
@@ -69,7 +84,8 @@ pub(crate) fn answer_for_root(peer: u32, root: &JsValue) -> Result<(), JsError> 
             let member_host = tilo_session_client::member_host(&session);
             let mut host = MemberQuestions {
                 host: &member_host,
-                root: &root,
+                root: &signer,
+                device: device.as_ref(),
             };
             let error =
                 answer_questions(&mut host, &mut PageSheet { answered }, &mut answers, || {

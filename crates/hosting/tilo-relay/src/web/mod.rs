@@ -90,6 +90,29 @@ pub struct LinkListen {
     pub origin: String,
 }
 
+impl Web {
+    /// Tell a person no Tilo of theirs is open for that a question waits, in
+    /// the browsers they let notify them. The push services are told this
+    /// host by the site it belongs to, else its own origin.
+    fn serve_pushes(
+        &self,
+        state: &std::path::Path,
+        site: Option<&str>,
+        public_origin: Option<&str>,
+        addr: SocketAddr,
+    ) {
+        let contact = site
+            .or(public_origin)
+            .map_or_else(|| format!("https://{addr}"), str::to_owned);
+        match crate::web_push::WebPush::open(state, &contact) {
+            Ok(push) => self.context.certification.set_notifier(Arc::new(push)),
+            Err(error) => {
+                tracing::warn!(%error, "this host tells nobody outside Tilo that a question waits");
+            }
+        }
+    }
+}
+
 /// A running browser listener. Dropping it stops serving.
 pub struct WebHandle {
     /// HTTPS address.
@@ -356,6 +379,10 @@ impl Relay {
     ///
     /// Returns [`RelayError::Iroh`] (the transport error kind) when the
     /// certificate cannot be loaded or an address cannot be bound.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one bring-up of every browser-facing part, each started where it reads"
+    )]
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         checked_origins(&config).map_err(failed)?;
@@ -423,6 +450,12 @@ impl Relay {
             door: config.door.clone(),
         });
         web.serve_stand_ins();
+        web.serve_pushes(
+            self.state_root(),
+            config.site.as_deref(),
+            public_origin.as_deref(),
+            addr,
+        );
         // A page's fetch proxy token is minted on the session it fetched from.
         if web.fetch.is_some() {
             let grants: Arc<dyn crate::peer::FetchGrants> = web.grants.clone();

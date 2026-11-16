@@ -8,9 +8,13 @@
 //! envelope, and keeps their root in an identity root directory;
 //! [`Command::Next`] signs their answer to the next question the host has for
 //! them, as a member's root does, and prints the question it saw.
+//! [`Command::Pair`] certifies another device of the person with their root, a
+//! device that holds no root (a phone, a second computer); `next --device`
+//! answers as that device, as a device paired to the person does.
 //!
 //! usage: tilo-approve person --person PERSON.json --root DIR
-//!        tilo-approve next --root DIR --relay KEY@HOST:PORT [--answer allow|deny|none] [--within SECS]
+//!        tilo-approve pair --root DIR --device DIR [--label NAME]
+//!        tilo-approve next --root DIR --relay KEY@HOST:PORT [--device DIR] [--answer allow|deny|none] [--within SECS]
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -50,11 +54,27 @@ enum Command {
         #[arg(long)]
         root: PathBuf,
     },
+    /// Certify a new device of the person with their root: a device that
+    /// holds no root, as one paired to them.
+    Pair {
+        /// The identity root directory [`Command::Person`] wrote.
+        #[arg(long)]
+        root: PathBuf,
+        /// Where the device's key and certificate are written.
+        #[arg(long)]
+        device: PathBuf,
+        /// What the device calls itself.
+        #[arg(long, default_value = "Phone")]
+        label: String,
+    },
     /// Answer the next question the host puts to the person.
     Next {
         /// The identity root directory [`Command::Person`] wrote.
         #[arg(long)]
         root: PathBuf,
+        /// Answer as the device [`Command::Pair`] wrote here, not the root.
+        #[arg(long)]
+        device: Option<PathBuf>,
         /// The host as a page's `TILO_HOSTED_BROWSER_RELAY` names it:
         /// `KEY@HOST:PORT`.
         #[arg(long)]
@@ -107,8 +127,21 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             );
             Ok(std::process::ExitCode::SUCCESS)
         }
+        Command::Pair {
+            root,
+            device,
+            label,
+        } => {
+            let cert = pair(&root, &device, &label)?;
+            println!(
+                "{}",
+                serde_json::json!({"device": hex::encode(cert.device_public_key), "label": label})
+            );
+            Ok(std::process::ExitCode::SUCCESS)
+        }
         Command::Next {
             root,
+            device,
             relay,
             answer,
             within,
@@ -116,7 +149,13 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
             let answer = Answer::parse(&answer)?;
             let answered = tokio::runtime::Runtime::new()
                 .context("start a runtime")?
-                .block_on(next(&root, &relay, answer, Duration::from_secs(within)))?;
+                .block_on(next(
+                    &root,
+                    device.as_deref(),
+                    &relay,
+                    answer,
+                    Duration::from_secs(within),
+                ))?;
             Ok(std::process::ExitCode::from(answered))
         }
     }
@@ -154,16 +193,78 @@ fn open_person(document: &std::path::Path, root: &std::path::Path) -> anyhow::Re
     Ok(public)
 }
 
+/// The file a paired device's key is kept in, under its directory.
+const DEVICE_KEY: &str = "device.key";
+/// The file a paired device's certificate is kept in, under its directory.
+const DEVICE_CERT: &str = "device.cert.json";
+
+/// Certify a fresh key as a device of the person whose root `root` holds,
+/// with a device's member capabilities and no root, and keep both under
+/// `device`.
+fn pair(
+    root: &std::path::Path,
+    device: &std::path::Path,
+    label: &str,
+) -> anyhow::Result<tilo_user_identity::DeviceCert> {
+    let root_key = tilo_user_identity::persist::read_owned_signing_key(
+        &IdentityPaths::under(root).user_privkey,
+    )
+    .context("read the person's root: run `tilo-approve person` first")?;
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|error| anyhow::anyhow!("no randomness: {error}"))?;
+    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root_key.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: label.to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root_key)
+        .map_err(|error| anyhow::anyhow!("certify the device: {error}"))?;
+    std::fs::create_dir_all(device).with_context(|| format!("make {}", device.display()))?;
+    write_signing_key(&device.join(DEVICE_KEY), &key)
+        .with_context(|| format!("write the device's key under {}", device.display()))?;
+    std::fs::write(device.join(DEVICE_CERT), serde_json::to_vec(&cert)?)
+        .with_context(|| format!("write the device's certificate under {}", device.display()))?;
+    Ok(cert)
+}
+
 /// Answer the next question the host at `relay` puts to the person whose
-/// root `root` holds: their root signs each command, as a member's does.
+/// root `root` holds: their root signs each command, as a member's does, or
+/// the device `device` holds when one is named, as a paired device does.
 /// Answers the exit status: a question answered, no question seen while
 /// watching, a question found by a watcher, or none offered in time.
 async fn next(
     root: &std::path::Path,
+    device: Option<&std::path::Path>,
     relay: &str,
     answer: Answer,
     within: Duration,
 ) -> anyhow::Result<u8> {
+    let host = tilo_relay_protocol::hosted::endpoint(relay)
+        .map_err(|error| anyhow::anyhow!("--relay: {error}"))?;
+    if let Some(device) = device {
+        let key = tilo_user_identity::persist::read_owned_signing_key(&device.join(DEVICE_KEY))
+            .context("read the device's key: run `tilo-approve pair` first")?;
+        let cert: tilo_user_identity::DeviceCert =
+            serde_json::from_slice(&std::fs::read(device.join(DEVICE_CERT))?)
+                .context("read the device's certificate")?;
+        let member = MemberApprover::new(Host::at(host));
+        let seen = {
+            let mut questions = MemberQuestions {
+                host: &member,
+                root: &key,
+                device: Some(&cert),
+            };
+            wait(&mut questions, answer, within).await
+        };
+        member.close().await;
+        return seen;
+    }
     let paths = IdentityPaths::under(root);
     let root_key = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .with_context(|| {
@@ -172,13 +273,12 @@ async fn next(
                 paths.user_privkey.display()
             )
         })?;
-    let host = tilo_relay_protocol::hosted::endpoint(relay)
-        .map_err(|error| anyhow::anyhow!("--relay: {error}"))?;
     let member = MemberApprover::new(Host::at(host));
     let seen = {
         let mut questions = MemberQuestions {
             host: &member,
             root: &root_key,
+            device: None,
         };
         wait(&mut questions, answer, within).await
     };

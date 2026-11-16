@@ -239,7 +239,20 @@ pub(crate) async fn member_approval(
     root: &dyn DeviceSigner,
     request: ApproverRequest,
 ) -> Result<MemberApproval, CertifyError> {
-    let user_public_key = root.device_public_key();
+    member_approval_as(root, None, request).await
+}
+
+/// [`member_approval`], signed by `signer`: the person's root when `device`
+/// is `None`, else the device `device` certifies, which signs only what a
+/// device may ([`MemberApproval::device`]).
+pub(crate) async fn member_approval_as(
+    signer: &dyn DeviceSigner,
+    device: Option<&tilo_user_identity::DeviceCert>,
+    request: ApproverRequest,
+) -> Result<MemberApproval, CertifyError> {
+    let root = signer;
+    let user_public_key =
+        device.map_or_else(|| root.device_public_key(), |cert| cert.user_public_key);
     let issued_at_ns = tilo_clock::unix_now_ns();
     let message = MemberApproval::signed_message(&user_public_key, issued_at_ns, &request)
         .map_err(|error| CertifyError::Request(error.to_string()))?;
@@ -252,6 +265,7 @@ pub(crate) async fn member_approval(
         issued_at_ns,
         request,
         signature,
+        device: device.cloned(),
     })
 }
 

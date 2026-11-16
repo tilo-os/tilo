@@ -4,7 +4,8 @@ import {answerAgentQuestions} from './agent-questions.mjs';
 
 const ADA = 'ad'.repeat(32);
 
-/** A session that records each root it is asked to answer as. */
+/** A session that records each root it is asked to answer as (`undefined`:
+ * its own device key). */
 const session = (userPublicKey = ADA) => {
   const calls = [];
   return {calls, userPublicKey, answerAgentQuestions: root => calls.push(root)};
@@ -17,14 +18,12 @@ test('a page holding the root of the person it is here as answers their agents o
   assert.deepEqual(peer.calls, [identity]);
 });
 
-test('a page paired to a person whose root is elsewhere, or holding none, is no approver', () => {
+test('a page paired to a person whose root is elsewhere answers with its own device key', () => {
+  // No root here, or another person's: the session signs with its own key.
   const peer = session();
-  assert.equal(answerAgentQuestions({peer, identity: {userPublicKey: 'be'.repeat(32)}}), false);
-  assert.equal(answerAgentQuestions({peer, identity: null}), false);
-  const nobody = session(null);
-  assert.equal(answerAgentQuestions({peer: nobody, identity: {userPublicKey: ADA}}), false);
-  assert.deepEqual(peer.calls, []);
-  assert.deepEqual(nobody.calls, []);
+  assert.equal(answerAgentQuestions({peer, identity: {userPublicKey: 'be'.repeat(32)}}), true);
+  assert.equal(answerAgentQuestions({peer, identity: null}), true);
+  assert.deepEqual(peer.calls, [undefined, undefined]);
 });
 
 test('without a session to ask over, nothing is started', () => {
