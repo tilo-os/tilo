@@ -153,9 +153,9 @@ impl Workspace {
     }
 }
 
-/// A fresh workspace has one member, its owner's root: the host holds no person of
-/// its own. It keeps that id and owner across restarts, and refuses a start
-/// under another root or none.
+/// A fresh workspace has no member: the host that keeps workspaces of people's own
+/// is nobody in them, and its owner becomes one by opening its owner link. It keeps
+/// its id and root across restarts, and refuses a start under another root or none.
 #[test]
 fn a_persistent_workspace_keeps_its_id_and_owner_across_restarts() {
     let scratch = tempfile::tempdir().unwrap();
@@ -175,8 +175,8 @@ fn a_persistent_workspace_keeps_its_id_and_owner_across_restarts() {
         panic!("no governed workspace announced")
     };
     assert_eq!(version, VERSION);
-    // The workspace's only member is its owner; the host holds no person of
-    // its own, so nobody is a member before anyone joined.
+    // The host's root is nobody in its workspaces: nobody is a member before
+    // anyone opened the workspace's owner link.
     let OperatorEvent::Online {
         people,
         members,
@@ -186,7 +186,10 @@ fn a_persistent_workspace_keeps_its_id_and_owner_across_restarts() {
     else {
         panic!("no presence announced")
     };
-    assert_eq!(members, 1, "the owner is the workspace's only member");
+    assert_eq!(
+        members, 0,
+        "a host that keeps workspaces of people's own is nobody"
+    );
     assert_eq!(people, 0);
     assert!(online.is_empty());
     assert_eq!(
@@ -196,7 +199,7 @@ fn a_persistent_workspace_keeps_its_id_and_owner_across_restarts() {
                 .verifying_key()
                 .to_bytes()
         ),
-        "the member is the mounted owner root"
+        "the root the host runs as, which its owner link admits as a person"
     );
     workspace.stop();
 
@@ -215,7 +218,7 @@ fn a_persistent_workspace_keeps_its_id_and_owner_across_restarts() {
     else {
         panic!("no presence announced")
     };
-    assert_eq!(members, 1, "the restart mints no second person");
+    assert_eq!(members, 0, "the restart mints no member");
     workspace.stop();
 
     // Another root mounted: the start is refused, so no other owner is minted.
@@ -273,7 +276,7 @@ fn a_workspace_whose_state_is_gone_starts_again_under_its_id() {
     else {
         panic!("no presence announced")
     };
-    assert_eq!(members, 1, "the fresh workspace has its owner alone");
+    assert_eq!(members, 0, "the fresh workspace has nobody in it yet");
     workspace.stop();
 }
 
@@ -325,7 +328,10 @@ fn a_volume_a_workspace_service_left_keeps_its_workspace_and_people() {
     else {
         panic!("no presence announced")
     };
-    assert_eq!(members, 1, "the owner is the workspace's only member");
+    assert_eq!(
+        members, 0,
+        "a host that keeps workspaces of people's own is nobody"
+    );
     let runtime = tokio::runtime::Runtime::new().unwrap();
     join_through_entry(
         &runtime,
@@ -335,10 +341,7 @@ fn a_volume_a_workspace_service_left_keeps_its_workspace_and_people() {
         "Ana",
     );
     let listed = runtime.block_on(directory_page(started.plain));
-    assert_eq!(
-        listed.workspaces[0].members, 2,
-        "the owner and the person who joined"
-    );
+    assert_eq!(listed.workspaces[0].members, 1, "the person who joined");
     workspace.stop();
 
     // The new image's first start of that volume.
@@ -359,10 +362,7 @@ fn a_volume_a_workspace_service_left_keeps_its_workspace_and_people() {
     else {
         panic!("no presence announced")
     };
-    assert_eq!(
-        members, 2,
-        "the owner and the person who joined keep their seats"
-    );
+    assert_eq!(members, 1, "the person who joined keeps their seat");
     workspace.stop();
 }
 
