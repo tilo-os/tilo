@@ -286,9 +286,9 @@ let tab = await tabIn(person, 'setup');
 await tab.navigate(site);
 let frame = await firstFrame(tab);
 // A browser the site knows nothing of is not shown the setup ahead of its
-// door's answer (first-run.inline.js): the screen is held at the first frame,
-// and shown once the door let the person in.
-check(frame.step === null && frame.held, '1. a browser new here holds the first screen at its first frame, until the door answers', JSON.stringify(frame));
+// entry's answer (first-run.inline.js): the screen is held at the first frame,
+// and shown once the entry let the person in.
+check(frame.step === null && frame.held, '1. a browser new here holds the first screen at its first frame, until the entry answers', JSON.stringify(frame));
 const ready = await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready' && document.getElementById('first-run-offer').textContent`);
 check(ready, '1. the setup prompt shows before the click', await pageText(tab));
 // The cause of the bug: the page joins the Lounge behind the first screen,

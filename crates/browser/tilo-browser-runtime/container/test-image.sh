@@ -129,14 +129,14 @@ for bad in 'ab12' '{"a":"b\c"}' "{\"a\":\"b'c\"}" '{"a":"$b"}'; do
   entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$bad" \
     && fail "a home host's info that is not the plain JSON page-host prints must refuse to start: $bad"
 done
-entry TILO_WEB_HOME_DOOR=https://workspaces.example/peer/v1/directory/ws/ \
-  && fail "a home door without a host must refuse to start"
+entry TILO_WEB_HOME_ENTRY=https://workspaces.example/peer/v1/directory/ws/ \
+  && fail "a home entry without a host must refuse to start"
 entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_FEEDBACK='c"x' \
   && fail "a feedback channel that is not an id must refuse to start"
-entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_DOOR=https://workspaces.example/join \
-  && fail "a home door without a trailing / must refuse to start"
-entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_DOOR=http://workspaces.example/ \
-  && fail "a home door that is not https must refuse to start"
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_ENTRY=https://workspaces.example/join \
+  && fail "a home entry without a trailing / must refuse to start"
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_ENTRY=http://workspaces.example/ \
+  && fail "a home entry that is not https must refuse to start"
 entry TILO_WEB_ABOUT_COMMUNITY=javascript:x && fail "an About link that is not https must refuse to start"
 entry TILO_WEB_SHELF=http://shelf.example/i && fail "a shelf that is not an https address must refuse to start"
 entry TILO_WEB_SHELF=https://shelf.example/i && fail "a shelf that is not an address must refuse to start"
@@ -241,11 +241,11 @@ start TILO_WEB_HOME_HOST=workspaces.example TILO_WEB_HOME_NAME=Commons "TILO_WEB
 expected='{"home":{"name":"Commons","host":{"origin":"https://workspaces.example","info":"'"$info_text"'"},"app":"so.tilo.chat"},"directory":"https://workspaces.example/directory"}'
 [[ $(get /entry.json) == "$expected" ]] || fail "entry.json: $(get /entry.json)"
 
-# A workspace its host lists is joined through the door the host lists it at.
+# A workspace its host lists is joined through the entry the host lists it at.
 start TILO_WEB_HOME_HOST=workspaces.example TILO_WEB_HOME_NAME=Commons "TILO_WEB_HOME_HOST_INFO=$info" \
-  TILO_WEB_HOME_DOOR=https://relay.example/peer/v1/directory/w1/
+  TILO_WEB_HOME_ENTRY=https://relay.example/peer/v1/directory/w1/
 expected='{"home":{"name":"Commons","host":{"origin":"https://workspaces.example","info":"'"$info_text"'"},"admission":"https://relay.example/peer/v1/directory/w1/"},"directory":"https://workspaces.example/directory"}'
-[[ $(get /entry.json) == "$expected" ]] || fail "entry.json with a door: $(get /entry.json)"
+[[ $(get /entry.json) == "$expected" ]] || fail "entry.json with an entry: $(get /entry.json)"
 grep -q '^cache-control: no-cache' <(head_of /entry.json) || fail "entry.json must revalidate"
 csp=$(head_of / | grep '^content-security-policy:' || true)
 [[ $csp == "content-security-policy: frame-ancestors 'self'" ]] \

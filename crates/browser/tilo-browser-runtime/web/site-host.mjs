@@ -74,7 +74,7 @@ export function staleSiteHost(info, answering) {
 }
 
 /** What the site's operator is told (the page's console, and the error log of the site's
- * door) when the site names `origin`'s host as it was before it was set up again. */
+ * entry) when the site names `origin`'s host as it was before it was set up again. */
 export function staleSiteHostReport(origin) {
   return `entry.json names the host at ${origin} as it was before it was set up again, and the host answers as `
     + `another now. Set the web entry's TILO_WEB_HOME_HOST_INFO to what \`tilo-relay page-host ${origin}\` prints.`;

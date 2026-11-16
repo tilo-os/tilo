@@ -87,11 +87,11 @@ function fakeRuntime({phase = 'ready'} = {}) {
       const through = {Invitation: {invitation: [...invitation], token: asked.admissionToken ? [...new TextEncoder().encode(asked.admissionToken)] : null}};
       return `{"certificate":{"cert":${cert},"hostCert":${hostCert}},"entering":{"workspace":"${WORKSPACE}","name":${JSON.stringify(asked.name)},"request_id":[${Array(32).fill(7)}],"through":${JSON.stringify(through)}}}`;
     },
-    /** The shared entry through a door: the certificate the root makes now, as text, and the
+    /** The shared entry through an entry: the certificate the root makes now, as text, and the
      * entry the session asks for as it opens. */
     async entryRequest(hostCert, workspace, custody, root, options) {
       calls.entryRequest = {hostCert, workspace, root, ...JSON.parse(options)};
-      return `{"certificate":{"cert":${LINUX_CERT},"hostCert":${hostCert}},"entering":{"workspace":"${workspace}","name":"Ana","request_id":[${Array(32).fill(7)}],"through":"Door"}}`;
+      return `{"certificate":{"cert":${LINUX_CERT},"hostCert":${hostCert}},"entering":{"workspace":"${workspace}","name":"Ana","request_id":[${Array(32).fill(7)}],"through":"Entry"}}`;
     },
     /** The platform secret store's channel vault key of a namespace. */
     async channelVault(namespace) {
@@ -153,7 +153,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
           emit(phase = peer.phase, events = [], said = []) { peer.phase = phase; durable.push(...events); liveEvents.push(...said); for (const listener of listeners) listener(); },
         };
         calls.started.push(peer);
-        // A session that enters (through a door, or with an invitation) hears the host's answer
+        // A session that enters (through an entry, or with an invitation) hears the host's answer
         // soon after it starts.
         if (peer.config.entering) {
           const started = peer;
@@ -239,14 +239,14 @@ test('a guest certificate from an invitation reaches the session byte for byte',
   await peer.dispose();
 });
 
-test('a door is entered on the session itself: its first connect asks, and the host answers in its status', async () => {
+test('an entry is entered on the session itself: its first connect asks, and the host answers in its status', async () => {
   const runtime = fakeRuntime();
   let asked = 0;
   runtime.hostInfo = async () => { asked += 1; return `{"address":${JSON.stringify(HOST_ADDRESS)},"hostCert":{"issued_at_ns":${NANOS}}}`; };
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const progress = [];
   const peer = await joinWorkspace({
-    origin: 'https://host.example:8443', door: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`, identity,
+    origin: 'https://host.example:8443', entry: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`, identity,
     displayName: 'Ana', runtime, custody, store: memoryStore(), storage: null, onProgress: event => progress.push(event),
     fetch: async () => { throw new Error('no network in tests'); },
   });
@@ -260,7 +260,7 @@ test('a door is entered on the session itself: its first connect asks, and the h
   await peer.dispose();
 });
 
-test('a door that refuses on the session says so in its own code, and a workspace refusal is a refused join', async () => {
+test('an entry that refuses on the session says so in its own code, and a workspace refusal is a refused join', async () => {
   for (const [entry, check] of [
     [{outcome: 'refused', code: 'full', message: 'come back later', retryAfterSecs: 30},
       error => error.name === 'HostRefusal' && error.code === 'full' && error.retryAfter === 30],
@@ -271,7 +271,7 @@ test('a door that refuses on the session says so in its own code, and a workspac
     runtime.calls.entry = entry;
     const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
     await assert.rejects(joinWorkspace({
-      origin: 'https://host.example:8443', door: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`, identity,
+      origin: 'https://host.example:8443', entry: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`, identity,
       runtime, custody, store: memoryStore(), storage: null,
       fetch: async () => { throw new Error('no network in tests'); },
     }), check);
@@ -305,21 +305,21 @@ const certifiedBySite = runtime => {
   runtime.certifyDevice = async () => `{"cert":${LINUX_CERT},"hostCert":${memberText(siteNamed(), 'hostCert')}}`;
   return runtime;
 };
-const doorOptions = (runtime, extra = {}) => ({
-  origin: 'https://host.example:8443', door: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`,
+const refusalOptions = (runtime, extra = {}) => ({
+  origin: 'https://host.example:8443', entry: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`,
   identity: {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)},
   displayName: 'Ana', runtime, custody, store: memoryStore(), storage: null,
   fetch: async () => { throw new Error('no network in tests'); }, ...extra,
 });
 
-test('a door whose site names its host is entered with no request to the host', async t => {
+test('an entry whose site names its host is entered with no request to the host', async t => {
   t.after(forgetSiteHosts);
   nameSiteHost(home());
   const runtime = fakeRuntime();
   let asked = 0;
   runtime.hostInfo = async () => { asked += 1; throw new Error('the host is not asked'); };
   const progress = [];
-  const peer = await joinWorkspace(doorOptions(runtime, {onProgress: event => progress.push(event)}));
+  const peer = await joinWorkspace(refusalOptions(runtime, {onProgress: event => progress.push(event)}));
   assert.equal(asked, 0, 'the page asks the host nothing over HTTPS');
   assert.equal(runtime.calls.entryRequest.hostCert, memberText(siteNamed(), 'hostCert'), 'the site\'s certificate reaches the entry byte for byte');
   assert.deepEqual(runtime.peer.config.address, JSON.parse(siteNamed()).address, 'the session dials the host where the site says');
@@ -350,7 +350,7 @@ test('a site that names its host as it was before it was set up again stops the 
   const error = console.error;
   console.error = message => said.push(String(message));
   t.after(() => { console.error = error; });
-  const entering = joinWorkspace(doorOptions(runtime));
+  const entering = joinWorkspace(refusalOptions(runtime));
   await until(() => runtime.peer, 'the session');
   runtime.peer.transport = 'reconnecting';
   runtime.peer.emit();
@@ -417,7 +417,7 @@ test('a host that refuses the connection is said at once, not after a timeout, a
   await peer.dispose();
 });
 
-test('a door the page cannot reach is said at once, after its site\'s host is asked who it is', async t => {
+test('an entry the page cannot reach is said at once, after its site\'s host is asked who it is', async t => {
   t.after(forgetSiteHosts);
   nameSiteHost(home());
   const runtime = fakeRuntime();
@@ -425,7 +425,7 @@ test('a door the page cannot reach is said at once, after its site\'s host is as
   let asked = 0;
   runtime.hostInfo = async () => { asked += 1; throw new TypeError('Failed to fetch'); };
   const began = Date.now();
-  const entering = joinWorkspace(doorOptions(runtime));
+  const entering = joinWorkspace(refusalOptions(runtime));
   await until(() => runtime.peer, 'the session');
   runtime.peer.transport = 'offline';
   runtime.peer.emit('incomplete');
@@ -628,7 +628,7 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   assert.equal(runtime.calls.certify.length, 0, 'nothing was certified by the new host');
   assert.equal(profileDevice(profile, namespaces), PROFILE_DEVICE, 'the profile stays where it was');
 
-  // The new host admits the person (its door's invitation and token).
+  // The new host admits the person (its entry's invitation and token).
   const peer = await joinWorkspace({...common, invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
   const fresh = `${PROFILE_DEVICE}:${'03'.repeat(32)}`;
   assert.equal(runtime.calls.started.length, 1);

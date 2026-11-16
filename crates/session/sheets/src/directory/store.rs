@@ -901,7 +901,7 @@ async fn read(
 }
 
 /// A store with no task behind it still says what a join the caller settles
-/// became: those words are the sheet's, whether they come from a entry or from
+/// became: those words are the sheet's, whether they come from an entry or from
 /// the caller's own enrollment.
 #[cfg(test)]
 mod tests {

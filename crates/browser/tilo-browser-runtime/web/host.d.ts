@@ -128,7 +128,7 @@ export interface MountOptions {
     held?: {workspace: string; key: string; name?: string}[];
   };
   /**
-   * A join the directory sheet asked for and the listed workspace's door
+   * A join the directory sheet asked for and the listed workspace's entry
    * granted: open it as this page's person, redeeming `invitation` and its
    * one-time `admissionToken` at `origin` (`joinWorkspace`, then open it).
    * Without this the join is dropped.
@@ -233,12 +233,12 @@ export interface DesktopMount {
   /** Name the workspace's people by the id their actions record (what an app's
    * `cx.me()` answers), for a page that knows who it admitted. */
   setPeople(people: {id: string; name: string}[]): void;
-  /** Current host/lifetime aliases; invokeAction accepts these through the same door. */
+  /** Current host/lifetime aliases; invokeAction accepts these through the same entry. */
   publications(): ActionDescriptor[];
   /** At most 32 exact targets. No locus until a subsequent successful presentation. */
   observeSemanticTarget(target: SemanticPresentationTarget): SemanticPresentationWatch;
   /**
-   * Invoke one published action through the application's action door, the
+   * Invoke one published action through the application's action entry, the
    * one the palette, agents and assistive technology use. Throws
    * `code: reason` when the address is not published now, the permissions
    * refuse it, the arguments do not bind, or its contract requires

@@ -4,7 +4,7 @@
  * rules every device takes, tilo-session-client's `way_in`); the page takes it
  * and says what happened. In the order the rules try them:
  * 1. the person's own desktop (`/me`) is this browser's, with no peer,
- *    once the home's door let them in where it gates (`ownDesktop`);
+ *    once the home's entry let them in where it gates (`ownDesktop`);
  * 2. an invitation is inspected (what the host verified: workspace, role,
  *    inviter, how many people it has), confirmed by the person, then
  *    redeemed. An invitation is the approval of whoever made it: the host
@@ -14,7 +14,7 @@
  *    admits into (`viaSealedLink`); the long form names the invitation's own
  *    text, or its handle and key as `?invite=` after a workspace's route. A
  *    pre-admission `token` admits at once too; a workspace service guest
- *    `ticket` is spent on this page's pairing code at the redemption door
+ *    `ticket` is spent on this page's pairing code at the redemption entry
  *    the web host names (`entry.json` `tickets`); with `pair`, this browser
  *    becomes a new device of that person once one of their devices approves
  *    its pairing code (the host relays): the device that made the link,
@@ -22,7 +22,7 @@
  * 3. a member connects with this browser's existing account for that host
  *    (where other tabs hold every device key it has there, this tab goes on
  *    to 4 and 5 as a new device of the person);
- * 4. a host whose listed workspace has an admission door (`workspaces.mjs`)
+ * 4. a host whose listed workspace has an admission entry (`workspaces.mjs`)
  *    admits this browser's person at once; a link that names a workspace there
  *    is followed only if that is the workspace the person was admitted to;
  * 5. a host this browser set up for its person, or joined as them through
@@ -30,8 +30,8 @@
  *    (`reconnect`); the host decides whether that person is in the workspace;
  * 6. anyone else is told they have no access and who can invite them.
  * A scope without a workspace (the web host's home workspace, whose workspace the
- * page learns on admission) can only be entered through its host's door.
- * A link never grants anything: each step is the workspace's own door. A failure
+ * page learns on admission) can only be entered through its host's entry.
+ * A link never grants anything: each step is the workspace's own entry. A failure
  * to connect reads the same whether the workspace is missing or private, so a
  * link never tells a stranger which workspaces exist. Only after admission does
  * the page read the workspace's catalogue to resolve the target.
@@ -99,29 +99,29 @@ async function ready(peer, onProgress = () => {}) {
   return {peer};
 }
 
-/** The listing `listed` with its door naming `workspace`: a host serves every
- * one of its workspaces' doors under its directory (`…/directory/<workspace>/`),
- * and the door the site lists is its own workspace's. */
-function doorTo(listed, workspace) {
+/** The listing `listed` with its entry naming `workspace`: a host serves every
+ * one of its workspaces' entries under its directory (`…/directory/<workspace>/`),
+ * and the entry the site lists is its own workspace's. */
+function entryUrl(listed, workspace) {
   if (!listed?.admission || !workspace || listed.workspace === workspace) return listed;
-  const door = new URL(listed.admission);
-  const segments = door.pathname.split('/');
+  const entry = new URL(listed.admission);
+  const segments = entry.pathname.split('/');
   const at = segments.lastIndexOf('directory');
   if (at >= 0 && segments[at + 1]) segments[at + 1] = encodeURIComponent(workspace);
   else segments.splice(segments.length - 1, 0, 'directory', encodeURIComponent(workspace));
-  door.pathname = segments.join('/');
-  return {...listed, workspace, admission: door.href};
+  entry.pathname = segments.join('/');
+  return {...listed, workspace, admission: entry.href};
 }
 
-/** Admission through `workspace`'s host door, held to the workspace the
+/** Admission through `workspace`'s host entry, held to the workspace the
  * link names (`admittedAsAsked` in `runtime`). */
 async function viaHost({workspace, id = null, runtime, deps, onProgress}) {
   onProgress({phase: 'joining'});
   // The workspace a link names, if any: what this browser kept for a host set up
   // again is offered to be joined again only from the bare entry, where the
-  // door's workspace is the one the person asked for.
+  // entry's workspace is the one the person asked for.
   const peer = await deps.enterViaHost({workspace});
-  // The door has nothing to admit yet: an embed shows its embedder's fallback
+  // The entry has nothing to admit yet: an embed shows its embedder's fallback
   // until the visitor's first gesture (`entry-page.mjs`), and nothing mounts
   // before it.
   if (peer?.idle) return {peer: null, idle: true};
@@ -135,7 +135,7 @@ async function viaHost({workspace, id = null, runtime, deps, onProgress}) {
 /** The person's own desktop: this browser's, with no peer. What syncs
  * across their devices lives in workspaces, as everything shared does.
  * Where the home lets only some in (`deps.ownDesktopOpen`), a browser no
- * host let in is sent to the home's door instead, which says how to get
+ * host let in is sent to the home's entry instead, which says how to get
  * in; a seat in the workspace is not a desktop of their own. */
 async function ownDesktop({home, runtime, deps, onProgress}) {
   const gated = Boolean(home?.admission && deps.ownDesktopOpen) && !await deps.ownDesktopOpen(home);
@@ -168,18 +168,18 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
   const listed = origin ? deps.workspaceAt?.(origin) ?? null : null;
   const pairing = secrets.pair ? parsePairSecret(secrets.pair) : null;
   const here = {
-    door: Boolean(listed?.admission),
+    entry: Boolean(listed?.admission),
     entered: Boolean(origin && id && deps.entered?.({origin, workspace: id})),
     tickets: Boolean(tickets),
     pairing: Boolean(deps.pairDevice),
   };
   // A link that names a workspace at a host this page lists nothing at has no
-  // door to ask: it can only come back as the person this device holds, and a
+  // entry to ask: it can only come back as the person this device holds, and a
   // device that holds none is told it has no access. Said once, with what the
   // page knew, so that refusal names what it was missing rather than reading
   // like a workspace that turned the person away.
-  if (id && origin && !here.door) {
-    console.warn('admission: no door to ask at', origin, JSON.stringify({listed: Boolean(listed), entered: here.entered}));
+  if (id && origin && !here.entry) {
+    console.warn('admission: no entry to ask at', origin, JSON.stringify({listed: Boolean(listed), entered: here.entered}));
   }
   const link = JSON.stringify({
     scope: scope.kind === 'workspace' ? {kind: 'workspace', workspace: id ?? undefined} : {kind: scope.kind},
@@ -207,12 +207,12 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
       case 'pair':
         onProgress({phase: 'pairing'});
         return ready(await deps.pairDevice({origin, workspace: id, ...pairing, listed}), onProgress);
-      case 'door':
-        // A door admits into its own workspace. A link naming another
-        // workspace of that host asks at that workspace's door: the listed
+      case 'entry':
+        // An entry admits into its own workspace. A link naming another
+        // workspace of that host asks at that workspace's entry: the listed
         // one would let this browser into the listed workspace, and holding
         // it to the one the link names would then read as no access to it.
-        return viaHost({workspace: doorTo(listed, id), id, runtime, deps, onProgress});
+        return viaHost({workspace: entryUrl(listed, id), id, runtime, deps, onProgress});
       case 'accounts':
         accounts = await deps.readAccounts(origin);
         way = runtime.wayIn(link, JSON.stringify({...here, accounts: accounts.length}));

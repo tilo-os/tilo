@@ -183,7 +183,7 @@ function memoryStorage(entries = {}) {
 
 test('a person signed in with a passkey is the person this browser keeps, replacing whoever it was', async () => {
   const root = 'cd'.repeat(32);
-  // The browser was someone else first: a visitor it made at the door.
+  // The browser was someone else first: a visitor it made at the entry.
   const storage = memoryStorage({identity: {rootPublicKey: 'ef'.repeat(32), held: 'held-before', envelope: {wraps: []}}});
   const envelope = {root: root, wraps: [{kind: 'passkey'}]};
   const runtime = {

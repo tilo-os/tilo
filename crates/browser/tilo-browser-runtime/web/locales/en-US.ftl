@@ -87,15 +87,15 @@ arrival-failed-saving = Your changes aren’t saved on this device yet. Keep thi
 # page no file store, so a desktop draws here but its apps keep no files.
 arrival-failed-files = This window keeps no files, so apps here can’t store files of their own. Open Tilo in a normal window to work with them.
 arrival-failed-renderer = The desktop stopped drawing. Try again to start it, or reload the page.
-arrival-door-heading = { $workspace } is invite-only for now
-arrival-door-heading-unnamed = This workspace is invite-only for now
-arrival-door-body = Ask someone in it for an invite link, then paste it here.
+arrival-refusal-heading = { $workspace } is invite-only for now
+arrival-refusal-heading-unnamed = This workspace is invite-only for now
+arrival-refusal-body = Ask someone in it for an invite link, then paste it here.
 arrival-invite-link = Invite link
 arrival-invite-placeholder = Paste an invite link
 arrival-invite-open = Open
 arrival-invite-not-a-link = That isn’t an invite link. Paste the whole link you were sent.
-arrival-door-wait-heading = Sorry, Tilo is invite-only right now
-arrival-door-wait-body = It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.
+arrival-refusal-wait-heading = Sorry, Tilo is invite-only right now
+arrival-refusal-wait-body = It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.
 arrival-wait-email = Email
 arrival-wait-placeholder = you@example.com
 arrival-wait-join = Join the wait list
@@ -127,7 +127,7 @@ arrival-sign-in-not-member-unnamed = You’re signed in, but this identity isn�
 arrival-sign-in-unknown = That passkey doesn’t open a Tilo identity this site knows. Use one you made on Tilo, or open Tilo where you already use it.
 arrival-sign-in-failed = Signing in didn’t work in this browser. Try again, or open Tilo where you already use it.
 arrival-invite-toggle = Have an invite link?
-arrival-door-own = Or try Tilo on your own
+arrival-own = Or try Tilo on your own
 
 ## The reconnect screen: the page was not let in yet and tries again
 # { $time } is how long until the next try, such as "40 s" or "2 min 05 s".

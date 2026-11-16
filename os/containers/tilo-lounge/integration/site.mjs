@@ -1,6 +1,6 @@
 // The site's host for the Lounge integration test: the web entry's bundle,
 // served as the web entry image serves it, with the entry configuration this
-// deployment writes — its home is the Lounge, joined through the door the
+// deployment writes — its home is the Lounge, joined through the entry the
 // relay lists it at, and its directory is the relay's. Under `/i/` it is the
 // site a sealed invitation's link opens: the page for a browser, and the
 // relay's shelf for the page's own request for the invitation (the web entry
@@ -45,7 +45,7 @@ const TYPES = {
 
 // What the web entry image writes as its entry configuration from
 // TILO_WEB_HOME_HOST, TILO_WEB_HOME_HOST_INFO, TILO_WEB_HOME_FEEDBACK and
-// TILO_WEB_HOME_DOOR, for a site whose home workspace is hosted at `origin`.
+// TILO_WEB_HOME_ENTRY, for a site whose home workspace is hosted at `origin`.
 const entry = JSON.stringify({
   home: {name, host: info ? {origin, info} : {origin}, ...(feedback ? {feedback: {channel: feedback}} : {}), admission},
   directory: `${origin}/peer/v1/directory`,

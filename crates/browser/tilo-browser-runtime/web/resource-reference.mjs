@@ -24,7 +24,7 @@ export async function resolveResourceReference({reference, provider, actions, cu
   const app = rows[0].app_id;
   if (!app || rows.some(row => row.app_id !== app)) throw Error('Ambiguous shared resource publisher');
   // Labels and action contracts come from the authorized live publisher, never
-  // from the untrusted message. Navigation still uses its own view door.
+  // from the untrusted message. Navigation still uses its own view entry.
   return {provider, app, revision: page.revision, locator: page.locator, resource: rows[0].resource,
     availableActions: rows.map(row => row.action).filter(Boolean),
     views: rows.filter(row => row.action?.kind === 'View' && row.action.view?.open_action === row.action.address?.action).map(row => row.action)};

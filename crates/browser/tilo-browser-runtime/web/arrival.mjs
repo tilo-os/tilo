@@ -254,7 +254,7 @@ export function createArrival({lines = {jokes: [], tips: []}, random = Math.rand
         segment = current;
       }
       if (segment === 'stopped') return {line: null, note: null, progress, bar: false, stalled: false};
-      // Never backwards: a skipped step (no door to join) jumps forward.
+      // Never backwards: a skipped step (no entry to join) jumps forward.
       progress = Math.max(progress, progressIn(segment, now - since, {reducedMotion, seconds}));
       if (segment === 'done') return {line: null, note: null, progress, bar: false, stalled: false};
       // Graphics start-up has steps of its own, which only the runtime sees.
@@ -290,7 +290,7 @@ export function localized(messages, id, fallback, args) {
   return fill(messages?.get(id) ?? fallback, args);
 }
 
-/** Whether `error` is a host's door turning this person away for a while
+/** Whether `error` is a host's entry turning this person away for a while
  * (`cooling-down`: the address someone removed from the workspace joined from;
  * `removed`: the person themselves; `invitation-only`: a workspace that takes
  * people by invitation, and this person came without one),
@@ -300,29 +300,29 @@ export function refusedByHost(error) {
 }
 
 /**
- * The words of the door a page turned away for coming without an
- * invitation shows (index.html, `#arrival-door`), in `messages`' language.
- * A door whose host keeps a wait list (`waitList`) is the product's own
- * front door: it apologises, says why, and asks for an address. Without
+ * The words of the entry a page turned away for coming without an
+ * invitation shows (index.html, `#arrival-refusal`), in `messages`' language.
+ * An entry whose host keeps a wait list (`waitList`) is the product's own
+ * front entry: it apologises, says why, and asks for an address. Without
  * one, it names the workspace and how to get an invite.
  */
-export function doorCopy({workspace = null, waitList = false, messages = null} = {}) {
+export function refusalCopy({workspace = null, waitList = false, messages = null} = {}) {
   const say = (key, english, args) => localized(messages, key, english, args);
   if (waitList) {
     return {
-      heading: say('arrival-door-wait-heading', 'Sorry, Tilo is invite-only right now'),
-      body: say('arrival-door-wait-body', 'It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.'),
+      heading: say('arrival-refusal-wait-heading', 'Sorry, Tilo is invite-only right now'),
+      body: say('arrival-refusal-wait-body', 'It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.'),
     };
   }
   return {
     heading: workspace
-      ? say('arrival-door-heading', '{ $workspace } is invite-only for now', {workspace})
-      : say('arrival-door-heading-unnamed', 'This workspace is invite-only for now'),
-    body: say('arrival-door-body', 'Ask someone in it for an invite link, then paste it here.'),
+      ? say('arrival-refusal-heading', '{ $workspace } is invite-only for now', {workspace})
+      : say('arrival-refusal-heading-unnamed', 'This workspace is invite-only for now'),
+    body: say('arrival-refusal-body', 'Ask someone in it for an invite link, then paste it here.'),
   };
 }
 
-/** What the door says when it kept no address, by `HostAdmissionError`
+/** What the entry says when it kept no address, by `HostAdmissionError`
  * code (`leaveOnWaitList`), in `messages`' language. */
 export function waitListFailure(code, messages = null) {
   const say = (key, english) => localized(messages, key, english);

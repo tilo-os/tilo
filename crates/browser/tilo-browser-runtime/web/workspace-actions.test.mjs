@@ -52,7 +52,7 @@ test('the wait list is listed, gets no banner, and each address is invited with 
   const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1000};
   const {peer, calls} = adasWorkspace({owner: false, letsIn: true, waitList: [ed]});
   const member = {...peer, userPublicKey: 'bb'.repeat(32),
-    membership: {...peer.membership, mailInvite: async () => { throw new Error('this door sends no mail'); }}};
+    membership: {...peer.membership, mailInvite: async () => { throw new Error('this entry sends no mail'); }}};
   const {mount, shown, banners} = desktop();
   const shared = [];
   let listed = null;
@@ -92,7 +92,7 @@ test('someone the workspace does not let invite is never offered the wait list',
   const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)},
     inviteLink: sealedLink, ui: {}});
   await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [PEOPLE.id, JOIN_WORKSPACE.id], 'a host that keeps its door from this person offers nothing');
+  assert.deepEqual(ids(shown.at(-1)), [PEOPLE.id, JOIN_WORKSPACE.id], 'a host that keeps its entry from this person offers nothing');
   assert.ok(!calls.some(([call]) => call === 'waitList'), 'nor asks the host for a list it would refuse');
   await actions.perform(WAITING.id);
   assert.deepEqual(ids(shown.at(-1)), [PEOPLE.id, JOIN_WORKSPACE.id]);
@@ -154,7 +154,7 @@ test('a person on a host that keeps workspaces of people’s own makes their nex
   const origin = 'https://lounge.example';
   const calls = [];
   // The Lounge: a listed workspace on a host that keeps a workspace of each
-  // person's own for the people its door lets in.
+  // person's own for the people its entry lets in.
   const lounge = {origin, workspace: 'lounge', userPublicKey: ADA,
     host: {hostCert: {user_public_key: bytes('bb'.repeat(32)), device_public_key: Array(32).fill(0xcd),
       capabilities: {can_own_workspaces: true}}},

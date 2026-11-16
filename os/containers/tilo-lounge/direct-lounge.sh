@@ -14,7 +14,7 @@
 # call `stop_lounge`.
 #
 # Its addresses are LOUNGE_PORT_BASE (default 19780) and the four ports after
-# it, so a second Lounge (another door, another admission) runs beside the
+# it, so a second Lounge (another entry, another admission) runs beside the
 # first on a base of its own. The site is named LOUNGE_SITE_NAME (default
 # 127.0.0.1); `localhost` gives it a name, which a page needs to make a
 # passkey (a passkey belongs to a site's name, never to an address).
@@ -39,7 +39,7 @@ lounge_fail() {
 # The Lounge's entrypoint, started on the volume start_lounge laid out.
 run_lounge() {
   # The image's entrypoint, with the environment the gate gives the image.
-  # `LOUNGE_ADMISSION` is the door: `open` (the gate's own Lounge) or
+  # `LOUNGE_ADMISSION` is the entry: `open` (the gate's own Lounge) or
   # `invite`, which keeps a wait list (`LOUNGE_WAIT_LIST_MAX`, and the mail
   # settings a test names for its sink).
   env -i HOME="$lounge_home" PATH="$lounge_bin:/usr/bin:/bin" \

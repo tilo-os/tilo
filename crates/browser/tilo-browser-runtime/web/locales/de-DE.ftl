@@ -71,15 +71,15 @@ arrival-failed-saving = Deine Änderungen sind noch nicht auf diesem Gerät gesp
 # seine Apps behalten keine eigenen Dateien.
 arrival-failed-files = Dieses Fenster behält keine Dateien, deshalb können Apps hier keine eigenen Dateien speichern. Öffne Tilo in einem normalen Fenster, um mit ihnen zu arbeiten.
 arrival-failed-renderer = Der Desktop zeichnet nicht mehr. Versuch es noch einmal, um ihn neu zu starten, oder lade die Seite neu.
-arrival-door-heading = { $workspace } ist im Moment nur mit Einladung offen
-arrival-door-heading-unnamed = Dieser Arbeitsbereich ist im Moment nur mit Einladung offen
-arrival-door-body = Bitte jemanden darin um einen Einladungslink und füge ihn hier ein.
+arrival-refusal-heading = { $workspace } ist im Moment nur mit Einladung offen
+arrival-refusal-heading-unnamed = Dieser Arbeitsbereich ist im Moment nur mit Einladung offen
+arrival-refusal-body = Bitte jemanden darin um einen Einladungslink und füge ihn hier ein.
 arrival-invite-link = Einladungslink
 arrival-invite-placeholder = Einladungslink einfügen
 arrival-invite-open = Öffnen
 arrival-invite-not-a-link = Das ist kein Einladungslink. Füge den ganzen Link ein, den du bekommen hast.
-arrival-door-wait-heading = Tilo ist im Moment leider nur mit Einladung offen
-arrival-door-wait-body = Es ist eine frühe Alpha. Hinterlass deine E-Mail-Adresse, und wir schicken dir eine Einladung, sobald Platz ist.
+arrival-refusal-wait-heading = Tilo ist im Moment leider nur mit Einladung offen
+arrival-refusal-wait-body = Es ist eine frühe Alpha. Hinterlass deine E-Mail-Adresse, und wir schicken dir eine Einladung, sobald Platz ist.
 arrival-wait-email = E-Mail-Adresse
 arrival-wait-placeholder = du@beispiel.de
 arrival-wait-join = Auf die Warteliste
@@ -111,7 +111,7 @@ arrival-sign-in-not-member-unnamed = Du bist angemeldet, aber diese Identität i
 arrival-sign-in-unknown = Dieser Passkey öffnet keine Tilo-Identität, die diese Seite kennt. Nimm einen, den du bei Tilo angelegt hast, oder öffne Tilo dort, wo du es schon nutzt.
 arrival-sign-in-failed = Die Anmeldung hat in diesem Browser nicht geklappt. Versuch es noch einmal oder öffne Tilo dort, wo du es schon nutzt.
 arrival-invite-toggle = Du hast einen Einladungslink?
-arrival-door-own = Oder probier Tilo für dich allein aus
+arrival-own = Oder probier Tilo für dich allein aus
 
 ## The reconnect screen: the page was not let in yet and tries again
 # { $time } is how long until the next try, such as "40 s" or "2 min 05 s".

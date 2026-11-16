@@ -50,7 +50,7 @@ test('a crash outside any window starts the page over, and a second one leaves t
   assert.deepEqual(first.reloads, ['reload'], 'the page starts itself over');
   assert.equal(first.document.body.children.length, 0, 'and leaves no screen behind');
   assert.deepEqual(reports, [{kind: 'panic', message: 'outside any window: already borrowed: BorrowMutError'}],
-    'the door hears about it before the reload');
+    'the entry hears about it before the reload');
 
   // The page that load started crashes again, inside the bound.
   const second = await loadPage({storage, reports});
@@ -67,7 +67,7 @@ test('a crash outside any window starts the page over, and a second one leaves t
   assert.equal(button.focused, true);
   button.listener.listener();
   assert.deepEqual(second.reloads, ['reload'], 'and the button is the way on');
-  assert.equal(reports.length, 2, 'both crashes reach the door, swallowed by neither');
+  assert.equal(reports.length, 2, 'both crashes reach the entry, swallowed by neither');
 });
 
 test('a crash inside a window is left to that window', async () => {

@@ -9,7 +9,7 @@ const view = {address: {resource: resource.id, action: 'show'}, kind: 'View',
   view: {id: 'resource', label: 'Resource', open_action: 'show', primary: true}};
 const row = {provider, app_id: 'so.tilo.chat', resource, action: view};
 
-// The resolver reads through one door: what the workspace's host answers for a catalogue
+// The resolver reads through one entry: what the workspace's host answers for a catalogue
 // query. Authentication and workspace admission remain the CertifiedPeer's job, not this
 // resolver's.
 function endpoints(reply) {
@@ -86,7 +86,7 @@ test('disconnect and replacement session fence replies; consent is never implici
 });
 
 
-test('explicit browser opening hydrates the exact record and invokes only its local view door', async () => {
+test('explicit browser opening hydrates the exact record and invokes only its local view entry', async () => {
   const {actions, sent} = endpoints(() => ({revision: 'r1', rows: [row]}));
   const steps = [];
   const opened = {actions: id => { steps.push(['actions', id]); return [view]; },

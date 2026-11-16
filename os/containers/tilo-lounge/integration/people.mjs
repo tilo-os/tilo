@@ -1,5 +1,5 @@
 // Two people in the Lounge, as two real browsers: each browser opens the web
-// entry, which joins the Lounge through its door as its own person (the
+// entry, which joins the Lounge through its entry as its own person (the
 // deployment admits everyone as an editor). Then one sends a chat message and
 // opens a window, and the other must see both, each shown present to the
 // other — the live plane's presence, the shared shell, and the chat all at
@@ -47,7 +47,7 @@ if (!site || !relay || !origin || !out || !ownerSocket) {
 }
 
 /** Declare `user` (hex) an owner of the running Lounge: the operator asks the
- * workspace itself, over its operator socket, and the workspace's door then
+ * workspace itself, over its operator socket, and the workspace's entry then
  * lets them in and its governance makes them an administrator. */
 const declareOwner = user => execFileSync(
   'python3',
@@ -149,7 +149,7 @@ const snapshot = async tab => {
     const safe = read => { try { return read(); } catch (error) { return \`unavailable: \${error}\`; } };
     return JSON.stringify({
     state: (() => { const s = globalThis.tiloMount?.state() ?? null;
-      return s && {arrival: s.arrival ?? null, entry: s.entry ?? null, door: s.door ?? null,
+      return s && {arrival: s.arrival ?? null, entry: s.entry ?? null, entry: s.entry ?? null,
         phase: s.phase ?? null, frames: s.frames ?? 0, searchOpen: !!s.searchOpen,
         // Frames the GPU left unreported since it last reported one: what a
         // page that stopped drawing while it stayed alive says.
@@ -230,7 +230,7 @@ const until = async (tab, expression, what, timeout = stepLimit(3)) => {
   // says more than the wait that ran out.
   const shown = await tab.evaluate(`JSON.stringify({
     arrival: document.documentElement.dataset.arrival ?? null,
-    door: document.documentElement.dataset.door ?? null,
+    entry: document.documentElement.dataset.entry ?? null,
     phase: document.documentElement.dataset.phase ?? null,
     progress: document.documentElement.dataset.arrivalProgress ?? null,
     status: document.getElementById('status')?.textContent ?? null,
@@ -757,7 +757,7 @@ const recordLoading = async (launched, tab) => {
 const mounted = async (tab, name) => {
   const arrival = JSON.parse(await tab.evaluate(`JSON.stringify({
     arrival: document.documentElement.dataset.arrival ?? null,
-    door: document.documentElement.dataset.door ?? null,
+    entry: document.documentElement.dataset.entry ?? null,
     phase: document.documentElement.dataset.phase ?? null,
     // Why a page stopped: refused, failed or unsupported, in the words it shows.
     entry: document.documentElement.dataset.entry ?? null,

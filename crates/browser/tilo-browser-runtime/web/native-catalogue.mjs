@@ -10,7 +10,7 @@
  * workspace's own, `workspace:<workspace>`) goes to the host over the peer's carrier
  * (`peer.actions`), and the host admits it by the person's own standing:
  * the page grants nothing itself. The page itself takes the same membership actions through the mount's
- * door (`invokeMembershipAction`). */
+ * entry (`invokeMembershipAction`). */
 const GOVERNANCE_PROVIDER = 'tilo.workspace';
 const MEMBERSHIP = {'remove-member': 'remove', ban: 'ban', unban: 'unban'};
 /** The membership request an action names, if it is one (never an inherited name). */
@@ -29,19 +29,19 @@ export const governanceResource = workspace => `workspace.permissions:${workspac
 const refusal = (code, reason) => Promise.reject(new Error(`${code}: ${reason}`));
 
 /**
- * The workspace's membership actions through a mount's own action door
+ * The workspace's membership actions through a mount's own action entry
  * (`invokeAction`), as a script, an agent or assistive technology takes
  * them on the page: `remove-member`, `ban` and `unban` on `workspace`'s
  * governance resource, each `{person}` (the person's root key, hex). They
  * become the same workspace requests an app's do (`membership`, see
  * `peer.mjs`), which the host decides by the workspace's policy; removing
- * and banning run only with `confirm`, as the door runs any action whose
+ * and banning run only with `confirm`, as the entry runs any action whose
  * contract asks first.
  *
  * `undefined` when `resource` and `action` name no such action of this
- * workspace, so the application's door answers them; else a promise of the
+ * workspace, so the application's entry answers them; else a promise of the
  * `ActionResult` (`{state: 'completed', output: {value: {workspace, members}}}`
- * once the host applied it), rejected `code: reason` as the door's errors
+ * once the host applied it), rejected `code: reason` as the entry's errors
  * read when the host refused it.
  */
 export function invokeMembershipAction({membership, workspace, resource, action, args = {}, confirm = false}) {

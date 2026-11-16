@@ -17,7 +17,7 @@
  *   role chosen, or the invitation listed and taken back, opens the sheet
  *   (`invite.rs`).
  *
- * - `waiting-to-join`: the addresses people left at the door of a workspace
+ * - `waiting-to-join`: the addresses people left at the entry of a workspace
  *   that takes people by invitation (`membership.waitList`), for the owner
  *   and anyone else the host lets invite. Each is answered with an invitation
  *   of the inviter's own, a short link to that address, made for the entry so
@@ -44,7 +44,7 @@ export const JOIN_WORKSPACE = Object.freeze({id: 'join-workspace', title: 'Join 
 export const INVITE_LINK = Object.freeze({id: 'copy-invite-link', title: 'Copy an invite link',
   subtitle: 'Anyone with it joins as an editor', source: 'workspace'});
 export const WAITING = Object.freeze({id: 'waiting-to-join', title: 'Waiting to join',
-  subtitle: 'Invite people who left their address at the door'});
+  subtitle: 'Invite people who left their address at the entry'});
 export const PEOPLE = Object.freeze({id: 'people', title: 'People',
   subtitle: 'Who is in this workspace, and who may remove them', source: 'workspace'});
 
@@ -164,7 +164,7 @@ export function createWorkspaceActions({
       link, copied: true});
   };
 
-  /** An invitation for the address `entry` left at the door: mailed there
+  /** An invitation for the address `entry` left at the entry: mailed there
    * by the host where it sends mail, else shared for the inviter to send.
    * Resolves to `{mailed, link}`; the entry leaves the list once someone
    * joins with it. */
@@ -226,7 +226,7 @@ export function createWorkspaceActions({
             remove: person => peer.membership.remove(person)});
         } else if (id === INVITE_LINK.id && lettingIn) await copyInviteLink();
         else if (id === WAITING.id && lettingIn) {
-          // The addresses left at the workspace's door, where the workspace
+          // The addresses left at the workspace's entry, where the workspace
           // keeps a wait list: a workspace without one lists none.
           await ui.waitingList({load: () => peer.membership.waitList(), invite: inviteContact,
             unlist: requestId => peer.membership.unlist(requestId)});

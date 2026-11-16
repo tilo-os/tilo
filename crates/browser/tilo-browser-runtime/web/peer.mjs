@@ -219,7 +219,7 @@ const isLoopbackHttp = url => url.protocol === 'http:' && LOOPBACK.has(url.hostn
  * http for local review (no certificate exception needed). The request names
  * no content type: the host reads every body as the bytes it is, and a
  * cross-origin POST with only the browser's own headers goes without the
- * CORS preflight, which cost a page entering through another origin's door a
+ * CORS preflight, which cost a page entering through another origin's entry a
  * round trip before each request it made of the host. */
 export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...args)) {
   const base = new URL(origin);
@@ -491,7 +491,7 @@ async function connect({
   const ownColor = () => runtime.presenceColor(userPublicKey);
   // Who the host is and where it is dialled: as the page's own site names
   // it, handed on by the entry that took it (`enterOnSession`), else asked
-  // of the host here. An answer from a door says where the host's packet
+  // of the host here. An answer from an entry says where the host's packet
   // relay answers and nothing of how a page reaches the host itself (the
   // WebTransport origin, and the certificate a page pins when the host's is
   // not trusted by the browser): the site's own naming of the host has
@@ -562,7 +562,7 @@ async function connect({
       if (!staleSiteHost(host, JSON.parse(text))) { checked(); return; }
       const report = staleSiteHostReport(origin);
       console.error(report);
-      // The site's door logs what a page did not catch (`reportErrors` in entry-page.mjs).
+      // The site's entry logs what a page did not catch (`reportErrors` in entry-page.mjs).
       globalThis.reportError?.(new Error(report));
       stale = new AdmissionError('stale-entry', STALE_SITE_HOST);
       publish();
@@ -741,7 +741,7 @@ async function connect({
     // The one rule every device keeps as it comes back (`reconnectCertificate`
     // in wasm): what this browser kept is never handed to another host than
     // the one it was certified by, and only a device that host has just
-    // admitted (an invitation redeemed, its door, a pairing) goes on there,
+    // admitted (an invitation redeemed, its entry, a pairing) goes on there,
     // in a namespace of its own.
     switch (reconnecting(existing, admitted, JSON.stringify((admitted && JSON.parse(admitted).hostCert) ?? host.hostCert))) {
       case 'host-changed': throw new AdmissionError('host-changed', HOST_CHANGED);
@@ -780,7 +780,7 @@ async function connect({
         // certificate, so the host refuses those keys from the moment each
         // entry names on.
         revocations: identity?.revocations?.length ? identity.revocations : undefined,
-        // The workspace this device enters through its door as its session opens, until
+        // The workspace this device enters through its entry as its session opens, until
         // the host admitted it.
         entering,
       }),
@@ -835,7 +835,7 @@ async function connect({
   const hasRecord = (app, record) => Boolean(peer?.hasRecord?.(app, record));
 
   // The page's actions: the workspace's host lists and runs them, asked through the
-  // session this page holds with it (`actionMessage` in wasm) — the same door the page's
+  // session this page holds with it (`actionMessage` in wasm) — the same entry the page's
   // own Rust asks, so nothing here speaks the frames. A ticket follows one invocation: the
   // host's receipt, then what became of it.
   function createActions() {
@@ -1228,7 +1228,7 @@ async function connect({
         current: () => !disposed && snapshot.phase === 'ready' && actions === connection});
     },
     /** Open an exact shared resource through a standalone app's current view
-     * door. Calling this is explicit navigation; it never joins or grants. */
+     * entry. Calling this is explicit navigation; it never joins or grants. */
     openResource(target, reference, provider, action, {signal} = {}) {
       const connection = actions;
       return openResourceReference({reference, provider, action, actions: connection, signal,
@@ -1484,14 +1484,14 @@ export async function openInvitation(site, secret, {runtime} = {}) {
  * Become a new device of the person `userPublicKey` (hex) at the host at
  * `origin`, with no root on this page: the host relays the request, this
  * page shows `onPairingCode(code)`, and one of the person's devices that
- * holds their root approves it. Then, with `door` (a workspace's door, its
+ * holds their root approves it. Then, with `entry` (a workspace's entry, its
  * base URL), the device goes through it into that workspace as a device of
  * theirs; without, it connects to `workspace`. Takes `connectPeer`'s other options; the device key is
  * `custody`, else a free one of `profile` (default the person's profile for
  * that host). Resolves to the `CertifiedPeer`.
  */
 export async function pairDevice(options) {
-  const {origin, userPublicKey, label = deviceLabel(), door, signal} = options;
+  const {origin, userPublicKey, label = deviceLabel(), entry, signal} = options;
   if (!origin || !userPublicKey) throw new TypeError('origin and userPublicKey are required');
   const profile = options.profile ?? identityProfile({userPublicKey}, origin);
   // A caller's device key (`options.custody`, of `profile`) stays the
@@ -1506,8 +1506,8 @@ export async function pairDevice(options) {
       options.invite ?? null, custodyForWasm, code => options.onPairingCode?.(code),
       JSON.stringify(info.address)));
     const common = {...options, identity: undefined, label: enrolled, profile, custody: own, runtime};
-    if (!door) return connect({...common, deviceCertificate: certified});
-    return join({...common, origin, door, certified});
+    if (!entry) return connect({...common, deviceCertificate: certified});
+    return join({...common, origin, entry, certified});
   };
   return options.custody ? pairing() : withCustody(own, pairing, signal);
 }
@@ -1596,7 +1596,7 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
 }
 
 /** What a session that never got through to the host at `origin` says in
- * place of its own phase: `failed`, `unanswered` (the code a door not
+ * place of its own phase: `failed`, `unanswered` (the code an entry not
  * reached ends an entry with), and words that name the host and read as a
  * connection that failed (`failure-screen.mjs`, `unanswered`). */
 function hostUnreached(origin, snapshot) {
@@ -1604,7 +1604,7 @@ function hostUnreached(origin, snapshot) {
   return {phase: 'failed', errorCode: 'unanswered', error: `connection refused or lost before ${new URL(origin).origin} answered${why}`};
 }
 
-/** The codes a door refuses with (`EntryRefusalCode`), and its entry when not reached. */
+/** The codes an entry refuses with (`EntryRefusalCode`), and its entry when not reached. */
 const DOOR_CODES = new Set(['banned', 'removed', 'invitation-only', 'full', 'refused', 'unanswered']);
 
 /** How long a page waits for its host's answer to the entry its session asked for: the host
@@ -1614,21 +1614,21 @@ const ENTRY_TIMEOUT_MS = 45_000;
  * asks the host who it is (`site-host.mjs`): an entry reaches it in about a second. */
 const SITE_HOST_CHECK_MS = 8_000;
 
-/** A refusal as the shared entry reads it (`HostRefusal`): its `code`, the wait the door
- * asked for in seconds, and, when a workspace's door turned the person away, the door's own
- * answer (`door`: whether it keeps a wait list, and where its contact is). */
-function hostRefusal(code, message, retryAfter = null, door = null) {
+/** A refusal as the shared entry reads it (`HostRefusal`): its `code`, the wait the entry
+ * asked for in seconds, and, when a workspace's entry turned the person away, the entry's own
+ * answer (`entry`: whether it keeps a wait list, and where its contact is). */
+function hostRefusal(code, message, retryAfter = null, entry = null) {
   const error = new Error(message);
   error.name = 'HostRefusal';
   error.code = code;
   if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfter = retryAfter;
-  if (door) error.door = door;
+  if (entry) error.entry = entry;
   return error;
 }
 
-/** The workspace `door` (its base URL, `…/directory/<workspace>/`) lets people into. */
-function doorWorkspace(door) {
-  const segments = new URL(door).pathname.split('/').filter(Boolean);
+/** The workspace `entry` (its base URL, `…/directory/<workspace>/`) lets people into. */
+function entryWorkspace(entry) {
+  const segments = new URL(entry).pathname.split('/').filter(Boolean);
   const at = segments.lastIndexOf('directory');
   return at >= 0 ? segments[at + 1] ?? null : null;
 }
@@ -1647,7 +1647,7 @@ function entryAnswered(peer, timeoutMs = ENTRY_TIMEOUT_MS) {
     const check = snapshot => {
       const entry = snapshot?.entry;
       if (entry?.outcome === 'admitted') finish(undefined, entry);
-      else if (entry?.outcome === 'refused') finish(hostRefusal(entry.code, entry.message, entry.retryAfterSecs, entry.door ?? null));
+      else if (entry?.outcome === 'refused') finish(hostRefusal(entry.code, entry.message, entry.retryAfterSecs, entry.entry ?? null));
       else if (snapshot?.phase === 'failed') finish(hostRefusal(snapshot.errorCode ?? 'refused', snapshot.error ?? 'The host refused this device.'));
     };
     stop = peer.onStatus(check);
@@ -1655,11 +1655,11 @@ function entryAnswered(peer, timeoutMs = ENTRY_TIMEOUT_MS) {
   });
 }
 
-/** Enter `workspace` on the session itself, through its door or with an invitation (`entry`,
+/** Enter `workspace` on the session itself, through its entry or with an invitation (`entry`,
  * given the host's certificate as text, makes the entry: `entryRequest` or `invitationEntry` in
  * wasm). Who the host is the page's own site says (`site-host.mjs`), else the host itself; the
  * shared entry chooses the certificate (the one this very key holds from this host, else one the
- * root makes now), and the session asks to enter as it opens: the door and the admission ride the
+ * root makes now), and the session asks to enter as it opens: the entry and the admission ride the
  * session's own first message, so a page its site told of the host asks it nothing over HTTPS,
  * and its first requests follow right behind. */
 async function enterOnSession({
@@ -1700,8 +1700,8 @@ async function enterOnSession({
     await peer.dispose?.().catch(() => {});
     // The site names the host as it was before it was set up again: the site's to fix.
     if (error?.code === 'stale-entry') throw new AdmissionError('stale-entry', STALE_SITE_HOST);
-    // A door's own refusal (its code, and the wait it asked for) is the caller's to show:
-    // `workspaces.mjs` reads it. The workspace refusing the device the door let in is a refusal
+    // An entry's own refusal (its code, and the wait it asked for) is the caller's to show:
+    // `workspaces.mjs` reads it. The workspace refusing the device the entry let in is a refusal
     // of what this browser brings, which the caller answers by coming again as a new device.
     if (DOOR_CODES.has(error?.code)) throw error;
     console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
@@ -1710,14 +1710,14 @@ async function enterOnSession({
 }
 
 async function join({
-  origin, invitation, door, identity, displayName = '', label = deviceLabel(), signal, onProgress,
+  origin, invitation, entry, identity, displayName = '', label = deviceLabel(), signal, onProgress,
   admissionToken, runtime, custody, profile, fetch: fetcher, certified, ...connectOptions
 }) {
   // A device certified elsewhere (`certified`, a paired device) asks as
   // itself; any other asks as the person whose root the page holds.
   if (!certified) identity ??= currentIdentity();
   if (!identity && !certified) throw new IdentityError('locked', 'Unlock the identity first');
-  if (!origin || !(invitation || door)) throw new TypeError('origin and an invitation or a door are required');
+  if (!origin || !(invitation || entry)) throw new TypeError('origin and an invitation or an entry are required');
   runtime ??= await pageRuntime(connectOptions.desktop);
   const person = identity ?? {userPublicKey: hexOf(JSON.parse(certified).cert.user_public_key)};
   profile ??= identityProfile(person, origin);
@@ -1735,9 +1735,9 @@ async function join({
   const common = {
     origin, identity, person, label, displayName, signal, onProgress, runtime, custody, profile, fetcher, connectOptions,
   };
-  if (door) {
-    const workspace = doorWorkspace(door);
-    if (!workspace) throw new TypeError('the door names no workspace');
+  if (entry) {
+    const workspace = entryWorkspace(entry);
+    if (!workspace) throw new TypeError('the entry names no workspace');
     return enterOnSession({
       ...common, workspace,
       entry: hostCert => runtime.entryRequest(hostCert, workspace, custodyForWasm, identity ?? undefined, accepting),

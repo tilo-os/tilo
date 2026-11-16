@@ -14,7 +14,7 @@
  *    `deps.chosenWorkspace`);
  * 3. gets into the workspace (`admission.mjs`);
  * 4. mounts the desktop or the one app, and shows the target through the
- *    view door (`open-target.mjs`);
+ *    view entry (`open-target.mjs`);
  * 5. hands `location` and `history` to the router.
  */
 import {admit} from './admission.mjs';
@@ -299,8 +299,8 @@ export function shownLink(target) {
 }
 /**
  * Boot an entry page. `deps` supplies the page host (`loadRuntime`,
- * `mountDesktop`) and the admission doors; the page wires the real ones.
- * `onStep` hears the steps of getting in: `join` while a host's door is
+ * `mountDesktop`) and the admission entries; the page wires the real ones.
+ * `onStep` hears the steps of getting in: `join` while a host's entry is
  * asked, `open` once admitted (until the desktop draws).
  */
 export async function boot({mode, window = globalThis, surface, status, deps, diagnostics = {}, onStep = () => {}}) {
@@ -322,7 +322,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // The host the site names with its home workspace: the page dials it as named.
   nameSiteHost(entry.home);
   const linked = loaded.then(runtime => grammar(runtime, entry));
-  // Awaited below; a failure is the first door's to report.
+  // Awaited below; a failure is the first entry's to report.
   void linked.catch(() => {});
   let route;
   try {
@@ -376,8 +376,8 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   if (sealedAdmitted) {
     route = {mode: 'desktop', target: {scope: {kind: 'workspace', host: new URL(peer.origin).origin, workspace: peer.workspace}}};
   }
-  // A link that names no workspace is let in through its host's door: the workspace
-  // the door admits to is that host's listed workspace.
+  // A link that names no workspace is let in through its host's entry: the workspace
+  // the entry admits to is that host's listed workspace.
   const admittedWorkspace = peer && route.target.scope.kind === 'workspace' && (sealedAdmitted || !route.target.scope.workspace)
     ? peer.workspace : null;
   configureFeedback(peer, entry.home, admittedWorkspace, {
@@ -424,7 +424,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // to, made and listed through the workspace's host.
   const invite = deps.invite?.({peer, entry}) ?? null;
   const host = scopeHost(scope, window.location?.host);
-  // Asked beside the door, not before it (`deps.rendererUnavailable`): a
+  // Asked beside the entry, not before it (`deps.rendererUnavailable`): a
   // browser that cannot draw opens no window, and the page says what to
   // change instead. The answer is the browser's GPU process starting, which
   // nothing admission needs waits on.

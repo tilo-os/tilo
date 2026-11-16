@@ -482,7 +482,7 @@ web_env() {
     "TILO_WEB_HOME_HOST_INFO=$info" \
     TILO_WEB_HOME_NAME=Lounge \
     "TILO_WEB_HOME_APP=${TILO_SH_HOME_APP-so.tilo.chat}" \
-    "TILO_WEB_HOME_DOOR=$relay_origin/peer/v1/directory/$workspace/" \
+    "TILO_WEB_HOME_ENTRY=$relay_origin/peer/v1/directory/$workspace/" \
     TILO_WEB_HOME_FEEDBACK=c_feedback \
     "TILO_WEB_DIRECTORY=$relay_origin/peer/v1/directory" \
     "TILO_WEB_SHELF=http://127.0.0.1:$plain_port" \

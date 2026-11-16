@@ -4,7 +4,7 @@
 // and the tab stays on the wait list when it reloads. The site is the web
 // entry's bundle served beside the relay, as the image serves it.
 //
-// usage: node wait-list-entry.mjs SITE_URL RELAY_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]
+// usage: node wait-list.mjs SITE_URL RELAY_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]
 //
 // Prints a JSON report and keeps the screenshots and the tab's console in
 // OUT_DIR; exits non-zero when a step did not happen or the page failed.
@@ -15,7 +15,7 @@ import {stepLimit, shellMetrics} from './waits.mjs';
 
 const [site, relay, mailDir, out, before] = process.argv.slice(2);
 if (!site || !relay || !mailDir || !out) {
-  console.error('usage: node wait-list-entry.mjs SITE_URL RELAY_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]');
+  console.error('usage: node wait-list.mjs SITE_URL RELAY_ORIGIN MAIL_DIR OUT_DIR [BEFORE_URL]');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});

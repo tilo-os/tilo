@@ -1,24 +1,24 @@
 /**
- * The wait list at the door of a workspace that takes people by invitation
+ * The wait list at the entry of a workspace that takes people by invitation
  * (index.html, `#arrival-wait` and the lines around it), as this browser
  * stands with it:
  *
  * - `form`: nothing left here. An email field and what the address is for.
- * - `inbox`: the address was left at a door that mails (`mail`), and waits
+ * - `inbox`: the address was left at an entry that mails (`mail`), and waits
  *   to be confirmed: "Check your inbox", with a way to have the link sent
  *   again and a way to take the address off.
- * - `listed`: the address is on the list (confirmed, or left at a door that
+ * - `listed`: the address is on the list (confirmed, or left at an entry that
  *   sends no mail, which says so), with the way off.
  * - `invited`: someone invited the address; the invitation is in its inbox
- *   (or comes from whoever invited it, where the door sends no mail).
+ *   (or comes from whoever invited it, where the entry sends no mail).
  * - `left`: it was just taken off: the form again, saying so.
  * - `expired`: a confirmation link no longer worked: the form again, saying
  *   so.
  *
- * Taking it off needs no inbox: the door handed this browser a secret when
+ * Taking it off needs no inbox: the entry handed this browser a secret when
  * the address was left (`leaveOnWaitList`), which `leaveWaitList` sends
  * back; every mail's removal link carries one too. The links mailed land on
- * this door (`arrival`): a confirmation link confirms and shows `listed`, a
+ * this entry (`arrival`): a confirmation link confirms and shows `listed`, a
  * removal link takes the address off and shows `left`. Where the host names
  * a contact (`TILO_WORKSPACES_CONTACT`), a line under it says where questions and
  * removal requests go; without one, nothing.
@@ -33,8 +33,8 @@ const CONTACT_AT = '\u0000';
 const ON_THE_LIST = new Set(['inbox', 'listed', 'invited']);
 
 /**
- * The words of the door's wait list in `state` (see above), for the
- * address `email` (maybe unknown), at a door that mails or not (`mail`),
+ * The words of the entry's wait list in `state` (see above), for the
+ * address `email` (maybe unknown), at an entry that mails or not (`mail`),
  * in `messages`' language, where this browser can take it off
  * (`leavable`, else the mails' removal links do): `done` (the line in place of the form, or
  * `null` while the form shows), `again` (`{prompt, button}` to have the
@@ -78,22 +78,22 @@ export function waitListWords({state = 'form', email = '', mail = false, leavabl
   };
 }
 
-/** The state an entry's standing at the door (`waitListStanding`) shows. */
+/** The state an entry's standing at the entry (`waitListStanding`) shows. */
 const STANDING = {pending: 'inbox', listed: 'listed', invited: 'invited', gone: 'form'};
 
 /**
- * Wire the door's wait list for `workspace`: `elements` are the form
+ * Wire the entry's wait list for `workspace`: `elements` are the form
  * (`form`, `email`, `submit`), the line in its place (`done`), the way to
  * have the link sent again (`againLine`, `againPrompt`, `again`, a
  * button), the way off (`change`, `leave`, a button), the note (`note`)
  * and the contact's line (`contact`). `root` (the page's element) carries
  * `data-wait-list` (the state) and `data-wait-listed` while the address is
- * on the list. `mail`: the door mails. `arrival` is what a mailed link
+ * on the list. `mail`: the entry mails. `arrival` is what a mailed link
  * brought: `{confirm}` or `{remove}`, a secret. `join`, `leave`,
  * `listing`, `confirm` and `standing` reach the host (`leaveOnWaitList`,
  * `leaveWaitList`, `waitListing`, `confirmWaitList`,
  * `waitListStanding`). Returns `state()` and `settled`, which resolves once
- * the door knows where the entry stands.
+ * the entry knows where the entry stands.
  */
 export function mountWaitList({elements, root, workspace, contact = null, mail = false, arrival = null, messages = null,
   document = globalThis.document, join = leaveOnWaitList, leave = leaveWaitList, listing = waitListing,
@@ -104,7 +104,7 @@ export function mountWaitList({elements, root, workspace, contact = null, mail =
   let address = '';
   const problem = text => {
     note.textContent = text;
-    note.classList.add('door-problem');
+    note.classList.add('refusal-problem');
     note.setAttribute('role', 'alert');
   };
   const show = (next, known = address) => {
@@ -120,7 +120,7 @@ export function mountWaitList({elements, root, workspace, contact = null, mail =
     again.textContent = words.again?.button ?? '';
     change.textContent = words.change ?? '';
     leaveButton.textContent = words.leave ?? '';
-    note.classList.remove('door-problem');
+    note.classList.remove('refusal-problem');
     note.removeAttribute('role');
     note.textContent = words.note ?? '';
     if (state === 'left' || state === 'expired') note.setAttribute('role', 'status');

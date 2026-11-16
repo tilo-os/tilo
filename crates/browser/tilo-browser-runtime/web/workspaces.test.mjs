@@ -23,24 +23,24 @@ const custodyOf = (calls, created) => async profile => {
   return custody;
 };
 
-/** A door's refusal as the shared entry reads it (`HostRefusal`, peer.mjs):
- * the door's code (`EntryRefusalCode`) and the wait it asked for. */
-const doorRefusal = ({code, error = code, retryAfter}) => Object.assign(new Error(error), {name: 'HostRefusal', code, retryAfter});
+/** An entry's refusal as the shared entry reads it (`HostRefusal`, peer.mjs):
+ * the entry's code (`EntryRefusalCode`) and the wait it asked for. */
+const entryRefusal = ({code, error = code, retryAfter}) => Object.assign(new Error(error), {name: 'HostRefusal', code, retryAfter});
 
-/** The door as the shared entry goes through it (`entryRequest`, on the session): each
- * join through `door` asks it once for the person, and `answers` says what it
+/** The entry as the shared entry goes through it (`entryRequest`, on the session): each
+ * join through `entry` asks it once for the person, and `answers` says what it
  * answers, one per ask (`null` lets them in), the last one ever after. */
 const knocking = (calls, answers) => options => {
-  calls.posted.push({url: new URL('join', options.door).href,
+  calls.posted.push({url: new URL('join', options.entry).href,
     body: {userPublicKey: options.identity?.userPublicKey ?? options.userPublicKey, displayName: options.displayName}});
   const answer = answers.length > 1 ? answers.shift() : answers[0];
-  if (answer) throw doorRefusal(answer);
+  if (answer) throw entryRefusal(answer);
 };
 
-function harness({person = identity(0x22), membership = null, door = [null], connectFails = false, created = false} = {}) {
+function harness({person = identity(0x22), membership = null, entry = [null], connectFails = false, created = false} = {}) {
   const calls = {posted: [], joined: [], connected: [], paired: [], custodies: [], renewed: [], waited: [], progress: []};
   const store = new Map(membership ? [[KEY, JSON.stringify({'https://workspaces.example': membership})]] : []);
-  const knock = knocking(calls, door);
+  const knock = knocking(calls, entry);
   return {
     calls,
     knock,
@@ -56,7 +56,7 @@ function harness({person = identity(0x22), membership = null, door = [null], con
         return {workspace: 'WORKSPACE', dispose: async () => {}};
       },
       connect: async options => { calls.connected.push(options); if (connectFails) throw new Error('refused: not a member'); return {workspace: options.workspace}; },
-      pair: async options => { calls.paired.push(options); if (options.door) knock(options); return {workspace: options.workspace}; },
+      pair: async options => { calls.paired.push(options); if (options.entry) knock(options); return {workspace: options.workspace}; },
       openCustody: custodyOf(calls, created),
       renew: async (custody, profile) => {
         const renewed = {profile, slot: 0, created: true, renewed: calls.renewed.length + 1, closed: false, close: async () => { renewed.closed = true; }};
@@ -76,7 +76,7 @@ test('a person new to the host is pre-admitted by it and joins with the pre-admi
   await joinViaHost(options);
   assert.equal(calls.posted[0].url, 'https://workspaces.example/join');
   assert.deepEqual(calls.posted[0].body, {userPublicKey: '22'.repeat(32), displayName: 'Brave Otter'});
-  assert.equal(calls.joined[0].door, commons.admission, 'through the workspace\'s door, by the shared entry');
+  assert.equal(calls.joined[0].entry, commons.admission, 'through the workspace\'s entry, by the shared entry');
   assert.equal(calls.joined[0].origin, 'https://workspaces.example');
   assert.equal(calls.joined[0].identity.userPublicKey, '22'.repeat(32));
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '22'.repeat(32)});
@@ -85,7 +85,7 @@ test('a person new to the host is pre-admitted by it and joins with the pre-admi
 /** The host turning away the device a join comes with (`peer.mjs`). */
 const refusal = reason => Object.assign(new Error('refused'), {name: 'AdmissionError', code: 'refused', reason});
 
-/** A join through the door that the workspace then refuses with `reasons`,
+/** A join through the entry that the workspace then refuses with `reasons`,
  * one per try, then admits. */
 const refusing = (calls, reasons, knock = knocking(calls, [null])) => async joined => {
   knock(joined);
@@ -135,7 +135,7 @@ test('a host started anew that knows this device under another certificate is jo
 
 test('a browser whose person is gone joins as the person it holds now, on a new device when refused', async () => {
   // The membership names a person whose identity this browser no longer
-  // holds: the door is asked for the one it does, and the key the host
+  // holds: the entry is asked for the one it does, and the key the host
   // turns away is replaced.
   const {calls, options, store} = harness({person: identity(0x33), membership: {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)}});
   options.join = refusing(calls, ['certificate conflict']);
@@ -149,7 +149,7 @@ test('a browser whose person is gone joins as the person it holds now, on a new 
 });
 
 test('a person the workspace bans is told they were removed, not asked to reload', async () => {
-  const {calls, options} = harness({door: [{code: 'banned', error: 'you were banned from this workspace'}]});
+  const {calls, options} = harness({entry: [{code: 'banned', error: 'you were banned from this workspace'}]});
   await assert.rejects(joinViaHost(options), error => {
     assert.equal(error.code, 'removed');
     assert.equal(error.message, removedFrom('Commons'));
@@ -183,10 +183,10 @@ test('a page that leaves while reconnecting stops asking', async () => {
   assert.equal(calls.posted.length, 2);
 });
 
-test('the own desktop opens for a browser some host let in, and asks no door', async () => {
-  // The door's join is the answer to who it lets in (admission.mjs): the
+test('the own desktop opens for a browser some host let in, and asks no entry', async () => {
+  // The entry's join is the answer to who it lets in (admission.mjs): the
   // check reads only what this browser kept, and makes no request of its
-  // own (it once read the door's `presence`, a route the host does not
+  // own (it once read the entry's `presence`, a route the host does not
   // serve, which answered 405).
   const requests = [];
   const fetched = globalThis.fetch;
@@ -196,7 +196,7 @@ test('the own desktop opens for a browser some host let in, and asks no door', a
     const kept = {getItem: () => JSON.stringify({'https://elsewhere.example': {origin: 'https://elsewhere.example', workspace: 'R', userPublicKey: '11'.repeat(32)}})};
     assert.equal(await ownDesktopOpen(null, {memberships: none}), true, 'no home: nothing to gate');
     assert.equal(await ownDesktopOpen({...commons, admission: undefined}, {memberships: none}), true);
-    assert.equal(await ownDesktopOpen(commons, {memberships: none}), false, 'no host let it in yet: the door first');
+    assert.equal(await ownDesktopOpen(commons, {memberships: none}), false, 'no host let it in yet: the entry first');
     assert.equal(await ownDesktopOpen(commons, {memberships: kept}), true, 'a member keeps theirs');
     assert.equal(await ownDesktopOpen(commons, {memberships: {getItem: () => { throw new Error('no storage'); }}}), false);
   } finally {
@@ -221,18 +221,18 @@ test('a person who joined the host before reconnects without asking it', async (
   assert.equal(calls.connected[0].workspace, 'WORKSPACE');
 });
 
-test('another workspace of the host is entered at its own door, not the membership’s workspace', async () => {
+test('another workspace of the host is entered at its own entry, not the membership’s workspace', async () => {
   // The person's browser was let into the host's home before; the host also
   // keeps a workspace of their own there, which they never entered in this
   // browser. It is not the membership's workspace: it is asked at its own
-  // door, and the membership stays the one its door first let them into.
+  // entry, and the membership stays the one its entry first let them into.
   const membership = {origin: 'https://workspaces.example', workspace: 'LOUNGE', userPublicKey: '11'.repeat(32)};
   const mine = {...commons, name: 'My workspace', workspace: 'MINE', admission: 'https://workspaces.example/directory/MINE/'};
   const {calls, options, store} = harness({person: identity(0x11), membership});
   const peer = await joinViaHost({...options, workspace: mine});
   assert.equal(peer.workspace, 'WORKSPACE');
   assert.deepEqual(calls.connected, [], 'the membership is for another workspace: it is not reconnected to');
-  assert.equal(calls.joined[0].door, mine.admission, 'this workspace’s own door');
+  assert.equal(calls.joined[0].entry, mine.admission, 'this workspace’s own entry');
   assert.equal(calls.joined[0].origin, 'https://workspaces.example');
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
 });
@@ -261,13 +261,13 @@ test('a kept membership the host refuses once the session starts is joined again
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)});
 });
 
-test('a person the host removed is told so, asks the door once and is not let in again', async () => {
+test('a person the host removed is told so, asks the entry once and is not let in again', async () => {
   // Removed and pruned look alike to the returning browser: the host no
-  // longer has the person. The door tells them apart, turning away the
+  // longer has the person. The entry tells them apart, turning away the
   // address a removed person joined from.
   const membership = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership,
-    door: [{code: 'removed', error: 'you were removed from this workspace within the day'}]});
+    entry: [{code: 'removed', error: 'you were removed from this workspace within the day'}]});
   options.connect = async connected => {
     calls.connected.push(connected);
     return {workspace: connected.workspace, dispose: async () => {},
@@ -275,45 +275,45 @@ test('a person the host removed is told so, asks the door once and is not let in
   };
   await assert.rejects(joinViaHost(options), {name: 'AdmissionError', code: 'removed', message: removedFrom('Commons')});
   assert.equal(calls.posted.length, 1);
-  assert.equal(calls.joined.length, 0, 'the door did not let them in');
+  assert.equal(calls.joined.length, 0, 'the entry did not let them in');
   assert.equal(keptMembership(commons, {getItem: key => store.get(key)}), null);
   assert.match(removedFrom('Commons'), /^You were removed from Commons\. .*new invitation/);
   assert.match(removedFrom(null), /^You were removed from this workspace\./);
 });
 
-test('a door that names the person removed tells them so, whatever this browser kept', async () => {
+test('an entry that names the person removed tells them so, whatever this browser kept', async () => {
   const {calls, options} = harness({person: identity(0x33),
-    door: [{code: 'removed', error: 'you were removed from this workspace within the day'}]});
+    entry: [{code: 'removed', error: 'you were removed from this workspace within the day'}]});
   await assert.rejects(joinViaHost(options), {name: 'AdmissionError', code: 'removed', message: removedFrom('Commons')});
   assert.equal(calls.posted.length, 1);
   assert.equal(calls.connected.length, 0);
 });
 
-test('a door taking people by invitation tells a visitor without one so, and asks once', async () => {
+test('an entry taking people by invitation tells a visitor without one so, and asks once', async () => {
   const {calls, options} = harness({person: identity(0x44),
-    door: [{code: 'invitation-only', error: 'this workspace is joined by invitation'}]});
+    entry: [{code: 'invitation-only', error: 'this workspace is joined by invitation'}]});
   await assert.rejects(joinViaHost(options), error => error instanceof HostAdmissionError && error.code === 'invitation-only');
   assert.equal(calls.posted.length, 1);
   assert.equal(calls.connected.length, 0);
 });
 
-test('an address left at the door is sent there, and each refusal is named for the page to say', async () => {
+test('an address left at the entry is sent there, and each refusal is named for the page to say', async () => {
   const posted = [];
-  const door = answer => async (url, init) => { posted.push({url: String(url), init}); return reply(answer); };
+  const entry = answer => async (url, init) => { posted.push({url: String(url), init}); return reply(answer); };
   assert.deepEqual(await leaveOnWaitList({workspace: commons, email: ' Ada@Example.org ', language: 'de-AT',
-    fetch: door({body: {email: 'ada@example.org', mail: true}})}), {email: 'ada@example.org', mail: true});
+    fetch: entry({body: {email: 'ada@example.org', mail: true}})}), {email: 'ada@example.org', mail: true});
   assert.equal(posted[0].url, 'https://workspaces.example/wait-list');
   assert.equal(posted[0].init.method, 'POST');
   assert.deepEqual(JSON.parse(posted[0].init.body), {email: ' Ada@Example.org ', language: 'de-AT'});
   for (const [status, code, headers = {}] of [[400, 'invalid-email'], [429, 'too-many', {'retry-after': '600'}],
     [503, 'wait-list-full'], [404, 'no-wait-list'], [503, 'unavailable'], [500, 'something-else']]) {
-    await assert.rejects(leaveOnWaitList({workspace: commons, email: 'x@y.org', fetch: door({status, headers, body: {error: 'no', code}})}),
+    await assert.rejects(leaveOnWaitList({workspace: commons, email: 'x@y.org', fetch: entry({status, headers, body: {error: 'no', code}})}),
       error => error instanceof HostAdmissionError && error.code === (code === 'something-else' ? 'unavailable' : code)
         && error.retryAfter === (code === 'too-many' ? 600 : null));
   }
   await assert.rejects(leaveOnWaitList({workspace: commons, email: 'x@y.org', fetch: async () => { throw new TypeError('Failed to fetch'); }}),
     {name: 'HostAdmissionError', code: 'unavailable'});
-  await assert.rejects(leaveOnWaitList({workspace: {name: 'Closed', host: {origin: 'https://h.example'}}, email: 'x@y.org', fetch: door({})}),
+  await assert.rejects(leaveOnWaitList({workspace: {name: 'Closed', host: {origin: 'https://h.example'}}, email: 'x@y.org', fetch: entry({})}),
     {name: 'HostAdmissionError', code: 'invitation-only'});
 });
 
@@ -322,20 +322,20 @@ const memoryStorage = () => {
   return {values, getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key)};
 };
 
-test('the browser keeps the secret that takes its address off a door’s wait list, and only for that door', async () => {
+test('the browser keeps the secret that takes its address off an entry’s wait list, and only for that entry', async () => {
   const storage = memoryStorage();
   const secret = 'a1'.repeat(32);
   const posted = [];
-  const door = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body), credentials: init.credentials}); return reply(answer); };
+  const entry = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body), credentials: init.credentials}); return reply(answer); };
   assert.equal(waitListing(commons, storage), null);
   assert.deepEqual(await leaveOnWaitList({workspace: commons, email: ' Ada@Example.org ', storage,
-    fetch: door({body: {email: 'Ada@Example.org', removal: secret}})}), {email: 'Ada@Example.org', mail: false});
+    fetch: entry({body: {email: 'Ada@Example.org', removal: secret}})}), {email: 'Ada@Example.org', mail: false});
   assert.deepEqual(waitListing(commons, storage), {email: 'Ada@Example.org', pending: false});
   assert.equal(waitListing({...commons, admission: 'https://other.example/'}, storage), null);
   assert.doesNotMatch(JSON.stringify(waitListing(commons, storage)), /a1a1/, 'the secret stays inside');
 
   // Taking it off sends the secret alone, and forgets it here.
-  await leaveWaitList({workspace: commons, storage, fetch: door({body: {}})});
+  await leaveWaitList({workspace: commons, storage, fetch: entry({body: {}})});
   assert.equal(posted.at(-1).url, 'https://workspaces.example/wait-list/remove');
   assert.deepEqual(posted.at(-1).body, {secret});
   assert.equal(posted.at(-1).credentials, 'omit');
@@ -343,11 +343,11 @@ test('the browser keeps the secret that takes its address off a door’s wait li
   assert.equal(storage.values.size, 0);
   // Nothing kept: nothing is asked.
   const asked = posted.length;
-  await leaveWaitList({workspace: commons, storage, fetch: door({body: {}})});
+  await leaveWaitList({workspace: commons, storage, fetch: entry({body: {}})});
   assert.equal(posted.length, asked);
 });
 
-test('a wait-list removal the door could not do keeps the secret to try again', async () => {
+test('a wait-list removal the entry could not do keeps the secret to try again', async () => {
   const storage = memoryStorage();
   await leaveOnWaitList({workspace: commons, email: 'bo@example.org', storage,
     fetch: async () => reply({body: {email: 'bo@example.org', removal: 'b2'.repeat(32)}})});
@@ -359,57 +359,57 @@ test('a wait-list removal the door could not do keeps the secret to try again', 
   await assert.rejects(leaveWaitList({workspace: commons, storage, fetch: async () => { throw new TypeError('Failed to fetch'); }}),
     {code: 'unavailable'});
   assert.deepEqual(waitListing(commons, storage), {email: 'bo@example.org', pending: false});
-  // A secret the door calls none is nothing to keep.
+  // A secret the entry calls none is nothing to keep.
   await leaveWaitList({workspace: commons, storage, fetch: async () => reply({status: 400, body: {code: 'invalid-secret'}})});
   assert.equal(waitListing(commons, storage), null);
-  // A door that handed back no secret leaves nothing to take off here.
+  // An entry that handed back no secret leaves nothing to take off here.
   await leaveOnWaitList({workspace: commons, email: 'cy@example.org', storage, fetch: async () => reply({body: {email: 'cy@example.org'}})});
   assert.equal(waitListing(commons, storage), null);
 });
 
-test('a mailed address waits to be confirmed by its link, and the door says where it stands', async () => {
+test('a mailed address waits to be confirmed by its link, and the entry says where it stands', async () => {
   const storage = memoryStorage();
   const posted = [];
-  const door = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body)}); return reply(answer); };
+  const entry = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body)}); return reply(answer); };
   const secret = 'c3'.repeat(32);
   await leaveOnWaitList({workspace: commons, email: 'cy@example.org', storage,
-    fetch: door({body: {email: 'cy@example.org', removal: secret, mail: true}})});
+    fetch: entry({body: {email: 'cy@example.org', removal: secret, mail: true}})});
   assert.deepEqual(waitListing(commons, storage), {email: 'cy@example.org', pending: true});
 
-  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({body: {standing: 'pending'}})}), 'pending');
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: entry({body: {standing: 'pending'}})}), 'pending');
   assert.equal(posted.at(-1).url, 'https://workspaces.example/wait-list/standing');
   assert.deepEqual(posted.at(-1).body, {secret});
   // The link confirms it: sent as it came, and this browser stops waiting.
   const token = 'd4'.repeat(32);
-  assert.equal(await confirmWaitList({workspace: commons, token, storage, fetch: door({body: {confirmed: true}})}), true);
+  assert.equal(await confirmWaitList({workspace: commons, token, storage, fetch: entry({body: {confirmed: true}})}), true);
   assert.equal(posted.at(-1).url, 'https://workspaces.example/wait-list/confirm');
   assert.deepEqual(posted.at(-1).body, {token});
   assert.deepEqual(waitListing(commons, storage), {email: 'cy@example.org', pending: false});
   // A link no longer waiting, or none at all, confirms nothing.
-  assert.equal(await confirmWaitList({workspace: commons, token, storage, fetch: door({body: {confirmed: false}})}), false);
+  assert.equal(await confirmWaitList({workspace: commons, token, storage, fetch: entry({body: {confirmed: false}})}), false);
   const asked = posted.length;
-  assert.equal(await confirmWaitList({workspace: commons, token: 'nope', storage, fetch: door({body: {confirmed: true}})}), false);
+  assert.equal(await confirmWaitList({workspace: commons, token: 'nope', storage, fetch: entry({body: {confirmed: true}})}), false);
   assert.equal(posted.length, asked);
-  // The door cannot say now: nothing changes; it says gone: forgotten.
-  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({status: 503, body: {code: 'unavailable'}})}), null);
+  // The entry cannot say now: nothing changes; it says gone: forgotten.
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: entry({status: 503, body: {code: 'unavailable'}})}), null);
   assert.equal(await waitListStanding({workspace: commons, storage, fetch: async () => { throw new TypeError('Failed to fetch'); }}), null);
   assert.ok(waitListing(commons, storage));
-  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({body: {standing: 'gone'}})}), 'gone');
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: entry({body: {standing: 'gone'}})}), 'gone');
   assert.equal(waitListing(commons, storage), null);
-  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({body: {standing: 'listed'}})}), null);
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: entry({body: {standing: 'listed'}})}), null);
 });
 
 test('a removal link takes its address off, and this browser forgets what it left', async () => {
   const storage = memoryStorage();
   const posted = [];
-  const door = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body)}); return reply(answer); };
+  const entry = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body)}); return reply(answer); };
   await leaveOnWaitList({workspace: commons, email: 'dee@example.org', storage,
-    fetch: door({body: {email: 'dee@example.org', removal: 'e5'.repeat(32), mail: true}})});
+    fetch: entry({body: {email: 'dee@example.org', removal: 'e5'.repeat(32), mail: true}})});
   const linked = 'f6'.repeat(32);
-  await leaveWaitList({workspace: commons, secret: linked, storage, fetch: door({body: {}})});
+  await leaveWaitList({workspace: commons, secret: linked, storage, fetch: entry({body: {}})});
   assert.deepEqual(posted.at(-1), {url: 'https://workspaces.example/wait-list/remove', body: {secret: linked}});
   assert.equal(waitListing(commons, storage), null);
-  await assert.rejects(leaveWaitList({workspace: commons, secret: 'not hex', storage, fetch: door({body: {}})}), {code: 'invalid-secret'});
+  await assert.rejects(leaveWaitList({workspace: commons, secret: 'not hex', storage, fetch: entry({body: {}})}), {code: 'invalid-secret'});
 });
 
 test('a host that has not answered a kept membership yet keeps it and is not asked to admit again', async () => {
@@ -431,9 +431,9 @@ test('a host that does not answer a kept membership at all (restarting) keeps it
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
 });
 
-test('a second tab is a new device of the person, admitted through the door once', async () => {
+test('a second tab is a new device of the person, admitted through the entry once', async () => {
   // Its device key is one no host has seen: the workspace admits each device
-  // once, so it asks the door for the same person rather than fail to connect.
+  // once, so it asks the entry for the same person rather than fail to connect.
   const membership = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership, created: true});
   const peer = await joinViaHost(options);
@@ -458,7 +458,7 @@ test('a second tab of a paired device pairs as a new device, approved on one of 
   assert.equal(calls.paired[0].custody, calls.custodies[0]);
   assert.equal(typeof calls.paired[0].onPairingCode, 'function');
   assert.deepEqual(calls.posted, [{url: 'https://workspaces.example/join', body: {userPublicKey: person, displayName: 'Brave Otter'}}],
-    'the new device joins the person\u2019s workspace through the door once paired');
+    'the new device joins the person\u2019s workspace through the entry once paired');
 });
 
 test('every device key held by other tabs keeps the membership and asks the host nothing', async () => {
@@ -474,7 +474,7 @@ test('every device key held by other tabs keeps the membership and asks the host
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
 });
 
-test('a host set up again is joined again through its door once, without asking', async () => {
+test('a host set up again is joined again through its entry once, without asking', async () => {
   // The peer refuses what this browser kept for the previous host before
   // any session starts (peer.mjs); the person simply joins the new host.
   const membership = {origin: 'https://workspaces.example', workspace: 'OLD', userPublicKey: '11'.repeat(32)};
@@ -485,7 +485,7 @@ test('a host set up again is joined again through its door once, without asking'
   };
   const peer = await joinViaHost(options);
   assert.equal(calls.connected.length, 1, 'the kept membership was tried once');
-  assert.equal(calls.posted.length, 1, 'exactly one join at the door');
+  assert.equal(calls.posted.length, 1, 'exactly one join at the entry');
   assert.equal(calls.posted[0].body.userPublicKey, '11'.repeat(32));
   assert.equal(calls.joined.length, 1);
   assert.equal(calls.joined[0].identity.userPublicKey, '11'.repeat(32));
@@ -494,16 +494,16 @@ test('a host set up again is joined again through its door once, without asking'
     {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)});
 });
 
-test('a person invited into another workspace of the home\'s host comes to the home through its door', async () => {
-  // The site's home names its workspace in its door's address; this browser
+test('a person invited into another workspace of the home\'s host comes to the home through its entry', async () => {
+  // The site's home names its workspace in its entry's address; this browser
   // was let in first by an invitation into another workspace on that host.
   const home = {...commons, admission: 'https://workspaces.example/peer/v1/directory/HOME/'};
   const {calls, options} = harness({person: identity(0x11),
     membership: {origin: 'https://workspaces.example', workspace: 'INVITED', userPublicKey: '11'.repeat(32)}});
   await joinViaHost({...options, workspace: home});
   assert.equal(calls.connected.length, 0, 'the workspace it was invited into is not the home');
-  assert.equal(calls.joined[0].door, home.admission, 'the home\'s door lets them in');
-  // Kept for the home itself, the membership reconnects without the door.
+  assert.equal(calls.joined[0].entry, home.admission, 'the home\'s entry lets them in');
+  // Kept for the home itself, the membership reconnects without the entry.
   const member = harness({person: identity(0x11),
     membership: {origin: 'https://workspaces.example', workspace: 'HOME', userPublicKey: '11'.repeat(32)}});
   await joinViaHost({...member.options, workspace: home});
@@ -526,16 +526,16 @@ test('a workspace whose host needs an invitation, or a call without a person, is
   assert.equal(calls.posted.length, 0);
 });
 
-test('a door not reached, and one that refuses for a reason of its own, are told', async () => {
-  const down = harness({door: [{code: 'unanswered', error: 'The workspace\'s door was not reached'}]});
+test('an entry not reached, and one that refuses for a reason of its own, are told', async () => {
+  const down = harness({entry: [{code: 'unanswered', error: 'The workspace\'s entry was not reached'}]});
   await assert.rejects(joinViaHost(down.options), error => error instanceof HostAdmissionError && error.code === 'unavailable');
-  const other = harness({door: [{code: 'refused', error: 'the door answered 500'}]});
+  const other = harness({entry: [{code: 'refused', error: 'the entry answered 500'}]});
   await assert.rejects(joinViaHost(other.options), error => error instanceof HostAdmissionError && error.code === 'refused');
 });
 
-test('a door with no seat is waited out as long as it asked, then the same person joins', async () => {
+test('an entry with no seat is waited out as long as it asked, then the same person joins', async () => {
   const busy = {code: 'full', error: 'the workspace is full', retryAfter: 30};
-  const {calls, options} = harness({door: [busy, busy, null]});
+  const {calls, options} = harness({entry: [busy, busy, null]});
   const peer = await joinViaHost(options);
   assert.equal(peer.workspace, 'WORKSPACE');
   assert.equal(calls.posted.length, 3, 'asked again after each wait');
@@ -543,10 +543,10 @@ test('a door with no seat is waited out as long as it asked, then the same perso
   assert.deepEqual(calls.waited.map(wait => [wait.attempt, wait.error.code, wait.retryAfter]), [[0, 'full', 30], [1, 'full', 30]]);
   assert.equal(calls.renewed.length, 0, 'the seat was the only thing missing, not the person');
   assert.equal(calls.joined.length, 1, 'one join, once there was a seat');
-  assert.equal(calls.joined[0].origin, 'https://workspaces.example', 'a door that names no origin is its workspace’s host');
+  assert.equal(calls.joined[0].origin, 'https://workspaces.example', 'an entry that names no origin is its workspace’s host');
 });
 
-test('the door is asked for the browser’s own person, never for a visitor’s device key', async () => {
+test('the entry is asked for the browser’s own person, never for a visitor’s device key', async () => {
   const {calls, options} = harness();
   await joinViaHost(options);
   assert.deepEqual(calls.posted[0].body, {userPublicKey: options.identity.userPublicKey, displayName: 'Brave Otter'});
@@ -623,7 +623,7 @@ test('a paired device is kept as its person and reconnects as them, never as a p
   assert.equal(paired.profile, `tilo-identity:${person}@workspaces.example`);
   assert.equal(typeof paired.onPairingCode, 'function');
   assert.deepEqual(calls.posted, [{url: 'https://workspaces.example/join', body: {userPublicKey: person, displayName: 'Ada'}}],
-    'the new device joins the person\u2019s workspace through the host\u2019s door');
+    'the new device joins the person\u2019s workspace through the host\u2019s entry');
   calls.posted.length = 0;
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}),
     {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, paired: true});
@@ -809,7 +809,7 @@ test('the person switches between the home and the workspaces they entered, neve
   const entered = [
     {origin: 'https://acme.example', workspace: 'A', name: 'Acme', unavailable: false},
     {origin: 'https://globex.example', workspace: 'G', name: null, unavailable: true},
-    // The workspace the home's door admitted this browser to is the home itself.
+    // The workspace the home's entry admitted this browser to is the home itself.
     {origin: 'https://workspaces.example', workspace: 'LOUNGE', name: 'Lounge', unavailable: false},
     // Another workspace on the home's host is a workspace of its own.
     {origin: 'https://workspaces.example', workspace: 'TEAM', name: 'Team', unavailable: false},
@@ -885,15 +885,15 @@ test('the directory lists the workspaces this page holds by the host actions tha
   assert.deepEqual(heldWorkspaces({entered: [], current: {kind: 'own'}}), []);
 });
 
-test('a join chosen in the directory enters through its door on the session, then opens under its name', async () => {
+test('a join chosen in the directory enters through its entry on the session, then opens under its name', async () => {
   const joined = [];
-  const door = 'https://workspaces.example/peer/v1/directory/WORKSPACE/';
+  const entry = 'https://workspaces.example/peer/v1/directory/WORKSPACE/';
   const grant = await joinGranted(
-    {origin: 'https://workspaces.example', door, workspace: 'WORKSPACE', name: 'Gardeners'},
+    {origin: 'https://workspaces.example', entry, workspace: 'WORKSPACE', name: 'Gardeners'},
     {join: async options => { joined.push(options); return {workspace: 'WORKSPACE'}; }, displayName: 'Brave Otter'},
   );
-  assert.deepEqual(joined, [{origin: 'https://workspaces.example', door, displayName: 'Brave Otter'}],
-    'the page enters through the door itself, holding no invitation or token');
+  assert.deepEqual(joined, [{origin: 'https://workspaces.example', entry, displayName: 'Brave Otter'}],
+    'the page enters through the entry itself, holding no invitation or token');
   assert.deepEqual(grant, {peer: {workspace: 'WORKSPACE'}, origin: 'https://workspaces.example', workspace: 'WORKSPACE', name: 'Gardeners'});
 });
 
@@ -906,16 +906,16 @@ test('a pasted link\'s invitation is redeemed with the same join', async () => {
   assert.deepEqual(joined, [{origin: 'https://workspaces.example', invitation: 'INV'}]);
 });
 
-test('a grant that names neither a door nor an invitation joins nothing', async () => {
+test('a grant that names neither an entry nor an invitation joins nothing', async () => {
   await assert.rejects(() => joinGranted({origin: 'https://workspaces.example', invitation: ''}, {join: async () => {}}), TypeError);
-  await assert.rejects(() => joinGranted({origin: '', door: 'https://workspaces.example/directory/W/'}, {join: async () => {}}), TypeError);
+  await assert.rejects(() => joinGranted({origin: '', entry: 'https://workspaces.example/directory/W/'}, {join: async () => {}}), TypeError);
 });
 
 test('an invitation to another workspace on the home\'s host leaves the home its own name and choice', () => {
   const store = memoryStore();
   const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}};
   const person = 'cd'.repeat(32);
-  // The home's door let this browser into its workspace.
+  // The home's entry let this browser into its workspace.
   keepJoinedHost({origin: 'https://lounge.example', workspace: 'lounge', userPublicKey: person}, store);
   // Then the person accepts an invitation to a customer's workspace on the same host.
   keepJoinedHost({origin: 'https://lounge.example/', workspace: 'customer', userPublicKey: person}, store);

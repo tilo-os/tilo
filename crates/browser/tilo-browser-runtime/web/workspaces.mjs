@@ -7,23 +7,23 @@
  * HTTPS origin of the relay that hosts the workspace, `host.key` the host's root
  * key (hex) once known, `workspace` its id once known (a listed public
  * workspace learns it when admitted), and `admission` the base URL of the
- * host's admission door, present only when that host lets people in without
+ * host's admission entry, present only when that host lets people in without
  * an invitation. Opening a workspace is the same admission everywhere
  * (`admission.mjs`): an invitation, a member's account, or, for a host that
- * says so, its admission door. Nothing here is special to any one workspace:
+ * says so, its admission entry. Nothing here is special to any one workspace:
  * which ones a page offers comes from its web host's entry configuration.
  *
  * Joining through the host takes the person's identity from the caller,
  * which owns creating and keeping it: a person who already joined that host
- * reconnects; otherwise the person goes through the door, by the entry every
+ * reconnects; otherwise the person goes through the entry, by the entry every
  * device takes, on the session itself (`entryRequest` in wasm, `device::entry_request`),
- * with no pairing code. A door that says no says why in its own code: a
+ * with no pairing code. An entry that says no says why in its own code: a
  * workspace that is full is waited out as long as it asked, until there is
  * a seat.
  *
  * A host set up again (a new device key behind the same origin) is not the
  * one this browser kept the person's state for. Nothing kept is reused or
- * handed to it: the person joins it through its door once, like anyone
+ * handed to it: the person joins it through its entry once, like anyone
  * new, without being asked (hosts are nothing a person decides about); the
  * peer then keeps that host's state in a namespace of its own
  * (`peer.mjs`), and what this browser kept for the previous host stays on
@@ -99,7 +99,7 @@ export function workspaceAt(workspaces, origin) {
 /**
  * The listed workspace the workspace `scope` names, when it is one: its host
  * lists a workspace and the workspace is that workspace's, as the listing names
- * it, else the workspace this browser was let into through its door
+ * it, else the workspace this browser was let into through its entry
  * (`admittedWorkspace` on this visit, or the membership it kept). Another workspace
  * on the same host is not the listed one, and goes by no name or count of
  * the listed one's.
@@ -117,7 +117,7 @@ export const OPEN_WORKSPACE = 'open-workspace:';
 
 /** Whether `scope` (`{host | origin, workspace}`) is the web host's `home`
  * workspace; `homeWorkspace` is the workspace this browser was admitted to through its
- * door. */
+ * entry. */
 function isHomeWorkspace({home, homeWorkspace = null, scope}) {
   const homeOrigin = home?.host?.origin ? originOf(home.host.origin) : null;
   return homeOrigin !== null && Boolean(scope?.host ?? scope?.origin)
@@ -160,7 +160,7 @@ export function knownWorkspaces({entered = [], listed = [], answering = null} = 
  * `null`): the web host's `home` workspace, then the workspaces they `entered`
  * or their host `listed` (`knownWorkspaces`), never the one in front.
  * `homeWorkspace` is the workspace this browser was admitted to through the
- * home's door, so that workspace is offered once, as the home.
+ * home's entry, so that workspace is offered once, as the home.
  * Where the person may have a desktop of their own (`own`), it comes first,
  * so a workspace is never a dead end. Each choice is
  * `{id, name, origin, workspace, home, own, unavailable}`; `id` is its host
@@ -232,17 +232,17 @@ export function heldWorkspaces({entered = [], listed = [], answering = null, cur
 
 /**
  * Join the workspace the person chose in a site's directory
- * (`mountDesktop({onJoinGranted})`): through its `door` (`…/directory/<workspace>/`),
- * which the page enters on the session it opens with the door's host at
- * `origin`, the same entry the page's own door takes; or with the
+ * (`mountDesktop({onJoinGranted})`): through its `entry` (`…/directory/<workspace>/`),
+ * which the page enters on the session it opens with the entry's host at
+ * `origin`, the same entry the page's own entry takes; or with the
  * `invitation` a pasted link brought. Either goes through the page's join
  * (`join`, its `joinWorkspace`), then the workspace shows. Resolves to
  * `{peer, origin, workspace, name}`.
  */
-export async function joinGranted({origin, door = null, invitation = null, workspace = null, name = null}, {join, displayName = null, ...connectOptions} = {}) {
-  if (!origin || !(door || invitation)) throw new TypeError('a granted join names the origin of its host, and its door or its invitation');
+export async function joinGranted({origin, entry = null, invitation = null, workspace = null, name = null}, {join, displayName = null, ...connectOptions} = {}) {
+  if (!origin || !(entry || invitation)) throw new TypeError('a granted join names the origin of its host, and its entry or its invitation');
   if (typeof join !== 'function') throw new TypeError('a granted join needs the page\'s join');
-  const way = door ? {door} : {invitation};
+  const way = entry ? {entry} : {invitation};
   const peer = await join({...connectOptions, origin, ...way, ...(displayName ? {displayName} : {})});
   const id = peer?.workspace ?? workspace;
   return {peer, origin: originOf(origin), workspace: id, name: name || id};
@@ -252,14 +252,14 @@ export async function joinGranted({origin, door = null, invitation = null, works
 export const removedFrom = name => `You were removed from ${name || 'this workspace'}. To come back, ask someone in it for a new invitation.`;
 
 export class HostAdmissionError extends Error {
-  /** `door`: what the door said beside its refusal: `{waitList, contact}`
+  /** `entry`: what the entry said beside its refusal: `{waitList, contact}`
    * from a workspace taking people by invitation that keeps a wait list. */
-  constructor(code, message, retryAfter = null, door = null) {
+  constructor(code, message, retryAfter = null, entry = null) {
     super(message);
     this.name = 'HostAdmissionError';
     this.code = code;
     this.retryAfter = retryAfter;
-    this.door = door;
+    this.entry = entry;
   }
 }
 
@@ -331,30 +331,30 @@ export function chooseDisplayName(userPublicKey, name, store = globalThis.localS
   return chosen;
 }
 
-function admissionDoor(workspace) {
+function admissionEntry(workspace) {
   if (!workspace?.admission) throw new HostAdmissionError('invitation-only', `${workspace?.name ?? 'This workspace'} needs an invitation`);
   return workspace.admission;
 }
 
-/** A door's refusal as the shared entry read it (`HostRefusal`: the door's
+/** An entry's refusal as the shared entry read it (`HostRefusal`: the entry's
  * code and the wait it asked for), as this page's screens tell them apart: a
- * ban and a removal alike are `removed`; a door not reached is `unavailable`.
+ * ban and a removal alike are `removed`; an entry not reached is `unavailable`.
  * Anything else stands. */
-function doorRefused(error) {
+function entryRefused(error) {
   if (error?.name !== 'HostRefusal') return error;
   const code = {banned: 'removed', removed: 'removed', 'invitation-only': 'invitation-only', full: 'full', unanswered: 'unavailable'}[error.code] ?? 'refused';
   // A workspace taking people by invitation may keep a wait list, and name
-  // where to ask to be taken off it: the door's own words, as the shared
-  // entry read them (`HostRefusal.door`).
-  const door = code === 'invitation-only' && error.door?.waitList === true
-    ? {waitList: true, contact: typeof error.door.contact === 'string' && error.door.contact ? error.door.contact : null, mail: error.door.mail === true} : null;
-  return new HostAdmissionError(code, error.message, Number.isFinite(error.retryAfter) && error.retryAfter > 0 ? error.retryAfter : null, door);
+  // where to ask to be taken off it: the entry's own words, as the shared
+  // entry read them (`HostRefusal.entry`).
+  const entry = code === 'invitation-only' && error.entry?.waitList === true
+    ? {waitList: true, contact: typeof error.entry.contact === 'string' && error.entry.contact ? error.entry.contact : null, mail: error.entry.mail === true} : null;
+  return new HostAdmissionError(code, error.message, Number.isFinite(error.retryAfter) && error.retryAfter > 0 ? error.retryAfter : null, entry);
 }
 
-/** Why the door kept no address, by its `code`: the cases a door page says. */
+/** Why the entry kept no address, by its `code`: the cases an entry page says. */
 const WAIT_CODES = new Set(['invalid-email', 'invalid-secret', 'too-many', 'wait-list-full', 'no-wait-list']);
 
-/** Where this browser keeps what it left on hosts' wait lists: per door
+/** Where this browser keeps what it left on hosts' wait lists: per entry
  * origin, the address and the secret that takes it off again. */
 const WAIT_LISTINGS = 'tilo-wait-listings';
 
@@ -368,13 +368,13 @@ const writeListings = (store, listings) => {
     else store?.removeItem(WAIT_LISTINGS);
   } catch {
     // Storage refused (private mode, full): the address stays listed, and
-    // the contact the door names still takes it off.
+    // the contact the entry names still takes it off.
   }
 };
 
-/** The door `POST`ed to, as JSON, without credentials; `HostAdmissionError`
+/** The entry `POST`ed to, as JSON, without credentials; `HostAdmissionError`
  * `unavailable` when it cannot be reached. */
-async function postToDoor(fetch, url, body, what) {
+async function postToEntry(fetch, url, body, what) {
   try {
     return await fetch(url, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body), credentials: 'omit'});
   } catch (error) {
@@ -382,7 +382,7 @@ async function postToDoor(fetch, url, body, what) {
   }
 }
 
-async function doorRefusal(response, what) {
+async function entryRefusal(response, what) {
   const reply = await response.json().catch(() => ({}));
   const retry = Number(response.headers.get('retry-after'));
   const code = WAIT_CODES.has(reply.code) ? reply.code : 'unavailable';
@@ -391,36 +391,36 @@ async function doorRefusal(response, what) {
 }
 
 /**
- * Leave `email` at `workspace`'s door, to be invited at (`POST
+ * Leave `email` at `workspace`'s entry, to be invited at (`POST
  * <admission>wait-list`), in the reader's `language`: a workspace taking people
- * by invitation keeps it for whoever may invite. A door that mails sends a
- * link that confirms it, and lists it only then. The secret the door hands
+ * by invitation keeps it for whoever may invite. An entry that mails sends a
+ * link that confirms it, and lists it only then. The secret the entry hands
  * back, which takes the address off again (`leaveWaitList`), is kept in
- * `storage` for that door. Resolves to `{email, mail}`: the address as the
- * door keeps it (as typed, trimmed), and whether it mailed a link to
+ * `storage` for that entry. Resolves to `{email, mail}`: the address as the
+ * entry keeps it (as typed, trimmed), and whether it mailed a link to
  * confirm; rejects with `HostAdmissionError` code `invalid-email`,
  * `too-many` (with `retryAfter`), `wait-list-full`, `no-wait-list` or
  * `unavailable`.
  */
 export async function leaveOnWaitList({workspace, email, language = globalThis.navigator?.language ?? '',
   fetch = globalThis.fetch, storage = globalThis.localStorage}) {
-  const door = new URL('wait-list', admissionDoor(workspace));
-  const response = await postToDoor(fetch, door, {email: String(email ?? ''), language: String(language)}, 'wait list');
-  if (!response.ok) throw await doorRefusal(response, 'wait list');
+  const entry = new URL('wait-list', admissionEntry(workspace));
+  const response = await postToEntry(fetch, entry, {email: String(email ?? ''), language: String(language)}, 'wait list');
+  if (!response.ok) throw await entryRefusal(response, 'wait list');
   const reply = await response.json().catch(() => ({}));
-  if (typeof reply.email !== 'string') throw new HostAdmissionError('unavailable', 'wait list: the door named no address');
+  if (typeof reply.email !== 'string') throw new HostAdmissionError('unavailable', 'wait list: the entry named no address');
   const mail = reply.mail === true;
   if (typeof reply.removal === 'string' && SECRET.test(reply.removal)) {
-    writeListings(storage, {...readListings(storage), [door.origin]: {email: reply.email, secret: reply.removal, mail}});
+    writeListings(storage, {...readListings(storage), [entry.origin]: {email: reply.email, secret: reply.removal, mail}});
   }
   return {email: reply.email, mail};
 }
 
-/** A wait-list secret, as the door hands it out and its links carry it. */
+/** A wait-list secret, as the entry hands it out and its links carry it. */
 const SECRET = /^[0-9a-f]{64}$/;
 
 /** What this browser left on `workspace`'s wait list and can take off
- * again: `{email, pending}` (`pending`: the door mailed a link to confirm
+ * again: `{email, pending}` (`pending`: the entry mailed a link to confirm
  * it, not known to be opened yet), or `null`. */
 export function waitListing(workspace, storage = globalThis.localStorage) {
   if (!workspace?.admission) return null;
@@ -438,23 +438,23 @@ const forgetListing = (storage, origin) => {
  * Take an address off `workspace`'s wait list (`POST
  * <admission>wait-list/remove`): the one this browser left, or the one
  * whose removal link carried `secret`; this browser's listing is forgotten
- * either way. The door answers alike whether or not it still listed the
+ * either way. The entry answers alike whether or not it still listed the
  * address, so this resolves either way; it rejects with
  * `HostAdmissionError` code `too-many` (with `retryAfter`) or
- * `unavailable`, and keeps the secret to try again. A secret the door
+ * `unavailable`, and keeps the secret to try again. A secret the entry
  * calls none is forgotten.
  */
 export async function leaveWaitList({workspace, secret = null, fetch = globalThis.fetch, storage = globalThis.localStorage}) {
-  const door = new URL('wait-list/remove', admissionDoor(workspace));
-  const sent = secret ?? readListings(storage)[door.origin]?.secret;
+  const entry = new URL('wait-list/remove', admissionEntry(workspace));
+  const sent = secret ?? readListings(storage)[entry.origin]?.secret;
   if (typeof sent !== 'string' || !SECRET.test(sent)) {
     if (secret === null) return;
     throw new HostAdmissionError('invalid-secret', 'leaving the wait list: the link carries no secret');
   }
-  const response = await postToDoor(fetch, door, {secret: sent}, 'leaving the wait list');
-  const refusal = response.ok ? null : await doorRefusal(response, 'leaving the wait list');
+  const response = await postToEntry(fetch, entry, {secret: sent}, 'leaving the wait list');
+  const refusal = response.ok ? null : await entryRefusal(response, 'leaving the wait list');
   if (!refusal || refusal.code === 'invalid-secret' || refusal.code === 'no-wait-list') {
-    forgetListing(storage, door.origin);
+    forgetListing(storage, entry.origin);
     return;
   }
   throw refusal;
@@ -462,24 +462,24 @@ export async function leaveWaitList({workspace, secret = null, fetch = globalThi
 
 /**
  * Confirm the address whose confirmation link carried `token` (`POST
- * <admission>wait-list/confirm`): whether the door still had it waiting
+ * <admission>wait-list/confirm`): whether the entry still had it waiting
  * (`false`: it was taken off, or not confirmed within two days). Rejects
  * with `HostAdmissionError` as `leaveWaitList` does.
  */
 export async function confirmWaitList({workspace, token, fetch = globalThis.fetch, storage = globalThis.localStorage}) {
-  const door = new URL('wait-list/confirm', admissionDoor(workspace));
+  const entry = new URL('wait-list/confirm', admissionEntry(workspace));
   if (typeof token !== 'string' || !SECRET.test(token)) return false;
-  const response = await postToDoor(fetch, door, {token}, 'confirming the wait list');
+  const response = await postToEntry(fetch, entry, {token}, 'confirming the wait list');
   if (!response.ok) {
-    const refusal = await doorRefusal(response, 'confirming the wait list');
+    const refusal = await entryRefusal(response, 'confirming the wait list');
     if (refusal.code === 'invalid-secret') return false;
     throw refusal;
   }
   const reply = await response.json().catch(() => ({}));
   const listings = readListings(storage);
-  if (reply.confirmed === true && listings[door.origin]) {
+  if (reply.confirmed === true && listings[entry.origin]) {
     // This browser left it: it no longer waits to be confirmed.
-    writeListings(storage, {...listings, [door.origin]: {...listings[door.origin], confirmed: true}});
+    writeListings(storage, {...listings, [entry.origin]: {...listings[entry.origin], confirmed: true}});
   }
   return reply.confirmed === true;
 }
@@ -488,22 +488,22 @@ export async function confirmWaitList({workspace, token, fetch = globalThis.fetc
  * Where what this browser left on `workspace`'s wait list stands (`POST
  * <admission>wait-list/standing`): `pending` (to be confirmed), `listed`,
  * `invited` or `gone` (then forgotten here); `null` when nothing is kept
- * here or the door cannot say now.
+ * here or the entry cannot say now.
  */
 export async function waitListStanding({workspace, fetch = globalThis.fetch, storage = globalThis.localStorage}) {
-  const door = new URL('wait-list/standing', admissionDoor(workspace));
-  const kept = readListings(storage)[door.origin];
+  const entry = new URL('wait-list/standing', admissionEntry(workspace));
+  const kept = readListings(storage)[entry.origin];
   if (typeof kept?.secret !== 'string') return null;
   let response;
   try {
-    response = await postToDoor(fetch, door, {secret: kept.secret}, 'the wait list');
+    response = await postToEntry(fetch, entry, {secret: kept.secret}, 'the wait list');
   } catch {
     return null;
   }
   if (!response.ok) return null;
   const {standing} = await response.json().catch(() => ({}));
   if (!['pending', 'listed', 'invited', 'gone'].includes(standing)) return null;
-  if (standing === 'gone') forgetListing(storage, door.origin);
+  if (standing === 'gone') forgetListing(storage, entry.origin);
   return standing;
 }
 
@@ -556,7 +556,7 @@ export function keepOwnedHost({origin, userPublicKey}, memberships = globalThis.
  * `userPublicKey`, whose root it holds (joined through an invitation, or a
  * workspace it created on a host it owns), so a later visit reconnects
  * (`hostToReconnect`). The workspace kept is the first this person entered
- * at that host, the one its door let them into (`listedAt` names the host's
+ * at that host, the one its entry let them into (`listedAt` names the host's
  * listed workspace by it): joining another of the host's workspaces, by an
  * invitation or by making one, adds that one to the entered workspaces
  * (`rememberEntered`) and leaves it as it is.
@@ -588,7 +588,7 @@ export function hostToReconnect(origin, userPublicKey, memberships = globalThis.
 }
 
 /** Resolves after the backoff before try `attempt` (`reconnect.mjs`), or the
- * least wait the door asked for (`retryAfter`, seconds), whichever is longer;
+ * least wait the entry asked for (`retryAfter`, seconds), whichever is longer;
  * rejects once `signal` aborts. */
 const backOff = ({attempt, retryAfter = null, signal}) => new Promise((resolve, reject) => {
   signal?.throwIfAborted();
@@ -604,7 +604,7 @@ const browserCustody = profile => openDeviceCustody({profile, storage: idbStorag
 
 /**
  * Join `workspace` as `identity` (the person, created and kept by the
- * caller) through its host's admission door; resolves to the peer. When
+ * caller) through its host's admission entry; resolves to the peer. When
  * the host was set up again since this browser joined it, the person joins
  * the new one as themselves: nothing about hosts is theirs to decide, and
  * what this browser kept for the previous host stays on this device in a
@@ -613,7 +613,7 @@ const browserCustody = profile => openDeviceCustody({profile, storage: idbStorag
  * Each tab is a device of its own (`openCustody`, one device key per tab
  * open at once): a tab that takes a key no host has seen yet is a new
  * device of the person. The workspace admits each device once, so a new device
- * of a person whose root this page holds is admitted through the door; one
+ * of a person whose root this page holds is admitted through the entry; one
  * of a person paired from elsewhere pairs first, approved on one of their
  * devices, as on any new browser.
  */
@@ -622,15 +622,15 @@ export async function joinViaHost({
   join = joinWorkspace, connect = connectPeer, pair = pairDevice, openCustody = browserCustody, renew = renewDevice,
   wait = backOff, onProgress, ...connectOptions
 }) {
-  const door = admissionDoor(workspace);
+  const entry = admissionEntry(workspace);
   const known = keptMembership(workspace, memberships);
-  // The workspace this listing's door admits into, when it names one, or
-  // its door's address does (`<relay>/peer/v1/directory/<workspace>/`, a
+  // The workspace this listing's entry admits into, when it names one, or
+  // its entry's address does (`<relay>/peer/v1/directory/<workspace>/`, a
   // site's home). A membership kept for another of the host's workspaces is
   // not this one's: a person invited into that one comes to the home through
-  // its door. Only an entry that names none is the membership's workspace.
+  // its entry. Only an entry that names none is the membership's workspace.
   const asking = typeof workspace.workspace === 'string' && workspace.workspace
-    ? workspace.workspace : door.match(/\/directory\/([^/]+)\/?$/)?.[1] ?? null;
+    ? workspace.workspace : entry.match(/\/directory\/([^/]+)\/?$/)?.[1] ?? null;
   const forThisWorkspace = !asking || known?.workspace === asking;
   if (known?.paired) {
     // A device paired to a person kept elsewhere: only that person's
@@ -641,16 +641,16 @@ export async function joinViaHost({
     return withCustody(custody, () => (custody.created
       // A tab with a key of its own: a new device of that person, which
       // only their root can certify. It pairs as a new browser would.
-      ? pair({...common, door}).catch(error => { throw doorRefused(error); })
+      ? pair({...common, entry}).catch(error => { throw entryRefused(error); })
       : connect(common)), connectOptions.signal);
   }
   if (!identity?.userPublicKey) throw new TypeError("joining through a host needs the person's identity");
-  /** Ask the door to admit the person, then join with what it hands out.
+  /** Ask the entry to admit the person, then join with what it hands out.
    * `custody` (this tab's device key for `known`'s host) goes on where the
-   * door names the same host. `refused`: the host refused the membership
+   * entry names the same host. `refused`: the host refused the membership
    * this browser kept. `fresh`: join as a new device of the person. */
-  const throughDoor = async (custody, refused, fresh) => {
-    // The door admits into its workspace's own host (`directory.rs` in the
+  const throughEntry = async (custody, refused, fresh) => {
+    // The entry admits into its workspace's own host (`directory.rs` in the
     // relay's protocol).
     const origin = workspace.host.origin;
     const sameHost = custody && known && originOf(origin) === originOf(known.origin);
@@ -662,21 +662,21 @@ export async function joinViaHost({
     }
     let admittedAt = null;
     const joining = () => join({
-      ...connectOptions, origin, door, identity, displayName, ...(device ? {custody: device} : {}),
+      ...connectOptions, origin, entry, identity, displayName, ...(device ? {custody: device} : {}),
       onProgress: event => { if (event.phase === 'admitted') admittedAt = event.workspace; onProgress?.(event); },
     });
     let peer;
     try {
       peer = fresh ? await withCustody(device, joining, connectOptions.signal) : await joining();
     } catch (error) {
-      const said = doorRefused(error);
+      const said = entryRefused(error);
       // The workspace's people took the person out (a ban, or a removal
-      // within the day): only an invitation brings them back. A door that
+      // within the day): only an invitation brings them back. An entry that
       // turns away a membership this browser kept says the same.
       if (said?.code === 'removed') throw Object.assign(new AdmissionError('removed', removedFrom(workspace.name)), {reason: said.message});
       throw said;
     }
-    // The membership names the workspace the host's door first let this
+    // The membership names the workspace the host's entry first let this
     // browser into: entering another of the host's workspaces leaves it.
     const held = keptMembership(workspace, memberships);
     const same = held?.userPublicKey === identity.userPublicKey;
@@ -684,16 +684,16 @@ export async function joinViaHost({
       userPublicKey: identity.userPublicKey});
     return peer;
   };
-  /** Join through the door until the host lets the person in. The door
+  /** Join through the entry until the host lets the person in. The entry
    * handed out the invitation a moment before, so a refusal is about what
    * this browser brings: a device key the host knows under a certificate
    * this browser no longer holds (its storage was cleared, or a join the
    * host admitted never finished here) is never admitted under another, so
    * the person comes again as a new device of theirs. A person the workspace
-   * bans is told so; a crowd at the door (the workspace is full, or this
-   * address asks too often) is waited out, as long as the door asked. Both
+   * bans is told so; a crowd at the entry (the workspace is full, or this
+   * address asks too often) is waited out, as long as the entry asked. Both
    * pass through `wait` (the reconnect screen, with the backoff and the
-   * door's own `Retry-After`), so the page says where it stands and tries
+   * entry's own `Retry-After`), so the page says where it stands and tries
    * again rather than stopping at an error. */
   const admitAnew = async (custody, refused = false) => {
     let held = custody;
@@ -704,13 +704,13 @@ export async function joinViaHost({
     let waits = 0;
     for (;;) {
       try {
-        return await throughDoor(held, refused, renewals > 0);
+        return await throughEntry(held, refused, renewals > 0);
       } catch (error) {
         if (error?.name === 'AdmissionError' && error.code === 'refused') {
           // The first new device took this tab's key in place of the old one.
           if (renewals > 0) held = null;
           renewals += 1;
-          console.warn('host admission: the host refused the door\'s invitation, joining as a new device', error.reason);
+          console.warn('host admission: the host refused the entry\'s invitation, joining as a new device', error.reason);
           // The first new device goes at once; later ones after a wait.
           if (renewals === 1) continue;
         } else if (!['full', 'too-many'].includes(error?.code)) {
@@ -725,11 +725,11 @@ export async function joinViaHost({
   if (!forThisWorkspace || known?.userPublicKey !== identity.userPublicKey) return admitAnew();
   // Other tabs of this browser may hold every device key it has for this
   // host (`custody-busy`): nothing the host refused, so the membership stays
-  // and the door is not asked, which would spend a seat to fail the same way.
+  // and the entry is not asked, which would spend a seat to fail the same way.
   const custody = await openCustody(identityProfile(identity, known.origin));
   return withCustody(custody, async () => {
     // A key no host has seen yet is a new device of the person: the workspace
-    // admits it through the door, as it admitted the person's first.
+    // admits it through the entry, as it admitted the person's first.
     if (custody.created) return admitAnew(custody);
     let peer;
     try {
@@ -768,7 +768,7 @@ export async function joinViaHost({
  * `origin`, answering the pairing link's `invite` (hex, or `null`).
  * `onPairingCode(code)` is called with the code that device shows the
  * person; resolves to the peer once approved. Where that host
- * lets people in through its door (`workspace.admission`), the new device
+ * lets people in through its entry (`workspace.admission`), the new device
  * joins the person's workspace there as theirs. The host is remembered as
  * joined, paired, for the next visit (`joinViaHost`).
  */
@@ -780,9 +780,9 @@ export async function pairViaHost({
   if (connectOptions.invite != null && !/^[0-9a-f]{32}$/.test(connectOptions.invite)) {
     throw new HostAdmissionError('invalid', 'This pairing link is damaged');
   }
-  const door = listed?.admission ?? undefined;
-  const peer = await pair({...connectOptions, origin, workspace, userPublicKey, label, displayName, fetch, door,
-    profile: identityProfile({userPublicKey}, origin)}).catch(error => { throw doorRefused(error); });
+  const entry = listed?.admission ?? undefined;
+  const peer = await pair({...connectOptions, origin, workspace, userPublicKey, label, displayName, fetch, entry,
+    profile: identityProfile({userPublicKey}, origin)}).catch(error => { throw entryRefused(error); });
   keepMembership(memberships, {host: {origin}}, {origin, workspace: peer.workspace ?? workspace, userPublicKey, paired: true});
   return peer;
 }
@@ -791,8 +791,8 @@ export async function pairViaHost({
  * Whether this browser opens the person's own desktop under an entry whose
  * home workspace is `home`: only a browser some host let in (a membership
  * it keeps: joined, paired or set up) does. One that none did is first sent
- * through the home's door (`admission.mjs`), whose join is the answer: an
- * open door lets it in, and one taking people by invitation only refuses
+ * through the home's entry (`admission.mjs`), whose join is the answer: an
+ * open entry lets it in, and one taking people by invitation only refuses
  * it, so anyone else has nothing here until invited.
  */
 export async function ownDesktopOpen(home, {memberships = globalThis.localStorage} = {}) {

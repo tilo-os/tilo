@@ -6,9 +6,9 @@
  * - `not-admitted`: the host no longer has the person (its state was reset,
  *   it pruned them after an absence, or a workspace took them out), and
  *   `host-changed`: another host answers at the origin now. A page that came
- *   in through the host's door (`canRejoin`) joins again through it, exactly
+ *   in through the host's entry (`canRejoin`) joins again through it, exactly
  *   as it does on arrival (`rejoin`, which loads the bare entry): the person
- *   sees the workspace loading again and nothing else. The door decides
+ *   sees the workspace loading again and nothing else. The entry decides
  *   whether they may: one that turns them away (they were removed) is said on
  *   arrival, as any refusal is.
  * - `certificate-rejected`: the host did not take the device's certificate.
@@ -17,13 +17,13 @@
  * - `workspace-deleted`: the workspace's owner deleted it. Nothing brings it
  *   back, so the page never joins again: `refuse` says so, and the page
  *   forgets the workspace.
- * - `device-revoked`, a page with no door to join through again, a second
+ * - `device-revoked`, a page with no entry to join through again, a second
  *   refusal soon after joining again, or a failed re-certification: `refuse`
  *   says what happened (`refusalText`); there is nothing to try again.
  *
  * Joining again is remembered for `REJOIN_WINDOW_MS` in the tab's session
  * storage (`rejoinedRecently`), with the name the person went by
- * (`rejoinedName`): a host that lets the person in at its door and turns
+ * (`rejoinedName`): a host that lets the person in at its entry and turns
  * them away again is not looped, and the page it reloads into joins under
  * the same name (a guest's is made up per visit, and kept nowhere else).
  * Their cursor colour follows the device key, which stays. Nothing here asks
@@ -82,7 +82,7 @@ export const hostUnreachable = error => (error?.name === 'HostAdmissionError' &&
 
 /**
  * The host did not answer the page before it got in (a host restarting
- * starts its relay and door a moment apart): which try this was, counted
+ * starts its relay and entry a moment apart): which try this was, counted
  * across the page's reloads (`attempt`, 0 for the first failure), and since
  * when it fails (`since`), for the reconnect screen's backoff. Counts it.
  */
@@ -122,7 +122,7 @@ export function refusalText(code, name = null) {
 
 /**
  * Follow `peer`'s session for a refusal. `canRejoin(code)` says whether this
- * page entered through a door it can enter through again; `rejoin(code)`
+ * page entered through an entry it can enter through again; `rejoin(code)`
  * leaves the page to do so, as the person named `displayName()`;
  * `refuse(code)` tells the person. It stops following once it joins again or
  * tells; the function it returns stops it sooner.

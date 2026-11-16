@@ -112,7 +112,7 @@ changes live, each under its own `author`.
 
 Every resource with a view has a link (`tilo_reference::link`), and the one
 an app's Share hands out opens it full tab: `<entry>app/#/@<host>/w/<workspace>/<app>/<record>/<resource>`.
-`web/app/index.html` gets into the workspace as any link does (its door, an
+`web/app/index.html` gets into the workspace as any link does (its entry, an
 invitation the link carries, or signing in), mounts that one app with no
 desktop, and shows the resource through its view. Over it, `web/app-bar.mjs`
 draws a thin bar: the workspace and the app, the people here from the

@@ -39,7 +39,7 @@ function answeredWithError(error) {
 
 /**
  * The case of a failure:
- * - `removed`, `cooling-down`, `invitation-only`: the host's door turned
+ * - `removed`, `cooling-down`, `invitation-only`: the host's entry turned
  *   the person away;
  * - `gone`, `deleted`, `no-access`, `refused`: the workspace is not there
  *   for this browser any more, or the link or invitation could not be used
@@ -67,8 +67,8 @@ function answeredWithError(error) {
 export function failureCause(error, {settled = null, admitted = false, drawn = false, online = true, siteAnswers = true, hostIsSite = false} = {}) {
   if (settled === 'gone' || settled === 'deleted') return settled;
   const code = error?.code;
-  const fromDoor = ['AdmissionError', 'HostAdmissionError'].includes(error?.name);
-  if (fromDoor && ['removed', 'invitation-only', 'cooling-down'].includes(code)) return code;
+  const fromEntry = ['AdmissionError', 'HostAdmissionError'].includes(error?.name);
+  if (fromEntry && ['removed', 'invitation-only', 'cooling-down'].includes(code)) return code;
   if (error?.name === 'AdmissionError') return code === 'no-access' ? 'no-access' : 'refused';
   if (error?.name === 'CustodyError' && code === 'custody-busy') return 'custody-busy';
   if (drawn) return 'stopped';

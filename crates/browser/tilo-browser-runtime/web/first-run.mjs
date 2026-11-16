@@ -10,7 +10,7 @@
  * A visitor this browser knows nothing of is held back
  * (`first-run.inline.js`): a site that takes people by invitation only
  * turns them away to its wait list, and the setup is no way in there. The
- * page shows the screen once the site's door let them in (`reveal`), and
+ * page shows the screen once the site's entry let them in (`reveal`), and
  * the visitor it turned away sees the wait list instead.
  *
  * Everything an agent does for the person goes through a login code
@@ -327,7 +327,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   };
   const view = new Proxy(drawn, {get: (target, name) => (...args) => {
     // A closed screen draws nothing: the person is done with it, or the page
-    // was turned away at a door, and what comes after is not the setup. Every
+    // was turned away at an entry, and what comes after is not the setup. Every
     // write it makes is the page's first screen itself (`domView`'s `state`),
     // so a late answer cannot bring it back over what took its place.
     if (closed && name !== 'close') return undefined;

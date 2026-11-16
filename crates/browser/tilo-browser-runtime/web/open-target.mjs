@@ -1,15 +1,15 @@
 /**
- * Show a link's target in a mount, through the same doors a person's own
+ * Show a link's target in a mount, through the same entries a person's own
  * navigation uses: on the desktop the navigation `open` command focuses or
  * launches the app's window, then the resource's declared view action runs
- * through that window's action door. A target the door does not offer
+ * through that window's action entry. A target the entry does not offer
  * fails with one message whether it is missing or not for this person, so
  * a link never tells a stranger what exists.
  */
 export const UNAVAILABLE = 'This link points at something that is not there, or that you cannot open';
 
 /** The view action (and arguments) that shows `resource` in view `viewId`
- * (`undefined`: the primary view), from the door's current descriptors. */
+ * (`undefined`: the primary view), from the entry's current descriptors. */
 export function viewInvocation(actions, resource, viewId) {
   // A view's open action carries the view's descriptor; nothing else does.
   const views = actions.filter(action => action.address?.resource === resource.id && action.view
@@ -157,7 +157,7 @@ export async function openTarget({mount, navigation, target, mode, timers}) {
   try {
     result = mount.invokeAction(target.resource.id, action, args, options);
   } catch {
-    // The door's own reason could tell "missing" from "refused".
+    // The entry's own reason could tell "missing" from "refused".
     throw new Error(UNAVAILABLE);
   }
   if (result?.state !== 'completed' && result?.state !== 'accepted') throw new Error(UNAVAILABLE);

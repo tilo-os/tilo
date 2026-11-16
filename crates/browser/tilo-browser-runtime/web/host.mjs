@@ -46,7 +46,7 @@ const crashListeners=new Set();
 // itself is what starts over (`app-crash.mjs`), once.
 const pageRestarts=createPageRestarts();
 let pageCrashed=false;
-/** Where the page reports what it did not catch, for the door it came in
+/** Where the page reports what it did not catch, for the entry it came in
  * through to log (`entry-page.mjs`). A panic is reported the same way. */
 let pageErrorReport=null;
 export function reportPageErrors(report){pageErrorReport=report;}
@@ -96,9 +96,9 @@ const data=createDataLoader({baseURL:import.meta.url,runtime});
  * `flush()` resolves when writes are durable; call `release()` once. */
 /** The certified peer's code — its crypto, transport and the workspaces'
  * replication — is a module of its own in the desktop bundle (`lazy_exports!`
- * in tilo-web-desktop), which nothing before a workspace's door needs. It is
+ * in tilo-web-desktop), which nothing before a workspace's entry needs. It is
  * fetched and compiled as soon as this module runs, beside the start
- * module's compile, and every door waits for it.
+ * module's compile, and every entry waits for it.
  * The bindgen glue of a split bundle imports `__wasm_split.js` itself, so it
  * is here once the start module is; a bundle without one has the peer in
  * its start module. */
@@ -464,7 +464,7 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(UPLOAD_ACTIONS.includes(request?.action))/* The shell menu's upload rows: the browser's chooser, then the files go up. */void chooseFiles({folder:request.action===UPLOAD_FOLDER}).then(upload,error=>report({upload:'failed',error:String(error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke?.key==='string')/* The person takes a device or an agent's grant back: the root this tab holds revokes it, for the reason they chose. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its door, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(Array.isArray(request?.profiles))fetchNames(request.profiles);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
+    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(UPLOAD_ACTIONS.includes(request?.action))/* The shell menu's upload rows: the browser's chooser, then the files go up. */void chooseFiles({folder:request.action===UPLOAD_FOLDER}).then(upload,error=>report({upload:'failed',error:String(error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke?.key==='string')/* The person takes a device or an agent's grant back: the root this tab holds revokes it, for the reason they chose. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its entry, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(Array.isArray(request?.profiles))fetchNames(request.profiles);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});}
     // This person's latest wave, which the one it is for shows once.

@@ -208,7 +208,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     for (const child of node.children ?? []) {
       const [, , cw, ch] = child.rect;
       // Nothing to show of a child with no room (a closed menu, an empty
-      // door), and nothing of it to reach.
+      // entry), and nothing of it to reach.
       if (cw <= 0 || ch <= 0) continue;
       children.push(render(child, context, next, scrollTop));
     }

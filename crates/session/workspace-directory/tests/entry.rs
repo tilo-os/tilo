@@ -30,9 +30,9 @@ fn entry(name: &str) -> DirectoryEntry {
     }
 }
 
-/// Joining through a entry asks the entry nothing here (there is no client to
+/// Joining through an entry asks the entry nothing here (there is no client to
 /// ask with): the device enters the workspace its path names on the session
-/// it opens with the entry's host, where the entry decides. A entry below a host's API prefix and one at a
+/// it opens with the entry's host, where the entry decides. An entry below a host's API prefix and one at a
 /// site's own path name the same workspace, and a path that names none is
 /// refused before anything is asked.
 #[test]
@@ -42,7 +42,7 @@ fn an_entry_join_enters_the_workspace_its_path_names_and_asks_nothing() {
         format!("https://tilo.test/directory/{WORKSPACE}/"),
     ] {
         let entry = url::Url::parse(&entry).expect("the entry's address");
-        let granted = through_entry(&entry).expect("a entry names its workspace");
+        let granted = through_entry(&entry).expect("an entry names its workspace");
         assert_eq!(granted.workspace, WORKSPACE);
         assert_eq!(
             granted.way,

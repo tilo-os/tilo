@@ -45,7 +45,7 @@ its settings. Required:
 | `TILO_WORKSPACES_PERSISTENT` | the workspace's name; its state is `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT` |
 | `TILO_WORKSPACES_ROOT_FILE` | the workspace's owner root, 64 hex characters, from the operator's secrets |
 | `TILO_WORKSPACES_RELAY_ORIGIN` | the `https://` origin the ingress publishes: pages, avatars and the callback |
-| `TILO_WORKSPACES_DESCRIPTION` | what the public directory says the workspace is; listed, anyone joins through its door |
+| `TILO_WORKSPACES_DESCRIPTION` | what the public directory says the workspace is; listed, anyone joins through its entry |
 | `TILO_WORKSPACES_WEB_ENTRY` | the Tilo app's web entry the links the host mints open |
 
 Optional, with these defaults:
@@ -53,7 +53,7 @@ Optional, with these defaults:
 | variable | default | what it is |
 | --- | --- | --- |
 | `TILO_WORKSPACES_NAME` | the name, capitalized | the name people see |
-| `TILO_WORKSPACES_DEFAULT_ROLE` | `editor` | the role everyone who joins through the door gets |
+| `TILO_WORKSPACES_DEFAULT_ROLE` | `editor` | the role everyone who joins through the entry gets |
 | `TILO_WORKSPACES_CHAT_CHANNELS` | `general` | comma-separated channels the Chat opens with |
 | `TILO_WORKSPACES_FEEDBACK_CHANNEL` | none | the channel members report problems to |
 | `TILO_WORKSPACES_SEED_APPS` | `so.tilo.chat` | comma-separated apps authored at the first start |
@@ -134,7 +134,7 @@ headless Chromium: the page booting, two people chatting and calling, the
 shell's menus and gestures, an invitation, a shared link, a setup through an
 agent and its resumes, the startup identity approving a server key and the
 visa run beside it, fresh visitors' entry into the Lounge, the wait list of a
-door that takes people by invitation, a stranger's onboarding on a tilo.sh of
+entry that takes people by invitation, a stranger's onboarding on a tilo.sh of
 its own (`test-onboarding.sh`: the wait list, the two mails, the invitation the
 person who runs the host sends from the workspace's wait list, and the
 workspace of their own with their agent set up in it, the passkey that brings

@@ -7,7 +7,7 @@
 // a review reads what a person saw. It fails nothing on looks; it fails only
 // when the page itself reports an exception or a panic.
 //
-// With TILO_BIN (and SITE_CA) the newcomer takes the door's agent path: the
+// With TILO_BIN (and SITE_CA) the newcomer takes the entry's agent path: the
 // prompt it copies runs here as an agent runs it (`tilo login`), with a stand-in
 // `claude` that only records how it was asked, and the agent then works in the
 // workspace through `tilo mcp` while the tab is looked at.
@@ -330,7 +330,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     .catch(() => report.problems.push(`${name}: the page never arrived`));
   await quiet(3000);
   await shoot('arrived');
-  // A newcomer at the door sets Tilo up through their agent when the tour
+  // A newcomer at the entry sets Tilo up through their agent when the tour
   // has the command, and else skips: either way the page opens their own
   // workspace.
   let agent = null;
@@ -348,7 +348,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
       await sleep(1500);
       await shoot('agent-connected');
       await tab.waitFor(`document.documentElement.dataset.firstRun === undefined`, {timeout: 90_000})
-        .catch(() => report.problems.push('shell: the door never left after tilo login'));
+        .catch(() => report.problems.push('shell: the entry never left after tilo login'));
       await tab.waitFor('!!globalThis.tiloMount?.state()?.frames', {timeout: 180_000}).catch(() => {});
       await quiet(4000);
       await shoot('own-workspace');

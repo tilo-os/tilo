@@ -4,7 +4,7 @@
  *
  * - `unreachable`: the host does not answer (restarting, or the network
  *   between);
- * - `refused`: the host turned this browser away at its door, and the page
+ * - `refused`: the host turned this browser away at its entry, and the page
  *   comes again as a new device of the person (`workspaces.mjs`);
  * - `offline`: the browser itself is offline;
  * - `busy`: the host has no workspace for the page now.

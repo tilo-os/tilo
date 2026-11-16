@@ -6,14 +6,14 @@
 # test with a fake runtime cannot see: the whole way from the page's refusal
 # through the relay's entry, the workspace's wait list and the mail out.
 #
-# usage: test-wait-list-entry.sh BUNDLE WORK
+# usage: test-wait-list.sh BUNDLE WORK
 # BUNDLE is the web desktop bundle (tools/ci/publish/web-desktop-bundle.sh);
 # WORK keeps what it found: the screenshots, the tab's console, the report,
 # the mails the entry sent and the Lounge's log. Needs node, chromium, curl,
 # TILO_RELAY_BIN and TILO_CRYPTO_BIN naming built programs, and TILO_FONTS_DIR
 # the product's font catalog.
 set -euo pipefail
-usage='usage: test-wait-list-entry.sh BUNDLE WORK'
+usage='usage: test-wait-list.sh BUNDLE WORK'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 bundle=${1:?$usage}
 out=${2:?$usage}
@@ -64,10 +64,10 @@ done
 before_origin=$(sed -n 's/.*"url": *"\([^"]*\)".*/\1/p' "$work/site-before.log")
 [[ -n $before_origin ]] || lounge_fail "the before site did not start: $(cat "$work/site-before.log")"
 
-node "$here/integration/wait-list-entry.mjs" "$site_origin" "$relay_origin" "$work/mail" "$work/wait-list-entry" "$before_origin" \
+node "$here/integration/wait-list.mjs" "$site_origin" "$relay_origin" "$work/mail" "$work/wait-list" "$before_origin" \
   || lounge_fail 'a stranger at the invitation-only entry was not kept on its wait list'
 mkdir -p "$out/report" "$out/mail"
-cp -R "$work/wait-list-entry/." "$out/report/"
+cp -R "$work/wait-list/." "$out/report/"
 cp -R "$work/mail/." "$out/mail/" 2>/dev/null || true
 cp "$log" "$out/lounge.log" 2>/dev/null || true
 echo 'ok: a stranger saw the wait list, left an address, confirmed it from the mail, and stayed on the list'

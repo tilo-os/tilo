@@ -653,7 +653,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/door-wait-list.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/wait-list.test.mjs",
   "crates/browser/tilo-browser-runtime/web/arrival.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs",
@@ -1685,12 +1685,12 @@ suite = "os/containers/tilo-sh/test-vm-host.sh"
 reason = "needs root, KVM, loop devices and the built VM host and hosted guest images; the tilo-sh-vm-host check runs it in a VM of its own on dispatch"
 
 [[unrequired]]
-suite = "os/containers/tilo-lounge/test-wait-list-door.sh"
-reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, and a mail sink it runs itself; the wait-list-door check runs it in its image"
+suite = "os/containers/tilo-lounge/test-wait-list.sh"
+reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, and a mail sink it runs itself; the wait-list check runs it in its image"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-onboarding.sh"
-reason = "one flow of the e2e check, on a whole tilo.sh of its own (the stack, whose door takes people by invitation and whose mail goes to a sink it reads): it needs the built web desktop bundle, the stack's programs, context, site and Caddy, headless Chromium, the tilo command, and minutes of a machine's walls; the e2e check runs it beside the other flows"
+reason = "one flow of the e2e check, on a whole tilo.sh of its own (the stack, whose entry takes people by invitation and whose mail goes to a sink it reads): it needs the built web desktop bundle, the stack's programs, context, site and Caddy, headless Chromium, the tilo command, and minutes of a machine's walls; the e2e check runs it beside the other flows"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-page-tour.sh"

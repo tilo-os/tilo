@@ -16,9 +16,9 @@ const DAY = 24 * 60 * 60 * 1000;
 /** The link a service writes for the person's browser, as given. */
 function link(over = {}) {
   const params = {
-    audience: 'https://door.example',
+    audience: 'https://entry.example',
     challenge: CHALLENGE,
-    return: 'https://door.example/sign-in',
+    return: 'https://entry.example/sign-in',
     pending: 'req-1',
     client: 'Claude Code',
     grant_key: KEY,
@@ -33,10 +33,10 @@ const read = (over, options = {now: NOW}) => readSignInRequest(link(over), optio
 
 test('a service’s link asks what the route answers', () => {
   assert.deepEqual(read(), {
-    audience: 'https://door.example',
-    host: 'door.example',
+    audience: 'https://entry.example',
+    host: 'entry.example',
     challenge: CHALLENGE,
-    returnTo: 'https://door.example/sign-in',
+    returnTo: 'https://entry.example/sign-in',
     pending: 'req-1',
     client: 'Claude Code',
     grantKey: KEY,
@@ -86,21 +86,21 @@ test('a grant asked for in part is one the service cannot name', () => {
 
 test('the answer may only go back to the service that asked', () => {
   assert.throws(() => read({return: 'https://elsewhere.example/sign-in'}), /somewhere other than the service/);
-  assert.throws(() => read({return: 'https://door.example/consent'}), /somewhere other than the service/);
-  assert.throws(() => read({return: 'https://door.example'}), /somewhere other than the service/);
+  assert.throws(() => read({return: 'https://entry.example/consent'}), /somewhere other than the service/);
+  assert.throws(() => read({return: 'https://entry.example'}), /somewhere other than the service/);
 });
 
 test('only an origin a sign-in may answer is a service', () => {
-  assert.equal(signInOrigin('https://door.example').origin, 'https://door.example');
-  assert.equal(signInOrigin('https://door.example:8443/'), null);
-  assert.equal(signInOrigin('https://door.example/path'), null);
-  assert.equal(signInOrigin('https://door.example?q=1'), null);
-  assert.equal(signInOrigin('https://user:pw@door.example'), null);
-  assert.equal(signInOrigin('http://door.example'), null);
+  assert.equal(signInOrigin('https://entry.example').origin, 'https://entry.example');
+  assert.equal(signInOrigin('https://entry.example:8443/'), null);
+  assert.equal(signInOrigin('https://entry.example/path'), null);
+  assert.equal(signInOrigin('https://entry.example?q=1'), null);
+  assert.equal(signInOrigin('https://user:pw@entry.example'), null);
+  assert.equal(signInOrigin('http://entry.example'), null);
   assert.equal(signInOrigin('http://localhost:8787').host, 'localhost:8787');
   assert.equal(signInOrigin('http://127.0.0.1:8787').host, '127.0.0.1:8787');
   assert.equal(signInOrigin('javascript:alert(1)'), null);
-  assert.throws(() => read({audience: 'http://door.example', return: 'http://door.example/sign-in'}),
+  assert.throws(() => read({audience: 'http://entry.example', return: 'http://entry.example/sign-in'}),
     /does not name the service/);
 });
 
@@ -133,7 +133,7 @@ test('a link that names a field twice, or lacks one, is no link of the service',
 test('the card says who asks, through which service, what it reaches and until when', () => {
   assert.deepEqual(requestWords(read(), {locale: 'en-GB'}), {
     heading: 'Let Claude Code act for you?',
-    service: 'Through door.example.',
+    service: 'Through entry.example.',
     reaches: 'All your workspaces, and it may create new ones',
     until: untilText(NOW + 7 * DAY, 'en-GB'),
     pages: 'It asks you before every page action.',
@@ -142,8 +142,8 @@ test('the card says who asks, through which service, what it reaches and until w
   assert.equal(one.reaches, `Only the workspace ${WORKSPACE}`);
   const proofOnly = requestWords(read({grant_key: null, grant_scope: null, grant_expires: null}));
   assert.deepEqual(proofOnly, {
-    heading: 'Sign in to door.example?',
-    service: 'Tilo in this browser will prove to door.example that this is your device.',
+    heading: 'Sign in to entry.example?',
+    service: 'Tilo in this browser will prove to entry.example that this is your device.',
     reaches: null,
     until: null,
     pages: null,
@@ -292,7 +292,7 @@ test('allow signs what the link asked for and posts it to the service', async ()
   assert.equal(formed.length, 1);
   const [form] = formed;
   assert.equal(form.method, 'POST');
-  assert.equal(form.action, 'https://door.example/sign-in');
+  assert.equal(form.action, 'https://entry.example/sign-in');
   assert.equal(form.acceptCharset, 'utf-8');
   assert.deepEqual(form.children.map(input => [input.type, input.name, input.value]), [
     ['hidden', 'pending', 'req-1'], ['hidden', 'proof', 'proof-text'], ['hidden', 'grant', 'grant-text'],
@@ -300,7 +300,7 @@ test('allow signs what the link asked for and posts it to the service', async ()
   assert.equal(form.submitted, 1);
   const ask = posted.find(entry => entry.ask)?.ask;
   assert.deepEqual(ask, {
-    audience: 'https://door.example',
+    audience: 'https://entry.example',
     challenge: CHALLENGE,
     client: 'Claude Code',
     grantKey: KEY,
@@ -310,7 +310,7 @@ test('allow signs what the link asked for and posts it to the service', async ()
     operateBrowserPages: false,
   });
   const custody = posted.find(entry => entry.custody)?.custody;
-  assert.equal(custody.profile, `tilo-identity:${ROOT}@door.example`);
+  assert.equal(custody.profile, `tilo-identity:${ROOT}@entry.example`);
 });
 
 test('a link that asks for no grant proves the person and posts no grant', async () => {
@@ -332,7 +332,7 @@ test('cancel answers the service with a denial and signs nothing', async () => {
   assert.deepEqual(formed[0].children.map(input => [input.name, input.value]), [
     ['pending', 'req-1'], ['decision', 'deny'],
   ]);
-  assert.equal(formed[0].action, 'https://door.example/sign-in');
+  assert.equal(formed[0].action, 'https://entry.example/sign-in');
   assert.equal(formed[0].submitted, 1);
 });
 
@@ -342,7 +342,7 @@ test('nothing is signed before the person decides', async () => {
   assert.equal(posted.length, 0);
   assert.equal(formed.length, 0);
   assert.equal(shown().heading, 'Let Claude Code act for you?');
-  assert.equal(shown().service, 'Through door.example.');
+  assert.equal(shown().service, 'Through entry.example.');
   assert.equal(shown().reaches, 'All your workspaces, and it may create new ones');
   assert.equal(shown().until, untilText(NOW + 7 * DAY));
 });

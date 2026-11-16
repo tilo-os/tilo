@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {parseMessages} from './arrival.mjs';
-import {mountWaitList, waitListWords} from './door-wait-list.mjs';
+import {mountWaitList, waitListWords} from './wait-list.mjs';
 import {HostAdmissionError} from './workspaces.mjs';
 
 const locale = name => parseMessages(readFileSync(new URL(`locales/${name}.ftl`, import.meta.url), 'utf8'));
@@ -36,10 +36,10 @@ class Element {
 const workspace = {name: 'Lounge', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/'};
 const NAMES = ['form', 'email', 'submit', 'done', 'againLine', 'againPrompt', 'again', 'change', 'leave', 'note', 'contact'];
 
-/** The door's wait list, mounted with `kept` left on an earlier visit (or
- * not), at a door that mails or not, after a mailed link (`arrival`) or
+/** The entry's wait list, mounted with `kept` left on an earlier visit (or
+ * not), at an entry that mails or not, after a mailed link (`arrival`) or
  * not, the host answering as given. */
-function door({kept = null, contact = null, mail = false, arrival = null, messages = null, join, leave = async () => {},
+function entry({kept = null, contact = null, mail = false, arrival = null, messages = null, join, leave = async () => {},
   confirm = async () => true, standing = async () => null} = {}) {
   const elements = Object.fromEntries(NAMES.map(name => [name, new Element()]));
   const root = {dataset: {}};
@@ -71,19 +71,19 @@ function door({kept = null, contact = null, mail = false, arrival = null, messag
 }
 
 test('a first visit shows the form, saying what the address is for', async () => {
-  const {shown, elements, mounted, calls} = door();
+  const {shown, elements, mounted, calls} = entry();
   await mounted.settled;
   assert.deepEqual(shown(), {state: 'form', listed: false, done: '', again: '', off: '',
     note: 'We only use your email to send you an invite.', alert: false, contact: ''});
   assert.equal(mounted.state(), 'form');
   assert.equal(elements.submit.textContent, 'Join the wait list');
   assert.equal(elements.email.placeholder, 'you@example.com');
-  assert.deepEqual(calls, [], 'nothing kept here: the door is not asked');
-  assert.equal(door({mail: true}).shown().note, 'We email you a link to confirm, then your invite. Nothing else.');
+  assert.deepEqual(calls, [], 'nothing kept here: the entry is not asked');
+  assert.equal(entry({mail: true}).shown().note, 'We email you a link to confirm, then your invite. Nothing else.');
 });
 
-test('joining at a door that mails says to check the inbox, with a resend and a way off', async () => {
-  const {elements, shown, calls} = door({mail: true, join: async ({email}) => ({email: email.trim(), mail: true})});
+test('joining at an entry that mails says to check the inbox, with a resend and a way off', async () => {
+  const {elements, shown, calls} = entry({mail: true, join: async ({email}) => ({email: email.trim(), mail: true})});
   elements.email.value = ' Ada@Example.org ';
   await elements.form.fire('submit');
   assert.deepEqual(calls, [['join', 'Ada@Example.org']]);
@@ -91,7 +91,7 @@ test('joining at a door that mails says to check the inbox, with a resend and a 
     again: 'Didn’t get it? Send it again', off: 'Changed your mind? Take me off the list', note: '', alert: false, contact: ''});
   assert.equal(elements.email.value, '', 'the field is not left holding the address');
 
-  // Asked again: the address is left once more, and the door says how
+  // Asked again: the address is left once more, and the entry says how
   // often a link goes out.
   await elements.again.fire('click');
   assert.deepEqual(calls.at(-1), ['join', 'Ada@Example.org']);
@@ -99,8 +99,8 @@ test('joining at a door that mails says to check the inbox, with a resend and a 
   assert.equal(shown().note, 'Sent again. We send at most one link an hour, so check your spam folder too.');
 });
 
-test('joining at a door that sends no mail lists the address and says plainly no mail comes', async () => {
-  const {elements, shown} = door({join: async ({email}) => ({email: email.trim(), mail: false})});
+test('joining at an entry that sends no mail lists the address and says plainly no mail comes', async () => {
+  const {elements, shown} = entry({join: async ({email}) => ({email: email.trim(), mail: false})});
   elements.email.value = 'ada@example.org';
   await elements.form.fire('submit');
   assert.deepEqual(shown(), {state: 'listed', listed: true, done: 'You’re on the list (ada@example.org)', again: '',
@@ -115,7 +115,7 @@ test('a browser that left its address before is told where it stands instead of 
     ['invited', 'invited', 'You’re invited: the link is in your inbox.'],
     [null, 'inbox', 'Check your inbox: we sent a link to ada@example.org to confirm.'],
   ]) {
-    const {shown, mounted, calls} = door({mail: true, kept: {email: 'ada@example.org', pending: true}, standing: async () => stands});
+    const {shown, mounted, calls} = entry({mail: true, kept: {email: 'ada@example.org', pending: true}, standing: async () => stands});
     assert.equal(shown().state, 'inbox', 'at once, from what this browser kept');
     await mounted.settled;
     assert.deepEqual(calls, [['standing', 'Lounge']]);
@@ -124,19 +124,19 @@ test('a browser that left its address before is told where it stands instead of 
     assert.equal(shown().off, 'Changed your mind? Take me off the list');
   }
   // Gone (joined, or taken off elsewhere): the form.
-  const gone = door({kept: {email: 'ada@example.org', pending: false}, standing: async () => 'gone'});
+  const gone = entry({kept: {email: 'ada@example.org', pending: false}, standing: async () => 'gone'});
   await gone.mounted.settled;
   assert.equal(gone.shown().state, 'form');
-  // Invited where the door sends no mail: the invitation comes from the inviter.
-  const plain = door({kept: {email: 'ada@example.org', pending: false}, standing: async () => 'invited'});
+  // Invited where the entry sends no mail: the invitation comes from the inviter.
+  const plain = entry({kept: {email: 'ada@example.org', pending: false}, standing: async () => 'invited'});
   await plain.mounted.settled;
   assert.equal(plain.shown().done, 'You’re invited: whoever invited you sends you the link.');
 });
 
-test('a confirmation link lands on the door, listed; one no longer waiting says so over the form', async () => {
+test('a confirmation link lands on the entry, listed; one no longer waiting says so over the form', async () => {
   const token = 'c1'.repeat(32);
   const kept = {email: 'ada@example.org', pending: true};
-  const confirmed = door({mail: true, kept, arrival: {confirm: token}});
+  const confirmed = entry({mail: true, kept, arrival: {confirm: token}});
   await confirmed.mounted.settled;
   assert.deepEqual(confirmed.calls, [['confirm', token]]);
   assert.equal(confirmed.shown().state, 'listed');
@@ -144,10 +144,10 @@ test('a confirmation link lands on the door, listed; one no longer waiting says 
   assert.equal(confirmed.shown().note, '');
   // Opened in another browser: listed, without the address, and without a
   // way off (the mail's own removal link is that).
-  const elsewhere = door({mail: true, arrival: {confirm: token}});
+  const elsewhere = entry({mail: true, arrival: {confirm: token}});
   await elsewhere.mounted.settled;
   assert.deepEqual([elsewhere.shown().done, elsewhere.shown().off], ['You’re on the list.', '']);
-  const late = door({mail: true, arrival: {confirm: token}, confirm: async () => false});
+  const late = entry({mail: true, arrival: {confirm: token}, confirm: async () => false});
   await late.mounted.settled;
   assert.equal(late.shown().state, 'expired');
   assert.equal(late.shown().note, 'That link no longer works. Leave your address again.');
@@ -155,14 +155,14 @@ test('a confirmation link lands on the door, listed; one no longer waiting says 
 
 test('a removal link takes the address off and lands on the form, saying so', async () => {
   const secret = 'd2'.repeat(32);
-  const {mounted, calls, shown} = door({mail: true, arrival: {remove: secret}});
+  const {mounted, calls, shown} = entry({mail: true, arrival: {remove: secret}});
   await mounted.settled;
   assert.deepEqual(calls, [['leave', secret]]);
   assert.deepEqual(shown(), {state: 'left', listed: false, done: '', again: '', off: '', note: 'You’re off the list.', alert: false, contact: ''});
 });
 
 test('taking the address off shows the form again, saying it is off', async () => {
-  const {elements, shown, calls, mounted} = door({kept: {email: 'ada@example.org', pending: false}});
+  const {elements, shown, calls, mounted} = entry({kept: {email: 'ada@example.org', pending: false}});
   await mounted.settled;
   await elements.leave.fire('click');
   assert.deepEqual(calls.at(-1), ['leave', 'kept']);
@@ -173,7 +173,7 @@ test('taking the address off shows the form again, saying it is off', async () =
 
 test('a removal the host could not do says so and keeps the address listed', async () => {
   let refusal = new HostAdmissionError('unavailable', 'the workspace is restarting');
-  const {elements, shown, mounted} = door({kept: {email: 'ada@example.org', pending: false}, leave: async () => { throw refusal; }});
+  const {elements, shown, mounted} = entry({kept: {email: 'ada@example.org', pending: false}, leave: async () => { throw refusal; }});
   await mounted.settled;
   await elements.leave.fire('click');
   assert.equal(shown().state, 'listed');
@@ -185,8 +185,8 @@ test('a removal the host could not do says so and keeps the address listed', asy
   assert.equal(elements.leave.disabled, false);
 });
 
-test('an address the door refused is said beside the field, which then reads as typed again', async () => {
-  const {elements, shown} = door({join: async () => { throw new HostAdmissionError('invalid-email', 'no'); }});
+test('an address the entry refused is said beside the field, which then reads as typed again', async () => {
+  const {elements, shown} = entry({join: async () => { throw new HostAdmissionError('invalid-email', 'no'); }});
   elements.email.value = 'not an address';
   await elements.form.fire('submit');
   assert.equal(shown().state, 'form');
@@ -201,7 +201,7 @@ test('an address the door refused is said beside the field, which then reads as 
 test('the contact the host names is a line of its own, linked, in every state; none, no line', async () => {
   for (const [contact, href, text] of [['hello@example.org', 'mailto:hello@example.org', 'hello@example.org'],
     ['https://example.org/privacy', 'https://example.org/privacy', 'example.org/privacy']]) {
-    const {elements, shown, mounted} = door({contact, kept: {email: 'ada@example.org', pending: false}});
+    const {elements, shown, mounted} = entry({contact, kept: {email: 'ada@example.org', pending: false}});
     await mounted.settled;
     assert.equal(shown().contact, `Questions or removal: ${text}`);
     const link = elements.contact.children.find(child => typeof child !== 'string');
@@ -209,10 +209,10 @@ test('the contact the host names is a line of its own, linked, in every state; n
     await elements.leave.fire('click');
     assert.equal(shown().contact, `Questions or removal: ${text}`);
   }
-  assert.equal(door().shown().contact, '');
+  assert.equal(entry().shown().contact, '');
 });
 
-test('the door’s wait-list words in each state, in German too', () => {
+test('the entry’s wait-list words in each state, in German too', () => {
   const de = locale('de-DE');
   assert.equal(waitListWords({state: 'form'}).done, null);
   assert.equal(waitListWords({state: 'listed', email: 'a@b.org', mail: true, messages: de}).done, 'Du stehst auf der Liste (a@b.org)');

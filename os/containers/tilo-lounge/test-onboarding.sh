@@ -2,7 +2,7 @@
 # A stranger's way into tilo.sh, end to end, on a whole tilo.sh of this run's
 # own: the Lounge relay, the API server, the web entry and production's Caddy,
 # started the way production's manifests start them (os/containers/tilo-sh's
-# stack.sh), so the door a stranger meets here is the one tilo.sh runs — taking
+# stack.sh), so the entry a stranger meets here is the one tilo.sh runs — taking
 # people by invitation, keeping a wait list, and mailing through a sink this run
 # reads. The person who runs it is declared an owner through the running
 # workspace's operator socket, as the deployment declares its own people, which
@@ -18,7 +18,7 @@
 # usage: test-onboarding.sh BUNDLE WORK
 # BUNDLE is the web desktop bundle the stack's site serves
 # (tools/ci/publish/web-desktop-bundle.sh). WORK keeps what it found: every
-# page's screenshots and console, the report, the mails the door sent, and the
+# page's screenshots and console, the report, the mails the entry sent, and the
 # stack's logs. Needs node, chromium, curl, bwrap and the stack's environment:
 # TILO_SH_PROGRAMS, TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY and
 # TILO_SH_CLI_DIR naming what t built, and TILO_CLI_BIN the tilo command an
@@ -56,7 +56,7 @@ fi
 export TILO_SH_TILO_BIN=$tilo_bin
 trap 'bash "$tilo_sh/stack.sh" down || true' EXIT
 bash "$tilo_sh/stack.sh" up --fresh || { echo 'FAIL: the stack did not come up' >&2; exit 1; }
-# Sourced after it is up, for its addresses: the site, the relay, the door and
+# Sourced after it is up, for its addresses: the site, the relay, the entry and
 # the mail sink, all production's own.
 # shellcheck source=../tilo-sh/stack.sh
 . "$tilo_sh/stack.sh"
@@ -65,6 +65,6 @@ bash "$tilo_sh/stack.sh" status || true
 
 node "$driver" "$site_origin" "$relay_origin" "$out" "$tilo_bin" "$owner_socket" \
   || { echo 'FAIL: a stranger did not get from the wait list to a workspace of their own' >&2
-       echo '--- the mails the door sent:' >&2; bash "$tilo_sh/stack.sh" mail >&2 || true
+       echo '--- the mails the entry sent:' >&2; bash "$tilo_sh/stack.sh" mail >&2 || true
        exit 1; }
 echo 'ok: a stranger came from the wait list to a workspace of their own, with their agent and a passkey, and a second workspace beside it'

@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import {existsSync} from 'node:fs';
-import {arrivalLines, arrivalLocale, createArrival, createRotation, describeSpent, doorCopy, fill,
+import {arrivalLines, arrivalLocale, createArrival, createRotation, describeSpent, refusalCopy, fill,
   FIRST_VISIT_SECONDS, inviteLinkTarget, measuredPlan, isHostedSite, lineParts, measuredSeconds, plannedSegments, refusedByHost,
   rememberArrival, rememberedArrival, waitListFailure, MEASURED_KEY, parseMessages, progressIn, SEGMENTS, segmentOf,
   STEP_NOTES, stoppedInside} from './arrival.mjs';
@@ -294,23 +294,23 @@ test('a placeholder the arguments lack stays as written', () => {
   assert.equal(locale('de-DE').get('arrival-retry'), 'Noch einmal versuchen');
 });
 
-test('a door turning an address away after a removal is the host’s own answer', () => {
+test('an entry turning an address away after a removal is the host’s own answer', () => {
   const cooling = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'cooling-down'});
   assert.ok(refusedByHost(cooling));
   assert.ok(!refusedByHost(Object.assign(new Error('x'), {name: 'HostAdmissionError', code: 'full'})));
   assert.ok(!refusedByHost(new Error('cooling-down')));
 });
 
-test('a removal the door says is the host’s own answer', () => {
+test('a removal the entry says is the host’s own answer', () => {
   const removed = Object.assign(new Error('You were removed from Lounge.'), {name: 'AdmissionError', code: 'removed'});
-  const door = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'removed'});
-  assert.ok(refusedByHost(door));
-  assert.ok(!refusedByHost(removed), 'the page’s own reading of a removal is no door’s answer');
+  const entry = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'removed'});
+  assert.ok(refusedByHost(entry));
+  assert.ok(!refusedByHost(removed), 'the page’s own reading of a removal is no entry’s answer');
 });
 
-test('a door taking people by invitation is the host’s own answer', () => {
-  const door = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'invitation-only'});
-  assert.ok(refusedByHost(door));
+test('an entry taking people by invitation is the host’s own answer', () => {
+  const entry = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'invitation-only'});
+  assert.ok(refusedByHost(entry));
 });
 
 test('a pasted invite link opens as itself; anything else is not one', () => {
@@ -335,15 +335,15 @@ test('a tip reads after its label, a joke bare', () => {
   assert.ok(!arrivalLines(locale('de-DE')).tips.includes('Tipp'));
 });
 
-test('the door apologises and asks for an email where there is a wait list, else names the workspace', () => {
-  assert.deepEqual(doorCopy({workspace: 'Lounge', waitList: true}), {
+test('the entry apologises and asks for an email where there is a wait list, else names the workspace', () => {
+  assert.deepEqual(refusalCopy({workspace: 'Lounge', waitList: true}), {
     heading: 'Sorry, Tilo is invite-only right now',
     body: 'It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.',
   });
-  assert.deepEqual(doorCopy({workspace: 'Lounge'}), {heading: 'Lounge is invite-only for now',
+  assert.deepEqual(refusalCopy({workspace: 'Lounge'}), {heading: 'Lounge is invite-only for now',
     body: 'Ask someone in it for an invite link, then paste it here.'});
-  assert.equal(doorCopy().heading, 'This workspace is invite-only for now');
-  const german = doorCopy({waitList: true, messages: locale('de-DE')});
+  assert.equal(refusalCopy().heading, 'This workspace is invite-only for now');
+  const german = refusalCopy({waitList: true, messages: locale('de-DE')});
   assert.match(german.heading, /Einladung/);
   assert.match(german.body, /Warteliste|E-Mail/);
   assert.equal(waitListFailure('invalid-email'), 'That doesn’t look like an email address.');
@@ -353,12 +353,12 @@ test('the door apologises and asks for an email where there is a wait list, else
   assert.match(waitListFailure('invalid-email', locale('de-DE')), /E-Mail-Adresse/);
 });
 
-test('both locales word the whole door, its wait list and signing in', () => {
+test('both locales word the whole entry, its wait list and signing in', () => {
   const en = locale('en-US');
   const de = locale('de-DE');
-  const door = [...en.keys()].filter(id => /^arrival-(door|wait|sign-in|invite)/.test(id));
-  assert.ok(door.length >= 25, `${door.length} door messages`);
-  for (const id of door) assert.ok(de.has(id), `de-DE: ${id}`);
+  const entry = [...en.keys()].filter(id => /^arrival-(entry|wait|sign-in|invite)/.test(id));
+  assert.ok(entry.length >= 25, `${entry.length} entry messages`);
+  for (const id of entry) assert.ok(de.has(id), `de-DE: ${id}`);
   for (const [id, arg] of [['arrival-wait-inbox', 'email'], ['arrival-wait-listed', 'email'], ['arrival-wait-contact', 'contact'], ['arrival-sign-in-not-member', 'workspace']]) {
     for (const messages of [en, de]) assert.ok(messages.get(id).includes(`{ $${arg} }`), id);
   }

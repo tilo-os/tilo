@@ -11,13 +11,13 @@
 #   TILO_WORKSPACES_RELAY_ORIGIN   the https:// origin the ingress publishes for the
 #                             relay: its pages, its avatars and the callback
 #   TILO_WORKSPACES_DESCRIPTION    what the public directory says the workspace is;
-#                             listed, anyone joins through its door at
+#                             listed, anyone joins through its entry at
 #                             TILO_WORKSPACES_DEFAULT_ROLE
 #   TILO_WORKSPACES_WEB_ENTRY      the Tilo app's web entry the links it mints open
 #
 # The operator declares a person an owner of the running workspace through its
 # operator socket (os/containers/tilo-lounge/declare-owner), which the host
-# answers by letting them in at its door and making them an administrator once
+# answers by letting them in at its entry and making them an administrator once
 # they are a member, and has the host invite someone as itself
 # (os/containers/tilo-lounge/invite: a link that names the workspace, an owner's
 # link for a host nobody owns yet):
@@ -98,7 +98,7 @@ root=${TILO_WORKSPACES_ROOT_FILE:-}
 origin=${TILO_WORKSPACES_RELAY_ORIGIN:-}
 [ -n "$origin" ] || fail 'TILO_WORKSPACES_RELAY_ORIGIN is required: the https:// origin the ingress publishes'
 description=${TILO_WORKSPACES_DESCRIPTION:-}
-# `invite` (the setting eu1 ships) lists the workspace and closes its door:
+# `invite` (the setting eu1 ships) lists the workspace and closes its entry:
 # only people invited or pre-admitted join. `open` (the default) lets anyone
 # in as the default role. Anything else stops the start.
 admission=${TILO_WORKSPACES_ADMISSION:-open}
@@ -180,7 +180,7 @@ fi
 if [ -n "${TILO_WORKSPACES_NAME:-}" ]; then
   set -- "$@" --workspace-name "$TILO_WORKSPACES_NAME"
 fi
-# The door: listed either way (the site's directory shows it), open to
+# The entry: listed either way (the site's directory shows it), open to
 # anyone as the default role or only to people invited.
 if [ "$admission" = invite ]; then
   set -- "$@" --invitation-only
@@ -190,8 +190,8 @@ if [ -n "$wait_list" ]; then
   case $wait_list in
     ''|*[!0-9]*) fail "TILO_WORKSPACES_WAIT_LIST_MAX is a count, not $wait_list" ;;
   esac
-  # The list is what a door taking people by invitation offers those it turns
-  # away: an open door turns nobody away.
+  # The list is what an entry taking people by invitation offers those it turns
+  # away: an open entry turns nobody away.
   [ "$admission" = invite ] || fail "TILO_WORKSPACES_WAIT_LIST_MAX needs TILO_WORKSPACES_ADMISSION=invite"
   set -- "$@" --wait-list-max "$wait_list"
 fi

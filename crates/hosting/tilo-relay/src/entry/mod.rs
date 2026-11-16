@@ -1,6 +1,6 @@
 //! The wait list of an entry that takes people by invitation: the addresses
 //! people leave there without one, the mail that confirms an address and
-//! carries an invitation to it, and the four routes a entry page asks about
+//! carries an invitation to it, and the four routes an entry page asks about
 //! them (`<entry>wait-list`, `…/remove`, `…/confirm`, `…/standing`).
 //!
 //! The addresses themselves are the workspace's own, kept beside its record
@@ -10,7 +10,7 @@
 //! it ([`outbox`], [`mail`]).
 //!
 //! It was the workspace service's, beside the relay; the relay answers it itself
-//! now, on the same routes and with the same words, so a entry page of either
+//! now, on the same routes and with the same words, so an entry page of either
 //! build reads the same answers.
 
 pub(crate) mod limits;

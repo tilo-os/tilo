@@ -141,7 +141,7 @@ test('any action the workspace\'s host runs goes to it with the person\'s answer
   bridge.dispose();
 });
 
-test('the page removes someone through its own door: the workspace\'s membership request, on confirmation only', async () => {
+test('the page removes someone through its own entry: the workspace\'s membership request, on confirmation only', async () => {
   const calls = [];
   const workspace = 'r1';
   const person = 'bb'.repeat(32);
@@ -151,7 +151,7 @@ test('the page removes someone through its own door: the workspace\'s membership
   };
   const invoke = (action, args, options = {}) => invokeMembershipAction({membership, workspace,
     resource: governanceResource(workspace), action, args, ...options});
-  // Not the workspace's membership: the application's door answers.
+  // Not the workspace's membership: the application's entry answers.
   assert.equal(invokeMembershipAction({membership, workspace, resource: 'notes.page:1', action: 'remove-member', args: {person}}), undefined);
   assert.equal(invokeMembershipAction({membership, workspace, resource: governanceResource('r2'), action: 'remove-member', args: {person}}),
     undefined, 'another workspace\'s governance');

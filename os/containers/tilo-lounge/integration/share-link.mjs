@@ -7,7 +7,7 @@
 // that run's page: a run is read from the workspace's history, which the
 // desktop's session serves.
 //
-// Both people come in through the Lounge's door as everyone does (the
+// Both people come in through the Lounge's entry as everyone does (the
 // deployment admits everyone as an editor), so the link they share is the
 // one the workspace's people open: no invitation rides in it.
 //

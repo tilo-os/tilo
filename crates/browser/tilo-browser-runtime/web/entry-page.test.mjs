@@ -278,7 +278,7 @@ test('a wait-list invitation is the short link its site keeps, not the invitatio
   const {calls, diagnostics} = await fixture({member: {
     createInvitation: async () => 'SIGNED-invitation',
     membership: {list: async () => ({name: 'Current', members: []}),
-      mayInvite: async () => true, waitList: async () => [ed], unlist: async () => {}, mailInvite: async () => { throw new Error('this door sends no mail'); }},
+      mayInvite: async () => true, waitList: async () => [ed], unlist: async () => {}, mailInvite: async () => { throw new Error('this entry sends no mail'); }},
   }});
   diagnostics.onHostAction('waiting-to-join');
   await tick();
@@ -295,7 +295,7 @@ test('a wait-list invitation is the short link its site keeps, not the invitatio
     ['sealed', 'https://web.example/', ORIGIN, 'SIGNED-invitation'],
     'the invitation is sealed onto the page’s own site, naming the host it admits into');
   const share = document.body.children.find(form => form.dataset.card === 'share');
-  assert.ok(share, 'a door that sends no mail shares the link instead');
+  assert.ok(share, 'an entry that sends no mail shares the link instead');
   assert.equal(share.children.find(child => child.name === 'link').value, SEALED,
     'what the inviter sends is the short link, not the invitation’s text');
   assert.match(share.children[1].textContent, /as an editor/);
@@ -428,7 +428,7 @@ test('the home workspace’s peer that carries reports from another workspace jo
   assert.equal(joined[0].live, false);
   assert.equal(joined[0].voice, false);
   assert.equal(joined[0].workspace, home);
-  await assert.rejects(joined[0].wait({attempt: 0}), /did not let this device in/, 'it never waits at the door');
+  await assert.rejects(joined[0].wait({attempt: 0}), /did not let this device in/, 'it never waits at the entry');
 });
 
 test('an embedded workspace offers no invite sheet it could not carry out', async () => {
@@ -466,7 +466,7 @@ test('an embed shows its site’s fallback until the visitor’s first gesture, 
   }});
   assert.equal(failure, null);
   assert.deepEqual(told, [{message: {type: 'tilo-embed', state: 'idle'}, origin: 'https://site.example'}]);
-  assert.deepEqual(requests, [], 'no spectate, no door, no person');
+  assert.deepEqual(requests, [], 'no spectate, no entry, no person');
   assert.deepEqual(calls, []);
   // The first pointer or key joins on the page that loads for it, and the
   // gesture goes no further than the page.
@@ -486,7 +486,7 @@ test('the page that loads after the gesture joins as this browser’s own person
   const requests = [];
   globalThis.window = globalThis;
   globalThis.parent = {postMessage: () => {}};
-  globalThis.fetch = async url => { requests.push(String(url)); throw new Error('no request before the door'); };
+  globalThis.fetch = async url => { requests.push(String(url)); throw new Error('no request before the entry'); };
   const joined = [];
   const {failure, session} = await fixture({search: '?embed=1', session: {'tilo-embed-join': '1'}, boot: async (options, booted) => {
     const {deps} = options;
@@ -520,13 +520,13 @@ test('a person who joins through an invitation joins under the name their key dr
   assert.equal(joined.length, 1);
   assert.equal(joined[0].identity.userPublicKey, USER);
   // Never nameless, so nobody here sees them as a guest: the same name the
-  // page's own door gives this person.
+  // page's own entry gives this person.
   assert.match(joined[0].displayName, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
   const {defaultDisplayName} = await import('./workspaces.mjs');
   assert.equal(joined[0].displayName, defaultDisplayName(USER));
 });
 
-test('an uncaught page error reaches the door the site names', async () => {
+test('an uncaught page error reaches the entry the site names', async () => {
   const beacons = [];
   globalThis.window = globalThis;
   globalThis.parent = {postMessage: () => {}};
@@ -543,7 +543,7 @@ test('an uncaught page error reaches the door the site names', async () => {
     error: {stack: 'at page.js:12'}});
   fire('unhandledrejection', {reason: Error('the host went away')});
   assert.equal(beacons.length, 2);
-  assert.equal(beacons[0].url, 'https://home.example/peer/v1/directory/lounge/errors', 'the door\'s own errors route');
+  assert.equal(beacons[0].url, 'https://home.example/peer/v1/directory/lounge/errors', 'the entry\'s own errors route');
   assert.deepEqual(JSON.parse(await beacons[0].body.text()), {
     kind: 'error', message: 'x is not a function', source: 'https://home.example/v/7/page.js', line: 12, column: 4,
     stack: 'at page.js:12', page: '/', build: 'development'});

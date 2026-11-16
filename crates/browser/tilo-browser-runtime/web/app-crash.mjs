@@ -93,7 +93,7 @@ export function createPageRestarts({storage=globalThis.localStorage,now=Date.now
 
 /** What the page does about a panic that named no window (`report`, as the
  * runtime's hook sends it): say what happened through the page's own error
- * route -- a panic outside every window must reach the door's log, not be
+ * route -- a panic outside every window must reach the entry's log, not be
  * swallowed by the reload -- then start the page over. The load that follows
  * shows the workspace, its windows and their drafts as the session last
  * saved them; nothing the page holds in JS is worth more than that, the

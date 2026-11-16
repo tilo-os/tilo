@@ -33,7 +33,7 @@ function follow({peer, canRejoin = () => true, storage = memoryStorage(), now = 
   return {seen, stop, storage};
 }
 
-test('a host that forgot the person, or was set up again, is joined again through its door, once', async () => {
+test('a host that forgot the person, or was set up again, is joined again through its entry, once', async () => {
   for (const code of ['not-admitted', 'host-changed']) {
     const peer = fakePeer();
     const {seen, storage} = follow({peer});
@@ -59,7 +59,7 @@ test('a page refused again soon after joining again by itself is told, not loope
   assert.equal(rejoinedName({storage, now: 1_000_000}), null);
 });
 
-test('a page with no door to come back through, and a revoked device, are told what happened', async () => {
+test('a page with no entry to come back through, and a revoked device, are told what happened', async () => {
   const peer = fakePeer();
   const {seen} = follow({peer, canRejoin: () => false});
   peer.send(failed('not-admitted'));

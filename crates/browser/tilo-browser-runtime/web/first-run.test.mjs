@@ -535,7 +535,7 @@ test('a passkey clicked before the page can ask waits for it, busy, then asks; a
 
 /** first-run.inline.js against a page at `href`, with `stored` keys and the
  * scrubber's `secrets`: whether the first screen shows, and whether it was
- * held for the site's door to answer (`data-first-run-hold`). */
+ * held for the site's entry to answer (`data-first-run-hold`). */
 function shows(href, {stored = {}, secrets = {}, storage = true, step = false, held = false} = {}) {
   const url = new URL(href);
   const attributes = new Map();
@@ -557,14 +557,14 @@ const kept = state => ({[SETUP]: JSON.stringify(state)});
 
 test('only a browser new here, opening the site itself, is offered the first screen', () => {
   // No screen and no setup kept: whether the setup is even the person's to
-  // take up is the site's door's to say, and a site taking people by
+  // take up is the site's entry's to say, and a site taking people by
   // invitation only sends them to its wait list. The page shows it once it
-  // is in, and the visitor the door turned away never sees it.
+  // is in, and the visitor the entry turned away never sees it.
   const fresh = {};
   assert.equal(shows('https://tilo.example/', {stored: fresh}), false);
   assert.equal(shows('https://tilo.example/#/'), false);
   assert.equal(shows('https://tilo.example/?debug'), false);
-  assert.equal(shows('https://tilo.example/', {stored: fresh, held: true}), true, 'held for the door’s answer');
+  assert.equal(shows('https://tilo.example/', {stored: fresh, held: true}), true, 'held for the entry’s answer');
   assert.equal(fresh[SETUP], undefined, 'and keeps no setup it has not started');
   assert.equal(shows('https://tilo.example/', {stored: kept({step: 'done'})}), false, 'set up already');
   assert.equal(shows('https://tilo.example/', {stored: kept({step: 'done'}), held: true}), false, 'nothing to hold');
@@ -633,7 +633,7 @@ test('a newcomer by invitation joins first, and is set up later: on the site its
 test('the kept setup alone decides the step a bare entry opens on, whatever the page did behind the screen', () => {
   const fresh = {};
   assert.equal(shows('https://tilo.example/', {stored: fresh, step: true}), null,
-    'a browser new here is shown nothing until its site’s door says');
+    'a browser new here is shown nothing until its site’s entry says');
   assert.equal(shows('https://tilo.example/', {stored: fresh, held: true}), true, 'its screen waits for that answer');
   assert.equal(fresh[SETUP], undefined);
   const lounge = {'tilo-host-memberships': '{"x":{}}', 'tilo-entered-workspaces': '[{}]'};
@@ -1025,7 +1025,7 @@ test('a first paint that held the screen shows it once the page says the site le
   root.dataset.firstRunHold = '';
   const storage = {getItem: () => null, setItem() {}};
   const run = startFirstRun(document, {storage});
-  assert.ok(run, 'the screen is wired while the door decides');
+  assert.ok(run, 'the screen is wired while the entry decides');
   assert.equal(run.held, true);
   assert.equal(root.dataset.firstRun, undefined, 'nothing painted: the wait list may take its place');
   run.reveal();

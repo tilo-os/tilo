@@ -49,7 +49,7 @@ function desktopNavigation(windows) {
   }};
 }
 
-test('desktop mode opens the app through navigation, then the view through its window’s door', async () => {
+test('desktop mode opens the app through navigation, then the view through its window’s entry', async () => {
   const {commands, navigation} = desktopNavigation([]);
   const invoked = [];
   const mount = {
@@ -284,14 +284,14 @@ test('a link opening Activity alone opens it on the desktop, before admission', 
   assert.deepEqual(order, [{mode: 'desktop', target}, 'https://tilo.so/#/@h.example/w/r/so.tilo.activity/-']);
 });
 
-test('the home workspace opens through its host door under its listed name, and the address becomes its canonical link', async () => {
+test('the home workspace opens through its host entry under its listed name, and the address becomes its canonical link', async () => {
   const home = {name: 'Commons', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/'};
   const formatted = [];
   const replaced = [];
   const runtime = runtimeFake({
     parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
     formatLink: route => { formatted.push(JSON.parse(route)); return 'https://workspaces.example/open/#/@workspaces.example/w/WORKSPACE'; },
-    ...entering('door'),
+    ...entering('entry'),
   });
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   const mounts = [];
@@ -328,7 +328,7 @@ test('the home workspace opens through its host door under its listed name, and 
   // A host still replaying the workspace says how far it got.
   assert.ok(shown.includes(receivingNote(3)), shown.join(' | '));
   assert.equal(status.text, 'Loading…');
-  // The page hears it is joining through the door, then opening once admitted.
+  // The page hears it is joining through the entry, then opening once admitted.
   assert.deepEqual([...new Set(steps)], ['join', 'open']);
   assert.equal(steps.at(-1), 'open');
   assert.deepEqual(formatted[0], {mode: 'desktop', target: {scope: {kind: 'workspace', host: 'https://workspaces.example', workspace: 'WORKSPACE'}}});
@@ -346,7 +346,7 @@ test('a workspace no listing of the page names is mounted under the name it answ
   const runtime = runtimeFake({
     parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
     formatLink: () => 'https://workspaces.example/open/#/@workspaces.example/w/OWN',
-    ...entering('door'),
+    ...entering('entry'),
   });
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   const mounts = [];
@@ -413,7 +413,7 @@ test('the page hears the peer the host let in before its desktop mounts, so a fa
   const runtime = runtimeFake({
     parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
     formatLink: () => 'https://workspaces.example/#/@workspaces.example/w/WORKSPACE',
-    ...entering('door'),
+    ...entering('entry'),
   });
   const heard = [];
   const peer = {workspace: 'WORKSPACE', workspaceName: 'Kaffeeküche', whenReady: async () => {},
@@ -562,7 +562,7 @@ test('a workspace mount keeps its invite sheet alongside host, About and title f
   };
   const statuses = [];
   const page = await boot({mode: 'desktop', window, diagnostics: {onStatus: status => statuses.push(status)}, deps: {
-    loadRuntime: async () => runtimeFake({formatLink: () => 'https://workspaces.example/open/#/WORKSPACE', ...entering('door')}),
+    loadRuntime: async () => runtimeFake({formatLink: () => 'https://workspaces.example/open/#/WORKSPACE', ...entering('entry')}),
     fetch: async () => ({ok: true, json: async () => ({home, about})}),
     enterViaHost: async () => peer,
     // The invite sheet this page's desktop shows, made through the workspace's host.
@@ -573,21 +573,21 @@ test('a workspace mount keeps its invite sheet alongside host, About and title f
     workspace: 'WORKSPACE', name: 'Reader', user: 'ab'.repeat(32)});
   assert.equal(mounted.host, 'workspaces.example');
   assert.deepEqual(mounted.about, about);
-  assert.equal(mounted.presenceUrl, undefined, 'presence travels over the session, not a door route');
+  assert.equal(mounted.presenceUrl, undefined, 'presence travels over the session, not an entry route');
   mounted.onStatus({workspaceName: 'Commons'});
   assert.equal(window.document.title, 'Tilo · Commons');
   assert.deepEqual(statuses, [{workspaceName: 'Commons'}]);
   page.router.stop();
 });
 
-test('a bare entry under a home workspace asks the host’s door once the runtime says that is the way in', async () => {
+test('a bare entry under a home workspace asks the host’s entry once the runtime says that is the way in', async () => {
   const home = {name: 'Commons', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/'};
   const order = [];
   let loaded;
   const runtime = runtimeFake({
     parseLink: () => { throw new Error('a home entry needs no grammar to be admitted'); },
     formatLink: () => 'https://workspaces.example/open/#/@workspaces.example/w/WORKSPACE',
-    ...entering('door'),
+    ...entering('entry'),
   });
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   const peer = {workspace: 'WORKSPACE', whenReady: async () => {}, mountDesktop: async () => { order.push('mount'); return {navigation}; }};
@@ -601,13 +601,13 @@ test('a bare entry under a home workspace asks the host’s door once the runtim
     loadRuntime: () => new Promise(resolve => { loaded = () => { order.push('runtime'); resolve(runtime); }; }),
     fetch: async () => { loaded(); return {ok: true, json: async () => ({home})}; },
     enterViaHost: async () => {
-      order.push('door');
+      order.push('entry');
       return peer;
     },
   };
   const page = await boot({mode: 'desktop', window, deps});
   // The router then keeps the address canonical as it goes.
-  assert.deepEqual(order.slice(0, 4), ['runtime', 'door', 'canonical', 'mount']);
+  assert.deepEqual(order.slice(0, 4), ['runtime', 'entry', 'canonical', 'mount']);
   page.router.stop?.();
 });
 
@@ -646,21 +646,21 @@ test('the home workspace’s app in front is fetched once admitted, never before
       addEventListener() {}, removeEventListener() {},
     };
     const deps = {
-      loadRuntime: async () => runtimeFake({...entering('door')}),
+      loadRuntime: async () => runtimeFake({...entering('entry')}),
       prefetchApplication: app => order.push(`prefetch ${app}`),
       fetch: async () => ({ok: true, json: async () => ({home})}),
-      enterViaHost: async () => { order.push('door'); return enterViaHost(); },
+      enterViaHost: async () => { order.push('entry'); return enterViaHost(); },
     };
     // An admitted boot goes on past what this asks of it.
     void boot({mode: 'desktop', window, deps}).catch(error => order.push(error.message));
     await new Promise(resolve => setTimeout(resolve, 10));
     return order;
   };
-  assert.deepEqual((await run(async () => ({workspace: 'r1'}))).slice(0, 2), ['door', 'prefetch so.tilo.chat']);
-  assert.deepEqual(await run(async () => { throw new Error('closed'); }), ['door', 'closed']);
+  assert.deepEqual((await run(async () => ({workspace: 'r1'}))).slice(0, 2), ['entry', 'prefetch so.tilo.chat']);
+  assert.deepEqual(await run(async () => { throw new Error('closed'); }), ['entry', 'closed']);
 });
 
-test('a desktop’s first-layout code is asked for before the door, the app’s only once admitted', async () => {
+test('a desktop’s first-layout code is asked for before the entry, the app’s only once admitted', async () => {
   const home = {name: 'Commons', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/', app: 'so.tilo.chat'};
   const order = [];
   const window = {
@@ -670,15 +670,15 @@ test('a desktop’s first-layout code is asked for before the door, the app’s 
     addEventListener() {}, removeEventListener() {},
   };
   const deps = {
-    loadRuntime: async () => runtimeFake({...entering('door')}),
+    loadRuntime: async () => runtimeFake({...entering('entry')}),
     prefetchDesktop: () => order.push('prefetch desktop'),
     prefetchApplication: app => order.push(`prefetch ${app}`),
     fetch: async () => ({ok: true, json: async () => ({home})}),
-    enterViaHost: async () => { order.push('door'); return {workspace: 'r1'}; },
+    enterViaHost: async () => { order.push('entry'); return {workspace: 'r1'}; },
   };
   void boot({mode: 'desktop', window, deps}).catch(error => order.push(error.message));
   await new Promise(resolve => setTimeout(resolve, 10));
-  assert.deepEqual(order.slice(0, 3), ['prefetch desktop', 'door', 'prefetch so.tilo.chat']);
+  assert.deepEqual(order.slice(0, 3), ['prefetch desktop', 'entry', 'prefetch so.tilo.chat']);
 });
 
 test('only a bare desktop entry under a home reopens the workspace the person last chose', () => {
@@ -713,7 +713,7 @@ function workspacePage({href, hash, parse}) {
   return {window, listeners, calls, runtime, navigation};
 }
 
-test('a returning person’s bare entry opens the chosen workspace through their membership, not the home’s door', async () => {
+test('a returning person’s bare entry opens the chosen workspace through their membership, not the home’s entry', async () => {
   const home = {name: 'Lounge', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/'};
   const page = workspacePage({href: 'https://tilo.example/', hash: '', parse: () => { throw new Error('a chosen workspace needs no parse'); }});
   const connected = [];
@@ -725,7 +725,7 @@ test('a returning person’s bare entry opens the chosen workspace through their
     onScope: seen => page.calls.scopes.push(seen),
     readAccounts: async origin => [{userPublicKey: 'ab', origin}],
     connectMember: async options => { connected.push(options); return peer; },
-    enterViaHost: async () => { throw new Error('the home’s door is not asked'); },
+    enterViaHost: async () => { throw new Error('the home’s entry is not asked'); },
   };
   const shown = await boot({mode: 'desktop', window: page.window, deps});
   assert.deepEqual(connected.map(({origin, workspace}) => [origin, workspace]), [['https://acme.example', 'A']]);
@@ -763,7 +763,7 @@ test('once admitted, the page names its host’s fetch proxy for the apps', asyn
   const runtime = runtimeFake({
     parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
     formatLink: () => 'https://app.example/#/@workspaces.example/w/WORKSPACE',
-    ...entering('door'),
+    ...entering('entry'),
   });
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   let session = 'feed';

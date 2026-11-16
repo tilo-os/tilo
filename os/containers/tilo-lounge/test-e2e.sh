@@ -21,7 +21,7 @@
 #                  `tilo keys create` asks for (tilo-sh/check.sh's step 1); the
 #                  visa run reads the key it made
 #   directory      the Lounge lists itself in its public directory as the
-#                  deployment named it, with its door and default role, and
+#                  deployment named it, with its entry and default role, and
 #                  every record it read on start read whole
 #   boot           the page arrives, joins and opens Notes with no exception
 #                  or panic (integration/page-boot.mjs)
@@ -50,12 +50,12 @@
 #                  step 7)
 #   passkey        a visitor keeps themselves with a passkey and signs in with
 #                  it again (check.sh's step 7b)
-#   wait-list      a stranger at an invitation-only door is kept on its wait
+#   wait-list      a stranger at an invitation-only entry is kept on its wait
 #                  list and confirms through the mail (a second Lounge, whose
-#                  door takes people by invitation: the one policy the stack
+#                  entry takes people by invitation: the one policy the stack
 #                  cannot have at once)
 #   onboarding     one stranger's whole way in, on a whole tilo.sh of its own
-#                  (test-onboarding.sh: the stack, whose door takes people by
+#                  (test-onboarding.sh: the stack, whose entry takes people by
 #                  invitation as production's does): the wait list and its
 #                  confirmation mail, the invitation the person who runs the
 #                  host sends from the workspace's own wait list and the mail it
@@ -114,13 +114,13 @@ expected = {
     "description": "The Tilo community: chat, notes and a shared desktop",
     # A role preset on the wire, which a site capitalises where it shows one.
     "defaultRole": "editor",
-    "door": f"directory/{workspace}/",
+    "entry": f"directory/{workspace}/",
     "workspace": workspace,
 }
 wrong = {field: listing.get(field) for field, want in expected.items() if listing.get(field) != want}
 if wrong:
     sys.exit(f"FAIL: the listing differs from the deployment'"'"'s: {wrong} (wanted {expected})")
-print("ok: the directory lists the Lounge, joined at its door as an editor")
+print("ok: the directory lists the Lounge, joined at its entry as an editor")
 ' "$workspace"
       exit ;;
     boot) exec node "$integration/page-boot.mjs" "$site_origin" "$relay_origin" "$out" ;;
@@ -133,19 +133,19 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
       exec node "$integration/$flow.mjs" "$site_origin" "$relay_origin" "$TILO_CLI_BIN" "$out" ;;
     signin|visa|entry|passkey) exec bash "$tilo_sh/check.sh" --flow "$flow" ;;
     wait-list)
-      # A second Lounge, whose door takes people by invitation: the one
+      # A second Lounge, whose entry takes people by invitation: the one
       # deployment setting the stack above cannot have at once, on addresses
       # of its own (direct-lounge.sh, LOUNGE_PORT_BASE).
-      exec bash "$lounge_dir/test-wait-list-door.sh" "$E2E_BUNDLE" "$out" ;;
+      exec bash "$lounge_dir/test-wait-list.sh" "$E2E_BUNDLE" "$out" ;;
     onboarding)
-      # A whole tilo.sh of its own, on addresses of its own: the stack's door
+      # A whole tilo.sh of its own, on addresses of its own: the stack's entry
       # takes people by invitation, so it cannot be the one above.
       ONBOARDING_PORT_BASE=25100 exec bash "$lounge_dir/test-onboarding.sh" "$E2E_BUNDLE" "$out" ;;
     restart)
       earlier=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["chat"])' \
         "$E2E_WORK/people-call/report.json") || { echo 'FAIL: people-call left no chat message behind'; exit 1; }
       # The Lounge's relay alone, stopped and started again on the volume it
-      # kept, the site and the door left serving: what a deployment's restart
+      # kept, the site and the entry left serving: what a deployment's restart
       # is.
       bash "$tilo_sh/stack.sh" restart relay
       [[ $(cat "$TILO_SH_STATE/relay/lounge/workspace-id") == "$workspace" ]] \
@@ -158,7 +158,7 @@ fi
 bundle=${1:?$usage}
 work=${2:?$usage}
 shift 2
-all=(signin directory boot people-call people-shell people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list onboarding restart)
+all=(signin directory boot people-call people-shell people-menus people-invite share-link agent-setup setup-resume visan entry passkey wait-list onboarding restart)
 # Run only when named: a person reloading their workspace page twenty times
 # in one browser, counting the reloads that crash or never come back.
 named_only=(reloads)
@@ -212,13 +212,13 @@ bash "$repo/tools/ci/publish/cli-release.sh" pack "$tilo_bin" "$release/tilo-lin
 export TILO_SH_CLI_DIR=$release TILO_SH_TILO_BIN=$tilo_bin
 trap 'bash "$tilo_sh/stack.sh" down || true' EXIT
 # Its flows' people arrive as strangers and enter the Lounge as guests: the
-# door open to anyone, not production's, which takes people by invitation.
+# entry open to anyone, not production's, which takes people by invitation.
 # Exported, so the restart flow's `stack.sh restart relay` brings the relay
-# back with the same door (the wait-list and onboarding flows set their own).
+# back with the same entry (the wait-list and onboarding flows set their own).
 export TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open}
 bash "$tilo_sh/stack.sh" up --fresh
 # Sourced after it is up, for its addresses and its helpers (find_tilo,
-# sdk_python): the site, the relay and the door every flow meets, and the one
+# sdk_python): the site, the relay and the entry every flow meets, and the one
 # tilo command they run.
 # shellcheck source=../tilo-sh/stack.sh
 . "$tilo_sh/stack.sh"
@@ -237,7 +237,7 @@ export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_
 # here, beside the flows that waited for it.
 service_complaints() {
   local name file said
-  for name in relay door web tls; do
+  for name in relay entry web tls; do
     file=$state/logs/$name.log
     [[ -s $file ]] || continue
     said=$(sed -E 's/\x1b\[[0-9;]*m//g' "$file" | grep -E '^[0-9T:.-]+Z +(ERROR|WARN) ' \

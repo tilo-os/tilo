@@ -4,12 +4,12 @@
  *
  * The CLI runs the SDK's workspace host on this machine (`/__tilo/workspace/…` on
  * the page's own origin): it learns each person's name and answers the
- * workspace's door, which the page enters through on its session with the
+ * workspace's entry, which the page enters through on its session with the
  * host, as an Editor. Each page creates a person, so two tabs are two
  * participants with their own `me`, name and history. Everyone opens the
  * workspace's one record of the app: the first page to arrive creates it, every
  * later page waits until it has reached it and opens that one, so two pages
- * never start the same record twice. The door also knows everyone's name,
+ * never start the same record twice. The entry also knows everyone's name,
  * which the page hands the app (`mount.setPeople`) so `cx.people()` names
  * each participant.
  */
@@ -43,7 +43,7 @@ export async function openInWorkspace({surface, name, onStatus = () => {}}) {
   const workspace = await call('/');
   onStatus('joining');
   const {identity} = await createIdentity({passkey: false});
-  // The workspace's door and its host's origin: the page enters through it.
+  // The workspace's entry and its host's origin: the page enters through it.
   const offer = await call('/join', {userPublicKey: identity.userPublicKey, name});
   const peer = await joinWorkspace({
     ...offer, identity, displayName: name, label: name,
@@ -70,7 +70,7 @@ export async function openInWorkspace({surface, name, onStatus = () => {}}) {
     record = mount.state().record;
     await call('/record', {app: workspace.app, record}, 'PUT');
   }
-  // The workspace's door knows everyone's name: the app shows them by it.
+  // The workspace's entry knows everyone's name: the app shows them by it.
   const names = async () => {
     try { mount.setPeople(await call('/people')); } catch {}
   };

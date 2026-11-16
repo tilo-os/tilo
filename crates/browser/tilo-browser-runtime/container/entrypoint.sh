@@ -1,7 +1,7 @@
 #!/bin/sh
 # Writes the entry configuration a bare visit reads (entry.json), then serves.
 # Without a home workspace a bare visit opens the person's own desktop; with
-# one, it opens that workspace, joined through the door its host lists it at:
+# one, it opens that workspace, joined through the entry its host lists it at:
 #   TILO_WEB_HOME_HOST  host name of the home workspace's host (unset: no home),
 #                       reached over https, or over plain http when it is
 #                       this machine (localhost, a name under it, 127.0.0.1)
@@ -9,14 +9,14 @@
 #   TILO_WEB_HOME_APP   the app in front, optional (unset: its desktop)
 #   TILO_WEB_HOME_FEEDBACK  the id of its Chat channel members report
 #                       problems to, optional (unset: reports are not offered)
-#   TILO_WEB_HOME_DOOR  the door everyone joins it through: an https:// address
+#   TILO_WEB_HOME_ENTRY  the entry everyone joins it through: an https:// address
 #                       (http:// on this machine)
-#                       ending in /, which the door's own paths hang off
+#                       ending in /, which the entry's own paths hang off
 #                       (`join` and `errors`; a host's `presence` and wait list
 #                       too, where it serves one). Unset: its people reconnect
 #                       and others need an invitation, as for a workspace its
 #                       host does not list. A workspace a relay lists has its
-#                       door at
+#                       entry at
 #                       https://<host>/peer/v1/directory/<workspace>/.
 #   TILO_WEB_HOME_HOST_INFO  who that host is and where it is dialled, the one
 #                       line of JSON `tilo-relay page-host https://<host>`
@@ -83,7 +83,7 @@ host=${TILO_WEB_HOME_HOST:-}
 name=${TILO_WEB_HOME_NAME:-}
 app=${TILO_WEB_HOME_APP:-}
 feedback=${TILO_WEB_HOME_FEEDBACK:-}
-door=${TILO_WEB_HOME_DOOR:-}
+entry=${TILO_WEB_HOME_ENTRY:-}
 info=${TILO_WEB_HOME_HOST_INFO:-}
 export TILO_WEB_SITE="${TILO_WEB_SITE:-/srv/tilo-web}"
 export TILO_WEB_INSTALL="${TILO_WEB_INSTALL:-/srv/tilo-install}"
@@ -92,21 +92,21 @@ caddyfile=${TILO_WEB_CADDYFILE:-/etc/caddy/Caddyfile}
 mkdir -p "$TILO_WEB_RUN"
 fields=
 if [ -z "$host" ]; then
-  [ -z "$name$app$feedback$door$info" ] || { echo "TILO_WEB_HOME_NAME, TILO_WEB_HOME_APP, TILO_WEB_HOME_FEEDBACK, TILO_WEB_HOME_DOOR and TILO_WEB_HOME_HOST_INFO need TILO_WEB_HOME_HOST" >&2; exit 2; }
+  [ -z "$name$app$feedback$entry$info" ] || { echo "TILO_WEB_HOME_NAME, TILO_WEB_HOME_APP, TILO_WEB_HOME_FEEDBACK, TILO_WEB_HOME_ENTRY and TILO_WEB_HOME_HOST_INFO need TILO_WEB_HOME_HOST" >&2; exit 2; }
 else
   # Values land in JSON as they are: only characters that need no escaping.
   case "$host" in *[!a-z0-9.:-]*) echo "TILO_WEB_HOME_HOST must be a host name: $host" >&2; exit 2 ;; esac
   case "$name" in '' | *[!A-Za-z0-9\ ._-]*) echo "TILO_WEB_HOME_NAME is required with a host and may use letters, digits, space, . _ -" >&2; exit 2 ;; esac
   case "$app" in *[!a-z0-9._-]*) echo "TILO_WEB_HOME_APP must be an app id" >&2; exit 2 ;; esac
   case "$feedback" in *[!a-z0-9_]*) echo "TILO_WEB_HOME_FEEDBACK must be a channel id like c_feedback" >&2; exit 2 ;; esac
-  case "$door" in
+  case "$entry" in
     '' | https://*) ;;
-    *) here "$door" || { echo "TILO_WEB_HOME_DOOR must be an https:// address (http:// on this machine): $door" >&2; exit 2; } ;;
+    *) here "$entry" || { echo "TILO_WEB_HOME_ENTRY must be an https:// address (http:// on this machine): $entry" >&2; exit 2; } ;;
   esac
-  case "$door" in
+  case "$entry" in
     '') ;;
-    *[!/]) echo "TILO_WEB_HOME_DOOR must end in /: $door" >&2; exit 2 ;;
-    *[!A-Za-z0-9._~:/?#@!\$\&\'\(\)*+,\;=%-]*) echo "TILO_WEB_HOME_DOOR must be a plain address: $door" >&2; exit 2 ;;
+    *[!/]) echo "TILO_WEB_HOME_ENTRY must end in /: $entry" >&2; exit 2 ;;
+    *[!A-Za-z0-9._~:/?#@!\$\&\'\(\)*+,\;=%-]*) echo "TILO_WEB_HOME_ENTRY must be a plain address: $entry" >&2; exit 2 ;;
   esac
   # One JSON object, written into entry.json as a string: only characters
   # that need no escaping there but its quotes, which are escaped below. A
@@ -122,7 +122,7 @@ else
   front=
   [ -z "$app" ] || front=",\"app\":\"$app\""
   [ -z "$feedback" ] || front="$front,\"feedback\":{\"channel\":\"$feedback\"}"
-  [ -z "$door" ] || front="$front,\"admission\":\"$door\""
+  [ -z "$entry" ] || front="$front,\"admission\":\"$entry\""
   scheme=https
   ! here "http://$host" || scheme=http
   fields=$(printf '"home":{"name":"%s","host":{"origin":"%s://%s","info":"%s"}%s}' "$name" "$scheme" "$host" "$quoted" "$front")

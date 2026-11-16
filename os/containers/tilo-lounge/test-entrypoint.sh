@@ -183,7 +183,7 @@ pair --discord-api-base http://127.0.0.1:9090 || fail "the Discord API base did 
 grep -Fqx -- --discord-client-id "$work/args" && fail "an API base asked for a sign-in"
 
 # eu1's own environment, unchanged but for the image: it takes people by
-# invitation, and names no description. The workspace stays listed, its door
+# invitation, and names no description. The workspace stays listed, its entry
 # admits only people invited, and the description is the name people know it
 # by.
 eu1() {
@@ -202,7 +202,7 @@ eu1() {
     sh "$here/entrypoint.sh"
 }
 eu1 >"$work/args" || fail "eu1's environment does not start"
-grep -Fqx -- --invitation-only "$work/args" || fail "invite admission did not close the door"
+grep -Fqx -- --invitation-only "$work/args" || fail "invite admission did not close the entry"
 grep -Fqx -- --members-only "$work/args" && fail "invite admission unlisted the workspace"
 pair --listing-description Lounge || fail "the description did not default to the workspace's name"
 pair --persistent lounge || fail "the workspace is not the one eu1 names"

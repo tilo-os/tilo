@@ -1,4 +1,4 @@
-// The mail service a door's mails go to when a run of it is local: it takes
+// The mail service an entry's mails go to when a run of it is local: it takes
 // what Resend's API takes (`POST /emails`, JSON) and keeps each mail as a
 // file in OUT_DIR, for the test to read the links out of. Nothing is sent.
 //

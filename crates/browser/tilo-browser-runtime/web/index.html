@@ -117,10 +117,10 @@ addEventListener('click',function(event){if(event.target&&event.target.id==='arr
 // shows the next time they open the site itself, never over a workspace's
 // address (the workspace also offers it once they have used it a while,
 // identity-actions.mjs). A browser this site knows nothing of is not shown
-// the setup ahead of its door's answer: a site that takes people by
+// the setup ahead of its entry's answer: a site that takes people by
 // invitation only may send them to its wait list, and the setup is no way
 // in where they hold no invitation. The page shows the screen itself once
-// the door let them in (first-run.mjs `reveal`). Without storage the page
+// the entry let them in (first-run.mjs `reveal`). Without storage the page
 // opens as it always did.
 var root=document.documentElement,secrets=globalThis.__tiloLinkSecrets||{};
 var fresh=function(){
@@ -142,7 +142,7 @@ try{
   if(!bare||!fresh())return;
   // Nothing this browser kept: no setup, no host that let it in, no
   // workspace it entered. Whether the setup is even theirs to take up is
-  // the site's door's to say (it may keep a wait list instead), so the
+  // the site's entry's to say (it may keep a wait list instead), so the
   // screen is wired but held, and the page shows it once it is in.
   root.setAttribute('data-first-run-hold','');
   return;
@@ -345,30 +345,30 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     /* A step that does not move on: Try again beside the wait (arrival.mjs, stall.inline.js). */
     [data-arrival-stalled]:not([data-arrival=done]):not([data-arrival=stopped]) body:not(:has(.tilo-entry-card)) #arrival-retry { display: block; }
     [data-arrival=stopped][data-entry=refused][data-own-desktop]:not([data-failure]) #arrival-own { display: block; }
-    /* Turned away for coming without an invitation: a door of its own
-       (entry-page.mjs `offerDoor`). One calm group, its top fixed a little
+    /* Turned away for coming without an invitation: an entry of its own
+       (entry-page.mjs `offerRefusal`). One calm group, its top fixed a little
        above the middle so nothing it reveals moves what is above: the mark,
        a heading, one line, the wait list's field (or, without a wait list,
        the invite link's), a quiet note under it; then signing in with an
        identity the person already has, and an invite link behind a small
        toggle. Trying Tilo on their own sits at the foot of the page.
        #status keeps the words for screen readers. */
-    #arrival-door { display: none; }
-    [data-arrival=stopped][data-entry=refused][data-door] #arrival-door { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 230px)) 24px 0; overflow-y: auto; text-align: center; background: #121214; }
-    [data-door] #status { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    .door-main { display: flex; flex-direction: column; align-items: center; width: min(400px, 100%); }
-    .door-main > svg { display: block; margin-bottom: 24px; }
-    #arrival-door h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: #ececf0; text-wrap: balance; }
-    #arrival-door-body { margin: 0 0 28px; font-size: 15px; line-height: 1.5; color: #a8a8b2; text-wrap: balance; }
-    .door-field { display: grid; grid-template-columns: 1fr auto; gap: 8px; width: 100%; margin: 0; }
-    .door-field input { box-sizing: border-box; height: 40px; min-width: 0; font: inherit; font-size: 15px; padding: 0 12px; border-radius: 8px; border: 1px solid #3a3d44; background: #17181c; color: #ececf0; }
-    .door-field input::placeholder { color: #6c6c76; }
-    .door-field input:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 1px; border-color: transparent; }
-    .door-field input[aria-invalid=true] { border-color: #b4574f; }
-    .door-field button { box-sizing: border-box; height: 40px; font: inherit; font-size: 15px; font-weight: 500; padding: 0 16px; border-radius: 8px; border: 0; background: #f2f2f4; color: #121214; cursor: pointer; white-space: nowrap; }
-    .door-field button:hover { background: #ffffff; }
-    .door-field button:disabled { cursor: default; opacity: .6; }
-    .door-field button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    #arrival-refusal { display: none; }
+    [data-arrival=stopped][data-entry=refused][data-refusal] #arrival-refusal { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 230px)) 24px 0; overflow-y: auto; text-align: center; background: #121214; }
+    [data-refusal] #status { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .refusal-main { display: flex; flex-direction: column; align-items: center; width: min(400px, 100%); }
+    .refusal-main > svg { display: block; margin-bottom: 24px; }
+    #arrival-refusal h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: #ececf0; text-wrap: balance; }
+    #arrival-refusal-body { margin: 0 0 28px; font-size: 15px; line-height: 1.5; color: #a8a8b2; text-wrap: balance; }
+    .refusal-field { display: grid; grid-template-columns: 1fr auto; gap: 8px; width: 100%; margin: 0; }
+    .refusal-field input { box-sizing: border-box; height: 40px; min-width: 0; font: inherit; font-size: 15px; padding: 0 12px; border-radius: 8px; border: 1px solid #3a3d44; background: #17181c; color: #ececf0; }
+    .refusal-field input::placeholder { color: #6c6c76; }
+    .refusal-field input:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 1px; border-color: transparent; }
+    .refusal-field input[aria-invalid=true] { border-color: #b4574f; }
+    .refusal-field button { box-sizing: border-box; height: 40px; font: inherit; font-size: 15px; font-weight: 500; padding: 0 16px; border-radius: 8px; border: 0; background: #f2f2f4; color: #121214; cursor: pointer; white-space: nowrap; }
+    .refusal-field button:hover { background: #ffffff; }
+    .refusal-field button:disabled { cursor: default; opacity: .6; }
+    .refusal-field button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
     /* The wait list once it took the address: the same height as the field
        it replaces. */
     #arrival-wait-done { display: none; box-sizing: border-box; width: 100%; min-height: 40px; margin: 0; padding: 9px 12px; border-radius: 8px; background: #1a2a20; color: #cfe9d6; font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; }
@@ -380,41 +380,41 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     [data-wait-listed] #arrival-wait-off { display: block; }
     [data-wait-listed] #arrival-wait-off:has(#arrival-wait-leave:empty) { display: none; }
     [data-wait-listed] #arrival-wait-note:empty { display: none; }
-    #arrival-wait-off .door-link, #arrival-wait-again-line .door-link { font-size: 13px; }
+    #arrival-wait-off .refusal-link, #arrival-wait-again-line .refusal-link { font-size: 13px; }
     #arrival-wait-again-line { min-height: 0; }
     #arrival-wait-again-line[hidden] { display: none; }
     /* Where questions go, when the host names it. */
     #arrival-wait-contact { min-height: 0; margin-top: 4px; }
     #arrival-wait-contact:empty { display: none; }
-    .door-note { width: 100%; margin: 10px 0 0; min-height: 3em; font-size: 13px; line-height: 1.5; color: #7f7f89; text-wrap: pretty; }
-    .door-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
-    .door-note a:hover { color: #c4c4cc; }
-    .door-note.door-problem, .door-problem { color: #ff8a80; }
-    .door-alt { width: 100%; margin: 20px 0 0; padding-top: 20px; border-top: 1px solid #23252a; }
-    .door-alt p { margin: 0; font-size: 14px; line-height: 1.5; color: #a8a8b2; }
-    .door-alt p + p { margin-top: 8px; }
-    .door-link { font: inherit; padding: 0; border: 0; background: none; color: #c9d3ff; cursor: pointer; text-decoration: underline; text-decoration-color: rgb(201 211 255 / 35%); text-underline-offset: 3px; }
-    .door-link:hover { color: #e4e9ff; text-decoration-color: currentColor; }
-    .door-link:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 3px; border-radius: 2px; }
-    .door-link:disabled { cursor: default; opacity: .6; }
+    .refusal-note { width: 100%; margin: 10px 0 0; min-height: 3em; font-size: 13px; line-height: 1.5; color: #7f7f89; text-wrap: pretty; }
+    .refusal-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+    .refusal-note a:hover { color: #c4c4cc; }
+    .refusal-note.refusal-problem, .refusal-problem { color: #ff8a80; }
+    .refusal-alt { width: 100%; margin: 20px 0 0; padding-top: 20px; border-top: 1px solid #23252a; }
+    .refusal-alt p { margin: 0; font-size: 14px; line-height: 1.5; color: #a8a8b2; }
+    .refusal-alt p + p { margin-top: 8px; }
+    .refusal-link { font: inherit; padding: 0; border: 0; background: none; color: #c9d3ff; cursor: pointer; text-decoration: underline; text-decoration-color: rgb(201 211 255 / 35%); text-underline-offset: 3px; }
+    .refusal-link:hover { color: #e4e9ff; text-decoration-color: currentColor; }
+    .refusal-link:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 3px; border-radius: 2px; }
+    .refusal-link:disabled { cursor: default; opacity: .6; }
     #arrival-sign-in-note:empty, #arrival-invite-error:empty { display: none; }
     #arrival-invite-toggle { font-size: 13px; color: #8f8f99; text-decoration-color: rgb(143 143 153 / 35%); }
     #arrival-invite-toggle:hover { color: #c4c4cc; }
     #arrival-invite { margin-top: 12px; }
     #arrival-invite[hidden] { display: none; }
     #arrival-invite-error { grid-column: 1 / -1; margin: 0; font-size: 13px; line-height: 1.5; color: #ff8a80; text-align: center; }
-    /* A door without a wait list: the invite link is the way in, shown. */
-    [data-door=invite] #arrival-wait, [data-door=invite] #arrival-wait-note, [data-door=invite] #arrival-wait-off, [data-door=invite] #arrival-wait-again-line, [data-door=invite] #arrival-wait-contact, [data-door=invite] #arrival-invite-toggle { display: none; }
-    [data-door=invite] #arrival-invite { margin-top: 0; }
-    [data-door=invite] .door-alt { margin-top: 24px; }
-    .door-foot { margin-top: auto; padding: 32px 0 24px; }
-    #arrival-door #arrival-own { display: block; visibility: hidden; position: static; transform: none; padding: 0; border: 0; border-radius: 2px; background: none; font-size: 13px; color: #8f8f99; text-decoration: underline; text-decoration-color: rgb(143 143 153 / 35%); text-underline-offset: 3px; }
-    #arrival-door #arrival-own:hover { color: #c4c4cc; }
-    [data-own-desktop] #arrival-door #arrival-own { visibility: visible; }
+    /* An entry without a wait list: the invite link is the way in, shown. */
+    [data-refusal=invite] #arrival-wait, [data-refusal=invite] #arrival-wait-note, [data-refusal=invite] #arrival-wait-off, [data-refusal=invite] #arrival-wait-again-line, [data-refusal=invite] #arrival-wait-contact, [data-refusal=invite] #arrival-invite-toggle { display: none; }
+    [data-refusal=invite] #arrival-invite { margin-top: 0; }
+    [data-refusal=invite] .refusal-alt { margin-top: 24px; }
+    .refusal-foot { margin-top: auto; padding: 32px 0 24px; }
+    #arrival-refusal #arrival-own { display: block; visibility: hidden; position: static; transform: none; padding: 0; border: 0; border-radius: 2px; background: none; font-size: 13px; color: #8f8f99; text-decoration: underline; text-decoration-color: rgb(143 143 153 / 35%); text-underline-offset: 3px; }
+    #arrival-refusal #arrival-own:hover { color: #c4c4cc; }
+    [data-own-desktop] #arrival-refusal #arrival-own { visibility: visible; }
     @media (max-width: 480px) {
-      [data-arrival=stopped][data-entry=refused][data-door] #arrival-door { padding-top: max(32px, calc(42vh - 230px)); }
-      #arrival-door h1 { font-size: 20px; }
-      .door-field { grid-template-columns: 1fr; }
+      [data-arrival=stopped][data-entry=refused][data-refusal] #arrival-refusal { padding-top: max(32px, calc(42vh - 230px)); }
+      #arrival-refusal h1 { font-size: 20px; }
+      .refusal-field { grid-template-columns: 1fr; }
     }
     html:not([data-arrival=done]):not([data-arrival=stopped]):not([data-arrival-status]) #status { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .tilo-entry-card { z-index: 3; }
@@ -463,7 +463,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       .failure-actions button { width: 100%; }
     }
     /* Not let in yet, and trying again (reconnect.mjs): one calm screen
-       for every reason, in the door's language. What happened in plain
+       for every reason, in the entry's language. What happened in plain
        words, a quiet countdown, Try now, and the technical details folded
        below. The countdown is hidden from screen readers; the status line
        beside it says each change once. */
@@ -747,7 +747,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
   <button id="arrival-own" type="button">Open your own desktop</button>
-  <section id="arrival-door" aria-labelledby="arrival-door-heading"><div class="door-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-door-heading"></h1><p id="arrival-door-body"></p><form id="arrival-wait" class="door-field" novalidate><input id="arrival-wait-email" name="email" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="254" placeholder="you@example.com" aria-label="Email" aria-describedby="arrival-wait-note"><button type="submit">Join the wait list</button></form><p id="arrival-wait-done" role="status"></p><p id="arrival-wait-again-line" class="door-note" hidden><span id="arrival-wait-again-prompt"></span> <button id="arrival-wait-again" class="door-link" type="button"></button></p><p id="arrival-wait-off" class="door-note"><span id="arrival-wait-change"></span> <button id="arrival-wait-leave" class="door-link" type="button"></button></p><p id="arrival-wait-note" class="door-note"></p><p id="arrival-wait-contact" class="door-note"></p><div class="door-alt"><p id="arrival-sign-in"><span id="arrival-sign-in-ask">Already have a Tilo identity?</span> <button id="arrival-sign-in-button" class="door-link" type="button">Sign in</button></p><p id="arrival-sign-in-note" role="alert"></p><p><button id="arrival-invite-toggle" class="door-link" type="button" aria-expanded="false" aria-controls="arrival-invite">Have an invite link?</button></p><form id="arrival-invite" class="door-field" hidden><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite link" aria-label="Invite link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="door-foot"></div></section>
+  <section id="arrival-entry" aria-labelledby="arrival-refusal-heading"><div class="refusal-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-refusal-heading"></h1><p id="arrival-refusal-body"></p><form id="arrival-wait" class="refusal-field" novalidate><input id="arrival-wait-email" name="email" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="254" placeholder="you@example.com" aria-label="Email" aria-describedby="arrival-wait-note"><button type="submit">Join the wait list</button></form><p id="arrival-wait-done" role="status"></p><p id="arrival-wait-again-line" class="refusal-note" hidden><span id="arrival-wait-again-prompt"></span> <button id="arrival-wait-again" class="refusal-link" type="button"></button></p><p id="arrival-wait-off" class="refusal-note"><span id="arrival-wait-change"></span> <button id="arrival-wait-leave" class="refusal-link" type="button"></button></p><p id="arrival-wait-note" class="refusal-note"></p><p id="arrival-wait-contact" class="refusal-note"></p><div class="refusal-alt"><p id="arrival-sign-in"><span id="arrival-sign-in-ask">Already have a Tilo identity?</span> <button id="arrival-sign-in-button" class="refusal-link" type="button">Sign in</button></p><p id="arrival-sign-in-note" role="alert"></p><p><button id="arrival-invite-toggle" class="refusal-link" type="button" aria-expanded="false" aria-controls="arrival-invite">Have an invite link?</button></p><form id="arrival-invite" class="refusal-field" hidden><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite link" aria-label="Invite link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="refusal-foot"></div></section>
   <section id="arrival-failure" aria-labelledby="arrival-failure-heading"><div class="failure-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-failure-heading"></h1><p id="arrival-failure-body"></p><div class="failure-actions"><button id="arrival-failure-host" type="button" hidden></button><button id="arrival-failure-retry" type="button" hidden>Try again</button></div><div id="arrival-failure-elsewhere" hidden><p id="arrival-failure-others-heading"></p><ul id="arrival-failure-others"></ul></div><details id="arrival-failure-details" hidden><summary id="arrival-failure-summary">Technical details</summary><pre id="arrival-failure-text"></pre><button id="arrival-failure-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><a id="arrival-reconnect-host" class="reconnect-copy" target="_blank" rel="noopener" hidden></a><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>
