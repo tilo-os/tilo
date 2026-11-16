@@ -2,7 +2,8 @@
 //!
 //! Some apps show a person's own things rather than a workspace's: Settings
 //! holds their appearance, their devices and access, their keys and billing,
-//! kept in their own records whichever workspace the window opens in. A window
+//! and Mail their mailbox, kept in their own records whichever workspace the
+//! window opens in, which nobody else in the workspace may read. A window
 //! of such an app belongs to the person who opened it. It stands on their own
 //! layout, and a workspace's shared desktop never holds it: nobody else in the
 //! workspace sees it, opens it, or finds it on their layout later.
@@ -17,8 +18,11 @@ use crate::ownership::SharedDesktop;
 use crate::tree::Layout;
 
 /// The apps whose windows are a person's own: their profile, devices and
-/// access, keys and billing are pages of Settings.
-pub const PERSONAL_APPS: &[&str] = &["so.tilo.settings"];
+/// access, keys and billing are pages of Settings, and their mail is Mail's.
+/// Each app that keeps a record per member (`member_record`) is one: a
+/// window of it on the shared desktop would name one person's record to
+/// everyone, who could neither read it nor open their own in its place.
+pub const PERSONAL_APPS: &[&str] = &["so.tilo.settings", "so.tilo.mail"];
 
 /// Whether a window of `app_id` is a person's own.
 #[must_use]
@@ -120,9 +124,10 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_persons_own_windows_stay_off_the_shared_desktop;
 
-        phase settings_is_personal_and_chat_is_not;
+        phase settings_and_mail_are_personal_and_chat_is_not;
         {
             assert!(is_personal_app("so.tilo.settings"));
+            assert!(is_personal_app("so.tilo.mail"));
             assert!(!is_personal_app("so.tilo.chat"));
         }
 
