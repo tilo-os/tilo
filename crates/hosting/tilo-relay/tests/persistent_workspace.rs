@@ -640,6 +640,65 @@ fn unenrolled_stranger_device() -> (ed25519_dalek::SigningKey, tilo_user_identit
     (sibling_key, sibling_cert)
 }
 
+/// A device the workspace owner's root certified that the workspace never
+/// enrolled: the owner's own, because membership follows the person and any
+/// participant admits a member's further device when it first asks
+/// (`docs/architecture/workspace.md`).
+fn another_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+    let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&[0x91; 32]);
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: owner_root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "Owner's other laptop".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &owner_root).unwrap();
+    (device, cert)
+}
+
+/// A device whose certificate names the workspace owner's root but carries a
+/// signature that root never made: a forgery claiming to be the owner's.
+fn forged_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+    let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&[0x92; 32]);
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: owner_root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "Owner's laptop".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &owner_root).unwrap();
+    cert.signature[0] ^= 0xff;
+    (device, cert)
+}
+
+/// A device the workspace owner's root did sign, whose certificate expired.
+fn expired_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+    let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&[0x94; 32]);
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: owner_root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "Owner's old laptop".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: Some(2),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &owner_root).unwrap();
+    (device, cert)
+}
+
 /// Wait until `visiting` reads `route` with every one of `channels`, and return
 /// the page's copy of it.
 async fn assert_page_reads_the_chat(
@@ -987,8 +1046,10 @@ fn a_persistent_workspaces_pages_read_the_workspace_and_write_what_their_role_le
 }
 
 /// The first start's pages: two people who joined through the entry read the
-/// chat and the viewer's writes are refused, and a device of a root with
-/// nobody in the workspace is not admitted.
+/// chat and the viewer's writes are refused; another device of the owner's
+/// root joins, while a device of a root with nobody in the workspace, one
+/// claiming the owner's root with a signature not the root's, and one whose
+/// certificate expired are not admitted.
 async fn persons_read_the_workspace_and_are_refused(
     plain: std::net::SocketAddr,
     cluster: &str,
@@ -1052,7 +1113,7 @@ async fn persons_read_the_workspace_and_are_refused(
     .await;
     assert!(!committed, "the viewer's write was committed: {refused:?}");
 
-    let other = page(host, sibling_key, sibling_cert, &host_cert);
+    let other = page(host.clone(), sibling_key, sibling_cert, &host_cert);
 
     let other_heard = other.events();
     other.send(Cmd::Join(workspace_id)).unwrap();
@@ -1076,9 +1137,96 @@ async fn persons_read_the_workspace_and_are_refused(
         "a sibling device was admitted: {refused:?}"
     );
 
+    owner_devices_join_and_forgeries_are_refused(host, &host_cert, workspace_id).await;
+
     other.close();
     writer.close();
     visiting.close();
+}
+
+/// Who the workspace's owner is in it: a device the owner's root certified is
+/// the owner's, enrolled or not, so it joins; a certificate that names the
+/// owner's root without the root's signature, and one of the owner's root's
+/// that expired, are not admitted.
+async fn owner_devices_join_and_forgeries_are_refused(
+    host: tilo_relay_client::Host,
+    host_cert: &tilo_user_identity::DeviceCert,
+    workspace_id: WorkspaceId,
+) {
+    use tilo_session_client::Event;
+
+    let (owner_key, owner_cert) = another_owner_device();
+    let owner_device = page(host.clone(), owner_key, owner_cert, host_cert);
+    owner_device.send(Cmd::Join(workspace_id)).unwrap();
+    wait_for(
+        "another device of the workspace's owner to be admitted",
+        || {
+            owner_device
+                .status()
+                .workspaces
+                .get(&workspace_id)
+                .copied()
+                .filter(|ready| *ready)
+        },
+        || format!("{:?}", owner_device.status()),
+    )
+    .await;
+
+    // A certificate that names the owner's root but carries a signature the
+    // root never made is no device of the owner's.
+    let (forged_key, forged_cert) = forged_owner_device();
+    let forged = page(host.clone(), forged_key, forged_cert, host_cert);
+    let forged_heard = forged.events();
+    forged.send(Cmd::Join(workspace_id)).unwrap();
+    let refused = wait_for(
+        "a device claiming the owner's root with a signature not the root's to be refused",
+        || {
+            forged
+                .status()
+                .failures
+                .into_iter()
+                .find(|failure| failure.code == "not-admitted")
+        },
+        || format!("{:?}", forged.status()),
+    )
+    .await;
+    assert!(
+        !forged_heard
+            .drain()
+            .iter()
+            .any(|event| matches!(event, Event::HostReady { .. })),
+        "a forged owner's device was admitted: {refused:?}"
+    );
+
+    // A device of the owner's root whose certificate expired is no longer
+    // theirs to offer.
+    let (expired_key, expired_cert) = expired_owner_device();
+    let expired = page(host, expired_key, expired_cert, host_cert);
+    let expired_heard = expired.events();
+    expired.send(Cmd::Join(workspace_id)).unwrap();
+    let refused = wait_for(
+        "the expired certificate to be refused",
+        || {
+            expired
+                .status()
+                .failures
+                .into_iter()
+                .find(|failure| failure.code == "certificate-expired")
+        },
+        || format!("{:?}", expired.status()),
+    )
+    .await;
+    assert!(
+        !expired_heard
+            .drain()
+            .iter()
+            .any(|event| matches!(event, Event::HostReady { .. })),
+        "an expired certificate was admitted: {refused:?}"
+    );
+
+    owner_device.close();
+    forged.close();
+    expired.close();
 }
 
 /// The restart's page: a person who joined through the entry writes, and the

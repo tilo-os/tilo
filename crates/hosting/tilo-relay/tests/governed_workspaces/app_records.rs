@@ -116,8 +116,19 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     )
     .await;
     // An editor's own change of an app's record is theirs: the record's
-    // genesis is theirs to start.
+    // genesis is theirs to start, and it is published only under an
+    // application id.
     let laptop_session = session(&relay, &laptop, workspace).await;
+    assert!(
+        genesis(&mut member_peer.clone(), "so.tilo.notes\n", &member.sk).is_err(),
+        "a malformed application id is refused"
+    );
+    for malformed in ["", " ", "notes", "so..notes", ".so.tilo", "so.tilo.notes/x"] {
+        assert!(
+            genesis(&mut member_peer.clone(), malformed, &member.sk).is_err(),
+            "{malformed:?} is not an application id"
+        );
+    }
     crate::common::wait_until_subscribed(&relay, workspace, &member.device_pubkey()).await;
     let created = genesis(&mut member_peer, OPENED, &member.sk).unwrap();
     publish(&member_session, &created);
