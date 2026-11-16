@@ -1,7 +1,7 @@
 //! What a workspace's host lists: its records' actions, the app rows it offers
 //! to open, and where each opens.
 
-use crate::participant::actions::open_row;
+use crate::participant::actions::{open_row, open_row_needing};
 use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 
 use super::{
@@ -166,11 +166,9 @@ impl Worker {
         self.catalogue
             .iter()
             .map(|definition| open_row(workspace, definition.app_id(), definition.title()))
-            .chain(
-                self.catalogue
-                    .iter_placed()
-                    .map(|placed| open_row(workspace, placed.app_id, placed.title)),
-            )
+            .chain(self.catalogue.iter_placed().map(|placed| {
+                open_row_needing(workspace, placed.app_id, placed.title, placed.needs)
+            }))
             .collect()
     }
 }

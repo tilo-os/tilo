@@ -113,6 +113,7 @@ pub fn placed_app() -> tilo_agent_participant::PlacedApp {
     tilo_agent_participant::PlacedApp {
         app_id: APP,
         title: TITLE,
+        needs: None,
     }
 }
 
@@ -125,6 +126,11 @@ pub fn placed_linux_apps() -> tilo_agent_participant::PlacedApp {
     tilo_agent_participant::PlacedApp {
         app_id: linux_apps::APP,
         title: linux_apps::TITLE,
+        needs: Some(tilo_agent_participant::PlacedArgument {
+            name: linux_apps::APP_ARGUMENT,
+            description: "the app to open, by its desktop file's name, such as \
+                          org.gnome.TextEditor",
+        }),
     }
 }
 

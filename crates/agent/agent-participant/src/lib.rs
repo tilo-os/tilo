@@ -61,7 +61,9 @@ pub mod worker;
 pub mod workspace_actions;
 mod workspace_records;
 
-pub use apps::{AppCatalogue, AppError, PlacedApp, Replica, ReplicaActor, Seed, component_apps};
+pub use apps::{
+    AppCatalogue, AppError, PlacedApp, PlacedArgument, Replica, ReplicaActor, Seed, component_apps,
+};
 pub use control::{
     AdmissionDone, AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone,
     GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot, Witness,

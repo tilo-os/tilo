@@ -53,6 +53,17 @@ pub(crate) fn record_of(provider: &str, workspace: &str) -> Option<DocumentRoute
 /// The row offering to open `app` on a new record in workspace `workspace`,
 /// under the name people read it by (`label`).
 pub(crate) fn open_row(workspace: &str, app: &str, label: &str) -> CatalogueRow {
+    open_row_needing(workspace, app, label, None)
+}
+
+/// [`open_row`] of an app whose open opens nothing unless it names `needs`:
+/// the row declares it, so whoever opens the app is asked for it.
+pub(crate) fn open_row_needing(
+    workspace: &str,
+    app: &str,
+    label: &str,
+    needs: Option<crate::PlacedArgument>,
+) -> CatalogueRow {
     let target = application_open_target(workspace, app);
     CatalogueRow::for_action(
         target.provider,
@@ -67,11 +78,28 @@ pub(crate) fn open_row(workspace: &str, app: &str, label: &str) -> CatalogueRow 
             action_label: format!("Open {label}"),
             keywords: Vec::new(),
             icon: None,
-            description: Some(format!("Open {label} on a new record in this workspace.")),
+            description: Some(needs.map_or_else(
+                || format!("Open {label} on a new record in this workspace."),
+                |needs| {
+                    format!(
+                        "Open {label} in this workspace, naming `{}`: {}.",
+                        needs.name, needs.description
+                    )
+                },
+            )),
             locus: tilo_actions::ExecutionLocus::ServerPreferred,
             kind: tilo_actions::OperationKind::Effect,
             contract: tilo_actions::ActionContract::default(),
-            params: Vec::new(),
+            params: needs
+                .map(|needs| {
+                    tilo_actions::ActionParam::required(
+                        needs.name,
+                        tilo_actions::ParamType::Text,
+                        needs.description,
+                    )
+                })
+                .into_iter()
+                .collect(),
             input: tilo_actions::InputSpec::None,
             view: None,
         },
@@ -439,5 +467,39 @@ pub(crate) fn door_status(error: &DoorError) -> ReceiptStatus {
     match door_outcome(error) {
         Outcome::Rejected(error) => ReceiptStatus::Rejected { error },
         Outcome::Failed(error) => ReceiptStatus::Failed { error },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An app that opens nothing unless its open names something declares
+    /// it, so whoever opens it from the listing is asked for it, rather than
+    /// offered an open that can only be refused.
+    #[test]
+    fn an_open_that_needs_a_name_declares_it() {
+        let plain = open_row("ws", "so.tilo.browser", "Browser")
+            .action
+            .expect("an open");
+        assert!(plain.params.is_empty());
+        let needing = open_row_needing(
+            "ws",
+            "so.tilo.linux",
+            "Linux apps",
+            Some(crate::PlacedArgument {
+                name: "app",
+                description: "the app to open",
+            }),
+        )
+        .action
+        .expect("an open");
+        assert_eq!(needing.params.len(), 1);
+        assert_eq!(needing.params[0].name, "app");
+        assert!(needing.params[0].required);
+        assert_eq!(
+            needing.description.as_deref(),
+            Some("Open Linux apps in this workspace, naming `app`: the app to open.")
+        );
     }
 }

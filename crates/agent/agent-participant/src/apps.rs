@@ -42,6 +42,18 @@ use ui::tilo_resource::{Place, ResourceKind};
 pub struct PlacedApp {
     pub app_id: &'static str,
     pub title: &'static str,
+    /// What its open must name, when it opens nothing without it: a
+    /// workspace's Linux apps open one app, named by its desktop file. An
+    /// open that leaves it out is refused before anything starts, so whoever
+    /// opens it is told to name it.
+    pub needs: Option<PlacedArgument>,
+}
+
+/// The one argument a [`PlacedApp`]'s open needs: its name and what it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlacedArgument {
+    pub name: &'static str,
+    pub description: &'static str,
 }
 
 /// The apps an agent can open, by app id.
