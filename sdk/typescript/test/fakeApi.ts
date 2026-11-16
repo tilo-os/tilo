@@ -132,6 +132,8 @@ export class FakeApi {
   events: { event: string; data: Answer }[] = [];
   /** How many events one stream answer carries before it ends; all without it. */
   eventsPerStream: number | null = null;
+  /** Every run the workspace lists, oldest first, as its host keeps them. */
+  runs: Answer[] = [];
   /** What `GET …/runs/{run}` answers once it is no longer pending. */
   finished: Answer = { result: { appended: "c01e" }, resources: [TODO], link: linkTo(TODO) };
 
@@ -469,8 +471,10 @@ export class FakeApi {
       });
     }
     if (this.pendingRuns > 0) {
+      this.noteRun(run, whole, "running", 0);
       return this.json({ status: "pending", run, path: whole }, 202);
     }
+    this.noteRun(run, whole, "ended", 1);
     return this.json({
       status: "ok",
       run,
@@ -481,12 +485,62 @@ export class FakeApi {
     });
   }
 
+  /** Keep `run` as the workspace's host lists it. */
+  private noteRun(run: string, action: string, status: string, changes: number): void {
+    this.runs.push({
+      id: run,
+      calls: [run],
+      by: { name: "Visa backend", kind: "agent" },
+      status,
+      started_ms: this.runs.length + 1,
+      action,
+      changes,
+      undone: 0,
+      undoable: changes > 0,
+      recorded: changes > 0,
+      remembered: true,
+    });
+  }
+
+  private listedAs(run: string, status: string): void {
+    for (const listed of this.runs) {
+      if (listed.id === run) {
+        listed.status = status;
+        if (status === "undone") {
+          listed.undone = listed.changes;
+          listed.undoable = false;
+        }
+      }
+    }
+  }
+
+  /** A page of the runs, newest first; the cursor is where it ends. */
+  private listRuns(call: Recorded): Response {
+    const newest = [...this.runs].reverse();
+    const limit = Math.min(Number(call.query.limit ?? 50), 200);
+    const start = Number(call.query.cursor ?? 0);
+    const page = newest.slice(start, start + limit);
+    return this.json({
+      runs: page,
+      total: newest.length,
+      waiting: newest.filter((run) => run.status === "waiting").length,
+      pending: false,
+      text: page.map((run) => `${String(run.id)} ${String(run.status)}`).join("\n"),
+      ...(start + limit < newest.length ? { next_cursor: String(start + limit) } : {}),
+    });
+  }
+
   private run(tail: string[], method: string, call: Recorded): Response {
     const run = tail[0] ?? "";
+    if (tail.length === 0 && method === "GET") {
+      return this.listRuns(call);
+    }
     if (tail[1] === "cancel") {
+      this.listedAs(run, "cancelled");
       return this.json({ status: "cancelled", run, path: `${TODO}#append-paragraph` });
     }
     if (tail[1] === "undo") {
+      this.listedAs(run, "undone");
       return this.json({ status: "ok", run, undone: [TODO] });
     }
     if (tail[1] === "output") {

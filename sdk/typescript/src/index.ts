@@ -53,6 +53,8 @@ export {
   type Person,
   type ProgramAnswer,
   type Row,
+  type RunInfo,
+  RunList,
   type Upload,
   type Usage,
   type WorkspaceInfo,

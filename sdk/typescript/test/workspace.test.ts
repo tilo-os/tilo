@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { AskPending, Refused, Run, Tilo } from "../src/index.ts";
+import { AskPending, Refused, Run, type RunInfo, RunList, Tilo } from "../src/index.ts";
 import { FakeApi, PDF, TODO, WORKSPACE_ID, linkTo } from "./fakeApi.ts";
 
 function open(api: FakeApi): Tilo {
@@ -161,6 +161,37 @@ describe("a run", () => {
 
     expect((await run.undo()).undone).toEqual([TODO]);
     expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/runs/${run.invocationId}/undo`);
+  });
+
+  it("is listed with every run of the workspace, newest first, page by page", async () => {
+    const api = new FakeApi();
+    const workspace = open(api).workspace("jane-doe");
+    await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
+    api.pendingRuns = 1;
+    const run = (await workspace.do(`${TODO}#append-paragraph`, { text: "Buy bread" })) as Run;
+    await run.undo();
+
+    const first = await workspace.runs({ limit: 1 });
+    expect(first).toBeInstanceOf(RunList);
+    expect([first.total, first.waiting, first.nextCursor]).toEqual([2, 0, "1"]);
+    const newest = first.runs[0] as RunInfo;
+    expect([newest.id, newest.status, newest.by, newest.byKind]).toEqual([
+      run.invocationId,
+      "undone",
+      "Visa backend",
+      "agent",
+    ]);
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/runs`);
+    expect(api.last()?.query).toEqual({ limit: "1" });
+
+    const every: RunInfo[] = [];
+    for await (const listed of first) {
+      every.push(listed);
+    }
+    expect(every.map((listed) => listed.status)).toEqual(["undone", "ended"]);
+    expect(every[1]?.changes).toBe(1);
+    expect(every[1]?.undoable).toBe(true);
+    expect(api.last()?.query).toEqual({ limit: "1", cursor: "1" });
   });
 
   it("answers its events as a stream, ending when it ends", async () => {

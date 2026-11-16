@@ -327,6 +327,121 @@ export class Listing {
   }
 }
 
+/**
+ * One run of a workspace, as its listing names it: who ran it, how it stands,
+ * when, and what it changed. `id` is the run id `new Run(await ws.endpoint(), id)`
+ * reads, cancels and undoes, while the host remembers the run's calls; a run known only
+ * from the workspace's records (the host restarted since) has none, and is
+ * told apart by `step`, the undo step its changes keep in each record's history.
+ */
+export interface RunInfo {
+  id: string | null;
+  /** Every call of it the host remembers, oldest first. */
+  calls: string[];
+  step: string | null;
+  /** Who ran it: the key's name, an agent's or a person's. */
+  by: string;
+  /** `agent` (every key is one), `person`, `bot` or `automation`. */
+  byKind: string;
+  /** What its client called it (`ws.run(title)`), when it named it. */
+  title: string | null;
+  /** `waiting` (for the person), `running`, `ended`, `failed`, `cancelled` or `undone`. */
+  status: string;
+  /** Why it failed, typed: `confirmation_required` when the person did not allow it. */
+  failure: string | null;
+  startedMs: number;
+  endedMs: number | null;
+  /** What its last call asked for, `<app>#<action>`, while the host remembers it. */
+  action: string | null;
+  /** What its newest change did, as History says it. */
+  summary: string | null;
+  /** How many changes it made to the workspace's records. */
+  changes: number;
+  /** How many of its edits were taken back since. */
+  undone: number;
+  /** The records it changed: `{app, app_id, record}`. */
+  records: Record<string, unknown>[];
+  /** Its edits still stand and nobody's edit stands on them. */
+  undoable: boolean;
+  /** Why it would not be taken back, when someone's edit stands on its own. */
+  undoBlocked: string | null;
+  /** The workspace's records keep it: it is listed after the host restarts. */
+  recorded: boolean;
+  /** The host remembers its calls: `id` reads, stops and takes it back. */
+  remembered: boolean;
+  raw: Record<string, unknown>;
+}
+
+export function runInfoOf(raw: Record<string, unknown>): RunInfo {
+  const by = raw.by !== null && typeof raw.by === "object" ? (raw.by as Record<string, unknown>) : {};
+  return {
+    id: textOf(raw.id),
+    calls: Array.isArray(raw.calls) ? raw.calls.filter((call): call is string => typeof call === "string") : [],
+    step: textOf(raw.step),
+    by: String(by.name ?? ""),
+    byKind: String(by.kind ?? ""),
+    title: textOf(raw.title),
+    status: String(raw.status ?? ""),
+    failure: textOf(raw.failure),
+    startedMs: intOf(raw.started_ms) ?? 0,
+    endedMs: intOf(raw.ended_ms),
+    action: textOf(raw.action),
+    summary: textOf(raw.summary),
+    changes: intOf(raw.changes) ?? 0,
+    undone: intOf(raw.undone) ?? 0,
+    records: arrayOf(raw.records),
+    undoable: raw.undoable === true,
+    undoBlocked: textOf(raw.undo_blocked),
+    recorded: raw.recorded === true,
+    remembered: raw.remembered === true,
+    raw,
+  };
+}
+
+/** A page of a workspace's runs, newest first, with the totals; `for await` reads on to the oldest. */
+export class RunList {
+  readonly runs: RunInfo[];
+  /** Runs the workspace holds, of which `runs` is a page. */
+  readonly total: number;
+  /** Of those, the runs waiting for the person. */
+  readonly waiting: number;
+  /** A record could not be read yet: runs that changed only it are missing. */
+  readonly pending: boolean;
+  readonly nextCursor: string | null;
+  /** The page as a person reads it, one line per run. */
+  readonly text: string;
+  #more: ((cursor: string) => Promise<RunList>) | null;
+
+  constructor(
+    raw: Record<string, unknown> = {},
+    more: ((cursor: string) => Promise<RunList>) | null = null,
+  ) {
+    this.runs = arrayOf(raw.runs).map(runInfoOf);
+    this.total = intOf(raw.total) ?? 0;
+    this.waiting = intOf(raw.waiting) ?? 0;
+    this.pending = raw.pending === true;
+    this.nextCursor = textOf(raw.next_cursor);
+    this.text = textOf(raw.text) ?? "";
+    this.#more = more;
+  }
+
+  /** The next page, older, or `null` on the last. */
+  async more(): Promise<RunList | null> {
+    if (this.#more === null || this.nextCursor === null) {
+      return null;
+    }
+    return this.#more(this.nextCursor);
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<RunInfo> {
+    let page: RunList | null = this;
+    while (page !== null) {
+      yield* page.runs;
+      page = page.nextCursor === null ? null : await page.more();
+    }
+  }
+}
+
 /** One search hit: a path the other calls take, and what it offers. */
 export interface Hit {
   path: string;

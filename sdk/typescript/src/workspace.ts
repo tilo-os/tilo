@@ -15,6 +15,7 @@ import {
   memberOf,
   type MintedKey,
   type ProgramAnswer,
+  RunList,
   type WorkspaceExport,
   type WorkspaceInfo,
   resultOf,
@@ -275,6 +276,29 @@ export class Workspace {
   /** Run one action: its result, or the `Run` that follows it. */
   async do(path: string, args: Record<string, unknown> = {}): Promise<unknown> {
     return this.call(path, args);
+  }
+
+  /**
+   * Every run in the workspace, newest first, whoever ran it: a `RunList` of
+   * `RunInfo`s, `limit` to a page (50 unless said, at most 200); `for await`
+   * reads on to the oldest. Each says who ran it, how it stands (`waiting` for
+   * the person, `running`, `ended`, `failed`, `cancelled`, `undone`), when,
+   * what it changed and whether it can still be taken back. Its `id` is the
+   * run id a `Run` reads, cancels and undoes; a run the host no longer
+   * remembers, after it restarted, is listed from the workspace's records
+   * without one.
+   */
+  async runs(options: { limit?: number | null; cursor?: string | null } = {}): Promise<RunList> {
+    const endpoint = await this.endpoint();
+    const page = async (cursor: string | null): Promise<RunList> => {
+      const answer = await endpoint.answer(
+        "GET",
+        `${routes.runs(endpoint.id)}${queryOf({ limit: options.limit, cursor })}`,
+        { idempotent: false },
+      );
+      return new RunList(answer, (next) => page(next));
+    };
+    return page(options.cursor ?? null);
   }
 
   /** Run a tilolang program as one step. */
