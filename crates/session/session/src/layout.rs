@@ -136,6 +136,10 @@ struct Held {
     pending_acted: Option<Acted>,
     /// Whether the record was read here.
     read: bool,
+    /// The engine revision this record was last read at, or found not to have moved at: a look
+    /// that skips the record (its write under way) or a write of it that finished leaves it behind
+    /// the engine, so the record is read again however the rest of the workspace moved meanwhile.
+    read_at: Option<u64>,
 }
 
 /// A record a step may be taken in: the record as this device writes it, its history, the
@@ -409,8 +413,8 @@ pub(crate) struct Layouts {
     /// look captures: a strip made or a window moved in the turn the person switched away is
     /// otherwise on a workspace no later look writes.
     left: Cell<Option<WorkspaceId>>,
-    /// The engine's revision and this session's own at the last look.
-    seen: Cell<Option<(u64, u64)>>,
+    /// This session's own revision at the last look.
+    seen: Cell<Option<u64>>,
     /// A failure to read or write a record that the person has not heard yet.
     refused: RefCell<Option<(WorkspaceId, String)>>,
     /// The last failure the person heard: the same one again is not said twice.
@@ -506,8 +510,8 @@ impl Layouts {
             .unwrap_or_default()
     }
 
-    /// Whether every workspace `tree` holds has had its records read here, and neither the engine at
-    /// revision `revision` nor this session has moved since: nothing of them can have changed, so no
+    /// Whether every record of every workspace `tree` holds was read here at the engine's revision
+    /// `revision`, and this session has not moved since: nothing of them can have changed, so no
     /// record is read or written again. Notes what was looked at.
     pub(crate) fn settled(&self, revision: u64, tree: &Layout) -> bool {
         // A write under way is taken first, and while it is no record is read or written.
@@ -517,19 +521,20 @@ impl Layouts {
         let person = self.person.borrow().clone();
         let settled = self.held.borrow().values().all(|held| {
             held.pending.is_none() && held.pending_step.is_none() && held.pending_acted.is_none()
-        }) && self.seen.get() == Some((revision, tree.external_revision))
+        }) && self.seen.get() == Some(tree.external_revision)
             && tree
                 .workspaces
                 .iter()
                 .filter(|workspace| !workspace.id().is_nil())
                 .all(|workspace| {
                     let workspace_id = workspace.id();
-                    self.held(&(workspace_id, Route::layout()), |held| held.read)
+                    let current = |held: &mut Held| held.read && held.read_at == Some(revision);
+                    self.held(&(workspace_id, Route::layout()), current)
                         && person.as_deref().is_none_or(|person| {
-                            self.held(&(workspace_id, Route::view(person)), |held| held.read)
+                            self.held(&(workspace_id, Route::view(person)), current)
                         })
                 });
-        self.seen.set(Some((revision, tree.external_revision)));
+        self.seen.set(Some(tree.external_revision));
         settled
     }
 
@@ -688,6 +693,7 @@ impl Layouts {
     /// Fold the layout of every workspace in the engine's copy into `tree`.
     fn follow_layout(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
         let salt = tree.salt;
+        let at = engine.owner().revision();
         let mut changed = false;
         for workspace in &mut tree.workspaces {
             let workspace_id = workspace.id();
@@ -702,7 +708,11 @@ impl Layouts {
                 continue;
             }
             let known = self.held(&key, |held| held.revision);
-            let Ok(record) = Self::record(engine, &key, known) else {
+            let record = Self::record(engine, &key, known);
+            // Read at this revision, whatever it held: a record that fails to read fails again until
+            // the engine moves.
+            self.held(&key, |held| held.read_at = Some(at));
+            let Ok(record) = record else {
                 continue;
             };
             let Some((doc, revision)) = record else {
@@ -807,6 +817,7 @@ impl Layouts {
             return false;
         };
         let route = Route::view(&person);
+        let at = engine.owner().revision();
         let held: Vec<WorkspaceId> = tree.workspaces.iter().map(Workspace::id).collect();
         let mut changed = false;
         for workspace_id in held {
@@ -820,7 +831,9 @@ impl Layouts {
                 continue;
             }
             let known = self.held(&key, |held| held.revision);
-            let Some((doc, revision)) = Self::record(engine, &key, known).ok().flatten() else {
+            let record = Self::record(engine, &key, known);
+            self.held(&key, |held| held.read_at = Some(at));
+            let Some((doc, revision)) = record.ok().flatten() else {
                 // Nothing written of this view here yet: the layout shows the person's view as it is.
                 self.held(&key, |held| {
                     held.read = true;
@@ -1065,6 +1078,8 @@ impl Layouts {
     /// the layout's history it is, and what they hear of it.
     fn laid(&self, key: &Key, laid: Laid, laying: &Laying) {
         let workspace_id = key.0;
+        // Whatever reached the record while the write was under way is read on the next look.
+        self.held(key, |held| held.read_at = None);
         let written = || Written::Layout(laying.own, laying.notes.clone());
         match laid {
             Laid::Held { record, windows } => {
@@ -1656,11 +1671,10 @@ impl Layouts {
                 None => Some(Going::Layout(laying)),
             },
         };
+        // A look skips a record while its write is under way, and another device's write to it may
+        // have moved the engine's revision before that look: a finished write leaves its record
+        // unread at any revision ([`Self::laid`], [`Self::published`]), and the next look reads it.
         let Some(going) = going else {
-            // A look skips a record while its write is under way, and another device's write to it
-            // may have moved the engine's revision before that look: once the write is done, the
-            // next look reads the record whatever the revision says.
-            self.seen.set(None);
             return true;
         };
         self.held(key, |held| held.writing = Some(going));
@@ -1678,6 +1692,8 @@ impl Layouts {
         revision: Option<[u8; 32]>,
     ) {
         let workspace_id = key.0;
+        // Whatever reached the record while the write was under way is read on the next look.
+        self.held(key, |held| held.read_at = None);
         match written {
             Ok(_write) => {
                 let Some(written) = replaced else {
@@ -2481,9 +2497,9 @@ mod tests {
         );
     }
 
-    /// A look that skipped a record while its write was under way leaves it to the look after the
-    /// write: what reached the record meanwhile moved the engine's revision before the skip, so the
-    /// revision alone says nothing moved.
+    /// A record a look skipped while its write was under way, or whose write finished since, is
+    /// read again: what reached it meanwhile moved the engine's revision before the skip, so only
+    /// the record's own read state says it is behind.
     #[test]
     fn a_record_skipped_for_its_write_is_read_once_the_write_is_done() {
         let workspace = workspace_id();
@@ -2498,14 +2514,20 @@ mod tests {
             ..Layouts::default()
         };
         let key = (workspace, Route::layout());
-        desktops.held(&key, |held| held.read = true);
+        let read_at = |revision| {
+            desktops.held(&key, |held| {
+                held.read = true;
+                held.read_at = Some(revision);
+            });
+        };
         assert!(
             !desktops.settled(7, &tree),
             "the first look reads the records"
         );
+        read_at(7);
         assert!(desktops.settled(7, &tree), "nothing moved since");
-        // Another device's write moves the record, and this look reads it while it starts a write
-        // of its own, which the look skips the record for.
+        // Another device's write moves the record, and this look starts a write of its own, which
+        // it skips reading the record for.
         assert!(!desktops.settled(8, &tree), "the record moved");
         let (answer, answered) = tokio::sync::oneshot::channel::<()>();
         let wake = desktops.wake.handle();
@@ -2529,6 +2551,7 @@ mod tests {
             !desktops.settled(8, &tree),
             "the look after the write reads the record again"
         );
+        read_at(8);
         assert!(
             desktops.settled(8, &tree),
             "and the one after that has nothing to read"
