@@ -99,7 +99,7 @@ impl Store {
                 let workbook = cx.live().get();
                 let id = workbook
                     .sheet_key(&Id::from_raw(sheet))
-                    .map_err(|refusal| refusal.0)?;
+                    .map_err(|refusal| refusal.reason().to_owned())?;
                 let snapshot = workbook
                     .snapshot_of(&id)
                     .ok_or_else(|| "no such sheet".to_owned())?;

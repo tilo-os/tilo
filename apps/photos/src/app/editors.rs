@@ -375,7 +375,7 @@ impl Photos {
         {
             Ok(edits) => self.commit_group(&edits),
             Err(refusal) => {
-                self.notice = Some(refusal.0);
+                self.notice = Some(refusal.reason().to_owned());
                 return;
             }
         }

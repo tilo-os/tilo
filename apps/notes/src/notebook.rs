@@ -750,7 +750,10 @@ impl Notebook {
                 return Err(Refusal::new("a note's id is a UUID"));
             }
             Some(note) if self.pages.contains(&note) => {
-                return Err(Refusal::new("that note is imported already"));
+                return Err(Refusal::coded(
+                    ui::tilo_actions::codes::NOTE_ALREADY_IMPORTED,
+                    "that note is imported already",
+                ));
             }
             Some(note) => note,
             None => Id::from(cx.uuid().to_string()),

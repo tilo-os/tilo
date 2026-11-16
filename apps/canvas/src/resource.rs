@@ -843,7 +843,7 @@ impl Artwork {
     /// its id.
     #[action]
     pub fn save_medium(&mut self, #[param(flatten)] save: MediumToSave) -> Result<(), Refusal> {
-        save.medium.validate().map_err(Refusal)?;
+        save.medium.validate().map_err(Refusal::from)?;
         self.media.insert(save.medium.id.clone(), save.medium);
         Ok(())
     }
@@ -857,7 +857,7 @@ impl Artwork {
         #[param(flatten)] remove: MediumRemoval,
     ) -> Result<(), Refusal> {
         if self.media.remove(&remove.id).is_none() {
-            return Err(Refusal(format!(
+            return Err(Refusal::new(format!(
                 "no medium {:?} is saved in this artwork",
                 remove.id
             )));
@@ -897,7 +897,7 @@ impl Artwork {
     /// blends and clip paths.
     #[action(answers, prepare = prepare::import_svg)]
     pub fn import_svg(&mut self, #[param(flatten)] import: SvgImport) -> Result<(), Refusal> {
-        let draw = crate::svg::import(&import).map_err(Refusal)?;
+        let draw = crate::svg::import(&import).map_err(Refusal::from)?;
         let art = self.as_read();
         draw.apply(self, &art)
     }
@@ -915,12 +915,12 @@ impl Artwork {
         // The picture is named by its content, which every replica reads
         // from its own store.
         if ui::tilo_actions::content_hash(&picture.path).is_none() {
-            return Err(Refusal(format!(
+            return Err(Refusal::new(format!(
                 "{:?} is not kept as content: open names a picture by its content address",
                 picture.path
             )));
         }
-        let (_, (width, height)) = keep_picture(&picture.path).map_err(Refusal)?;
+        let (_, (width, height)) = keep_picture(&picture.path).map_err(Refusal::from)?;
         let art = self.as_read();
         picture.apply(self, &art, [width, height])
     }
@@ -941,7 +941,8 @@ impl Artwork {
     /// or JSON), one undo away.
     #[action(prepare = prepare::open_artwork)]
     pub fn open_artwork(&mut self, #[param(flatten)] open: SavedArtwork) -> Result<(), Refusal> {
-        let file = crate::document::ArtworkFile::parse(open.file.as_bytes()).map_err(Refusal)?;
+        let file =
+            crate::document::ArtworkFile::parse(open.file.as_bytes()).map_err(Refusal::from)?;
         crate::actions::replace(self, &file)
     }
 

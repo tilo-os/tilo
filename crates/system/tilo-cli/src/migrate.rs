@@ -471,7 +471,7 @@ fn undo_in(workspace: &mut dyn Workspace, record: &str, run: &str) -> Result<Run
         // An app the run never opened keeps no history of it.
         return Ok(RunInHistory::Absent);
     };
-    let found = run_in_history(&answer, run);
+    let found = run_in_history(answer.result(), run);
     if let RunInHistory::InEffect(change) = &found {
         workspace
             .ask(&format!("{record}#undo"), json!({"step": change}))
@@ -493,11 +493,8 @@ enum RunInHistory {
 
 /// What a record's `history` answer holds of the run `run`: History keeps with each change the
 /// id of the run its agent said it is a step of (`actor.run_id`).
-fn run_in_history(history: &str, run: &str) -> RunInHistory {
+fn run_in_history(history: Option<&Value>, run: &str) -> RunInHistory {
     let entries = history
-        .find('{')
-        .and_then(|at| history.get(at..))
-        .and_then(|body| serde_json::from_str::<Value>(body).ok())
         .and_then(|value| {
             ["versions", "history"]
                 .iter()

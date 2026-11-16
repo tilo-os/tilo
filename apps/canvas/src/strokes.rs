@@ -12,7 +12,7 @@ use ui::vello::kurbo::{Line, ParamCurveNearest as _, Point};
 use crate::model::{Artwork, MAX_POINTS, Mark, Shape, StrokePoint};
 
 fn refuse(message: impl Into<String>) -> Refusal {
-    Refusal(message.into())
+    Refusal::new(message)
 }
 
 fn at(point: &[f64]) -> Point {

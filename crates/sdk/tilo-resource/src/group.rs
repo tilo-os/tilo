@@ -115,7 +115,7 @@ impl Deferring {
         }
         let checks = DEFERRED.with(|deferred| deferred.borrow_mut().take().unwrap_or_default());
         for (_, check) in checks {
-            check(doc).map_err(|refusal| ActionError::Refused(refusal.0))?;
+            check(doc).map_err(ActionError::from)?;
         }
         Ok(())
     }

@@ -1218,9 +1218,11 @@ pub(crate) fn refusal(error: &tilo_actions::ApiError) -> ActionHostError {
             reason: error.to_string(),
         },
         ApiError::ConfirmationRequired => ActionHostError::confirmation_required(),
-        ApiError::Unavailable { .. } | ApiError::Failed(_) => ActionHostError::Refused {
-            reason: error.to_string(),
-        },
+        ApiError::Unavailable { .. } | ApiError::Refused { .. } | ApiError::Failed(_) => {
+            ActionHostError::Refused {
+                reason: error.to_string(),
+            }
+        }
     }
 }
 

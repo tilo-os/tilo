@@ -91,10 +91,10 @@ impl ModelError {
         self
     }
 
-    /// A check's refusal.
+    /// A check's refusal, in its words: a model error names no code of its own.
     #[must_use]
     pub fn refused(refusal: Refusal) -> Self {
-        Self::Refused(refusal.0)
+        Self::Refused(refusal.into_reason())
     }
 
     /// An edit whose operation the value at its path does not support.

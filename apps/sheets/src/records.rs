@@ -137,7 +137,7 @@ fn expand_formula(formula: &str, row: u32, columns: &Columns) -> Result<String, 
                 })?;
                 let col = columns
                     .column(header)
-                    .map_err(|error| Refusal::new(format!("in `{formula}`: {}", error.0)))?;
+                    .map_err(|error| Refusal::new(format!("in `{formula}`: {}", error.reason())))?;
                 out.push_str(&addr_to_a1(col, row));
                 rest = tail;
                 continue;
@@ -274,10 +274,11 @@ pub(crate) fn set_records_writes(
         return new_sheet_writes(&names, records);
     };
     let named = |error: Refusal| {
-        if error.0.starts_with("no column") {
+        if error.reason().starts_with("no column") {
             Refusal::new(format!(
                 "sheet `{}` has {}; write the records to the sheet whose headers they name",
-                snap.name, error.0
+                snap.name,
+                error.reason()
             ))
         } else {
             error
@@ -511,9 +512,9 @@ mod tests {
             );
             let error = expand_formula("=[Cost]*2", 1, &cols).unwrap_err();
             assert!(
-                error.0.contains("no column `Cost`") && error.0.contains("`People`"),
+                error.reason().contains("no column `Cost`") && error.reason().contains("`People`"),
                 "{}",
-                error.0
+                error.reason()
             );
             assert!(expand_formula("=[Total", 1, &cols).is_err());
         }

@@ -134,6 +134,11 @@ pub enum ActionError {
     /// asked correctly and the answer is no".
     #[error("{0}")]
     Refused(String),
+    /// The app declined for a reason a caller acts on rather than reads: the
+    /// thing it would add is there already, say. `code` names it stably, and
+    /// `message` says it in words for whoever reads.
+    #[error("{message}")]
+    Unavailable { code: String, message: String },
     /// The app declined for one of the reasons a window tells the person in
     /// their own language ([`Declined`]): a caller can say what happened
     /// instead of showing them the plumbing.
@@ -145,6 +150,16 @@ pub enum ActionError {
 /// window carries in one string. One number for both, so a text an edit keeps
 /// is always a text the window can show.
 pub const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Codes an app answers a condition with, for a caller that decides on the
+/// condition rather than reads the words beside it.
+pub mod codes {
+    /// A message delivered to a mailbox is there already, under the id its
+    /// `Message-ID` names.
+    pub const MESSAGE_ALREADY_HELD: &str = "message_already_held";
+    /// A note imported from a source page is in the notebook already.
+    pub const NOTE_ALREADY_IMPORTED: &str = "note_already_imported";
+}
 
 /// Why an app declined an action, for the reasons a person is told rather than
 /// logged: the window says what happened and what to do, from the toolkit's

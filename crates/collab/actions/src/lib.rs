@@ -189,7 +189,7 @@ pub mod terminal_text;
 
 pub use action::{
     Action, ActionError, ActionId, Declined, Doc, EncodedAction, ExecutionLocus, MAX_TEXT_BYTES,
-    OperationKind, asks_first, undo_takes_back,
+    OperationKind, asks_first, codes, undo_takes_back,
 };
 pub use agent_disclosure::hidden_from_agents;
 pub use api::{ActionAddress, ActionDescriptor, ApiError, InputSpec, ResourceViewDescriptor};

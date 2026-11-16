@@ -385,10 +385,8 @@ fn land_mail(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
                 "smtp_port": config.smtp_port,
             });
             match workspace.act(run, ADD_ACCOUNT, arguments) {
+                Ok(answer) if answer.said("already") => Ok(super::Landed::Already),
                 Ok(_) => Ok(super::Landed::One),
-                Err(error) if format!("{error:#}").contains("already") => {
-                    Ok(super::Landed::Already)
-                }
                 Err(error) => Err(super::thunderbird::mail_not_open(error, &config.email)),
             }
         },
@@ -493,7 +491,7 @@ impl Landing<'_, '_> {
         let (workspace, run_of) = self.lander.workspace()?;
         let made = workspace.act(run_of, CREATE_AREA, json!({"name": name, "kind": kind}))?;
         let id = created_id(&made).ok_or_else(|| {
-            anyhow!("Tasks made the {kind} {name} but did not say its id: {made}")
+            anyhow!("Tasks made the {kind} {name} but did not say its id: {made:?}")
         })?;
         self.kept.areas.insert(
             key,
@@ -568,7 +566,7 @@ impl service::Landing for Landing<'_, '_> {
             ) {
                 Ok(_) => {}
                 // A page an earlier run brought is the person's now, as they left it.
-                Err(error) if format!("{error:#}").contains("imported already") => return Ok(()),
+                Err(error) if already_imported(&error) => return Ok(()),
                 Err(error) => return Err(error),
             }
             if let Some(parent) = &page.parent {
@@ -690,7 +688,7 @@ impl Landing<'_, '_> {
         )?;
         let id = created_id(&created).ok_or_else(|| {
             anyhow!(
-                "Tasks made {} but did not say its id: {created}",
+                "Tasks made {} but did not say its id: {created:?}",
                 issue.identifier
             )
         })?;
@@ -808,34 +806,39 @@ fn millis(at: &str) -> Option<i64> {
         .map(|at| at.timestamp_millis())
 }
 
-/// The id Tasks answered for the issue it made: `-> tasks.issues/issues/<id>`.
-fn created_id(answer: &str) -> Option<String> {
-    if let Some((_, after)) = answer
-        .split_once("/issues/")
-        .or_else(|| answer.split_once("/areas/"))
-    {
-        let id: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-            .collect();
-        if !id.is_empty() {
-            return Some(id);
-        }
-    }
-    let body = answer.trim().strip_prefix("ok").unwrap_or(answer).trim();
-    if let Ok(value) = serde_json::from_str::<Value>(body) {
-        for key in ["id", "issue"] {
-            if let Some(id) = value.get(key).and_then(Value::as_str) {
-                return Some(id.to_owned());
+/// Whether `error` is the refusal that says a note from this source is in the notebook already.
+fn already_imported(error: &anyhow::Error) -> bool {
+    super::workspace::Refused::of(error)
+        .is_some_and(|refused| refused.code() == tilo_actions::codes::NOTE_ALREADY_IMPORTED)
+}
+
+/// The id Tasks answered for the issue it made, as the record its answer names
+/// (`tasks.issues/issues/<id>`) or the id in its value.
+fn created_id(answer: &super::workspace::Answer) -> Option<String> {
+    for resource in answer.resources() {
+        if let Some((_, after)) = resource
+            .split_once("/issues/")
+            .or_else(|| resource.split_once("/areas/"))
+        {
+            let id: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if !id.is_empty() {
+                return Some(id);
             }
         }
-        if let Value::String(id) = value {
-            return Some(id);
+    }
+    let value = answer.result()?;
+    for key in ["id", "issue"] {
+        if let Some(id) = value.get(key).and_then(Value::as_str) {
+            return Some(id.to_owned());
         }
     }
-    body.split(|c: char| c.is_whitespace() || matches!(c, ',' | '"' | '(' | ')'))
-        .find(|word| uuid::Uuid::parse_str(word).is_ok())
-        .map(str::to_owned)
+    match value {
+        Value::String(id) => Some(id.clone()),
+        _ => None,
+    }
 }
 
 /// The note a source's page is kept under: Notes' own rule for a migration's pages
@@ -854,21 +857,49 @@ pub fn note_for(source: &str, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migrate::workspace::{Answer, Refused};
+
+    #[test]
+    fn a_note_an_earlier_run_imported_is_told_by_its_code() {
+        let imported: anyhow::Error = Refused::coded(
+            tilo_actions::codes::NOTE_ALREADY_IMPORTED,
+            "that note is imported already",
+        )
+        .into();
+        assert!(already_imported(&imported));
+        let other: anyhow::Error =
+            Refused::coded("something_else", "that note is imported already").into();
+        assert!(
+            !already_imported(&other),
+            "the app's words alone decide nothing"
+        );
+    }
 
     #[test]
     fn tasks_answers_name_the_issue_they_made() {
         let id = "0f0e0d0c-0b0a-4908-8706-050403020100";
+        let answered = |value: Value| Answer::of(Some(value), Vec::new());
         assert_eq!(
-            created_id(&format!("ok {{\"id\":\"{id}\"}}")).as_deref(),
+            created_id(&answered(json!({"id": id}))).as_deref(),
             Some(id)
         );
-        assert_eq!(created_id(&format!("ok created {id}")).as_deref(), Some(id));
-        assert_eq!(created_id("ok"), None);
         assert_eq!(
-            created_id("ok\n-> tasks.issues/issues/f4055b9d9830a78c21b8\nlink: http://x")
-                .as_deref(),
+            created_id(&Answer::of(
+                None,
+                vec![json!(format!("tasks.issues/issues/{id}"))]
+            ))
+            .as_deref(),
+            Some(id)
+        );
+        assert_eq!(
+            created_id(&Answer::of(
+                None,
+                vec![json!("tasks.issues/issues/f4055b9d9830a78c21b8")]
+            ))
+            .as_deref(),
             Some("f4055b9d9830a78c21b8")
         );
+        assert_eq!(created_id(&Answer::of(None, Vec::new())), None);
     }
 
     #[test]

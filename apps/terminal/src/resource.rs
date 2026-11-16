@@ -265,7 +265,7 @@ impl Terminal {
         }
         let mut record = Self::read_under(doc, obj).map_err(refused)?;
         tilo_resource::Operation::perform(&action.operation, &mut record, &mut cx)
-            .map_err(|refusal| ActionError::Refused(refusal.0))?;
+            .map_err(ActionError::from)?;
         record.write_fields(doc, obj).map_err(refused)
     }
 }

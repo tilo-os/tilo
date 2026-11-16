@@ -330,6 +330,10 @@ pub(crate) enum WireApiError {
     ConfirmationRequired,
     UnregisteredType(String),
     Failed(String),
+    Refused {
+        code: String,
+        reason: String,
+    },
 }
 
 impl WireApiError {
@@ -345,6 +349,10 @@ impl WireApiError {
                 violation: violation.clone(),
             },
             ApiError::Unavailable { code, reason } => Self::Unavailable {
+                code: code.clone(),
+                reason: reason.clone(),
+            },
+            ApiError::Refused { code, reason } => Self::Refused {
                 code: code.clone(),
                 reason: reason.clone(),
             },
@@ -367,6 +375,7 @@ impl WireApiError {
                 ApiError::ArgumentOutOfRange { param, violation }
             }
             Self::Unavailable { code, reason } => ApiError::Unavailable { code, reason },
+            Self::Refused { code, reason } => ApiError::Refused { code, reason },
             Self::ConfirmationRequired => ApiError::ConfirmationRequired,
             Self::UnregisteredType(kind) => ApiError::UnregisteredType(kind),
             Self::Failed(message) => ApiError::Failed(message),

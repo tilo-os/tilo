@@ -7,6 +7,10 @@
 //! do their own ordinary actions. Every action of one run names that run, so History shows the run
 //! as one entry under the agent's name, the person sees each record arrive in their tab, and
 //! undoing the entry takes back exactly what the run brought.
+//!
+//! Every call asks for the typed answer the workspace keeps beside its words, and decides on that:
+//! how a call went, the value and the records it answered with, and the code of a refusal. What a
+//! call did is never read back out of its text.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -25,20 +29,23 @@ const PERSON_WAIT: Duration = Duration::from_secs(6 * 60);
 const ACTION_TRIES: u32 = 7;
 /// The largest piece of an upload one call carries (the session's own bound).
 const PUT_CHUNK: usize = 512 * 1024;
+/// The code of a save the workspace's host did not confirm in time: it may or may not be kept, so
+/// the same call under its same id is asked again, which runs it once.
+const SAVE_UNCONFIRMED: &str = "save_unconfirmed";
 
 /// What a run asks of the workspace.
 pub trait Workspace {
     /// Run `action` (`contacts#add-contacts`) with `args` as a step of `run`; its answer.
     ///
     /// # Errors
-    /// The workspace refused it or could not be reached.
-    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<String>;
+    /// The workspace refused it ([`Refused`], by its code) or could not be reached.
+    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<Answer>;
 
     /// Run `action` with `args` outside any run: a read, or taking a run back.
     ///
     /// # Errors
-    /// The workspace refused it or could not be reached.
-    fn ask(&mut self, action: &str, args: Value) -> Result<String>;
+    /// The workspace refused it ([`Refused`], by its code) or could not be reached.
+    fn ask(&mut self, action: &str, args: Value) -> Result<Answer>;
 
     /// Keep `bytes` in the workspace's content; the `tilo.content:` reference actions name them
     /// by.
@@ -46,6 +53,41 @@ pub trait Workspace {
     /// # Errors
     /// The workspace refused them or could not be reached.
     fn put(&mut self, bytes: &[u8]) -> Result<String>;
+}
+
+/// What an action that ran answered: its value, and the records it names (`tasks.tracker/issues/<id>`).
+#[derive(Clone, Debug, Default)]
+pub struct Answer {
+    result: Option<Value>,
+    resources: Vec<Value>,
+}
+
+impl Answer {
+    /// An answer carrying `result` and the records a call named.
+    pub(crate) fn of(result: Option<Value>, resources: Vec<Value>) -> Self {
+        Self { result, resources }
+    }
+
+    /// The value the action answered, when it answered one.
+    #[must_use]
+    pub fn result(&self) -> Option<&Value> {
+        self.result.as_ref()
+    }
+
+    /// The records it names, as the references other actions take them by.
+    pub fn resources(&self) -> impl Iterator<Item = &str> {
+        self.resources.iter().filter_map(Value::as_str)
+    }
+
+    /// Whether the action answered `true` under `field` (an account it found there already).
+    #[must_use]
+    pub fn said(&self, field: &str) -> bool {
+        self.result
+            .as_ref()
+            .and_then(|result| result.get(field))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
 }
 
 /// One migration run: what History calls it, and the id every action of it names.
@@ -56,9 +98,13 @@ pub struct Run {
 }
 
 impl Run {
-    /// The `_meta` an action of this run carries.
+    /// The `_meta` an action of this run carries: the typed answer it asks for, and the run it is a
+    /// step of.
     fn meta(&self) -> Value {
-        json!({"so.tilo.mcp": {"run": {"id": self.id, "title": self.title}}})
+        json!({"so.tilo.mcp": {
+            "structured": true,
+            "run": {"id": self.id, "title": self.title},
+        }})
     }
 }
 
@@ -100,6 +146,11 @@ impl Held {
                 )
             })?
         };
+        Self::over(stream)
+    }
+
+    /// The session `stream` carries, opened: the workspace's end answers as it does.
+    fn over(stream: UnixStream) -> Result<Self> {
         stream.set_read_timeout(Some(ACTION_WAIT))?;
         let writer = stream.try_clone()?;
         let mut held = Self {
@@ -154,12 +205,36 @@ impl Held {
         }
     }
 
-    /// Call `tool` and answer its text, or why it failed.
-    fn tool(&mut self, tool: &str, arguments: &Value, meta: Option<Value>) -> Result<String> {
+    /// Call `tool` and answer its typed value, or why it failed.
+    fn tool(&mut self, tool: &str, arguments: &Value, meta: Option<Value>) -> Result<Value> {
         let mut params = json!({"name": tool, "arguments": arguments});
         if let (Some(meta), Some(fields)) = (meta, params.as_object_mut()) {
             fields.insert("_meta".into(), meta);
         }
+        let result = self.request("tools/call", &params)?;
+        let typed = result.get("structuredContent").cloned().ok_or_else(|| {
+            anyhow!(
+                "{tool} answered no typed value: {}",
+                result.get("content").cloned().unwrap_or_default()
+            )
+        })?;
+        if result.get("isError").and_then(Value::as_bool) == Some(true)
+            && typed.get("status").and_then(Value::as_str) != Some("failed")
+        {
+            // A tool the host refused before the action ran: its typed refusal is the answer.
+            return Err(refused_of(&typed).into());
+        }
+        Ok(typed)
+    }
+
+    /// Call `tilo_do` and answer how it went, typed: what the action did, or why it did not run.
+    fn call(&mut self, arguments: &Value, meta: Option<Value>) -> Result<Call> {
+        Call::of(&self.tool("tilo_do", arguments, meta)?)
+    }
+
+    /// Call `tool` and read its answer as the JSON it is.
+    fn text(&mut self, tool: &str, arguments: &Value) -> Result<Value> {
+        let params = json!({"name": tool, "arguments": arguments});
         let result = self.request("tools/call", &params)?;
         let text = result
             .get("content")
@@ -173,47 +248,132 @@ impl Held {
             })
             .unwrap_or_default();
         if result.get("isError").and_then(Value::as_bool) == Some(true) {
-            let code = result
-                .pointer("/structuredContent/error/code")
-                .and_then(Value::as_str)
-                .unwrap_or("failed")
-                .to_owned();
-            let retry_after_ms = result
-                .pointer("/structuredContent/error/retry_after_ms")
-                .and_then(Value::as_u64);
-            return Err(Refused {
-                code,
-                text,
-                retry_after_ms,
-            }
-            .into());
+            bail!("{tool}: {text}");
         }
-        Ok(text)
+        serde_json::from_str(&text)
+            .with_context(|| format!("{tool} answered no value: {}", text.trim()))
+    }
+}
+
+/// How one call went, as its typed answer says.
+#[derive(Clone, Debug)]
+pub(super) struct Call {
+    pub(super) status: Status,
+    pub(super) result: Option<Value>,
+    pub(super) resources: Vec<Value>,
+    pub(super) error: Option<Refused>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Status {
+    /// It ran, and answered what it did.
+    Ok,
+    /// It did not run: its refusal, by code.
+    Failed,
+    /// It runs still, waiting for its person (to allow it in their tab, say).
+    Pending,
+}
+
+impl Call {
+    /// The answer `typed` says the call gave.
+    pub(super) fn of(typed: &Value) -> Result<Self> {
+        let status = match typed.get("status").and_then(Value::as_str) {
+            Some("ok") => Status::Ok,
+            Some("failed") => Status::Failed,
+            Some("pending") => Status::Pending,
+            other => bail!("the workspace answered no status: {other:?}"),
+        };
+        let resources = match typed.get("resources") {
+            Some(Value::Array(resources)) => resources.clone(),
+            _ => Vec::new(),
+        };
+        let result = typed
+            .get("result")
+            .filter(|value| !value.is_null())
+            .cloned();
+        let error = (status == Status::Failed).then(|| refused_of(typed));
+        Ok(Self {
+            status,
+            result,
+            resources,
+            error,
+        })
+    }
+
+    pub(super) fn answer(&self) -> Answer {
+        Answer::of(self.result.clone(), self.resources.clone())
+    }
+}
+
+/// The refusal `typed` carries, in the words its code is answered beside.
+fn refused_of(typed: &Value) -> Refused {
+    Refused {
+        code: typed
+            .pointer("/error/code")
+            .and_then(Value::as_str)
+            .unwrap_or("failed")
+            .to_owned(),
+        message: typed
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        retry_after_ms: typed
+            .pointer("/error/retry_after_ms")
+            .and_then(Value::as_u64),
     }
 }
 
 /// A call the workspace did not run, as its typed answer says: its code, its words, and the
 /// wait it asked for.
-#[derive(Debug)]
-pub(super) struct Refused {
+#[derive(Clone, Debug)]
+pub struct Refused {
     code: String,
-    text: String,
+    message: String,
     retry_after_ms: Option<u64>,
 }
 
 impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.text)
+        f.write_str(&self.message)
     }
 }
 
 impl std::error::Error for Refused {}
 
 impl Refused {
+    /// The workspace's refusal among `error`'s causes, when it refused.
+    #[must_use]
+    pub fn of(error: &anyhow::Error) -> Option<&Self> {
+        error.downcast_ref()
+    }
+
+    /// The app's stable code for why it did not run (`message_already_held`).
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    /// A refusal named by `code`, in `message`, as a workspace answers one.
+    #[cfg(test)]
+    pub(super) fn coded(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_owned(),
+            message: message.into(),
+            retry_after_ms: None,
+        }
+    }
+
+    /// The refusal said with the action it names, as a person reads it.
+    fn with_action(mut self, action: &str) -> Self {
+        self.message = format!("{action}: {}", self.message.trim());
+        self
+    }
+
     /// Whether the workspace said the same step works when asked again: it was busy (after the
     /// wait it said), not serving yet, or did not answer. Asked again under its same id, a step
     /// runs once.
-    fn asks_again(&self) -> bool {
+    pub(super) fn asks_again(&self) -> bool {
         matches!(
             self.code.as_str(),
             "rate_limited" | "not_ready" | "unanswered"
@@ -221,17 +381,8 @@ impl Refused {
     }
 }
 
-/// `answer`, or the `pending …` the workspace marked an error: a step still running (waiting
-/// for its person, say) is no failure, and is asked about again.
-pub(super) fn pending_or(answer: Result<String>) -> Result<String> {
-    match answer {
-        Err(error) if format!("{error:#}").starts_with("pending") => Ok(format!("{error:#}")),
-        other => other,
-    }
-}
-
 impl Workspace for Held {
-    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<String> {
+    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<Answer> {
         let wait = u64::try_from(ACTION_WAIT.as_millis()).unwrap_or(u64::MAX);
         // The same step of the same run is the same invocation, which the workspace never runs
         // twice: a step asked again after its answer was lost is answered, not repeated.
@@ -250,100 +401,229 @@ impl Workspace for Held {
         let until = std::time::Instant::now()
             .checked_add(PERSON_WAIT)
             .ok_or_else(|| anyhow!("no time to wait for the person in"))?;
-        let answer = loop {
-            let answer = match self.tool("tilo_do", &call, Some(run.meta())) {
-                Err(error) if tries < ACTION_TRIES => match error.downcast_ref::<Refused>() {
-                    Some(refused) if refused.asks_again() => {
-                        if let Some(wait) = refused.retry_after_ms {
+        loop {
+            let call = self.call(&call, Some(run.meta()))?;
+            match call.status {
+                Status::Ok => return Ok(call.answer()),
+                // An action the person allows first (an outside one, as adding an account is) is
+                // pending while their tab asks them: the same call under the same id waits for it
+                // to move, held by the workspace, until their answer.
+                Status::Pending => {
+                    if std::time::Instant::now() >= until {
+                        bail!(
+                            "{action} is waiting for the person to allow it in their Tilo tab. Allow it \
+                             there, then run the same command again; what it did so far is kept."
+                        );
+                    }
+                }
+                Status::Failed => {
+                    let error = call.error.unwrap_or_else(|| Refused {
+                        code: String::from("failed"),
+                        message: String::new(),
+                        retry_after_ms: None,
+                    });
+                    // A save its host did not confirm in time may or may not be kept: asked again
+                    // under its same id, it runs once.
+                    let again = error.asks_again() || error.code == SAVE_UNCONFIRMED;
+                    if again && tries < ACTION_TRIES {
+                        if let Some(wait) = error.retry_after_ms {
                             std::thread::sleep(Duration::from_millis(wait));
                         }
                         tries = tries.saturating_add(1);
                         continue;
                     }
-                    _ => pending_or(Err(error))?,
-                },
-                other => pending_or(other)?,
-            };
-            // An action the person allows first (an outside one, as adding an account is) is
-            // pending while their tab asks them: the same call under the same id waits for it
-            // to move, held by the workspace, until their answer.
-            // A save its host did not confirm in time may or may not be kept: asked again under
-            // its same id, it runs once.
-            if answer.starts_with("failed: save_unconfirmed:") && tries < ACTION_TRIES {
-                tries = tries.saturating_add(1);
-                continue;
+                    return Err(error.with_action(action).into());
+                }
             }
-            if !answer.starts_with("pending") {
-                break answer;
-            }
-            if std::time::Instant::now() >= until {
-                bail!(
-                    "{action} is waiting for the person to allow it in their Tilo tab. Allow it \
-                     there, then run the same command again; what it did so far is kept."
-                );
-            }
-        };
-        if let Some(why) = answer.strip_prefix("failed:") {
-            bail!("{action}: {}", why.trim());
         }
-        if answer.starts_with("pending") {
-            bail!("{action} did not finish in time: {answer}");
-        }
-        // Anything but `ok` is the workspace saying why it did not run it (an app not running, a
-        // path it does not have).
-        if !answer.starts_with("ok") {
-            bail!("{action}: {answer}");
-        }
-        Ok(answer)
     }
 
-    fn ask(&mut self, action: &str, args: Value) -> Result<String> {
+    fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
         let wait = u64::try_from(ACTION_WAIT.as_millis()).unwrap_or(u64::MAX);
-        let answer = self.tool(
-            "tilo_do",
+        let call = self.call(
             &json!({"path": action, "args": args, "wait_ms": wait}),
             None,
         )?;
-        if let Some(why) = answer.strip_prefix("failed:") {
-            bail!("{action}: {}", why.trim());
+        match call.status {
+            Status::Ok => Ok(call.answer()),
+            Status::Pending => bail!("{action} did not finish in time"),
+            Status::Failed => Err(call
+                .error
+                .unwrap_or_else(|| Refused {
+                    code: String::from("failed"),
+                    message: String::new(),
+                    retry_after_ms: None,
+                })
+                .with_action(action)
+                .into()),
         }
-        if !answer.starts_with("ok") {
-            bail!("{action}: {answer}");
-        }
-        Ok(answer)
     }
 
     fn put(&mut self, bytes: &[u8]) -> Result<String> {
-        let begun = self.tool("tilo_put_begin", &json!({"size": bytes.len()}), None)?;
-        let upload = serde_json::from_str::<Value>(&begun)
-            .ok()
-            .and_then(|begun| begun.get("upload").and_then(Value::as_u64))
+        let begun = self.text("tilo_put_begin", &json!({"size": bytes.len()}))?;
+        let upload = begun
+            .get("upload")
+            .and_then(Value::as_u64)
             .ok_or_else(|| anyhow!("the workspace began no upload: {begun}"))?;
         let engine = base64::engine::general_purpose::STANDARD;
         let mut offset = 0_usize;
         for chunk in bytes.chunks(PUT_CHUNK) {
-            self.tool(
+            self.text(
                 "tilo_put_append",
                 &json!({"upload": upload, "offset": offset, "chunk": engine.encode(chunk)}),
-                None,
             )?;
             offset = offset.saturating_add(chunk.len());
         }
-        let finished = self.tool("tilo_put_finish", &json!({"upload": upload}), None)?;
-        let reference = serde_json::from_str::<Value>(&finished)
-            .ok()
-            .and_then(|value| match value {
-                Value::String(text) => Some(text),
-                other => other
-                    .get("content")
-                    .or_else(|| other.get("reference"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            })
-            .unwrap_or_else(|| finished.trim().trim_matches('"').to_owned());
+        let finished = self.text("tilo_put_finish", &json!({"upload": upload}))?;
+        let reference = finished
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow!("the workspace kept the upload under no reference: {finished}")
+            })?;
         if !reference.starts_with("tilo.content:") {
             bail!("the workspace kept the upload under no reference: {finished}");
         }
-        Ok(reference)
+        Ok(reference.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// The workspace's end of a session: it records each call and answers the next of `answers`.
+    fn serve(stream: UnixStream, calls: &Arc<Mutex<Vec<Value>>>, answers: Vec<Value>) {
+        let mut lines = BufReader::new(stream.try_clone().expect("a reading end"));
+        let mut out = stream;
+        let mut answers = answers.into_iter();
+        loop {
+            let mut line = String::new();
+            if lines.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
+            }
+            let request: Value = serde_json::from_str(&line).expect("a request");
+            let Some(id) = request.get("id").cloned() else {
+                continue;
+            };
+            let answer = if request.get("method").and_then(Value::as_str) == Some("tools/call") {
+                calls.lock().expect("the calls").push(request);
+                answers
+                    .next()
+                    .unwrap_or_else(|| json!({"content": [], "isError": true}))
+            } else {
+                json!({})
+            };
+            let reply = json!({"jsonrpc": "2.0", "id": id, "result": answer});
+            writeln!(out, "{reply}").expect("an answer");
+        }
+    }
+
+    /// The workspace reached over a socket the test answers on, and the calls it made.
+    fn reached(answers: Vec<Value>) -> (Held, Arc<Mutex<Vec<Value>>>) {
+        let (ours, theirs) = UnixStream::pair().expect("a socket pair");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&calls);
+        std::thread::spawn(move || serve(theirs, &recorded, answers));
+        (Held::over(ours).expect("the session"), calls)
+    }
+
+    fn run() -> Run {
+        Run {
+            id: "run-1".into(),
+            title: "From Thunderbird".into(),
+        }
+    }
+
+    #[test]
+    fn a_step_that_waits_is_asked_again_under_its_id_and_its_refusal_keeps_its_code() {
+        let (mut workspace, calls) = reached(vec![
+            json!({"content": [], "structuredContent": {
+                "status": "pending", "invocation_id": "asked",
+                "waiting_for": "the person to allow it",
+            }, "isError": false}),
+            json!({"content": [], "structuredContent": {
+                "status": "failed",
+                "error": {"code": tilo_actions::codes::MESSAGE_ALREADY_HELD, "message": "held"},
+            }, "isError": true}),
+        ]);
+        let error = workspace
+            .act(
+                &run(),
+                "mail/mail.mailbox#deliver-message",
+                json!({"from": "ada@example.com"}),
+            )
+            .expect_err("the workspace refused");
+        assert_eq!(
+            Refused::of(&error).expect("a refusal").code(),
+            tilo_actions::codes::MESSAGE_ALREADY_HELD
+        );
+        let calls = calls.lock().expect("the calls");
+        assert_eq!(calls.len(), 2, "the pending step is asked about again");
+        let ids = (
+            calls[0].pointer("/params/arguments/invocation_id").cloned(),
+            calls[1].pointer("/params/arguments/invocation_id").cloned(),
+        );
+        let structured = calls[0]
+            .pointer("/params/_meta/so.tilo.mcp/structured")
+            .cloned();
+        let named = calls[0]
+            .pointer("/params/_meta/so.tilo.mcp/run/id")
+            .cloned();
+        drop(calls);
+        assert_eq!(
+            ids.0, ids.1,
+            "the same step is the same invocation, which runs once"
+        );
+        assert_eq!(
+            structured,
+            Some(json!(true)),
+            "the caller asks for the typed answer it decides on"
+        );
+        assert_eq!(
+            named,
+            Some(json!("run-1")),
+            "the step is named as the run's"
+        );
+    }
+
+    #[test]
+    fn a_step_that_ran_answers_its_value_and_the_records_it_names() {
+        let (mut workspace, _) = reached(vec![json!({
+            "content": [], "isError": false,
+            "structuredContent": {
+                "status": "ok",
+                "result": {"already": true},
+                "resources": ["tasks.tracker/issues/abc"],
+            },
+        })]);
+        let answer = workspace
+            .act(&run(), "tasks/tasks.issues#create", json!({"title": "x"}))
+            .expect("it ran");
+        assert!(answer.said("already"));
+        assert_eq!(answer.resources().next(), Some("tasks.tracker/issues/abc"));
+    }
+
+    #[test]
+    fn an_upload_is_kept_under_the_reference_its_answer_names() {
+        let (mut workspace, calls) = reached(vec![
+            json!({"content": [{"type": "text", "text": "{\"upload\":7}"}], "isError": false}),
+            json!({"content": [{"type": "text", "text": "{\"upload\":7,\"written\":5,\"size\":5}"}], "isError": false}),
+            json!({"content": [{"type": "text", "text": "{\"content\":\"tilo.content:abc\"}"}], "isError": false}),
+        ]);
+        assert_eq!(
+            workspace.put(b"hello").expect("it is kept"),
+            "tilo.content:abc"
+        );
+        let calls = calls.lock().expect("the calls");
+        let last = calls
+            .last()
+            .and_then(|call| call.pointer("/params/name"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        drop(calls);
+        assert_eq!(last.as_deref(), Some("tilo_put_finish"));
     }
 }

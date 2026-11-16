@@ -52,7 +52,12 @@ pub(super) fn ask_to_add(
         .iter()
         .any(|account| account.id.eq_ignore_ascii_case(&email))
     {
-        return Err(format!("{email} is among the accounts already"));
+        // The account is among the person's already: the same answer as
+        // adding it, saying it was there, so a caller that moves accounts in
+        // tells "nothing to do" from "added now" without reading words.
+        return Ok(ui::framework::Effected::value(
+            serde_json::json!({ "account": email, "already": true }),
+        ));
     }
     shared
         .borrow_mut()

@@ -127,21 +127,21 @@ fn describe_into(provider: &str, resource: &ResourceSpec, words: &[String], out:
 /// confirmed" the same way against either endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
-    pub code: &'static str,
+    pub code: String,
     pub message: String,
 }
 
 impl Refusal {
     fn unknown(id: &str) -> Self {
         Self {
-            code: "unknown_action",
+            code: "unknown_action".to_owned(),
             message: format!("no action `{id}` is published here; `actions list` shows what is"),
         }
     }
 
     fn from_api(error: &api::ApiError) -> Self {
         Self {
-            code: error.code(),
+            code: error.code().to_owned(),
             message: error.to_string(),
         }
     }
@@ -202,7 +202,7 @@ pub fn admit(
         ConfirmationPolicy::Confirm => {
             if own.remove(CONFIRM_ARG) != Some(Value::Bool(true)) {
                 return Err(Refusal {
-                    code: "action_confirmation_required",
+                    code: "action_confirmation_required".to_owned(),
                     message: format!(
                         "`{id}` is consequential: pass \"{CONFIRM_ARG}\": true to confirm it"
                     ),
@@ -214,7 +214,7 @@ pub fn admit(
             let typed = own.remove(PHRASE_ARG);
             if typed.as_ref().and_then(Value::as_str) != Some(phrase.as_str()) {
                 return Err(Refusal {
-                    code: "action_confirmation_required",
+                    code: "action_confirmation_required".to_owned(),
                     message: format!(
                         "`{id}` needs its confirmation phrase typed exactly: pass \"{PHRASE_ARG}\": \"{phrase}\""
                     ),
@@ -365,28 +365,31 @@ mod tests {
             };
             assert_eq!(
                 code("other", "rename@session", json!({"name": "x"})),
-                Some("unknown_action")
+                Some("unknown_action".to_owned())
             );
             assert_eq!(
                 code("test", "nope@session", json!({})),
-                Some("unknown_action")
+                Some("unknown_action".to_owned())
             );
-            assert_eq!(code("test", "rename", json!({})), Some("unknown_action"));
+            assert_eq!(
+                code("test", "rename", json!({})),
+                Some("unknown_action".to_owned())
+            );
             assert_eq!(
                 code("test", "rename@session", json!({})),
-                Some("invalid_arguments")
+                Some("invalid_arguments".to_owned())
             );
             assert_eq!(
                 code("test", "rename@session", json!({"name": 3})),
-                Some("invalid_arguments")
+                Some("invalid_arguments".to_owned())
             );
             assert_eq!(
                 code("test", "rename@session", json!({"name": "x", "extra": 1})),
-                Some("invalid_arguments")
+                Some("invalid_arguments".to_owned())
             );
             assert_eq!(
                 code("test", "reset@session", json!({})),
-                Some("action_unavailable")
+                Some("action_unavailable".to_owned())
             );
         }
         {
@@ -396,14 +399,17 @@ mod tests {
                     .err()
                     .map(|r| r.code)
             };
-            assert_eq!(refused(json!({})), Some("action_confirmation_required"));
+            assert_eq!(
+                refused(json!({})),
+                Some("action_confirmation_required".to_owned())
+            );
             assert_eq!(
                 refused(json!({PHRASE_ARG: "/dev/vda"})),
-                Some("action_confirmation_required")
+                Some("action_confirmation_required".to_owned())
             );
             assert_eq!(
                 refused(json!({CONFIRM_ARG: true})),
-                Some("action_confirmation_required"),
+                Some("action_confirmation_required".to_owned()),
                 "a boolean cannot stand in for a typed phrase"
             );
             let admitted = admit(
@@ -419,11 +425,11 @@ mod tests {
             let off = |value: Value| admit("test", &tree, "test", "off@power", &args(&value));
             assert_eq!(
                 off(json!({})).err().map(|r| r.code),
-                Some("action_confirmation_required")
+                Some("action_confirmation_required".to_owned())
             );
             assert_eq!(
                 off(json!({CONFIRM_ARG: false})).err().map(|r| r.code),
-                Some("action_confirmation_required")
+                Some("action_confirmation_required".to_owned())
             );
             assert!(off(json!({CONFIRM_ARG: true})).is_ok());
         }

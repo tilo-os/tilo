@@ -501,7 +501,7 @@ pub struct Open {
 }
 
 pub(crate) fn refuse(message: impl Into<String>) -> Refusal {
-    Refusal(message.into())
+    Refusal::new(message)
 }
 
 /// The id of a mark or layer given none: a hash of what it is and where it

@@ -293,7 +293,7 @@ pub(super) fn select_found(
     let before = selected.clone();
     select
         .apply(&mut selected, &before)
-        .map_err(|refusal| refusal.0)?;
+        .map_err(|refusal| refusal.reason().to_owned())?;
     let answer = json!({"selection": crate::answer::selection(&selected)});
     cx.submit(Artwork::SELECT.with(select));
     Ok(answer)

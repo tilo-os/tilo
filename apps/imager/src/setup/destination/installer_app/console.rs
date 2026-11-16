@@ -70,7 +70,7 @@ impl InstallerApp {
             Ok(Request::Invoke { provider, id, args }) => {
                 let resources = self.published();
                 match console_control::admit(PROVIDER, &resources, &provider, &id, &args) {
-                    Err(refusal) => wire::error(refusal.code, &refusal.message),
+                    Err(refusal) => wire::error(&refusal.code, &refusal.message),
                     Ok(admitted) => {
                         match DestinationEffect::from_payload(&admitted.encoded.payload)
                             .map_err(|error| error.to_string())

@@ -312,6 +312,10 @@ pub enum ApiError {
     /// can't prove what it would run. Fail-closed: a refusal, not a
     /// best-effort apply.
     UnregisteredType(String),
+    /// The app declined for a reason it named by a stable code (the thing it
+    /// would add is there already, say), in words beside it for whoever
+    /// reads: a caller decides on the code without reading the words.
+    Refused { code: String, reason: String },
     /// The action ran and failed.
     Failed(String),
 }
@@ -325,13 +329,25 @@ impl ApiError {
     pub fn decoding(error: crate::action::ActionError) -> Self {
         match error {
             crate::action::ActionError::UnknownType(type_id) => ApiError::UnregisteredType(type_id),
+            other => ApiError::refused(other),
+        }
+    }
+
+    /// `error` as the caller reads it: an app that named why keeps its code
+    /// as data, so a caller decides on it without reading the words.
+    pub fn refused(error: crate::action::ActionError) -> Self {
+        match error {
+            crate::action::ActionError::Unavailable { code, message } => ApiError::Refused {
+                code,
+                reason: message,
+            },
             other => ApiError::Failed(other.to_string()),
         }
     }
 
     /// Stable machine-readable code, distinguishing "I addressed this
     /// wrongly" from "it ran and could not do its job".
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> &str {
         match self {
             ApiError::Unknown(_) | ApiError::UnregisteredType(_) => "unknown_action",
             ApiError::MissingArgument(_)
@@ -339,6 +355,8 @@ impl ApiError {
             | ApiError::InvalidArguments(_)
             | ApiError::ArgumentOutOfRange { .. } => "invalid_arguments",
             ApiError::Unavailable { .. } => "action_unavailable",
+            // The app's own code, which is why it gave one.
+            ApiError::Refused { code, .. } => code,
             ApiError::ConfirmationRequired => "action_confirmation_required",
             ApiError::Failed(_) => "action_failed",
         }
@@ -390,6 +408,7 @@ impl std::fmt::Display for ApiError {
                 write!(f, "action ({}, {}) takes no argument", a.resource, a.action)
             }
             ApiError::InvalidArguments(why) | ApiError::Failed(why) => write!(f, "{why}"),
+            ApiError::Refused { reason, .. } => f.write_str(reason),
             ApiError::ArgumentOutOfRange { param, violation } => {
                 write!(f, "argument `{param}` {violation}")
             }
@@ -970,7 +989,7 @@ fn dispatch_encoded_with_context(
         Some(provenance.actor),
         context,
     )
-    .map_err(|e| ApiError::Failed(e.to_string()))
+    .map_err(ApiError::refused)
 }
 
 /// The resource `id` in `resources` or among their children.

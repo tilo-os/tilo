@@ -1731,7 +1731,7 @@ pub(crate) fn refusal_reason(error: &tilo_actions::ApiError) -> String {
         ApiError::Unavailable { code, reason } => {
             internal_refusal(code).map_or_else(|| reason.clone(), str::to_owned)
         }
-        ApiError::Failed(reason) => reason.clone(),
+        ApiError::Refused { reason, .. } | ApiError::Failed(reason) => reason.clone(),
         ApiError::MissingArgument(_)
         | ApiError::UnexpectedArgument(_)
         | ApiError::InvalidArguments(_)

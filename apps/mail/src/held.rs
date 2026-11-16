@@ -360,9 +360,10 @@ impl Mail {
         }
         let key = Id::from_raw(id.to_string());
         if self.held.contains(&key) || self.messages.contains(&key) {
-            return Err(Refusal::new(format!(
-                "this message is in the mailbox already, as {id}"
-            )));
+            return Err(Refusal::coded(
+                ui::tilo_actions::codes::MESSAGE_ALREADY_HELD,
+                format!("this message is in the mailbox already, as {id}"),
+            ));
         }
         let answered = match delivery.reply_to.as_deref().map(str::trim) {
             Some(reply) if !reply.is_empty() => Some(

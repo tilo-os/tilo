@@ -275,8 +275,8 @@ fn land_account(
         &format!("account:{}", account_key(account)),
         "accounts",
         |workspace, run| match workspace.act(run, ADD_ACCOUNT, arguments.clone()) {
+            Ok(answer) if answer.said("already") => Ok(Landed::Already),
             Ok(_) => Ok(Landed::One),
-            Err(error) if format!("{error:#}").contains("already") => Ok(Landed::Already),
             Err(error) => Err(mail_not_open(error, text(&arguments, "email"))),
         },
     )
@@ -285,7 +285,9 @@ fn land_account(
 /// Why an account could not be added, said as what to do: Mail adds it from the person's own
 /// tab, so it has to be open there.
 pub fn mail_not_open(error: anyhow::Error, email: &str) -> anyhow::Error {
-    if format!("{error:#}").contains("no action") {
+    if super::workspace::Refused::of(&error)
+        .is_some_and(|refused| refused.code() == "unknown_action")
+    {
         return error.context(format!(
             "{email} is added to the person's accounts by Mail in their tab, and Mail is not open there: ask them to open Mail, then start this again"
         ));
@@ -416,13 +418,17 @@ fn land_message(
             match workspace.act(run, DELIVER, delivery) {
                 Ok(_) => Ok(Landed::One),
                 // Mail holds it already: an earlier run, or another computer's, brought it.
-                Err(error) if format!("{error:#}").contains("in the mailbox already") => {
-                    Ok(Landed::Already)
-                }
+                Err(error) if already_held(&error) => Ok(Landed::Already),
                 Err(error) => Err(error),
             }
         },
     )
+}
+
+/// Whether `error` is the refusal that says Mail holds the message already.
+fn already_held(error: &anyhow::Error) -> bool {
+    super::workspace::Refused::of(error)
+        .is_some_and(|refused| refused.code() == tilo_actions::codes::MESSAGE_ALREADY_HELD)
 }
 
 /// What Mail's `deliver-message` takes for the message `bytes`: who sent it to whom, its subject,
@@ -560,7 +566,39 @@ fn text<'a>(value: &'a Value, name: &str) -> &'a str {
 
 #[cfg(test)]
 mod tests {
+    use super::super::workspace::Refused;
     use super::*;
+
+    #[test]
+    fn mail_holding_a_message_is_told_by_its_code() {
+        let held: anyhow::Error = Refused::coded(
+            tilo_actions::codes::MESSAGE_ALREADY_HELD,
+            "this message is in the mailbox already, as m1",
+        )
+        .into();
+        assert!(already_held(&held));
+        let other: anyhow::Error =
+            Refused::coded("refused", "this message is in the mailbox already").into();
+        assert!(
+            !already_held(&other),
+            "the app's words alone decide nothing"
+        );
+    }
+
+    #[test]
+    fn a_mail_that_does_not_run_says_what_to_do() {
+        let unopened: anyhow::Error = Refused::coded(
+            "unknown_action",
+            "no action addressed by (mail, add-account)",
+        )
+        .into();
+        let said = format!("{:#}", mail_not_open(unopened, "ada@example.com"));
+        assert!(said.contains("Mail is not open there"), "{said}");
+        let refused: anyhow::Error =
+            Refused::coded("refused", "the account's servers do not check").into();
+        let said = format!("{:#}", mail_not_open(refused, "ada@example.com"));
+        assert_eq!(said, "the account's servers do not check");
+    }
 
     #[test]
     fn a_message_is_delivered_as_its_account_received_it() {

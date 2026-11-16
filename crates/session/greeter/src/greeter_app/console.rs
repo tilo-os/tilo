@@ -82,7 +82,7 @@ impl GreeterApp {
                     &args,
                 );
                 match admitted {
-                    Err(refusal) => wire::error(refusal.code, &refusal.message),
+                    Err(refusal) => wire::error(&refusal.code, &refusal.message),
                     Ok(mut admitted) => {
                         let reply = match self.apply_operation(&admitted.encoded) {
                             Ok(answer) => wire::answer(&answer),

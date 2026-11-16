@@ -8,7 +8,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use super::state::{Journal, Place, RunState};
-use super::workspace::{Run, Workspace};
+use super::workspace::{Answer, Call, Run, Status, Workspace};
 use super::{Lander, Stopped, thunderbird};
 
 /// A workspace that keeps every action it is asked, and every upload.
@@ -19,14 +19,14 @@ struct Recorded {
 }
 
 impl Workspace for Recorded {
-    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<String> {
+    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<Answer> {
         self.actions.push((run.id.clone(), action.to_owned(), args));
-        Ok("ok".into())
+        Ok(Answer::of(None, Vec::new()))
     }
 
-    fn ask(&mut self, action: &str, args: Value) -> Result<String> {
+    fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
         self.actions.push((String::new(), action.to_owned(), args));
-        Ok("ok".into())
+        Ok(Answer::of(None, Vec::new()))
     }
 
     fn put(&mut self, bytes: &[u8]) -> Result<String> {
@@ -45,7 +45,7 @@ impl Recorded {
     }
 }
 
-fn run_once(home: &Path, place: &Place, workspace: &mut Recorded) -> Result<Journal> {
+fn run_once(home: &Path, place: &Place, workspace: &mut dyn Workspace) -> Result<Journal> {
     let review = place.review(thunderbird::SOURCE)?.expect("reviewed");
     let mut journal = place.journal(thunderbird::SOURCE)?;
     journal.brought.clear();
@@ -75,6 +75,33 @@ fn run_once(home: &Path, place: &Place, workspace: &mut Recorded) -> Result<Jour
     };
     place.keep_journal(thunderbird::SOURCE, &journal)?;
     result.map(|()| journal)
+}
+
+/// A workspace whose Mail holds every message delivered already, as an earlier run's would.
+struct HoldsMail(Recorded);
+
+impl Workspace for HoldsMail {
+    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<Answer> {
+        if action == "mail/mail.mailbox#deliver-message" {
+            self.0
+                .actions
+                .push((run.id.clone(), action.to_owned(), args));
+            return Err(super::workspace::Refused::coded(
+                tilo_actions::codes::MESSAGE_ALREADY_HELD,
+                "this message is in the mailbox already",
+            )
+            .into());
+        }
+        self.0.act(run, action, args)
+    }
+
+    fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
+        self.0.ask(action, args)
+    }
+
+    fn put(&mut self, bytes: &[u8]) -> Result<String> {
+        self.0.put(bytes)
+    }
 }
 
 /// The sample profile reviewed, and its work account chosen as an agent chooses it, checking
@@ -234,6 +261,23 @@ fn one_thunderbird_account_of_two_comes_over_once() {
 }
 
 #[test]
+fn a_message_mail_holds_already_counts_as_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let (home, place) = work_account_chosen(dir.path());
+    let mut workspace = HoldsMail(Recorded::default());
+    let journal = run_once(&home, &place, &mut workspace).unwrap();
+    assert_eq!(
+        journal.brought.get("messages"),
+        None,
+        "no message was brought: Mail holds each already"
+    );
+    assert_eq!(
+        journal.already_there, 4,
+        "its four messages are told by the app's code, not by its words"
+    );
+}
+
+#[test]
 fn an_address_book_and_calendar_chosen_later_come_over_alone() {
     let dir = tempfile::tempdir().unwrap();
     let (home, place) = work_account_chosen(dir.path());
@@ -298,40 +342,40 @@ fn a_stopped_run_resumes_where_it_stopped() {
 
 #[test]
 fn a_runs_change_in_effect_is_found_by_the_run_id_history_keeps() {
-    let of = |change: &str, run: &str| {
-        format!(
-            r#"{{"change": "{change}", "run": "From Linear: Engineering", "actor": {{"id": "agent:tilo", "run_id": "{run}"}}}}"#
-        )
-    };
-    let history = format!(
-        r#"ok {{"versions": [{}, {}, {{"change": "b1", "actor": {{"id": "person"}}}}, {}, {}]}}"#,
+    let of = |change: &str, run: &str| serde_json::json!({"change": change, "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "run_id": run}});
+    let history = serde_json::json!({"versions": [
         of("a1", "migrate-linear-1"),
         of("a2", "migrate-linear-1"),
+        {"change": "b1", "actor": {"id": "person"}},
         of("c1", "migrate-linear-2"),
-        of("c2", "migrate-linear-2").replace(r#""change""#, r#""undone": true, "change""#),
-    );
+        {"undone": true, "change": "c2", "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "run_id": "migrate-linear-2"}},
+    ]});
     assert_eq!(
-        super::run_in_history(&history, "migrate-linear-1"),
+        super::run_in_history(Some(&history), "migrate-linear-1"),
         super::RunInHistory::InEffect("a2".to_owned()),
         "two runs under one title are told apart by their ids"
     );
     assert_eq!(
-        super::run_in_history(&history, "migrate-linear-2"),
+        super::run_in_history(Some(&history), "migrate-linear-2"),
         super::RunInHistory::InEffect("c1".to_owned()),
         "a change undone already is not taken back again"
     );
     assert_eq!(
-        super::run_in_history(&history, "migrate-linear-3"),
+        super::run_in_history(Some(&history), "migrate-linear-3"),
         super::RunInHistory::Absent
     );
-    let undone = format!(
-        r#"ok {{"versions": [{}]}}"#,
-        of("d1", "migrate-linear-4").replace(r#""change""#, r#""undone": true, "change""#)
-    );
+    let undone = serde_json::json!({"versions": [
+        {"undone": true, "change": "d1", "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "run_id": "migrate-linear-4"}},
+    ]});
     assert_eq!(
-        super::run_in_history(&undone, "migrate-linear-4"),
+        super::run_in_history(Some(&undone), "migrate-linear-4"),
         super::RunInHistory::Undone,
         "a run someone undid already is there, with nothing left to take back"
+    );
+    assert_eq!(
+        super::run_in_history(None, "migrate-linear-5"),
+        super::RunInHistory::Absent,
+        "a record that answered no history holds no change of any run"
     );
 }
 
@@ -343,15 +387,60 @@ fn a_run_counts_one_thing_in_the_singular() {
 }
 
 #[test]
-fn a_step_the_workspace_answers_pending_is_waited_on_not_failed() {
-    let pending = super::workspace::pending_or(Err(anyhow::anyhow!(
-        "pending 9c19: not finished yet; tilo_status {{invocation_id}} says how it went"
-    )));
-    assert!(pending.unwrap().starts_with("pending 9c19"));
-    assert!(super::workspace::pending_or(Err(anyhow::anyhow!("failed: refused"))).is_err());
+fn a_step_that_waits_for_its_person_answers_pending_not_failed() {
+    let pending = Call::of(&serde_json::json!({
+        "status": "pending", "invocation_id": "9c19",
+        "waiting_for": "the person to allow it",
+    }))
+    .unwrap();
+    assert_eq!(pending.status, Status::Pending);
+    assert_eq!(pending.result, None);
+    assert!(pending.error.is_none(), "waiting is no refusal");
+
+    let waiting = Call::of(&serde_json::json!({
+        "status": "failed",
+        "error": {"code": "rate_limited", "message": "busy", "retry_after_ms": 40},
+    }))
+    .unwrap();
+    assert_eq!(waiting.status, Status::Failed);
+    let error = waiting.error.unwrap();
+    assert_eq!(error.code(), "rate_limited");
+    assert!(error.asks_again(), "a busy workspace is asked again");
+
+    let already = Call::of(&serde_json::json!({
+        "status": "failed",
+        "error": {"code": tilo_actions::codes::MESSAGE_ALREADY_HELD, "message": "held"},
+    }))
+    .unwrap();
     assert_eq!(
-        super::workspace::pending_or(Ok("ok".to_owned())).unwrap(),
-        "ok"
+        already.error.unwrap().code(),
+        tilo_actions::codes::MESSAGE_ALREADY_HELD,
+        "an app's refusal is read by its code, never its words"
+    );
+    assert!(
+        !super::workspace::Refused::coded("x", "y").asks_again(),
+        "an app's own refusal is not asked again"
+    );
+}
+
+#[test]
+fn a_call_that_ran_answers_its_value_and_the_records_it_names() {
+    let ran = Call::of(&serde_json::json!({
+        "status": "ok",
+        "result": {"already": true, "id": "abc"},
+        "resources": ["tasks.tracker/issues/abc"],
+    }))
+    .unwrap();
+    assert_eq!(ran.status, Status::Ok);
+    let answer = ran.answer();
+    assert!(answer.said("already"));
+    assert_eq!(
+        answer.result().and_then(|value| value.get("id")),
+        Some(&serde_json::json!("abc"))
+    );
+    assert_eq!(
+        answer.resources().collect::<Vec<_>>(),
+        ["tasks.tracker/issues/abc"]
     );
 }
 

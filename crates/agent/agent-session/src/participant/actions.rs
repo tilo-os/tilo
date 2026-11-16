@@ -454,6 +454,13 @@ pub(crate) fn api_outcome(error: &ApiError) -> Outcome {
         ApiError::Unavailable { reason, .. } => Outcome::Rejected(ActionHostError::Unavailable {
             reason: reason.clone(),
         }),
+        // The app said no, and named why: the code crosses with the words.
+        ApiError::Refused { reason, .. } => Outcome::Failed(ActionFailure {
+            code: error.code().to_owned(),
+            message: reason.clone(),
+            details: None,
+            retryable: false,
+        }),
         ApiError::Failed(message) => Outcome::Failed(ActionFailure {
             code: error.code().to_owned(),
             message: message.clone(),

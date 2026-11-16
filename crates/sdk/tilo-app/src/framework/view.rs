@@ -382,7 +382,11 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     pub fn on_open<O: tilo_resource::Outcome>(&self, mut open: impl FnMut(&str) -> O + 'static) {
         self.stages.push_opener(
             self.alive.clone(),
-            Box::new(move |anchor| open(anchor).into_result().map_err(|refusal| refusal.0)),
+            Box::new(move |anchor| {
+                open(anchor)
+                    .into_result()
+                    .map_err(|refusal| refusal.reason().to_owned())
+            }),
         );
     }
 
@@ -399,7 +403,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             Box::new(move |anchor| {
                 let (_, item) = tilo_resource::items::item_of_resource::<R>(anchor)
                     .ok_or_else(|| format!("`{anchor}` is not an item of {}", R::LABEL))?;
-                open(&item).map_err(|refusal| refusal.0)
+                open(&item).map_err(|refusal| refusal.reason().to_owned())
             }),
         );
     }
