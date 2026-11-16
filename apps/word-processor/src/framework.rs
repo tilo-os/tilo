@@ -254,6 +254,7 @@ mod tests {
             "open-document",
             "save",
             "save-as",
+            "save-to",
             "read-file",
             "convert-file",
             "zoom-in",
@@ -314,7 +315,7 @@ mod tests {
             for (id, param) in [
                 ("open-document", "path"),
                 ("save", "path"),
-                ("save-as", "path"),
+                ("save-to", "path"),
                 ("read-file", "file"),
                 ("convert-file", "file"),
             ] {

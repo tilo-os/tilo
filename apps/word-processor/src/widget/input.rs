@@ -944,7 +944,7 @@ impl Editor {
         // Save is not an editing action: do not mark the document modified after writing it.
         if s.eq_ignore_ascii_case("s") {
             self.invoke_effect(&if shift {
-                WordProcessorEffect::SaveAs { path: None }
+                WordProcessorEffect::SaveAs
             } else {
                 WordProcessorEffect::Save { path: None }
             });

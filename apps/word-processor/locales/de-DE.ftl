@@ -276,6 +276,7 @@ word-processor-effects-share-image = Bild teilen
 word-processor-effects-open-document = Dokument öffnen
 word-processor-effects-save = Dokument speichern
 word-processor-effects-save-as = Dokument speichern unter
+word-processor-effects-save-to = Dokument in eine Datei speichern
 word-processor-effects-read-file = Datei lesen
 word-processor-effects-read-content = Dokumentinhalt lesen
 word-processor-effects-import-docx-content = Dokumentinhalt importieren

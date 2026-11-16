@@ -942,3 +942,23 @@ fn peer_note(doc: &mut ui::tilo_resource::Doc, note: &str) {
     )
     .unwrap();
 }
+
+/// Save As from the keyboard goes straight to the chooser, which asks before it
+/// replaces a file: nothing asks first.
+#[test]
+fn save_as_asks_where_without_a_confirmation_first() {
+    let directory = tempfile::tempdir().unwrap();
+    let chosen = directory.path().join("Letter.docx");
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    let mut app = open();
+    app.harness().type_text("Dear reader");
+    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(chosen.clone()));
+    app.harness()
+        .set_modifiers(&["ctrl".to_owned(), "shift".to_owned()]);
+    app.harness().key("S");
+    app.harness().set_modifiers(&[]);
+    app.settle();
+    assert_eq!(recorder.pick_requests().len(), 1, "the chooser asks where");
+    assert!(chosen.exists(), "the document is saved where it was asked");
+}

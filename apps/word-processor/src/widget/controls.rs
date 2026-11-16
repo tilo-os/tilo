@@ -980,7 +980,7 @@ impl Editor {
                 self.invoke_effect(&crate::effects::WordProcessorEffect::Save { path: None });
             }
             FileChoice::SaveAs => {
-                self.invoke_effect(&crate::effects::WordProcessorEffect::SaveAs { path: None });
+                self.invoke_effect(&crate::effects::WordProcessorEffect::SaveAs);
             }
             FileChoice::Template(template) => self.apply_template(state, template),
         }

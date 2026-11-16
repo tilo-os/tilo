@@ -314,7 +314,7 @@ mod tests {
                 content: tilo_content::ContentStore::memory(),
             };
             let resources = published_for(&ctx, &state.doc);
-            for id in ["open-document", "save", "save-as"] {
+            for id in ["open-document", "save", "save-to"] {
                 let action = resources[0]
                     .actions
                     .iter()

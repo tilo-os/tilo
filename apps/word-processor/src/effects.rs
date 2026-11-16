@@ -29,10 +29,15 @@ pub enum WordProcessorEffect {
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save document as.
+    ///
+    /// Asks where with the system picker, which asks before it replaces a file.
+    #[effect(attended, job)]
+    SaveAs,
+    /// Save document to a file.
     #[effect(job, destructive)]
-    SaveAs {
-        #[param("Absolute filesystem path; omit to choose one")]
-        path: Option<ui::tilo_resource::AbsolutePath>,
+    SaveTo {
+        #[param("Absolute filesystem path")]
+        path: ui::tilo_resource::AbsolutePath,
     },
     /// Read a file.
     /// What a document file says, as Markdown: Word, `OpenDocument`, RTF, HTML, EPUB,

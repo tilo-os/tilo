@@ -1173,10 +1173,10 @@ impl Editor {
                     },
                 }
             }
-            WordProcessorEffect::SaveAs { path: Some(path) } => {
+            WordProcessorEffect::SaveTo { path } => {
                 self.save_now(cx, &path)?;
             }
-            WordProcessorEffect::SaveAs { path: None } => {
+            WordProcessorEffect::SaveAs => {
                 return self.choose_where_to_save(this, cx);
             }
             WordProcessorEffect::Find => {

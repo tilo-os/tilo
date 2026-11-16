@@ -514,7 +514,7 @@ fn open() -> App {
 
 fn save_as(app: &mut App, path: &Path) -> Result<u64, String> {
     app.call_confirmed(
-        "save-as",
+        "save-to",
         serde_json::json!({"path": path.to_string_lossy()}),
     )
     .map_err(|error| format!("Save As refused: {error}"))?;
