@@ -65,12 +65,11 @@ pub fn tool_effect(intent: &os_actions::ToolIntent) -> Result<SettingsEffect, St
 }
 
 pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
-    // The page opens a Settings page by the resource a person's own card
-    // names (`settings.section:<slug>`), as links do by `settings://`.
-    let rest = uri
+    // A link names its page the way every shell reads it, so a card's
+    // `settings.section:<slug>` and a link's `settings://<slug>` open alike.
+    let anchor = ui::shell::settings_anchor(uri).unwrap_or_default();
+    let rest = anchor
         .strip_prefix("settings.section:")
-        .or_else(|| uri.strip_prefix("settings://"))
-        .or_else(|| uri.strip_prefix("settings:"))
         .ok_or_else(|| "not a Settings link".to_string())?;
     if let Some(id) = rest.strip_prefix("models/") {
         let id = id.trim_end_matches('/');

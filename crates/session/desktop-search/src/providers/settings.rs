@@ -21,8 +21,7 @@ use ui::search::system::{ResourceKind, provider_score};
 
 use crate::model::{Hit, InvokeTarget, Source, Target};
 
-/// Settings, by its package id.
-pub const SETTINGS_APP: &str = "so.tilo.settings";
+pub use ui::shell::SETTINGS_APP;
 /// The resource Settings' window publishes, whose `open` shows a page.
 const SETTINGS_ROOT: &str = "settings.root";
 /// The anchor of a page of Settings, by its slug.

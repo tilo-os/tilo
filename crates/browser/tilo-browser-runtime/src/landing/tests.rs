@@ -111,14 +111,14 @@ fn settings_opened_on_a_record_the_host_holds_empty_shows_its_pane() {
         .expect("Settings mounts");
     window.settle();
     // The app's own `open`, at the anchor of the pane a page's link names
-    // ([`crate::settings_link`]), as the page shows a search hit or a link.
+    // ([`ui::shell::settings_anchor`]), as the page shows a search hit or a link.
     let own = window
         .resources()
         .into_iter()
         .map(|resource| resource.id.0)
         .find(|id| !id.starts_with("settings.section:") && window.publishes(id, "open"))
         .expect("Settings publishes its open");
-    let pane = crate::settings_link::resource("settings://appearance").unwrap();
+    let pane = ui::shell::settings_anchor("settings://appearance").unwrap();
     window
         .call_on(&own, "open", serde_json::json!({ "anchor": pane }))
         .expect("Settings opens Appearance");

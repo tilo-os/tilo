@@ -497,11 +497,7 @@ pub(crate) fn follow_dictation(shared: &Shared) {
 pub(crate) fn open_settings(shared: &Shared, link: &str) {
     close(shared);
     let workspace = shared.active_workspace_id();
-    let anchor = match link.strip_prefix("settings://") {
-        Some(slug) => Some(format!("settings.section:{slug}")),
-        None => (!link.is_empty()).then(|| link.to_owned()),
-    };
-    if let Some(anchor) = anchor {
+    if let Some(anchor) = ui::shell::settings_anchor(link) {
         let target = tilo_desktop_search::Target::Invoke(Box::new(
             tilo_desktop_search::providers::settings::opening(&workspace, &anchor),
         ));

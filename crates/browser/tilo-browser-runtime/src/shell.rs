@@ -124,10 +124,7 @@ const RENAME_ACTION: &str = "set-name";
 const REPORT_PROBLEM: &str = "report-problem";
 /// Chat, which holds the conversation each pair of people shares.
 /// Settings, whose pages a person's own card opens.
-pub(crate) use crate::settings_link::APP as SETTINGS_APP;
-/// The resource a `settings:` link names, as Settings' `open` reads it: a
-/// pane row (`settings.section:<slug>`); `None` for anything else.
-pub(crate) use crate::settings_link::resource as settings_resource;
+pub(crate) use ui::shell::SETTINGS_APP;
 /// Settings' page that lists the person's devices and agents and takes them
 /// back: the card's own way to what acts as them.
 const DEVICES_ACCESS: &str = tilo_session::people::DEVICES_ACCESS;
@@ -1030,7 +1027,7 @@ impl BrowserShell {
                 // The Settings pages this person's own card names: the page opens the app, on
                 // the page the card asked for.
                 tilo_session::people::PeopleAsk::Settings(link) => {
-                    let resource = settings_resource(&link).unwrap_or(link);
+                    let resource = ui::shell::settings_anchor(&link).unwrap_or(link);
                     self.requests.borrow_mut().push(HostRequest::ShowInApp {
                         app: SETTINGS_APP.into(),
                         resource,
@@ -1381,7 +1378,7 @@ impl BrowserShell {
                 // Settings at the page the link names opens in this page, as
                 // the account's own page does above.
                 DesktopAsk::OpenSettings(link) => {
-                    let resource = settings_resource(&link).unwrap_or(link);
+                    let resource = ui::shell::settings_anchor(&link).unwrap_or(link);
                     self.requests.borrow_mut().push(HostRequest::ShowInApp {
                         app: SETTINGS_APP.into(),
                         resource,

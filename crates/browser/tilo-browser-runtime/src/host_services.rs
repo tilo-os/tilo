@@ -452,11 +452,11 @@ pub(crate) fn stop_serving_settings_links(mount: u64) {
 /// as a notice's choice is: the app's `open` of the pane, anchored on it.
 /// Whether a desktop was here to show it.
 fn show_settings(uri: &str) -> bool {
-    let Some((app, resource)) = crate::settings_link::show_in_app(uri) else {
+    let Some(resource) = ui::shell::settings_anchor(uri) else {
         return false;
     };
     let request = crate::shell::HostRequest::ShowInApp {
-        app: app.to_owned(),
+        app: ui::shell::SETTINGS_APP.to_owned(),
         resource,
     };
     let shown = DESKTOP_REQUESTS.with_borrow(|by_mount| {
