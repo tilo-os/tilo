@@ -2615,8 +2615,12 @@ mod tests {
                 .map(|entry| entry.expect("history entry").path())
                 .collect();
             versions.sort();
+            let shipped = std::fs::read(os_file("os/usr/share/tilo/fs-capabilities.json"))
+                .expect("the shipped default capability list must exist");
             assert!(
-                !versions.is_empty(),
+                versions
+                    .iter()
+                    .any(|path| std::fs::read(path).is_ok_and(|bytes| bytes == shipped)),
                 "the history must hold the list the image ships today: {versions:?}"
             );
             let identity: IdentityKey = [0x5A; 32];
