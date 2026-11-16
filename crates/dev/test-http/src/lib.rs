@@ -132,8 +132,9 @@ impl Reply {
             let _ = write!(head, "{name}: {value}\r\n");
         }
         head.push_str("\r\n");
-        stream.write_all(head.as_bytes())?;
-        stream.write_all(&self.body)?;
+        let mut reply = head.into_bytes();
+        reply.extend_from_slice(&self.body);
+        stream.write_all(&reply)?;
         stream.flush()
     }
 }
