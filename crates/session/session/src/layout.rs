@@ -698,7 +698,9 @@ impl Layouts {
             // A write of this layout under way holds what the person just changed: the record has
             // not taken it yet, and folding the record over the shell would put it back. A write
             // that answered is taken first, so the next one never starts before the record is read.
+            // The look after it reads the record: what reached it meanwhile moves nothing else.
             if !self.settle_one(&key) {
+                self.seen.set(None);
                 continue;
             }
             let known = self.held(&key, |held| held.revision);
@@ -815,8 +817,10 @@ impl Layouts {
             }
             let key = (workspace_id, route.clone());
             // A write of this view under way holds what the person just changed: the record has not
-            // taken it yet, and laying the record over the shell would put it back.
+            // taken it yet, and laying the record over the shell would put it back. The look after
+            // it reads the record.
             if self.held(&key, |held| held.writing.is_some()) {
+                self.seen.set(None);
                 continue;
             }
             let known = self.held(&key, |held| held.revision);
@@ -2693,6 +2697,30 @@ mod tests {
         assert!(
             desktops.last_step(workspace, &person).is_some(),
             "the change the task wrote is one step of the person's"
+        );
+
+        // A change can reach the record while this device's next write is under way: the look that handed the write noted the engine's revision, and its follow skipped the
+        // record. The write's answer need not move the revision again (one that finds nothing to
+        // write does not), and the look after it still reads the record.
+        let mut tree = tree;
+        desktops.follow(&engine, "", &mut tree);
+        tree.external_revision += 1;
+        let strip = tree.workspaces.iter_mut().flat_map(|held| &mut held.strips);
+        strip
+            .take(1)
+            .for_each(|strip| strip.name = "Moved".to_owned());
+        let revision = engine.owner().revision();
+        let _ = desktops.settled(revision, &tree);
+        gate.hold();
+        desktops.capture(&engine, &tree);
+        desktops.follow(&engine, "", &mut tree.clone());
+        gate.open();
+        heard
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the write wakes the loop once it is done");
+        assert!(
+            !desktops.settled(revision, &tree),
+            "the look after a write reads the record its follow skipped"
         );
     }
 }
