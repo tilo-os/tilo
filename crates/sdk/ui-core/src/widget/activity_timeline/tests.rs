@@ -1287,7 +1287,7 @@ fn a_long_band_lead_leaves_room_for_the_facts_beside_it() {
     );
     // The lead — the name and its chip — ends inside its share of the line,
     // and the facts it answers start one gap past it, never past the line.
-    let bounded = at.x + (end - at.x) * 0.55 + 6.0 + 0.01;
+    let bounded = at.x + (end - at.x) * 0.7 + 6.0 + 0.01;
     assert!(
         facts <= bounded,
         "the lead ends inside its share of the line: {facts} past {bounded}"

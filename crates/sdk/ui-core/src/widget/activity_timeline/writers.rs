@@ -164,7 +164,18 @@ impl ActivityTimeline {
             theme,
         } = ctx.reborrow();
         let style = theme.text(TextRole::Caption);
-        let name = fit_text(tr, &parts.person, &style, (lead_end - x).max(0.0));
+        // The agent that wrote for the person is part of who did it: its mark keeps its room
+        // and the person's name truncates first.
+        let writer_mark = parts.writer.as_ref().map_or(0.0, |writer| {
+            let lead_mark = author_writer_lead(lead, writer, theme);
+            crate::widget::ChipFace::intrinsic_width("", lead_mark, false, tr, theme) + 6.0
+        });
+        let name = fit_text(
+            tr,
+            &parts.person,
+            &style,
+            (lead_end - x - writer_mark).max(0.0),
+        );
         let (name_w, name_h) = tr.measure_style(&name, None, &style);
         tr.draw_style(
             scene,
@@ -182,11 +193,16 @@ impl ActivityTimeline {
             let mark = crate::widget::ChipFace::intrinsic_width("", lead_mark, false, tr, theme);
             let room = (lead_end - x).max(0.0);
             if room >= mark {
-                // The chip elides its own name inside the room it is given.
-                let width = named.min(room);
+                // The agent by its mark and name, or by its mark alone where its name does not
+                // fit: the name stays in the hover, never cut to an ellipsis.
+                let (label, width) = if named <= room {
+                    (writer.as_str(), named)
+                } else {
+                    ("", mark)
+                };
                 let height = crate::widget::ChipFace::height(theme);
                 let chip = Rect::new(x, at.y - height / 2.0, x + width, at.y + height / 2.0);
-                crate::widget::ChipFace::new(chip, writer)
+                crate::widget::ChipFace::new(chip, label)
                     .lead(lead_mark)
                     .paint(scene, transform, tr, theme);
                 x += width + 6.0;
@@ -284,6 +300,6 @@ impl ActivityTimeline {
     }
 }
 
-/// The most of a band's second line its one author's name and chip may take:
-/// the facts after them keep the rest.
-const LEAD_MAX_SHARE: f64 = 0.55;
+/// The most of a band's second line its one author's name and chip may take: who did it
+/// comes before how much moved, so the facts after them truncate first.
+const LEAD_MAX_SHARE: f64 = 0.7;
