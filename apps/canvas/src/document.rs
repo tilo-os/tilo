@@ -10,7 +10,7 @@
 //! title, size, ground, layers in order, marks in order and the media saved
 //! in it) and, under `content/`, each picture its marks show, once however
 //! often it is placed, as the bytes it was placed from and named by its
-//! content address. The JSON is the same data every collaborator simulates
+//! content address. The JSON is the same data every member simulates
 //! from, so a painting opened from a file paints exactly as it was saved;
 //! opening it puts its pictures back in the content store, so they show on
 //! a machine that never had them. The JSON alone still opens as an artwork

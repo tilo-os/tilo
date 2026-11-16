@@ -21,7 +21,7 @@ pub(super) fn fixture(
     ui::i18n::I18nManager::init("en-US");
     let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
     let target = crate::PageId::new_v4();
-    // Author the corpus on a real collaborator replica, then merge once.
+    // Author the corpus on a real member replica, then merge once.
     // Each real action still commits; setup does not render 255 intermediate frames.
     let mut peer = app.peer_document();
     for index in 0..pages {
@@ -288,7 +288,7 @@ fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() 
     let resources = app.harness().resources();
     assert!(
         contains(&resources, &crate::actions::page_resource_id(page)),
-        "the cache must expose collaborator changes at the new revision"
+        "the cache must expose member changes at the new revision"
     );
 }
 
@@ -555,7 +555,7 @@ const OWNED_LONG_SECTIONS: usize = 45;
 
 /// A disposable notebook shaped like a working one: nested notes, tags,
 /// `[[links]]` between notes, headings, lists, code and one long note.
-/// Every note is authored on a collaborator replica through the same
+/// Every note is authored on a member replica through the same
 /// actions a person's edits use, then merged once.
 fn owned_notebook() -> (
     ui::framework::testing::TestApp<crate::NotesShell>,
@@ -699,7 +699,7 @@ fn shown_text(app: &mut OwnedApp) -> String {
 }
 
 /// The owned-fixture profile: typing, scrolling, pointer motion, an idle
-/// frame, opening notes, writes from the note tree and a collaborator, search
+/// frame, opening notes, writes from the note tree and a member, search
 /// and reading the notebook, each on the real mounted app with its canonical
 /// effect asserted. No timing budgets; the printed rows are the profile.
 #[test]
@@ -802,7 +802,7 @@ fn profile_opening(app: &mut OwnedApp, pages: &[crate::PageId]) {
 }
 
 /// A rename from the note tree, on the tree's own event path, and a
-/// collaborator's rename arriving.
+/// member's rename arriving.
 fn profile_writes(app: &mut OwnedApp, pages: &[crate::PageId]) {
     let titled = |app: &mut OwnedApp, title: &str| {
         app.read_document(crate::read::list_pages)
@@ -831,7 +831,7 @@ fn profile_writes(app: &mut OwnedApp, pages: &[crate::PageId]) {
         );
         let (elapsed, rows) = observe(|| app.merge_peer(&mut peer).unwrap());
         let frames = app.harness().take_profile_samples();
-        assert!(titled(app, &title), "the collaborator's edit landed");
+        assert!(titled(app, &title), "the member's edit landed");
         emit_owned("remote_edit", sample, elapsed, &rows, &frames);
     }
 }
@@ -899,7 +899,7 @@ fn bodies_read(rows: &[Sample]) -> usize {
 /// Restoring a saved window view, as a launch that reopens the window does,
 /// to the frame that shows it. Hosted, the framework has read the notebook
 /// already: the restore takes that state and reads no note a second time,
-/// and a collaborator's change that arrived after the framework read is
+/// and a member's change that arrived after the framework read is
 /// shown all the same.
 fn profile_restore(app: &mut OwnedApp, pages: &[crate::PageId]) {
     use ui::application_view::ApplicationViewState as _;
@@ -955,7 +955,7 @@ fn profile_restore(app: &mut OwnedApp, pages: &[crate::PageId]) {
         );
         emit_owned("restore_view", sample, elapsed, &rows, &frames);
     }
-    // A collaborator renames a note after the framework read the notebook:
+    // A member renames a note after the framework read the notebook:
     // the document the restore is given holds the rename, the live notebook
     // has not followed it yet.
     leave(app);

@@ -11,7 +11,7 @@
 //! opening, closing and moving on the strip | | [`Ambient`] | chrome that comes back on its own (shell
 //! widgets) | | [`Transient`] | a readout or acknowledgement that goes on its own | | [`Follow`] | a
 //! peer's pointer gliding between the samples it is heard at | | [`Float`] | a reaction rising from the
-//! pointer it was sent from | | [`Trace`] | a collaborator's just-typed run fading on its own | |
+//! pointer it was sent from | | [`Trace`] | a member's just-typed run fading on its own | |
 //! [`Breathe`] | a live state's soft ring (someone in a call) | | [`Feedback`] | press and hover tints
 //! | | [`ControlChange`] / [`Thumb`] / [`Mark`] | a switch's knob and tint, a checkbox's mark, a
 //! slider's thumb, a badge's count | | [`Attention`] | a refusal's shake, a single pulse | | [`Beckon`]

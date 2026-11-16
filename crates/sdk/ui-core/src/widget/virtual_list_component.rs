@@ -52,7 +52,7 @@ pub struct ListItemProps {
     pub key: String,
     /// The resource the row shows: what selecting or activating the row reports.
     pub item: Option<ResourceId>,
-    /// Who else is at the item now (a collaborator's or an agent's lens on it), shown on the
+    /// Who else is at the item now (a member's or an agent's lens on it), shown on the
     /// row.
     pub presence: Option<Person>,
     /// Who wrote it, in a transcript: the list shows their avatar, their name and the time

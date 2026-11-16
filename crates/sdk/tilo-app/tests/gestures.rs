@@ -100,7 +100,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_peers_edit_lands_under_the_caret_of_a_person_typing;
-    // A collaborator's edit lands in the field while the person types in it, and the caret stays
+    // A member's edit lands in the field while the person types in it, and the caret stays
     // with what they were typing: the person's next keystroke goes where they were.
     {
         use tilo_app::automerge::transaction::Transactable as _;
@@ -192,7 +192,7 @@ tilo_test_env::scenario! {
         assert!(first > 0.3, "the drag moved the level: {first}");
         assert!(
             app.versions().len() > versions + 1,
-            "collaborators follow the drag live"
+            "members follow the drag live"
         );
         app.harness().drag_at((at(0.5), y), (at(0.9), y));
         assert!(app.state().level > first);

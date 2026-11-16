@@ -97,7 +97,7 @@ pub(crate) struct Journal {
     /// Stored selection (absolute index into `entries`, or -1 = auto).
     sel_raw: i64,
     /// This survives reordering within the local journal cache; it is this window's, never
-    /// a collaborator's.
+    /// a member's.
     selected_entry: Option<String>,
     live_tail: bool,
     /// Never holds `journalctl` stderr or raw journal content.
@@ -229,7 +229,7 @@ impl Journal {
     fn effective_selected(&self) -> Option<usize> {
         // A stable resource selection is explicit even when this replica has not received
         // that record yet; never substitute an unrelated auto selection for a
-        // collaborator's chosen entry.
+        // member's chosen entry.
         if self.selected_entry.is_some() {
             let selected = usize::try_from(self.sel_raw).ok()?;
             return self.filtered.contains(&selected).then_some(selected);

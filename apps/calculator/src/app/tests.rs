@@ -157,10 +157,10 @@ fn click(app: &mut TestApp<CalculatorShell>, target: &str) {
     app.settle();
 }
 
-/// The mode, an open drawer and a collaborator's pointer over the first
+/// The mode, an open drawer and a member's pointer over the first
 /// formula, staged over the scenario's rows.
 #[test]
-fn captures_stage_mode_drawers_and_collaborators() {
+fn captures_stage_mode_drawers_and_members() {
     let _calc = TestApp::<CalculatorShell>::capture(Some("calculator")).unwrap();
     let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
     assert_eq!(chosen_view().as_deref(), Some("Calculator"));
@@ -188,7 +188,7 @@ fn captures_stage_mode_drawers_and_collaborators() {
     let (x, y) = (f64::from(x), f64::from(y));
     assert!(
         field.x0 <= x && x <= field.x1 && field.y0 <= y && y <= field.y1,
-        "the collaborator's pointer is over the first formula: {field:?}"
+        "the member's pointer is over the first formula: {field:?}"
     );
 }
 
@@ -885,7 +885,7 @@ fn keyboard_path_switches_mode_and_edits_graph_rows() {
 }
 
 /// A formula is written keystroke by keystroke and lands as one undo step; a
-/// collaborator's edit is presented.
+/// member's edit is presented.
 #[test]
 fn formula_keystrokes_are_one_undo_step_and_peer_edits_are_presented() {
     let mut app = hosted();
@@ -940,7 +940,7 @@ fn formula_keystrokes_are_one_undo_step_and_peer_edits_are_presented() {
             .value
             .as_deref(),
         Some("x*x+1"),
-        "the collaborator's formula is shown"
+        "the member's formula is shown"
     );
 }
 

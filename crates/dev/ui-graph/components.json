@@ -7614,7 +7614,7 @@
         },
         {
           "name": "presence",
-          "doc": "Who else is at the item now (a collaborator's or an agent's lens on it), shown on the row as a list row shows it ([`crate::widget::ListItemProps::presence`]).",
+          "doc": "Who else is at the item now (a member's or an agent's lens on it), shown on the row as a list row shows it ([`crate::widget::ListItemProps::presence`]).",
           "type": {
             "option": "principal"
           }
@@ -7720,7 +7720,7 @@
         },
         {
           "name": "presence",
-          "doc": "Who else is at the item now (a collaborator's or an agent's lens on it), shown on the row.",
+          "doc": "Who else is at the item now (a member's or an agent's lens on it), shown on the row.",
           "type": {
             "option": "principal"
           }

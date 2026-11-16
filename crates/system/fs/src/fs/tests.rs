@@ -254,7 +254,7 @@ mod availability_control_tests {
     }
 
     #[tokio::test]
-    async fn pin_policy_persists_and_read_only_collaborators_manage_offline_policy() {
+    async fn pin_policy_persists_and_read_only_members_manage_offline_policy() {
         {
             let dir = tempfile::tempdir().unwrap();
             let registry_path = dir.path().join("availability.json");

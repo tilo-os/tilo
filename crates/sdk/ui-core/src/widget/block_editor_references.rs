@@ -1395,9 +1395,9 @@ mod tests {
             };
             let mut editor = BlockEditor::from_props("b", props);
             assert_eq!(editor.to_markdown().trim(), "First line");
-            value.set("Changed by a collaborator".to_owned());
+            value.set("Changed by a member".to_owned());
             assert!(editor.follow_body());
-            assert_eq!(editor.to_markdown().trim(), "Changed by a collaborator");
+            assert_eq!(editor.to_markdown().trim(), "Changed by a member");
         }
 
         phase a_rich_document_shows_as_its_blocks;

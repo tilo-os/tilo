@@ -450,7 +450,7 @@ impl HistoryAttribution {
 }
 
 /// Who an author is to the person reading the history. Rows draw the
-/// reader's own changes, a collaborator's and an agent's differently.
+/// reader's own changes, a member's and an agent's differently.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AuthorRelation {
     /// The reader's own change.

@@ -983,7 +983,7 @@ impl Artwork {
 impl Artwork {
     /// Where selecting leaves the participant who asked for it: the marks
     /// `select` names, as a range over the artwork's marks, in the order
-    /// every collaborator holds them — so a peer draws the selection on
+    /// every member holds them — so a peer draws the selection on
     /// their own screen, and a participant with no pointer of its own shows
     /// what it picked.
     fn lands(

@@ -2,7 +2,7 @@
 //! painting is stored as its marks (strokes and filled regions with a colour
 //! and a medium) and this crate turns a layer's marks into the pixels that
 //! paint would leave; the same marks give the same pixels on every machine, so
-//! a painting syncs as marks and each collaborator simulates it locally.
+//! a painting syncs as marks and each member simulates it locally.
 //!
 //! [`MediumEngine`] is one kind of paint ([`watercolour`], [`oil`]),
 //! [`Preset`] is shareable data over an engine, and [`LayerPainter`] keeps one

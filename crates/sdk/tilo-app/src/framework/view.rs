@@ -538,7 +538,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// into a form ([`Self::form`]).
     ///
     /// A record's field shows its text as the document holds it, so who
-    /// wrote each run shows in their colour, a collaborator's edit lands
+    /// wrote each run shows in their colour, a member's edit lands
     /// under the caret as they make it, and an invocation writing there
     /// draws its writer's caret where the write ends. Each edit is a splice
     /// of it ([`Path::splice`]); the keystrokes of one word are one undo step.

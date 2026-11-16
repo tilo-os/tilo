@@ -338,7 +338,7 @@ fn replaced(
     matched.is_some()
 }
 
-/// Where the body's blocks are for presence under `path`, so a collaborator's caret in the
+/// Where the body's blocks are for presence under `path`, so a member's caret in the
 /// same body shows here.
 fn presence_of(path: &[PathSegment]) -> Option<PresenceKeyFn> {
     (!path.is_empty()).then(|| {

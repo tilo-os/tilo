@@ -2,7 +2,7 @@
 //! fuzzy ranking behind the address bar's suggestions.
 //!
 //! It is the person's own record ([`BrowsingHistory`]): it follows them to their
-//! other devices and never reaches a collaborator. [`History::suggest`] matches
+//! other devices and never reaches a member. [`History::suggest`] matches
 //! the query as a case-insensitive subsequence of the title and URL, then ranks
 //! survivors on match quality first, then recency, then frequency.
 

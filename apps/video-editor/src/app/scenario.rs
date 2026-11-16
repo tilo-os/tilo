@@ -44,7 +44,7 @@ pub enum ShotScenario {
     /// keyed, so the box, the channel chooser, the amount slider and its
     /// key control are all on screen at once.
     Curves,
-    Collaborators,
+    Members,
     /// The export dialog open over the editor, before a render starts.
     ExportDialog,
     /// The export dialog showing why a render failed, at full length, so the
@@ -105,7 +105,7 @@ impl ShotScenario {
                 | ShotScenario::Markers
                 | ShotScenario::KeyMenu
                 | ShotScenario::Curves
-                | ShotScenario::Collaborators
+                | ShotScenario::Members
                 | ShotScenario::ProjectFormat
                 | ShotScenario::FocusInspector
                 | ShotScenario::LinkedAudio
@@ -141,7 +141,7 @@ impl ShotScenario {
         "goto",
         "filedrop",
         "curves",
-        "collaborators",
+        "members",
         "exportdialog",
         "exportfaileddialog",
         "range",
@@ -178,7 +178,7 @@ impl ShotScenario {
             "goto" => ShotScenario::GotoTimecode,
             "filedrop" => ShotScenario::FileDrop,
             "curves" => ShotScenario::Curves,
-            "collaborators" => ShotScenario::Collaborators,
+            "members" => ShotScenario::Members,
             "exportdialog" => ShotScenario::ExportDialog,
             "exportfaileddialog" => ShotScenario::ExportFailedDialog,
             "range" => ShotScenario::RenderRange,
@@ -545,7 +545,7 @@ impl VideoEditorApp {
     /// [`crate::presence::range_frame`], the functions this editor publishes with, folded
     /// in through [`PresenceCtx::apply_remote_presence`], the one decoder every inbound
     /// frame goes through. What the capture shows is what a real peer produces.
-    pub(super) fn seed_shot_collaborators(&mut self) {
+    pub(super) fn seed_shot_members(&mut self) {
         use ui::permissions::MemberId;
         let mut ctx = PresenceCtx::empty();
         // Clips to hand out, one per track walked from the top, so the pick is the same on
@@ -613,8 +613,8 @@ impl VideoEditorApp {
             self.inspector_flap.snap(true);
         }
         match self.capture.scenario {
-            ShotScenario::Collaborators => {
-                self.seed_shot_collaborators();
+            ShotScenario::Members => {
+                self.seed_shot_members();
             }
             ShotScenario::Mix => {
                 if let Some(cid) = self

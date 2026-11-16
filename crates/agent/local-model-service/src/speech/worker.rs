@@ -200,7 +200,7 @@ pub trait SpeechDecoder {
         false
     }
     /// Declare scheduling supported by this implementation, never by model
-    /// bytes or a remote collaborator. Older workers default to full context.
+    /// bytes or a remote member. Older workers default to full context.
     fn draft_policy(&self) -> DraftPolicy {
         DraftPolicy::FullContext
     }

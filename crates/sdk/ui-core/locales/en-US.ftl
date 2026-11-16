@@ -594,7 +594,7 @@ participant-bot = { $name } · Bot
 # same numbers for everyone in it.
 participant-numbered = { $name } ({ $number })
 interaction-agent = Agent
-interaction-collaborator = Collaborator
+interaction-member = Member
 # What an actor is doing: its name, then the action in the present tense.
 interaction-editing-field = editing { $field }
 interaction-working = working

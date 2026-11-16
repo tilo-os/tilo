@@ -55,10 +55,10 @@ fn not_kept(error: &ActionError) -> String {
 /// the host permission-checks, attributes and replicates it; for rich text
 /// inside another resource ([`RichTextSurface::field`]) the owning
 /// resource's action carries it. Either way typing a word is one undo step;
-/// a collaborator's edit, an undo or a restore is presented without moving
+/// a member's edit, an undo or a restore is presented without moving
 /// the caret of the person typing; a participant who may only view can
 /// read, select and copy, and their edits never reach the document; and
-/// collaborators' carets are keyed to paragraphs rather than positions on
+/// members' carets are keyed to paragraphs rather than positions on
 /// screen. In a framework app, History mode shows past versions in the same
 /// editor, read-only.
 pub struct RichTextSurface<S: ?Sized = Hosted> {

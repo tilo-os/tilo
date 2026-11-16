@@ -318,7 +318,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
 }
 
 /// An agent on the person's computer opens Notes and makes a note: the Notes window reaches the
-/// person's layout as a collaborator's open puts it there, named as the agent's run's.
+/// person's layout as a member's open puts it there, named as the agent's run's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_app_an_agent_opens_reaches_the_persons_layout() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);

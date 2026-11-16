@@ -223,7 +223,7 @@ fn writes_text(doc: &AutoCommit, p: &Patch) -> bool {
 ///
 /// Found by walking prefix frontiers rather than comparing hashes, because
 /// the run's last change need not be the only head of that prefix — with
-/// two collaborators a prefix can have several concurrent frontiers.
+/// two members a prefix can have several concurrent frontiers.
 fn first_index_after(doc: &mut AutoCommit, after: &[ChangeHash], total: usize) -> usize {
     let after_set: HashSet<ChangeHash> = after.iter().copied().collect();
     for i in 0..total {

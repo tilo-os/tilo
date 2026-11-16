@@ -171,7 +171,7 @@ fn remote_writing_tints_once_per_run() {
         );
     }
 
-    // A collaborator that publishes **only** a caret — never `Typing` — still
+    // A member that publishes **only** a caret — never `Typing` — still
     // gets a highlighter over the run it just wrote.
     //
     // Why derivation lives on the receiving side, not the sending one: `App`

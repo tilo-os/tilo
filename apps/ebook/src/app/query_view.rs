@@ -42,7 +42,7 @@ use crate::search_provider::{
 };
 use crate::store::{STORE_BOOK, StoreBook};
 
-/// A book on the shelf, or one a collaborator shared.
+/// A book on the shelf, or one a member shared.
 pub(crate) const BOOK: &str = "books.book";
 /// A chapter of a book.
 pub(crate) const CHAPTER: &str = "books.chapter";
@@ -653,7 +653,7 @@ impl BooksApp {
     /// it is anchored at, as the platform search opens its hits.
     ///
     /// Opening is the person's own gesture, done at once like a click on
-    /// the page; under an invocation, or for a collaborator's book that is
+    /// the page; under an invocation, or for a member's book that is
     /// fetched first and answers once its bytes land, it goes through the
     /// host like any caller's.
     pub(super) fn open_hit(&mut self, anchor: &str) {

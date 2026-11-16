@@ -2,7 +2,7 @@
 //!
 //! A `--shots` scenario has three parts. What the resource does not hold —
 //! stand-ins for live sources, scratch files, blobs, other people's
-//! versions, collaborators — is its fixture
+//! versions, members — is its fixture
 //! ([`ResourceApp::fixture`](super::ResourceApp::fixture)), prepared before
 //! the view is built. The resource half is ordinary actions
 //! ([`ResourceApp::scenario`](super::ResourceApp::scenario)), applied through
@@ -153,15 +153,15 @@ pub fn stage<A: ResourceApp>(
     )
 }
 
-/// The collaborators the root the harness hosts shows once its views
+/// The members the root the harness hosts shows once its views
 /// staged `scenario`; `None` when it hosts no root.
-fn stage_root(harness: &mut FrameHarness, scenario: Option<&str>) -> Option<Collaborators> {
+fn stage_root(harness: &mut FrameHarness, scenario: Option<&str>) -> Option<Members> {
     harness.with_widget_mut(|root: &mut ResourceRoot| root.stage(scenario))
 }
 
-/// The collaborators a staged capture shows, as the presence frames their
+/// The members a staged capture shows, as the presence frames their
 /// windows would send.
-type Collaborators = Vec<(
+type Members = Vec<(
     String,
     ui_core::presence::PresenceKey,
     ui_core::PresencePayload,
@@ -174,7 +174,7 @@ type ScenarioAction = (&'static str, serde_json::Map<String, serde_json::Value>)
 struct Staging {
     title: &'static str,
     kind: &'static str,
-    stage_root: fn(&mut FrameHarness, Option<&str>) -> Option<Collaborators>,
+    stage_root: fn(&mut FrameHarness, Option<&str>) -> Option<Members>,
     input: fn(Option<&str>, &mut FrameHarness) -> Result<(), String>,
 }
 
@@ -204,11 +204,11 @@ fn stage_with(
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
     }
     harness.relayout();
-    let collaborators = (app.stage_root)(harness, scenario)
+    let members = (app.stage_root)(harness, scenario)
         .ok_or_else(|| LaunchError::Operation(format!("{title} is not hosted here")))?;
-    if !collaborators.is_empty() {
+    if !members.is_empty() {
         harness.update_presence(|presence| {
-            for (name, key, payload) in collaborators {
+            for (name, key, payload) in members {
                 let user = ui_core::permissions::MemberId::person(name.clone());
                 presence.set_display_name(user.clone(), name);
                 presence.apply_remote_presence(user, key, payload);

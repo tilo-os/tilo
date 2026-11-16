@@ -127,7 +127,7 @@ impl SurfaceScope {
 /// This trait adds only what the framework cannot infer:
 ///
 /// * **Read** — [`present`](Self::present) receives the resource state
-///   whenever it changes: a local edit, a collaborator's, an undo. In History
+///   whenever it changes: a local edit, a member's, an undo. In History
 ///   mode the framework builds the surface again from a read-only `ViewCx`
 ///   and presents a *past* version, so time travel needs no extra code as
 ///   long as the surface draws from what it was presented. A surface over a
@@ -156,7 +156,7 @@ impl SurfaceScope {
 ///   confirmed edit then arrives as an ordinary change.
 /// * **Presence** — report where the user is as a [`ResourceSelection`] from
 ///   the toolkit's `Widget::presence_payload` (one line:
-///   `selection.presence::<R>(app_id)`), and draw collaborators from the
+///   `selection.presence::<R>(app_id)`), and draw members from the
 ///   `PresenceCtx` every draw receives, under the same keys.
 /// * **Effects** — work with no document delta (back up now, connect, run a
 ///   query) is the surface's effect vocabulary `E`, a `#[derive(Effect)]`
@@ -223,7 +223,7 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         let _ = cx;
     }
 
-    /// A participant's action — an agent's verb, a collaborator's edit
+    /// A participant's action — an agent's verb, a member's edit
     /// taken through the API — left them at `place`, as the resource says
     /// it lands ([`Resource::lands`](tilo_resource::Resource::lands)).
     /// Called after [`present`](Self::present) showed the state holding it.
@@ -501,7 +501,7 @@ impl<R: Resource> SurfaceCx<R> {
 }
 
 /// Where a participant is inside a resource, in the resource's own terms, so
-/// it means the same thing on every collaborator's screen.
+/// it means the same thing on every member's screen.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResourceSelection {
     /// An item (a clip, a card, a row) is selected.
@@ -515,7 +515,7 @@ pub enum ResourceSelection {
         end: usize,
     },
     /// A pointer over an item, at a point of the shared window (logical
-    /// pixels): where a collaborator is aiming in a surface that draws
+    /// pixels): where a member is aiming in a surface that draws
     /// their cursor itself.
     Pointer { item: String, x: f32, y: f32 },
 }

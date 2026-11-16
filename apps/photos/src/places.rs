@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use crate::model::{LibraryPhoto, PhotoLocation};
 
 /// Minimum and maximum local map zoom. These are presentation values, never
-/// shared state: a collaborator can open the same place without moving your
+/// shared state: a member can open the same place without moving your
 /// viewport.
 pub const MIN_ZOOM: f64 = 1.0;
 pub const MAX_ZOOM: f64 = 18.0;

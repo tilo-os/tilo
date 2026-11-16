@@ -4,7 +4,7 @@
 //! One row per workspace with someone in it, wearing their faces, and under
 //! it a row for each window someone is in (choosing it goes there) and each
 //! call in progress (choosing it joins). It reads the presence the shell
-//! already holds: the collaborators the desktop writes into each workspace
+//! already holds: the members the desktop writes into each workspace
 //! as its people say where they are, and the calls their presence names.
 //! Nothing here watches anything.
 //!
@@ -38,7 +38,7 @@ pub fn happening_kind() -> ResourceKind {
 /// first section did. Only the empty palette asks this source anything.
 const LEAD_INTENT: f32 = 1.0;
 
-/// Someone in a workspace, as the shell's collaborators list them.
+/// Someone in a workspace, as the shell's members list them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PersonHere {
     /// Their id within the workspace's roster: their face is theirs.

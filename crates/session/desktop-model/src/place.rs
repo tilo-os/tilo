@@ -1,5 +1,5 @@
 //! A view placed on a workspace's layout by someone other than the person
-//! arranging it: an agent's window, or a window a collaborator's open asks for.
+//! arranging it: an agent's window, or a window a member's open asks for.
 //!
 //! The view becomes a tab of the layout the device holds, beside the group
 //! showing the record it works in already, and the change travels to every

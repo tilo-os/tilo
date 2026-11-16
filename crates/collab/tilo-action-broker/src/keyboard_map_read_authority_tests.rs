@@ -226,7 +226,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 "an unretained original cannot borrow worker identity"
             );
             let mut foreign = delivered.clone();
-            foreign.actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("unrelated-same-role-collaborator"));
+            foreign.actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("unrelated-same-role-member"));
             assert!(
                 authorize(&foreign).is_err(),
                 "caller labels cannot replace broker custody"

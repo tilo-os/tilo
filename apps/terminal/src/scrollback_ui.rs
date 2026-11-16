@@ -195,7 +195,7 @@ impl TerminalWidget {
 
     /// Paint the grid: each row in view with its share of the selection and the find matches, drawn at
     /// its place in the scrollback so a scroll only moves it ([`ui::scroll_copy::PaintedFrames`]); then the
-    /// cursor, the bar, the bands above the grid (`outside`) and collaborators' marks.
+    /// cursor, the bar, the bands above the grid (`outside`) and members' marks.
     fn draw_grid(
         &mut self,
         scene: &mut Scene,

@@ -238,7 +238,7 @@ mod tests {
             assert_eq!(
                 app.peer_document().save(),
                 library,
-                "collaborators on the library never see them"
+                "members on the library never see them"
             );
 
             app.effect(&TubeEffect::SetPreferredQuality {
@@ -558,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn a_collaborators_emptied_library_is_shown_empty() {
+    fn a_members_emptied_library_is_shown_empty() {
         let mut app = TestApp::<TubeShell>::capture(Some("watch")).unwrap();
         app.invoke(Invoke::edit(&Library::like("vid_donut", true)).unwrap())
             .unwrap();

@@ -542,7 +542,7 @@ fn draw_presence_layer(
     if widgets_changed { None } else { damage }
 }
 
-/// Where collaborators' marks painted over the widgets (`layer`, with this
+/// Where members' marks painted over the widgets (`layer`, with this
 /// frame recorded) are on screen and this frame, in whole device pixels of
 /// the `physical_viewport`: what a scroll copy beneath them repaints
 /// ([`crate::scroll_copy::marks_over_copies`]). `None` when the marks
@@ -578,7 +578,7 @@ fn peer_marks(
 /// `false` when damage cannot describe the frame and it must repaint the
 /// window instead.
 ///
-/// `content_marks`: widgets paint collaborators' carets, selections or
+/// `content_marks`: widgets paint members' carets, selections or
 /// activity, placed from their own content and labelled with name chips
 /// that hang outside the widget. A widget that changes can move those marks
 /// without reporting where they were, so a frame with widget damage

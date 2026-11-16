@@ -709,7 +709,7 @@ impl CaptureStudio {
     }
 
     /// Copy the last screenshot into this workspace's files, under `Screenshots` , where the
-    /// person's collaborators see it: the screenshot the studio wrote, never what a private window
+    /// person's members see it: the screenshot the studio wrote, never what a private window
     /// showed.
     fn send_last_to_workspace(&mut self) {
         // A new send: what was said of the last one is not about this one.

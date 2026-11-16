@@ -11,7 +11,7 @@
 //! * [`ChatPermissions::can_embed`] — may this peer hydrate the bytes behind a
 //!   file/image/video attachment? Checked before the image cache requests the
 //!   blob **and** before the renderer paints it, so an ungranted embed shows a
-//!   locked card and never asks a collaborator for bytes.
+//!   locked card and never asks a member for bytes.
 //! * [`ChatPermissions::can_participate`] — may this peer send / react / join a
 //!   call in the current workspace? (`Write` on the workspace.)
 //! * [`ChatPermissions::allows`] — the call-action seam (join / speak / camera

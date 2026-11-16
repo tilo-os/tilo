@@ -86,7 +86,7 @@ pub enum TubeEffect {
     /// Mark watched.
     ///
     /// Adds the video to your own watch history, which follows you to your
-    /// other devices and never reaches collaborators.
+    /// other devices and never reaches members.
     #[effect(kind = "read")]
     MarkWatched {
         #[param("The video's id")]
@@ -129,7 +129,7 @@ pub enum TubeEffect {
     /// Set a playback preference.
     ///
     /// Your own choice, which follows you to your other devices and never
-    /// reaches collaborators.
+    /// reaches members.
     #[effect(kind = "read")]
     SetPreference {
         #[param(

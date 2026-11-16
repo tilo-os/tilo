@@ -1,4 +1,4 @@
-//! The agent surface: the tools an AI collaborator can drive any app with.
+//! The agent surface: the tools an AI member can drive any app with.
 //!
 //! `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link` and `tilo_status` address
 //! everything by **path**: `notes/Todo/body#append-paragraph` is the app

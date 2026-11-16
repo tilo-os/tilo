@@ -2,7 +2,7 @@
 """Audit Tilo's public collaboration vocabulary.
 
 Protocol and implementation types may continue to use ``peer``.
-Ordinary copy uses Workspace, People, Collaborator and Participant. The audit
+Ordinary copy uses Workspace, People, Member and Participant. The audit
 covers the session modules that own public collaboration copy and stops at each
 file's test module so assertion prose may describe implementation details.
 """
@@ -62,7 +62,7 @@ def main() -> int:
         for violation in violations:
             print(f"  {violation}", file=sys.stderr)
         return 1
-    print("shell copy contract OK (Workspace/People/Collaborator vocabulary)")
+    print("shell copy contract OK (Workspace/People/Member vocabulary)")
     return 0
 
 

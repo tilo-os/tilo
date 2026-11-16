@@ -592,7 +592,7 @@ fn a_selected_box_is_formatted_whole_from_the_toolbar() {
 }
 
 #[test]
-fn a_collaborators_edits_merge_with_typing_letter_by_letter() {
+fn a_members_edits_merge_with_typing_letter_by_letter() {
     use tilo_document::RichTextAction;
     use tilo_document::action::RegionKind;
     let mut slide = Slide::new(Layout::Blank);
@@ -610,7 +610,7 @@ fn a_collaborators_edits_merge_with_typing_letter_by_letter() {
 
     let mut peer =
         ui::tilo_resource::Replica::<crate::deck::Deck>::from_doc(bench.app.peer_document())
-            .as_author("collaborator");
+            .as_author("member");
     bench.type_text(" one");
 
     let splice = |element: &str, block: String, at: usize, del: usize, ins: &str| {
@@ -705,7 +705,7 @@ fn drawn_paths(bench: &mut Bench) -> usize {
 }
 
 #[test]
-fn collaborators_carets_show_in_the_boxes_they_are_in() {
+fn members_carets_show_in_the_boxes_they_are_in() {
     let (mut bench, id) = box_of("Hello world", 900.0, 120.0);
     let key = render::words_presence_key(&first_paragraph(&bench, &id));
     let alone = drawn_paths(&mut bench);

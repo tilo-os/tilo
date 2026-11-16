@@ -506,7 +506,7 @@ pub(crate) fn refuse(message: impl Into<String>) -> Refusal {
 
 /// The id of a mark or layer given none: a hash of what it is and where it
 /// sits in its action, so every replica of the action names it alike and two
-/// collaborators drawing different things never collide.
+/// members drawing different things never collide.
 /// A name for a new layer made from `base` that no layer has yet: "Layer
 /// 3" after "Layer 2"; another medium's base alone while it is unused
 /// ("Oil"), numbered once it is ("Oil 2"). Plain layers are always

@@ -6,7 +6,7 @@ registry for the namespaces your app ids live in. It is the graphical side of
 secret in this app's secret store (the system keychain), which `tilo-app`
 addresses under this app's id.
 
-The key never enters the app's resource, which is synced to collaborators and
+The key never enters the app's resource, which is synced to members and
 kept in history; only the namespaces, contact and registry do. Creating the
 key and copying it for CI need the owner's role and a confirmation, through
 the buttons and through the action API alike.

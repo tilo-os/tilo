@@ -730,7 +730,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            // The band must never swallow a collaborator's work just because it sits
+            // The band must never swallow a member's work just because it sits
             // between two of the agent's changes.
             let (mut report, _intro) = Report::started_by_a_person();
             report.edit_as(AGENT, 1_780_000_200, |dm| {

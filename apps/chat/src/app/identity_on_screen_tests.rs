@@ -192,10 +192,10 @@ tilo_test_env::scenario! {
         let mut app = ChatApp::new_ephemeral();
         app.users = vec![user("u_me", false), user("u_scribe", true)];
         assert!(
-            app.has_other_collaborator(),
-            "the agent is another collaborator"
+            app.has_other_member(),
+            "the agent is another member"
         );
-        assert_eq!(app.roster_label(), "Collaborators");
+        assert_eq!(app.roster_label(), "Members");
 
         app.users = vec![user("u_me", false), user("u_aria", false)];
         assert_eq!(app.roster_label(), "People");
@@ -354,7 +354,7 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
     );
 }
 
-/// An agent is a collaborator like a person: its answer reads by the name the workspace's own
+/// An agent is a member like a person: its answer reads by the name the workspace's own
 /// record of its agents keeps for it — whether or not its device works here — and the conversation
 /// with it is named for it. Never by a placeholder that spells part of its routing id.
 #[test]

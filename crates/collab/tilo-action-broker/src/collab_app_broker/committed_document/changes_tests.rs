@@ -367,7 +367,7 @@ fn every_piece_of_changes_is_authorized_and_a_revocation_while_editing_fails_clo
     let mut channel = Channel::new(&service);
     let first = channel.open(None).unwrap();
     channel.take(&first);
-    // A collaborator keeps editing; each edit is read as changes.
+    // A member keeps editing; each edit is read as changes.
     for revision in 2..5 {
         service.edit(revision);
         let changes = channel.open_changes([revision - 1; 32]).unwrap();

@@ -281,7 +281,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase selected_tilo_credentials_are_resealed_without_overwriting_or_adopting_collaborators;
+    phase selected_tilo_credentials_are_resealed_without_overwriting_or_adopting_members;
     {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");

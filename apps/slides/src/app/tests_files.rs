@@ -1,7 +1,7 @@
 //! Presentation files and effects from outside the editor: opening and
 //! saving through the host's chooser or a path, failures, reveals the
 //! palette or an agent asks for, and the editor following a restored or
-//! collaborator-changed deck.
+//! member-changed deck.
 
 use super::bench::{Bench, deck_of};
 use super::*;
@@ -409,7 +409,7 @@ fn notes_of_a_deleted_slide_stop_being_edited() {
 }
 
 #[test]
-fn the_slide_shown_stays_shown_when_a_collaborator_inserts_before_it() {
+fn the_slide_shown_stays_shown_when_a_member_inserts_before_it() {
     let mut bench = Bench::sample();
     bench.with(|app| app.cur_slide = 2);
     let shown = bench.deck().slides[2].id.clone();

@@ -3998,7 +3998,7 @@ impl BooksApp {
         }
     }
 
-    /// Close an editor whose note or comment a collaborator deleted.
+    /// Close an editor whose note or comment a member deleted.
     fn close_orphaned_editors(&mut self) {
         let live = |id: Uuid| {
             self.annotations
@@ -5328,7 +5328,7 @@ impl BooksApp {
     }
 
     /// Show what was asked to be opened: the book, chapter, annotation or
-    /// match a hit is anchored at, fetching a collaborator's book first.
+    /// match a hit is anchored at, fetching a member's book first.
     fn drain_opens(&self) {
         let opens = std::mem::take(&mut *self.opens.borrow_mut());
         for anchor in opens {

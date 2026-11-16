@@ -357,7 +357,7 @@ pub struct SlidesApp {
     editing_text: bool,
     editing_notes: bool,
     presentation: Presentation,
-    /// Local routing policy; never sync it: collaborators do not share
+    /// Local routing policy; never sync it: members do not share
     /// hardware.
     presentation_target: ui::fullscreen::FullscreenTarget,
 

@@ -3,7 +3,7 @@
 
 The scheduled lane compares a run with earlier nights on other hosts, and on
 the shared `runner` class that spread is larger than most changes (the same
-relay bench measured 15.9 and 31.2 CPU-seconds per collaborator-hour on two
+relay bench measured 15.9 and 31.2 CPU-seconds per member-hour on two
 runs). This tool builds two commits in one checkout, one after the other, and
 runs the existing benchmark of a KPI group on both, alternating, in one job
 on one machine. A slow host then slows both sides alike, and pairing each
@@ -380,7 +380,7 @@ def run_hosting(ctx: RunContext) -> list[record.Record]:
         call([ctx.bins["keystroke_writes"]], ctx.dir / "keystroke-writes.log", ctx.repo)
     # Both sides need a bench that knows --relay-cpus; an older one refuses it.
     cpus = ["--relay-cpus", str(ctx.options.hosting_relay_cpus)] if ctx.options.hosting_relay_cpus else []
-    call([ctx.bins["relay_load"], "--collaborators", "100", "--minutes", str(ctx.options.hosting_minutes),
+    call([ctx.bins["relay_load"], "--members", "100", "--minutes", str(ctx.options.hosting_minutes),
           *cpus, "--out", ctx.dir], ctx.dir / "bench.log", ctx.repo)
     report = json.loads((ctx.dir / "hosting-load.json").read_text(encoding="utf-8"))
     prices = tomllib.loads(adapters.PRICES.read_text(encoding="utf-8"))

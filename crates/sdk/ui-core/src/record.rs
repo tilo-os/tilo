@@ -3593,7 +3593,7 @@ impl RecordStore {
     }
 
     /// Merge a peer's full document into an open record, exactly as a
-    /// collaborator's state arriving over sync is merged: validated first,
+    /// member's state arriving over sync is merged: validated first,
     /// and without moving the local author's undo history onto the peer's
     /// edits. Returns whether anything changed.
     ///

@@ -386,7 +386,7 @@ tilo_test_env::scenario! {
         assert!(!pinned(&app), "one undo takes it back");
     }
 
-    phase a_collaborators_deletion_leaves_no_ghost_row;
+    phase a_members_deletion_leaves_no_ghost_row;
     {
         let mut app = hosted_sample();
         let id = sample_id(5);

@@ -41,7 +41,7 @@ Hiding a pane is presentation, not authorization or data isolation. Actions
 and effects must enforce their own requirements. Device-private information
 must stay outside the replicated resource. The host supplies authenticated
 identity and workspace membership; an app does not grant itself a role or
-create a separate sign-in service. An agent is an ordinary collaborator.
+create a separate sign-in service. An agent is an ordinary member.
 
 In `TestApp`, call `set_role` while the app is open. Check the pane disappears,
 `invoke` refuses its restricted action and the resource stays unchanged; then

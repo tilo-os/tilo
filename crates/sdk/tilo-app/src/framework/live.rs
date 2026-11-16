@@ -8,7 +8,7 @@ use tilo_resource::{Delta, Demand, Doc, ModelError, Place, Reader, Resource};
 /// A shared handle to the current state of one resource.
 ///
 /// The framework brings the state up to date when the document's heads move
-/// — a local action, a collaborator's edit, an undo — reading only what the
+/// — a local action, a member's edit, an undo — reading only what the
 /// change touched ([`Resource::refresh`]), and bumps the revision so bound
 /// widgets refresh. Views never write it: edits are actions.
 ///
@@ -30,7 +30,7 @@ pub struct Live<R: Resource> {
 }
 
 /// Where each participant's last action left them ([`Resource::lands`]):
-/// the framework's record of where an agent or a collaborator works, which
+/// the framework's record of where an agent or a member works, which
 /// presence draws and a surface reads instead of keeping its own copy.
 struct Places<R: Resource> {
     /// Applied for a participant, not yet placed: placed once the state

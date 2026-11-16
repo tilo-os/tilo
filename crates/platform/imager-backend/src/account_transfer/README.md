@@ -54,7 +54,7 @@ status responses or migration manifests.
   legacy keys, direct KWallet-only custody and client certificates require sign-in.
 - `import_tilo(source_tilo_root, account_id)` imports an already-Tilo local
   account and its available explicit-root vault credential. Accounts owned by
-  other collaborators are excluded. A source with unavailable device/system
+  other members are excluded. A source with unavailable device/system
   key custody requires reconnection; encrypted bytes alone are insufficient.
   Guided selection uses `import_tilo_reviewed`: it checks the reviewed metadata
   fingerprint before and after opening source custody, reads the existing vault

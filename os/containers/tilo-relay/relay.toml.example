@@ -1,7 +1,7 @@
 # Tilo composite home-peer relay configuration.
 #
 # This process durably hosts workspace CRDT state and queues updates for
-# offline collaborators. The companion `fs replica` worker retains the
+# offline members. The companion `fs replica` worker retains the
 # workspace content configured in `/etc/tilo/home-peer.toml`.
 identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-relay"

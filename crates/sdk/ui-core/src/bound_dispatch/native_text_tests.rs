@@ -202,9 +202,9 @@ tilo_test_env::scenario! {
         assert_eq!(value(&records, &checkout, "second"), "xy");
     }
 
-    phase native_text_does_not_cross_collaborator_instance_or_programmatic_edits;
+    phase native_text_does_not_cross_member_instance_or_programmatic_edits;
     {
-        for author in ["You", "Collaborator"] {
+        for author in ["You", "Member"] {
             let records = crate::record::RecordOwners::portable(
                 crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
             )

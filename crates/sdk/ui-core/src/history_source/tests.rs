@@ -813,7 +813,7 @@ tilo_test_env::scenario! {
         assert!(!last.summary.contains("title"), "{}", last.summary);
     }
 
-    phase rows_tell_the_readers_changes_from_a_collaborators_and_an_agents;
+    phase rows_tell_the_readers_changes_from_a_members_and_an_agents;
     {
         use crate::widget::history::AuthorRelation;
         use tilo_actions::{ActionContext, ActionInvoker};

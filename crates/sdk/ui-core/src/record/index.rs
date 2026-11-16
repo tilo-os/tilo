@@ -131,7 +131,7 @@ pub fn holds(doc: &AutoCommit, id: &DocumentId) -> bool {
 
 /// Every well-formed record this workspace references.  This is retained
 /// for callers that already have their own work bound; hosts that learn a
-/// collaborator-supplied index should use [`discoverable_references`]
+/// member-supplied index should use [`discoverable_references`]
 /// instead.
 pub fn references(doc: &AutoCommit) -> Vec<DocumentCheckout> {
     let Some(idx) = index_ro(doc) else {
@@ -153,7 +153,7 @@ pub fn references(doc: &AutoCommit) -> Vec<DocumentCheckout> {
     out
 }
 
-/// A deterministic, resource-bounded view of collaborator-supplied record
+/// A deterministic, resource-bounded view of member-supplied record
 /// names.  It reads at most a small fixed prefix of the CRDT map and
 /// returns at most [`super::MAX_DISCOVERED_RECORDS`] valid entries.
 /// It does **not** open records, create persistence, or join record

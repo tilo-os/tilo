@@ -1,5 +1,5 @@
 //! The contract every application action must honour, as reusable assertions. An app's
-//! actions are its public surface: the palette, automation, agents and collaborators all
+//! actions are its public surface: the palette, automation, agents and members all
 //! reach it through them.
 
 #![allow(

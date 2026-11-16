@@ -98,7 +98,7 @@ recording's bytes start with a header that says what they are
 (`tilo_content::RECORDING`), so every app built on the framework opens one:
 
 - in a private window, whose profile is thrown away with it and whose
-  record reaches no other window, device or collaborator;
+  record reaches no other window, device or member;
 - on a record of its own holding exactly the recording's changes;
 - read-only: nothing in the window can change it;
 - with History open at the recording's first step.

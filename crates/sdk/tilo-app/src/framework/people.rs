@@ -266,7 +266,7 @@ impl People {
     }
 
     /// People named as `names` gives them, for a capture whose fixture
-    /// places collaborators, or a test.
+    /// places members, or a test.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn named(me: Option<&MemberId>, names: &[(MemberId, &str)]) -> Self {

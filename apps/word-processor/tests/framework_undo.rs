@@ -66,7 +66,7 @@ fn bold(spans: Vec<Span>, on: bool) -> RichTextAction {
 }
 
 #[test]
-fn undo_takes_back_only_your_own_steps_around_a_collaborators_words() {
+fn undo_takes_back_only_your_own_steps_around_a_members_words() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<WordProcessorApp>::new().unwrap();
     app.harness().type_text("hello");

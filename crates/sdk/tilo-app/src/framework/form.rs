@@ -1,7 +1,7 @@
 //! Forms: a verb's parameters filled in before it is invoked.
 //!
 //! A form is a local instance of a verb's parameter struct: never synced,
-//! never undoable, invisible to collaborators. Its fields bind to controls
+//! never undoable, invisible to members. Its fields bind to controls
 //! with the same paths a record's do (`cx.input(form.paths().url)`),
 //! and its button submits it as one invocation of the verb.
 

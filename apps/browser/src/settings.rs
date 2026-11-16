@@ -165,7 +165,7 @@ pub struct SettingsPane {
     composed: ui::widget::Composed,
     actions: SettingsActionBindings,
     /// A device-local persistence failure supplied by Browser after a clear action;
-    /// deliberately not a CRDT value, since no collaborator can diagnose this
+    /// deliberately not a CRDT value, since no member can diagnose this
     /// profile's disk.
     history_clear_error: Option<String>,
     private_window_request: Option<ui::LocalState<bool>>,

@@ -131,7 +131,7 @@ Inline marks inside non-code blocks:
 ## Current boundaries
 
 - One person can select across blocks, but the editor does not expose multiple
-  independent local carets. Remote collaborator carets are still visible.
+  independent local carets. Remote member carets are still visible.
 - Comments are not implemented yet. Notes, folders, tags, blocks, links and
   inline formatting are durable collaborative resources and actions.
 

@@ -337,7 +337,7 @@ pub(crate) fn resource_id(kind: &str) -> String {
 ///
 /// It is the person's, not the workspace's: kept in their own scope, carried
 /// to their other devices by their personal store, and never reaching a
-/// collaborator. The app's committed surface names it whether or not a view
+/// member. The app's committed surface names it whether or not a view
 /// of it is showing, so the host admits the app's changes to it — and its
 /// reads of it — against the surface.
 #[derive(Clone, Copy)]

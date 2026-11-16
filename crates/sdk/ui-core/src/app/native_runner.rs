@@ -136,7 +136,7 @@ struct AppHandler {
     /// The generation of the last frame drawn as layers and whether it was the frame submitted just
     /// before: what the next one's chrome damage is measured from.
     layers_drawn: (u64, bool),
-    /// The collaborators' marks painted over the widgets, as last submitted,
+    /// The members' marks painted over the widgets, as last submitted,
     /// so a frame damages only the marks that changed.
     presence_layer: crate::presence::PresenceLayer,
     /// Bounds what the presence layer draws outside its parts, so scrolls

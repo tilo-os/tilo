@@ -255,16 +255,16 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
     );
 }
 
-/// Home-peer management admits only the owner's devices: a collaborator the
+/// Home-peer management admits only the owner's devices: a member the
 /// relay's live policy admits on the relay ALPN is refused at its handshake.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn management_alpn_rejects_collaborator_admitted_by_live_policy() {
+async fn management_alpn_rejects_member_admitted_by_live_policy() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
     let relay_dev = alice.enrol("home-server", DeviceCapabilities::member());
     let relay_key = relay_dev.device_pubkey();
     let alice_laptop = alice.enrol("laptop", DeviceCapabilities::primary());
-    let bob_laptop = bob.enrol("collaborator-laptop", DeviceCapabilities::primary());
+    let bob_laptop = bob.enrol("member-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let relay = crate::common::start_relay(
         tilo_relay::RelayConfig {
@@ -306,13 +306,13 @@ async fn management_alpn_rejects_collaborator_admitted_by_live_policy() {
         RevocationList::new(),
     )
     .await
-    .expect("the live policy admits the collaborator on the relay ALPN");
+    .expect("the live policy admits the member on the relay ALPN");
     // Management answers the owner's device and refuses Bob's.
     manage(alice_laptop.cert, alice_laptop.sk)
         .await
         .expect("the owner's device manages its home peer");
     assert!(
         manage(bob_laptop.cert, bob_laptop.sk).await.is_err(),
-        "a collaborator must not pass the management handshake"
+        "a member must not pass the management handshake"
     );
 }

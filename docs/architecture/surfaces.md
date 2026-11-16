@@ -32,7 +32,7 @@ automation, accessibility and agents see — the same action API a person uses.
 | --- | --- | --- | --- |
 | `Popup` | A menu or flyout hanging beside what it acts on | chrome or a context | Power menu, tab context menu, window menu |
 | `Overlay` | A mode the person is held in until they answer it | the person's chord | Alt+Tab switcher, emoji picker, dictation, command palette, overview |
-| `Dialog` | A sheet a person asked for and works in | the person, or an app | Quick Settings, workspace settings, display layouts, collaborators, now playing, shortcut help |
+| `Dialog` | A sheet a person asked for and works in | the person, or an app | Quick Settings, workspace settings, display layouts, members, now playing, shortcut help |
 | `Picker` | A picker raised for another process, which is waiting | a portal request | file chooser, screenshot/screencast selection |
 | `Consent` | A question that *is* the grant | the system only | display change Keep/Revert, permission prompts, pairing and invite questions |
 | `Toast` | A short, self-dismissing message | anything | warnings and confirmations |

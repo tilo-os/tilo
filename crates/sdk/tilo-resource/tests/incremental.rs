@@ -217,7 +217,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase the_refreshed_state_follows_merged_collaborators_and_raw_changes;
+    phase the_refreshed_state_follows_merged_members_and_raw_changes;
     {
         let mut rng = Lcg(11);
         let mut left = Replica::<Notebook>::new();
@@ -2058,7 +2058,7 @@ fn change_marks(map: &mut Map<Mark>, rng: &mut Lcg, step: usize) {
     }
 }
 
-/// What a collaborator writes into the map meanwhile: entries put,
+/// What a member writes into the map meanwhile: entries put,
 /// removed, or changed inside.
 fn peer_marks(doc: &mut Doc, rng: &mut Lcg, step: usize) {
     use tilo_resource::__private::{ObjType, ROOT, ReadDoc};
@@ -2311,7 +2311,7 @@ fn remove_and_change(cut: &mut Cut, rng: &mut Lcg, step: usize) {
 }
 
 /// Write the entry `{ k: key, v: item }` under `id` into the Ordered map
-/// `map`, as a collaborator's store would.
+/// `map`, as a member's store would.
 fn put_ordered_entry(doc: &mut Doc, map: &ObjId, id: &str, key: &str, item: &Shot) {
     use tilo_resource::__private::ObjType;
     let entry =
@@ -2331,7 +2331,7 @@ fn order_key(doc: &Doc, map: &ObjId, id: &str) -> Option<String> {
     }
 }
 
-/// What a collaborator writes into the Ordered list `stack` meanwhile: an
+/// What a member writes into the Ordered list `stack` meanwhile: an
 /// item inserted under an order key another item holds (as two people
 /// inserting at one place at once do) or a new one, one removed, one moved
 /// onto another's key, or a field of one changed.
@@ -2496,7 +2496,7 @@ fn root_map(doc: &Doc, key: &str) -> ObjId {
     .unwrap()
 }
 
-/// What a collaborator writes into the list `shots` meanwhile: an item put
+/// What a member writes into the list `shots` meanwhile: an item put
 /// whole, one removed, or a field of one changed.
 fn peer_shots(doc: &mut Doc, rng: &mut Lcg, step: usize) {
     use tilo_resource::__private::{ObjType, ReadDoc};
@@ -2550,7 +2550,7 @@ fn a_keyed_list_saved_over_its_copy_writes_what_a_whole_write_does() {
 }
 
 /// 40 random sequences of 8 saves of a Keyed list, each copy changed by
-/// `change`, with a collaborator's concurrent writes: each save writes what
+/// `change`, with a member's concurrent writes: each save writes what
 /// a whole write does, and the edits are those of comparing every item.
 fn keyed_saves_write_what_a_whole_write_does(change: fn(&mut Cut, &mut Lcg, usize)) {
     use tilo_resource::__private::ROOT;
@@ -2658,7 +2658,7 @@ fn change_elements(set: &mut Set<String>, rng: &mut Lcg) {
     }
 }
 
-/// What a collaborator writes into the set `tags` meanwhile: elements
+/// What a member writes into the set `tags` meanwhile: elements
 /// added and removed.
 fn peer_elements(doc: &mut Doc, rng: &mut Lcg) {
     use tilo_resource::__private::ReadDoc;
@@ -2798,7 +2798,7 @@ fn change_grid(grid: &mut Grid<i64>, rng: &mut Lcg, step: usize) {
     }
 }
 
-/// What a collaborator writes into the grid `grid` meanwhile: cells
+/// What a member writes into the grid `grid` meanwhile: cells
 /// written, changed and cleared.
 fn peer_cells(doc: &mut Doc, rng: &mut Lcg) {
     use tilo_resource::__private::{ObjType, ReadDoc};

@@ -382,7 +382,7 @@ impl Video {
 
 /// How this person likes Tube to play: `SponsorBlock`, `DeArrow`, dislike
 /// counts, autoplay, comments and the preferred quality. A personal setting
-/// that follows them to every device and that collaborators on a shared
+/// that follows them to every device and that members on a shared
 /// library never see.
 #[allow(
     clippy::struct_excessive_bools,

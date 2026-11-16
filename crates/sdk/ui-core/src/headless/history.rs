@@ -26,7 +26,7 @@ impl FrameHarness {
         resources
     }
 
-    /// Invoke only this host's local History API. This is not a collaborator transport entry point and
+    /// Invoke only this host's local History API. This is not a member transport entry point and
     /// never searches app destinations.
     pub fn invoke_local_history_action(
         &mut self,

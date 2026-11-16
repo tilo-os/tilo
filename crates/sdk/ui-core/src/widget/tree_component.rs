@@ -94,7 +94,7 @@ pub struct TreeViewNodeProps {
     pub label: String,
     /// The resource of the node it stands under; without one it is a top-level node.
     pub parent: Option<ResourceId>,
-    /// Who else is at the item now (a collaborator's or an agent's lens on it), shown on the
+    /// Who else is at the item now (a member's or an agent's lens on it), shown on the
     /// row as a list row shows it ([`crate::widget::ListItemProps::presence`]).
     pub presence: Option<Person>,
     /// The item was removed and the person has not seen it go: the row stands in for it, its

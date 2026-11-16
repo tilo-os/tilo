@@ -448,7 +448,7 @@ pub struct PdfApp {
     sig_strokes: Vec<Vec<(f64, f64)>>,
     sig_stroke: Option<Vec<(f64, f64)>>,
     /// The person's own signature record: it follows them to their other devices and
-    /// never reaches a collaborator. Absent where the host keeps no person records.
+    /// never reaches a member. Absent where the host keeps no person records.
     signature: Option<ui::framework::PersonRecord<crate::signature::SignatureProfile>>,
     signature_revision: Option<u64>,
     sig_pad_rect: Rect,

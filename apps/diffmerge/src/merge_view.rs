@@ -1,5 +1,5 @@
 //! The three-way merge: base, ours and theirs hunk by hunk, with a resolution chip on each
-//! conflict, and the merged result below, the record's text every collaborator edits.
+//! conflict, and the merged result below, the record's text every member edits.
 
 use std::collections::HashMap;
 use ui::widget::TaffyTreeExt;

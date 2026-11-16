@@ -1,5 +1,5 @@
 //! Code's preferences: they follow the person to every device, and no
-//! collaborator sees them.
+//! member sees them.
 
 use serde::{Deserialize, Serialize};
 use ui::storage::{Scope, SettingsSchema};

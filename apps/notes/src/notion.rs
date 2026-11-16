@@ -16,7 +16,7 @@
 //!
 //! Every page becomes a top-level note of its own; the caller adds them all
 //! as one action group, so a single undo takes the whole import back and a
-//! collaborator sees either all of it or none. A page nested in another is
+//! member sees either all of it or none. A page nested in another is
 //! still a note of its own, and the link the export writes where that page
 //! used to sit is left exactly as the export wrote it.
 
@@ -81,7 +81,7 @@ pub fn pages(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
 }
 
 /// Every page of `pages`, added to the notebook as one action: one undo
-/// takes the whole import back, and a collaborator sees all of it or none.
+/// takes the whole import back, and a member sees all of it or none.
 ///
 /// Each note's id is minted by the group from its seed and the member's
 /// position, so every replica adds the same notes under the same ids.

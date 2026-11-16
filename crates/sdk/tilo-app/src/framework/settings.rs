@@ -20,7 +20,7 @@ use super::section::{SectionApi, SectionKind};
 ///
 /// Bind controls to [`Self::state`] and write with [`Self::set`]. Settings
 /// are not the document: they are not undone and never seen by
-/// collaborators.
+/// members.
 ///
 /// A section that is a resource model (`#[derive(Model)]` and an empty
 /// `#[resource]`) is also a record its views edit by path

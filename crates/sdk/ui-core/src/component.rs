@@ -709,7 +709,7 @@ pub struct Bound<T> {
     pub edits: Option<Intent>,
     /// What the bound value is called, for assistive technology: the field's name.
     pub name: String,
-    /// Where the bound value lives, for presence: collaborators at the same path see each other's
+    /// Where the bound value lives, for presence: members at the same path see each other's
     /// carets and selections in it.
     pub path: Vec<crate::presence::PathSegment>,
     /// What the value edits, as the identity anyone looks it up by: the kind of record, the one

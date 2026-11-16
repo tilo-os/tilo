@@ -3,7 +3,7 @@
 //! The actor is the transport, and what some of its APIs ask is the
 //! session's business: another of the person's devices asking for its
 //! disk-unlock half, an agent's question for its person on a workspace host,
-//! a collaborator's device at another peer protocol version. Each is served
+//! a member's device at another peer protocol version. Each is served
 //! here by the part of the session that owns it, installed once before the
 //! actor starts ([`install`]).
 
@@ -22,7 +22,7 @@ mod unlock;
 pub(crate) use approvers::KIND as AGENT_QUESTION;
 pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion, slot_name};
 
-/// A collaborator's device heard at another peer protocol version: one of the two devices must
+/// A member's device heard at another peer protocol version: one of the two devices must
 /// update before the two work together again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VersionMismatch {
@@ -44,7 +44,7 @@ impl VersionMismatch {
 
 /// Install the session's services for the actor started from now on: the person's other devices'
 /// disk unlock ([`unlock`]), the questions their agents ask ([`approvers`]), and the word that a
-/// collaborator's device is at another protocol version.
+/// member's device is at another protocol version.
 /// A session that is no certified device of the person's offers no API: it has no key to answer
 /// as.
 pub(crate) fn install(
@@ -88,7 +88,7 @@ fn approvers(questions: Option<Questions>) -> ApproversOf {
     })
 }
 
-/// Tell the session that a collaborator's device is at another protocol version, once per device
+/// Tell the session that a member's device is at another protocol version, once per device
 /// and version: one of the two must update before they work together again. The session answers the
 /// person, and a newer one on their side has it fetch the newest system ([`crate::update_finish`]).
 fn peer_versions(updates: std::sync::mpsc::Sender<VersionMismatch>) -> PeerVersion {
@@ -107,7 +107,7 @@ fn peer_versions(updates: std::sync::mpsc::Sender<VersionMismatch>) -> PeerVersi
             %endpoint,
             theirs,
             ours,
-            "a collaborator's device speaks another peer protocol version"
+            "a member's device speaks another peer protocol version"
         );
         let mismatch = VersionMismatch {
             endpoint,

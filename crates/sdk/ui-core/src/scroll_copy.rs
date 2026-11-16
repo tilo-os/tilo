@@ -804,7 +804,7 @@ pub fn carried(copies: &[DeviceCopy], rects: &[Rect]) -> Vec<Rect> {
 }
 
 /// Add to `damage` what marks painted over a window's content without moving with it, and
-/// unseen by the planner (collaborators' pointers and names), cost its `copies` (device
+/// unseen by the planner (members' pointers and names), cost its `copies` (device
 /// pixels, as each would be repainted): the target holds the marks of the frame on screen
 /// (`shown`), which a copy moves with the content, stale, one delta away; and this
 /// frame's marks (`painted`) must be repainted wherever a copy wrote under them.

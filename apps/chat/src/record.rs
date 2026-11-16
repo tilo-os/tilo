@@ -1193,7 +1193,7 @@ fn valid_anchor(anchor: Option<&tilo_reference::Anchor>) -> bool {
 
 /// An existing record of an existing app, and the resource inside it. The
 /// host resolves and authorizes it; storing this address neither admits a
-/// collaborator nor grants Read.
+/// member nor grants Read.
 pub(crate) fn valid_resource_at(at: &tilo_reference::ResourceAt) -> bool {
     let field = |value: &str| {
         !value.is_empty()

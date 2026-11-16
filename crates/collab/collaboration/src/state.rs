@@ -26,7 +26,7 @@ pub use undo_log::{InstanceId, UndoEntry, UndoLog};
 /// rather than replacing the document with an old state and dropping every
 /// concurrently-merged remote op.
 /// A container the delta would remove that somebody has written inside since
-/// `from_heads` — the paragraph a collaborator typed into after the action
+/// `from_heads` — the paragraph a member typed into after the action
 /// that created it — is left standing, so undo takes back only the action.
 ///
 /// The caller commits. That is deliberate: the owner's action records the
@@ -158,7 +158,7 @@ pub fn write_selected_patches(
     // so nested child patches target the new object.
     let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
     // Diff indices refer to the sequence as earlier patches transform it,
-    // which the live document — holding later collaborator edits too — is
+    // which the live document — holding later member edits too — is
     // not; each sequence object follows both.
     let mut sequences = sequence_replay::prepare(doc, &patches, index_anchor);
     for (patch, apply) in patches {
@@ -206,7 +206,7 @@ pub fn write_selected_patches(
             },
             PatchAction::PutSeq { index, value, .. } => {
                 // The element still exists after the action; leave it be when
-                // a collaborator removed it since.
+                // a member removed it since.
                 let Some(sequence) = sequence else { continue };
                 let Some(at) = sequence.element(index) else {
                     continue;
@@ -321,7 +321,7 @@ pub fn write_selected_patches(
             }
             PatchAction::DeleteSeq { index, length } => {
                 // Removing elements the local action inserted, except those
-                // a collaborator removed since.
+                // a member removed since.
                 let Some(sequence) = sequence else { continue };
                 for (at, units) in sequence.delete(index, length) {
                     let Ok(units) = isize::try_from(units) else {

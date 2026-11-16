@@ -20,7 +20,7 @@ behaviour. The one thing that survives every change is the person's data.
   desktop to finish an update, at most every two days together
   (`tilo_system_service::update`), so the updates of those days apply with one.
 - Something that needs a newer system than this one (an app build, a
-  collaborator's device) starts the system update at once
+  member's device) starts the system update at once
   (`tilo-deployment-update.service`): what applies live has applied when it
   returns, the desktop finishes the rest at the next moment the person is
   away, and a restart is asked for at once if one is needed.
@@ -140,7 +140,7 @@ version is answered with this one's and admitted to nothing, so nothing it
 sends arrives half-applied; each device keeps its own changes, and sync
 resumes by itself once both speak the same version:
 
-- **A collaborator is behind**: "Ana needs to update to keep working
+- **A member is behind**: "Ana needs to update to keep working
   together".
 - **This device is behind**: "Updating Tilo to keep working with Ana"; the
   system update starts at once and the restart is asked for as soon as it is

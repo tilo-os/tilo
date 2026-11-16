@@ -3029,7 +3029,7 @@ impl MailApp {
             mail.apply_flags(&mut st.mailbox);
         }
         // A persisted draft becomes a local Drafts projection, but does not
-        // force another collaborator's composer open.
+        // force another member's composer open.
         let draft = mail.draft.draft();
         if !draft.is_empty() {
             self.upsert_draft_message(doc, &draft, None);

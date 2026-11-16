@@ -148,7 +148,7 @@ fn history_definition_of(
 /// The History restore schema of `R`, derived from its stored layout:
 /// restoring a version writes it back field by field and collection item by
 /// item, the way actions write it, so unchanged content keeps its identity and
-/// a collaborator's concurrent edits to other items survive. Every field is
+/// a member's concurrent edits to other items survive. Every field is
 /// optional (a record reads absent fields as their empty value) and whatever a
 /// field holds is accepted by type; the resource's own `read` is the validator,
 /// so a version is restorable exactly when the app can open it.

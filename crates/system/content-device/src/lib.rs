@@ -1,6 +1,6 @@
 //! `tilo-content-device`: the device content store.
 //!
-//! The filesystem daemon keeps this device's content and fetches what a collaborator
+//! The filesystem daemon keeps this device's content and fetches what a member
 //! or another of the user's devices stored. The launcher hands an app a scoped
 //! capability to it, and [`device()`] is the one store every caller in the process
 //! shares.

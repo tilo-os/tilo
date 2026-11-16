@@ -1,4 +1,4 @@
-//! Damage for the collaborators an app window shows.
+//! Damage for the members an app window shows.
 //!
 //! Presence reaches a window's pixels two ways, and each gets the damage it
 //! can prove:

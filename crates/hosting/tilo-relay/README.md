@@ -100,7 +100,7 @@ the network learns the endpoint id. Invite addresses work without it.
 
 ## Cost model
 
-What a relay costs per active collaborator is measured, not estimated:
+What a relay costs per active member is measured, not estimated:
 
 - **Egress counters.** The daemon counts every byte it writes to a peer
   session (`bytes_sent`), the presence part of it (`bytes_sent_live`),
@@ -117,12 +117,12 @@ What a relay costs per active collaborator is measured, not estimated:
   budgets, and the live egress counter checked against the frames the
   subscribers read.
 - **Load bench** (`examples/relay_load`, run by
-  `tools/ci/perf-scheduled.sh hosting`): 100 collaborators in workspaces of four, each typing 30
+  `tools/ci/perf-scheduled.sh hosting`): 100 members in workspaces of four, each typing 30
   characters, then pointing for four seconds at 30 Hz (which the relay
   forwards one frame per move, in the order it was posted), then idle, every
   minute, against one relay process. It records CPU-seconds, resident MiB and
-  egress bytes per collaborator-hour; packets per collaborator-hour, from the
-  collaborators' own QUIC connection counters (datagrams they sent and of
+  egress bytes per member-hour; packets per member-hour, from the
+  members' own QUIC connection counters (datagrams they sent and of
   those the ones carrying data, datagrams the relay sent and of those the
   ones carrying only acknowledgements), so the same bytes in more packets
   fail a budget too; fan-out latency, and the workspace
@@ -130,7 +130,7 @@ What a relay costs per active collaborator is measured, not estimated:
   contract is in `src/persistence.rs`).
   `tools/perf/adapters.py hosting-load` prices each minute with
   `tools/perf/prices.toml` (provider, VM price and date stated there) into $
-  per collaborator-hour and per active user-month (88 h);
+  per member-hour and per active user-month (88 h);
   `tools/perf/kpi-budgets.toml` holds the ceilings.
 - **Timed keystroke writes** (`examples/keystroke_writes`, nightly in the
   same workflow's `hosting` job): the original 21-keystroke network scenario,
@@ -143,7 +143,7 @@ What a relay costs per active collaborator is measured, not estimated:
 
 ```bash
 cargo run --release -p tilo-relay --example relay_load -- \
-  --collaborators 100 --minutes 10 --out target/hosting
+  --members 100 --minutes 10 --out target/hosting
 python3 tools/perf/record.py env --profile release --renderer none \
   --virtualization none --runner local > target/hosting/env.json
 python3 tools/perf/adapters.py hosting-load --env-json target/hosting/env.json \

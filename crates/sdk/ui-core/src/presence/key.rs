@@ -62,7 +62,7 @@ mod view_key_tests {
             // The presence scope is the workspace, and it is the *same* workspace the
             // collaboration address uses — deriving the two separately is how a
             // window ends up announcing into one workspace while addressing documents to
-            // another. It's also what makes a collaborator's cursor follow them from
+            // another. It's also what makes a member's cursor follow them from
             // the editor into the file manager: neither app names itself.
             {
                 let workspace = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";

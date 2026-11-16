@@ -1,6 +1,6 @@
 use ui::prelude::*;
 
-/// The app's state. The framework stores it, syncs it to collaborators and
+/// The app's state. The framework stores it, syncs it to members and
 /// keeps its history; add a field here and it is all of those at once.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Greeting {
@@ -49,7 +49,7 @@ impl ResourceApp for App {
             .with_id("name-input")
             .with_placeholder("starter-name-placeholder");
         // Read from the resource, so it follows every edit: this window's, a
-        // collaborator's, an undo.
+        // member's, an undo.
         let message = cx.text(|state| greeting(&state.name)).with_id("greeting");
         let clear = cx.button("starter-clear", Greeting::CLEAR.invoke());
         Box::new(ui::column![

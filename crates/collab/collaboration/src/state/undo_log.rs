@@ -662,7 +662,7 @@ impl UndoLog {
 
     /// As [`Self::record_committed_action`], naming who performed it — for a
     /// change that reached this document from outside the window (an agent,
-    /// a collaborator's published operation) under the caller's own actor.
+    /// a member's published operation) under the caller's own actor.
     /// The name keeps the steps apart afterwards.
     pub fn record_committed_action_authored(
         &mut self,

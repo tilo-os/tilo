@@ -77,7 +77,7 @@ impl AssetReads {
 
 impl super::NotesApp {
     /// Keep the image snapshot in step with the notebook's asset references,
-    /// and pick up referenced bytes that arrive from a collaborator's device
+    /// and pick up referenced bytes that arrive from a member's device
     /// after the reference did. Their arrival syncs the window and moves the
     /// record content's arrival count; nothing looks for them on a timer.
     pub(super) fn refresh_canonical_assets(&mut self) {

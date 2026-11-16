@@ -29,7 +29,7 @@ impl AfterSave {
 
 impl CodeApp {
     /// Read a disk-backed file into its buffer the first time this session opens it. Text the document
-    /// already holds (a collaborator's, a previous session's unsaved edits) is kept, and the file's bytes
+    /// already holds (a member's, a previous session's unsaved edits) is kept, and the file's bytes
     /// and stamp become the comparison a save is checked against.
     ///
     /// A read failure closes the tab again: a buffer that opened empty would be written back empty by the

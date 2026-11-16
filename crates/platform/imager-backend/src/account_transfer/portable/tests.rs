@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
         assert!(SecretVault::open_in(&target).get(&first).is_none());
         let mut store = accounts::AccountStore::load_in(&source);
         let mut contributed = store.get(&first).unwrap().clone();
-        contributed.owner = Some("another-collaborator".into());
+        contributed.owner = Some("another-member".into());
         store.upsert(contributed);
         store.save_in(&source).unwrap();
         assert!(

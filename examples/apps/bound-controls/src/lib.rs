@@ -2,7 +2,7 @@
 //!
 //! A bound control shows the value at a path of the resource and edits it
 //! there with each value the user commits. It keeps no state of its own, so
-//! it follows edits from anywhere (a collaborator, an agent, an undo) with no
+//! it follows edits from anywhere (a member, an agent, an undo) with no
 //! notification code, and disables itself for a viewer.
 //!
 //! `cx.input` and `cx.checkbox` cover text and booleans; `cx.control` binds

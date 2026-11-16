@@ -1,10 +1,10 @@
 //! The people in this workspace, found by name.
 //!
 //! "Go to what Mara is doing" is a search like any other: typing a
-//! collaborator's name offers them, with where they are. Choosing one runs
+//! member's name offers them, with where they are. Choosing one runs
 //! the chrome's `show-person` by address, which opens the people panel on
 //! them, where following is one step. The people are the workspace's
-//! collaborators as the runtime peer keeps them in the desktop's model.
+//! members as the runtime peer keeps them in the desktop's model.
 
 use ui::search::FieldWeight;
 use ui::search::system::{ResourceKind, rank_fields};
@@ -119,7 +119,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_collaborator_is_found_by_name_and_shown_by_the_chromes_address() {
+    fn a_member_is_found_by_name_and_shown_by_the_chromes_address() {
         let people = People::new(
             "workspace",
             vec![PersonEntry {

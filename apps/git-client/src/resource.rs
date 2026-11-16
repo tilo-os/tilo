@@ -1,5 +1,5 @@
 //! Git client as a resource: the record is the repository it opens and what
-//! collaborators see of its history ([`GitClient`]); working-tree status, the
+//! members see of its history ([`GitClient`]); working-tree status, the
 //! history the window shows and an in-flight transfer are live rows the view
 //! publishes.
 
@@ -18,7 +18,7 @@ use crate::app::GitClientApp;
 use crate::model::{DiffMap, RepoModel};
 use crate::shared::SharedRepo;
 
-/// The record: the repository it opens and what collaborators see of it.
+/// The record: the repository it opens and what members see of it.
 /// Working-tree rows and in-flight fetch/push are live.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct GitClient {
@@ -30,7 +30,7 @@ pub struct GitClient {
     /// Shared history
     ///
     /// Branches, history, remotes and identity as the repository on disk
-    /// last held them, for collaborators and past versions.
+    /// last held them, for members and past versions.
     #[model(readonly)]
     pub shared: SharedRepo,
 }
@@ -60,7 +60,7 @@ impl GitClient {
 impl GitClient {
     /// Record what the repository on disk holds now
     ///
-    /// Its branches, history, remotes and identity, for collaborators and
+    /// Its branches, history, remotes and identity, for members and
     /// past versions. Read from the repository, nobody's edit.
     #[action(external)]
     pub fn record_repository(

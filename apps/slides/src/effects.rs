@@ -20,7 +20,7 @@ pub enum SlidesEffect {
     Present,
     /// Present on largest external display
     ///
-    /// Each collaborator keeps control of their own displays.
+    /// Each member keeps control of their own displays.
     #[effect(view)]
     PresentLargestExternal,
     /// Present on primary external display

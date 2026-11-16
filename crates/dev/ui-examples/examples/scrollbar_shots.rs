@@ -72,7 +72,7 @@ fn wide_list() -> Box<dyn Widget> {
     for i in 0..60usize {
         col = col.push(Box::new(Text::new(&format!(
             "{i:>3}  2026-07-09T12:{:02}:00Z  systemd[1]: Started Tilo session service for the \
-             workspace and its collaborators.",
+             workspace and its members.",
             i % 60
         ))));
     }

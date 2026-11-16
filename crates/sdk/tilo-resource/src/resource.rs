@@ -92,7 +92,7 @@ pub trait Resource: Sized + 'static {
 
     /// Bring `state`, read earlier from this document, up to date after the
     /// changes in `delta`. Re-read only what they touched: this runs on every
-    /// keystroke, local or a collaborator's. The default reads everything
+    /// keystroke, local or a member's. The default reads everything
     /// again, which is right for small resources.
     ///
     /// # Errors
@@ -193,7 +193,7 @@ pub trait Resource: Sized + 'static {
 
     /// Where `action`, just applied, leaves the participant who took it, read
     /// off the state after it: the paragraph an append wrote and the caret
-    /// at its end. Every collaborator's view draws that participant there,
+    /// at its end. Every member's view draws that participant there,
     /// so one with no pointer or caret of its own (an agent) shows where it
     /// works. The default places it nowhere in particular.
     fn lands(state: &Self::State, action: &Self::Action) -> Option<Place> {
@@ -1248,7 +1248,7 @@ impl tilo_actions::Action for NoAction {
 }
 
 /// Where a participant is inside a resource, in the resource's own terms:
-/// the same on every collaborator's screen whatever its layout.
+/// the same on every member's screen whatever its layout.
 ///
 /// Also what an action is told to act at (`#[param(place)] at:
 /// Option<Place>`): it travels as `{"item": id}`, `{"item": id, "at": n}` or

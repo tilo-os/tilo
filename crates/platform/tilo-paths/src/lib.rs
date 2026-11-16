@@ -18,7 +18,7 @@ pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use location::{InvalidVPath, Location, VPath, VirtualRoot};
 
 /// Where a Tilo Linux session mounts the collaborative workspace, and the
-/// root every collaborator's documents name workspace files under, whatever
+/// root every member's documents name workspace files under, whatever
 /// this device mounts. [`AppPaths::workspace_root`] says whether (and where)
 /// this process has one mounted.
 pub const WORKSPACE_MOUNT: &str = "/var/workspace";

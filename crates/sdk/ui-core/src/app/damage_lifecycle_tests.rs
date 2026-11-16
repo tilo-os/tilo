@@ -216,7 +216,7 @@ tilo_test_env::scenario! {
     }
 }
 
-// ── Collaborators' presence ─────────────────────────────────────────────
+// ── Members' presence ─────────────────────────────────────────────
 //
 // A visible peer used to turn widget damage off: every frame repainted the
 // window. The presence layer now damages the marks that changed, and these

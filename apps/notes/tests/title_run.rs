@@ -80,7 +80,7 @@ fn renames_a_pause_apart_are_two_renames() {
 }
 
 #[test]
-fn a_collaborators_change_in_between_ends_the_rename() {
+fn a_members_change_in_between_ends_the_rename() {
     let (mut app, page) = with_note("Welcome", "Hello");
     tilo_clock::with_wall_ms(T0, || {
         app.harness().relayout_at((1200, 800)).unwrap();

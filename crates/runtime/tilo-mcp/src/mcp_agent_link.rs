@@ -271,7 +271,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
     }
 
-    /// Show the record `provider` names as a window on the person's layout, as a collaborator's
+    /// Show the record `provider` names as a window on the person's layout, as a member's
     /// open does: its app's `open` on it, a call of this call's step, so one run lists the write
     /// and the window it showed. The host leaves a record a window already shows where the people
     /// put it. A provider that is no record (a window of a device) names the app `app_id`'s own

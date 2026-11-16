@@ -307,7 +307,7 @@ pub trait ResourceApp: 'static {
     /// Prepare what a capture of `fixture.scenario()` shows that its actions
     /// cannot stage, before the view is built: typed stand-ins for live
     /// sources, scratch files, content-store blobs, other people's versions
-    /// and collaborators. Runs only for a capture, whose views are built in
+    /// and members. Runs only for a capture, whose views are built in
     /// [`RunMode::Capture`](super::RunMode). See [`Fixture`](super::Fixture).
     fn fixture(fixture: &mut super::Fixture<Self::Resource>) {
         let _ = fixture;
@@ -347,7 +347,7 @@ pub trait ResourceApp: 'static {
     /// The actions apply once, right after the genesis, attributed to the
     /// creator and recorded as content from outside: they sync like any
     /// edit but are nobody's undo step, so a first Ctrl+Z does not take the
-    /// seed back. A collaborator who creates the same record concurrently
+    /// seed back. A member who creates the same record concurrently
     /// seeds it too, so a seed sets values rather than adding rows.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Self::Resource>> {
         let _ = cx;
@@ -1685,7 +1685,7 @@ fn prepare_hooked(
     let named = record
         .or_else(|| (app.launch_record)(&LaunchInput::new(arguments, None).with_options(&options)));
     // A recording replays in a private window: nothing it shows reaches
-    // the person's records, devices or collaborators.
+    // the person's records, devices or members.
     let private = (app.private_windows && args.has(PRIVATE_FLAG)) || names_recording(arguments);
     let mut prepared = prepare_named(definition, args, named, private)?;
     // A window someone looks at shows before its record. What drives or photographs one acts

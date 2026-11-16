@@ -313,7 +313,7 @@ tilo_test_env::scenario! {
         let summaries = version_summaries(&app);
         assert!(
             summaries.iter().any(|summary| summary.contains("Create")),
-            "a collaborator's action is history: {summaries:?}"
+            "a member's action is history: {summaries:?}"
         );
 
         let source = app.read_document(Clone::clone);

@@ -399,7 +399,7 @@ pub(crate) fn declarations() -> Vec<ActionDecl<RichText>> {
                 })
             },
         )
-        .describe("Replace the page body from Markdown as one undoable edit. Blocks whose line is unchanged, or whose ^id is kept, stay the same blocks (so their ids, history and collaborators' carets hold); only what differs is edited, inserted or removed. Answers the ids it touched.")
+        .describe("Replace the page body from Markdown as one undoable edit. Blocks whose line is unchanged, or whose ^id is kept, stay the same blocks (so their ids, history and members' carets hold); only what differs is edited, inserted or removed. Answers the ids it touched.")
                 .answering(),
         ActionDecl::new(
             "replace-text",

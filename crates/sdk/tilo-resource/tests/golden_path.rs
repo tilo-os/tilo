@@ -600,7 +600,7 @@ tilo_test_env::scenario! {
         assert_eq!(peer.state().unwrap(), origin.state().unwrap());
     }
 
-    phase collaborators_edit_concurrently_and_converge;
+    phase members_edit_concurrently_and_converge;
     {
         let mut alice = Replica::<Board>::new().as_author("alice");
         alice.apply(Board::ADD_CARD.with("shared")).unwrap();

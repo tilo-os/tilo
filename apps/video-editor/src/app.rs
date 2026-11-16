@@ -2456,7 +2456,7 @@ impl VideoEditorApp {
             else {
                 // Existing edits must have captured their local starting
                 // point. Without it, comparing the edited local model to the
-                // current CRDT could recreate a collaborator's unrelated
+                // current CRDT could recreate a member's unrelated
                 // change as a reverse patch.
                 return;
             };

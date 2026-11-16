@@ -131,7 +131,7 @@ pub struct Options {
     /// screenshots).
     pub state: Option<std::path::PathBuf>,
     /// Whether the session takes part in the collaboration plane: who is here in each workspace,
-    /// over Iroh. Off, this desktop has no collaborators but its own person.
+    /// over Iroh. Off, this desktop has no members but its own person.
     pub collab: bool,
     /// A collaboration plane to take part in instead of starting one: a session a test hands the
     /// presence a workspace would have carried ([`sync::Client::untethered`]), which says nothing

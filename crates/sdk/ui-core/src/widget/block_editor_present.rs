@@ -436,7 +436,7 @@ impl BlockEditor {
     }
 
     /// Address blocks in presence by the owning model's keys (a resource
-    /// selection, say) rather than the editor's own, so a collaborator's
+    /// selection, say) rather than the editor's own, so a member's
     /// caret lands in the same paragraph of the same resource.
     pub fn set_presence_key(&mut self, key: PresenceKeyFn) {
         self.presence_key = Some(key);
@@ -469,7 +469,7 @@ mod tests {
         /// Each phase was a test of its own and builds its own fixture.
         fn presenting_blocks_carries_caret_focus_and_authors;
 
-        phase a_collaborators_insert_before_the_caret_carries_it;
+        phase a_members_insert_before_the_caret_carries_it;
         {
             let mut editor = editor_with(vec![BlockContent::paragraph("a", "hello world")]);
             editor.focus_block(0, super::super::CursorPlacement::Byte(6));
@@ -543,7 +543,7 @@ mod tests {
         }
     }
 
-    /// A collaborator's caret on the first line labels itself below the
+    /// A member's caret on the first line labels itself below the
     /// line: above it are the host's title and dates, which the tag must
     /// not cover. On a later line, mid-way through its words and under a line
     /// of text, the tag covers neither: it hangs below the caret's line.

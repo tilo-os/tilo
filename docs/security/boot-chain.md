@@ -45,7 +45,7 @@ this system is specifically designed to keep.
 
 The answer is that the machine's own key is the root: the owner clears the
 factory keys, enrols a Platform Key generated on that machine, and signs the boot
-artefacts with it. A collaborator who chooses to trust that key gets an
+artefacts with it. A member who chooses to trust that key gets an
 attestable machine, whether the image came from CI or from a laptop.
 
 `/usr/libexec/tilo-secureboot` implements this. Nothing about it runs during the

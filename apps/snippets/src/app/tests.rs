@@ -423,7 +423,7 @@ fn the_list_moves_the_open_snippet_by_keys() {
 }
 
 /// Typing in the body splices the stored text with field edits at the body's path; the
-/// editor follows a collaborator's edit and an undo.
+/// editor follows a member's edit and an undo.
 #[test]
 fn body_edits_are_text_actions_and_the_editor_follows_the_document() {
     let mut app = launched(&[snippet("Only", "")]);

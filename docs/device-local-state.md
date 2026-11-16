@@ -1,7 +1,7 @@
 # Device-local state in synced workspaces
 
 Everything in a workspace syncs to the workspace's other devices and
-collaborators: every file, at every size, with its history. Some files should
+members: every file, at every size, with its history. Some files should
 not. A build tree, a thumbnail cache or a tool's per-machine index is derived
 state: it is rebuilt from the synced files, it is only valid on the machine
 that built it, and syncing it wastes bandwidth and produces conflicts nobody

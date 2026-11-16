@@ -222,7 +222,7 @@ these hold (`crates/runtime/ush/src/host.rs`):
    the shell hosting Terminal in-process.
 2. **No agent asked.** The request carries `"requested_by":"agent"` whenever
    the session was asked for through Terminal's published actions (by an
-   agent, another app, or a collaborator); that is always refused.
+   agent, another app, or a member); that is always refused.
 3. **The device owner is signed in.** The owner's root key
    (`/var/lib/tilo/user-identity/pubkey.bin`) must be the session's default
    identity (`$XDG_CONFIG_HOME/tilo/identity/registry.json`).
@@ -315,7 +315,7 @@ starts the shell.
 ## Home
 
 `~` is the workspace's own files: for the primary workspace, the device's
-files folder, the one synced between its devices and collaborators
+files folder, the one synced between its devices and members
 (`/var/workspace` on a Tilo Linux session); for any other workspace `W`, its
 tree in that folder, `/var/workspace/.workspaces/W`
 ([`tilo_paths::workspace_tree`](../../crates/platform/tilo-paths/src/lib.rs)).
@@ -644,7 +644,7 @@ Which commands an agent's `run` may start is a grant on the environment.
 The person's command history spans every session: each run also adds an
 entry to the person's own history record (`terminal.history`: command, cwd,
 environment, exit, when, who, and the session record and run it was), which
-follows them to their devices and never reaches a collaborator. It keeps the
+follows them to their devices and never reaches a member. It keeps the
 newest 10,000 runs. Every entry is a search entry under its command line, so
 Terminal's search finds a command whichever session ran it, and each
 session's own runs are search entries of the session whose `open` shows it.

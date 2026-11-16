@@ -445,7 +445,7 @@ fn keyed_rows(
 /// overwrite a row that is no longer the one the caller read: a record that
 /// names the key column (the leftmost header, which identifies a row) with
 /// a value other than the one its target row already holds there. Another
-/// collaborator may have appended or sorted rows since the caller read the
+/// member may have appended or sorted rows since the caller read the
 /// sheet, and a stale row number would then silently replace their row. An
 /// empty target row, a matching key, or a record leaving the key out (an
 /// update of that row's other cells) is written.

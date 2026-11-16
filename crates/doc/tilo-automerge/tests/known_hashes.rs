@@ -19,7 +19,7 @@ fn actor(name: &str) -> ActorId {
     ActorId::from(name.as_bytes())
 }
 
-/// Two collaborators editing one record concurrently, plus a third who
+/// Two members editing one record concurrently, plus a third who
 /// started an unrelated document and merged it in: maps with overwrites
 /// and deletes, conflicting writes, a counter and its increments, text with
 /// deletions and marks, authors, messages and empty changes. Changes with

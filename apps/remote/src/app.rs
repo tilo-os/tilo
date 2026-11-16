@@ -1267,7 +1267,7 @@ impl Store {
             conn.favorite = existing.favorite;
             conn.last_used_ms = existing.last_used_ms;
         }
-        // Only the fields the form changed, as one step: a collaborator's
+        // Only the fields the form changed, as one step: a member's
         // pin or a use recorded meanwhile stays.
         let invoke = save_invoke(self.workspace.connections(), &conn);
         let purpose = secret_purpose(conn.kind, conn.auth);
@@ -1347,7 +1347,7 @@ impl Store {
         self.dirty = true;
     }
 
-    /// Drop references to connections a collaborator deleted.
+    /// Drop references to connections a member deleted.
     fn forget_vanished(&mut self) {
         if self
             .selected
@@ -1933,7 +1933,7 @@ impl Widget for RemoteApp {
     // Rebuilding the views (the connections or the screen changed, full
     // screen swapped the body) replaces this widget's children. Say so, or
     // the host re-places the old tree and the change shows only once
-    // something else asks for a rebuild: a collaborator's deletion left
+    // something else asks for a rebuild: a member's deletion left
     // its row on screen.
     fn take_structure_dirty(&mut self) -> bool {
         let own = self.layout_dirty;

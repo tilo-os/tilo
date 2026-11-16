@@ -38,7 +38,7 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
 }
 
 /// Which part of the catalogue shows when no app page, remotes or trust page
-/// is open. Browsing is this window's own: it never moves a collaborator's.
+/// is open. Browsing is this window's own: it never moves a member's.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum View {
     #[default]
@@ -2069,7 +2069,7 @@ impl StoreState {
             _ => return Err("moderation operation does not match this action".into()),
         }
         // Do not rebuild or compare to the mutable draft: these are the exact
-        // parameters the framework admitted, even if a collaborator edited it.
+        // parameters the framework admitted, even if a member edited it.
         Ok(operation)
     }
 
@@ -5808,10 +5808,7 @@ mod tests {
             };
             let expected: ui::registry::ExternalModerationOperation =
                 serde_json::from_str(operation).unwrap();
-            draft(
-                &mut app,
-                "A collaborator replaced the note after preparation.",
-            );
+            draft(&mut app, "A member replaced the note after preparation.");
             let job = admitted_job(&mut app, effect);
             let Request::ExternalModeration(operation) = job.request else {
                 panic!("a submission");

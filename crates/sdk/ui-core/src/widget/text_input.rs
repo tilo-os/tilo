@@ -1027,7 +1027,7 @@ impl TextInput {
     /// replacement selected.
     ///
     /// Refuses, changing nothing, when the range no longer holds `expected`
-    /// (the text moved while an asynchronous action ran, or a collaborator
+    /// (the text moved while an asynchronous action ran, or a member
     /// edited it), when the field is read-only or disabled, or while an
     /// input method composition is open.
     pub fn replace_range(

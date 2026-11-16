@@ -654,7 +654,7 @@ impl Widget for EmbeddedApp {
             .wake_deadline()
             .is_some_and(|deadline| deadline <= crate::time::now());
         // A wake the app raised from another thread (a question put to its
-        // action directory, an invocation, a collaborator's edit) is serviced
+        // action directory, an invocation, a member's edit) is serviced
         // here too, not only by the next frame: the host may park without
         // painting it, and an answer owed to a waiting caller would then wait
         // for something unrelated. Consume it before pumping: a nonvisual

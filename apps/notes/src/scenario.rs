@@ -691,7 +691,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
                 driver.scroll(0.0, -3.0);
             }
         }
-        Some("presence") => show_collaborators(driver)?,
+        Some("presence") => show_members(driver)?,
         _ => {}
     }
     for _ in 0..3 {
@@ -702,7 +702,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
 
 /// Alice typing in the fifth block with her pointer over the note, and Bob
 /// reading another note.
-fn show_collaborators(driver: &mut FrameHarness) -> Result<(), String> {
+fn show_members(driver: &mut FrameHarness) -> Result<(), String> {
     use ui::permissions::MemberId;
     use ui::presence::{PresenceCtx, PresenceKey, SelectionRange};
     let mut presence = PresenceCtx::empty();

@@ -1,6 +1,6 @@
 //! That presence reaches a member of the workspace through the real relay.
 //!
-//! A collaborator drags a pointer at 100 Hz through the real relay, then
+//! A member drags a pointer at 100 Hz through the real relay, then
 //! moves a caret and clears the pointer, publishing as the shell does
 //! (`RelayCoeditSession::publish_presence`). A member reads what the relay
 //! writes it; the host batches what arrives together, in order (see

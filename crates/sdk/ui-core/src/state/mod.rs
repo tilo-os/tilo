@@ -415,7 +415,7 @@ impl State {
     }
 
     /// Undo on behalf of `author`: the entry point every interactive Ctrl+Z takes. With
-    /// an author, undo skips past other people's actions, so one collaborator never
+    /// an author, undo skips past other people's actions, so one member never
     /// reverts another's work; `None` — an app running with no identity at all — keeps
     /// the plain LIFO behaviour.
     pub fn undo_as(
@@ -1284,9 +1284,9 @@ mod tests {
             );
         }
 
-        phase undo_as_an_author_skips_a_collaborators_action;
+        phase undo_as_an_author_skips_a_members_action;
         // `undo_as` is the entry point `App`'s Ctrl+Z takes. With an author it
-        // must behave like an authored undo — walk past a collaborator's action
+        // must behave like an authored undo — walk past a member's action
         // to the local user's own — not like plain LIFO undo.
         {
             let mut state = State::new();
@@ -1403,7 +1403,7 @@ mod tests {
         }
 
         phase can_undo_is_author_scoped_like_the_shortcut;
-        // A session where every entry belongs to a collaborator must report
+        // A session where every entry belongs to a member must report
         // nothing to undo. Without author scoping the control would light up and
         // then do nothing — or, worse, revert someone else's work.
         {
@@ -1789,7 +1789,7 @@ mod tests {
             }
         }
 
-        phase undo_keeps_a_created_paragraph_a_collaborator_wrote_in;
+        phase undo_keeps_a_created_paragraph_a_member_wrote_in;
         {
             fn paragraph(state: &mut State, blocks: &ObjId, id: &str) -> ObjId {
                 let block = state.doc.put_object(blocks, id, ObjType::Map).unwrap();

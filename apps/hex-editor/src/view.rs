@@ -868,7 +868,7 @@ impl Editor {
         let fresh = state.opened != self.opened || (!self.has_file && state.has_file());
         let name = state.name().unwrap_or("No file").to_owned();
         if fresh {
-            // A file a collaborator opened is not the one at our path.
+            // A file a member opened is not the one at our path.
             if self.has_file && name != self.file_name && !self.expect_open {
                 self.path = None;
             }

@@ -93,10 +93,10 @@ floating 0.32; its accent is light with a dark label) keep the contract.
 more chroma) from its wallpaper, so switching workspaces feels like entering
 a different workspace. A grey wallpaper keeps the stock temperature.
 
-**Your colour.** The local person's presence colour is what collaborators
+**Your colour.** The local person's presence colour is what members
 see their cursor in; by default it is also their accent. Until they choose
 one, it derives from their stable identity, so every machine shows the same.
-Each collaborator's and agent's colour marks their presence, cursor,
+Each member's and agent's colour marks their presence, cursor,
 selection and attribution. Unread counts and mentions are filled in the
 person's colour too.
 
@@ -303,7 +303,7 @@ distribution, user, workspace and accessibility layers. A theme can set:
 
 A theme cannot set colours of individual widgets, remove the lift or focus
 ring, or break contrast floors. "Your colour" is part of your identity, not
-the theme: you pick it once and every device and collaborator sees the same.
+the theme: you pick it once and every device and member sees the same.
 
 ## Icons
 

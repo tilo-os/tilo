@@ -697,12 +697,12 @@ mod tests {
                 AccountId::new("foreign-account"),
                 accounts::AccountTypeId::new("webdav"),
             );
-            account.owner = Some("another-collaborator".into());
+            account.owner = Some("another-member".into());
             let bundle = Bundle {
                 version: 1,
                 entries: vec![Entry {
                     account,
-                    secret: Secret::password("private-collaborator-password"),
+                    secret: Secret::password("private-member-password"),
                 }],
             };
             let plain = Zeroizing::new(serde_json::to_vec(&bundle).unwrap());

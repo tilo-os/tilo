@@ -11,7 +11,7 @@ impl SheetsApp {
     /// smart inference where a source cell carried no explicit format, with
     /// how many cells it writes. Into a workbook that is still blank, the
     /// file replaces its empty sheet. The verb checks every tab and cell
-    /// before anything is written, so collaborators never observe a
+    /// before anything is written, so members never observe a
     /// half-import; history and undo see one operation.
     pub(super) fn import_action(
         tables: Vec<crate::xlsx::SheetTable>,

@@ -1,6 +1,6 @@
 //! The reader's own keys: the one-key bindings a person chooses for reader
 //! commands. They follow the person to every device they sign in on, and a
-//! collaborator's keys never change anyone else's reader.
+//! member's keys never change anyone else's reader.
 
 use std::collections::BTreeMap;
 

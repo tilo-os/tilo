@@ -1,5 +1,5 @@
 //! What this device shows: its workspaces in its own order, the one in front, which display each
-//! window group is on and whether one covers its display. It is the device's alone — a collaborator has their own
+//! window group is on and whether one covers its display. It is the device's alone — a member has their own
 //! monitors and their own workspace in front — and is kept beside this device's other state, as one
 //! small file written away from the frame. Nothing else of the layout is here: the strips, window
 //! groups and tabs are the workspace's layout record ([`tilo_desktop_model::shared_record`]).

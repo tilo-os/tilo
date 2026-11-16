@@ -7,7 +7,7 @@
 //! [`Resource::read`] on the document forked at that version's heads.
 //!
 //! Versions are addressed two ways: by heads (a set of change hashes, what a
-//! collaborator can name) and by position in [`versions`]' causal order (what
+//! member can name) and by position in [`versions`]' causal order (what
 //! a scrubber counts). [`prefix_heads`] turns a position into heads, which
 //! the document is read at.
 
@@ -171,7 +171,7 @@ pub fn commit_stamped_at_with_message(
 
 /// Heads of the document as of the first `upto + 1` changes of [`versions`].
 /// Any prefix of that causal order is a valid document state, but with
-/// several collaborators it can have several concurrent frontiers, so "the
+/// several members it can have several concurrent frontiers, so "the
 /// heads" is a set: a change is a head of the prefix when no other change in
 /// the prefix depends on it.
 pub fn prefix_heads(doc: &mut Doc, upto: usize) -> Vec<ChangeHash> {
@@ -970,7 +970,7 @@ mod tests {
         }
     }
 
-    /// Two collaborators' interleaved, combined edits.
+    /// Two members' interleaved, combined edits.
     fn combined() -> Doc {
         let mut left = Doc::new();
         left.put(ROOT, "n", 0).unwrap();

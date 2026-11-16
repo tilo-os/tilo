@@ -129,7 +129,7 @@ pub enum ReadOutcome {
         bytes: Vec<u8>,
         total_len: u64,
     },
-    /// This device is fetching the content from a collaborator; ask again.
+    /// This device is fetching the content from a member; ask again.
     Pending,
     /// Not readable through this capability, now or later.
     Unavailable,

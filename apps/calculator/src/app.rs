@@ -589,7 +589,7 @@ impl CalculatorApp {
 
     /// The same stable, tombstoned action the palette offers. The model is not
     /// spliced optimistically: the presented rows are the merged list a
-    /// collaborator sees, and `adopt_resource_state` clamps the active row.
+    /// member sees, and `adopt_resource_state` clamps the active row.
     fn delete_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut ui::widget::Edits<'_>) {
         if let Some(id) = self.rows.graph_id(kind, index).cloned() {
             match kind {

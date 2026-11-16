@@ -593,7 +593,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
         window.page_mut().attach_service_catalog(cx.waker());
     }
     // Visits and addresses are the person's own: they follow them to their other
-    // devices and never reach a collaborator; a private window keeps none. Downloads
+    // devices and never reach a member; a private window keeps none. Downloads
     // and side panel widths stay on this device.
     if !cx.is_private() {
         window.attach_downloads(cx.storage().settings());

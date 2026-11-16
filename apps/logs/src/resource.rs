@@ -1,4 +1,4 @@
-//! Logs as a resource: the journal filter follows the person and syncs to collaborators;
+//! Logs as a resource: the journal filter follows the person and syncs to members;
 //! the journal itself is this device's, shown and offered as live rows by the window's
 //! view.
 

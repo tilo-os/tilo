@@ -82,7 +82,7 @@ impl ChatApp {
                     .destructive(),
             );
         }
-        if self.direct_person().is_none() && self.has_other_collaborator() {
+        if self.direct_person().is_none() && self.has_other_member() {
             let pins = self.pins_open && self.right_flap_open() && self.thread_open.is_none();
             actions.push(
                 self.bar_entries

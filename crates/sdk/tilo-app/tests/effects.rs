@@ -651,7 +651,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(state.sent.values().collect::<Vec<_>>(), ["first"]);
 
-        // A collaborator's queued message is drained here too.
+        // A member's queued message is drained here too.
         app.merge_peer_edit(|doc| {
             Mailbox::SEND
                 .with("from a peer")

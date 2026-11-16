@@ -2,7 +2,7 @@
 //! against its grant.
 //!
 //! A shortcut's grant is a set of rules over the published tree, the same
-//! `(node, kinds, answer)` a person grants to a collaborator or an agent. It
+//! `(node, kinds, answer)` a person grants to a member or an agent. It
 //! bounds the shortcut: the host still decides, from the invoking person's
 //! own grants, whether that person may take the action at all. The effective
 //! answer is the stricter of the two.

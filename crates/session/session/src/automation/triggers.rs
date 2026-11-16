@@ -2,7 +2,7 @@
 //! kind of event and turns it into [`Firing`]s for the shortcuts armed on this device; the session
 //! starts each run through the action broker, which checks again that the shortcut still exists and
 //! that its saver may still run it. Only shortcuts saved by the person this device acts for in
-//! their workspace are armed ([`armed`]), so a collaborator's shortcut never fires on someone
+//! their workspace are armed ([`armed`]), so a member's shortcut never fires on someone
 //! else's behalf. A shortcut reaches every device of its saver: they rank themselves for each fire
 //! time or record change by a hash, the first runs it at once and records a [`ScheduleClaim`] that
 //! syncs like the shortcut, and each other waits [`CLAIM_GRACE`] per rank, so an asleep device is

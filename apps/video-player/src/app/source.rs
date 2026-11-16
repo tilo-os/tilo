@@ -98,7 +98,7 @@ pub(crate) fn demo_media_ref() -> String {
 
 /// Opaque, deterministic per-process identity for a local source. Resource
 /// IDs and action payload guards need a stable token, but publishing a URI
-/// would expose an absolute path to search, history, or a collaborator.
+/// would expose an absolute path to search, history, or a member.
 pub(super) fn local_source_token(source: &media::Source, generation: u64) -> String {
     // FNV-1a is used only as an opaque UI identifier, not as a security
     // boundary. The monotonic generation prevents a same-path reopen from

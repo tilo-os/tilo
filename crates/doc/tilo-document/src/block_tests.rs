@@ -869,7 +869,7 @@ fn the_declared_actions_are_published_with_typed_described_parameters() {
 }
 
 #[test]
-fn two_collaborators_editing_the_same_page_merge_by_block() {
+fn two_members_editing_the_same_page_merge_by_block() {
     let mut ada = seeded("- [ ] milk\n- [ ] eggs");
     let mut bob = ada.fork().as_author("bob");
     let (milk, eggs) = (id_of(&ada, "- [ ] milk"), id_of(&ada, "- [ ] eggs"));

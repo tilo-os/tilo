@@ -69,7 +69,7 @@ storage exists until the first unlock.
   device key no longer protects anyone's secrets; it identifies the machine.
 - **The store volume** is unlocked by its owner's user key instead of a key file
   on the root. Before its owner signs in, the machine still relays ciphertext for
-  collaborators but cannot read or serve workspace contents.
+  members but cannot read or serve workspace contents.
 - **Wi-Fi networks** a person adds are personal by default; a network the admin
   marks "for everyone" stays in device storage so updates and remote unlock can
   use it before sign-in.

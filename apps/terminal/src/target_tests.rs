@@ -290,7 +290,7 @@ fn reopening_a_session_goes_back_to_its_recorded_target_and_survives_a_new_proce
 }
 
 #[test]
-fn agents_and_collaborators_never_open_the_device_shell() {
+fn agents_and_members_never_open_the_device_shell() {
     let mut app = App::new().unwrap();
     let opened = host_tab(&mut app, RecentTarget::none(), |_| Ok(()));
     let before = recorded(&app);

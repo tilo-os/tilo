@@ -1772,7 +1772,7 @@ fn holder_parts(node: &UiNode) -> Vec<&UiNode> {
 /// kind and props of each part (a field's label).
 type PartShape = (String, String, Vec<(String, Value)>);
 
-/// Where a bound control is for presence: the resource and the field it edits, so collaborators at
+/// Where a bound control is for presence: the resource and the field it edits, so members at
 /// the same field see each other's carets. A control bound to view state has none.
 pub(crate) fn presence_path(node: &UiNode) -> Vec<PathSegment> {
     node.binding

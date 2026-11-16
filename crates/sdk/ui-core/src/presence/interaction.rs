@@ -697,7 +697,7 @@ impl PresenceCtx {
             || {
                 crate::i18n::widget_format(
                     if interaction.actor.is_person() {
-                        "interaction-collaborator"
+                        "interaction-member"
                     } else {
                         "interaction-agent"
                     },
@@ -1238,7 +1238,7 @@ fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> Str
         (Some(member), None) if !member.is_person() => {
             crate::i18n::widget_format("interaction-agent", &[])
         }
-        (Some(_), None) => crate::i18n::widget_format("interaction-collaborator", &[]),
+        (Some(_), None) => crate::i18n::widget_format("interaction-member", &[]),
     }
 }
 
@@ -2064,7 +2064,7 @@ mod tests {
             assert_eq!(
                 presence.agent_marker_interactions(at).len(),
                 2,
-                "a collaborator's own action keeps the plain outline"
+                "a member's own action keeps the plain outline"
             );
         }
 
@@ -2282,10 +2282,10 @@ mod tests {
                 presence.set_display_name(user.clone(), key);
                 let mut keyed = interaction(12, 1, InteractionPhase::Committed);
                 keyed.actor = Acting::person(key);
-                assert_eq!(actor_label(&presence, &keyed), "Collaborator");
+                assert_eq!(actor_label(&presence, &keyed), "Member");
                 assert_eq!(
                     presence.interaction_status_label(&keyed),
-                    "Collaborator: Working in Draft.md"
+                    "Member: Working in Draft.md"
                 );
                 let agent = MemberId::agent("quill");
                 presence.set_display_name(agent.clone(), "Claude");

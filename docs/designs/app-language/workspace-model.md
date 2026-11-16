@@ -105,7 +105,7 @@ window or a place.
 - A resource's actions are available in its views, in the command surface for what has focus,
   and to agents.
 - Arranging (open, close, move) is an action on the workspace's layout, attributed and
-  undoable like any other; agents arrange as collaborators do, visibly. Following and moving
+  undoable like any other; agents arrange as members do, visibly. Following and moving
   your own lens are yours alone.
 - Every change shows where it happened: marked in the views showing the resource, as presence,
   and in its task (shell.md, "What a person sees of a task").

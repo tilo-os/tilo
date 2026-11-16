@@ -13,7 +13,7 @@ use crate::model::Playback;
 /// Device-private state; `playing` is left out, so a launch never starts audio.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceProfile {
-    /// Catalogue choice belongs to this device, never its collaborators.
+    /// Catalogue choice belongs to this device, never its members.
     #[serde(default)]
     pub spotify_catalogue: bool,
     /// Whether this device connected a catalogue; until it has, Music contacts no provider.

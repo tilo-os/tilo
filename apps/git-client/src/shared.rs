@@ -1,4 +1,4 @@
-//! What collaborators see of the repository: its branches, history,
+//! What members see of the repository: its branches, history,
 //! remotes, tags, stashes and identity, read from the repository on disk
 //! and stored whole in the record (see [`crate::resource::GitClient`]).
 //! Working-tree status is never part of it; it stays a live row of the
@@ -9,7 +9,7 @@ use ui::tilo_resource::{self, JsonSchema};
 
 use crate::model::{Branch, Commit, Remote, RepoModel, Stash, Tag};
 
-/// Branches, history, remotes and identity collaborators share. No staged /
+/// Branches, history, remotes and identity members share. No staged /
 /// unstaged / untracked lists — those are live working-tree status.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SharedRepo {

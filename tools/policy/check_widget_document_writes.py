@@ -4,7 +4,7 @@
 A widget in the toolkit (``crates/sdk/ui-core/src/widget``) shows the
 document and keeps what the user does local; its owner takes the edit and
 submits it as a resource action, which is what history attributes, undo
-takes back, permissions check and a collaborator replays. A write from widget
+takes back, permissions check and a member replays. A write from widget
 code bypasses all of that, so production widget sources may not:
 
 * call an Automerge write (``put``, ``put_object``, ``insert_object``,

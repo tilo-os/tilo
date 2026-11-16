@@ -1,5 +1,5 @@
 //! The colour this person wears everywhere, as a setting: their focus ring,
-//! text caret and text selection, the mark their collaborators see on their
+//! text caret and text selection, the mark their members see on their
 //! cursor, and their part of every presence list.
 
 use serde::{Deserialize, Serialize};

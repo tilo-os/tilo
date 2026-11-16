@@ -47,7 +47,7 @@ tilo_test_env::scenario! {
         assert_eq!(count(&grace.root(APP), &meta), 2);
     }
 
-    phase a_view_open_over_a_replica_follows_a_collaborators_press;
+    phase a_view_open_over_a_replica_follows_a_members_press;
     {
         let (mut ada, mut grace, _) = counter_workspace();
         let mut view_ada = ada.view(APP);

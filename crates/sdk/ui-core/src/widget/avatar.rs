@@ -150,7 +150,7 @@ impl<'a> AvatarFace<'a> {
         self
     }
 
-    /// Use a collaborator's own presence colour (their chosen identity
+    /// Use a member's own presence colour (their chosen identity
     /// colour) instead of hashing an id. It is painted at the theme's
     /// presence lightness and chroma, like every other presence mark.
     #[must_use]

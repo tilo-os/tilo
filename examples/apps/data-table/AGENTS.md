@@ -14,7 +14,7 @@ contains this project's longer workflow. Use `tilo-app --help` or a command's
    `cx.control(make, p.level)` for fields, `cx.button(key, Verb.with(..))` for
    verbs, `cx.form::<Params>()` for a verb's parameters, and `cx.each` for
    collections (`let p = cx.paths()`). A click handler alone is not the app's
-   public API: accessibility, automation and collaborators use the same actions.
+   public API: accessibility, automation and members use the same actions.
    Commit the public surface with `tilo-app surface`.
 3. Use shared widgets and the theme. Put visible strings in `locales/*.ftl`,
    and pass Fluent message ids to controls. Start empty; keep sample data in
@@ -30,7 +30,7 @@ Storage, history, per-author undo/redo, permissions and collaboration belong
 in the resource runtime. Keep edits on that path so they can be attributed,
 merged and replayed. Device sync uses the host's collaboration transport;
 do not invent app-local identities, a second database or a permission bypass.
-An agent is an ordinary collaborator subject to the same roles.
+An agent is an ordinary member subject to the same roles.
 For a short, offline workflow with runnable peer-edit and undo tests, use
 `tilo-app guide collaborate --json` (also `guide undo`, `history` or `sync`).
 For live roles, permission-aware panes and refused actions, use

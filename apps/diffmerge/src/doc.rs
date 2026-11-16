@@ -1,5 +1,5 @@
 //! The session's record: the inputs of what is open and the merged result everyone edits,
-//! so a collaborator, a reload and history see the same session. Inputs are written as
+//! so a member, a reload and history see the same session. Inputs are written as
 //! atoms, so two people opening different files end with one of the two sets. `resolutions`
 //! and `written` hold how each hunk was taken, and a new merge clears both.
 

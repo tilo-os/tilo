@@ -401,7 +401,7 @@ pub struct TerminalWidget {
     /// Latched once any output arrived: the empty-state watermark shows only before that.
     ever_nonblank: bool,
 
-    /// Window title from OSC 0/2, in the record so collaborators see it.
+    /// Window title from OSC 0/2, in the record so members see it.
     title: String,
     links: HashMap<u16, String>,
     content: ContentStore,

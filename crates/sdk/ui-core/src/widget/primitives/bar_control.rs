@@ -377,7 +377,7 @@ mod tests {
             let icon = BarControlFace::new("Quick settings").icon(Icon::Settings);
             assert!((icon.width(&mut text, &theme) - 28.0).abs() < 1e-6);
             let short = BarControlFace::new("Workspace").label("Studio");
-            let long = BarControlFace::new("Workspace").label("Studio for collaborators");
+            let long = BarControlFace::new("Workspace").label("Studio for members");
             assert!(long.width(&mut text, &theme) > short.width(&mut text, &theme));
             let chevron = short.trailing(Icon::ChevronDown);
             assert!(chevron.width(&mut text, &theme) > short.width(&mut text, &theme));

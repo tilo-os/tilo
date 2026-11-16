@@ -277,7 +277,7 @@ pub fn close_driver(driver: &mut ui::headless::FrameHarness) {
         assert_closed(report);
     }
 }
-/// Apply one rich-text edit to `page`'s body, as a collaborator's edit
+/// Apply one rich-text edit to `page`'s body, as a member's edit
 /// arrives.
 #[allow(
     clippy::needless_pass_by_value,
@@ -291,7 +291,7 @@ pub fn edit_body(
     tilo_actions::Action::apply(&notes::actions::edit_body_action(page, edit), doc).unwrap();
 }
 
-/// Apply one notebook action to `doc`, as a collaborator's change arrives.
+/// Apply one notebook action to `doc`, as a member's change arrives.
 pub fn apply_to(
     doc: &mut automerge::AutoCommit,
     action: &notes::actions::Action,
@@ -308,7 +308,7 @@ pub fn edit_page_body(
     apply_to(doc, &notes::actions::edit_body_action(page, edit))
 }
 
-/// Write note `page` titled `title` under `parent`, as a collaborator does:
+/// Write note `page` titled `title` under `parent`, as a member does:
 /// made when the notebook lacks it, renamed and moved when it has it.
 pub fn upsert_page(doc: &mut automerge::AutoCommit, page: &notes::PageMeta) {
     let exists = notes::read::list_pages(doc)

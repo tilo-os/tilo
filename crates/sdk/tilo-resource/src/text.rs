@@ -23,7 +23,7 @@ use crate::resource::{ActionDecl, Resource, SearchEntry};
 pub const TEXT_KEY: &str = "text";
 
 /// The mark naming who wrote a run of text: the author of the action that
-/// inserted it. Collaborators' views highlight what each person wrote.
+/// inserted it. Members' views highlight what each person wrote.
 pub const AUTHOR_MARK: &str = "author";
 
 /// Mark `inserted`, just written at the document text index `at` of the text
@@ -71,7 +71,7 @@ pub enum TextEdit {
         insert: String,
     },
     /// Replace the whole text with `text`, written as the smallest splice
-    /// that turns what the document holds into it, so a collaborator's
+    /// that turns what the document holds into it, so a member's
     /// concurrent typing elsewhere survives.
     ReplaceText { text: String },
 }
@@ -484,7 +484,7 @@ mod tests {
             assert_eq!(doc.text(&obj).unwrap(), "abc");
         }
 
-        phase replacing_the_text_keeps_a_collaborators_concurrent_typing;
+        phase replacing_the_text_keeps_a_members_concurrent_typing;
         {
             let mut ours = Doc::new();
             let obj = ours.put_object(ROOT, "body", ObjType::Text).unwrap();

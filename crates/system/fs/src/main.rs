@@ -865,7 +865,7 @@ fn bootstrap_peers(
 
 /// A daemon can serve either its own workspace or exactly one discovered remote workspace.
 /// Refuse ambiguous persisted state instead of combining record planes: records are signed
-/// against a workspace UUID, so an arbitrary ticket could make a collaborator read the wrong
+/// against a workspace UUID, so an arbitrary ticket could make a member read the wrong
 /// namespace.
 fn persisted_remote_workspace_ticket(cache_dir: Option<&Path>) -> Result<Option<Ticket>> {
     let Some(cache_dir) = cache_dir else {

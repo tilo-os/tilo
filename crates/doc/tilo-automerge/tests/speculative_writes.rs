@@ -37,7 +37,7 @@ fn type_at_random(doc: &mut AutoCommit, text: &ObjId, rng: &mut Rng, letters: us
     doc.splice_text(text, at, 0, &word).unwrap();
 }
 
-/// A text two collaborators wrote in `changes` changes of 16 letters at
+/// A text two members wrote in `changes` changes of 16 letters at
 /// random places: old and new op ids side by side all along it, the history
 /// whose lookups the op index serves.
 fn scattered(changes: usize, rng: &mut Rng) -> (AutoCommit, ObjId) {
@@ -118,7 +118,7 @@ fn a_rolled_back_letter_does_not_make_the_next_remote_letter_search() {
 }
 
 /// The fastest of several empty commits, by an actor that has not written,
-/// into a text two collaborators wrote in `changes` scattered changes (so
+/// into a text two members wrote in `changes` scattered changes (so
 /// that the ops' actor column changes every few ops).
 fn empty_commit(changes: usize) -> Duration {
     let mut rng = Rng(0x2545_f491_4f6c_dd1d);

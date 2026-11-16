@@ -10,7 +10,7 @@
 //! involved: the people a task here can be given to without typing them in
 //! again. Each of them carries the role they have here, which is not who may
 //! read the project: sharing and permissions remain the resource's, granted
-//! by the framework to collaborators, not kept in a field.
+//! by the framework to members, not kept in a field.
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal};

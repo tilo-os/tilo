@@ -250,7 +250,7 @@ rise to AAA on a high-contrast palette:
 | `intent.on_inverted` | `intent.inverted`, `intent.inverted_hover` | 4.5:1 | the label of a primary action, at rest and under the pointer |
 | `intent.inverted` | `content` | 3:1 | an on switch, a filled track (WCAG 1.4.11) |
 | `intent.you` | `content`, `sidebar`, `inspector`, `raised`, `overlay` | 3:1 | your focus ring (WCAG 2.4.11) |
-| every presence colour | `content`, `raised`, `overlay` | 3:1 | a collaborator's caret, cursor, pill |
+| every presence colour | `content`, `raised`, `overlay` | 3:1 | a member's caret, cursor, pill |
 | `success`, `warning`, `danger`, `info` | `content`; `base` | 4.5:1; 3:1 | status ink on a control; status dots |
 
 - `ThemeDocument::findings` audits a document as authored, for every
@@ -486,12 +486,12 @@ handle). It reaches windows through the window layer, not the theme:
 `Theme::configured` does not read `identity.colour`; the shell sends it to
 each app window, and a standalone app that may read the person's settings
 starts from the stored choice (a private app with an ephemeral identity
-does not). Collaborators see the same colour: a shell's presence frame says
+does not). Members see the same colour: a shell's presence frame says
 its face's colour (`ShellPresence::colour`), a live frame carries
 `LiveParticipant::color`, and a remote cursor the toolkit draws takes its hue
 from the publisher's identity (`PresenceHue`); each receiving shell paints
 that peer in it and announces it to its apps in the roster
-(`Collaborator::colour`). It is their focus ring, text caret, text-selection tint and unread
+(`Member::colour`). It is their focus ring, text caret, text-selection tint and unread
 mark (`intent.you`, `selection_tint`, `border_focus`), painted at the
 current theme's presence lightness and chroma, so it reads on every theme.
 The theme sets only that lightness and chroma. Settings' Appearance page
@@ -544,14 +544,14 @@ correctly.
 
 ## Theming is per viewer
 
-Collaborators sync state, not pixels. A shared workspace is drawn natively on
+Members sync state, not pixels. A shared workspace is drawn natively on
 each machine from the same CRDT state, so each person sees it in their own
 theme, at their own text scale, with their own accessibility settings. A
-collaborator's high-contrast preference never reaches anyone else's screen,
+member's high-contrast preference never reaches anyone else's screen,
 and a host's dark theme never reaches a guest.
 
 A workspace carries a **temperature** on each viewer's device (layer 4):
-it moves hue only, never contrast. Collaborator colours are identities: a
+it moves hue only, never contrast. Member colours are identities: a
 person's presence hue is painted through each viewer's own theme, at that
 theme's presence lightness and chroma (one tone for everybody).
 
@@ -595,7 +595,7 @@ Verified against the code at the time of writing:
   light palette is pure neutral.
 - **Your colour.** The shell resolves `identity.colour` or the
   identity-derived hue, paints its chrome and the person's own avatar in it,
-  and sends it to every app window; collaborators receive it with the
+  and sends it to every app window; members receive it with the
   person's presence and paint them in it.
 - **The material.** Each surface role names its painter set (`block`,
   `default`, `glass`, `pixelated`, `liquid`, `shader`) in `material`, and one path (`fill_role`,

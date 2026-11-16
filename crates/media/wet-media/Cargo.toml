@@ -6,7 +6,7 @@ publish.workspace = true
 license.workspace = true
 
 # Deterministic wet-media simulation (watercolour, oil) over vector marks.
-# Kept free of the UI and GPU stacks: every collaborator re-simulates the same
+# Kept free of the UI and GPU stacks: every member re-simulates the same
 # marks into the same pixels, and a headless host can render a painting.
 
 [dependencies]

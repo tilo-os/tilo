@@ -461,7 +461,7 @@ mod tests {
                     edited: Some(200)
                 }
             );
-            // A collaborator types in another note: nothing of this one is read
+            // A member types in another note: nothing of this one is read
             // again and its dates stay.
             apply(&mut doc, actions::rename_page_action(other, "Renamed"), 500);
             assert_eq!(ops_read(|| index.sync(&doc, Some(page))), 0);

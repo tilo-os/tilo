@@ -14,7 +14,7 @@
 //! then keeps both sides as element identities (cursors): the running sequence
 //! the diff describes, and the live sequence as the replay writes it. A patch
 //! index is resolved through the first, and the elements it names are found
-//! in the second — or found gone, when a collaborator removed them since.
+//! in the second — or found gone, when a member removed them since.
 //! Every lookup is one pass over the object's elements, whatever the number
 //! of elements a patch names.
 

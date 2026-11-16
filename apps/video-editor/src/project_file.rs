@@ -335,7 +335,7 @@ mod tests {
             assert_eq!(c.anim, p.clips[0].anim, "keyframe curves survive");
         }
         {
-            // If ids were re-minted on load, a collaborator opening the same file
+            // If ids were re-minted on load, a member opening the same file
             // would produce a *disjoint* project that merges into duplicates
             // rather than converging, and every clip would lose its source.
             let p = rich_project();

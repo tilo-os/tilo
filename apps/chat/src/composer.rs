@@ -3,7 +3,7 @@
 //! A channel or thread composer edits that surface's shared draft: rich text
 //! in the document, the record's `drafts` field under the composer's key,
 //! every edit of it a field edit at that path through the chat's dispatcher, so
-//! collaborators see each keystroke and a typed word is one undo step. The
+//! members see each keystroke and a typed word is one undo step. The
 //! message editor edits a local copy until it is saved. Enter sends and Shift+Enter breaks the line in both. What chat
 //! needs beyond the editor — the plain text, the caret as an offset into it
 //! for presence, a peer's caret drawn at such an offset — is read from the

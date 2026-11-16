@@ -47,7 +47,7 @@ pub struct WriterPlace<'a> {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AuthorDirectory {
     by_actor: HashMap<String, HistoryAuthor>,
-    /// A person's own colour (`Collaborator::cursor_color`, local
+    /// A person's own colour (`Member::cursor_color`, local
     /// `avatar_color`). Wins over [`crate::presence::user_color`] for
     /// that identity, matching [`crate::presence::PresenceCtx::color_for`].
     color_overrides: HashMap<String, (u8, u8, u8)>,

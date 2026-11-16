@@ -553,7 +553,7 @@ pub fn serial_to_time(serial: f64, style: TimeStyle) -> String {
     // A cell that follows the language reads each person's own clock.
     match style.resolved(ui::format::words()) {
         TimeStyle::Language | TimeStyle::H24 => ui::format::machine!(
-            "a cell's own number format, the same for every collaborator",
+            "a cell's own number format, the same for every member",
             format!("{h:02}:{mi:02}")
         ),
         TimeStyle::H12 => {
@@ -569,7 +569,7 @@ pub fn serial_to_time(serial: f64, style: TimeStyle) -> String {
 
 fn month_abbrev(m: u32) -> &'static str {
     const M: [&str; 12] = ui::format::machine!(
-        "a cell's own date format, the same for every collaborator",
+        "a cell's own date format, the same for every member",
         [
             "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         ]

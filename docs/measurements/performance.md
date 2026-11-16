@@ -107,7 +107,7 @@ module's encoded size either way, which is what a page pays before it can
 present anything. Such a run is a different series too, so the nightly stays on
 loopback and names the module's size from the bytes it served.
 
-The `hosting` group measures the relay's cost per collaborator-hour
+The `hosting` group measures the relay's cost per member-hour
 (`relay_load`, workspaces of four): fan-out latency and the priced capacity of a relay VM.
 
 Input-to-presentation latency and idle wakeups of an installed desktop are
@@ -152,7 +152,7 @@ this lane.
 A nightly record cannot prove what one change did to a wall-clock or CPU
 KPI: it is compared with earlier nights on other hosts, and the shared
 runners differ by more than most changes (the unchanged relay bench has
-measured 15.9 and 31.2 CPU-seconds per collaborator-hour). To claim a gain,
+measured 15.9 and 31.2 CPU-seconds per member-hour). To claim a gain,
 or to show there is no regression, run an A/B from a clean checkout on Linux:
 
 ```bash

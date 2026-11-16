@@ -11,7 +11,7 @@
 //!   script*"), naming the field by its published label ([`Labels`]) and never
 //!   by a raw id or path.
 //!
-//! The same entry reads in German for a German collaborator and in English
+//! The same entry reads in German for a German member and in English
 //! for an English one, whoever wrote it.
 
 use std::cell::RefCell;

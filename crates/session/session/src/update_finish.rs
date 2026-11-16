@@ -298,7 +298,7 @@ impl Session {
     /// always-on host into it, and ask the person for a restart of the machine. Called once per
     /// pass of the loop.
     pub(super) fn follow_update(&mut self) {
-        // A collaborator's device at another protocol version is the person's to know: this device
+        // A member's device at another protocol version is the person's to know: this device
         // updates when theirs is the newer one, and otherwise theirs is the one that must.
         let mismatched = self
             .shared
@@ -605,7 +605,7 @@ mod tests {
             let now = Instant::now();
             let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
             let mut finish = a_finish(now, None);
-            // The person's app or a collaborator's device needs a newer system,
+            // The person's app or a member's device needs a newer system,
             // so this session fetches it: the reading says it runs, and then
             // that it ended waiting for the desktop.
             assert_eq!(

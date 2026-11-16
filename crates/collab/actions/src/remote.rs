@@ -561,7 +561,7 @@ pub struct InvocationState {
 }
 
 /// A caret or selection in a record, as the live plane's selection anchors
-/// (hex): every collaborator's editor resolves them against its own items.
+/// (hex): every member's editor resolves them against its own items.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActorPlace {
     pub anchor: String,

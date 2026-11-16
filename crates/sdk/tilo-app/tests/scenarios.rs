@@ -133,7 +133,7 @@ impl ResourceApp for PlaylistApp {
             BILL_AT_MS,
             Playlist::ADD.with("Flamenco Sketches"),
         );
-        fixture.collaborator("miles", ResourceSelection::Item("second-take".into()));
+        fixture.member("miles", ResourceSelection::Item("second-take".into()));
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<Playlist>> {

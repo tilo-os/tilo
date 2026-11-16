@@ -59,7 +59,7 @@ tilo_test_env::scenario! {
             undo_for_author_skips_entries_owned_by_other_users();
         }
 
-        // Claiming an unattributed entry must not widen Ctrl+Z to a collaborator's
+        // Claiming an unattributed entry must not widen Ctrl+Z to a member's
         // work: the fallback reaches past somebody else's action to an unclaimed one,
         // and leaves theirs standing.
         {

@@ -115,7 +115,7 @@ impl<R: Resource> Replica<R> {
     }
 
     /// Attribute later actions to `author`, as the host does for a signed-in
-    /// collaborator.
+    /// member.
     #[must_use]
     pub fn as_author(self, person: &str) -> Self {
         self.as_member(MemberId::person(person))
@@ -360,7 +360,7 @@ impl<R: Resource> Replica<R> {
         Ok(reader.state())
     }
 
-    /// A second replica sharing this one's history, as a collaborator who
+    /// A second replica sharing this one's history, as a member who
     /// just joined would hold.
     #[must_use]
     pub fn fork(&mut self) -> Self {

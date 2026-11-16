@@ -34,7 +34,7 @@
 //! session's own device key, and [`RelayCoeditSession::recv`] unwraps it
 //! into [`Inbound::Presence`]`{ author, payload }`. Without this a
 //! remote cursor would arrive unauthored and could not be drawn against
-//! the right collaborator.
+//! the right member.
 //!
 //! Document-op *authorisation* (a viewer without a write cap must not
 //! mutate the doc) is enforced by the broker/host layer that validates
@@ -722,7 +722,7 @@ mod tests {
             }
 
             // The author key must survive the presence wrapper so a remote cursor
-            // is drawn against the right collaborator — the host envelope carries
+            // is drawn against the right member — the host envelope carries
             // no author of its own.
             let wrapped = AttributedPresence {
                 author: [7u8; 32],

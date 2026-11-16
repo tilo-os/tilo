@@ -39,7 +39,7 @@
 //!
 //! A variant that only changes what this participant sees — open a snippet,
 //! reveal a tag, show a result — is a `view`: published as a `View`
-//! operation (any reader may invoke it, a collaborator may not move someone
+//! operation (any reader may invoke it, a member may not move someone
 //! else's view, repeating it is harmless), answered by the same handler.
 //!
 //! Who may run an effect is decided by its kind alone, like any action: an

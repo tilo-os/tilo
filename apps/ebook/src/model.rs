@@ -1019,7 +1019,7 @@ pub fn default_schemes() -> Vec<ColorScheme> {
 }
 
 /// Global reading preferences, shared across the library and persisted in the
-/// CRDT so collaborators see a consistent layout when reading together.
+/// CRDT so members see a consistent layout when reading together.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 #[model(check = Settings::valid)]
 pub struct Settings {
@@ -1125,7 +1125,7 @@ impl Progress {
 }
 
 /// How the library shelf orders its books. Persisted so the shelf keeps the
-/// reader's chosen ordering across sessions and collaborators.
+/// reader's chosen ordering across sessions and members.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
 #[serde(rename_all = "snake_case")]
 pub enum LibrarySort {

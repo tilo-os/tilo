@@ -742,7 +742,7 @@ mod tests {
         );
         assert_eq!(
             account.label, "ada@corp.example",
-            "the collaborator's label stands"
+            "the member's label stands"
         );
         assert_eq!(account.color, 5, "the edit keeps the account's colour");
         assert!(app.undo(), "the edit is one undo step");

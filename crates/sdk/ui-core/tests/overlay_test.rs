@@ -204,7 +204,7 @@ fn overlay_panels_register_their_edge_in_both_themes() {
         let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));
         let anchor = Rect::new(240.0, 60.0, 400.0, 92.0);
         for (name, theme) in themes() {
-            let content = FixedContent::new(200.0, 40.0, "Shared with 3 collaborators");
+            let content = FixedContent::new(200.0, 40.0, "Shared with 3 members");
             let mut popover = Popover::with_content(content)
                 .anchored(anchor)
                 .side(PopoverSide::Below)

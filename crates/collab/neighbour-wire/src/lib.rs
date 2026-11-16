@@ -123,7 +123,7 @@ pub type PresenceKey = String;
 /// The colour the person at the publishing session wears for everyone in
 /// the workspace: one of the twelve presence hues by its stored name (`"red"` …
 /// `"pink"`, as `identity.colour` spells it) — their choice, or the one their
-/// stable identity derives, so every collaborator paints them the same. Self-
+/// stable identity derives, so every member paints them the same. Self-
 /// asserted and cosmetic, like `user`. `None` when the sender did not say; a
 /// receiver then derives one from the sender's handle. A name the receiver
 /// does not know is treated as unsaid.

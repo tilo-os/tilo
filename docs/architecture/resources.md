@@ -2,7 +2,7 @@
 
 Every app is written one way. Its state is a typed model stored in a CRDT
 document, its changes are actions on that model, and its pixels are views that
-read the model and submit actions. People, collaborators, agents, Shortcuts,
+read the model and submit actions. People, members, agents, Shortcuts,
 the palette, search and accessibility all reach an app through the same
 published tree of resources and actions. Nothing is declared twice, nothing
 is addressed by a string an app writes by hand, and nothing happens without
@@ -457,7 +457,7 @@ palette, an agent), subtree by subtree, and cached by item id.
 ### 3.3 Forms
 
 A form is a local instance of a verb's parameter struct: never synced, never
-undoable, invisible to collaborators. Its fields bind with the same paths; the
+undoable, invisible to members. Its fields bind with the same paths; the
 button submits it as one action.
 
 ```rust
@@ -515,10 +515,10 @@ live, and the action runs through that view, exactly as a person's click does.
   a strip the person is not looking at. A person invoking from the palette gets
   it where they are.
 - **Presence.** Whoever acts is a participant with presence in the view: a
-  person, a collaborator, an agent, a Shortcut. Presence names the actor and on
+  person, a member, an agent, a Shortcut. Presence names the actor and on
   whose behalf it acts ("Claude, for Ada"), shows where it works and what it
   just changed.
-- **Me and others.** The person's own changes, a collaborator's and an agent's
+- **Me and others.** The person's own changes, a member's and an agent's
   look different in every view and in history.
 - **Hosts without a screen.** An agent host or relay that performs actions runs
   the app's view attached but undrawn, and publishes presence and placement.
