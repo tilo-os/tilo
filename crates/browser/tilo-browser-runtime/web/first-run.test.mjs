@@ -38,14 +38,14 @@ function maker(...codes) {
   return {make, made};
 }
 
-function fixture({copy, site, stored = new Map(), online = () => true, clock = 0, held = false} = {}) {
+function fixture({copy, site, stored = new Map(), online = () => true, clock = 0, held = false, signInOnly = false, onBack} = {}) {
   const {view, said, names, last} = fakeView();
   const copied = [];
   const state = {clock, ticks: null, every: null, timers: new Map(), id: 0, reloads: 0};
-  const run = createFirstRun({view, site, held,
+  const run = createFirstRun({view, site, held, signInOnly, onBack,
     // The clipboard takes the text at once, as `writeText` does inside the click.
     clipboard: {copy: copy ?? (text => { copied.push(text); return Promise.resolve(); })},
-    storage: {setItem: (key, value) => stored.set(key, value), getItem: key => stored.get(key) ?? null},
+    storage: signInOnly ? null : {setItem: (key, value) => stored.set(key, value), getItem: key => stored.get(key) ?? null},
     now: () => state.clock, every: (tick, ms) => { state.ticks = tick; state.every = ms; return () => { state.ticks = null; }; },
     later: (run, ms) => { const id = ++state.id; state.timers.set(id, {run, ms}); return id; },
     clear: id => state.timers.delete(id),
@@ -464,6 +464,38 @@ test('returning: a sign-in the page could not finish says why', async () => {
   await tick();
   await settle();
   assert.deepEqual(last('failed'), ['failed', 'This tab isn’t let in yet. Try again in a moment.', 'sign-in']);
+});
+
+test('signing in from the wait list: the prompt shows at once, a claim signs the tab in, nothing is kept', async () => {
+  let back = 0;
+  const {run, last, names, stored, tick} = fixture({signInOnly: true, onBack: () => { back += 1; }});
+  const code = fakeCode();
+  run.offerAgentSignIn(maker(code).make);
+  await settle();
+  await settle();
+  // No click copied it: the screen shows the prompt to copy or select, and
+  // says nothing failed.
+  assert.deepEqual(last('waiting'), ['waiting', 'sign-in', {text: signInPrompt(CODE), copied: false}]);
+  assert.ok(!names().includes('problem') || last('problem')[1] === '', 'no copy was asked for, so none failed');
+  assert.ok(code.asked > 0, 'followed from the moment it shows');
+  const claimed = {user: 'ab'.repeat(32), invite: 'cd'.repeat(16), by: 'Claude Code on build-box'};
+  Object.assign(code.polled, {resolved: true, steps: ['resolved'], claimed});
+  await tick();
+  await settle();
+  assert.deepEqual(code.signedIn, [claimed], 'the tab asks to be that person, with the invite the claim named');
+  assert.equal(stored.size, 0, 'a browser on the wait list keeps no setup');
+  assert.equal(back, 0);
+});
+
+test('signing in from the wait list: back closes the screen onto the wait list', async () => {
+  let back = 0;
+  const {run, names} = fixture({signInOnly: true, onBack: () => { back += 1; }});
+  run.offerAgentSignIn(maker(fakeCode()).make);
+  await settle();
+  await settle();
+  run.back();
+  assert.equal(names().at(-1), 'close');
+  assert.equal(back, 1);
 });
 
 test('set up manually shows the MCP server and the commands with the code shown, and follows it', async () => {

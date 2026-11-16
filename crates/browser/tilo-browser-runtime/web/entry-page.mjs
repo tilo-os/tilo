@@ -28,7 +28,7 @@ import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspac
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, setupOrigin, syncProfile} from './identity-actions.mjs';
-import {firstRun, MCP_URL, openFirstRun, readSetup, setupDone, setupLater} from './first-run.mjs';
+import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -42,7 +42,7 @@ import {createWorkspaceActions, invitedLine, mayRemove} from './workspace-action
 import {sameEntry} from './entered-workspaces.mjs';
 import {siteHost} from './site-host.mjs';
 import {
-  chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces,
+  chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces,
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
   keptMembership, listedWorkspaces,
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
@@ -1652,7 +1652,7 @@ export async function startEntryPage({mode}) {
     if (error?.code === 'invitation-only') {
       const screen = failureScreen('invitation-only', {workspace: named, messages});
       status.textContent = `${screen.heading}. ${screen.body}`;
-      offerRefusal({messages, named, error, workspace: visitedAt ?? admitting?.entry?.home});
+      offerRefusal({messages, named, error, workspace: visitedAt ?? admitting?.entry?.home, runtime, link: admitting?.link});
       if (admitting && !embed) void offerOwnDesktop({...admitting, runtime});
       // Its answer, not a failure of this page to report as an uncaught
       // error (every stranger at such an entry would send one).
@@ -1820,13 +1820,16 @@ const DOOR_SIGNED_IN = 'tilo-entry-signed-in';
  * at the foot of the page (`offerOwnDesktop`); while the home takes people
  * by invitation only, nothing does.
  */
-function offerRefusal({messages, named, error, workspace}) {
+function offerRefusal({messages, named, error, workspace, runtime, link}) {
   const entry = document.getElementById('arrival-entry');
   // The first screen of a first visit is not for someone the entry turns
   // away: it asks them to set an agent up in a workspace they are not in. It
   // leaves now, not after its fade, and whatever the page drew of it while it
-  // loaded goes with it: the entry is what this visit is.
+  // loaded goes with it: the entry is what this visit is. Its setup code is
+  // no longer watched for an agent either: this person approves no device
+  // at a host that turned them away, and asking would only be refused.
   firstRun?.close();
+  for (const watcher of agentWatchers) watcher.stopWatchingAgents();
   document.documentElement.removeAttribute('data-first-run');
   const form = document.getElementById('arrival-invite');
   const toggle = document.getElementById('arrival-invite-toggle');
@@ -1847,7 +1850,7 @@ function offerRefusal({messages, named, error, workspace}) {
     });
   }
   if (waitList) offerWaitList({workspace, contact: error.entry.contact, mail: error.entry.mail === true, messages});
-  offerSignIn({workspace, named, messages});
+  offerSignIn({workspace, named, messages, runtime, link});
   // The invite link: behind a small toggle beside the wait list; shown
   // where it is the only way in.
   toggle.textContent = say('arrival-invite-toggle', 'Have an invite link?');
@@ -1908,17 +1911,34 @@ function offerWaitList({workspace, contact, mail, messages}) {
  * the home workspace's shared desktop. A member gets in; anyone else is told
  * this identity is not in `named` yet, with the wait list still there.
  */
-function offerSignIn({workspace, named, messages}) {
+function offerSignIn({workspace, named, messages, runtime, link}) {
   const say = (key, english, args) => localized(messages, key, english, args);
   const row = document.getElementById('arrival-sign-in');
+  const agent = document.getElementById('arrival-sign-in-agent');
   const button = document.getElementById('arrival-sign-in-button');
   const note = document.getElementById('arrival-sign-in-note');
-  if (!row || !button || !note) return;
+  if (!row || !agent || !button || !note) return;
   document.getElementById('arrival-sign-in-ask').textContent = say('arrival-sign-in-ask', 'Already have a Tilo identity?');
-  button.textContent = say('arrival-sign-in', 'Sign in');
+  agent.textContent = say('arrival-sign-in-agent', 'Sign in with your agent');
+  button.textContent = say('arrival-sign-in-passkey', 'Use a passkey');
+  // With their agent: a computer of theirs vouches for this tab, which
+  // then opens this workspace as them, past the wait list.
+  const origin = workspace?.host?.origin;
+  const target = entryWorkspace(workspace);
+  const signInWithAgent = origin && target && runtime?.createLoginCode && link;
+  agent.hidden = !signInWithAgent;
+  if (signInWithAgent) {
+    const codes = loginCodes(runtime, new URL(origin).origin);
+    const signIn = claimed => signInAs(claimed, {origin, workspace: target}, link);
+    agent.addEventListener('click', () => {
+      const run = openSignIn(document, {onBack: () => agent.focus()});
+      run?.offerAgentSignIn(async () => ({...await codes.create(null), signIn}));
+    });
+  }
   // A browser without passkeys cannot open an identity kept with one.
   if (typeof globalThis.PublicKeyCredential !== 'function' || !navigator.credentials?.get) {
-    row.hidden = true;
+    button.hidden = true;
+    row.hidden = !signInWithAgent;
     return;
   }
   let signedIn = null;
@@ -2185,6 +2205,10 @@ let setUpIn = null;
 /** Resolves to the page's peer once it is in its workspace. */
 let letIn;
 const pageLetIn = new Promise(resolve => { letIn = resolve; });
+/** The identity actions watching for agents set up from this tab's codes:
+ * told to stop once the host turns the page away (`offerDoor`), where this
+ * person approves nothing. */
+const agentWatchers = new Set();
 /** How long signing in with an agent waits for this tab to be in its workspace. */
 const LET_IN_MS = 30_000;
 
@@ -2216,6 +2240,7 @@ function agentSetupCodes({origin, identity, runtime, link}) {
       // this tab: a stand-in on the host keeps them, made now and not for
       // every visitor shown a prompt.
       onAgent: () => { void actions?.keepStandIn().catch(error => console.warn('first run: stand-in', error)); }});
+    agentWatchers.add(actions);
     return actions;
   };
   // A code followed: the first screen follows one as soon as it shows it, so
@@ -2286,19 +2311,29 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
   // device of theirs with the invite the claim named, as a pairing link
   // does, and their stand-in on the host approves exactly that request.
   // The link opens the workspace this tab is let into, so it waits for that.
-  const signIn = async ({user, invite}) => {
+  const signIn = async claimed => {
     const peer = await Promise.race([pageLetIn, new Promise(resolve => setTimeout(resolve, LET_IN_MS, null))]);
     if (!peer?.workspace) throw Object.assign(new Error('this tab is not in its workspace yet'), {code: 'not-let-in'});
-    const url = (await link).format({mode: 'desktop', target: {scope: {kind: 'workspace', host: peer.origin, workspace: peer.workspace}}});
-    setupDone();
-    try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
-    globalThis.location.assign(`${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(user, invite)}`);
-    globalThis.location.reload();
+    await signInAs(claimed, peer, link);
   };
   firstRun.offerAgentSignIn(async () => {
     const made = await codes.create(null);
     return {...made, saved: {...made.saved, person: identity.userPublicKey, host: new URL(origin).origin}, signIn};
   }, saved => (ours(saved) ? {...codes.resume(saved), signIn} : null));
+}
+
+/**
+ * Sign this tab in as the person whose device claimed its sign-in code
+ * (`{user, invite}`): it opens `workspace` on the host at `origin` as a new
+ * device of theirs, asking to be certified with the invite the claim named,
+ * which their stand-in there approves, and then their own workspace.
+ */
+async function signInAs({user, invite}, {origin, workspace}, link) {
+  const url = (await link).format({mode: 'desktop', target: {scope: {kind: 'workspace', host: origin, workspace}}});
+  setupDone();
+  try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
+  globalThis.location.assign(`${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(user, invite)}`);
+  globalThis.location.reload();
 }
 
 /** Where this browser keeps the person's own workspace it named before it existed. */

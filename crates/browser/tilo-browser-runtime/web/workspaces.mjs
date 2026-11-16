@@ -336,6 +336,14 @@ function admissionEntry(workspace) {
   return workspace.admission;
 }
 
+/** The workspace a listing's entry admits into, when it names one, or its
+ * entry's address does (`<relay>/peer/v1/directory/<workspace>/`, a site's
+ * home); else `null`. */
+export function entryWorkspace(workspace) {
+  if (typeof workspace?.workspace === 'string' && workspace.workspace) return workspace.workspace;
+  return (typeof workspace?.admission === 'string' && workspace.admission.match(/\/directory\/([^/]+)\/?$/)?.[1]) || null;
+}
+
 /** An entry's refusal as the shared entry read it (`HostRefusal`: the entry's
  * code and the wait it asked for), as this page's screens tell them apart: a
  * ban and a removal alike are `removed`; an entry not reached is `unavailable`.
@@ -624,13 +632,11 @@ export async function joinViaHost({
 }) {
   const entry = admissionEntry(workspace);
   const known = keptMembership(workspace, memberships);
-  // The workspace this listing's entry admits into, when it names one, or
-  // its entry's address does (`<relay>/peer/v1/directory/<workspace>/`, a
-  // site's home). A membership kept for another of the host's workspaces is
-  // not this one's: a person invited into that one comes to the home through
-  // its entry. Only an entry that names none is the membership's workspace.
-  const asking = typeof workspace.workspace === 'string' && workspace.workspace
-    ? workspace.workspace : entry.match(/\/directory\/([^/]+)\/?$/)?.[1] ?? null;
+  // The workspace this listing's entry admits into (`entryWorkspace`). A
+  // membership kept for another of the host's workspaces is not this one's:
+  // a person invited into that one comes to the home through its entry. Only
+  // an entry that names none is the membership's workspace.
+  const asking = entryWorkspace({...workspace, admission: entry});
   const forThisWorkspace = !asking || known?.workspace === asking;
   if (known?.paired) {
     // A device paired to a person kept elsewhere: only that person's

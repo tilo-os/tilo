@@ -438,6 +438,15 @@ mod tests {
             policy.keepers().collect::<Vec<_>>(),
             vec![hex::encode(owner)]
         );
+        // Who the workspace lists as its owner (`tilo members ls`): the
+        // person the link made one.
+        let members = workspaces.members(&workspace).await.unwrap();
+        let row = members
+            .iter()
+            .find(|row| row["person"] == hex::encode(owner))
+            .unwrap_or_else(|| panic!("the owner has a row in {members:?}"));
+        assert_eq!(row["owner"], true, "{members:?}");
+        assert_eq!(row["administrator"], true, "{members:?}");
         assert!(
             workspaces
                 .open_owner_invitation(&workspace, until)

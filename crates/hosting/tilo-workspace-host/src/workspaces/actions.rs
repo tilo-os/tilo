@@ -1352,6 +1352,50 @@ impl Workspaces {
         }
     }
 
+    /// The people in `workspace`, one row each: who they are, their role,
+    /// and whether they own or administer it.
+    pub(super) async fn members(&self, workspace: &str) -> Result<Vec<Value>, CollaborationError> {
+        let governed = self.workspace(workspace).await?;
+        let governed = governed.lock().await;
+        // Whoever made a workspace of their own holds it, though its
+        // governance names this host's device as the structural owner
+        // that runs it: every other workspace here is its governor's.
+        let owner = self
+            .own()
+            .and_then(|own| own.owner_of(workspace))
+            .unwrap_or_else(|| governed.peer().owner());
+        // An owner the host declared (its owner link, or the operator's
+        // `owner`) is an administrator the workspace is kept for: as much an
+        // owner as whoever made it.
+        let policy = governed
+            .peer()
+            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
+            .ok()
+            .map(|permissions| permissions.policy);
+        let owns = |root: [u8; 32]| {
+            root == owner
+                || policy
+                    .as_ref()
+                    .is_some_and(|policy| policy.is_keeper(&hex::encode(root)))
+        };
+        let people = self.people(&governed);
+        drop(governed);
+        Ok(people
+            .members
+            .iter()
+            .filter(|member| !member.removed)
+            .map(|member| {
+                json!({
+                    "person": member.id.key(),
+                    "name": (!member.name.is_empty()).then_some(&member.name),
+                    "role": member.role.map(Role::key),
+                    "owner": member.root().is_some_and(owns),
+                    "administrator": member.administrator,
+                })
+            })
+            .collect())
+    }
+
     /// Inviting, and what inviting covers: the invitations.
     async fn governance_invitations(
         &self,
@@ -1399,35 +1443,11 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 Ok(pending.iter().map(pending_json).collect())
             }
-            MEMBERS => {
-                let governed = self
-                    .workspace(workspace)
-                    .await
-                    .map_err(|error| refused(&error))?;
-                let governed = governed.lock().await;
-                // Whoever made a workspace of their own holds it, though its
-                // governance names this host's device as the structural owner
-                // that runs it: every other workspace here is its governor's.
-                let owner = self
-                    .own()
-                    .and_then(|own| own.owner_of(workspace))
-                    .unwrap_or_else(|| governed.peer().owner());
-                Ok(self
-                    .people(&governed)
-                    .members
-                    .iter()
-                    .filter(|member| !member.removed)
-                    .map(|member| {
-                        json!({
-                            "person": member.id.key(),
-                            "name": (!member.name.is_empty()).then_some(&member.name),
-                            "role": member.role.map(Role::key),
-                            "owner": member.root() == Some(owner),
-                            "administrator": member.administrator,
-                        })
-                    })
-                    .collect())
-            }
+            MEMBERS => Ok(self
+                .members(workspace)
+                .await
+                .map_err(|error| refused(&error))?
+                .into()),
             NAME => {
                 self.name_self(
                     workspace,

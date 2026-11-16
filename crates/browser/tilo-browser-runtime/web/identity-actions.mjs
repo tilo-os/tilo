@@ -395,6 +395,16 @@ export function createIdentityActions({
     watchAgents() {
       if (agents.size) stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
     },
+    /** Stop asking for the devices answering this page's agent invites,
+     * and drop those invites: the host turned this page away, so this
+     * person approves nothing there and every ask would be refused. */
+    stopWatchingAgents() {
+      for (const id of [...agents]) { invites.spend(id); closeInvite(id); }
+      if (invites.size) return;
+      stopPairing?.();
+      stopPairing = null;
+      void pairing?.close?.();
+    },
     /** Show the actions in `mount`'s desktop. */
     async attach(target) {
       withPasskeys = await Promise.resolve().then(passkeys).then(Boolean, () => false);

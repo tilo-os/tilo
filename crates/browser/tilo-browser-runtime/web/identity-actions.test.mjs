@@ -575,6 +575,19 @@ test('a link only shown asks the host nothing until the person uses it', async (
   assert.deepEqual(pairing.agents, [{label: 'Claude Code on laptop'}]);
 });
 
+test('a page the host turned away stops looking for its agent: it approves nothing there', async () => {
+  // Its first screen made a setup code before the wait list answered; every
+  // look would be refused, for as long as the link stayed open.
+  const pairing = await pairingFixture();
+  await pairing.actions.connectAgent();
+  assert.equal(typeof pairing.poll, 'function');
+  pairing.actions.stopWatchingAgents();
+  assert.equal(pairing.poll, null, 'nothing is asked any more');
+  pairing.host.pending = [request('d1', INVITE_A, {label: 'Claude Code on laptop'})];
+  await pairing.tick();
+  assert.deepEqual(pairing.agents, [], 'and the dropped link approves no device');
+});
+
 test('an agent set up in the person’s own workspace gets a link that opens it', async () => {
   const pairing = await pairingFixture();
   const made = await pairing.actions.connectAgent({workspace: 'MINE'});

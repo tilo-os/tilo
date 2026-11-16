@@ -289,7 +289,7 @@ function bounded(promise, ms, later, clear) {
  * it may show (`reveal`).
  */
 export function createFirstRun({view: drawn, clipboard, storage = null, now = () => Date.now(), site = HOME_SITE,
-  held: heldAtPaint = false,
+  held: heldAtPaint = false, signInOnly = false, onBack = () => {},
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
   later = (run, ms) => setTimeout(run, ms), clear = timer => clearTimeout(timer),
   reload = () => globalThis.location?.reload(), online = () => globalThis.navigator?.onLine !== false}) {
@@ -801,7 +801,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   // another try. `handed` says an agent got the code without a copy in this
   // tab (typed, or copied by hand), so the screen asks for no paste and says
   // nothing was copied; `agent` is the computer's name, once it said one.
-  const use = (kind, mode, made, text, {copied = false, handed = false, agent = null} = {}) => {
+  const use = (kind, mode, made, text, {copied = false, handed = false, agent = null, shown = false} = {}) => {
     const mine = ++attempt;
     stopWatch();
     manualShown = false;
@@ -811,7 +811,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     view.waiting(mode, {text, copied, ...(handed ? {handed: true, agent} : {})});
     view.agentFailed(null);
     view.net(null);
-    if (!copied && !handed) view.problem(setupFailure({code: 'copy-failed'}, {site}));
+    if (!copied && !handed && !shown) view.problem(setupFailure({code: 'copy-failed'}, {site}));
     view.steps(stepLines(null, mode));
     following = made.code;
     save({step: 'waiting', mode, code: made.saved ? {...made.saved, kind} : null, copied, handed, manual: false, polled: null,
@@ -912,9 +912,13 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       return writing.then(() => true, () => false)
         .then(ok => { view.copied(ok, which); if (!ok) view.problem(setupFailure({code: 'copy-failed'}, {site})); });
     },
-    /** Back to the start, forgetting the code under way. */
+    /** Back to the start, forgetting the code under way; signing in from
+     * the wait list, back to it. */
     back() {
-      if (!closed) toStart(true);
+      if (closed) return;
+      if (!signInOnly) { toStart(true); return; }
+      close();
+      onBack();
     },
     skip() {
       if (!closed) leave();
@@ -954,8 +958,14 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     offerAgentSignIn(make, resume = null) {
       codes.signIn.make = make;
       codes.signIn.resume = resume;
-      void prepare('signIn');
-      resumeFollow();
+      // Signing in from the wait list, the prompt is what the screen is
+      // for: shown as soon as its code is in, to copy or select.
+      void prepare('signIn').then(() => {
+        const made = codes.signIn.made;
+        if (!signInOnly || closed || following || !made) return;
+        use('signIn', 'sign-in', made, prompts.signIn(made.code, {site}), {shown: true});
+      });
+      if (!signInOnly) resumeFollow();
     },
     /** The page cannot make codes (it was not let in): `error` says why. A
      * screen opening the person's workspace leaves for what the page says. */
@@ -1249,10 +1259,32 @@ export function openFirstRun(document = globalThis.document, {storage} = {}) {
   return run;
 }
 
-/** The screen's buttons wired to a controller of its own. */
-function wireFirstRunScreen(document, storage, {held = false} = {}) {
-  const run = createFirstRun({view: domView(document), clipboard: pageClipboard(), storage: storage ?? globalThis.localStorage,
-    site: globalThis.location?.origin, held});
+/**
+ * Signing in from a site's wait list, as someone who has been here: the
+ * screen opens on the prompt that has the person's agent sign this tab in
+ * (`offerAgentSignIn`, then `signIn(claimed)`), and Back closes it onto the
+ * wait list again (`onBack`). It keeps nothing with the setup: this browser
+ * has none here, and its next visit opens on the wait list as this one did.
+ */
+export function openSignIn(document = globalThis.document, {onBack = () => {}} = {}) {
+  const screen = document?.getElementById?.('first-run');
+  if (!screen) return null;
+  const root = document.documentElement;
+  root.removeAttribute('data-first-run');
+  screen.removeAttribute('data-closing');
+  screen.dataset.reopened = 'true';
+  screen.dataset.mode = 'sign-in';
+  const run = wireFirstRunScreen(document, null, {signInOnly: true, onBack});
+  run?.whenDone(() => {});
+  root.setAttribute('data-first-run', '');
+  return run;
+}
+
+/** The screen's buttons wired to a controller of its own. A sign-in from the
+ * wait list (`signInOnly`) keeps nothing in `storage`. */
+function wireFirstRunScreen(document, storage, {held = false, signInOnly = false, onBack} = {}) {
+  const run = createFirstRun({view: domView(document), clipboard: pageClipboard(),
+    storage: signInOnly ? null : storage ?? globalThis.localStorage, site: globalThis.location?.origin, held, signInOnly, onBack});
   const on = (id, handler) => document.getElementById(id)?.addEventListener('click', handler);
   const text = id => document.getElementById(id).textContent;
   on('first-run-agent', () => run.copy());

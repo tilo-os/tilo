@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, defaultDisplayName, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStanding, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, defaultDisplayName, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStanding, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -946,4 +946,11 @@ test('a kept membership or entered workspace that names no workspace is left out
   const entered = {getItem: () => '[]', setItem: () => {}};
   nameEntered(runtime, {origin: 'https://workspaces.example', workspace: undefined, name: 'Tilo'}, entered);
   markUnavailable(runtime, {origin: 'https://workspaces.example', workspace: undefined}, entered);
+});
+
+test('the workspace an entry admits into: the one its listing names, else the one its address does', () => {
+  assert.equal(entryWorkspace({workspace: 'w1', admission: 'https://h.example/peer/v1/directory/w2/'}), 'w1');
+  assert.equal(entryWorkspace({host: {origin: 'https://h.example'}, admission: 'https://h.example/peer/v1/directory/w2/'}), 'w2');
+  assert.equal(entryWorkspace({admission: 'https://h.example/peer/v1/admission'}), null);
+  assert.equal(entryWorkspace(null), null);
 });
