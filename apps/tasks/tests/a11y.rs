@@ -170,7 +170,9 @@ fn a_captured_issue_page_names_its_people() {
         .harness()
         .a11y_nodes()
         .into_iter()
-        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        // A chip's words are the value a static text carries; everything else
+        // names itself.
+        .filter_map(|(_, node)| node.label().or_else(|| node.value()).map(str::to_owned))
         .collect();
     let assignee = labels
         .iter()
