@@ -634,7 +634,7 @@ pub const EVENT_INPUT: &str = "event";
 static EVENT_PAYLOAD: [ActionParam; 1] = [ActionParam::required(
     EVENT_INPUT,
     ParamType::Object,
-    "What fired the run: the change or the connector event",
+    "What fired the run: the change, the connector event or the fire time",
 )];
 
 /// [`TriggerSpec::FocusMode`] mode: the person's Do Not Disturb switch.
@@ -690,7 +690,8 @@ impl TriggerSpec {
             Self::RecordChanged { .. }
             | Self::Connector { .. }
             | Self::IncomingMessage { .. }
-            | Self::AppEvent { .. } => &EVENT_PAYLOAD,
+            | Self::AppEvent { .. }
+            | Self::Schedule { .. } => &EVENT_PAYLOAD,
             _ => &[],
         }
     }

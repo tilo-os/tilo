@@ -81,7 +81,7 @@ pub fn dispatch(armed: &[Armed<'_>], event: Event<'_>) -> Dispatched {
     let mut out = Dispatched::default();
     for armed in armed {
         for (index, trigger) in armed.shortcut.triggers.iter().enumerate() {
-            if !matches(trigger, armed, event) {
+            if !matches(trigger, index, armed, event) {
                 continue;
             }
             let key = armed.firer.key();
@@ -138,8 +138,9 @@ pub fn run_id(firer: &Firer<'_>, trigger_index: usize, event: Event<'_>) -> Invo
     InvocationId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
 }
 
-fn matches(trigger: &TriggerSpec, armed: &Armed<'_>, event: Event<'_>) -> bool {
+fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<'_>) -> bool {
     match (trigger, event) {
+        (TriggerSpec::Schedule { .. }, Event::Schedule(fired)) => fired.trigger == index,
         (
             TriggerSpec::RecordChanged {
                 kind,

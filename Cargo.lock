@@ -17897,6 +17897,7 @@ name = "tilo-automation"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "chrono",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -21077,6 +21078,7 @@ dependencies = [
  "bounded-command",
  "bytes",
  "chat",
+ "chrono",
  "clap",
  "collab-types",
  "crc32fast",

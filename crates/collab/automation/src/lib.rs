@@ -47,6 +47,7 @@ pub mod requirements;
 pub mod run;
 mod saved;
 pub mod scenario;
+pub mod schedule;
 pub mod shortcut;
 mod template;
 pub mod text;

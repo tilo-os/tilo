@@ -237,9 +237,7 @@ impl Automation {
             .iter()
             .flat_map(|armed| armed.shortcut.triggers.iter())
             .filter_map(|trigger| match trigger {
-                TriggerSpec::Schedule { schedule, .. } => {
-                    triggers::next_fire_time(schedule, now, clock)
-                }
+                TriggerSpec::Schedule { schedule, .. } => triggers::next_fire(schedule, now, clock),
                 _ => None,
             })
             .min()
