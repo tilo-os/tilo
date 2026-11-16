@@ -1135,8 +1135,8 @@ fn a_moved_note_keeps_its_origin_and_who_moved_it() {
     let handbook = page(&mover, &titled(&mover, "Handbook"));
     assert_eq!(handbook.origin, Some(origin));
     assert_eq!(
-        handbook.creator.map(|by| by.0).as_deref(),
-        Some("agent:grant-a8a42b74")
+        handbook.creator,
+        Some(ui::tilo_resource::MemberId::agent("grant-a8a42b74"))
     );
     assert_eq!(handbook.creator_name, "Company mover");
 }

@@ -117,8 +117,14 @@ impl<R: Resource> Replica<R> {
     /// Attribute later actions to `author`, as the host does for a signed-in
     /// collaborator.
     #[must_use]
-    pub fn as_author(mut self, person: &str) -> Self {
-        self.author = Some(MemberId::person(person));
+    pub fn as_author(self, person: &str) -> Self {
+        self.as_member(MemberId::person(person))
+    }
+
+    /// Attribute later actions to `member`.
+    #[must_use]
+    pub fn as_member(mut self, member: MemberId) -> Self {
+        self.author = Some(member);
         self
     }
 

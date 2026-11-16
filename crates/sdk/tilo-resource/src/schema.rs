@@ -85,6 +85,22 @@ primitive! {
     uuid::Uuid => json!({"type": "string", "format": "uuid"}), Text,
 }
 
+/// A member as serde writes it: `{"person": "<id>"}`, `{"agent": "<id>"}` or
+/// `{"bot": "<id>"}`.
+impl JsonSchema for tilo_action_policy::MemberId {
+    fn json_schema() -> Value {
+        let kind = |name: &str| {
+            json!({
+                "type": "object",
+                "properties": { name: {"type": "string"} },
+                "required": [name],
+                "additionalProperties": false,
+            })
+        };
+        json!({"oneOf": [kind("person"), kind("agent"), kind("bot")]})
+    }
+}
+
 impl<T: JsonSchema> JsonSchema for Option<T> {
     const OPTIONAL: bool = true;
 

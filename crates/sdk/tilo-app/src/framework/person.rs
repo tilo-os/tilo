@@ -55,7 +55,7 @@ struct Shared<P: Resource> {
     owner: Option<&'static str>,
     app_id: &'static str,
     app_title: &'static str,
-    me: String,
+    me: tilo_resource::MemberId,
     /// The state, followed change by change: what views of the record read.
     live: Live<P>,
     /// The same state, for controls bound to it.
@@ -168,7 +168,7 @@ impl<P: Resource> PersonRecord<P> {
             .record
             .edit(change == ChangeKind::Content, |doc| {
                 let writer = ui_core::history_source::authors::device_actor(
-                    shared.me.as_bytes(),
+                    &shared.me.actor_bytes(),
                     doc.get_actor(),
                 );
                 tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
@@ -270,7 +270,7 @@ pub(crate) struct PersonState {
     own: Option<PersonRecords>,
     app_id: &'static str,
     app_title: &'static str,
-    me: String,
+    me: tilo_resource::MemberId,
     /// The ids they went by before this device had an identity, under which
     /// what they changed is still theirs.
     earlier: Vec<String>,
@@ -302,7 +302,7 @@ struct Published {
 }
 
 /// Take back (`true`) or redo (`false`) one step for the invoker named.
-type Step = Box<dyn Fn(bool, &str) -> bool>;
+type Step = Box<dyn Fn(bool, &tilo_actions::Actor) -> bool>;
 
 /// A person record just opened as its type: its shared state, its API and
 /// its undo and redo.
@@ -450,7 +450,7 @@ impl PersonState {
         app_id: &'static str,
         app_title: &'static str,
     ) -> Self {
-        let me = records.author().key();
+        let me = records.author().clone();
         Self::named(Some(records), own, me, Vec::new(), app_id, app_title)
     }
 
@@ -460,7 +460,7 @@ impl PersonState {
     /// are the ids they went by before this device had an identity, whose
     /// changes are theirs too.
     pub(crate) fn without_records(
-        me: String,
+        me: tilo_resource::MemberId,
         earlier: Vec<String>,
         app_id: &'static str,
         app_title: &'static str,
@@ -471,7 +471,7 @@ impl PersonState {
     fn named(
         records: Option<PersonRecords>,
         own: Option<PersonRecords>,
-        me: String,
+        me: tilo_resource::MemberId,
         earlier: Vec<String>,
         app_id: &'static str,
         app_title: &'static str,
@@ -669,7 +669,11 @@ impl PersonState {
         {
             return api;
         }
-        let api = Rc::new(SectionApi::new(kind, self.me.clone(), self.earlier.clone()));
+        let api = Rc::new(SectionApi::new(
+            kind,
+            Some(self.me.clone()),
+            self.earlier.clone(),
+        ));
         let stepping = Rc::downgrade(&api);
         self.publish(
             key,
@@ -782,7 +786,7 @@ impl PersonState {
             .collect()
     }
 
-    pub(crate) fn me(&self) -> &str {
+    pub(crate) fn me(&self) -> &tilo_resource::MemberId {
         &self.me
     }
 
@@ -804,9 +808,12 @@ impl PersonState {
         if !(1..=MAX_STEPS).contains(&steps) {
             return Err(format!("steps is 1 to {MAX_STEPS}"));
         }
-        if invoker.acting.by.key() != self.me
-            && invoker.acting.acted_for_person() != Some(self.me.as_str())
-        {
+        let theirs = invoker.acting.by.member_id() == Some(&self.me)
+            || self
+                .me
+                .person_id()
+                .is_some_and(|person| invoker.acting.acted_for_person() == Some(person));
+        if !theirs {
             return Err(format!(
                 "`{}` is {}'s own; only they change it",
                 request.record, self.me
@@ -818,7 +825,7 @@ impl PersonState {
             .find(|published| published.id == request.record)
             .ok_or_else(|| format!("no record of yours is open as {}", request.record))?;
         let mut taken = 0;
-        while taken < steps && (record.step)(request.undo, &invoker.acting.by.key()) {
+        while taken < steps && (record.step)(request.undo, &invoker.acting.by) {
             taken = taken.saturating_add(1);
         }
         if taken == 0 {

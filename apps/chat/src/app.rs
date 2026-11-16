@@ -640,7 +640,7 @@ impl ChatApp {
         let mut app = Self::bare(ContentStore::memory());
         app.attach_framework(ui::framework::Dispatcher::detached(
             "so.tilo.chat",
-            crate::model::ME,
+            &ui::tilo_resource::MemberId::person(crate::model::ME),
         ));
         app.attach_detached_chain(crate::model::ME);
         app
@@ -652,9 +652,11 @@ impl ChatApp {
     #[cfg(test)]
     pub(crate) fn attach_detached_chain(&mut self, me: &str) {
         let last_read = std::rc::Rc::clone(&self.last_read);
-        if let Some(chain) = ui::framework::Chain::detached("so.tilo.chat", me, move || {
-            std::rc::Rc::clone(&last_read.borrow())
-        }) {
+        if let Some(chain) = ui::framework::Chain::detached(
+            "so.tilo.chat",
+            &ui::tilo_resource::MemberId::person(me),
+            move || std::rc::Rc::clone(&last_read.borrow()),
+        ) {
             self.attach_chain(chain);
         }
     }
@@ -664,8 +666,7 @@ impl ChatApp {
     #[cfg(test)]
     pub(crate) fn attach_workspace(&mut self, workspace: &crate::demo::Workspace) {
         self.last_read = workspace.base();
-        if let Some(chain) = workspace.chain() {
-            let me = self.me.id.clone();
+        if let (Some(chain), Some(me)) = (workspace.chain(), self.me.member()) {
             self.attach_chain(chain.as_reader(&me));
         }
     }
@@ -1247,11 +1248,9 @@ impl ChatApp {
             return;
         };
         let reacting = self.message(msg).is_some_and(|m| {
-            m.reactions.iter().any(|r| {
-                r.emoji == emoji
-                    && ui::tilo_resource::MemberId::parse(&self.me.id)
-                        .is_some_and(|me| r.includes(&me))
-            })
+            m.reactions
+                .iter()
+                .any(|r| r.emoji == emoji && self.me.member().is_some_and(|me| r.includes(&me)))
         });
         let reactions = crate::resource::Chat::paths()
             .feedback
@@ -1279,11 +1278,9 @@ impl ChatApp {
     ) -> ui::tilo_resource::Edit<crate::parts::ChatPart> {
         use crate::parts::ChatPart;
         let reacting = self.message(msg).is_some_and(|m| {
-            m.reactions.iter().any(|r| {
-                r.emoji == emoji
-                    && ui::tilo_resource::MemberId::parse(&self.me.id)
-                        .is_some_and(|me| r.includes(&me))
-            })
+            m.reactions
+                .iter()
+                .any(|r| r.emoji == emoji && self.me.member().is_some_and(|me| r.includes(&me)))
         });
         let reactions = ChatPart::paths()
             .messages

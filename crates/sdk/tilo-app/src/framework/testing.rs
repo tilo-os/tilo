@@ -103,7 +103,7 @@ pub fn surface_in_root<A: ResourceApp, S: 'static>(
 /// the test exercises the surface's real write path. Queued invocations
 /// ([`Dispatcher::apply`](super::Dispatcher::apply)) are not taken by anyone: drive those through
 /// [`TestApp`].
-pub fn detached_dispatcher<R: Resource>(author: &str) -> super::Dispatcher<R> {
+pub fn detached_dispatcher<R: Resource>(author: &tilo_resource::MemberId) -> super::Dispatcher<R> {
     super::Dispatcher::new("test", R::KIND, false, Some(author))
 }
 
@@ -280,7 +280,7 @@ pub fn drive_live_embedded<A: ResourceApp, T>(
 /// onto the document the test hands the surface. Invocations it queues are
 /// resolved by a host only; test those through [`TestApp`].
 pub fn dispatcher<R: Resource>(app_id: &'static str) -> super::Dispatcher<R> {
-    super::Dispatcher::new(app_id, R::KIND, false, Some(AUTHOR))
+    super::Dispatcher::new(app_id, R::KIND, false, Some(&MemberId::person(AUTHOR)))
 }
 
 /// Resolve what `dispatcher` ([`dispatcher`]) queued since the last call —

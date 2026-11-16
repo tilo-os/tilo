@@ -717,7 +717,7 @@ pub struct BlockEditor {
     /// `Some`: backed by this Automerge block-Map list, bound per-line
     /// so edits sync. `None`: local-only (examples/tests).
     blocks_list: Option<ObjId>,
-    local_author: Option<String>,
+    local_author: Option<crate::permissions::MemberId>,
     kbd_sel_anchor: Option<(usize, usize)>,
     empty_hint: String,
     /// Reserved preview geometry for the final source line in each TeX/Typst
@@ -1668,11 +1668,11 @@ impl BlockEditor {
     }
 
     #[must_use]
-    pub fn local_author(&self) -> Option<&str> {
-        self.local_author.as_deref()
+    pub fn local_author(&self) -> Option<&crate::permissions::MemberId> {
+        self.local_author.as_ref()
     }
 
-    pub fn set_local_author(&mut self, author: Option<String>) {
+    pub fn set_local_author(&mut self, author: Option<crate::permissions::MemberId>) {
         for b in &mut self.blocks {
             b.line.set_local_author(author.clone());
         }

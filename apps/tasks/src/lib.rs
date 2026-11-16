@@ -155,9 +155,9 @@ impl ResourceApp for App {
     fn fixture(fixture: &mut ui::framework::Fixture<Tracker>) {
         match fixture.scenario() {
             Some("migrated" | "migrated-issue") => {
-                fixture.start(sample::migrated(fixture.person()));
+                fixture.start(sample::migrated(fixture.person().id()));
             }
-            Some(_) => fixture.start(sample::tracker(fixture.person())),
+            Some(_) => fixture.start(sample::tracker(fixture.person().id())),
             None => {}
         }
     }
@@ -441,7 +441,10 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav) -> LocalState<Tracker> {
 fn sidebar(cx: &ViewCx<Tracker>, nav: &Nav, tracker: &LocalState<Tracker>) -> Element {
     let chosen = nav.clone();
     let selection = nav.filter.clone();
-    let me = cx.me().map(str::to_owned);
+    let me = cx
+        .me()
+        .and_then(ui::tilo_resource::MemberId::person_id)
+        .map(str::to_owned);
     cx.switch(tracker, move |_cx, tracker| {
         let chosen = chosen.clone();
         Box::new(

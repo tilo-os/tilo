@@ -267,7 +267,7 @@ impl<R: Resource> RecordEnv<R> {
         &self,
         state: Rc<super::chain::ChainState<P>>,
     ) -> Option<super::Chain<P>> {
-        let me = self.dispatch.me()?.to_owned();
+        let me = self.dispatch.me()?.clone();
         let dispatch = super::chain::dispatching(&state, &me, |apply| {
             self.dispatch
                 .for_workspace_record::<P>(state.id(), self.dispatch.is_past(), apply)
@@ -282,7 +282,7 @@ impl<R: Resource> RecordEnv<R> {
     pub fn children<C: super::ChildRecord<Parent = R>>(&self) -> Option<super::Children<C>> {
         let live = self.live.clone();
         let state = self.storage.children::<C>(move || live.get())?;
-        let me = self.dispatch.me()?.to_owned();
+        let me = self.dispatch.me()?.clone();
         Some(super::Children::new(state, me).dispatching(&self.dispatch))
     }
 
@@ -292,7 +292,7 @@ impl<R: Resource> RecordEnv<R> {
     /// authors the resource records with it ("your message", "you reacted")
     /// instead of keeping the reader in the resource state, which is the
     /// same for everyone. `None` in a view of a past version.
-    pub fn me(&self) -> Option<&str> {
+    pub fn me(&self) -> Option<&tilo_resource::MemberId> {
         self.dispatch.me()
     }
 

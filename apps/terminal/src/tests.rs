@@ -1644,7 +1644,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
     };
     assert!(
         matches!(
-            app.effect_by("agent:paste-test", &paste),
+            app.effect_by(&ui::tilo_resource::MemberId::agent("paste-test"), &paste),
             Err(ui::tilo_actions::ApiError::ConfirmationRequired)
         ),
         "an agent's paste waits for confirmation"

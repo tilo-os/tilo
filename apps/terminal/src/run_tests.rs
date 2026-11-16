@@ -6,7 +6,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use base64::Engine as _;
 use ui::tilo_actions::ActionInvoker;
 use ui::tilo_resource::items::item_resource_id;
-use ui::tilo_resource::{Bytes, Settled};
+use ui::tilo_resource::{Bytes, MemberId, Settled};
 
 use crate::resource::{ItemKind, RunAnswer, Terminal};
 use crate::sessions::Sessions;
@@ -215,12 +215,18 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         .entries()
         .next()
         .expect("the agent's request");
-    assert_eq!(entry.value.requested_by.0, "agent:helper");
+    assert_eq!(
+        entry.value.requested_by,
+        Some(ui::tilo_resource::MemberId::agent("helper"))
+    );
     let rerun = state
         .runs
         .get(request)
         .expect("the run is the request's item");
-    assert_eq!(rerun.actor.0, "agent:helper");
+    assert_eq!(
+        rerun.actor,
+        Some(ui::tilo_resource::MemberId::agent("helper"))
+    );
     let ada =
         |person: &Option<ui::tilo_resource::Atom>| person.as_ref().map(|person| person.0.clone());
     assert_eq!(ada(&entry.value.for_person), Some("person:ada".to_owned()));
@@ -278,13 +284,13 @@ fn a_terminal_joining_a_session_run_elsewhere_claims_nothing_and_runs_reach_its_
         .clone()
         .expect("the claim names its device")
         .0;
-    let holder = session.holder.clone().expect("and who started it").0;
+    let holder = session.holder.clone().expect("and who started it");
     assert!(
         !session.runs_elsewhere(&device, &holder),
         "reopened where it ran, the session is its own"
     );
     assert!(session.runs_elsewhere("laptop", &holder));
-    assert!(session.runs_elsewhere(&device, "person:bea"));
+    assert!(session.runs_elsewhere(&device, &MemberId::person("bea")));
 
     let opened = Rc::new(RefCell::new(0_u32));
     let count = Rc::clone(&opened);
@@ -378,7 +384,7 @@ fn two_sessions_are_searchable_together() {
         ]
     );
     let me = app.state().runs.values().next().unwrap().actor.clone();
-    assert!(!me.0.is_empty());
+    assert!(me.is_some());
     assert!(history.runs.values().all(|run| run.actor == me));
     assert_eq!(
         history
@@ -910,7 +916,7 @@ fn an_agents_run_gets_the_agent_rendering() {
         let run = state
             .runs
             .values()
-            .find(|run| (run.actor.0 == "agent:helper") == (actor == "agent"))
+            .find(|run| run.actor.as_ref().is_some_and(MemberId::is_agent) == (actor == "agent"))
             .unwrap();
         let printed = run.output.read(&app.content()).expect("the output");
         String::from_utf8(printed).unwrap()

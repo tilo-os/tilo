@@ -534,7 +534,7 @@ tilo_test_env::scenario! {
         // A viewer may take a read effect, but not the edit it submits.
         let refused = app
             .effect_by(
-                "agent:viewer",
+                &MemberId::agent("viewer"),
                 &MailEffect::Note {
                     text: "seen".into(),
                 },
@@ -553,7 +553,7 @@ tilo_test_env::scenario! {
         // Someone admitted to write gets the edit their effect submits, as
         // theirs.
         app.effect_by(
-            "agent:writer",
+            &MemberId::agent("writer"),
             &MailEffect::Fetch {
                 from: "a writer".into(),
             },
@@ -565,8 +565,8 @@ tilo_test_env::scenario! {
             .last()
             .and_then(|version| version.context.clone())
             .and_then(|context| context.invoker)
-            .map(|invoker| invoker.acting.by.key());
-        assert_eq!(invoker.as_deref(), Some("agent:writer"));
+            .map(|invoker| invoker.acting.by);
+        assert_eq!(invoker, Some(MemberId::agent("writer").into()));
     }
 }
 
@@ -753,9 +753,8 @@ fn delayed_receipt_completion_applies_history_as_its_original_invoker() {
             .as_ref()
             .unwrap()
             .acting
-            .by
-            .key(),
-        "agent:receipt-writer"
+            .by,
+        MemberId::agent("receipt-writer").into()
     );
     assert!(
         app.harness()

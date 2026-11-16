@@ -753,9 +753,10 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// reads whose it is here, never from the view.
     pub fn person(&self) -> Option<String> {
         match ui_core::invocation_scope::current_invoker() {
-            Some(invoker) => invoker.acting.is_person().then(|| invoker.acting.by.key()),
-            None => self.env.dispatch.me().map(str::to_owned),
+            Some(invoker) => invoker.acting.by.member_id().cloned(),
+            None => self.env.dispatch.me().cloned(),
         }
+        .and_then(|member| member.person_id().map(str::to_owned))
     }
 
     /// Submit one typed action, as [`Dispatcher::apply`].

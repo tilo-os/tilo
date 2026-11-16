@@ -606,7 +606,7 @@ tilo_test_env::scenario! {
             .and_then(|version| version.context)
             .expect("the agent's edit is recorded");
         let invoker = entry.invoker.expect("attributed");
-        assert_eq!(invoker.acting.by.key(), "agent:claude");
+        assert_eq!(invoker.acting.by, MemberId::agent("claude").into());
         assert!(invoker.acting.is_agent());
         assert_eq!(invoker.acting.acted_for_person(), Some("person:ada"));
         let listed = newest(&mut app);

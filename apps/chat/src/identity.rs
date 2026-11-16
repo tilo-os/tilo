@@ -24,6 +24,11 @@ pub struct LocalIdentity {
 }
 
 impl LocalIdentity {
+    /// The participant as a member.
+    pub fn member(&self) -> Option<ui::tilo_resource::MemberId> {
+        ui::tilo_resource::MemberId::parse(&self.id)
+    }
+
     /// The demo's own person — identical to the seeded demo's `u_me`.
     pub fn demo() -> Self {
         Self {

@@ -1312,11 +1312,11 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// fails it.
     pub fn effect_by<E: Effect>(
         &mut self,
-        actor: &str,
+        actor: &MemberId,
         effect: &E,
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         self.effect_invoked(
-            Some(tilo_actions::ActionInvoker::person(actor)),
+            Some(tilo_actions::ActionInvoker::member(actor.clone())),
             <A::Resource as Resource>::KIND,
             effect.id(),
             &effect.arguments(),

@@ -258,7 +258,7 @@ fn a_secret_entered_as_an_action_reaches_only_its_buffer() {
 fn an_agent_cannot_hand_setup_a_secret_or_choose_where_identity_goes() {
     let (mut app, state) = mounted(page(Screen::Restore));
     let refused = app.effect_by(
-        "agent",
+        &ui::tilo_resource::MemberId::agent("onboarding-test"),
         &OnboardingEffect::EnterSecret {
             field: "backup-passphrase".to_owned(),
             value: "from an agent".to_owned(),

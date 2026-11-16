@@ -69,7 +69,10 @@ fn rows(tracker: &Tracker, people: &ui::framework::People) -> Vec<(Id, Row)> {
 
 pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
     let chosen = nav.filter.clone();
-    let me = cx.me().map(str::to_owned);
+    let me = cx
+        .me()
+        .and_then(ui::tilo_resource::MemberId::person_id)
+        .map(str::to_owned);
     let people = cx.people();
     let nav = nav.clone();
     let list = cx.switch(&chosen, move |cx, chosen| {

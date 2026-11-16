@@ -45,7 +45,7 @@ pub(super) fn synced(app: &mut FeedsApp) -> AutoCommit {
 fn sync_over(app: &mut FeedsApp, mut doc: AutoCommit) -> AutoCommit {
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.feeds",
-        "component-test-author",
+        &ui::tilo_resource::MemberId::person("component-test-author"),
     ));
     // A component fixture writes the same field edits a capture applies;
     // the live app never seeds its document during sync.

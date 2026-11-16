@@ -84,7 +84,7 @@ pub struct Page {
     /// sets it.
     #[model(readonly)]
     #[model(default = None)]
-    pub creator: Option<Atom>,
+    pub creator: Option<ui::tilo_resource::MemberId>,
     /// The name its maker acted under, when software made it: an agent's
     /// name, shown where the workspace no longer names the agent.
     #[model(readonly)]
@@ -147,7 +147,7 @@ impl Page {
     #[must_use]
     pub fn made(self, cx: &ActionCx) -> Self {
         Self {
-            creator: cx.author().map(|author| Atom(author.key())),
+            creator: cx.author().cloned(),
             creator_name: cx.acting_name(),
             ..self
         }
@@ -863,7 +863,7 @@ impl Notebook {
         }
         let id = match title.as_deref().map(str::trim) {
             Some(title) if !title.is_empty() => self.titled(title)?,
-            _ => self.made_by(cx.author().map(ui::tilo_resource::MemberId::key).as_deref())?,
+            _ => self.made_by(cx.author())?,
         };
         let note = self.pages.get(&id).ok_or("no such note")?;
         let (title, path) = (note.title.clone(), note.path.clone());
@@ -1017,13 +1017,11 @@ impl Notebook {
     /// The one note `author` made, for an append that names none. The note
     /// open in a window, or the first, is someone's but not necessarily
     /// the caller's, so with none or several the caller names one.
-    fn made_by(&self, author: Option<&str>) -> Result<Id, Refusal> {
+    fn made_by(&self, author: Option<&ui::tilo_resource::MemberId>) -> Result<Id, Refusal> {
         let made: Vec<(&Id, &Page)> = self
             .pages
             .iter()
-            .filter(|(_, page)| {
-                author.is_some_and(|author| page.creator.as_ref().is_some_and(|by| by.0 == author))
-            })
+            .filter(|(_, page)| author.is_some_and(|author| page.creator.as_ref() == Some(author)))
             .collect();
         match made.as_slice() {
             [(id, _)] => Ok((*id).clone()),

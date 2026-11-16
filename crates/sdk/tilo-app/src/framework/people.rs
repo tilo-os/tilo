@@ -24,6 +24,7 @@ use ui_core::widget::mention_picker::{MentionCandidate, merged_roster};
 use ui_core::widget::{Button, ButtonRole, Element, Stack, Tone};
 
 use super::ViewCx;
+use tilo_resource::MemberId;
 
 /// The names the host knows for the participants of the window's workspace.
 /// Cloneable; clones read the same roster.
@@ -32,7 +33,7 @@ pub struct People {
     roster: Rc<RefCell<Roster>>,
     revision: LocalState<u64>,
     /// The participant this window is for, when someone edits it.
-    me: Option<Rc<str>>,
+    me: Option<MemberId>,
     /// The name this device knows its person by, for `me` until the workspace
     /// names them.
     local: Option<Rc<str>>,
@@ -41,10 +42,10 @@ pub struct People {
 #[derive(Default, PartialEq)]
 struct Roster {
     /// Each participant the workspace names, as presence labels them.
-    names: HashMap<String, String>,
+    names: HashMap<MemberId, String>,
     /// The colour each of them wears, as presence paints them: the one they
     /// chose, or the one their identity derives.
-    hues: HashMap<String, PresenceHue>,
+    hues: HashMap<MemberId, PresenceHue>,
     /// The label this session's participant goes by, when the workspace said.
     own: Option<String>,
     /// Everyone the workspace names, by name, as `@` offers them.
@@ -54,60 +55,71 @@ struct Roster {
     registry: ui_core::history_source::AuthorDirectory,
 }
 
-/// A participant as a view shows them: what the workspace calls the id an
-/// action recorded, the id presence knows them by (which a face takes its
-/// colour and photograph from), and whether the workspace offers them as an
-/// agent.
+/// A participant as a view shows them: what the workspace calls them, the id
+/// a face takes its photograph from, the colour it wears, and whether the
+/// workspace offers them as an agent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Actor {
-    /// The id presence names them by: an agent's `agent:<id>`, a person's
-    /// bare id.
-    pub id: String,
+    /// The member, or `None` for someone outside the workspace.
+    pub member: Option<MemberId>,
     /// What the workspace calls them, or their id where it names them not.
     pub name: String,
+    pub hue: PresenceHue,
+}
+
+impl Actor {
+    /// The id a face takes its photograph from.
+    #[must_use]
+    pub fn identity(&self) -> &str {
+        self.member.as_ref().map_or(&self.name, MemberId::id)
+    }
+
     /// Whether they are an agent of the workspace, not a person in it.
-    pub agent: bool,
+    #[must_use]
+    pub fn agent(&self) -> bool {
+        self.member.as_ref().is_some_and(MemberId::is_agent)
+    }
 }
 
 impl People {
-    pub(crate) fn new(me: Option<&str>) -> Self {
+    pub(crate) fn new(me: Option<&MemberId>) -> Self {
         Self {
             roster: Rc::default(),
             revision: LocalState::new(0),
             local: me
                 .and_then(|_| ui_core::local_identity::own_name())
                 .map(Rc::from),
-            me: me.map(Rc::from),
+            me: me.cloned(),
         }
     }
 
-    /// The name to show for `id`: the roster's label; for the window's own
-    /// participant before the workspace names them, the name this device knows
-    /// its person by; else the id itself — what a record written before ids
-    /// were names holds, and what a capture's fixture people are called.
-    pub fn name(&self, id: &str) -> String {
+    /// The name to show for `member`: the roster's label; for the window's
+    /// own participant before the workspace names them, the name this device
+    /// knows its person by; else their id, which is what a capture's fixture
+    /// people are called.
+    pub fn name(&self, member: &MemberId) -> String {
         let roster = self.roster.borrow();
-        if let Some(name) = roster.names.get(id) {
+        if let Some(name) = roster.names.get(member) {
             return name.clone();
         }
-        if self.me.as_deref() == Some(id)
+        if self.me.as_ref() == Some(member)
             && let Some(own) = roster.own.as_deref().or(self.local.as_deref())
         {
             return own.to_owned();
         }
-        id.to_owned()
+        member.id().to_owned()
     }
 
-    /// The hue `id` wears: the one the workspace announced for them, else the
-    /// one their identity derives, so a view paints a face, a card or a chip
-    /// in the same colour presence paints their caret and their byline.
-    pub fn hue(&self, id: &str) -> PresenceHue {
+    /// The hue `member` wears: the one the workspace announced for them, else
+    /// the one their identity derives, so a view paints a face, a card or a
+    /// chip in the same colour presence paints their caret and their byline.
+    pub fn hue(&self, member: &MemberId) -> PresenceHue {
         self.roster
             .borrow()
             .hues
-            .get(id)
+            .get(member)
             .copied()
-            .unwrap_or_else(|| PresenceHue::of_identity(id))
+            .unwrap_or_else(|| ui_core::presence::member_hue(member, None))
     }
 
     /// The workspace's people and agents, this window's own participant among
@@ -119,7 +131,7 @@ impl People {
 
     /// The workspace's `member`, when it names them: their name, their hue
     /// and whether they are this window's own.
-    pub fn member(&self, member: &tilo_resource::MemberId) -> Option<MentionCandidate> {
+    pub fn member(&self, member: &MemberId) -> Option<MentionCandidate> {
         self.roster
             .borrow()
             .members
@@ -135,52 +147,44 @@ impl People {
         self.roster.borrow().registry.clone()
     }
 
-    /// Who the id an action recorded names, however the record spells it: a
-    /// person as an assignee holds them (`person:<id>`), an agent as the
-    /// action API names it (`agent:<id>`), someone outside the workspace by
-    /// their name (`outside:<name>`), or the bare id. The name is the
-    /// workspace's, else the id without its prefix: a view never shows a
-    /// record's spelling of a participant.
+    /// `member` as a view shows them.
+    pub fn actor_of(&self, member: &MemberId) -> Actor {
+        Actor {
+            name: self.name(member),
+            hue: self.hue(member),
+            member: Some(member.clone()),
+        }
+    }
+
+    /// Who an assignee value names: a person (`person:<id>`), an agent
+    /// (`agent:<id>`), someone outside the workspace by their name
+    /// (`outside:<name>`), or a person's bare id.
     pub fn actor(&self, id: &str) -> Actor {
         // Someone outside the workspace, named where an item came from
         // until they join: their name is all the record knows of them.
         if let Some(name) = id.strip_prefix("outside:") {
             return Actor {
-                id: id.to_owned(),
+                member: None,
                 name: name.trim().to_owned(),
-                agent: false,
+                hue: PresenceHue::of_identity(id),
             };
         }
-        let (identity, bare, agent) = if let Some(bare) = id.strip_prefix("person:") {
-            (bare, bare, false)
-        } else if let Some(bare) = id.strip_prefix("agent:") {
-            (id, bare, true)
-        } else {
-            (id, id, false)
-        };
-        let name = [identity, bare]
-            .into_iter()
-            .map(|key| self.name(key))
-            .find(|name| name != identity && name != bare)
-            .unwrap_or_else(|| bare.to_owned());
-        Actor {
-            id: identity.to_owned(),
-            name,
-            agent,
-        }
+        let member = id.strip_prefix("agent:").map_or_else(
+            || MemberId::person(id.strip_prefix("person:").unwrap_or(id)),
+            MemberId::agent,
+        );
+        self.actor_of(&member)
     }
 
     /// [`Self::actor`], named by `kept` (the name the record kept beside
     /// the id: what an agent acted under) where the workspace names them
     /// not, so an agent that left the roster reads by its name, never its
-    /// key.
+    /// id.
     pub fn actor_kept(&self, id: &str, kept: &str) -> Actor {
         let mut actor = self.actor(id);
-        let named = self.name(&actor.id) != actor.id
-            || id
-                .strip_prefix("agent:")
-                .or_else(|| id.strip_prefix("person:"))
-                .is_some_and(|bare| self.name(bare) != bare);
+        let named = actor.member.as_ref().is_some_and(|member| {
+            self.roster.borrow().names.contains_key(member) || self.is_me(member)
+        });
         if !named && !kept.trim().is_empty() {
             kept.trim().clone_into(&mut actor.name);
         }
@@ -197,8 +201,8 @@ impl People {
     }
 
     /// Whether `id` is the participant this window is for.
-    pub fn is_me(&self, id: &str) -> bool {
-        self.me.as_deref() == Some(id)
+    pub fn is_me(&self, member: &MemberId) -> bool {
+        self.me.as_ref() == Some(member)
     }
 
     /// Increases whenever a name changes, for a view to show names that
@@ -213,12 +217,12 @@ impl People {
             names: presence
                 .names
                 .keys()
-                .map(|user| (user.key(), presence.display_name(user)))
+                .map(|user| (user.clone(), presence.display_name(user)))
                 .collect(),
             hues: presence
                 .names
                 .keys()
-                .map(|user| (user.key(), presence.hue_for(user)))
+                .map(|user| (user.clone(), presence.hue_for(user)))
                 .collect(),
             own: presence.self_label(),
             members: merged_roster(presence, &[]),
@@ -228,7 +232,7 @@ impl People {
                 // This window's own person: presence names their devices, and
                 // the device this page is knows its person's name. That is the
                 // key their writes carry, so a page never shows it raw.
-                if let Some(me) = &self.me {
+                if let Some(me) = self.me.as_ref().and_then(MemberId::person_id) {
                     let name = self
                         .local
                         .as_deref()
@@ -238,7 +242,7 @@ impl People {
                         me,
                         ui_core::history_source::author_for_identity(name.to_owned(), me),
                     );
-                    registry.set_reader(tilo_resource::MemberId::person(me.as_ref()));
+                    registry.set_reader(MemberId::person(me));
                 }
                 if let Some(me) = presence.self_id().filter(|me| me.is_person()) {
                     registry.set_reader(me.clone());
@@ -258,20 +262,20 @@ impl People {
     /// places collaborators, or a test.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn named(me: Option<&str>, names: &[(&str, &str)]) -> Self {
+    pub fn named(me: Option<&MemberId>, names: &[(MemberId, &str)]) -> Self {
         let people = Self::new(me);
         let mut roster = people.roster.borrow_mut();
         roster.names = names
             .iter()
-            .map(|(id, name)| ((*id).to_owned(), (*name).to_owned()))
+            .map(|(id, name)| (id.clone(), (*name).to_owned()))
             .collect();
         roster.members = names
             .iter()
             .map(|(id, name)| MentionCandidate {
-                id: tilo_resource::MemberId::person(*id),
+                id: id.clone(),
                 name: (*name).to_owned(),
-                hue: PresenceHue::of_identity(id),
-                is_self: me == Some(*id),
+                hue: ui_core::presence::member_hue(id, None),
+                is_self: me == Some(id),
             })
             .collect();
         drop(roster);
@@ -330,10 +334,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                         continue;
                     };
                     choices = choices.push(cx.person_choice(
-                        &format!("{id}-{}", member.id.key()),
+                        &format!("{id}-{}", member.id.id()),
                         &member.name,
                         Some(value),
-                        Some((&member.name, &member.id.key())),
+                        Some((&member.name, member.id.id(), member.hue)),
                         member.id.is_agent(),
                         held_action.clone(),
                     ));
@@ -341,9 +345,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                 let (name, agent, chip) = match &who {
                     Some(who) => (
                         who.name.clone(),
-                        who.agent,
+                        who.agent(),
                         Button::new(id, &who.name)
-                            .with_avatar(&who.name, &who.id, people.hue(&who.id))
+                            .with_avatar(&who.name, who.identity(), who.hue)
                             .showing_choice(),
                     ),
                     None => (
@@ -369,15 +373,13 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         id: &str,
         label: &str,
         value: Option<String>,
-        face: Option<(&str, &str)>,
+        face: Option<(&str, &str, PresenceHue)>,
         agent: bool,
         action: B,
     ) -> Element {
         let mut button = Button::new(id, label).role(ButtonRole::Plain);
         button = match face {
-            Some((name, identity)) => {
-                button.with_avatar(name, identity, self.people().hue(identity))
-            }
+            Some((name, identity, hue)) => button.with_avatar(name, identity, hue),
             None => button.with_icon(Icon::User).with_placeholder(),
         };
         if agent {
@@ -429,45 +431,41 @@ impl std::fmt::Debug for People {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui_core::permissions::MemberId;
 
     tilo_test_env::scenario! {
         fn a_participant_reads_as_the_name_the_workspace_gives;
 
         phase an_id_reads_as_the_rosters_name_or_itself;
         {
-            let people = People::new(Some("me-id"));
+            let me = MemberId::person("me-id");
+            let peer = MemberId::person("peer-id");
+            let people = People::new(Some(&me));
             assert_eq!(
-                people.name("me-id"),
+                people.name(&me),
                 "me-id",
                 "nobody is called \"You\": an unnamed self reads as its id"
             );
-            assert_eq!(
-                people.name("Alice"),
-                "Alice",
-                "an unknown id reads as itself"
-            );
 
             let mut presence = PresenceCtx::default();
-            presence.set_display_name(MemberId::person("peer-id"), "Bob");
-            presence.set_self_participant(MemberId::person("me-id"), "Ada");
+            presence.set_display_name(peer.clone(), "Bob");
+            presence.set_self_participant(me.clone(), "Ada");
             assert!(people.follow(&presence));
             assert!(
                 !people.follow(&presence),
                 "an unchanged roster changes nothing"
             );
-            assert_eq!(people.name("peer-id"), "Bob");
-            assert_eq!(people.name("me-id"), "Ada");
-            assert!(people.is_me("me-id"));
+            assert_eq!(people.name(&peer), "Bob");
+            assert_eq!(people.name(&me), "Ada");
+            assert!(people.is_me(&me));
             assert_eq!(people.revision().get(), 1);
 
-            presence.set_display_name(MemberId::person("peer-id"), "ada");
+            presence.set_display_name(peer.clone(), "ada");
             assert!(people.follow(&presence));
-            assert_eq!(people.name("me-id"), "Ada (1)");
-            assert_eq!(people.name("peer-id"), "ada (2)");
+            assert_eq!(people.name(&me), "Ada (1)");
+            assert_eq!(people.name(&peer), "ada (2)");
         }
 
-        phase an_actors_record_spelling_reads_as_the_name_the_workspace_gives;
+        phase an_assignee_reads_as_the_name_the_workspace_gives;
         {
             let people = People::new(None);
             let mut presence = PresenceCtx::default();
@@ -475,31 +473,15 @@ mod tests {
             presence.set_display_name(MemberId::agent("scribe"), "Scribe");
             assert!(people.follow(&presence));
 
+            let bob = people.actor("person:bob");
+            assert_eq!(bob.name, "Bob", "an assignee's spelling is not a name");
+            assert_eq!(bob.member, Some(MemberId::person("bob")));
+            let scribe = people.actor("agent:scribe");
+            assert_eq!(scribe.name, "Scribe · Agent");
+            assert!(scribe.agent());
             assert_eq!(
-                people.actor("person:bob"),
-                Actor {
-                    id: "bob".into(),
-                    name: "Bob".into(),
-                    agent: false,
-                },
-                "an assignee's spelling is not a name"
-            );
-            assert_eq!(
-                people.actor("agent:scribe"),
-                Actor {
-                    id: "agent:scribe".into(),
-                    name: "Scribe · Agent".into(),
-                    agent: true,
-                },
-                "an agent keeps the id presence colours its face by"
-            );
-            assert_eq!(
-                people.actor("person:stranger"),
-                Actor {
-                    id: "stranger".into(),
-                    name: "stranger".into(),
-                    agent: false,
-                },
+                people.actor("person:stranger").name,
+                "stranger",
                 "an id the workspace names not reads without its prefix"
             );
             assert_eq!(people.actor("bob").name, "Bob", "a bare id reads the same");

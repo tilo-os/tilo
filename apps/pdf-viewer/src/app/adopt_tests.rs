@@ -156,8 +156,11 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         };
         let doc = &mut state.doc;
         app.attach_people(ui::framework::People::named(
-            Some("test-author"),
-            &[("test-author", "Tess Author")],
+            Some(&ui::tilo_resource::MemberId::person("test-author")),
+            &[(
+                ui::tilo_resource::MemberId::person("test-author"),
+                "Tess Author",
+            )],
         ));
 
         let annotations = PdfMarkup::of(doc).list_annotations();

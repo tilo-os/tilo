@@ -340,7 +340,9 @@ impl TreeBrowser {
             // the workspace names, as a name alone. One it does not name (the
             // workspace's host, which writes the files of notes) is left
             // unnamed rather than shown as its key.
-            let name = self.people.name(author);
+            let name = self
+                .people
+                .name(&ui::tilo_resource::MemberId::person(author));
             if name != author {
                 row = row.meta(name);
             }

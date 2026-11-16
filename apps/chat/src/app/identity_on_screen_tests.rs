@@ -13,7 +13,7 @@ fn a_live_peer_joins_through_the_user_action() {
     .announcing();
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.chat",
-        "person-1",
+        &ui::tilo_resource::MemberId::person("person-1"),
     ));
     let mut state = ui::State::new();
     crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
@@ -59,7 +59,7 @@ fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
     .announcing();
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.chat",
-        "person-1",
+        &ui::tilo_resource::MemberId::person("person-1"),
     ));
     let mut state = ui::State::new();
     crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");

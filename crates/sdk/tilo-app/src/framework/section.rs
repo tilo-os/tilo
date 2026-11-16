@@ -92,11 +92,11 @@ impl SectionKind {
         &self,
         action: &dyn Action,
         id: &str,
-        by: &str,
+        by: &tilo_actions::Actor,
         invoked_by: Option<&InvokingAction>,
     ) -> Result<(), ActionError> {
         let origin = ChangeOrigin::action(format!("{}/{id}", self.kind))
-            .by(by.to_owned())
+            .by(principal(by))
             .invoked_by(invoked_by.cloned());
         (self.ops)(self, SectionOp::Apply(action, &origin)).map(drop)
     }
@@ -128,13 +128,19 @@ impl SectionKind {
     /// through the section's actions, or ones under an `alias` of theirs
     /// (an id they went by before this device had an identity). Whether
     /// there was one.
-    fn step(&self, undo: bool, by: &str, aliases: &[String]) -> Result<bool, String> {
+    fn step(
+        &self,
+        undo: bool,
+        by: &tilo_actions::Actor,
+        aliases: &[String],
+    ) -> Result<bool, String> {
         let verb = if undo { "undo" } else { "redo" };
-        let origin = ChangeOrigin::action(format!("{}/{verb}", self.kind)).by(by.to_owned());
+        let by = principal(by);
+        let origin = ChangeOrigin::action(format!("{}/{verb}", self.kind)).by(by.clone());
         let actions = format!("{}/", self.kind);
         let owns = |version: &tilo_resource::history::Version| {
             version.message.as_deref().is_some_and(|message| {
-                ui_core::storage::made_by(message, &actions, by)
+                ui_core::storage::made_by(message, &actions, &by)
                     || aliases
                         .iter()
                         .any(|alias| ui_core::storage::made_by(message, &actions, alias))
@@ -156,6 +162,11 @@ impl SectionKind {
             .map_err(|error| error.to_string())?;
         Ok(stepped)
     }
+}
+
+/// How the settings document names who made a change: the actor as JSON.
+fn principal(by: &tilo_actions::Actor) -> String {
+    serde_json::to_string(by).unwrap_or_default()
 }
 
 /// Everything a section's record asks of the section type `T`.
@@ -207,7 +218,7 @@ pub(crate) struct SectionApi {
     /// The person whose steps the section's undo and redo take back, and
     /// the ids they went by before this device had an identity: changes
     /// made under any of them are theirs.
-    me: String,
+    me: Option<tilo_resource::MemberId>,
     earlier: Vec<String>,
     /// The settings document's version the API last read.
     seen: Cell<Option<SettingsRevision>>,
@@ -219,7 +230,11 @@ pub(crate) struct SectionApi {
 }
 
 impl SectionApi {
-    pub(crate) fn new(kind: Rc<SectionKind>, me: String, earlier: Vec<String>) -> Self {
+    pub(crate) fn new(
+        kind: Rc<SectionKind>,
+        me: Option<tilo_resource::MemberId>,
+        earlier: Vec<String>,
+    ) -> Self {
         Self {
             id: format!("settings:{}", kind.kind),
             kind,
@@ -261,17 +276,21 @@ impl SectionApi {
         let action = self.kind.decode(encoded)?;
         let id = action_id(&encoded.payload);
         self.kind
-            .apply(action.as_ref(), &id, &invoker.acting.by.key(), invoked_by)?;
+            .apply(action.as_ref(), &id, &invoker.acting.by, invoked_by)?;
         self.notice();
         Ok(())
     }
 
     /// Take back (`undo`) or redo the last step `by` took on the section.
     /// Whether there was one.
-    pub(crate) fn step(&self, undo: bool, by: &str) -> bool {
+    pub(crate) fn step(&self, undo: bool, by: &tilo_actions::Actor) -> bool {
         // What an id they went by made is theirs to take back; what an agent
         // acting for them made is the agent's own.
-        let aliases: &[String] = if by == self.me { &self.earlier } else { &[] };
+        let aliases: &[String] = if by.member_id() == self.me.as_ref() {
+            &self.earlier
+        } else {
+            &[]
+        };
         match self.kind.step(undo, by, aliases) {
             Ok(stepped) => {
                 self.notice();
@@ -484,7 +503,7 @@ impl SettingsRecords {
                 app_id,
                 document,
                 person: Some(Rc::new(super::person::PersonState::without_records(
-                    person.to_owned(),
+                    tilo_resource::MemberId::person(person),
                     earlier.to_vec(),
                     app_id,
                     app_title,

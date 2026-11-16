@@ -995,7 +995,10 @@ impl PdfApp {
         dispatcher: ui::framework::Dispatcher<crate::markup::PdfMarkup>,
     ) {
         self.read_only = dispatcher.read_only();
-        if let Some(me) = dispatcher.me() {
+        if let Some(me) = dispatcher
+            .me()
+            .and_then(ui::tilo_resource::MemberId::person_id)
+        {
             me.clone_into(&mut self.author);
         }
         self.dispatcher = Some(dispatcher);
@@ -1055,10 +1058,10 @@ impl PdfApp {
     }
 
     fn known_name(&self, id: &str) -> Option<String> {
-        let name = self
-            .people
-            .as_ref()
-            .map_or_else(|| id.to_owned(), |people| people.name(id));
+        let name = self.people.as_ref().map_or_else(
+            || id.to_owned(),
+            |people| people.name(&ui::tilo_resource::MemberId::person(id)),
+        );
         (name != id || !opaque_participant_id(id)).then_some(name)
     }
 

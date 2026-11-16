@@ -890,7 +890,7 @@ mod tests {
         );
         app.attach_framework(ui::framework::Dispatcher::detached(
             "so.tilo.chat",
-            &app.me.id.clone(),
+            &ui::tilo_resource::MemberId::person(&app.me.id),
         ));
         let line = |id: &str, ts: i64| Message {
             id: id.into(),

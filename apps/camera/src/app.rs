@@ -1070,7 +1070,7 @@ impl CameraApp {
     fn unattached_dispatcher() -> Option<ui::framework::Dispatcher<crate::record::Record>> {
         Some(ui::framework::Dispatcher::detached(
             "so.tilo.camera",
-            "test-author",
+            &ui::tilo_resource::MemberId::person("test-author"),
         ))
     }
 
@@ -3541,12 +3541,15 @@ mod tests {
     fn sample_app() -> (CameraApp, AutoCommit, ObjId) {
         let mut app = CameraApp::sample();
         let mut doc = AutoCommit::new();
-        ui::framework::Dispatcher::<Camera>::detached("so.tilo.camera", "test-author")
-            .submit_now(
-                &mut Edits::lend(&mut doc),
-                Camera::REGISTER_CAPTURE.with(crate::resource::sample_capture()),
-            )
-            .unwrap();
+        ui::framework::Dispatcher::<Camera>::detached(
+            "so.tilo.camera",
+            &ui::tilo_resource::MemberId::person("test-author"),
+        )
+        .submit_now(
+            &mut Edits::lend(&mut doc),
+            Camera::REGISTER_CAPTURE.with(crate::resource::sample_capture()),
+        )
+        .unwrap();
         let root = automerge::ROOT;
         app.sync_record(&mut doc, &root);
         (app, doc, root)

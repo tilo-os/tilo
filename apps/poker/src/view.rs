@@ -28,7 +28,7 @@ fn plain(key: &str) -> String {
 
 /// The whole table, built again whenever the record changes.
 pub fn table(cx: &mut ViewCx<Table>, table: &Table) -> Element {
-    let me = cx.me().map(str::to_owned);
+    let me = cx.me().and_then(MemberId::person_id).map(str::to_owned);
     let people = cx.people();
     let me = me.as_deref();
     let seating = table.seating();
@@ -156,7 +156,7 @@ fn seat_view(
         }
         return seat_box(Box::new(body));
     };
-    let name = people.name(player);
+    let name = people.name(&MemberId::person(player));
     let you = me == Some(player);
     let title = if you {
         plain("poker-seat-you")
@@ -174,7 +174,8 @@ fn seat_view(
     {
         stack = stack.tertiary(state);
     }
-    let avatar = ui::widget::Avatar::person(name, player.to_owned()).with_hue(people.hue(player));
+    let avatar = ui::widget::Avatar::person(name, player.to_owned())
+        .with_hue(people.hue(&MemberId::person(player)));
     let mut body = ui::column![
         ui::row![avatar, stack]
             .with_rhythm(Rhythm::Sibling)
@@ -242,7 +243,9 @@ fn hole_cards(table: &Table, p: &InHand, you: bool, seat: usize, people: &People
         } else if p.folded && table.hand.street.in_play() {
             continue;
         } else {
-            Showing::Back(ui::presence::identity_rgb(people.hue(&p.player)))
+            Showing::Back(ui::presence::identity_rgb(
+                people.hue(&MemberId::person(p.player.as_str())),
+            ))
         };
         row = row.push(Box::new(CardView::new(id, showing, CardSize::Small)));
     }
@@ -304,7 +307,7 @@ fn status(table: &Table, people: &People, me: Option<&str>) -> Element {
         Street::Idle => lines.push(waiting(table, people, me)),
         Street::Done => {
             for award in &hand.awards {
-                let name = people.name(&award.player);
+                let name = people.name(&MemberId::person(award.player.as_str()));
                 lines.push(if award.category.is_empty() {
                     fmt(
                         "poker-won-uncontested",
@@ -335,7 +338,10 @@ fn status(table: &Table, people: &People, me: Option<&str>) -> Element {
                 } else {
                     fmt(
                         "poker-status-their-turn",
-                        &[("name", people.name(&actor.player).into())],
+                        &[(
+                            "name",
+                            people.name(&MemberId::person(actor.player.as_str())).into(),
+                        )],
                     )
                 });
             }
@@ -363,7 +369,7 @@ fn waiting(table: &Table, people: &People, me: Option<&str>) -> String {
         Some(dealer) if Some(dealer) == me => plain("poker-status-you-deal"),
         Some(dealer) => fmt(
             "poker-status-waiting-dealer",
-            &[("name", people.name(dealer).into())],
+            &[("name", people.name(&MemberId::person(dealer)).into())],
         ),
         None => plain("poker-status-need-players"),
     }
@@ -499,7 +505,7 @@ fn show_cards(cx: &ViewCx<Table>, hand: &game::Hand, me: &str) -> Option<Element
 fn skip_control(cx: &ViewCx<Table>, table: &Table, people: &People) -> Option<Element> {
     let actor = table.hand.actor()?;
     let opens = table.skip_opens_ms()?;
-    let name = people.name(&actor.player);
+    let name = people.name(&MemberId::person(actor.player.as_str()));
     let phrase: Rc<Phrase> = Rc::new(move |seconds: u64| {
         fmt(
             "poker-skip-wait",

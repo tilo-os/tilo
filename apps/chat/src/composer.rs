@@ -482,8 +482,8 @@ impl<S: RichTextSource + 'static> Composer<S> {
         }
     }
 
-    pub fn set_local_author(&mut self, author: Option<String>) {
-        if self.host.widget().editor().local_author() != author.as_deref() {
+    pub fn set_local_author(&mut self, author: Option<ui::tilo_resource::MemberId>) {
+        if self.host.widget().editor().local_author() != author.as_ref() {
             self.host.widget_mut().editor_mut().set_local_author(author);
         }
     }

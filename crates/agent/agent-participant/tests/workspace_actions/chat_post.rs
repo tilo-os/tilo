@@ -229,7 +229,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     let chain = ui::framework::Chain::<chat::parts::ChatPart>::detached_in(
         store,
         <chat::ChatShell as ui::framework::ResourceApp>::ID,
-        "ada",
+        &ui::tilo_resource::MemberId::person("ada"),
         move || std::rc::Rc::clone(&base),
     )
     .unwrap();

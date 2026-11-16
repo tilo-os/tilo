@@ -81,6 +81,7 @@ fn device_keeping(memory: &Rc<durable_store::MemoryStore>) -> RecordStore {
 }
 
 fn chain_in(store: &RecordStore, me: &str) -> Chain<LogPart> {
+    let me = &MemberId::person(me);
     let log = Rc::new(Log::default());
     Chain::detached_in(store.clone(), "so.tilo.test-chain-log", me, move || {
         Rc::clone(&log)

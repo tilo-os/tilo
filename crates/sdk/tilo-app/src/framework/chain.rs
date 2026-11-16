@@ -200,7 +200,7 @@ impl From<String> for Unopened {
 #[derive(Clone)]
 pub(crate) struct WorkspaceRecords {
     pub(crate) store: RecordStore,
-    pub(crate) me: String,
+    pub(crate) me: tilo_resource::MemberId,
     pub(crate) permissions: Option<LivePermissions>,
     pub(crate) app_id: &'static str,
     pub(crate) app_title: &'static str,
@@ -1779,7 +1779,7 @@ impl<P: Chained> Chain<P> {
         };
         let undone = self
             .state
-            .apply_history(&edit, &ActionInvoker::person(me))
+            .apply_history(&edit, &ActionInvoker::member(me.clone()))
             .map(drop);
         if let Err(error) = &undone {
             self.dispatch.refused().set(Some(super::dispatch::Refused {
@@ -1888,7 +1888,7 @@ impl<P: Chained> Chain<P> {
     #[must_use]
     pub fn detached(
         app_id: &'static str,
-        me: &str,
+        me: &tilo_resource::MemberId,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Self> {
         Self::detached_in(RecordStore::in_memory(), app_id, me, base)
@@ -1901,12 +1901,12 @@ impl<P: Chained> Chain<P> {
     pub fn detached_in(
         store: RecordStore,
         app_id: &'static str,
-        me: &str,
+        me: &tilo_resource::MemberId,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Self> {
         let workspace = WorkspaceRecords {
             store,
-            me: me.to_owned(),
+            me: me.clone(),
             permissions: None,
             app_id,
             app_title: app_id,
@@ -1919,7 +1919,7 @@ impl<P: Chained> Chain<P> {
     /// The same detached chain edited as `me`: another person's window
     /// over it, in a test.
     #[must_use]
-    pub fn as_reader(&self, me: &str) -> Self {
+    pub fn as_reader(&self, me: &tilo_resource::MemberId) -> Self {
         Self {
             state: Rc::clone(&self.state),
             dispatch: detached_dispatch(self.state.workspace.app_id, &self.state, me),
@@ -1955,7 +1955,7 @@ impl<P: Chained> Chain<P> {
 fn detached_dispatch<P: Chained>(
     app_id: &'static str,
     state: &Rc<ChainState<P>>,
-    me: &str,
+    me: &tilo_resource::MemberId,
 ) -> Dispatcher<P> {
     dispatching(state, me, |apply| {
         Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_workspace_record::<P>(
@@ -1973,11 +1973,11 @@ fn detached_dispatch<P: Chained>(
 /// refused after this device showed it.
 pub(crate) fn dispatching<P: Chained>(
     state: &Rc<ChainState<P>>,
-    me: &str,
+    me: &tilo_resource::MemberId,
     make: impl FnOnce(Box<dyn Fn(&P::Action) -> Result<(), ActionError>>) -> Dispatcher<P>,
 ) -> Dispatcher<P> {
     let applying = Rc::downgrade(state);
-    let invoker = ActionInvoker::person(me);
+    let invoker = ActionInvoker::member(me.clone());
     let told: Rc<std::cell::OnceCell<ui_core::LocalState<Option<super::dispatch::Refused>>>> =
         Rc::default();
     let telling = Rc::clone(&told);
@@ -2011,9 +2011,11 @@ pub(crate) fn dispatching<P: Chained>(
 /// app's records are kept in: their own there, as the app's records of a
 /// kind are ([`RecordId::of_member`]), or the one a person without a root
 /// identity keeps on this device.
-fn unsent_checkout(me: &str) -> RecordCheckout {
+fn unsent_checkout(me: &tilo_resource::MemberId) -> RecordCheckout {
     let kind = RecordKind::new(UNSENT_KIND);
-    let id = RecordId::of_member(me, UNSENT_KIND)
+    let id = me
+        .person_id()
+        .and_then(|person| RecordId::of_member(person, UNSENT_KIND))
         .unwrap_or_else(|| ui_core::record::person::record_id(&kind));
     RecordCheckout::new(id, kind)
 }
@@ -2174,7 +2176,7 @@ impl Chains {
     /// changes, for whoever the host admitted to invoke it.
     pub(crate) fn answer(
         &self,
-        me: Option<&str>,
+        me: Option<&tilo_resource::MemberId>,
         payload: &[u8],
         live: &mut ui_core::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, String> {
@@ -2188,7 +2190,7 @@ impl Chains {
             .cloned()
             .ok_or_else(|| format!("no chain `{}` is open here", request.record))?;
         let invoker = ui_core::invocation_scope::current_invoker()
-            .or_else(|| me.map(ActionInvoker::person))
+            .or_else(|| me.cloned().map(ActionInvoker::member))
             .ok_or("nobody changes a past version")?;
         api.apply_in(&request.action, &invoker, live)
     }

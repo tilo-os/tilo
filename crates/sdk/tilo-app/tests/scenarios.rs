@@ -124,11 +124,15 @@ impl ResourceApp for PlaylistApp {
         fixture.provide(Cover(cover));
         // Two people built the playlist before the capture.
         fixture.version(
-            "miles",
+            MemberId::person("miles"),
             MILES_AT_MS,
             Playlist::ADD.with("Freddie Freeloader"),
         );
-        fixture.version("bill", BILL_AT_MS, Playlist::ADD.with("Flamenco Sketches"));
+        fixture.version(
+            MemberId::person("bill"),
+            BILL_AT_MS,
+            Playlist::ADD.with("Flamenco Sketches"),
+        );
         fixture.collaborator("miles", ResourceSelection::Item("second-take".into()));
     }
 
@@ -419,7 +423,7 @@ tilo_test_env::scenario! {
             .iter()
             .filter_map(|version| {
                 let invoker = version.context.as_ref()?.invoker.as_ref()?;
-                Some((invoker.acting.by.key(), version.time_ms))
+                Some((invoker.acting.by.id().to_owned(), version.time_ms))
             })
             .collect();
         assert!(

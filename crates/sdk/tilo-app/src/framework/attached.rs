@@ -103,7 +103,7 @@ pub struct AttachedView {
     records: RecordStore,
     permissions: SharedPermissions,
     /// Who acts through the view: the invoker its operations are admitted for.
-    me: String,
+    me: MemberId,
     /// The invoker as admitted: its kind and the person it acts for.
     invoker: tilo_actions::ActionInvoker,
     /// The task the invoker is carrying out, recorded with what it does.
@@ -183,7 +183,7 @@ impl AttachedView {
         workspace: &str,
         checkout: RecordCheckout,
         document: Vec<u8>,
-        me: &str,
+        me: &MemberId,
         permissions: PermissionContext,
         created: bool,
     ) -> Result<Self, String> {
@@ -192,7 +192,7 @@ impl AttachedView {
             workspace,
             checkout,
             document,
-            &tilo_actions::ActionInvoker::person(me),
+            &tilo_actions::ActionInvoker::member(me.clone()),
             permissions,
             created,
         )
@@ -254,7 +254,7 @@ impl AttachedView {
             content,
         } = view;
         let invoker = &invoker;
-        let me = &*invoker.acting.by.key();
+        let me = member_of(invoker)?;
         let joined_at = (!created).then(|| heads_of(&document)).transpose()?;
         let cache = PortableStorage::new("attached-views", DEVICE)?;
         let key = if checkout.id.is_package_primary() {
@@ -292,7 +292,7 @@ impl AttachedView {
                 device_id: DEVICE.into(),
                 instance_id: INSTANCE,
                 permissions: permissions.clone(),
-                author: MemberId::person(me.to_owned()),
+                author: me.clone(),
                 action_context: tilo_actions::ActionContext::default()
                     .with_invoker(invoker.clone()),
             },
@@ -339,7 +339,7 @@ impl AttachedView {
             moves: Cell::new(0),
             records,
             permissions,
-            me: me.to_owned(),
+            me: me.clone(),
             invoker: invoker.clone(),
             context: None,
             landed,
@@ -363,7 +363,7 @@ impl AttachedView {
 
     /// Who acts through the view.
     #[must_use]
-    pub fn me(&self) -> &str {
+    pub fn me(&self) -> &MemberId {
         &self.me
     }
 
@@ -1259,6 +1259,15 @@ fn changed_keys_of(
             keys
         })
         .collect())
+}
+
+/// The member `invoker` is: an automation opens no view of its own.
+fn member_of(invoker: &tilo_actions::ActionInvoker) -> Result<&MemberId, String> {
+    invoker
+        .acting
+        .by
+        .member_id()
+        .ok_or_else(|| "an automation opens no view of its own".to_owned())
 }
 
 fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, String> {

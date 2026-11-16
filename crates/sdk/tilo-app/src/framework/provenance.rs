@@ -115,7 +115,7 @@ impl Provenance {
         let colour = Color::from_rgb8(red, green, blue);
         let mut chip = Chip::new(self.name.clone()).with_id(format!("{id}-author"));
         chip = match &self.actor {
-            Some(actor) if actor.agent => chip.with_lead(ChipLead::Agent(colour)),
+            Some(actor) if actor.agent() => chip.with_lead(ChipLead::Agent(colour)),
             _ => chip.with_face(self.name.clone(), colour),
         };
         let mut row = Row::new()
@@ -154,6 +154,25 @@ impl Provenance {
     }
 }
 
+impl Provenance {
+    /// An item moved here from elsewhere: by its original author, in the tool
+    /// it came from, on the day it was written there (else `at_ms`).
+    #[must_use]
+    pub fn moved(origin: &Origin, at_ms: i64) -> Self {
+        Self {
+            actor: None,
+            name: origin.author.clone(),
+            hue: PresenceHue::of_identity(&origin.author),
+            source: Some(Source {
+                name: origin.source.clone(),
+                reference: origin.reference.clone(),
+                url: origin.url.clone(),
+            }),
+            at_ms: origin.created_ms.unwrap_or(at_ms),
+        }
+    }
+}
+
 impl People {
     /// Who wrote an item and when, in the fields a page shows separately: an
     /// item moved here is by its original author, in the tool it came from,
@@ -169,22 +188,11 @@ impl People {
         origin: Option<&Origin>,
     ) -> Provenance {
         if let Some(origin) = origin {
-            let at_ms = origin.created_ms.unwrap_or(at_ms);
-            return Provenance {
-                actor: None,
-                name: origin.author.clone(),
-                hue: PresenceHue::of_identity(&origin.author),
-                source: Some(Source {
-                    name: origin.source.clone(),
-                    reference: origin.reference.clone(),
-                    url: origin.url.clone(),
-                }),
-                at_ms,
-            };
+            return Provenance::moved(origin, at_ms);
         }
         let actor = self.actor_kept(author, kept);
         Provenance {
-            hue: self.hue(&actor.id),
+            hue: actor.hue,
             name: actor.name.clone(),
             actor: Some(actor),
             source: None,
@@ -204,7 +212,8 @@ mod tests {
 
     #[test]
     fn a_moved_item_names_its_author_its_source_and_its_day_as_separate_fields() {
-        let people = People::named(Some("ada"), &[("ada", "Ada")]);
+        let ada = tilo_resource::MemberId::person("ada");
+        let people = People::named(Some(&ada), &[(ada.clone(), "Ada")]);
         let origin = tilo_resource::Origin {
             author: "xemmerling".into(),
             handle: Some("xemmerling".into()),
@@ -258,7 +267,8 @@ mod tests {
 
     #[test]
     fn the_provenance_row_is_the_same_fields_as_the_description_a_reader_hears() {
-        let people = People::named(Some("ada"), &[("ada", "Ada")]);
+        let ada = tilo_resource::MemberId::person("ada");
+        let people = People::named(Some(&ada), &[(ada.clone(), "Ada")]);
         let origin = tilo_resource::Origin {
             author: "xemmerling".into(),
             handle: None,

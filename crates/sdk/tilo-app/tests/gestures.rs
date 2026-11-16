@@ -149,7 +149,7 @@ tilo_test_env::scenario! {
     {
         use tilo_app::framework::testing::detached_dispatcher;
         let mut mixer = Replica::<Mixer>::new();
-        let dispatcher = detached_dispatcher::<Mixer>("ada");
+        let dispatcher = detached_dispatcher::<Mixer>(&MemberId::person("ada"));
         let p = Mixer::paths();
         let doc = mixer.doc_mut();
         let before = doc.get_changes(&[]).len();

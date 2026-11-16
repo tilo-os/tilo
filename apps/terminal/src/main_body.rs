@@ -435,13 +435,13 @@ pub struct TerminalWidget {
 
 struct Here {
     device: String,
-    me: String,
+    me: ui::tilo_resource::MemberId,
 }
 
 struct RunHistory {
     record: ui::framework::PersonRecord<crate::history::CommandHistory>,
     session: String,
-    me: String,
+    me: ui::tilo_resource::MemberId,
 }
 
 /// Where this terminal is with its process's command runs (docs/app-model/ush.md, "Command runs").
@@ -627,10 +627,10 @@ impl TerminalWidget {
         }
     }
 
-    pub(crate) fn runs_on(&mut self, device: &str, me: &str) {
+    pub(crate) fn runs_on(&mut self, device: &str, me: &ui::tilo_resource::MemberId) {
         self.here = Some(Here {
             device: device.to_owned(),
-            me: me.to_owned(),
+            me: me.clone(),
         });
     }
 
@@ -2058,7 +2058,7 @@ impl TerminalWidget {
         &mut self,
         record: ui::framework::PersonRecord<crate::history::CommandHistory>,
         session: String,
-        me: String,
+        me: ui::tilo_resource::MemberId,
     ) {
         self.runs.history = Some(RunHistory {
             record,
@@ -2332,10 +2332,7 @@ impl TerminalWidget {
                     .map(crate::target::SessionTarget::encode),
                 exit: finished.exit,
                 ended_ms: finished.ended_ms,
-                actor: asked
-                    .as_ref()
-                    .map(|asked| asked.requested_by.clone())
-                    .unwrap_or_default(),
+                actor: asked.as_ref().and_then(|asked| asked.requested_by.clone()),
                 session: String::new(),
                 run: id.clone(),
             };
@@ -2393,8 +2390,8 @@ impl TerminalWidget {
         let Some(history) = &self.runs.history else {
             return;
         };
-        if ran.actor.is_empty() {
-            ran.actor.clone_from(&history.me);
+        if ran.actor.is_none() {
+            ran.actor = Some(history.me.clone());
         }
         ran.session.clone_from(&history.session);
         let remember = crate::history::CommandHistory::REMEMBER.with(ran);

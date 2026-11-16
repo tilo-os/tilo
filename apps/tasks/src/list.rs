@@ -33,7 +33,10 @@ struct Row {
 
 pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
     let chosen = nav.filter.clone();
-    let me = cx.me().map(str::to_owned);
+    let me = cx
+        .me()
+        .and_then(ui::tilo_resource::MemberId::person_id)
+        .map(str::to_owned);
     let nav = nav.clone();
     let list = cx.switch(&chosen, move |cx, chosen| {
         let filter = chosen.as_deref().and_then(Filter::of).unwrap_or_default();

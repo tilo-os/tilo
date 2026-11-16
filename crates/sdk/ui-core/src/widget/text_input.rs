@@ -372,7 +372,7 @@ pub struct TextInput {
     /// record's own), as an action's text anchor names it ([`Self::set_edits`]).
     edits: Option<(String, String)>,
     adopted: Option<preparation::Adopted>,
-    local_author: Option<String>,
+    local_author: Option<crate::permissions::MemberId>,
     align: TextAlign,
     secret: bool,
     disabled: bool,
@@ -827,7 +827,7 @@ impl TextInput {
         self.align
     }
 
-    pub fn set_local_author(&mut self, author: Option<String>) {
+    pub fn set_local_author(&mut self, author: Option<crate::permissions::MemberId>) {
         self.repaint = true;
         self.local_author = author;
     }

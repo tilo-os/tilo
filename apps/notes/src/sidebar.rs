@@ -1188,7 +1188,10 @@ mod tests {
     /// detached notebook actions, whose queue the test reads.
     fn with_actions() -> (PageSidebar, Dispatcher<NotebookResource>) {
         let tree = PageSidebar::new();
-        let actions = Dispatcher::detached("so.tilo.notes", "test-author");
+        let actions = Dispatcher::detached(
+            "so.tilo.notes",
+            &ui::tilo_resource::MemberId::person("test-author"),
+        );
         tree.attach_notebook(actions.clone());
         (tree, actions)
     }

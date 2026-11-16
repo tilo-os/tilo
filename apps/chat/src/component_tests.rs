@@ -11,7 +11,10 @@ fn projection(doc: &AutoCommit, identity: LocalIdentity) -> ChatApp {
         crate::app::ChatRuntime::Unavailable,
         tilo_content::ContentStore::memory(),
     );
-    app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", &me));
+    app.attach_framework(ui::framework::Dispatcher::detached(
+        "so.tilo.chat",
+        &ui::tilo_resource::MemberId::person(&me),
+    ));
     app.attach_detached_chain(&me);
     app.sync(doc, &ROOT);
     app
@@ -25,7 +28,10 @@ fn projection_of(workspace: &crate::testing::Workspace, identity: LocalIdentity)
         crate::app::ChatRuntime::Unavailable,
         tilo_content::ContentStore::memory(),
     );
-    app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", &me));
+    app.attach_framework(ui::framework::Dispatcher::detached(
+        "so.tilo.chat",
+        &ui::tilo_resource::MemberId::person(&me),
+    ));
     app.attach_workspace(workspace);
     app.sync(&workspace.chat, &ROOT);
     app

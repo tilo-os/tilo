@@ -63,7 +63,7 @@ tilo_test_env::scenario! {
     // A caret in a record's text is anchored to the record, as actions and History name it, never to
     // the package the text is kept in: two viewers of the same paragraph then agree on its identity.
     {
-        let record = Dispatcher::<Document>::new("test.dispatch", "body", false, Some("author"));
+        let record = Dispatcher::<Document>::new("test.dispatch", "body", false, Some(&MemberId::person("author")));
         assert_eq!(
             record.anchored_kind(),
             Document::KIND,
@@ -79,7 +79,7 @@ tilo_test_env::scenario! {
 
     phase framework_edits_finish_before_observation_drain_and_a_full_queue_never_refuses_an_edit;
     {
-        let dispatcher = Dispatcher::<Document>::new("test.dispatch", "body", false, Some("author"));
+        let dispatcher = Dispatcher::<Document>::new("test.dispatch", "body", false, Some(&MemberId::person("author")));
         let mut doc = AutoCommit::new();
         let queue = ui_core::local_document_action::Queue::new();
         let _input = queue.enter("published-revision".into());
@@ -131,7 +131,7 @@ tilo_test_env::scenario! {
                 [false, true]
             } {
                 let dispatcher =
-                    Dispatcher::<Document>::new("test.dispatch", "body", false, Some("author"));
+                    Dispatcher::<Document>::new("test.dispatch", "body", false, Some(&MemberId::person("author")));
                 let mut doc = AutoCommit::new();
                 ENCODINGS.with(|count| count.set(0));
                 for value in 0..128 {
@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
     phase standalone_immediate_dispatch_has_no_capture_encoding;
     {
         let _nonlocal = ui_core::local_document_action::suspend();
-        let dispatcher = Dispatcher::<Document>::new("test.dispatch", "body", false, Some("author"));
+        let dispatcher = Dispatcher::<Document>::new("test.dispatch", "body", false, Some(&MemberId::person("author")));
         let mut doc = AutoCommit::new();
         ENCODINGS.with(|count| count.set(0));
         dispatcher
@@ -202,7 +202,7 @@ tilo_test_env::scenario! {
 
     phase what_the_app_submits_on_its_own_reaches_the_host_as_the_apps;
     {
-        let dispatcher = Dispatcher::<Document>::new("test.dispatch", "body", false, Some("author"));
+        let dispatcher = Dispatcher::<Document>::new("test.dispatch", "body", false, Some(&MemberId::person("author")));
         let invoke = || Invoke::<Document>::apply(&Put(1)).expect("the edit binds");
         dispatcher.submit(invoke());
         dispatcher.submit_on_its_own(invoke());

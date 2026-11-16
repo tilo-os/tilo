@@ -384,7 +384,7 @@ pub trait ResourceApp: 'static {
 /// What [`ResourceApp::opening`] builds with: who the window is for, the workspace, and the record
 /// on its way.
 pub struct OpeningCx<'a> {
-    pub(crate) me: &'a str,
+    pub(crate) me: &'a MemberId,
     pub(crate) device: &'a str,
     pub(crate) workspace: String,
     pub(crate) files: ui_core::storage::AppFiles,
@@ -394,7 +394,7 @@ pub struct OpeningCx<'a> {
 impl OpeningCx<'_> {
     /// Who the window is for.
     #[must_use]
-    pub fn me(&self) -> &str {
+    pub fn me(&self) -> &MemberId {
         self.me
     }
 
@@ -463,7 +463,7 @@ pub struct FileHistory {
 /// workspace service: [`seed_record`](super::seed_record)) creates it with no
 /// host: what a seed imports from the device is the device's own to seed.
 pub struct SeedCx<'a> {
-    pub(crate) me: &'a str,
+    pub(crate) me: &'a MemberId,
     pub(crate) device: &'a str,
     pub(crate) host: Option<&'a HostContext>,
 }
@@ -471,7 +471,7 @@ pub struct SeedCx<'a> {
 impl SeedCx<'_> {
     /// Who is creating the record: the id their views read as
     /// [`RecordEnv::me`](super::RecordEnv::me) and the seed's actions read as their author.
-    pub fn me(&self) -> &str {
+    pub fn me(&self) -> &MemberId {
         self.me
     }
 
@@ -754,8 +754,8 @@ pub(crate) enum Editing {
     /// runs, in a window someone uses or a capture.
     Live {
         permissions: LivePermissions,
-        me: String,
-        run: Run,
+        me: MemberId,
+        run: Box<Run>,
     },
     /// Never: a past version in History mode.
     ReadOnly,
@@ -791,7 +791,7 @@ struct RootShell {
     scope: PermissionScope,
     permissions: Option<LivePermissions>,
     read_only: bool,
-    me: Option<String>,
+    me: Option<MemberId>,
     run: Run,
     storage: Rc<super::settings::ViewStorage>,
 }
@@ -808,7 +808,7 @@ impl RootShell {
                 permissions,
                 me,
                 run,
-            } => (Some(permissions), false, Some(me), run),
+            } => (Some(permissions), false, Some(me), *run),
             Editing::ReadOnly => (None, true, None, Run::past()),
         };
         let scope = write_scope(app, &run);
@@ -816,7 +816,7 @@ impl RootShell {
             || permissions
                 .as_ref()
                 .is_some_and(|permissions| !permissions.check(&scope));
-        let run = run.for_participant(me.as_deref());
+        let run = run.for_participant(me.as_ref());
         let storage =
             super::settings::ViewStorage::new(storage, hosted.attach(app.id(), app.title()));
         Self {
@@ -886,7 +886,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let published = tilo_resource::publish::<A::Resource>(app.kind, &label, reader.state());
     let live = Live::new(reader);
     let alive = Rc::new(());
-    let dispatch = Dispatcher::new(app.id(), app.kind, read_only, me.as_deref()).on_record(
+    let dispatch = Dispatcher::new(app.id(), app.kind, read_only, me.as_ref()).on_record(
         run.launched
             .record
             .as_ref()
@@ -1008,7 +1008,7 @@ fn built_actions<R: Resource>(
 /// content from outside, which no undo takes back.
 pub(crate) fn apply_seed<A: ResourceApp>(
     doc: &mut tilo_resource::Doc,
-    author: &str,
+    author: &MemberId,
     seed: &[Invoke<A::Resource>],
 ) -> Result<(), String> {
     let actions = built_actions(seed, tilo_resource::origin_now_ms())?;
@@ -1027,15 +1027,16 @@ pub(crate) fn apply_seed<A: ResourceApp>(
 fn apply_seed_actions(
     app: &AppHooks,
     doc: &mut tilo_resource::Doc,
-    author: &str,
+    author: &MemberId,
     actions: &[&dyn tilo_actions::Action],
     encoded: Vec<tilo_actions::EncodedAction>,
 ) -> Result<(), String> {
-    let writer = ui_core::history_source::authors::device_actor(author.as_bytes(), doc.get_actor());
+    let writer =
+        ui_core::history_source::authors::device_actor(&author.actor_bytes(), doc.get_actor());
     for (action, encoded) in actions.iter().zip(encoded) {
         let context = tilo_actions::ActionContext::for_resource(app.kind, app.kind, app.label)
             .with_app(app.id(), app.title())
-            .with_invoker(tilo_actions::ActionInvoker::person(author))
+            .with_invoker(tilo_actions::ActionInvoker::member(author.clone()))
             .with_change(tilo_actions::ChangeKind::External);
         tilo_actions::apply_local_with_context(doc, *action, encoded, Some(&writer), context)
             .map_err(|error| format!("seeding the new record failed: {error}"))?;
@@ -1070,7 +1071,7 @@ fn new_record<A: ResourceApp>(
             .with_options(options)
             .with_content(context.content()),
     );
-    let author = context.author().key();
+    let author = context.author().clone();
     let seed = A::seed(&SeedCx {
         me: &author,
         device: context.device_id(),
@@ -1242,7 +1243,7 @@ pub(crate) fn hosted(context: &HostContext) -> super::settings::Hosted {
         device: Some(context.device_id().to_owned()),
         records: Some((
             context.records().clone(),
-            context.author().key(),
+            context.author().clone(),
             context.live_permissions(),
         )),
         workspace: context
@@ -1305,7 +1306,7 @@ fn create_component(
     // before it, and opens as below once the record is had.
     if let Some(record) = context.record_opening() {
         let opening = OpeningCx {
-            me: &context.author().key(),
+            me: context.author(),
             device: context.device_id(),
             workspace: context.records().home(),
             files: context.files(),
@@ -1414,8 +1415,8 @@ fn start_record(
         .showing_folder_history(folder.clone().map(|source| (source, (app.history)())));
     let editing = Editing::Live {
         permissions: context.live_permissions(),
-        me: context.author().key(),
-        run,
+        me: context.author().clone(),
+        run: Box::new(run),
     };
     Ok(Starting {
         replay,
@@ -1570,11 +1571,8 @@ fn prepare_capture<A: ResourceApp>(
     context: &mut HostContext,
     scenario: Option<&str>,
 ) -> Result<Run, LaunchError> {
-    let mut fixture = Fixture::<A::Resource>::new(
-        scenario,
-        &context.author().key(),
-        context.content().cloned(),
-    );
+    let mut fixture =
+        Fixture::<A::Resource>::new(scenario, context.author(), context.content().cloned());
     A::fixture(&mut fixture);
     if context.content().is_none()
         && let Some(content) = fixture.lent_content()
@@ -1985,7 +1983,7 @@ fn prepare_named(
         let mut host = super::headless::data_dir_host(
             std::path::Path::new(directory),
             &author,
-            role_permissions(&author.key(), Role::Owner),
+            role_permissions(author.id(), Role::Owner),
         )?;
         let mut prepared = prepare_on(
             &mut host,

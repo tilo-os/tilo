@@ -28,7 +28,7 @@ pub struct Remembered {
     /// Ended, in milliseconds since the Unix epoch.
     pub ended_ms: i64,
     /// Who ran it.
-    pub actor: Atom,
+    pub actor: Option<ui::tilo_resource::MemberId>,
     /// The session that ran it: its record's address.
     pub session: Atom,
     /// The run, an item of the session's `runs`.
@@ -43,7 +43,7 @@ pub struct Ran {
     pub environment: Option<String>,
     pub exit: i32,
     pub ended_ms: i64,
-    pub actor: String,
+    pub actor: Option<ui::tilo_resource::MemberId>,
     pub session: String,
     pub run: Id,
 }
@@ -104,7 +104,7 @@ impl CommandHistory {
                 environment: ran.environment.map(Atom),
                 exit: ran.exit,
                 ended_ms: ran.ended_ms,
-                actor: Atom(ran.actor),
+                actor: ran.actor,
                 session: Atom(ran.session),
                 run: ran.run,
             },

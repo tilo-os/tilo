@@ -1016,7 +1016,9 @@ mod tests {
 
     fn bound() -> (WordProcessor, AutoCommit) {
         let mut wp = WordProcessor::new();
-        wp.attach(ui::framework::testing::detached_dispatcher("test-author"));
+        wp.attach(ui::framework::testing::detached_dispatcher(
+            &ui::tilo_resource::MemberId::person("test-author"),
+        ));
         let mut state = AutoCommit::new();
         crate::initialize_empty_document(&mut state).unwrap();
         wp.bind(&state, &ROOT);

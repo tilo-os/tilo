@@ -47,7 +47,7 @@ impl ResourceApp for App {
         let Some(scenario) = fixture.scenario() else {
             return;
         };
-        fixture.start(sample::table(scenario, fixture.person()));
+        fixture.start(sample::table(scenario, fixture.person().id()));
     }
 
     fn view(cx: &mut ViewCx<Table>) -> Element {

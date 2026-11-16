@@ -133,8 +133,12 @@ fn a_post_is_read_against_the_chat_record_where_it_is_invoked() {
 #[test]
 fn the_window_chain_rolls_over_and_reads_across_its_parts() {
     let chat = Rc::new(crate::demo::demo(crate::model::ME));
-    let chain: Chain<ChatPart> =
-        Chain::detached("so.tilo.chat", crate::model::ME, move || Rc::clone(&chat)).unwrap();
+    let chain: Chain<ChatPart> = Chain::detached(
+        "so.tilo.chat",
+        &ui::tilo_resource::MemberId::person(crate::model::ME),
+        move || Rc::clone(&chat),
+    )
+    .unwrap();
     chain
         .write_start(0, &crate::demo::demo_part(crate::model::ME))
         .unwrap();
@@ -265,7 +269,7 @@ impl TwoDevices {
         let poster = Chain::detached_in(
             device(&Rc::new(durable_store::MemoryStore::new())),
             "so.tilo.chat",
-            crate::model::ME,
+            &ui::tilo_resource::MemberId::person(crate::model::ME),
             base(),
         )
         .unwrap();
@@ -274,8 +278,13 @@ impl TwoDevices {
         if asks_workspace {
             guest_store.ask_workspace_for_missing();
         }
-        let guest =
-            Chain::detached_in(guest_store.clone(), "so.tilo.chat", "u_aria", base()).unwrap();
+        let guest = Chain::detached_in(
+            guest_store.clone(),
+            "so.tilo.chat",
+            &ui::tilo_resource::MemberId::person("u_aria"),
+            base(),
+        )
+        .unwrap();
         assert_eq!(guest.head(), None, "a fresh workspace has no part yet");
         let shown = ui::record::RecordCheckout::new(
             ui::record::RecordId::derived("shown", &ui::record::RecordId::workspace_default()),
@@ -575,7 +584,11 @@ fn a_message_sent_while_its_part_arrives_shows_as_sending_and_lands_after_it() {
     let devices = TwoDevices::back_from_away();
     let mut doc = crate::testing::demo_doc();
     let mut app = crate::app::ChatApp::new_ephemeral();
-    app.attach_chain(devices.guest.as_reader(crate::model::ME));
+    app.attach_chain(
+        devices
+            .guest
+            .as_reader(&ui::tilo_resource::MemberId::person(crate::model::ME)),
+    );
     app.active_channel = "c_general".into();
     app.focus = Focus::Main;
     app.thread_open = None;

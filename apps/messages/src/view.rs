@@ -428,7 +428,11 @@ fn sources(cx: &ViewCx<Messages>) -> Sources {
         },
         record: Some(cx.live().clone()),
         tilo: live,
-        me: cx.me().map(str::to_owned).unwrap_or_default(),
+        me: cx
+            .me()
+            .and_then(ui::tilo_resource::MemberId::person_id)
+            .map(str::to_owned)
+            .unwrap_or_default(),
         people,
         fixture: cx.fixture::<CapturePeople>().unwrap_or_default(),
     }
@@ -485,7 +489,7 @@ pub(super) fn build(cx: &ViewCx<Messages>, services: &Services) -> Element {
         sending
             .history()
             .or_else(|| live.then(|| services.history.clone()).flatten()),
-        cx.me(),
+        cx.me().and_then(ui::tilo_resource::MemberId::person_id),
         sources.tilo,
     );
     if !cx.mode().is_live()
@@ -496,7 +500,7 @@ pub(super) fn build(cx: &ViewCx<Messages>, services: &Services) -> Element {
     let setup = crate::setup::SetupView::new(
         sending.client(),
         live.then(|| enrollment(services)).flatten(),
-        cx.me(),
+        cx.me().and_then(ui::tilo_resource::MemberId::person_id),
     );
     let groups = crate::groups::GroupsView::new(sending.client());
     register_effects(
@@ -613,7 +617,7 @@ fn sending_and_drafts(
                 .or_else(|| inherited().map(|(_, messaging)| messaging))
         })
         .flatten(),
-        cx.me(),
+        cx.me().and_then(ui::tilo_resource::MemberId::person_id),
         drafts.clone(),
         direct,
     );

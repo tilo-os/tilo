@@ -38,7 +38,10 @@ impl ResourceApp for NotesShell {
     const WORKSPACE_RECORD: bool = true;
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
-        let author = MemberId::person(cx.me().unwrap_or("local").to_owned());
+        let author = cx
+            .me()
+            .cloned()
+            .unwrap_or_else(|| MemberId::person("local"));
         // A note's save status sits in its header row beside the title, on
         // the note's own save status surface, so the window paints none.
         let mut app = NotesApp::empty_surface(&author, cx.save_status());

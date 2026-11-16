@@ -293,7 +293,10 @@ fn peer(id: &str, name: &str, initials: &str, color: usize) -> ChatApp {
         initials: initials.into(),
         color_idx: color,
     };
-    app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", id));
+    app.attach_framework(ui::framework::Dispatcher::detached(
+        "so.tilo.chat",
+        &ui::tilo_resource::MemberId::person(id),
+    ));
     app.active_channel = crate::record::CHAT_CHANNEL.into();
     app.thread_open = None;
     app.focus = Focus::Main;

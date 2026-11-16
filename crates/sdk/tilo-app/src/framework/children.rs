@@ -1191,7 +1191,7 @@ impl<C: ChildRecord> ChildrenState<C> {
 /// module docs.
 pub struct Children<C: ChildRecord> {
     state: Rc<ChildrenState<C>>,
-    me: String,
+    me: tilo_resource::MemberId,
     /// The API of the parent the view shows, which the lifecycle a view
     /// asks for goes through.
     dispatch: Option<super::Dispatcher<C::Parent>>,
@@ -1208,7 +1208,7 @@ impl<C: ChildRecord> Clone for Children<C> {
 }
 
 impl<C: ChildRecord> Children<C> {
-    pub(crate) fn new(state: Rc<ChildrenState<C>>, me: String) -> Self {
+    pub(crate) fn new(state: Rc<ChildrenState<C>>, me: tilo_resource::MemberId) -> Self {
         Self {
             state,
             me,
@@ -1369,18 +1369,18 @@ impl<C: ChildRecord> Children<C> {
     pub fn detached_in(
         store: ui_core::record::RecordStore,
         app_id: &'static str,
-        me: &str,
+        me: &tilo_resource::MemberId,
         parent: impl Fn() -> Rc<<C::Parent as Resource>::State> + 'static,
     ) -> Option<Self> {
         let workspace = WorkspaceRecords {
             store,
-            me: me.to_owned(),
+            me: me.clone(),
             permissions: None,
             app_id,
             app_title: app_id,
         };
         let state = Rc::new(ChildrenState::<C>::open(workspace, Rc::new(parent))?);
-        Some(Self::new(state, me.to_owned()))
+        Some(Self::new(state, me.clone()))
     }
 }
 
@@ -1455,14 +1455,18 @@ mod tests {
             })
             .unwrap();
         let read = store.clone();
-        let children =
-            Children::<Topic>::detached_in(store.clone(), "so.tilo.test", "ana", move || {
+        let children = Children::<Topic>::detached_in(
+            store.clone(),
+            "so.tilo.test",
+            &tilo_resource::MemberId::person("ana"),
+            move || {
                 read.read(&RecordId::workspace_default(), |doc| {
                     Reader::<Workspace>::read(doc).unwrap().state().clone()
                 })
                 .unwrap()
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
         (store, children)
     }
 
@@ -1725,12 +1729,17 @@ mod tests {
     /// The children of the workspace `store` holds, as `author` sees them.
     fn children_of(store: &RecordStore) -> Children<Topic> {
         let read = store.clone();
-        Children::<Topic>::detached_in(store.clone(), "so.tilo.test", "ana", move || {
-            read.read(&RecordId::workspace_default(), |doc| {
-                Reader::<Workspace>::read(doc).unwrap().state().clone()
-            })
-            .unwrap()
-        })
+        Children::<Topic>::detached_in(
+            store.clone(),
+            "so.tilo.test",
+            &tilo_resource::MemberId::person("ana"),
+            move || {
+                read.read(&RecordId::workspace_default(), |doc| {
+                    Reader::<Workspace>::read(doc).unwrap().state().clone()
+                })
+                .unwrap()
+            },
+        )
         .unwrap()
     }
 }

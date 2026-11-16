@@ -1521,7 +1521,11 @@ impl ResourceApp for SheetsShell {
             .map(|invoke| ("Alex", invoke))
             .chain(crate::sample::comments());
         for (at, (author, invoke)) in (0_i64..).zip(versions) {
-            fixture.version(author, SAMPLE_WRITTEN_MS + at * 60_000, invoke);
+            fixture.version(
+                ui::tilo_resource::MemberId::person(author),
+                SAMPLE_WRITTEN_MS + at * 60_000,
+                invoke,
+            );
         }
     }
 

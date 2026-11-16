@@ -478,7 +478,13 @@ impl Replica {
             for_agent || matches!(actor, ReplicaActor::Agent | ReplicaActor::Bot { .. });
         let runs_views = matches!(actor, ReplicaActor::Agent | ReplicaActor::Member { .. });
         let (invoker, permissions) = replica_standing(actor, workspace, participant);
-        let (checkout, bytes, created) = seeded(definition, kind, workspace, participant, seed)?;
+        let creator = invoker
+            .acting
+            .by
+            .member_id()
+            .cloned()
+            .unwrap_or_else(|| ui::tilo_resource::MemberId::person(participant));
+        let (checkout, bytes, created) = seeded(definition, kind, workspace, &creator, seed)?;
         let opening = AttachedView::opening(definition, workspace, checkout, bytes)
             .for_invoker(&invoker)
             .with_permissions(permissions)
@@ -1359,7 +1365,7 @@ fn seeded(
     definition: &ApplicationDefinition,
     kind: ResourceKind,
     workspace: &str,
-    participant: &str,
+    participant: &ui::tilo_resource::MemberId,
     seed: Seed,
 ) -> Result<(RecordCheckout, Vec<u8>, bool), AppError> {
     let (checkout, bytes, created) = match seed {
@@ -1411,7 +1417,7 @@ fn genesis(
     workspace: &str,
     checkout: &RecordCheckout,
     kind: ResourceKind,
-    creator: &str,
+    creator: &ui::tilo_resource::MemberId,
 ) -> Result<Vec<u8>, AppError> {
     let launch = |error: &dyn std::fmt::Display| AppError::Launch(error.to_string());
     let cache = PortableStorage::new("agent-records", DEVICE).map_err(|e| launch(&e))?;

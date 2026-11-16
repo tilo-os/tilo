@@ -166,17 +166,23 @@ fn the_apps_own_code_applies_a_by_app_verb_as_whoever_it_names() {
     );
 
     // Each is a change in the record's history, by who the app named.
-    let authors: Vec<String> = played
+    let authors: Vec<tilo_app::tilo_actions::Actor> = played
         .record()
         .read(|doc| {
             tilo_app::tilo_resource::history::versions(&mut doc.clone())
                 .into_iter()
                 .filter_map(|version| version.context?.invoker)
-                .map(|invoker| invoker.acting.by.key())
+                .map(|invoker| invoker.acting.by)
                 .collect()
         })
         .unwrap();
-    assert_eq!(authors, [ada(), "agent:eve".to_owned()]);
+    assert_eq!(
+        authors,
+        [
+            MemberId::person(ada()).into(),
+            MemberId::agent("eve").into()
+        ]
+    );
     // It is still housekeeping: nothing of the person's to take back.
     assert!(!played.undo());
 }

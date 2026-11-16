@@ -51,7 +51,7 @@ pub struct Terminal {
     ///
     /// Who that window is: the participant who set the session up there.
     #[model(readonly)]
-    pub holder: Option<Atom>,
+    pub holder: Option<ui::tilo_resource::MemberId>,
     /// Runs
     ///
     /// The commands the session ran, one item each, written when it ends.
@@ -132,7 +132,7 @@ pub struct Run {
     /// Where it ran: the session's encoded target.
     pub environment: Option<Atom>,
     /// Who ran it: the person at the keyboard, or whoever asked with `run`.
-    pub actor: Atom,
+    pub actor: Option<ui::tilo_resource::MemberId>,
     /// The person an agent ran it for.
     pub for_person: Option<Atom>,
     /// Started, in milliseconds since the Unix epoch.
@@ -160,7 +160,7 @@ pub struct RunRequest {
     /// Command
     pub command: Atom,
     /// Who asked.
-    pub requested_by: Atom,
+    pub requested_by: Option<ui::tilo_resource::MemberId>,
     /// The person they asked for.
     pub for_person: Option<Atom>,
     /// The pane of the process asked to run it: only that process does, so
@@ -226,16 +226,16 @@ impl Terminal {
 
     /// Whether the session belongs to a window other than one `me` opens on `device`: a window opened on
     /// it joins the session instead of starting a shell, and one `me` reopens there takes it back.
-    pub fn runs_elsewhere(&self, device: &str, me: &str) -> bool {
+    pub fn runs_elsewhere(&self, device: &str, me: &ui::tilo_resource::MemberId) -> bool {
         let is =
             |field: &Option<Atom>, value: &str| field.as_ref().is_some_and(|atom| atom.0 == value);
         (self.pane.is_some() || self.target.is_some())
-            && !(is(&self.device, device) && is(&self.holder, me))
+            && !(is(&self.device, device) && self.holder.as_ref() == Some(me))
     }
 
     fn set_up_on(&mut self, cx: &ActionCx, device: Option<String>) {
         self.device = device.filter(|device| !device.is_empty()).map(Atom);
-        self.holder = cx.author().map(|author| Atom(author.key()));
+        self.holder = cx.author().cloned();
     }
 
     /// The session stored under `obj` of another record's document: a terminal nested in an editor's
@@ -349,14 +349,7 @@ impl Terminal {
             .map(|entry| entry.value.clone());
         let (actor, for_person) = match asked {
             Some(asked) => (asked.requested_by, asked.for_person),
-            None => (
-                Atom(
-                    cx.author()
-                        .map(ui::tilo_resource::MemberId::key)
-                        .unwrap_or_default(),
-                ),
-                None,
-            ),
+            None => (cx.author().cloned(), None),
         };
         let mut items = run.items;
         items.truncate(crate::parse::MAX_ITEMS);
@@ -455,11 +448,7 @@ impl Terminal {
         let by = cx.invoked_by().filter(|by| !by.is_person());
         let request = RunRequest {
             command: Atom(command.to_owned()),
-            requested_by: Atom(
-                cx.author()
-                    .map(ui::tilo_resource::MemberId::key)
-                    .unwrap_or_default(),
-            ),
+            requested_by: cx.author().cloned(),
             for_person: by
                 .as_ref()
                 .and_then(|by| by.acted_for_person())
@@ -731,7 +720,7 @@ impl ResourceApp for TerminalShell {
                 queue.ask(crate::runs::Asked {
                     request: id.clone(),
                     command: request.command.0,
-                    requested_by: request.requested_by.0,
+                    requested_by: request.requested_by,
                     agent: request.agent,
                     reply: cx.reply(),
                 });
@@ -789,16 +778,13 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         }
         self.set_run_action(Terminal::RUN.on(cx.actions().resource_id()));
         if cx.mode().is_live()
-            && let (Some(history), Some(record)) = (
+            && let (Some(history), Some(record), Some(me)) = (
                 cx.person::<crate::history::CommandHistory>(),
                 cx.record_id(),
+                cx.me(),
             )
         {
-            self.remember_in(
-                history,
-                record.uri(),
-                cx.me().unwrap_or_default().to_owned(),
-            );
+            self.remember_in(history, record.uri(), me.clone());
         }
         if cx.mode().is_live()
             && let (Some(record), Some(device)) = (
@@ -885,16 +871,13 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         }
         self.set_run_action(Terminal::RUN.on(cx.actions().resource_id()));
         if cx.mode().is_live()
-            && let (Some(history), Some(record)) = (
+            && let (Some(history), Some(record), Some(me)) = (
                 cx.person::<crate::history::CommandHistory>(),
                 cx.record_id(),
+                cx.me(),
             )
         {
-            self.remember_in(
-                history,
-                record.uri(),
-                cx.me().unwrap_or_default().to_owned(),
-            );
+            self.remember_in(history, record.uri(), me.clone());
         }
         if cx.mode().is_live()
             && let (Some(record), Some(device)) = (

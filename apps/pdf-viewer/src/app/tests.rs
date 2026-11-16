@@ -2439,7 +2439,10 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
         app.signer_name.clear();
         let member =
             |id: &str| crate::model::Author::Member(ui::tilo_resource::MemberId::person(id));
-        app.attach_people(ui::framework::People::named(Some(me), &[(me, "")]));
+        app.attach_people(ui::framework::People::named(
+            Some(&ui::tilo_resource::MemberId::person(me)),
+            &[(ui::tilo_resource::MemberId::person(me), "")],
+        ));
         assert_eq!(app.comment_author_name(&member(me)), "You");
         assert_eq!(app.comment_author_name(&member(peer)), "Someone");
         assert_eq!(app.signer(), "");
@@ -2449,8 +2452,8 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
         assert_eq!(app.signatures.len(), signed, "no nameless signature");
         assert!(app.is_editing(&EditTarget::Signer), "the name field opens");
         app.attach_people(ui::framework::People::named(
-            Some(me),
-            &[(me, "Ada Lovelace")],
+            Some(&ui::tilo_resource::MemberId::person(me)),
+            &[(ui::tilo_resource::MemberId::person(me), "Ada Lovelace")],
         ));
         assert_eq!(app.comment_author_name(&member(me)), "Ada Lovelace");
         assert_eq!(app.signer(), "Ada Lovelace");
@@ -2461,8 +2464,17 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
         let (mut app, mut st) = app_with_state();
         app.author = "test-author".into();
         app.attach_people(ui::framework::People::named(
-            Some("test-author"),
-            &[("test-author", "Tess Author"), ("peer-id", "Bob Builder")],
+            Some(&ui::tilo_resource::MemberId::person("test-author")),
+            &[
+                (
+                    ui::tilo_resource::MemberId::person("test-author"),
+                    "Tess Author",
+                ),
+                (
+                    ui::tilo_resource::MemberId::person("peer-id"),
+                    "Bob Builder",
+                ),
+            ],
         ));
         app.create_note(&mut Edits::lend(&mut st.doc), 2, (120.0, 200.0));
         let thread = PdfMarkup::of(&st.doc)

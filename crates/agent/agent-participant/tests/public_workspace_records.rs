@@ -217,7 +217,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     let chain = ui::framework::Chain::<chat::parts::ChatPart>::detached_in(
         store,
         <chat::ChatShell as ui::framework::ResourceApp>::ID,
-        "member",
+        &ui::tilo_resource::MemberId::person("member"),
         move || std::rc::Rc::clone(&base),
     )
     .unwrap();

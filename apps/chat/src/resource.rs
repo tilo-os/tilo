@@ -233,7 +233,10 @@ impl ResourceApp for ChatShell {
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
         crate::i18n::ensure();
-        let me = cx.me().unwrap_or_default().to_owned();
+        let me = cx
+            .me()
+            .map(ui::tilo_resource::MemberId::key)
+            .unwrap_or_default();
         let live = cx.mode().is_live();
         // Native path access controls attachment import. A live browser
         // independently discovers its host's voice service through media replies.
@@ -396,8 +399,12 @@ impl ResourceApp for ChatShell {
         }
         fixture.start(crate::demo::demo(crate::model::ME));
         if fixture.scenario() == Some("agent-work") {
-            for (author, invoke) in agent_work_steps() {
-                fixture.version(author, crate::demo::NOW * 1000, invoke);
+            for (_, invoke) in agent_work_steps() {
+                fixture.version(
+                    ui::tilo_resource::MemberId::agent(DEMO_AGENT_ID),
+                    crate::demo::NOW * 1000,
+                    invoke,
+                );
             }
         }
     }
@@ -426,7 +433,7 @@ impl ResourceApp for ChatShell {
         if cx.host().is_some_and(|host| host.capture().is_some()) {
             return Vec::new();
         }
-        let creator = LocalIdentity::for_participant(cx.me());
+        let creator = LocalIdentity::for_participant(&cx.me().key());
         vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
             name: creator.name,
             initials: creator.initials,
@@ -632,6 +639,8 @@ fn bridged_post() -> (Id, crate::record::Message) {
 /// The agent the `agent-work` scenario summons.
 #[cfg(feature = "samples")]
 pub(crate) const DEMO_AGENT: &str = "agent:tide";
+#[cfg(feature = "samples")]
+const DEMO_AGENT_ID: &str = "tide";
 /// The message summoning it.
 #[cfg(feature = "samples")]
 pub(crate) const DEMO_SUMMONS: &str = "m_agent_request";

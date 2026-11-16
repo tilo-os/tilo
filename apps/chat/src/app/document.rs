@@ -273,14 +273,12 @@ impl ChatApp {
         self.composer_main.set_key(&self.active_channel);
         self.composer_main
             .set_placeholder(&self.conversation_placeholder(&self.active_channel));
-        self.composer_main
-            .set_local_author(Some(self.me.id.clone()));
+        self.composer_main.set_local_author(self.me.member());
         let thread_key = self.thread_draft_key().unwrap_or_default();
         self.composer_thread.set_key(&thread_key);
         self.composer_thread
             .set_placeholder(&crate::i18n::t("chat-thread-reply-placeholder"));
-        self.composer_thread
-            .set_local_author(Some(self.me.id.clone()));
+        self.composer_thread.set_local_author(self.me.member());
         self.composer_main
             .set_read_only(!self.main_composer_can_edit());
         self.composer_thread.set_read_only(!self.can_participate());

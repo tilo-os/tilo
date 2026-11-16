@@ -85,7 +85,7 @@ impl ResourceApp for TlApp {
             let window = if crate::hosted::is_hosted() {
                 crate::hosted::HostedWindow::new(crate::hosted::window_instance())
             } else {
-                in_process(cx.me(), cx.workspace(), &cx.files())?
+                in_process(cx.me().id(), cx.workspace(), &cx.files())?
             };
             Some(Box::new(window))
         }
@@ -115,7 +115,9 @@ impl ResourceApp for TlApp {
                 Some(window) => Some(*window),
                 None => cx.workspace().and_then(|workspace| {
                     in_process(
-                        cx.me().unwrap_or_default(),
+                        cx.me()
+                            .map(ui::tilo_resource::MemberId::id)
+                            .unwrap_or_default(),
                         &workspace,
                         &cx.storage().files(),
                     )

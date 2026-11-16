@@ -412,7 +412,7 @@ impl ResourceApp for Discord {
             return;
         };
         let scenario = scenario.to_owned();
-        let person = fixture.person().to_owned();
+        let person = fixture.person().id().to_owned();
         fixture.start(crate::sample::guild(Some(&scenario), &person));
     }
 
@@ -425,7 +425,7 @@ impl ResourceApp for Discord {
             }
             effects::answer(effect, ecx)
         });
-        let me = cx.me().map(str::to_owned);
+        let me = cx.me().and_then(MemberId::person_id).map(str::to_owned);
         let shown = cx.value(move |guild: &Guild| Shown::of(guild, me.as_deref()));
         let offered = bridging.clone();
         let page = cx.switch(&shown, move |cx, shown| {

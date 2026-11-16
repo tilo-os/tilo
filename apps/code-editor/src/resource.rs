@@ -72,7 +72,7 @@ impl ResourceApp for CodeEditorShell {
                 queue.ask(terminal::runs::Asked {
                     request: id.clone(),
                     command: request.command.0,
-                    requested_by: request.requested_by.0,
+                    requested_by: request.requested_by,
                     agent: request.agent,
                     reply: cx.reply(),
                 });

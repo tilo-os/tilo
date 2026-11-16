@@ -1760,7 +1760,7 @@ mod tests {
         let open_disks = crate::effects::SettingsEffect::from(StorageEffect::OpenDisks);
 
         app.effect(&open_disks).expect("the person opens Disks");
-        app.effect_by("agent:scribe", &open_disks)
+        app.effect_by(&ui::tilo_resource::MemberId::agent("scribe"), &open_disks)
             .expect("the agent opens Disks");
 
         let asked = std::mem::take(&mut *asked.lock().unwrap());

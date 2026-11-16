@@ -20,7 +20,7 @@ struct RunQueueState {
 pub struct Asked {
     pub request: ui::tilo_resource::Id,
     pub command: String,
-    pub requested_by: String,
+    pub requested_by: Option<ui::tilo_resource::MemberId>,
     pub agent: bool,
     pub reply: ui::framework::EffectReply,
 }

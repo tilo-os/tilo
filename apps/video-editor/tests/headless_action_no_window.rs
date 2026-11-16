@@ -68,7 +68,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
         TEST_WORKSPACE,
         RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
         app.read_document(|doc| doc.clone().save()),
-        "headless-driver",
+        &ui::tilo_resource::MemberId::person("headless-driver"),
         PermissionContext::permissive(),
         false,
     )

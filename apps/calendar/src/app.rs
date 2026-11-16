@@ -288,7 +288,10 @@ impl CalendarApp {
     #[cfg(test)]
     pub(crate) fn new_detached() -> Self {
         let mut app = Self::build();
-        let dispatcher = ui::framework::Dispatcher::detached("so.tilo.calendar", "test-author");
+        let dispatcher = ui::framework::Dispatcher::detached(
+            "so.tilo.calendar",
+            &ui::tilo_resource::MemberId::person("test-author"),
+        );
         app.notes_editor = Box::new(Self::new_notes_editor(None, Some(&dispatcher)));
         app.dispatcher = Some(dispatcher);
         app
