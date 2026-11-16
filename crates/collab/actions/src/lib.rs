@@ -148,6 +148,7 @@ pub mod record_sync;
 pub mod registry;
 pub mod remote;
 pub mod resource;
+pub mod run;
 pub mod schema;
 pub mod selection;
 pub mod selectors;

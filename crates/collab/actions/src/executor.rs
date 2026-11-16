@@ -277,6 +277,16 @@ fn envelope_for(
     } else {
         inverse_as(doc, action, committing)
     };
+    let timestamp = tilo_clock::unix_now_i64();
+    // A person setting the same item again with the same verb, right after
+    // they last did, continues that run: undo takes it back and History
+    // lists it as one ([`crate::run`]).
+    if compensation.is_none()
+        && let Some(actor) = actor.as_deref()
+        && let Some(gesture) = crate::run::continued_gesture(doc, actor, &context, timestamp)
+    {
+        context.gesture = Some(gesture);
+    }
     // Only what undo adds is bounded hard: the action itself is recorded
     // when it fits the budget, and travels in the envelope anyway.
     if let Some(compensation) = &compensation
@@ -296,7 +306,7 @@ fn envelope_for(
         id,
         action: encoded,
         base_heads: base.iter().map(|h| h.0).collect(),
-        timestamp: tilo_clock::unix_now_i64(),
+        timestamp,
         locus: action.locus(),
         actor,
         context,

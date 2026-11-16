@@ -1,55 +1,71 @@
-//! A person typing in one field is one change in History: the keystrokes of
-//! a formula, a title or a paragraph, however many words and undo steps
-//! they took, are one row until the person stops.
+//! A person typing in one field, or setting one value again and again, is
+//! one change in History: the keystrokes of a formula, a title or a
+//! paragraph, however many words and undo steps they took, are one row
+//! until the person stops; so are the calls of a verb a run of setting one
+//! item's value made ([`tilo_actions::run`]).
 //!
-//! Undo keeps its own, finer steps (a word at a time): this decides only
-//! what History lists as one change. A change continues its author's typing
-//! when it is a typing edit (a text replacement or splice made as part of a
-//! gesture, by a person) of the same field as that author's previous change,
-//! made within [`TYPING_PAUSE_MS`] of it. Any other change by the author (an
-//! edit elsewhere, a verb, a version they named) ends the typing; another
-//! person's changes in between do not. Every input is in the change itself,
-//! so every peer, and every reader of the log (the toolkit's `HistorySource`
-//! rows, restoring one row's changes), finds the same runs.
+//! Undo keeps its own, finer steps for typing (a word at a time): this
+//! decides only what History lists as one change. A change continues its
+//! author's typing when it is a typing edit (a text replacement or splice
+//! made as part of a gesture, by a person) of the same field as that
+//! author's previous change, made within [`TYPING_PAUSE_MS`] of it. A run of
+//! setting a value is decided as it is written: its calls share a gesture,
+//! the step undo takes back, so History joins the calls of one verb on one
+//! item that share one. Any other change by the author (an edit elsewhere,
+//! another verb, a version they named) ends the run; another person's
+//! changes in between do not end typing. Every input is in the change
+//! itself, so every peer, and every reader of the log (the toolkit's
+//! `HistorySource` rows, restoring one row's changes), finds the same runs.
 
 use std::collections::HashMap;
 
-use tilo_actions::{ActionContext, Did, EditOp, PathStep};
+use tilo_actions::{ActionContext, ActionId, ActionKey, Did, EditOp, PathStep};
 
-/// How long a person may stop typing in a field and still be writing the
-/// same thing: long enough to think through the rest of a formula or a
-/// sentence, short enough that coming back to the field later is a change
-/// of its own.
-pub const TYPING_PAUSE_MS: i64 = 30_000;
+pub use tilo_actions::run::TYPING_PAUSE_MS;
+use tilo_actions::run::within_pause;
 
-/// The field a change typed into, when it is a person's typing.
+/// What a change runs on in: the field a person typed into, or the run of
+/// setting one item's value with a verb.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[doc(hidden)]
-pub struct TypedField {
-    ty: String,
-    field: String,
-    path: Vec<PathStep>,
+pub enum TypedField {
+    Field {
+        ty: String,
+        field: String,
+        path: Vec<PathStep>,
+    },
+    Setting {
+        action: ActionKey,
+        item: String,
+        gesture: ActionId,
+    },
 }
 
 impl TypedField {
-    /// The field `context`'s change typed into: a text replacement or
-    /// splice made as part of a gesture by a person. A change that is a step
-    /// of its own (an agent's edit, a paste through a verb) types nothing.
+    /// What `context`'s change runs on in: the field of a text replacement
+    /// or splice made as part of a gesture by a person, or the verb, item
+    /// and gesture of a person's call setting an item's value. A change that
+    /// is a step of its own (an agent's edit, a paste through a verb) runs
+    /// on in nothing.
     pub fn of(context: &ActionContext) -> Option<Self> {
-        context.gesture?;
-        if context
-            .invoker
-            .as_ref()
-            .is_some_and(|invoker| !invoker.acting.is_person())
-        {
+        if let Some((call, item)) = tilo_actions::run::setting(context) {
+            return Some(Self::Setting {
+                action: call.action.clone(),
+                item: item.to_owned(),
+                gesture: context.gesture?,
+            });
+        }
+        if !tilo_actions::run::by_a_person(context) {
             return None;
         }
         match context.what.as_ref()? {
-            Did::Edit(edit) if matches!(edit.op, EditOp::Replace | EditOp::Splice) => Some(Self {
-                ty: edit.ty.clone(),
-                field: edit.field.clone(),
-                path: edit.path.clone(),
-            }),
+            Did::Edit(edit) if matches!(edit.op, EditOp::Replace | EditOp::Splice) => {
+                Some(Self::Field {
+                    ty: edit.ty.clone(),
+                    field: edit.field.clone(),
+                    path: edit.path.clone(),
+                })
+            }
             _ => None,
         }
     }
@@ -115,13 +131,6 @@ impl<T> TypingRuns<T> {
     pub fn places_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.open.values_mut().map(|run| &mut run.at)
     }
-}
-
-/// Whether a change at `next` is within the pause of one at `previous`. A
-/// change committed without a time is no pause: splitting on it would split
-/// differently per peer.
-fn within_pause(previous: i64, next: i64) -> bool {
-    previous <= 0 || next <= 0 || next.saturating_sub(previous) <= TYPING_PAUSE_MS
 }
 
 #[cfg(test)]

@@ -10627,6 +10627,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-clock",
  "tilo-content",
  "tilo-desktop-model",
  "tilo-desktop-surface",

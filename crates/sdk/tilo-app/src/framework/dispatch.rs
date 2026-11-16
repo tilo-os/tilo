@@ -952,6 +952,22 @@ impl DispatchCore {
     }
 }
 
+/// The entry of the change `doc` committed since `before`, if it committed
+/// one.
+fn made_since(
+    doc: &ui_core::automerge::AutoCommit,
+    before: &[ChangeHash],
+) -> Option<tilo_actions::ActionContext> {
+    let heads = doc.committed_heads();
+    if heads == before {
+        return None;
+    }
+    let document = doc.committed_document();
+    heads
+        .into_iter()
+        .find_map(|head| tilo_actions::entry_of(document, head))
+}
+
 impl<R: Resource> Dispatcher<R> {
     /// What does not name the resource type.
     pub(crate) fn core(&self) -> &DispatchCore {
@@ -1787,6 +1803,8 @@ impl<R: Resource> Dispatcher<R> {
                 .borrow()
                 .as_ref()
                 .is_some_and(|(at, previous)| *at == serial && R::coalesces(previous, action));
+        let opened = self.core.gesture.get();
+        let before = edits.doc().committed_heads();
         let context = self.core.step_context(context, step, continues);
         let fallback = if !ui_core::local_document_action::input_is_active()
             || ui_core::local_document_action::has_invocation()
@@ -1802,7 +1820,22 @@ impl<R: Resource> Dispatcher<R> {
         if !step {
             return Ok(());
         }
-        let serial = self.core.stepped(continues, R::continuable(action));
+        // The executor writes a person's call that sets the same value again
+        // into the run it continues ([`tilo_actions::run`]): it is that
+        // run's step, which stays open for the next call.
+        let made = made_since(edits.doc(), &before);
+        let continues = continues
+            || made
+                .as_ref()
+                .is_some_and(|entry| opened.is_some() && entry.gesture == opened);
+        if continues {
+            self.core.gesture.set(opened);
+        }
+        let continuable = R::continuable(action)
+            || made
+                .as_ref()
+                .is_some_and(|entry| tilo_actions::run::setting(entry).is_some());
+        let serial = self.core.stepped(continues, continuable);
         *self.last.borrow_mut() = Some((serial, action.clone()));
         Ok(())
     }

@@ -77,6 +77,8 @@ mod slash_menu_focus;
 mod surface_receipts;
 #[path = "tab_nesting.rs"]
 mod tab_nesting;
+#[path = "title_run.rs"]
+mod title_run;
 #[path = "tree_operations.rs"]
 mod tree_operations;
 #[path = "two_peer_sync.rs"]

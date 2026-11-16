@@ -362,20 +362,21 @@ impl HistoryLog {
                     message => message.and_then(tilo_actions::ActionContext::from_change_message),
                 }
             };
-            let summary = if genesis {
-                crate::i18n::I18nManager::lookup_plain("history-genesis")
-            } else if framework == Some(tilo_actions::FrameworkChange::Transfer) {
-                crate::i18n::I18nManager::lookup_plain("history-moved")
-            } else {
-                // A change that names no finer action than the document (a
-                // window's direct edit, or one written before it could name
-                // any) says that, as an entry naming nothing does.
-                context
-                    .as_ref()
-                    .and_then(super::sentence::step_summary)
-                    .unwrap_or_else(|| {
-                        super::sentence::sentence(context.as_ref().unwrap_or(&Default::default()))
-                    })
+            let summary = |context: Option<&tilo_actions::ActionContext>| {
+                if genesis {
+                    crate::i18n::I18nManager::lookup_plain("history-genesis")
+                } else if framework == Some(tilo_actions::FrameworkChange::Transfer) {
+                    crate::i18n::I18nManager::lookup_plain("history-moved")
+                } else {
+                    // A change that names no finer action than the document (a
+                    // window's direct edit, or one written before it could name
+                    // any) says that, as an entry naming nothing does.
+                    context
+                        .and_then(super::sentence::step_summary)
+                        .unwrap_or_else(|| {
+                            super::sentence::sentence(context.unwrap_or(&Default::default()))
+                        })
+                }
             };
             let typed = context
                 .as_ref()
@@ -384,12 +385,19 @@ impl HistoryLog {
             if let Some(&mut row) = typing.continues(&logged.actor, typed.as_ref(), logged.time_ms)
             {
                 // The row is the run as of its newest change: what it now
-                // reads, when, and the version it restores to. It moves to
-                // where that change is in the log.
+                // reads, when, and the version it restores to, on the item
+                // as it was named when the run began ("Renamed Welcome to
+                // Road"). It moves to where that change is in the log.
                 let mut run = out.remove(row);
+                let mut context = context;
+                if let Some(context) = context.as_mut()
+                    && let Some(item) = run.context.as_mut().and_then(|first| first.item.take())
+                {
+                    context.item = Some(item);
+                }
                 run.id = logged.id;
                 run.timestamp = timestamp_from_ms(logged.time_ms);
-                run.summary = summary;
+                run.summary = summary(context.as_ref());
                 run.entry_kind = reading.entry_kind;
                 run.text_delta = run.text_delta.zip(reading.text_delta).map(
                     |((added, removed), (more, fewer))| {
@@ -419,7 +427,7 @@ impl HistoryLog {
                 entry_kind: reading.entry_kind,
                 artifact_kind: source.artifact_kind,
                 timestamp: timestamp_from_ms(logged.time_ms),
-                summary,
+                summary: summary(context.as_ref()),
                 text_delta: reading.text_delta,
                 // The scrubber re-derives state via `materialize_at` /
                 // `heads_for_entry` rather than cracking open a payload.
