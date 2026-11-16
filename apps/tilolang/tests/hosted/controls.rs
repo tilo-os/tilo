@@ -253,7 +253,7 @@ impl super::Session {
             Some(arguments),
             None,
         )
-        .unwrap_or_else(|| panic!("the door answered nothing of {identity}"))
+        .unwrap_or_else(|| panic!("the action API answered nothing of {identity}"))
 =======
         self.deliver(actor, doing.resource, doing.action, Some(arguments), None)
             .unwrap_or_else(|| panic!("the API answered nothing of {identity}"))
