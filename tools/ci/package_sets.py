@@ -68,6 +68,27 @@ WASM_ALSO = {
 }
 
 
+# The crate the web build compiles into the module a browser loads: the page.
+PAGE_ENTRY = "tilo-web-desktop"
+
+
+def page_closure(packages: dict[str, dict]) -> set[str]:
+    """The workspace crates the page compiles for the browser: its entry, and every
+    workspace crate the entry reaches through normal dependencies. A change to any
+    of them can break the page while every crate still builds natively."""
+    if PAGE_ENTRY not in packages:
+        return set()
+    reached = {PAGE_ENTRY}
+    pending = [PAGE_ENTRY]
+    while pending:
+        for dependency in packages[pending.pop()].get("dependencies", ()):
+            name = dependency.get("name")
+            if dependency.get("kind") is None and name in packages and name not in reached:
+                reached.add(name)
+                pending.append(name)
+    return reached
+
+
 def wasm_crates(packages: dict[str, dict]) -> set[str]:
     """Crates whose check and clippy also build their library for wasm32-unknown-unknown:
     the browser crates, and those the page runtime compiles for the browser through them."""

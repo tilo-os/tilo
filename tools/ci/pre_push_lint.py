@@ -41,7 +41,7 @@ from typing import Iterable, NamedTuple
 TOOLS = Path(__file__).resolve().parents[1]
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
-from ci.package_sets import wasm_crates
+from ci.package_sets import PAGE_ENTRY, page_closure, wasm_crates
 from ci.workspace_graph import cargo_metadata, owner_for, package_maps
 
 WASM_TARGET = "wasm32-unknown-unknown"
@@ -185,12 +185,20 @@ def rust_changes(files: set[str]) -> set[str]:
 
 
 def touched(root: Path, files: set[str]) -> tuple[list[str], list[str]]:
-    """The packages owning the changed files, and which of them build for the page."""
+    """The packages owning the changed files, and what is linted for the page.
+
+    That is each touched package that builds for the page, and the page itself
+    when a touched package is one the page compiles: a change made and linted
+    only natively - a field or a function the page's own code still names under
+    its cfg - otherwise breaks the page with every touched crate green.
+    """
     metadata = cargo_metadata(root)
     packages, by_dir = package_maps(metadata, root)
     owners = {owner_for(path, by_dir) for path in files} & set(packages)
-    web = wasm_crates(packages)
-    return sorted(owners), sorted(owners & web)
+    web = owners & wasm_crates(packages)
+    if owners & page_closure(packages):
+        web.add(PAGE_ENTRY)
+    return sorted(owners), sorted(web)
 
 
 def lint_runs(native: list[str], web: list[str], formatting: bool) -> list[Lint]:

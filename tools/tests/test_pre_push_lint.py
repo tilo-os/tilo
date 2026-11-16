@@ -98,6 +98,8 @@ class PrePushLintTests(unittest.TestCase):
         self.stub("rustup", RUSTUP_STUB)
         self.stub("drop-in", DROP_IN_STUB)
         self.log = self.temporary / "hook.log"
+        # Whether the fixture has a page entry that compiles the host crate.
+        self.page_entry = False
         self.commit("test: a workspace of one host crate and one page crate")
         self.base = self.head()
 
@@ -133,6 +135,11 @@ class PrePushLintTests(unittest.TestCase):
             {"name": "wasm-bindgen", "manifest_path": str(self.root / "fake-binding/Cargo.toml"),
              "dependencies": []},
         ]
+        if self.page_entry:
+            packages.append(
+                {"name": "tilo-web-desktop", "manifest_path": str(self.root / "page/Cargo.toml"),
+                 "dependencies": [{"name": "fixture-web", "kind": None, "path": "web"},
+                                  {"name": "fixture-native", "kind": None, "path": "native"}]})
         return json.dumps({"packages": packages})
 
     def environment(self, page=True, status=0, sleep=0, drop_in=False, unformatted=False) -> dict:
@@ -199,6 +206,19 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(len(started), 2)
         self.assertLess(max(started), min(ended), "both lints must start before either finishes")
         self.assertIn("for the page", result.stderr)
+
+    def test_a_host_crate_the_page_compiles_lints_the_page_too(self):
+        # A crate with no wasm-bindgen of its own that the page still compiles:
+        # a change linted only natively broke the page while it stayed green.
+        self.page_entry = True
+        self.write("native/src/lib.rs", LIB.format(answer=44))
+        self.commit("feat: answer 44")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(self.calls()), sorted([
+            NATIVE_CLIPPY,
+            "clippy --locked --target wasm32-unknown-unknown -p tilo-web-desktop -- -D warnings",
+        ]))
 
     def test_a_page_build_is_skipped_without_its_target(self):
         self.write("web/src/lib.rs", LIB.format(answer=12))
