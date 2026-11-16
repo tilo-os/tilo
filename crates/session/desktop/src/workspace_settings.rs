@@ -279,9 +279,8 @@ pub fn expiry_label(expiry: Expiry) -> String {
 /// grantor. People and agents are named as the People pane names them; the viewer is "you".
 pub fn granted_by_label(cap: &CapOverride, ws: &Workspace, local_user: &str) -> Option<String> {
     cap.granted_by.as_ref().map(|who| match who {
-        MemberId::Person(id) | MemberId::Agent(id) if id == local_user => {
-            t("workspace-settings-granted-by-you")
-        }
+        MemberId::Person(id) if id == local_user => t("workspace-settings-granted-by-you"),
+        MemberId::Agent(id) if id == local_user => t("workspace-settings-granted-by-you"),
         MemberId::Person(_) => t_args(
             "workspace-settings-granted-by-person",
             &[("id", member_name_or_short_id(ws, who).into())],
@@ -905,7 +904,7 @@ fn classify_grantee(grantee: &Grantee) -> GrantSubject {
     match grantee {
         Grantee::Member(MemberId::Person(id)) => GrantSubject {
             kind: SubjectKind::Member,
-            id: id.clone(),
+            id: id.as_str().to_owned(),
         },
         Grantee::Member(MemberId::Agent(id) | MemberId::Bot(id)) => GrantSubject {
             kind: SubjectKind::Agent,

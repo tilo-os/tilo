@@ -1534,7 +1534,7 @@ impl PresenceCtx {
 
     fn kind_label(&self, user: &MemberId, name: &str) -> String {
         if let MemberId::Person(person) = user {
-            return self.labels.label(person, name);
+            return self.labels.label(person.as_str(), name);
         }
         // Whom software acts for: "Claude for you", "Claude for Ada". A person the roster has not
         // named yet is left out rather than shown as their raw key.

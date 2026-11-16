@@ -38,6 +38,7 @@ mod grant;
 mod kind;
 mod member;
 mod path;
+mod person;
 pub mod roles;
 pub mod share;
 mod standing;
@@ -73,10 +74,9 @@ pub fn session_answers<'g>(
 
 pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, Role};
 pub use kind::{ActionKind, KindSet};
-pub use member::{
-    Acting, Actor, AgentSessionId, AutomationId, MemberId, ResourceId, person_root, same_person,
-};
+pub use member::{Acting, Actor, AgentSessionId, AutomationId, MemberId, ResourceId};
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
+pub use person::{PersonId, PersonIdError};
 pub use roles::{Preset, PresetError, Rule};
 pub use standing::Standing;
 pub use workspace::{Change, Refusal, WorkspacePolicy};

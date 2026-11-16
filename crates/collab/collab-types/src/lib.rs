@@ -118,7 +118,7 @@ pub use document_transfer::{
     MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
 };
 pub use identity::{AttestationId, AvatarBytes};
-pub use member::{Member, Person, PersonId, assigned_colour};
+pub use member::{Member, Person, assigned_colour};
 pub use mls_governance::{
     JoinMaterial, Joining, MAX_COMMIT_DEVICES, MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION,
     MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceError, MlsGovernanceFrame,
@@ -145,7 +145,7 @@ pub use redaction::{
     encode_redact_payload, hash_target_op, parse_redact_payload,
 };
 pub use role::{ArtifactKind, OpKind, Role};
-pub use tilo_action_policy::MemberId;
+pub use tilo_action_policy::{MemberId, PersonId, PersonIdError};
 pub use validator::{
     DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_admitted_inbound_op,
     validate_replayed_inbound_op,

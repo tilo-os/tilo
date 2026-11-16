@@ -44,7 +44,7 @@ impl Standing {
     #[must_use]
     pub fn person(
         policy: impl Into<std::sync::Arc<WorkspacePolicy>>,
-        person: impl Into<String>,
+        person: impl Into<crate::PersonId>,
     ) -> Self {
         Self::new(policy, Acting::person(person))
     }

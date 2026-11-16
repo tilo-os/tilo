@@ -483,7 +483,8 @@ impl Replica {
             .by
             .member_id()
             .cloned()
-            .unwrap_or_else(|| ui::tilo_resource::MemberId::person(participant));
+            .or_else(|| ui::tilo_resource::MemberId::parse(participant))
+            .unwrap_or_else(|| ui::tilo_resource::MemberId::person(""));
         let (checkout, bytes, created) = seeded(definition, kind, workspace, &creator, seed)?;
         let opening = AttachedView::opening(definition, workspace, checkout, bytes)
             .for_invoker(&invoker)

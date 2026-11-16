@@ -51,7 +51,7 @@ pub struct BrokerActor {
 
 impl BrokerActor {
     #[must_use]
-    pub fn person(id: impl Into<String>) -> Self {
+    pub fn person(id: impl Into<tilo_action_policy::PersonId>) -> Self {
         Self::of_member(MemberId::person(id))
     }
 

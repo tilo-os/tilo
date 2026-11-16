@@ -88,8 +88,8 @@ pub struct NewIssue {
     /// Where it starts; Backlog without
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<Status>,
-    /// person:<id>, agent:<id>, or outside:<name> for someone not in the
-    /// workspace yet
+    /// A person's root key, agent:<id>, or outside:<name> for someone not in
+    /// the workspace yet
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
     /// The page it is read at elsewhere, when it was written from one
@@ -354,7 +354,7 @@ pub struct Issue {
     pub status: Status,
     /// Assignee
     ///
-    /// Whom the issue is assigned to: `person:<id>`, `agent:<id>`, or
+    /// Whom the issue is assigned to: a person's root key, `agent:<id>`, or
     /// `outside:<name>` for someone who has not joined the workspace yet
     /// ([`person_assignee`], [`agent_assignee`], [`outside_assignee`]).
     /// Written whole, so two
@@ -472,27 +472,44 @@ impl Issue {
     pub fn assigned_agent(&self) -> Option<&str> {
         self.assignee
             .as_ref()
-            .filter(|assignee| assignee.0.starts_with(AGENT_PREFIX))
+            .filter(|assignee| matches!(assignee_parts(&assignee.0), Some((Assignee::Agent, _))))
             .map(|assignee| assignee.0.as_str())
     }
 
     /// The member the issue is assigned to: a person or an agent.
     #[must_use]
     pub fn assigned_member(&self) -> Option<MemberId> {
-        let assignee = &self.assignee.as_ref()?.0;
-        assignee
-            .strip_prefix(PERSON_PREFIX)
-            .map(MemberId::person)
-            .or_else(|| assignee.strip_prefix(AGENT_PREFIX).map(MemberId::agent))
+        match self
+            .assignee
+            .as_ref()
+            .and_then(|assignee| assignee_parts(&assignee.0))?
+        {
+            (Assignee::Person, id) => Some(MemberId::person(id)),
+            (Assignee::Agent, id) => Some(MemberId::agent(id)),
+            (Assignee::Outside, _) => None,
+        }
+    }
+
+    /// The person the issue is assigned to, by their root key.
+    #[must_use]
+    pub fn assigned_person(&self) -> Option<&str> {
+        self.assigned(Assignee::Person)
     }
 
     /// The name of someone outside the workspace the issue is assigned to,
     /// until they join.
     #[must_use]
     pub fn assigned_outsider(&self) -> Option<&str> {
+        self.assigned(Assignee::Outside)
+    }
+
+    /// The id or name the assignee names, when it names `kind`.
+    fn assigned(&self, kind: Assignee) -> Option<&str> {
         self.assignee
             .as_ref()
-            .and_then(|assignee| assignee.0.strip_prefix(OUTSIDE_PREFIX))
+            .and_then(|assignee| assignee_parts(&assignee.0))
+            .filter(|(named, _)| *named == kind)
+            .map(|(_, id)| id)
     }
 
     /// When the issue shows it was written: when it was written where it
@@ -517,23 +534,35 @@ impl Message {
     }
 }
 
-const PERSON_PREFIX: &str = "person:";
 const AGENT_PREFIX: &str = "agent:";
 const OUTSIDE_PREFIX: &str = "outside:";
 
-/// What an assignee may be, as a refusal says it.
-pub const ASSIGNEE_FORMS: &str = "an assignee is person:<id>, agent:<id>, or outside:<name> for someone not in the workspace yet";
+/// What an assignee may be, as a refusal says it: a person's root key, an
+/// `agent:<id>`, or `outside:<name>` for someone not in the workspace yet.
+pub const ASSIGNEE_FORMS: &str = "an assignee is a person's root key, agent:<id>, or outside:<name> for someone not in the workspace yet";
 
-fn assignee_parts(assignee: &str) -> Option<(&'static str, &str)> {
-    let (prefix, id) = if let Some(id) = assignee.strip_prefix(PERSON_PREFIX) {
-        (PERSON_PREFIX, id)
-    } else if let Some(name) = assignee.strip_prefix(OUTSIDE_PREFIX) {
-        (OUTSIDE_PREFIX, name)
+/// What an assignee value names.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Assignee {
+    /// A person, by their bare root key: the one spelling a person is stored
+    /// under, so `person:<root>` names nobody.
+    Person,
+    Agent,
+    Outside,
+}
+
+/// The kind `assignee` names, and the id or name inside it, when it names one.
+fn assignee_parts(assignee: &str) -> Option<(Assignee, &str)> {
+    let (kind, id) = if let Some(name) = assignee.strip_prefix(OUTSIDE_PREFIX) {
+        (Assignee::Outside, name)
+    } else if let Some(id) = assignee.strip_prefix(AGENT_PREFIX) {
+        (Assignee::Agent, id)
     } else {
-        (AGENT_PREFIX, assignee.strip_prefix(AGENT_PREFIX)?)
+        tilo_resource::PersonId::parse(assignee).ok()?;
+        (Assignee::Person, assignee)
     };
     let fits = id.chars().count() <= tilo_resource::origin::MAX_ORIGIN_CHARS;
-    (!id.trim().is_empty() && id.trim() == id && fits).then_some((prefix, id))
+    (!id.trim().is_empty() && id.trim() == id && fits).then_some((kind, id))
 }
 
 /// The assignee value naming someone outside the workspace, by `name`: whom
@@ -562,8 +591,8 @@ pub fn checked_assignee(assignee: Option<String>) -> Result<Option<Atom>, Refusa
 
 /// The assignee value naming the person `id`.
 #[must_use]
-pub fn person_assignee(id: &str) -> Atom {
-    Atom(format!("{PERSON_PREFIX}{id}"))
+pub fn person_assignee(id: impl Into<tilo_resource::PersonId>) -> Atom {
+    Atom(id.into().as_str().to_owned())
 }
 
 /// The assignee value naming an agent. An agent id already carries its

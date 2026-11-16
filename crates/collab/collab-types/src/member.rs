@@ -4,46 +4,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use tilo_action_policy::MemberId;
+use tilo_action_policy::{MemberId, PersonId};
 
 use crate::identity::AvatarBytes;
 use crate::presence::PresenceHue;
 use crate::role::Role;
-
-/// A person, by the lowercase hex of their root public key.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct PersonId(pub String);
-
-impl PersonId {
-    #[must_use]
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for PersonId {
-    fn from(id: String) -> Self {
-        Self(id)
-    }
-}
-
-impl From<&str> for PersonId {
-    fn from(id: &str) -> Self {
-        Self(id.to_owned())
-    }
-}
-
-impl std::fmt::Display for PersonId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
 
 /// A person as a surface shows them, in the colour they wear there.
 ///
@@ -52,6 +17,7 @@ impl std::fmt::Display for PersonId {
 /// decode.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Person {
+    /// Them: their bare root key, the one spelling every record stores.
     pub id: PersonId,
     pub name: String,
     #[serde(default)]
@@ -89,7 +55,7 @@ impl Person {
 
     #[must_use]
     pub fn member_id(&self) -> MemberId {
-        MemberId::Person(self.id.0.clone())
+        MemberId::Person(self.id.clone())
     }
 }
 
@@ -197,9 +163,7 @@ impl Member {
     /// Their root key, when they are a person: the hex of their id, decoded.
     #[must_use]
     pub fn root(&self) -> Option<[u8; 32]> {
-        let mut root = [0; 32];
-        hex::decode_to_slice(self.id.person_id()?, &mut root).ok()?;
-        Some(root)
+        self.id.as_person()?.root()
     }
 
     /// [`Self::colour`] as a roster's wire carries it: the sRGB colour packed

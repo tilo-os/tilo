@@ -1855,7 +1855,21 @@ pub fn install_channel_settings() {
 /// more than one identity must not be frozen into the first one.
 pub fn local_user_id() -> collab_types::MemberId {
     let id = resolve_local_user_id();
-    collab_types::MemberId::parse(&id).unwrap_or_else(|| collab_types::MemberId::person(id))
+    collab_types::MemberId::parse(&id).unwrap_or_else(|| {
+        // An override that names no person (a prefixed or empty id) lands on
+        // the last rung the ladder has: the local account, not a subject no
+        // roster knows.
+        collab_types::MemberId::person(local_account())
+    })
+}
+
+/// The OS account this process runs as, or `local` on a machine without one.
+fn local_account() -> String {
+    crate::host::environment()
+        .identity
+        .account_name
+        .clone()
+        .unwrap_or_else(|| "local".to_owned())
 }
 
 fn resolve_local_user_id() -> String {

@@ -392,22 +392,20 @@ tilo_test_env::scenario! {
             check_appearances(&by_bot, Some(&MemberId::bot("other"))),
             Err(ReceiptRefusal::Appearance { .. })
         ));
-        // An invoker whose key spells a bot's actor id without being one is refused.
-        let posing = change_by(
-            tilo_actions::ActionInvoker::person("bot:7f1c").with_appearance(Some(alice.clone())),
+        // A key that spells a bot's actor id is no person at all: the id is
+        // refused where it is made, so no receipt can claim to be one.
+        assert_eq!(
+            tilo_action_policy::PersonId::parse("bot:7f1c"),
+            Err(tilo_action_policy::PersonIdError::Prefixed)
         );
-        assert!(matches!(
-            check_appearances(&posing, Some(&MemberId::bot("7f1c"))),
-            Err(ReceiptRefusal::Appearance { .. })
-        ));
         let by_person = change_by(
-            tilo_actions::ActionInvoker::person("person:mallory").with_appearance(Some(alice)),
+            tilo_actions::ActionInvoker::person("mallory").with_appearance(Some(alice)),
         );
         assert!(matches!(
             check_appearances(&by_person, Some(&MemberId::bot("7f1c"))),
             Err(ReceiptRefusal::Appearance { .. })
         ));
-        let plain = change_by(tilo_actions::ActionInvoker::person("person:ada"));
+        let plain = change_by(tilo_actions::ActionInvoker::person("ada"));
         assert_eq!(check_appearances(&plain, None), Ok(()));
     }
 

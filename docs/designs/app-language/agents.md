@@ -123,7 +123,7 @@ opens them. The task host is not an app, so it gets its own admission instead of
   task's search from records takes the same path. Fields read as the app's surface types them
   (`Option<Text>` as the text it holds or `.none`, a case of the app's enum, a set as its
   members), and what a query lists is what the app's directory lists under its own record, so
-  `find(tasks.Issue).filter(i -> i.assignee == "person:ada")` asks the app for the issues it
+  `find(tasks.Issue).filter(i -> i.assignee == "ada")` asks the app for the issues it
   lists and for each one it keeps. Two things a native app does not answer yet: `grep` over its
   text (its record's text stays in the app, and a program searches the resources its directory
   lists by their fields) and `history` (the task has no change log of an app's own record).

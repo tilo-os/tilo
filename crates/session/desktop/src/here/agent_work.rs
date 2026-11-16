@@ -88,12 +88,10 @@ pub(super) struct AgentWork {
 }
 
 impl HereState {
-    /// An agent acting for `for_person` (a person's root key, either spelling) narrated an action:
+    /// An agent acting for `for_person` (a person's root key) narrated an action:
     /// where it works is shown again on the next look, even when it did not move.
     pub fn note_agent_acted(&mut self, for_person: &str) {
-        let own = self
-            .own_user()
-            .is_some_and(|own| same_person(own, for_person));
+        let own = self.own_user().is_some_and(|own| own == for_person);
         if own {
             self.agent_work.acted = true;
         }
@@ -114,10 +112,7 @@ impl HereState {
         let own = self.own_user()?.to_owned();
         let mut news = None;
         for person in people.iter().filter(|person| person.agent) {
-            let theirs = person
-                .user
-                .as_deref()
-                .is_some_and(|user| same_person(user, &own));
+            let theirs = person.user.as_deref().is_some_and(|user| user == own);
             if !theirs {
                 continue;
             }
@@ -142,11 +137,6 @@ impl HereState {
             .retain(|publisher, _| here.contains(&publisher.as_str()));
         news
     }
-}
-
-/// Whether two root keys name the same person, in either spelling and either case of hex.
-fn same_person(a: &str, b: &str) -> bool {
-    tilo_action_policy::person_root(a).eq_ignore_ascii_case(tilo_action_policy::person_root(b))
 }
 
 #[cfg(test)]
@@ -197,7 +187,7 @@ mod tests {
         assert_eq!(here.take_own_agent_work(&at(1)), Some(WorkPlace::Window(1)));
         assert_eq!(here.take_own_agent_work(&at(1)), None, "it did not move");
         assert_eq!(here.take_own_agent_work(&at(2)), Some(WorkPlace::Window(2)));
-        here.note_agent_acted(&format!("person:{}", ADA.to_uppercase()));
+        here.note_agent_acted(ADA);
         assert!(here.own_agent_acted());
         assert_eq!(
             here.take_own_agent_work(&at(2)),

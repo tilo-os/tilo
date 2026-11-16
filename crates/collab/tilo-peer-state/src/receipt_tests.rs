@@ -698,7 +698,7 @@ tilo_test_env::scenario! {
     // bot allowed it may, is refused by every receiver.
     {
         let (mut peer, key, guest) = workspace_with(Role::Editor);
-        let impostor = tilo_actions::ActionInvoker::person("person:guest").with_appearance(Some(
+        let impostor = tilo_actions::ActionInvoker::person("guest").with_appearance(Some(
             tilo_actions::Appearance::new("Owner", None, None).unwrap(),
         ));
         let edited = guest_write_by(
@@ -715,7 +715,7 @@ tilo_test_env::scenario! {
             &key,
             |doc| doc.put(ROOT, "value", "y").unwrap(),
             edit_value(),
-            tilo_actions::ActionInvoker::person("person:guest"),
+            tilo_actions::ActionInvoker::person("guest"),
         );
         receive(&mut peer, &guest, plain).expect("an editor's own edit is admitted");
     }

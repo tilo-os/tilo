@@ -3,7 +3,7 @@
 use super::*;
 
 fn person(name: &str, handle: &str) -> Candidate {
-    Candidate::reference(name, format!("@{name}"), format!("person:{handle}")).with_handle(handle)
+    Candidate::reference(name, format!("@{name}"), handle.to_string()).with_handle(handle)
 }
 
 fn names(rows: &[Entry]) -> Vec<String> {
@@ -159,14 +159,14 @@ tilo_test_env::scenario! {
         let shown = rows(&source, "m");
         let milan = shown
             .iter()
-            .position(|e| e.key() == Some("person:milan"))
+            .position(|e| e.key() == Some("milan"))
             .unwrap_or_default();
         assert_eq!(milan, 1);
         let next = rows(&source, "mil");
-        let (next, selected) = keep_place(next, Some(("person:milan", milan)));
+        let (next, selected) = keep_place(next, Some(("milan", milan)));
         assert_eq!(selected, Some(1));
-        assert_eq!(next[1].key(), Some("person:milan"), "Milan stays second");
-        let (_, selected) = keep_place(rows(&source, "jo"), Some(("person:milan", 1)));
+        assert_eq!(next[1].key(), Some("milan"), "Milan stays second");
+        let (_, selected) = keep_place(rows(&source, "jo"), Some(("milan", 1)));
         assert_eq!(selected, Some(0));
     }
 

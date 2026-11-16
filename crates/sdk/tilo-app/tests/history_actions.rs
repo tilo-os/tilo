@@ -392,7 +392,7 @@ tilo_test_env::scenario! {
         let mut app = TestApp::<BoardApp>::new().unwrap();
         for (actor, text) in [
             (tilo_actions::ActionInvoker::agent("clipboard-helper"), "agent card"),
-            (tilo_actions::ActionInvoker::person("person:owner"), "person card"),
+            (tilo_actions::ActionInvoker::person("owner"), "person card"),
         ] {
             app.call_by(
                 actor,
@@ -412,7 +412,7 @@ tilo_test_env::scenario! {
             .expect("history publishes the exact invoker");
         assert_eq!(author, json!({"member": {"agent": "clipboard-helper"}}));
         app.call_by(
-            tilo_actions::ActionInvoker::person("person:owner"),
+            tilo_actions::ActionInvoker::person("owner"),
             "test.board",
             "undo",
             json!({"by": author}),
@@ -420,7 +420,7 @@ tilo_test_env::scenario! {
         .unwrap();
         assert_eq!(cards(&app), ["person card"]);
         let undo = newest(&mut app);
-        assert_eq!(undo["by"], "person:owner", "{undo}");
+        assert_eq!(undo["by"], "owner", "{undo}");
         assert_eq!(undo["what"]["op"], "undo", "{undo}");
     }
 
@@ -592,7 +592,7 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();
         let agent = tilo_actions::Acting::agent("claude")
-            .acting_for(tilo_actions::Acting::person("person:ada"));
+            .acting_for(tilo_actions::Acting::person("ada"));
         app.call_by(
             tilo_actions::ActionInvoker::admitted(&agent),
             "test.board",
@@ -608,12 +608,12 @@ tilo_test_env::scenario! {
         let invoker = entry.invoker.expect("attributed");
         assert_eq!(invoker.acting.by, MemberId::agent("claude").into());
         assert!(invoker.acting.is_agent());
-        assert_eq!(invoker.acting.acted_for_person(), Some("person:ada"));
+        assert_eq!(invoker.acting.acted_for_person(), Some("ada"));
         let listed = newest(&mut app);
         assert_eq!(listed["actor"]["by"]["member"]["agent"], "claude", "{listed}");
         assert_eq!(
             listed["actor"]["for"][0]["by"]["member"]["person"],
-            "person:ada",
+            "ada",
             "{listed}"
         );
     }

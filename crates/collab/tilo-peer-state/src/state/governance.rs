@@ -1014,7 +1014,7 @@ impl PeerGovernanceMut<'_> {
                 Grantee::Member(tilo_action_policy::MemberId::Person(person)) => {
                     Some(tilo_action_policy::roles::administrator_grant(
                         workspace,
-                        person,
+                        person.as_str(),
                         grant.granted_by.clone(),
                     ))
                 }

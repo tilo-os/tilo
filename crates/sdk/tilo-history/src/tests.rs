@@ -238,7 +238,7 @@ fn a_task_names_the_person_who_acted_through_it() {
 #[test]
 fn actors_are_named_with_the_person_they_act_for() {
     let reader = Reader::new("en-US");
-    let agent = ActionInvoker::agent("claude").acting_for("person:ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     assert!(agent.acting.is_agent());
     assert_eq!(
         reader.actor(&Who {

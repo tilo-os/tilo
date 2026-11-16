@@ -18,7 +18,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use tilo_action_policy::{MemberId, Standing, person_root, same_person};
+use tilo_action_policy::{MemberId, Standing};
 use tilo_app::framework::WorkspaceRecord;
 use tilo_app::tilo_workspace_agent::{
     OWNER, WorkspaceAgents as Record, workspace_agents as actions,
@@ -167,7 +167,7 @@ impl Agents {
         let agents: Vec<sheet::Agent> = state
             .active()
             .map(|agent| {
-                let mine = same_person(&agent.keeper, me.id());
+                let mine = agent.keeper == me.id();
                 sheet::Agent {
                     key: agent.id.0.clone(),
                     name: agent.name.clone(),
@@ -298,8 +298,7 @@ impl Agents {
         let kept = state.get(&Id::from_raw(agent.to_owned()))?;
         let name = kept.name.clone();
         let status = keeper_line(names, workspace, record, &kept.keeper);
-        let tag = same_person(&kept.keeper, record.me().id())
-            .then(|| t("workspace-settings-agent-yours"));
+        let tag = (kept.keeper == record.me().id()).then(|| t("workspace-settings-agent-yours"));
         // What the turn admits it to, before the answers the person set for its apps: the cap's
         // grants, narrowed by the bound its record keeps.
         let admission = tilo_action_policy::roles::agent_grants(
@@ -313,12 +312,12 @@ impl Agents {
         // What an agent plans with is its keeper's to choose, alone, and the record holds the
         // choice.
         let offered = agent_access::agent_models(config, agent);
-        let keeps = same_person(&kept.keeper, record.me().id());
+        let keeps = kept.keeper == record.me().id();
         let keeper = domain::member_row_name(
             names,
             workspace,
             record.me().id(),
-            &MemberId::person(person_root(&kept.keeper)),
+            &MemberId::person(&kept.keeper),
         );
         let limit = limit_of(kept, keeps, &keeper);
         let note = if keeps {
@@ -519,7 +518,7 @@ impl Agents {
                 continue;
             };
             taken.push(name.as_str().to_owned());
-            let model = same_person(&keeper, person)
+            let model = (keeper == *person)
                 .then(|| {
                     agent_access::agent_models(config, &agent)
                         .and_then(|models| models.chosen.map(|chosen| chosen.key()))
@@ -553,7 +552,7 @@ impl Agents {
     ) {
         let state = record.get();
         for agent in state.active() {
-            if !same_person(&agent.keeper, person) {
+            if agent.keeper != *person {
                 continue;
             }
             let held = agent_access::agent_models(config, &agent.id.0)
@@ -623,9 +622,7 @@ impl Agents {
         let state = record.get();
         state
             .active()
-            .find(|agent| {
-                same_person(&agent.keeper, person) && agent.mcp_client.as_deref() == Some(client)
-            })
+            .find(|agent| agent.keeper == *person && agent.mcp_client.as_deref() == Some(client))
             .map(|agent| (agent.id.0.clone(), agent.name.clone()))
     }
 
@@ -798,7 +795,7 @@ fn keeper_line(
     record: &WorkspaceRecord<Record>,
     keeper: &str,
 ) -> String {
-    if same_person(keeper, record.me().id()) {
+    if keeper == record.me().id() {
         return t("workspace-settings-agent-keeper-you");
     }
     t_args(
@@ -809,7 +806,7 @@ fn keeper_line(
                 names,
                 workspace,
                 record.me().id(),
-                &MemberId::person(person_root(keeper)),
+                &MemberId::person(keeper),
             )
             .into(),
         )],

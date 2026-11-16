@@ -920,10 +920,10 @@ mod tests {
         assert_eq!(shown_by(&bot_itself), None, "a bot posting as itself");
         let person = edit_by(
             &mut AutoCommit::new(),
-            ActionInvoker::person("person:ada").with_appearance(Some(shown)),
+            ActionInvoker::person("ada").with_appearance(Some(shown)),
         );
         assert_eq!(shown_by(&person), None, "only a bot shows another name");
-        let unnamed = edit_by(&mut AutoCommit::new(), ActionInvoker::person("person:ada"));
+        let unnamed = edit_by(&mut AutoCommit::new(), ActionInvoker::person("ada"));
         assert_eq!(shown_by(&unnamed), None);
     }
 

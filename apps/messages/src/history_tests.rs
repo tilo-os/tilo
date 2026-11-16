@@ -819,7 +819,7 @@ tilo_test_env::scenario! {
     // them: only theirs with this person, in each part's order, the person's as incoming.
     {
         let (me, peer) = ("aa", "bb");
-        let channel = "direct:person:aa|person:bb";
+        let channel = "direct:aa|bb";
         let route = routing::Route {
             person: Id::from_raw("bb"),
             association: Id::from_raw("tilo"),

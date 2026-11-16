@@ -4,7 +4,7 @@
 use crate::common::{todo_meta, validate};
 
 fn written(src: &str) -> Result<tilolang::CompiledView, Vec<tilolang::Diagnostic>> {
-    tilolang::compile_view_definition(src, "person:ada", &[todo_meta()])
+    tilolang::compile_view_definition(src, "ada", &[todo_meta()])
 }
 
 fn codes(src: &str) -> Vec<String> {
@@ -36,7 +36,7 @@ tilo_test_env::scenario! {
     {
         let src = "view hello() {\n    text(\"Hello\")\n}";
         let ada = written(src).unwrap();
-        let bo = tilolang::compile_view_definition(src, "person:bo", &[todo_meta()]).unwrap();
+        let bo = tilolang::compile_view_definition(src, "bo", &[todo_meta()]).unwrap();
         assert_ne!(ada.meta.app, bo.meta.app);
         assert_eq!(
             ada.meta.app,

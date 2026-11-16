@@ -3,19 +3,21 @@
 use serde::{Deserialize, Serialize};
 use tilo_app_id::AppId;
 
+use crate::person::PersonId;
+
 /// A person, agent or bot in a workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemberId {
-    /// A person, by the lowercase hex of their root public key.
-    Person(String),
+    /// A person, by their root public key ([`PersonId`]).
+    Person(PersonId),
     Agent(String),
     Bot(String),
 }
 
 impl MemberId {
     #[must_use]
-    pub fn person(id: impl Into<String>) -> Self {
+    pub fn person(id: impl Into<PersonId>) -> Self {
         Self::Person(id.into())
     }
 
@@ -33,7 +35,8 @@ impl MemberId {
     #[must_use]
     pub fn id(&self) -> &str {
         match self {
-            Self::Person(id) | Self::Agent(id) | Self::Bot(id) => id,
+            Self::Person(id) => id.as_str(),
+            Self::Agent(id) | Self::Bot(id) => id,
         }
     }
 
@@ -55,11 +58,17 @@ impl MemberId {
 
     /// The person this is, when it is one.
     #[must_use]
-    pub fn person_id(&self) -> Option<&str> {
+    pub fn as_person(&self) -> Option<&PersonId> {
         match self {
             Self::Person(id) => Some(id),
             Self::Agent(_) | Self::Bot(_) => None,
         }
+    }
+
+    /// The person this is, by their root key, when it is one.
+    #[must_use]
+    pub fn person_id(&self) -> Option<&str> {
+        self.as_person().map(PersonId::as_str)
     }
 
     #[must_use]
@@ -82,7 +91,7 @@ impl MemberId {
     #[must_use]
     pub fn actor_bytes(&self) -> Vec<u8> {
         match self {
-            Self::Person(id) => id.as_bytes().to_vec(),
+            Self::Person(id) => id.as_str().as_bytes().to_vec(),
             Self::Agent(id) => [b"agent:", id.as_bytes()].concat(),
             Self::Bot(id) => [b"bot:", id.as_bytes()].concat(),
         }
@@ -93,20 +102,20 @@ impl MemberId {
     #[must_use]
     pub fn key(&self) -> String {
         match self {
-            Self::Person(id) => id.clone(),
+            Self::Person(id) => id.as_str().to_owned(),
             Self::Agent(id) => format!("agent:{id}"),
             Self::Bot(id) => format!("bot:{id}"),
         }
     }
 
     /// The member [`Self::key`] spells.
+    ///
+    /// `None` for a key carrying a prefix this workspace does not know: a
+    /// person's id has none, so `person:<root>` names nobody.
     #[must_use]
     pub fn parse(key: &str) -> Option<Self> {
         fn nonempty(id: &str) -> Option<String> {
             (!id.is_empty()).then(|| id.to_owned())
-        }
-        if let Some(id) = key.strip_prefix("person:") {
-            return nonempty(id).map(Self::Person);
         }
         if let Some(id) = key.strip_prefix("agent:") {
             return nonempty(id).map(Self::Agent);
@@ -114,28 +123,17 @@ impl MemberId {
         if let Some(id) = key.strip_prefix("bot:") {
             return nonempty(id).map(Self::Bot);
         }
-        nonempty(key).map(Self::Person)
+        if key.is_empty() {
+            return None;
+        }
+        PersonId::parse(key).ok().map(Self::Person)
     }
-}
-
-/// A person's id however a record spells it: their root key, or `person:<root>` as grants, mentions
-/// and an agent's keeper carry it. Every rule that compares people or looks one up asks this, so
-/// one person is one member wherever an id came from.
-#[must_use]
-pub fn person_root(id: &str) -> &str {
-    id.strip_prefix("person:").unwrap_or(id)
-}
-
-/// Whether two ids name the same person, in either spelling ([`person_root`]).
-#[must_use]
-pub fn same_person(a: &str, b: &str) -> bool {
-    person_root(a) == person_root(b)
 }
 
 impl std::fmt::Display for MemberId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Person(id) => write!(f, "person {}", short(id)),
+            Self::Person(id) => write!(f, "person {}", short(id.as_str())),
             Self::Agent(id) => write!(f, "agent {id}"),
             Self::Bot(id) => write!(f, "bot {}", short(id)),
         }
@@ -360,11 +358,13 @@ impl Acting {
     }
 
     #[must_use]
-    pub fn person(id: impl Into<String>) -> Self {
+    pub fn person(id: impl Into<PersonId>) -> Self {
         Self::member(MemberId::person(id))
     }
 
-    /// The actor an [`Actor::key`] spells, acting for itself.
+    /// The actor an [`Actor::key`] spells, acting for itself. A key that names
+    /// nobody — one carrying a prefix this code does not know, such as the old
+    /// `person:<root>` — acts for nobody: it holds no one's authority.
     #[must_use]
     pub fn of_key(key: &str) -> Self {
         if let Some(id) = key.strip_prefix("automation:") {
@@ -376,7 +376,27 @@ impl Acting {
         if let Some(id) = key.strip_prefix("bot:") {
             return Self::bot(id);
         }
-        Self::person(key)
+        if let Some(id) = key.strip_prefix("app:") {
+            return Self::by_app(id);
+        }
+        match PersonId::parse(key) {
+            Ok(person) => Self::person(person),
+            Err(_) => Self::person(""),
+        }
+    }
+
+    /// An app acting by itself: a trigger it declares, or a migration of its
+    /// package.
+    #[must_use]
+    pub fn by_app(id: impl Into<AppId>) -> Self {
+        Self {
+            by: Actor::App(id.into()),
+            agent_session: None,
+            app: None,
+            cause: None,
+            foreign_device: false,
+            acted_for: Vec::new(),
+        }
     }
 
     #[must_use]
@@ -460,7 +480,7 @@ impl Acting {
         let Actor::Member(MemberId::Person(person)) = &self.by else {
             return None;
         };
-        Some(person)
+        Some(person.as_str())
     }
 
     /// The app the change went through.
@@ -570,6 +590,31 @@ mod tests {
             assert!(person.direct());
             assert_eq!(person.direct_person(), Some("q"));
             assert!(Acting::person("q").on_foreign_device(true).delegated());
+        }
+
+        phase a_persons_key_is_their_bare_root_and_a_prefixed_one_names_nobody;
+        {
+            let root = PersonId::from_root([5; 32]);
+            assert_eq!(
+                MemberId::parse(&root),
+                Some(MemberId::person(&root)),
+                "a person's stored key is their bare root key"
+            );
+            assert_eq!(
+                MemberId::person(&root).key(),
+                root.as_str(),
+                "a person is written bare"
+            );
+            assert_eq!(
+                MemberId::parse(&format!("person:{root}")),
+                None,
+                "the prefixed spelling names no member"
+            );
+            assert_eq!(
+                MemberId::parse("agent:helper"),
+                Some(MemberId::agent("helper")),
+                "software keeps the prefix that says what it is"
+            );
         }
 
         phase the_tree_is_written_as_it_is_read;

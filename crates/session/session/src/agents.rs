@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use tilo_action_policy::{Standing, WorkspacePolicy, same_person};
+use tilo_action_policy::{Standing, WorkspacePolicy};
 use tilo_app::framework::WorkspaceRecord;
 use tilo_app::tilo_workspace_agent::{
     KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
@@ -207,7 +207,7 @@ impl Agents {
                     },
                 );
                 // An MCP agent connects on its own; the keeper's device runs every other one.
-                if agent.mcp_client.is_none() && same_person(&agent.keeper, person) {
+                if agent.mcp_client.is_none() && agent.keeper == person {
                     kept.push(Kept {
                         workspace: workspace.clone(),
                         id: agent.id.0.clone(),
@@ -272,7 +272,7 @@ impl Agents {
         let state = record.get();
         state
             .active()
-            .find(|agent| agent.mcp_client.is_none() && same_person(&agent.keeper, person))
+            .find(|agent| agent.mcp_client.is_none() && agent.keeper == person)
             .map(|agent| (agent.id.0.clone(), agent.name.clone()))
     }
 
@@ -428,8 +428,6 @@ mod tests {
     use tilo_broker_core::services::AgentRoster as _;
     use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 
-    use super::same_person;
-
     /// The person at the shell, who owns its workspace.
     const PERSON: &str = "ada";
     /// The workspace in front of them, where nobody set an agent up yet.
@@ -491,9 +489,7 @@ mod tests {
             .expect("the person's agent member for the client is added");
         let keeper = roster.keeper(STUDIO, &member);
         assert!(
-            keeper
-                .as_deref()
-                .is_some_and(|keeper| same_person(keeper, PERSON)),
+            keeper.as_deref().is_some_and(|keeper| keeper == PERSON),
             "the broker lists the member {member} as the person's before its client is told it \
              may join: {keeper:?}"
         );

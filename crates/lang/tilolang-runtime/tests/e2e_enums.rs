@@ -177,7 +177,7 @@ view drawing(c: Canvas) {
         {
             let store = AmStore::new();
             let (rt, app, canvas) = setup(&store);
-            let (ada, bo) = (person("person:ada"), person("person:bo"));
+            let (ada, bo) = (person("ada"), person("bo"));
             let open = |who: &Actor| {
                 rt.open_view(who, &app.view("drawing"), vec![Value::resource(&canvas)])
                     .unwrap()

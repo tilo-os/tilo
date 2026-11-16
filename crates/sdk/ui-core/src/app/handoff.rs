@@ -271,7 +271,7 @@ mod tests {
         Successor {
             workspace: "3f2b1c00-0000-4000-8000-0000000000f1".into(),
             document: "uuid:arrived".into(),
-            by: "person:ada".into(),
+            by: "ada".into(),
         }
     }
 

@@ -151,7 +151,7 @@ impl PageActor {
     pub fn of(actor: &tilo_actions::Actor) -> Option<Self> {
         use tilo_actions::{Actor, MemberId};
         Self::named(&match actor {
-            Actor::Member(MemberId::Person(id)) => id.clone(),
+            Actor::Member(MemberId::Person(id)) => id.as_str().to_owned(),
             Actor::Member(MemberId::Agent(id)) => format!("agent:{id}"),
             Actor::Member(MemberId::Bot(id)) => format!("bot:{id}"),
             Actor::Automation(id) => format!("automation:{}", id.as_str()),
@@ -177,7 +177,7 @@ impl PageActor {
         } else if let Some(id) = name.strip_prefix("app:") {
             Actor::App(nonempty(id)?.into())
         } else {
-            Actor::Member(MemberId::Person(name.to_owned()))
+            Actor::Member(MemberId::parse(name)?)
         })
     }
 

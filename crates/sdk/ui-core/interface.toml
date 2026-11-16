@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 33
+version = 34
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -34,6 +34,7 @@ sources = [
     "crates/collab/reference/src/reference.rs",
     "crates/collab/actions/src/interaction.rs",
     "crates/collab/action-policy/src/member.rs",
+    "crates/collab/action-policy/src/person.rs",
     "crates/platform/tilo-app-id/src/lib.rs",
     "crates/collab/actions/src/step.rs",
     "crates/collab/actions/src/outcome.rs",
@@ -433,7 +434,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "MemberId" = "enum external"
 "MemberId::agent" = "tuple(String)"
 "MemberId::bot" = "tuple(String)"
-"MemberId::person" = "tuple(String)"
+"MemberId::person" = "tuple(PersonId)"
 "MotionCurve" = "enum external"
 "MotionCurve::eased" = "unit"
 "MotionCurve::none" = "unit"
@@ -467,6 +468,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "PartToCapture" = "struct"
 "PartToCapture.path" = "String"
 "PartToCapture.rect" = "[f64; 4]"
+"PersonId" = "tuple(String)"
 "PickAnswer" = "enum internal tag=kind"
 "PickAnswer::captured" = "struct"
 "PickAnswer::captured.parts" = "Vec<CapturedPart>"

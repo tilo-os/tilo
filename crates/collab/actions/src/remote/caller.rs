@@ -89,7 +89,7 @@ impl Caller {
     /// A person on a connection the host admitted itself, by the id that
     /// admission established.
     #[must_use]
-    pub fn local_person(person: impl Into<String>) -> Self {
+    pub fn local_person(person: impl Into<tilo_action_policy::PersonId>) -> Self {
         Self {
             acting: Acting::person(person.into()),
             user_public_key: None,
@@ -171,7 +171,7 @@ impl Caller {
     #[must_use]
     pub fn agent_turn(
         agent_id: impl Into<String>,
-        person: impl Into<String>,
+        person: impl Into<tilo_action_policy::PersonId>,
         turn: tilo_action_policy::turn::Turn,
     ) -> Self {
         Self {
@@ -265,7 +265,7 @@ impl Caller {
     /// payload. It names who the actor works for in presence and history; it
     /// widens nothing.
     #[must_use]
-    pub fn acting_for(mut self, person: impl Into<String>) -> Self {
+    pub fn acting_for(mut self, person: impl Into<tilo_action_policy::PersonId>) -> Self {
         let person = person.into();
         self.acting = if let Some(app) = self.acting.app.clone() {
             Acting::person(person).in_app(app)

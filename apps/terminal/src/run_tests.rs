@@ -192,7 +192,7 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         assert!(offered.iter().any(|id| id == verb), "{verb}: {offered:?}");
     }
 
-    let agent = ActionInvoker::agent("helper").acting_for("person:ada");
+    let agent = ActionInvoker::agent("helper").acting_for("ada");
     app.call_by(
         agent,
         &item_resource_id::<Terminal>("runs", first),
@@ -229,10 +229,10 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
     );
     let ada =
         |person: &Option<ui::tilo_resource::Atom>| person.as_ref().map(|person| person.0.clone());
-    assert_eq!(ada(&entry.value.for_person), Some("person:ada".to_owned()));
+    assert_eq!(ada(&entry.value.for_person), Some("ada".to_owned()));
     assert_eq!(
         ada(&rerun.for_person),
-        Some("person:ada".to_owned()),
+        Some("ada".to_owned()),
         "the run names the person the agent ran it for"
     );
     assert_eq!(rerun.exit, 0);
@@ -900,7 +900,7 @@ fn an_agents_run_gets_the_agent_rendering() {
     settle_until(&mut app, |state| {
         state.commands.len() == 1 && state.requests.pending().next().is_none()
     });
-    let agent = ActionInvoker::agent("helper").acting_for("person:ada");
+    let agent = ActionInvoker::agent("helper").acting_for("ada");
     app.call_by(
         agent,
         Terminal::KIND,
@@ -1051,7 +1051,7 @@ fn an_agents_refused_run_answers_with_the_refusal_and_shows_the_person_the_promp
     );
     let (mut app, _print, lines) = marked_session(output);
     settle_until(&mut app, |state| !state.pane_id().is_empty());
-    let agent = ActionInvoker::agent("helper").acting_for("person:ada");
+    let agent = ActionInvoker::agent("helper").acting_for("ada");
     app.call_by(
         agent,
         <Terminal as ui::tilo_resource::Resource>::KIND,

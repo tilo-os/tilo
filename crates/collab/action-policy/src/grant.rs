@@ -189,7 +189,7 @@ impl Grantee {
     }
 
     #[must_use]
-    pub fn person(id: impl Into<String>) -> Self {
+    pub fn person(id: impl Into<crate::PersonId>) -> Self {
         Self::Member(crate::MemberId::person(id))
     }
 
@@ -220,7 +220,7 @@ impl Grantee {
     #[must_use]
     pub fn person_id(&self) -> Option<&str> {
         match self {
-            Self::Member(crate::MemberId::Person(person)) => Some(person),
+            Self::Member(crate::MemberId::Person(person)) => Some(person.as_str()),
             Self::Member(crate::MemberId::Agent(_) | crate::MemberId::Bot(_)) | Self::Role(_) => {
                 None
             }

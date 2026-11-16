@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 28
+version = 29
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -31,6 +31,7 @@ sources = [
     "crates/collab/collab-types/src/role.rs",
     "crates/collab/collab-types/src/member.rs",
     "crates/collab/action-policy/src/member.rs",
+    "crates/collab/action-policy/src/person.rs",
     "crates/platform/tilo-app-id/src/lib.rs",
     "crates/collab/action-policy/src/grant.rs",
     "crates/collab/collab-types/src/presence/hue.rs",
@@ -516,7 +517,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "MemberId" = "enum external"
 "MemberId::agent" = "#1 tuple(String)"
 "MemberId::bot" = "#2 tuple(String)"
-"MemberId::person" = "#0 tuple(String)"
+"MemberId::person" = "#0 tuple(PersonId)"
 "Metadata" = "struct"
 "Metadata.kind" = "#0 EntryKind"
 "Metadata.modified_unix_seconds" = "#2 Option<i64>"
@@ -659,6 +660,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "PeerPresencePayload::Wave" = "#12 struct"
 "PeerPresencePayload::Wave.seq" = "#0 u32"
 "PeerPresencePayload::Wave.target" = "#1 String"
+"PersonId" = "tuple(String)"
 "PhotoInput" = "struct deny_unknown_fields"
 "PhotoInput.height" = "#1 u16"
 "PhotoInput.rgba" = "#2 Vec<u8> deserialize_with=bounded_pixels"

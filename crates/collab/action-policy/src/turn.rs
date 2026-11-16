@@ -164,7 +164,7 @@ pub fn authority(
     let Some(looked) = looked(turn) else {
         return Err(Held::Waiting);
     };
-    if !crate::same_person(&looked.author, person) {
+    if looked.author != person {
         return Err(Held::AnotherAuthor);
     }
     if !looked.participant {

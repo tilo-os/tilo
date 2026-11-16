@@ -1179,12 +1179,8 @@ impl HereState {
             add(&mut named, self.person_of(&member.publisher), label);
         }
         ui::presence::ParticipantLabels::by_joining(named.iter().map(|(id, name)| {
-            // A person is spelled by their root key, or by `person:<root>` in a grant.
-            let admitted = self
-                .joined
-                .get(*id)
-                .or_else(|| self.joined.get(tilo_action_policy::person_root(id)))
-                .copied();
+            // A person is spelled by their root key, the one every record stores.
+            let admitted = self.joined.get(*id).copied();
             (*id, name.as_str(), admitted)
         }))
     }
@@ -1417,23 +1413,26 @@ fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member
         .roster()
         .into_iter()
         .filter(|(person, _)| !workspace.is_blocked(person))
-        .map(|(person, role)| {
-            let id = MemberId::person(person.clone());
+        .filter_map(|(person, role)| {
+            let person_id = PersonId::parse(&person).ok()?;
+            let id = MemberId::person(person_id.clone());
             let (name, colour) = here(&id).map_or_else(
                 || (String::new(), assigned_colour(&id, None)),
                 |person| (person.label.clone(), hue_of(person.rgb)),
             );
             let mut row = Member::of_person(
-                &collab_types::Person::new(PersonId::new(person.clone()), name).wearing(colour),
+                &collab_types::Person::new(person_id, name).wearing(colour),
                 Some(role),
             );
             row.joined_at = workspace.policy.joined_at(&person);
-            row
+            Some(row)
         })
         .collect();
     for (agent, _) in workspace.agent_members_at(now) {
         let id = MemberId::agent(agent.clone());
-        let keeper = workspace.agent_keeper(&agent).map(PersonId::new);
+        let keeper = workspace
+            .agent_keeper(&agent)
+            .and_then(|keeper| PersonId::parse(keeper).ok());
         let mut row = Member::of_software(id.clone(), agent, keeper.as_ref());
         if let Some(person) = here(&id) {
             row.name.clone_from(&person.label);

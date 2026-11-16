@@ -3147,7 +3147,7 @@ fn describe_scope(scope: &Scope) -> String {
 /// Who a capability reaches, and through which app when it names one.
 fn describe_grantee(grantee: &Grantee, app: Option<&tilo_app_id::AppId>) -> String {
     let who = match grantee {
-        Grantee::Member(MemberId::Person(id)) => short(id),
+        Grantee::Member(MemberId::Person(id)) => short(id.as_str()),
         Grantee::Member(MemberId::Agent(agent)) => {
             t_args("activity-capability-agent", &[("agent", agent.into())])
         }

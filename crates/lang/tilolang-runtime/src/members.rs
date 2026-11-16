@@ -26,7 +26,7 @@ pub struct Member {
 
 impl Member {
     #[must_use]
-    pub fn person(id: impl Into<String>, role: Role) -> Self {
+    pub fn person(id: impl Into<tilo_actions::policy::PersonId>, role: Role) -> Self {
         Self {
             id: MemberId::person(id),
             role: Some(role),

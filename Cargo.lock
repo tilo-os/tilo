@@ -17302,6 +17302,7 @@ dependencies = [
 name = "tilo-action-policy"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "postcard",
  "serde",
  "serde_json",

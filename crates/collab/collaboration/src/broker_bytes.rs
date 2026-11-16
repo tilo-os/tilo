@@ -27,12 +27,10 @@ impl ByteMeter {
         self.add(value.capacity());
     }
 
+    /// A member's id as its key is written: `agent:<id>`, `bot:<id>`, or a
+    /// person's bare root key.
     pub(super) fn member(&mut self, member: &tilo_actions::MemberId) {
-        match member {
-            tilo_actions::MemberId::Person(id)
-            | tilo_actions::MemberId::Agent(id)
-            | tilo_actions::MemberId::Bot(id) => self.string_capacity(id),
-        }
+        self.add(member.key().len());
     }
 
     pub(super) fn bytes(&mut self, value: &Vec<u8>) {
@@ -496,7 +494,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             "KeyAccess"
         }
         CollabEvent::RemoteCursorMoved { member, .. } => {
-            meter.string_capacity(member_string(member));
+            meter.member(member);
             "RemoteCursorMoved"
         }
         CollabEvent::RemotePresenceUpdate {
@@ -504,7 +502,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             key,
             payload,
         } => {
-            meter.string_capacity(member_string(member));
+            meter.member(member);
             serialized_bytes(key, &mut meter);
             presence_payload_bytes(payload, &mut meter);
             "RemotePresenceUpdate"
@@ -660,11 +658,4 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         }
     };
     (kind, meter.finish())
-}
-
-fn member_string(member: &collab_types::MemberId) -> &String {
-    let (collab_types::MemberId::Person(id)
-    | collab_types::MemberId::Agent(id)
-    | collab_types::MemberId::Bot(id)) = member;
-    id
 }

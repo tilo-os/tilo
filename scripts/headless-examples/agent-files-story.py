@@ -274,8 +274,7 @@ def main() -> int:
         except ra.Failed:
             channel = ""
         check("the question lands in the person's direct conversation with the agent",
-              channel.startswith("direct:") and "agent:" in channel
-              and "person:" in channel, channel)
+              channel.startswith("direct:") and "agent:" in channel, channel)
         try:
             opened = ra.until("Chat's window on the shell", lambda: any(
                 window.get("app_id") == ra.app_id("chat") for window in session.windows()),

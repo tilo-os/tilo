@@ -277,7 +277,7 @@ impl IssuePart {
         &mut self,
         issue: &Id,
         #[param(
-            "person:<id>, agent:<id>, or outside:<name> for someone not in the workspace yet; nobody without"
+            "a person's root key, agent:<id>, or outside:<name> for someone not in the workspace yet; nobody without"
         )]
         assignee: Option<String>,
     ) -> Result<(), Refusal> {

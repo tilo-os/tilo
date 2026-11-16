@@ -437,7 +437,7 @@ tilo_test_env::scenario! {
             app.settle();
         };
         pick(&mut app, "tasks-issue-assignee-bob");
-        assert_eq!(assignee(&app).as_deref(), Some("person:bob"));
+        assert_eq!(assignee(&app).as_deref(), Some("bob"));
         assert!(
             app.harness().a11y_node_named("Assignee: Bob").is_some(),
             "the chip says the person's name, never the record's spelling"
@@ -455,6 +455,43 @@ tilo_test_env::scenario! {
         assert!(
             app.harness().a11y_node_named("Assignee: Nobody").is_some(),
             "clearing says nobody is doing it"
+        );
+    }
+
+    phase an_assignee_is_the_roots_bare_key_the_roster_names_and_the_prefixed_spelling_is_refused;
+    // An assignee is a person's root key, the one spelling presence keys the
+    // roster by: an issue assigned an id written anywhere reads the workspace's
+    // name for that person, and the old `person:<root>` spelling names nobody.
+    {
+        let mut app = open();
+        let root = "9f2c4d1e8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d";
+        {
+            let presence = app.harness().presence_mut();
+            presence.set_display_name(ui::permissions::MemberId::person(root), "Ada");
+        }
+        app.settle();
+        app.call_on(&chain(), "create", json!({ "title": "Hers", "assignee": root }))
+            .expect("create for Ada");
+        let issue = only(&app);
+        assert_eq!(
+            held(&app).get(&issue).unwrap().assigned_person(),
+            Some(root),
+            "the record keeps the bare root, not a prefixed spelling"
+        );
+        app.call_on(&issue_resource(&issue), "open", json!({}))
+            .expect("open the issue");
+        assert!(
+            app.harness().a11y_node_named("Assignee: Ada").is_some(),
+            "the roster names the id the record stores"
+        );
+        assert!(
+            app.call_on(
+                &chain(),
+                "create",
+                json!({ "title": "Old spelling", "assignee": format!("person:{root}") }),
+            )
+            .is_err(),
+            "a prefixed person id names nobody"
         );
     }
 
@@ -775,7 +812,7 @@ tilo_test_env::scenario! {
     {
         let mut app = open();
         for (title, assignee, label) in [
-            ("Write the launch notes", Some("person:ada"), Some("launch")),
+            ("Write the launch notes", Some("ada"), Some("launch")),
             ("Record the demo", None, None),
             ("Tidy the onboarding docs", Some("agent:claude"), None),
         ] {

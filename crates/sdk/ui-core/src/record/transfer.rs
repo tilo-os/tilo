@@ -829,7 +829,7 @@ mod tests {
         Retirement::Moved(Some(Successor {
             workspace: TO.into(),
             document: "uuid:successor".into(),
-            by: "person:ada".into(),
+            by: "ada".into(),
         }))
     }
 

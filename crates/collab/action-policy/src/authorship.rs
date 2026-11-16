@@ -57,7 +57,7 @@ pub fn code_party<'g>(author: &Grantee, own: &'g [Grant], workspace: &'g [Grant]
 
 fn grantee_key(grantee: &Grantee) -> String {
     match grantee {
-        Grantee::Member(crate::MemberId::Person(id)) => format!("person:{id}"),
+        Grantee::Member(crate::MemberId::Person(id)) => id.as_str().to_owned(),
         Grantee::Member(crate::MemberId::Agent(id)) => format!("agent:{id}"),
         other => other.to_string(),
     }

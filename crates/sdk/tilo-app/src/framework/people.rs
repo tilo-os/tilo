@@ -156,9 +156,11 @@ impl People {
         }
     }
 
-    /// Who an assignee value names: a person (`person:<id>`), an agent
-    /// (`agent:<id>`), someone outside the workspace by their name
-    /// (`outside:<name>`), or a person's bare id.
+    /// Who the id an action recorded names: a person by their bare root key (as
+    /// an assignee or a mention holds them), an agent as the action API names
+    /// it (`agent:<id>`), or someone outside the workspace by their name
+    /// (`outside:<name>`). A person is never spelled with a prefix, so an id
+    /// that has one names software or nobody, and reads as what it says.
     pub fn actor(&self, id: &str) -> Actor {
         // Someone outside the workspace, named where an item came from
         // until they join: their name is all the record knows of them.
@@ -169,11 +171,14 @@ impl People {
                 hue: PresenceHue::of_identity(id),
             };
         }
-        let member = id.strip_prefix("agent:").map_or_else(
-            || MemberId::person(id.strip_prefix("person:").unwrap_or(id)),
-            MemberId::agent,
-        );
-        self.actor_of(&member)
+        match MemberId::parse(id) {
+            Some(member) => self.actor_of(&member),
+            None => Actor {
+                member: None,
+                name: id.to_owned(),
+                hue: PresenceHue::of_identity(id),
+            },
+        }
     }
 
     /// `member` as a view shows them, named by `kept` (the name the record
@@ -472,7 +477,7 @@ mod tests {
             assert_eq!(people.name(&peer), "ada (2)");
         }
 
-        phase an_assignee_reads_as_the_name_the_workspace_gives;
+        phase a_persons_bare_root_reads_as_the_name_the_workspace_gives;
         {
             let people = People::new(None);
             let mut presence = PresenceCtx::default();
@@ -480,18 +485,18 @@ mod tests {
             presence.set_display_name(MemberId::agent("scribe"), "Scribe");
             assert!(people.follow(&presence));
 
-            let bob = people.actor("person:bob");
-            assert_eq!(bob.name, "Bob", "an assignee's spelling is not a name");
+            let bob = people.actor("bob");
+            assert_eq!(bob.name, "Bob", "an assignee's bare root reads by its name");
             assert_eq!(bob.member, Some(MemberId::person("bob")));
             let scribe = people.actor("agent:scribe");
             assert_eq!(scribe.name, "Scribe · Agent");
             assert!(scribe.agent());
+            let old = people.actor("person:bob");
             assert_eq!(
-                people.actor("person:stranger").name,
-                "stranger",
-                "an id the workspace names not reads without its prefix"
+                old.member, None,
+                "the old prefixed spelling names nobody the workspace knows"
             );
-            assert_eq!(people.actor("bob").name, "Bob", "a bare id reads the same");
+            assert_eq!(old.name, "person:bob", "and reads as what it says");
         }
     }
 }

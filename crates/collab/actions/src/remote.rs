@@ -1831,7 +1831,7 @@ mod tests {
 
         phase execution_lifetime_is_shared_without_changing_caller_identity;
         {
-            let first = Caller::local_person("person:owner").in_new_execution();
+            let first = Caller::local_person("owner").in_new_execution();
             let retained = first.clone();
             let second = first.clone().in_new_execution();
             let hash = |caller: &Caller| {

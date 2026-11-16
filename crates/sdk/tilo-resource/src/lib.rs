@@ -219,8 +219,8 @@ pub use shape::{FieldShape, Shape, StoredText, Trust, absent_scalar, stored_text
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
 pub use surface::Surface;
 pub use text::{PlainText, TextEdit};
-pub use tilo_action_policy::MemberId;
 pub use tilo_action_policy::edits::Weaker;
+pub use tilo_action_policy::{MemberId, PersonId};
 pub use tilo_actions::surface::{FieldType, TypeSet};
 pub use tilo_actions::{Acting, Availability};
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, resource};

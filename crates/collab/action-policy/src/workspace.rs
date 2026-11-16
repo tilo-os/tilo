@@ -638,10 +638,10 @@ impl WorkspacePolicy {
                 continue;
             }
             if self.is_blocked(person) {
-                return Err(Refusal::Banned(person.clone()));
+                return Err(Refusal::Banned(person.as_str().to_owned()));
             }
             if self.restricted_until(person, cx).is_some() {
-                return Err(Refusal::Restricted(person.clone()));
+                return Err(Refusal::Restricted(person.as_str().to_owned()));
             }
         }
         Ok(())

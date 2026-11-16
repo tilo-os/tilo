@@ -2132,9 +2132,9 @@ mod tests {
                 })),
                 change: (at == 1).then(|| ChangeMarkProps {
                     by: Some(Person {
-                        identity: "person:bo".to_owned(),
+                        identity: "bo".to_owned(),
                         name: "Bo".to_owned(),
-                        hue: crate::tokens::PresenceHue::of_identity("person:bo"),
+                        hue: crate::tokens::PresenceHue::of_identity("bo"),
                     }),
                     said: Some("moved it to Today".to_owned()),
                     ..ChangeMarkProps::default()

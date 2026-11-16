@@ -1256,7 +1256,7 @@ impl ActionInvoker {
 
     /// A person the host authenticated, acting for themselves.
     #[must_use]
-    pub fn person(id: impl Into<String>) -> Self {
+    pub fn person(id: impl Into<tilo_action_policy::PersonId>) -> Self {
         Self::admitted(&Acting::person(id))
     }
 
@@ -1301,14 +1301,9 @@ impl ActionInvoker {
     /// The same invoker, for `person`. A person acting for themselves
     /// records nobody.
     #[must_use]
-    pub fn acting_for(mut self, person: impl Into<String>) -> Self {
+    pub fn acting_for(mut self, person: impl Into<tilo_action_policy::PersonId>) -> Self {
         let person = person.into();
-        if person.trim().is_empty()
-            || self
-                .acting
-                .person_id()
-                .is_some_and(|me| tilo_action_policy::same_person(me, &person))
-        {
+        if person.trim().is_empty() || self.acting.person_id() == Some(person.as_str()) {
             self.acting.acted_for.clear();
         } else {
             self.acting.acted_for = vec![Acting::person(person)];
@@ -1563,8 +1558,8 @@ mod tests {
         phase host_invoker_overwrites_a_forged_envelope_invoker;
         {
             let forged = ActionContext::for_resource("r", "k", "l").with_invoker(
-                ActionInvoker::person("person:owner")
-                    .acting_for("person:other")
+                ActionInvoker::person("owner")
+                    .acting_for("other")
                     .with_participant(ParticipantId::new("owner-window").unwrap()),
             );
             let task = ParticipantId::new("agent-alpha-view").unwrap();
@@ -1576,14 +1571,14 @@ mod tests {
                 Some(ActionInvoker::agent("alpha").with_participant(task))
             );
             let delegated = forged.with_host_actor(
-                &crate::Acting::agent("alpha").acting_for(crate::Acting::person("person:owner")),
+                &crate::Acting::agent("alpha").acting_for(crate::Acting::person("owner")),
                 None,
             );
             let invoker = delegated.invoker.unwrap();
             assert!(invoker.acting.is_agent());
             assert_eq!(
                 invoker.acting.acted_for_person(),
-                Some("person:owner"),
+                Some("owner"),
                 "the host records whom the admitted actor acts for"
             );
         }
@@ -1650,13 +1645,13 @@ mod tests {
             .unwrap();
             let entry = ActionContext::default().with_invoker(
                 ActionInvoker::bot("7f1c")
-                    .acting_for("person:ada")
+                    .acting_for("ada")
                     .with_appearance(Some(appearance.clone())),
             );
             let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
             assert_eq!(read, entry);
             assert_eq!(read.invoker.unwrap().appearance, Some(appearance));
-            let plain = ActionContext::default().with_invoker(ActionInvoker::person("person:ada"));
+            let plain = ActionContext::default().with_invoker(ActionInvoker::person("ada"));
             let json = serde_json::to_string(&plain.invoker).unwrap();
             assert!(!json.contains("appearance"), "{json}");
         }
@@ -1665,7 +1660,7 @@ mod tests {
         {
             let entry = ActionContext::default().with_invoker(
                 ActionInvoker::agent("task-7")
-                    .acting_for("person:ada")
+                    .acting_for("ada")
                     .from_device(Some(laptop())),
             );
             let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
@@ -1706,7 +1701,7 @@ mod tests {
                 .with_described(starred())
                 .with_group("run:7", "Tidy snippets", "agent-session")
                 .with_invoker(
-                    ActionInvoker::agent("claude").acting_for("person:ada"),
+                    ActionInvoker::agent("claude").acting_for("ada"),
                 )
                 .with_source_invocation(Some(InvocationId(uuid::Uuid::from_u128(42))));
             let message = entry.change_message().unwrap();
@@ -1715,7 +1710,7 @@ mod tests {
             assert!(read.acting().unwrap().is_agent());
             assert_eq!(
                 read.acting().unwrap().acted_for_person(),
-                Some("person:ada")
+                Some("ada")
             );
             assert_eq!(read.described(), Some(starred()));
 

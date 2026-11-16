@@ -326,7 +326,9 @@ struct HistoryRequest {
     steps: Option<i64>,
 }
 
-/// The address a person record of `kind` is published under.
+/// The address a person record of `kind` is published under. It is a record
+/// address, not a person's id: a person is their bare root key
+/// ([`tilo_resource::PersonId`]).
 #[must_use]
 pub(crate) fn resource_id(kind: &str) -> String {
     format!("person:{kind}")

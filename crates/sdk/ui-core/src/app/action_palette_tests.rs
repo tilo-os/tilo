@@ -38,7 +38,7 @@ impl crate::search::SearchProvider for PeopleProvider {
             .filter(|n| {
                 crate::search::fold_search_text(n).contains(&crate::search::fold_search_text(query))
             })
-            .map(|n| crate::search::SearchResult::new("People", n, format!("person:{n}")))
+            .map(|n| crate::search::SearchResult::new("People", n, n.to_string()))
             .collect()
     }
 }
@@ -736,7 +736,7 @@ tilo_test_env::scenario! {
                 .and_then(|(v, _)| v.as_str().map(str::to_string));
             assert_eq!(
                 nav,
-                Some("person:Ada Lovelace".to_string()),
+                Some("Ada Lovelace".to_string()),
                 "the content row's id reached the app to navigate"
             );
             assert!(

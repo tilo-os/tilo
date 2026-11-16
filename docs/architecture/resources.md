@@ -441,6 +441,8 @@ cx.record(&display, |cx| Box::new(cx.checkbox("High contrast", Display::paths().
 
 Each is published beside the app's resource (`person:<kind>`, `settings:<kind>`)
 with its field edits and verbs, so the palette and agents edit it by path too.
+`person:<kind>` names that record and is not a person's id: a person is their
+bare root key (`PersonId`), and no record stores `person:<root>`.
 Only its person changes it (or software acting for them), whatever their role
 in the workspace; its `check` holds on every way in; each change is recorded in the
 record's history (the record's own history and undo, the settings

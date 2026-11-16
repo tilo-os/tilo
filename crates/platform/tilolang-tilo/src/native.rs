@@ -986,7 +986,7 @@ mod tests {
             let schema = lookup("so.tilo.tasks.Issue").expect("the issue's schema");
             let content = json!({
                 "title": "Review Ada's portfolio",
-                "assignee": "person:ada",
+                "assignee": "ada",
                 "labels": ["urgent", "review"],
                 "body": "Look at her GitHub.",
             });
@@ -1001,7 +1001,7 @@ mod tests {
             assert_eq!(
                 fields.get("Issue.assignee"),
                 Some(&FieldValue::Scalar(Scalar::Json(
-                    json!({"some": "person:ada"})
+                    json!({"some": "ada"})
                 )))
             );
             assert_eq!(

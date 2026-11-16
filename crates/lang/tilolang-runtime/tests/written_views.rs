@@ -203,7 +203,7 @@ view unread_mail(m: mail.Mail) {\n\
     #[test]
     fn an_agent_answers_with_a_view_over_mail_and_the_person_keeps_it() {
         let apps = apps();
-        let ada = Person::new(&apps, "person:ada");
+        let ada = Person::new(&apps, "ada");
         let mail = ada.inbox(&apps);
         let task = person("agent-task:unread");
         let v = answer(&ada, &apps, &task);
@@ -251,8 +251,8 @@ view unread_mail(m: mail.Mail) {\n\
     #[test]
     fn a_sent_view_shows_its_recipient_their_own_mail_and_asks_before_acting() {
         let apps = apps();
-        let mut ada = Person::new(&apps, "person:ada");
-        let mut bo = Person::new(&apps, "person:bo");
+        let mut ada = Person::new(&apps, "ada");
+        let mut bo = Person::new(&apps, "bo");
         let ada_mail = ada.inbox(&apps);
         let bo_mail = bo.inbox(&apps);
         // Bo's mail is his own: he read the launch plan.

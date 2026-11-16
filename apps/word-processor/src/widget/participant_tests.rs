@@ -731,8 +731,7 @@ fn invoke_opening_action(
             descriptor.address.resource.as_str() == resource && descriptor.address.action == action
         });
     assert!(published, "Writer publishes the opening action `{action}`");
-    let invoker =
-        ActionInvoker::person("person:opening-rehearsal").with_participant(participant.clone());
+    let invoker = ActionInvoker::person("opening-rehearsal").with_participant(participant.clone());
     app.call_by(invoker, resource, action, arguments)
         .unwrap_or_else(|error| panic!("`{action}` for {participant:?}: {error}"));
     app.settle();
@@ -783,8 +782,8 @@ fn assert_png_placed_after(doc: &AutoCommit, ids: &[String], hash: &str, png: &[
 #[test]
 fn two_person_executions_type_the_opening_and_place_real_png_independently() {
     let callers = [
-        tilo_actions::remote::Caller::local_person("person:opening-rehearsal").in_new_execution(),
-        tilo_actions::remote::Caller::local_person("person:opening-rehearsal").in_new_execution(),
+        tilo_actions::remote::Caller::local_person("opening-rehearsal").in_new_execution(),
+        tilo_actions::remote::Caller::local_person("opening-rehearsal").in_new_execution(),
     ];
     assert_eq!(callers[0].acting(), callers[1].acting());
     assert_ne!(callers[0].execution_id(), callers[1].execution_id());

@@ -653,7 +653,7 @@ tilo_test_env::scenario! {
         let row = collab_types::Member::of_software(
             collab_types::MemberId::agent("scribe"),
             "Scribe",
-            Some(&collab_types::PersonId::new("owner")),
+            Some(&collab_types::PersonId::expect("owner")),
         );
         let (red, green, blue) = collab_types::presence::identity_rgb(row.colour);
         assert_eq!(

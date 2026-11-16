@@ -399,7 +399,7 @@ pub(crate) fn direct_page(
     (me, peer): (&str, &str),
     readings: &serde_json::Value,
 ) -> HistoryPage {
-    let mut sides = [format!("person:{me}"), format!("person:{peer}")];
+    let mut sides = [me.to_owned(), peer.to_owned()];
     sides.sort();
     let channel = format!("direct:{}", sides.join("|"));
     let field = |value: &serde_json::Value, at: &str| value.pointer(at).cloned();

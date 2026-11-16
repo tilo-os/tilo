@@ -145,7 +145,7 @@ impl Notes {
             published_kinds: Arc::default(),
             history: Arc::default(),
             here: Arc::new(Mutex::new(Some(vec![tilo_actions::remote::Here {
-                who: "person:ada".into(),
+                who: "ada".into(),
                 name: "Ada".into(),
                 kind: "person".into(),
             }]))),
@@ -1593,7 +1593,7 @@ tilo_test_env::scenario! {
             }));
             host.people(Some(vec![
                 tilo_actions::remote::Here {
-                    who: "person:ada".into(),
+                    who: "ada".into(),
                     name: "Ada".into(),
                     kind: "person".into(),
                 },

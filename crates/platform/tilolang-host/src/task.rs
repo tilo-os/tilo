@@ -1005,7 +1005,7 @@ mod tests {
                             "number": 7,
                             "title": "Ship the reads",
                             "body": "One read path.",
-                            "assignee": "person:ada",
+                            "assignee": "ada",
                             "labels": ["review", "urgent"],
                         }),
                     )],
@@ -1022,7 +1022,7 @@ mod tests {
             // members, a count.
             assert_eq!(
                 answer["output"],
-                json!(["Ship the reads", "person:ada", "2", "7"]),
+                json!(["Ship the reads", "ada", "2", "7"]),
                 "{answer:#}"
             );
             closed(&api);
@@ -1079,11 +1079,11 @@ mod tests {
                     items: vec![
                         (
                             "tasks.issues/issues/one",
-                            json!({"title": "Ship the reads", "assignee": "person:ada"}),
+                            json!({"title": "Ship the reads", "assignee": "ada"}),
                         ),
                         (
                             "tasks.issues/issues/two",
-                            json!({"title": "Review Ada's portfolio", "assignee": "person:bob"}),
+                            json!({"title": "Review Ada's portfolio", "assignee": "bob"}),
                         ),
                     ],
                 }
@@ -1091,7 +1091,7 @@ mod tests {
             );
             let answer = ran(
                 &task,
-                "for i in find(tasks.Issue).filter(i -> i.assignee == \"person:ada\") {\n    \
+                "for i in find(tasks.Issue).filter(i -> i.assignee == \"ada\") {\n    \
              print(i.title)\n}",
             );
             assert_eq!(answer["state"], "done", "{answer:#}");

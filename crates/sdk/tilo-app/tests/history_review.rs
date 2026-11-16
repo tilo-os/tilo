@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
 
         let agent =
             tilo_actions::Acting::agent("historian")
-                .acting_for(tilo_actions::Acting::person("person:ada"));
+                .acting_for(tilo_actions::Acting::person("ada"));
         let restored = app
             .call_by(
                 tilo_actions::ActionInvoker::admitted(&agent),
@@ -140,7 +140,7 @@ tilo_test_env::scenario! {
         let entry = newest(&mut app);
         assert_eq!(entry["what"]["op"], "restore");
         assert_eq!(entry["actor"]["by"]["member"]["agent"], "historian");
-        assert_eq!(entry["actor"]["for"][0]["by"]["member"]["person"], "person:ada");
+        assert_eq!(entry["actor"]["for"][0]["by"]["member"]["person"], "ada");
         app.call("undo", json!({"by": {"member": {"agent": "historian"}}}))
             .unwrap();
         assert_eq!(cards(&app), ["storm", "Peer's sea"]);

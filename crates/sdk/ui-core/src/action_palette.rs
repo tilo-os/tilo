@@ -3280,7 +3280,7 @@ mod tests {
                     crate::search::fold_search_text(n)
                         .contains(&crate::search::fold_search_text(query))
                 })
-                .map(|n| SearchResult::new("People", n, format!("person:{n}")))
+                .map(|n| SearchResult::new("People", n, n.to_string()))
                 .collect()
         }
     }
@@ -3487,7 +3487,7 @@ mod tests {
                 );
                 assert_eq!(
                     p.take_navigation().as_deref(),
-                    Some("person:Ada Lovelace"),
+                    Some("Ada Lovelace"),
                     "the opaque provider id is handed back for navigation"
                 );
                 assert!(!p.is_open(), "navigation closes the palette");

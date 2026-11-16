@@ -764,7 +764,7 @@ tilo_test_env::scenario! {
     {
         fn person(id: &str, joined_at: u64, is_self: bool) -> collab_types::Member {
             let row = collab_types::Member::of_person(
-                &collab_types::Person::new(id.trim_start_matches("person:"), "Ada"),
+                &collab_types::Person::new(id, "Ada"),
                 None,
             )
             .joined_at(Some(joined_at));
@@ -774,8 +774,8 @@ tilo_test_env::scenario! {
         let first = crate::permissions::MemberId::person("m");
         app.apply_collab_event_for_test(CollabEvent::Context {
             members: vec![
-                person("person:m", 2_000, true),
-                person("person:z", 5_000, false),
+                person("m", 2_000, true),
+                person("z", 5_000, false),
             ],
             permissions: vec![],
             apps: Vec::new(),
@@ -786,9 +786,9 @@ tilo_test_env::scenario! {
 
         app.apply_collab_event_for_test(CollabEvent::Context {
             members: vec![
-                person("person:a", 9_000, false),
-                person("person:m", 2_000, true),
-                person("person:z", 5_000, false),
+                person("a", 9_000, false),
+                person("m", 2_000, true),
+                person("z", 5_000, false),
             ],
             permissions: vec![],
             apps: Vec::new(),

@@ -69,7 +69,7 @@ tilo_test_env::scenario! {
         assert_round_trips(
             "person with avatar",
             &Person {
-                id: PersonId::new("ada"),
+                id: PersonId::expect("ada"),
                 name: "Ada".into(),
                 avatar: Some(AvatarBytes(vec![0x89, b'P', b'N', b'G'])),
                 colour: PresenceHue::Violet,

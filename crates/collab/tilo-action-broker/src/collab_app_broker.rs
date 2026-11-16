@@ -7057,7 +7057,10 @@ impl AppBrokerState {
         for (agent, name, keeper) in agents {
             tilo_peer_state::workspace_membership::valid_agent_id(&agent)
                 .map_err(|_| "native context contains a noncanonical agent identity")?;
-            let keeper = keeper.map(collab_types::PersonId::new);
+            let keeper = keeper
+                .map(|keeper| collab_types::PersonId::parse(&keeper))
+                .transpose()
+                .map_err(|_| "the context's agent keeper is not a person's root key")?;
             let row = collab_types::Member::of_software(
                 collab_types::MemberId::agent(agent),
                 name,

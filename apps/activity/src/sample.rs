@@ -23,7 +23,7 @@ fn person(name: &str, rgb: [u8; 3]) -> wire::Author {
     wire::Author {
         name: name.to_owned(),
         rgb,
-        identity: format!("person:{}", name.to_lowercase()),
+        identity: name.to_lowercase(),
         relation: wire::Relation::Person,
         on_behalf_of: None,
         ..wire::Author::default()

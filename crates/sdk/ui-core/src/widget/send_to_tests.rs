@@ -159,7 +159,7 @@ tilo_test_env::scenario! {
         let mut send_to = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
         crate::shared_selection::set_recipients(vec![
             Recipient::found(RecipientKind::Agent, "agent:7", "Ada").with_detail("agent"),
-            Recipient::found(RecipientKind::Person, "person:ada", "Ada Lovelace"),
+            Recipient::found(RecipientKind::Person, "ada", "Ada Lovelace"),
         ]);
         assert!(
             send_to.rows().is_empty(),
@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
         type_text(&mut send_to, "d");
         crate::shared_selection::set_recipients(vec![
             Recipient::found(RecipientKind::Agent, "agent:4", "Adrien"),
-            Recipient::found(RecipientKind::Person, "person:bo", "Bo"),
+            Recipient::found(RecipientKind::Person, "bo", "Bo"),
         ]);
         assert!(send_to.drain_answer());
         assert_eq!(send_to.rows().len(), 1);
@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
         send_to.focus_first();
         crate::shared_selection::set_recipients(vec![Recipient::found(
             RecipientKind::Person,
-            "person:ada",
+            "ada",
             "Ada Lovelace",
         )]);
         type_text(&mut send_to, "ada");

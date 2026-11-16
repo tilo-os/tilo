@@ -199,7 +199,7 @@ impl AppBrokerState {
             .keeper(workspace, &cert.agent_id)
             .ok_or_else(|| format!("the workspace lists no agent {}", cert.agent_id))?;
         let person = tilo_broker_core::person_id_for_root(cert.user_public_key);
-        if !tilo_action_policy::same_person(&keeper, &person) {
+        if keeper != person {
             return Err(format!(
                 "the agent {} is {keeper}'s, not this device's person's",
                 cert.agent_id
@@ -230,7 +230,7 @@ pub(super) fn admit_kept_agent(
     let keeper = roster
         .keeper(workspace, agent_id)
         .ok_or_else(|| format!("the workspace keeps no active agent {agent_id}"))?;
-    if !tilo_action_policy::same_person(&keeper, &admitted.actor_key) {
+    if keeper != admitted.actor_key {
         return Err(format!(
             "the agent {agent_id} is {keeper}'s to launch, not this session's"
         ));

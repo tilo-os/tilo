@@ -85,7 +85,7 @@ fn send_is_pressed_through_the_published_control() {
     let mut host = window();
     let adalovelace = ui::floating_surface::Recipient::found(
         ui::floating_surface::RecipientKind::Person,
-        "person:ada",
+        "ada",
         "Ada",
     );
     host.app_mut().open_send_box(

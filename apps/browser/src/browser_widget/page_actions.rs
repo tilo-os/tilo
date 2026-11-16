@@ -1342,7 +1342,7 @@ fn the_admitted_invoker_is_who_asks_the_engine() {
     succeeded(settled(&mut widget, &doc, &root, own));
     // An agent acting for a person asks under its own actor, never the
     // person's: what it did is set down as its own.
-    let for_ada = ActionInvoker::agent("task-7").acting_for("person:ada");
+    let for_ada = ActionInvoker::agent("task-7").acting_for("ada");
     let click = start_as(
         &mut widget,
         Some(&for_ada),

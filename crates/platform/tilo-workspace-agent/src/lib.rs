@@ -359,7 +359,7 @@ impl WorkspaceAgents {
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if !tilo_action_policy::same_person(&found.keeper, &me) {
+        if found.keeper != me {
             return Err(Refusal::new(
                 "only the agent's keeper sets the most it may spend in a day",
             ));
@@ -385,7 +385,7 @@ impl WorkspaceAgents {
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if !tilo_action_policy::same_person(&found.keeper, &me) {
+        if found.keeper != me {
             return Err(Refusal::new(
                 "only the agent's keeper counts what it spends",
             ));
@@ -416,7 +416,7 @@ impl WorkspaceAgents {
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if !tilo_action_policy::same_person(&found.keeper, &me) {
+        if found.keeper != me {
             return Err(Refusal::new(
                 "only the agent's keeper chooses the colour it is drawn in",
             ));
@@ -457,7 +457,7 @@ impl WorkspaceAgents {
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if !tilo_action_policy::same_person(&found.keeper, &me) {
+        if found.keeper != me {
             return Err(Refusal::new(
                 "only the agent's keeper chooses the model it plans with",
             ));
@@ -645,10 +645,12 @@ fn author(cx: &ActionCx) -> Result<String, Refusal> {
 
 fn person(id: &str) -> Result<String, Refusal> {
     let id = id.trim();
-    if id.is_empty() || id.len() > MAX_KEEPER {
+    if id.len() > MAX_KEEPER {
         return Err(Refusal::new("an agent is kept by a member"));
     }
-    Ok(id.to_owned())
+    tilo_action_policy::PersonId::parse(id)
+        .map(|id| id.as_str().to_owned())
+        .map_err(|_| Refusal::new("an agent is kept by a member"))
 }
 
 fn clean_name(name: &NonBlank) -> Result<String, Refusal> {

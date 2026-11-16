@@ -302,7 +302,7 @@ fn the_sends_send_is_pressed_through_the_target_and_sends_what_the_box_holds() {
     let (mut app, mut shell, _keys) = box_window();
     drawn(&mut app);
     let _window = told(&mut app, &mut shell);
-    let adalovelace = Recipient::found(RecipientKind::Person, "person:ada", "Ada");
+    let adalovelace = Recipient::found(RecipientKind::Person, "ada", "Ada");
     app.open_send_box(
         None,
         None,

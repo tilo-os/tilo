@@ -221,9 +221,7 @@ fn only_the_keeper_chooses_the_model_it_plans_with() {
 #[test]
 fn a_keeper_named_the_way_grants_name_them_keeps_their_agent() {
     let mut record = as_person(GRACE);
-    record
-        .apply(restore("claude-code", &format!("person:{ADA}")))
-        .unwrap();
+    record.apply(restore("claude-code", ADA)).unwrap();
     let agent = record.state().unwrap().agents[0].id.0.clone();
     let mut ada = record.fork().as_author(ADA);
     ada.apply(set_model(&agent, Some("anthropic/claude")))
@@ -369,15 +367,13 @@ fn a_workspace_keeps_at_most_its_limit() {
 #[test]
 fn stored_agents_read_back_as_they_were() {
     let mut record = as_person(ADA);
-    record
-        .apply(restore("claude-code", &format!("person:{GRACE}")))
-        .unwrap();
+    record.apply(restore("claude-code", GRACE)).unwrap();
     record.apply(make("Reviewer")).unwrap();
     let state = record.state().unwrap();
     let kept_by_grace = state
         .agents
         .iter()
-        .find(|agent| agent.keeper == format!("person:{GRACE}"))
+        .find(|agent| agent.keeper == GRACE)
         .map(|agent| agent.id.0.clone())
         .expect("the restored agent");
     let reviewer = state

@@ -208,7 +208,7 @@ mod tests {
             let successor = Successor {
                 workspace: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
                 document: "uuid:5b0e".into(),
-                by: "person:ada".into(),
+                by: "ada".into(),
             };
             for request in [
                 HandoffRequest::Checkpoint { token: 7 },

@@ -589,7 +589,10 @@ fn parse_member(spec: &str) -> Result<MemberId> {
         .with_context(|| format!("member {spec:?} must be KIND:ID"))?;
     let id = id.to_string();
     Ok(match kind {
-        "person" => MemberId::Person(id),
+        "person" => MemberId::Person(
+            collab_types::PersonId::parse(&id)
+                .with_context(|| format!("{id:?} is not a person's root key"))?,
+        ),
         "agent" => MemberId::Agent(id),
         "bot" => MemberId::Bot(id),
         other => bail!("unknown member kind {other:?} (person|agent|bot)"),

@@ -60,7 +60,7 @@ impl<'a> Authority<'a> {
                     MemberId::Person(person) => {
                         people = people.saturating_add(1);
                         let party = policy
-                            .party(person)
+                            .party(person.as_str())
                             .with_grants(granted)
                             .with_grants(answers.iter().copied());
                         person_parts.push(if node.foreign_device {

@@ -727,13 +727,11 @@ impl IndexedContent {
     }
 }
 
-/// A person's or an agent's identity as the app that keeps them spells it,
-/// without the prefix the index adds to say what it is.
+/// A person's or an agent's identity as the app that keeps them spells it: a
+/// person's bare root key, an agent's `agent:<id>` with the prefix the index
+/// adds to say what it is taken off.
 fn bare_identity(identity: &str) -> &str {
-    identity
-        .strip_prefix("agent:")
-        .or_else(|| identity.strip_prefix("person:"))
-        .unwrap_or(identity)
+    identity.strip_prefix("agent:").unwrap_or(identity)
 }
 
 /// Whether a message to `person` goes to an agent or a person.
@@ -1048,7 +1046,7 @@ mod tests {
                     note("chat.workspace/channels/c_crit", "Ada's design crit", false),
                     IndexKind::Conversation,
                     vec![
-                        person("Aria", "person:u_aria", "", false),
+                        person("Aria", "u_aria", "", false),
                         person("Ada", "agent:a_ada", "", true),
                     ],
                 )],
@@ -1091,7 +1089,7 @@ mod tests {
                 note("chat.workspace/channels/c_ada", "Ada", false),
                 IndexKind::Conversation,
                 vec![
-                    person("Me", "person:u_me", "", false),
+                    person("Me", "u_me", "", false),
                     person("Ada", "agent:a_ada", "", true),
                 ],
             );
@@ -1108,7 +1106,7 @@ mod tests {
                         IndexKind::Person,
                         vec![person(
                             "Me",
-                            "person:u_me",
+                            "u_me",
                             "chat.workspace/people/u_me",
                             false,
                         )],
@@ -1118,7 +1116,7 @@ mod tests {
                         IndexKind::Person,
                         vec![person(
                             "Ada",
-                            "person:u_ada",
+                            "u_ada",
                             "chat.workspace/people/u_ada",
                             false,
                         )],
@@ -1126,7 +1124,7 @@ mod tests {
                     shaped(
                         note("chat.workspace/messages/m_ada", "Ada, can you look?", false),
                         IndexKind::Message,
-                        vec![person("Ada", "person:u_ada", "", false)],
+                        vec![person("Ada", "u_ada", "", false)],
                     ),
                 ],
             );
@@ -1226,7 +1224,7 @@ mod tests {
                 IndexKind::Message,
                 vec![person(
                     "",
-                    "person:u_aria",
+                    "u_aria",
                     "chat.workspace/people/u_aria",
                     false,
                 )],
@@ -1255,12 +1253,12 @@ mod tests {
                     shaped(
                         note("chat.workspace/people/u_aria", "Aria", false),
                         IndexKind::Person,
-                        vec![person("Aria", "person:u_aria", "", false)],
+                        vec![person("Aria", "u_aria", "", false)],
                     ),
                     shaped(
                         note("chat.workspace/channels/c_crit", "Ada's design crit", false),
                         IndexKind::Conversation,
-                        vec![person("Aria", "person:u_aria", "", false)],
+                        vec![person("Aria", "u_aria", "", false)],
                     ),
                     message,
                 ],
@@ -1285,7 +1283,7 @@ mod tests {
             };
             assert_eq!(
                 row.avatar,
-                Some(("Aria".to_owned(), "person:u_aria".to_owned()))
+                Some(("Aria".to_owned(), "u_aria".to_owned()))
             );
             let Target::Invoke(target) = &hit.target else {
                 panic!("a message opens where it lives");

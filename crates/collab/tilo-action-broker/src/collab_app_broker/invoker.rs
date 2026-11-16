@@ -79,7 +79,7 @@ mod tests {
         tilo_actions::ActionContext::default()
             .with_group("issue:42", "Prepare launch", "issue")
             .with_invoker(
-                tilo_actions::ActionInvoker::person("person:owner")
+                tilo_actions::ActionInvoker::person("owner")
                     .with_participant(tilo_actions::ParticipantId::new("owner-window").unwrap()),
             )
     }
@@ -89,13 +89,13 @@ mod tests {
 
         phase a_person_never_gets_a_participant_from_the_envelope;
         {
-            let actor = BrokerActor::person("person:guest");
+            let actor = BrokerActor::person("guest");
             let context = host_set_invoker(Some(forged()), &actor, None, None)
                 .unwrap()
                 .unwrap();
             assert_eq!(
                 context.invoker,
-                Some(tilo_actions::ActionInvoker::person("person:guest"))
+                Some(tilo_actions::ActionInvoker::person("guest"))
             );
             assert_eq!(invoker_participant(Some(&context)), None);
             assert_eq!(
@@ -183,16 +183,16 @@ mod tests {
 
         phase an_execution_cannot_borrow_another_actor_or_agent_view;
         {
-            let caller = tilo_actions::remote::Caller::local_person("person:owner").in_new_execution();
+            let caller = tilo_actions::remote::Caller::local_person("owner").in_new_execution();
             let execution =
                 ExecutionScope::for_call(&caller, tilo_actions::InvocationId::new()).unwrap();
             for actor in [
-                BrokerActor::person("person:other"),
-                BrokerActor::agent("person:owner"),
+                BrokerActor::person("other"),
+                BrokerActor::agent("owner"),
             ] {
                 assert!(host_set_invoker(Some(forged()), &actor, None, Some(&execution)).is_err());
             }
-            let actor = BrokerActor::person("person:owner");
+            let actor = BrokerActor::person("owner");
             let context = host_set_invoker(Some(forged()), &actor, None, Some(&execution))
                 .unwrap()
                 .unwrap();
