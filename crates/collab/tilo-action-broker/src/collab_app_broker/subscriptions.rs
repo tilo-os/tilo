@@ -53,7 +53,6 @@ pub(super) fn admitted_ops(
         if let Ok(op_bytes) = postcard::to_stdvec(op) {
             let _ = tx.send(OpEnvelope {
                 op_bytes,
-                from_user_id: hex::encode(op.author.as_bytes()),
                 admission: recorded_admission(op),
             });
         }
@@ -590,7 +589,6 @@ mod tests {
         state.fanout_to_route(
             &super::super::CollabEvent::Document {
                 envelope: Box::new(op),
-                from_user_id: "writer".into(),
                 decrypted_payload: None,
             },
             u64::MAX,

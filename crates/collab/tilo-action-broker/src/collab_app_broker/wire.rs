@@ -2073,7 +2073,6 @@ impl WireConnection {
                         tokio::task::spawn_local(pump(feed, id, frames, |envelope: OpEnvelope| {
                             Some(Event::Op {
                                 op: envelope.op_bytes,
-                                from_user_id: envelope.from_user_id,
                                 admission: envelope.admission,
                             })
                         }))

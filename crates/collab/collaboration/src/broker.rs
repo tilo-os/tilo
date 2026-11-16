@@ -4792,7 +4792,6 @@ async fn spawn_op_stream(
                 let (author, seq) = (envelope.author, envelope.seq);
                 let arrived = Arrived {
                     envelope,
-                    from_user_id: event.from_user_id,
                     admission: event.admission,
                 };
                 let signed = match signed_document_event(arrived, &encryption) {
@@ -6890,7 +6889,6 @@ fn complete_document_event(
 ) -> Option<CollabEvent> {
     let CollabEvent::Document {
         envelope,
-        from_user_id,
         decrypted_payload,
     } = event
     else {
@@ -6900,7 +6898,6 @@ fn complete_document_event(
         DocumentReassembly::complete(reassembler, &envelope, decrypted_payload)?;
     Some(CollabEvent::Document {
         envelope,
-        from_user_id,
         decrypted_payload,
     })
 }

@@ -275,7 +275,6 @@ mod tests {
     fn event(op: &SignedOp) -> CollabEvent {
         CollabEvent::Document {
             envelope: Box::new(op.clone()),
-            from_user_id: "peer".to_owned(),
             decrypted_payload: None,
         }
     }

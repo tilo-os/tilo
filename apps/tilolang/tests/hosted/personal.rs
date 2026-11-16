@@ -115,7 +115,7 @@ fn relay(from: &Session, to: &mut Session) {
         relayed += 1;
         to.inbox()
             .borrow_mut()
-            .push_back(delivered(&route, "ada", &mutation).expect("the change encodes"));
+            .push_back(delivered(&route, &mutation).expect("the change encodes"));
     }
     assert!(
         relayed > 0,

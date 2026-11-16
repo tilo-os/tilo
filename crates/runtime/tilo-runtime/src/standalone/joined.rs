@@ -516,7 +516,6 @@ impl Joined {
                 // route, and so does every held write it brought what that
                 // write waited for.
                 for write in input.app_writes(&report) {
-                    let author = write.envelope.author.as_bytes().to_owned();
                     collab_inbound::deliver(
                         &self.channels,
                         &self.fanout,
@@ -529,7 +528,6 @@ impl Joined {
                             envelope: write.envelope,
                             own: write.own,
                         },
-                        |_| format!("peer@{}", hex::encode(author)),
                     );
                 }
             }

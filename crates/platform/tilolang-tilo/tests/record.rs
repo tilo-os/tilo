@@ -59,7 +59,6 @@ type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
 /// other as the signed document envelope the broker delivers.
 struct Relay {
     route: RouteSpec,
-    me: String,
     mine: Inbox,
     theirs: Inbox,
     joined: Option<RouteSpec>,
@@ -76,7 +75,7 @@ impl PeerTransport for Relay {
                 self.joined = Some(self.route.clone());
             }
             CollabRequest::Document { mutation, .. } => {
-                let delivered = delivered(&self.route, &self.me, &mutation)?;
+                let delivered = delivered(&self.route, &mutation)?;
                 self.theirs.borrow_mut().push_back(delivered);
             }
             _ => {}
@@ -93,11 +92,10 @@ impl PeerTransport for Relay {
     }
 }
 
-/// `mutation`, sent by `me` on `route`, as the signed document envelope the broker delivers to
-/// the route's other replicas.
+/// `mutation` sent on `route`, as the signed document envelope the broker delivers to the
+/// route's other replicas.
 fn delivered(
     route: &RouteSpec,
-    me: &str,
     mutation: &collab_types::DocumentMutation,
 ) -> Result<CollabEvent, String> {
     let record = route.record.as_deref().unwrap_or("");
@@ -114,7 +112,6 @@ fn delivered(
     envelope.signature = collab_types::Signature::from_bytes([0; 64]);
     Ok(CollabEvent::Document {
         envelope: Box::new(envelope),
-        from_user_id: me.to_owned(),
         decrypted_payload: None,
     })
 }
@@ -126,7 +123,6 @@ type Queue = Arc<Mutex<VecDeque<CollabEvent>>>;
 /// it takes reaches the other replica as [`Relay`] relays it.
 struct Crowded {
     route: RouteSpec,
-    me: String,
     mine: Queue,
     theirs: Queue,
     busy: Arc<AtomicBool>,
@@ -147,7 +143,7 @@ impl CollabTransport for Crowded {
                 if self.busy.load(Ordering::SeqCst) {
                     return Err(TransportError::Busy);
                 }
-                let delivered = delivered(&self.route, &self.me, &mutation).unwrap();
+                let delivered = delivered(&self.route, &mutation).unwrap();
                 self.theirs.lock().unwrap().push_back(delivered);
             }
             _ => {}
@@ -187,7 +183,6 @@ fn window(
 ) -> Window {
     let manager = CollaborationManager::with_peer_transport(Relay {
         route: route.clone(),
-        me: me.to_owned(),
         mine: Rc::clone(mine),
         theirs: Rc::clone(theirs),
         joined: None,
@@ -477,10 +472,9 @@ fn what_the_collab_client_cannot_take_yet_is_kept_and_reaches_the_workspace_once
     let platform = Rc::new(Counter {
         ids: RefCell::new(String::new()),
     });
-    let crowded = |me: &str, mine: &Queue, theirs: &Queue, busy: &Arc<AtomicBool>| {
+    let crowded = |mine: &Queue, theirs: &Queue, busy: &Arc<AtomicBool>| {
         CollaborationManager::with_transport(Box::new(Crowded {
             route: route.clone(),
-            me: me.to_owned(),
             mine: Arc::clone(mine),
             theirs: Arc::clone(theirs),
             busy: Arc::clone(busy),
@@ -488,14 +482,14 @@ fn what_the_collab_client_cannot_take_yet_is_kept_and_reaches_the_workspace_once
         }))
     };
     let mut ada = window_over(
-        crowded("ada", &ada_inbox, &grace_inbox, &full),
+        crowded(&ada_inbox, &grace_inbox, &full),
         "ada",
         &route,
         &platform,
         automerge::AutoCommit::new(),
     );
     let mut grace = window_over(
-        crowded("grace", &grace_inbox, &ada_inbox, &never),
+        crowded(&grace_inbox, &ada_inbox, &never),
         "grace",
         &route,
         &platform,

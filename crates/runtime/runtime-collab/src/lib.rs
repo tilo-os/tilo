@@ -657,13 +657,10 @@ impl NearbyTransferReply {
     }
 }
 
-/// A signed op as delivered by [`OpStream::read`]. `from_user_id` is the
-/// broker's attribution string for the author—duplicated on the RPC so
-/// non-Rust clients can route by author without decoding the envelope.
+/// A signed op as delivered by [`OpStream::read`].
 #[derive(Debug, Clone)]
 pub struct OpEvent {
     pub op: Vec<u8>,
-    pub from_user_id: String,
     /// The broker's verdict for the op on its channel.
     pub admission: OpAdmission,
 }

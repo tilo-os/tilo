@@ -154,7 +154,7 @@ fn a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again(
     session
         .inbox()
         .borrow_mut()
-        .push_back(delivered(&chunk_route, "bea", &snapshot).expect("the change encodes"));
+        .push_back(delivered(&chunk_route, &snapshot).expect("the change encodes"));
     session.settle();
     assert!(
         session.index_whole(),
@@ -205,7 +205,7 @@ fn a_chunk_that_arrives_after_the_live_window_opened_is_caught_up_off_its_frame(
     session
         .inbox()
         .borrow_mut()
-        .push_back(delivered(&chunk_route, "bea", &snapshot).expect("the change encodes"));
+        .push_back(delivered(&chunk_route, &snapshot).expect("the change encodes"));
     session.settle();
     assert!(
         session.catch_ups() > 0,

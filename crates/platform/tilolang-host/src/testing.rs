@@ -103,16 +103,15 @@ impl Bus {
         joined.push((route, person, inbox));
     }
 
-    /// Delivers `mutation`, which `from` sent on `route` as `person`, to the other connections
-    /// joined on that route.
+    /// Delivers `mutation`, which `from` sent on `route`, to the other connections joined on that
+    /// route.
     fn relay(
         &self,
         route: &RouteSpec,
         from: &Inbox,
-        person: &str,
         mutation: &DocumentMutation,
     ) -> Result<(), String> {
-        let delivery = delivered(route, person, mutation)?;
+        let delivery = delivered(route, mutation)?;
         for (joined, _, inbox) in self.joined.borrow().iter() {
             if joined == route && !Rc::ptr_eq(inbox, from) {
                 inbox.borrow_mut().push_back(delivery.clone());
@@ -145,17 +144,13 @@ impl Bus {
     }
 }
 
-/// `mutation`, sent by `person` on `route`, as the document envelope the broker delivers to the
-/// route's other replicas.
+/// `mutation` sent on `route`, as the document envelope the broker delivers to the route's other
+/// replicas.
 ///
 /// # Errors
 ///
 /// Returns the error a mutation too large to carry encodes to, as the connection reports it.
-pub fn delivered(
-    route: &RouteSpec,
-    person: &str,
-    mutation: &DocumentMutation,
-) -> Result<CollabEvent, String> {
+pub fn delivered(route: &RouteSpec, mutation: &DocumentMutation) -> Result<CollabEvent, String> {
     let record = route.record.as_deref().unwrap_or("");
     let workspace = route.cluster_id.to_string();
     let mut envelope = collab_types::SignedOp::new_unsigned(
@@ -170,7 +165,6 @@ pub fn delivered(
     envelope.signature = collab_types::Signature::from_bytes([0; 64]);
     Ok(CollabEvent::Document {
         envelope: Box::new(envelope),
-        from_user_id: person.to_owned(),
         decrypted_payload: None,
     })
 }
@@ -278,8 +272,7 @@ impl PeerTransport for Broker {
                 if let Some(commit) = commit {
                     self.actions.borrow_mut().push(CommitHistory::of(commit));
                 }
-                self.bus
-                    .relay(&self.route, &self.inbox, &self.person, mutation)?;
+                self.bus.relay(&self.route, &self.inbox, mutation)?;
             }
             CollabRequest::Presence { key, payload } => {
                 self.bus
@@ -313,8 +306,7 @@ impl PeerTransport for Broker {
     /// connections joined there.
     fn send_to_route(&mut self, route: RouteSpec, request: CollabRequest) -> Result<(), String> {
         if let CollabRequest::Document { mutation, .. } = &request {
-            self.bus
-                .relay(&route, &self.inbox, &self.person, mutation)?;
+            self.bus.relay(&route, &self.inbox, mutation)?;
         }
         self.routed.borrow_mut().push((route, request));
         Ok(())

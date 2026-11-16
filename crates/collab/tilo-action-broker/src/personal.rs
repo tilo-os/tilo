@@ -289,7 +289,6 @@ async fn deliver(
                 envelope: frame.envelope,
                 own: None,
             },
-            |_| person.clone(),
         );
         if delivered != collab_inbound::Delivery::Done {
             tracing::debug!(?delivered, "a write of the person's own was not taken");

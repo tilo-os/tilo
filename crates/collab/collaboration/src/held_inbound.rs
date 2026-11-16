@@ -158,7 +158,6 @@ async fn deliver_owed(route: &SdkRoute, inbound_tx: &InboundBridge) -> bool {
                     continue;
                 }
                 let arrived = Arrived {
-                    from_user_id: hex::encode(op.author.as_bytes()),
                     envelope: op,
                     // The local broker pages what it admitted.
                     admission: OpAdmission::CleartextAdmitted,

@@ -434,7 +434,6 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
         );
         app.apply_collab_event_for_test(CollabEvent::Document {
             envelope: Box::new(envelope.clone()),
-            from_user_id: "peer".into(),
             decrypted_payload: None,
         });
         app.apply_collab_event_for_test(CollabEvent::ScrollbackBatch {
@@ -1356,7 +1355,6 @@ tilo_test_env::scenario! {
                     &binding.broker_route().unwrap(),
                     collab_types::DocumentMutation::Snapshot(peer.save()),
                 )),
-                from_user_id: "peer".into(),
                 decrypted_payload: None,
             });
         layout(&mut fixture.app);

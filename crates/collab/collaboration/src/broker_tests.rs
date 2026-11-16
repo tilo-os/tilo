@@ -300,13 +300,13 @@ pub struct SeedScrollback {
 }
 
 /// `(op bytes, author, verdict)` the fake host's op topic delivers.
-type OpBacklog = Rc<RefCell<Vec<(Vec<u8>, String, OpAdmission)>>>;
+type OpBacklog = Rc<RefCell<Vec<(Vec<u8>, OpAdmission)>>>;
 
 /// What a fake host's channels start with, and what it records.
 #[derive(Default)]
 pub struct FakeBroker {
     pub captures: SharedCaptures,
-    pub op_backlog: Vec<(Vec<u8>, String, OpAdmission)>,
+    pub op_backlog: Vec<(Vec<u8>, OpAdmission)>,
     pub presence_backlog: Vec<SeedPresence>,
     pub context_backlog: Vec<SeedContext>,
     pub terminate_context_stream: bool,
@@ -640,7 +640,7 @@ impl FakeHost {
                             let mut backlog = backlog.borrow_mut();
                             (!backlog.is_empty()).then(|| backlog.remove(0))
                         };
-                        let Some((op, from_user_id, admission)) = next else {
+                        let Some((op, admission)) = next else {
                             // Clients that outrun the backlog wait, as on
                             // a quiet channel.
                             return std::future::pending().await;
@@ -649,11 +649,7 @@ impl FakeHost {
                         if let Some(delay) = delay {
                             tokio::time::sleep(delay).await;
                         }
-                        feed.send(Event::Op {
-                            op,
-                            from_user_id,
-                            admission,
-                        });
+                        feed.send(Event::Op { op, admission });
                     }
                 })
             }
@@ -2891,11 +2887,7 @@ fn a_member_waiting_for_keys_shows_the_cleartext_the_broker_admitted() {
             crate::time::SystemTime::UNIX_EPOCH,
             seq,
         );
-        (
-            postcard::to_stdvec(&op).unwrap(),
-            "host".to_owned(),
-            admission,
-        )
+        (postcard::to_stdvec(&op).unwrap(), admission)
     };
     let broker = FakeBroker {
         op_backlog: vec![
@@ -3130,7 +3122,6 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
         })),
         op_backlog: vec![(
             postcard::to_stdvec(&op).unwrap(),
-            "peer".to_owned(),
             OpAdmission::EncryptionRequired,
         )],
         ..FakeBroker::default()
@@ -5205,17 +5196,12 @@ tilo_test_env::scenario! {
         let event = signed_document_event(
             Arrived {
                 envelope: op,
-                from_user_id: "peer-alice".into(),
                 admission: OpAdmission::CleartextAdmitted,
             },
             &plain_route_keys(),
         )
         .unwrap()
         .event;
-        assert!(matches!(
-            &event,
-            CollabEvent::Document { from_user_id, .. } if from_user_id == "peer-alice"
-        ));
         assert!(matches!(
             event.document_mutation(),
             Some(Ok(DocumentMutation::Snapshot(data))) if data == b"whole document"
@@ -5288,7 +5274,6 @@ tilo_test_env::scenario! {
             let signed = signed_document_event(
                 Arrived {
                     envelope: op.clone(),
-                    from_user_id: "alice".into(),
                     admission: OpAdmission::EncryptionRequired,
                 },
                 &endpoint,
@@ -5316,7 +5301,6 @@ tilo_test_env::scenario! {
         let refusal = |op| match signed_document_event(
             Arrived {
                 envelope: op,
-                from_user_id: "alice".into(),
                 admission: OpAdmission::EncryptionRequired,
             },
             &endpoint,
@@ -5379,7 +5363,6 @@ tilo_test_env::scenario! {
         let event = signed_document_event(
             Arrived {
                 envelope: op,
-                from_user_id: "alice".into(),
                 admission: OpAdmission::EncryptionRequired,
             },
             &carol_endpoint,
@@ -5552,11 +5535,7 @@ tilo_test_env::scenario! {
         let op_bytes = postcard::to_stdvec(&op).unwrap();
 
         let broker = FakeBroker {
-            op_backlog: vec![(
-                op_bytes,
-                "peer-bob".to_owned(),
-                OpAdmission::CleartextAdmitted,
-            )],
+            op_backlog: vec![(op_bytes, OpAdmission::CleartextAdmitted)],
             ..FakeBroker::default()
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
@@ -5570,21 +5549,16 @@ tilo_test_env::scenario! {
         let signed: Vec<_> = events
             .into_iter()
             .filter_map(|e| match e {
-                CollabEvent::Document {
-                    envelope,
-                    from_user_id,
-                    ..
-                } => Some((envelope, from_user_id)),
+                CollabEvent::Document { envelope, .. } => Some(envelope),
                 _ => None,
             })
             .collect();
         assert_eq!(signed.len(), 1, "one document event expected");
-        assert_eq!(signed[0].1, "peer-bob");
         assert_eq!(
-            collab_types::DocumentMutation::decode(&signed[0].0.payload).unwrap(),
+            collab_types::DocumentMutation::decode(&signed[0].payload).unwrap(),
             collab_types::DocumentMutation::Incremental(b"remote-payload".to_vec())
         );
-        assert_eq!(signed[0].0.seq, 42);
+        assert_eq!(signed[0].seq, 42);
     }
 
     phase context_stream_translates_to_context_event;

@@ -707,7 +707,6 @@ fn authorize_join_certificate(
 #[derive(Clone, Debug)]
 struct OpEnvelope {
     op_bytes: Vec<u8>,
-    from_user_id: String,
     admission: OpAdmission,
 }
 
@@ -6565,19 +6564,9 @@ impl AppBrokerState {
             .filter(|(k, _)| route.delivers_to(&CrdtRoute::from_channel_key(k)))
             .map(|(_, subs)| subs);
         match event {
-            CollabEvent::Document {
-                envelope,
-                from_user_id,
-                ..
-            } => {
+            CollabEvent::Document { envelope, .. } => {
                 self.wake_committed_reads(route);
-                Self::fanout_signed_incremental(
-                    channels,
-                    except,
-                    envelope,
-                    from_user_id,
-                    admission,
-                );
+                Self::fanout_signed_incremental(channels, except, envelope, admission);
             }
             CollabEvent::RemoteCursorMoved { member, x, y } => {
                 Self::fanout_cursor_moved(channels, except, member, *x, *y);
@@ -6641,7 +6630,6 @@ impl AppBrokerState {
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
         envelope: &SignedOp,
-        from_user_id: &str,
         admission: OpAdmission,
     ) {
         let op_bytes = match postcard::to_stdvec(envelope) {
@@ -6653,7 +6641,6 @@ impl AppBrokerState {
         };
         let env = OpEnvelope {
             op_bytes,
-            from_user_id: from_user_id.to_owned(),
             admission,
         };
         for subs in channels {
@@ -8508,10 +8495,8 @@ fn handle_signed_op_send_for_artifact(
             if !state.durable_owner_required {
                 state.publisher().signed_document(route, envelope.clone());
             }
-            let from_user_id = AppBrokerState::member_id(verified_identity).key();
             let event = CollabEvent::Document {
                 envelope: Box::new(envelope),
-                from_user_id,
                 decrypted_payload: None,
             };
             if let Some(t) = state.fanout.upgrade() {
@@ -13563,7 +13548,6 @@ pub mod tests {
         state.fanout_to_route(
             &CollabEvent::Document {
                 envelope: Box::new(envelope),
-                from_user_id: "peer@42".into(),
                 decrypted_payload: None,
             },
             1,

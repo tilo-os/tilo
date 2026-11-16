@@ -97,7 +97,6 @@ pub(super) type HeldFrame = (Vec<u8>, Vec<collab_types::ChangeClaim>);
 #[derive(Debug, Clone)]
 pub(super) struct Arrived {
     pub(super) envelope: SignedOp,
-    pub(super) from_user_id: String,
     pub(super) admission: OpAdmission,
 }
 
@@ -555,7 +554,6 @@ mod tests {
     fn held(envelope: SignedOp) -> Arrived {
         Arrived {
             envelope,
-            from_user_id: "peer".into(),
             admission: OpAdmission::EncryptionRequired,
         }
     }

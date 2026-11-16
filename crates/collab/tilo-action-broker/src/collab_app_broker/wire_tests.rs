@@ -371,19 +371,13 @@ async fn a_signed_change_crosses_the_wire_to_the_channel_subscribers() {
             );
             let HostFrame::Event {
                 subscription: delivered,
-                event:
-                    Event::Op {
-                        op: bytes,
-                        from_user_id,
-                        ..
-                    },
+                event: Event::Op { op: bytes, .. },
             } = watcher.frame().await
             else {
                 panic!("the watcher receives the change");
             };
             assert_eq!(delivered, subscription);
             assert_eq!(postcard::from_bytes::<SignedOp>(&bytes).unwrap(), op);
-            assert!(!from_user_id.is_empty());
 
             let channel = watcher.channel;
             assert!(matches!(

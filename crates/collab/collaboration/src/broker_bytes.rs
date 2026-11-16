@@ -511,11 +511,9 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         }
         CollabEvent::Document {
             envelope,
-            from_user_id,
             decrypted_payload,
         } => {
             meter.bytes(&envelope.payload);
-            meter.string_capacity(from_user_id);
             if let Some(payload) = decrypted_payload {
                 meter.bytes(payload);
             }
