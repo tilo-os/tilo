@@ -29,14 +29,15 @@ use tilo_render_protocol::patch::local::pair;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
-use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
+use tilolang_tilo::instance::{Config, Instance, Mode};
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
 use tilolang_tilo::platform_apps::platform_packages;
 use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::runtime::origin::OriginWrite;
-use tilolang_tilo::runtime::{Delivery, NameHost, Principal, ResourceRef, Value};
+use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 use tilolang_tilo::tilolang::Compiled;
 
+use crate::session_platform::{Loads, OnSession, Person};
 use crate::{Placement, WidgetHost};
 
 /// What a shell reads of the session and the names the session publishes it by: every host's,
@@ -747,12 +748,11 @@ impl Origin for SessionOrigin {
 /// What a shell's instance asks of the session's process.
 struct ShellPlatform {
     packages: Rc<Vec<Compiled>>,
-    waker: Waker,
     /// Where what the composed views change of other apps' resources goes.
     link: Rc<SessionLink>,
 }
 
-impl Platform for ShellPlatform {
+impl Loads for ShellPlatform {
     fn load(&self, host: &Host) -> u64 {
         // The device's and Settings' packages first: the shell's views read their resources
         // (`device.sound`) from the readings the session publishes, and pressing their actions
@@ -809,71 +809,6 @@ impl Platform for ShellPlatform {
             verbs: session_verbs(),
         });
         0
-    }
-
-    fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
-        tilo_ui_host::i18n::word(id, args, id)
-    }
-
-    /// The time of day as the person reads a clock: the shell's views run in the session, which
-    /// holds their settings.
-    fn clock(&self, hour: u32, minute: u32) -> String {
-        ui::clock::hour_minute(hour, minute)
-    }
-
-    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
-        if window {
-            tilo_ui_host::i18n::add_catalogues(catalogues);
-        } else {
-            tilo_ui_host::i18n::add_shared_catalogues(catalogues);
-        }
-    }
-
-    fn words_revision(&self) -> u64 {
-        tilo_ui_host::i18n::revision()
-    }
-
-    fn now(&self) -> String {
-        ui::clock::local_now()
-            .with_timezone(&chrono::Utc)
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string()
-    }
-
-    fn zone(&self) -> i64 {
-        i64::from(ui::clock::local_now().offset().local_minus_utc())
-    }
-
-    fn zone_name(&self) -> Option<String> {
-        ui::time::local_zone_name()
-    }
-
-    /// The day the person's region starts its week on, as they chose it in Settings: the shell's
-    /// views run in the session, which holds their formats, so a day's `start_of_week()` goes
-    /// back to the day their calendar starts a week on.
-    fn week_start(&self) -> i64 {
-        i64::from(ui::format::first_weekday().num_days_from_monday())
-    }
-
-    fn waker(&self) -> Waker {
-        std::sync::Arc::clone(&self.waker)
-    }
-}
-
-/// The person at the device, as the shell names them.
-struct Person(String);
-
-impl NameHost for Person {
-    fn name(&self, who: &Principal) -> String {
-        if who.0.is_empty() {
-            self.0.clone()
-        } else if who.1.trim().is_empty() {
-            // Named by what the actor is: an app by its own name in the person's language, an
-            // agent by its name, a person by theirs. Never a principal id.
-            ui::history_source::participant_name(&who.0)
-        } else {
-            who.1.clone()
-        }
     }
 }
 
@@ -1047,10 +982,12 @@ impl ShellPart {
                 // The shell's whole screen, not whatever root the package lists first.
                 root: screen_layer(),
             },
-            Rc::new(ShellPlatform {
-                packages: Rc::new(packages),
+            Rc::new(OnSession {
+                loads: ShellPlatform {
+                    packages: Rc::new(packages),
+                    link: Rc::clone(&link),
+                },
                 waker,
-                link: Rc::clone(&link),
             }),
             Rc::new(Person(person.to_owned())),
             Box::new(app_end),

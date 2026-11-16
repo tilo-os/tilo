@@ -12,6 +12,7 @@
 use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service as _, Started};
 use tilolang_tilo::records_service::RecordService;
+use tilolang_tilo::runtime::Principal;
 
 use super::tests_support::{part_with, reading_with_windows};
 use super::*;

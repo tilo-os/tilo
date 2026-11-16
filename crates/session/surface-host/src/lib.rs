@@ -13,6 +13,7 @@ mod commit;
 mod desktop;
 mod frames;
 mod i18n;
+mod session_platform;
 pub mod shell_part;
 pub mod slot_view;
 mod well_policy;
