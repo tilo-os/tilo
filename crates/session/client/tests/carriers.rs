@@ -144,7 +144,7 @@ impl Ada {
             .unwrap();
         let approved = approve_one_over(host, &self.root, &self.laptop).await;
         assert_eq!(approved, shown, "the person compares codes");
-        let (cert, host_cert) = certifying.await.unwrap().unwrap();
+        let (cert, host_cert, _) = certifying.await.unwrap().unwrap();
         (key, cert, host_cert)
     }
 
@@ -235,7 +235,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     .await
     .unwrap()
     .expect("an approval issues a certificate");
-    let (cert, host_cert) = asking.await.unwrap().unwrap();
+    let (cert, host_cert, _) = asking.await.unwrap().unwrap();
     assert_eq!(cert, issued);
     assert_eq!(cert.device_public_key, key.verifying_key().to_bytes());
     assert_eq!(

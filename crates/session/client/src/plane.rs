@@ -284,6 +284,10 @@ pub enum Event {
         peer: EndpointId,
         msg: Box<NeighbourMsg>,
     },
+    /// The person's workspace list, as their host keeps it now: sent whenever
+    /// a workspace of theirs is made, joined, renamed, left or deleted, so no
+    /// device has to ask the host again.
+    Personal(Box<tilo_relay_session::workspaces::PersonalList>),
 }
 
 /// What the host said about this device's calls.

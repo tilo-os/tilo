@@ -695,6 +695,17 @@ pub enum Envelope {
         workspace_id: WorkspaceId,
         refusal: crate::refusal::Refusal,
     },
+
+    /// The person's workspace list, as their host keeps it now: sent to every
+    /// session of one of their devices whenever the set of workspaces they
+    /// have changes (one made, one they joined, one renamed, one they left or
+    /// was deleted), so a device reads it as it changes rather than asking
+    /// again. `list` is the `PersonalList` (`tilo_relay_session::workspaces`)
+    /// as its host action answers it, in JSON.
+    PersonalList {
+        #[serde(with = "serde_bytes")]
+        list: Vec<u8>,
+    },
 }
 
 /// A member's own record a device opens ([`Envelope::OpenRecord`]): the app
@@ -796,6 +807,7 @@ impl Envelope {
             Self::HostSaid { .. } => "HostSaid",
             Self::KeyFollower => "KeyFollower",
             Self::RecordContentRefused { .. } => "RecordContentRefused",
+            Self::PersonalList { .. } => "PersonalList",
         }
     }
 
@@ -858,7 +870,8 @@ impl Envelope {
             | Self::AgentSessionStopped
             | Self::Entered(_)
             | Self::KeyFollower
-            | Self::FetchGrant { .. } => None,
+            | Self::FetchGrant { .. }
+            | Self::PersonalList { .. } => None,
         }
     }
 }

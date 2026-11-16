@@ -416,21 +416,17 @@ async fn keep_peer<E: Enter>(shared: Arc<Shared<E>>, home: PathBuf, state: PathB
     };
     let _ = PEER.set(Arc::clone(&peer));
     let mut shown: Option<Arc<super::Session>> = None;
+    // What the host sends this session: the person's workspaces as they are
+    // now, and a wake when one arrives.
+    let mut personal: Option<tilo_session_client::Events> = None;
+    let woken = Arc::new(tokio::sync::Notify::new());
     loop {
         match shared.session(false).await {
             Ok(session) => {
                 *NOT_IN
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-                if shown
-                    .as_ref()
-                    .is_none_or(|shown| !Arc::ptr_eq(shown, &session))
-                {
-                    peer.close().await;
-                    shown = Some(Arc::clone(&session));
-                }
-                // The folders as the person set them last (`tilo folders`).
-                peer.reconcile(&session.device).await;
+                follow_session(&peer, &session, &mut shown, &mut personal, &woken).await;
             }
             Err(why) => {
                 *NOT_IN
@@ -438,8 +434,53 @@ async fn keep_peer<E: Enter>(shared: Arc<Shared<E>>, home: PathBuf, state: PathB
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(why);
             }
         }
-        tokio::time::sleep(PEER_LOOK).await;
+        tokio::select! {
+            // The host sent a list: the folders follow now, rather than at the
+            // next look, and the session is looked at again as it changes.
+            () = woken.notified() => {}
+            () = tokio::time::sleep(PEER_LOOK) => {}
+        }
     }
+}
+
+/// Follow one session of the person's device: the folders as `tilo folders`
+/// set them, and the person's workspaces as the host sends them. A session
+/// this holder did not hold before asks for the list once, so a workspace made
+/// while the computer was away is not missed; after that every list the host
+/// sends is kept.
+async fn follow_session(
+    peer: &crate::peer::Peer,
+    session: &Arc<super::Session>,
+    shown: &mut Option<Arc<super::Session>>,
+    personal: &mut Option<tilo_session_client::Events>,
+    woken: &Arc<tokio::sync::Notify>,
+) {
+    if shown
+        .as_ref()
+        .is_none_or(|shown| !Arc::ptr_eq(shown, session))
+    {
+        peer.close().await;
+        shown.replace(Arc::clone(session));
+        peer.forget_personal().await;
+        let events = session
+            .device
+            .session()
+            .events_where(|event| matches!(event, tilo_session_client::Event::Personal(_)));
+        let woken = Arc::clone(woken);
+        session
+            .device
+            .session()
+            .on_event(&events, Arc::new(move || woken.notify_one()));
+        *personal = Some(events);
+    }
+    if let Some(events) = personal {
+        for event in events.drain() {
+            if let tilo_session_client::Event::Personal(list) = event {
+                peer.keep_personal(&session.device, &list).await;
+            }
+        }
+    }
+    peer.reconcile(&session.device).await;
 }
 
 /// Once no connection has been open for `linger`; never without one.

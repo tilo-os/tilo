@@ -357,7 +357,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     });
     let shown = code_rx.await.unwrap();
     assert_eq!(approve_agent(&host, &root, &laptop).await, shown);
-    let (agent_cert, _) = certifying.await.unwrap().unwrap();
+    let (agent_cert, _, _) = certifying.await.unwrap().unwrap();
     assert_eq!(
         agent_cert.capabilities,
         CertificationPolicy::agent().ceiling

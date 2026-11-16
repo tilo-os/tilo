@@ -230,7 +230,9 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::AgentSessionAnswer { .. }
         | Envelope::AgentSessionStopped
         | Envelope::Entered(_)
-        | Envelope::FetchGrant { .. } => false,
+        | Envelope::FetchGrant { .. }
+        // The person's list is the session's own, not one workspace's.
+        | Envelope::PersonalList { .. } => false,
     }
 }
 

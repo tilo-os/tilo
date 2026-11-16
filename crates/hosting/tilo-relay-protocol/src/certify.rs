@@ -8,7 +8,7 @@
 //! requester → host:  CertifyOpen::Request(CertificationRequest)
 //! host → requester:  CertifyReply::Pending { pairing_code }
 //!                    … later, on the same stream …
-//! host → requester:  CertifyReply::Issued { cert, host_cert }
+//! host → requester:  CertifyReply::Issued { cert, host_cert, label }
 //!                  | CertifyReply::Denied { reason } | CertifyReply::Expired
 //!
 //! approver → host:   CertifyOpen::Approver(Hello)   then the usual
@@ -66,11 +66,36 @@ pub const CERTIFY_ALPN: &[u8] = b"tilo-device-certify/1";
 pub const MAX_CERTIFY_FRAME_BYTES: usize = 16 * 1024;
 /// Requests one host holds at once; further requests are refused.
 pub const MAX_PENDING_CERTIFICATIONS: usize = 32;
-/// Why a host refuses a request whose device name another of the person's
-/// devices already reads by. The computer asking adds the next number to its
-/// name and asks again (`Claude Code on laptop 2`), so two computers set up
-/// the same way still read apart.
-pub const DEVICE_LABEL_TAKEN: &str = "that name is another of your devices";
+/// The number the host adds to a device name another of the person's devices
+/// already reads by ([`numbered_label`]), so two devices set up the same way
+/// still read apart.
+pub const MAX_NUMBERED_LABELS: u32 = 999;
+
+/// `base` numbered `n`: the name itself for the first, then `Laptop 2`,
+/// `Laptop 3`, …, within what a certificate's label carries.
+#[must_use]
+pub fn numbered_label(base: &str, n: u32) -> String {
+    let room = tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
+    if n < 2 {
+        return fitted(base, room);
+    }
+    let suffix = format!(" {n}");
+    format!(
+        "{}{suffix}",
+        fitted(base, room.saturating_sub(suffix.len()))
+    )
+}
+
+/// `text` cut to `room` bytes without splitting a character: what a
+/// certificate's label carries.
+#[must_use]
+fn fitted(text: &str, room: usize) -> String {
+    let mut end = room.min(text.len());
+    while !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    text.get(..end).unwrap_or_default().to_owned()
+}
 
 /// First frame on a certification stream. Its variants' order is their tag
 /// on the wire: a new opener goes last, and the ones before keep theirs.
@@ -108,6 +133,10 @@ pub enum CertifyReply {
         /// The host's own certificate, which the device pins for later
         /// sessions.
         host_cert: DeviceCert,
+        /// The name the host gave the device: the one it proposed when no
+        /// other device of the person reads by it, else the next numbered
+        /// name (`Laptop 2`), so two devices set up the same way read apart.
+        label: String,
     },
     /// An approver declined, or the host refused the request.
     Denied {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {certifyUnderAFreeName, connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
+import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 import {memberText} from './json-text.mjs';
 import {forgetSiteHosts, nameSiteHost, STALE_SITE_HOST, staleSiteHost} from './site-host.mjs';
@@ -1399,18 +1399,10 @@ test('the peer starts from the certificate text, keeping nanosecond timestamps e
   assert.equal(withStartFields(certified, {displayName: undefined}), certified);
 });
 
-test('a second browser of the person pairs under the next free name, as a computer does', async () => {
-  const taken = new Set(['Chrome on Linux', 'Chrome on Linux 2']);
-  const asked = [];
-  const certify = async name => {
-    asked.push(name);
-    if (taken.has(name)) throw new Error(`that name is another of your devices: a device of yours is already called “${name}”`);
-    return {cert: name};
-  };
-  const paired = await certifyUnderAFreeName('Chrome on Linux', certify);
-  assert.deepEqual(paired, {certified: {cert: 'Chrome on Linux 3'}, enrolled: 'Chrome on Linux 3'});
-  assert.deepEqual(asked, ['Chrome on Linux', 'Chrome on Linux 2', 'Chrome on Linux 3']);
-  // Any other refusal is the host's answer, asked once.
-  await assert.rejects(certifyUnderAFreeName('Firefox on Linux', async () => { throw new Error('the pairing link expired'); }),
-    /expired/);
+test('a device shows the name the host gave it, not the one it asked for', async () => {
+  const runtime = fakeRuntime();
+  runtime.certifyDevice = async () => `{"cert":${LINUX_CERT},"hostCert":{"issued_at_ns":${NANOS}},"label":"Browser on Cloud 2"}`;
+  const peer = await connect(options(runtime, memoryStore()));
+  assert.equal(peer.member.label, 'Browser on Cloud 2');
+  await peer.dispose();
 });

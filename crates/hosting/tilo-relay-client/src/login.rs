@@ -243,7 +243,9 @@ pub struct SignIn {
     pub link: PairingLink,
     /// The agent that runs here, as the person's page names it.
     pub agent: String,
-    /// This device's label, as the person's devices list it.
+    /// This device's label, as the person's devices list it: the name the host
+    /// gave it, which is the one asked for unless another device of the
+    /// person reads by it already.
     pub label: String,
     /// Where the workspace's host is reached.
     pub host: Host,
@@ -282,7 +284,7 @@ pub async fn sign_in(
         }
     };
     let invite = link.invite.unwrap_or([0; 16]);
-    let (cert, host_cert) = crate::certify::certify(
+    let (cert, host_cert, label) = crate::certify::certify(
         &host,
         link.user_public_key,
         label,
@@ -294,7 +296,7 @@ pub async fn sign_in(
     Ok(SignIn {
         link: link.clone(),
         agent: agent.to_owned(),
-        label: label.to_owned(),
+        label,
         host,
         cert,
         host_cert,

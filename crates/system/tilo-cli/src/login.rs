@@ -27,7 +27,6 @@ use tilo_relay_client::LinkError;
 use tilo_relay_client::https::{self, Origin};
 use tilo_relay_client::login::{PairingLink, SignIn, entry_at, sign_in};
 use tilo_relay_client::login_code;
-use tilo_relay_protocol::certify::DEVICE_LABEL_TAKEN;
 use tilo_relay_protocol::login_code::{self as protocol, Claimed, Report, Resolved, Step};
 use tilo_relay_protocol::web::API_PREFIX;
 use tilo_session_client::device::Device as Entered;
@@ -302,53 +301,38 @@ pub(crate) fn hostname() -> String {
         .unwrap_or_else(|| "this computer".to_owned())
 }
 
-/// `"Claude Code on build-box"`, at most 64 characters.
+/// `"Claude Code on build-box"`, the name this computer asks the host for,
+/// which it keeps unless another device of the person reads by it, within
+/// what a certificate's label carries.
 #[must_use]
 pub fn label(agent: &str, host: &str) -> String {
-    format!("{agent} on {host}").chars().take(64).collect()
+    let mut fitted = format!("{agent} on {host}");
+    let room = tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
+    fitted.truncate(
+        (0..=room.min(fitted.len()))
+            .rev()
+            .find(|end| fitted.is_char_boundary(*end))
+            .unwrap_or(0),
+    );
+    fitted
 }
 
-/// `label` numbered `n`: the name it enrolled with for the first, then
-/// `Claude Code on laptop 2`, `3`, …, within 64 characters.
-#[must_use]
-fn numbered_label(label: &str, n: u32) -> String {
-    if n < 2 {
-        return label.to_owned();
-    }
-    let suffix = format!(" {n}");
-    let room = 64usize.saturating_sub(suffix.chars().count());
-    let base: String = label.chars().take(room).collect();
-    format!("{base}{suffix}")
-}
-
-/// Sign in as this computer with the first name no other of the person's
-/// devices reads by: the host refuses a name another device has
-/// ([`DEVICE_LABEL_TAKEN`]), and the next number asks again. Resolves to the
-/// sign-in and the name it enrolled under.
-async fn sign_in_not_taken(
+/// Have the person's tab certify this computer as one of their devices, under
+/// the name [`label`] names for the agent here: the host answers the name it
+/// gave it.
+async fn certify(
     host: &Origin,
     link: &PairingLink,
     agent: &str,
     key: &SigningKey,
-) -> Result<(tilo_relay_client::login::SignIn, String), CertifyError> {
-    let base = label(agent, &hostname());
-    let mut last = None;
-    for n in 0..=MAX_LABEL_ATTEMPTS {
-        let candidate = numbered_label(&base, n);
-        match sign_in(host, link, agent, &candidate, key, |_| {}).await {
-            Ok(signed) => return Ok((signed, candidate)),
-            Err(CertifyError::Denied(reason)) if reason.contains(DEVICE_LABEL_TAKEN) => {
-                last = Some(CertifyError::Denied(reason));
-            }
-            Err(other) => return Err(other),
-        }
-    }
-    Err(last.unwrap_or(CertifyError::Expired))
+) -> Result<SignIn> {
+    sign_in(host, link, agent, &label(agent, &hostname()), key, |_| {})
+        .await
+        .map_err(|error| {
+            debug_why("the person's tab certifying this computer", &error);
+            anyhow!(certify_said(&error))
+        })
 }
-
-/// How many numbered names a computer tries when the person already has
-/// devices called what it would be.
-const MAX_LABEL_ATTEMPTS: u32 = 9;
 
 /// What a login that worked says: the device this computer now is, and which of the person's
 /// agents runs on it ([`which_agent`]).
@@ -958,12 +942,10 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     let key = SigningKey::from_bytes(&rand::random());
     let host_web = Origin::new(&http(), &link.host_origin);
     eprintln!("Waiting for the person's tab to approve this computer…");
-    let (signed, label) = sign_in_not_taken(&host_web, &link, &agent.name, &key)
-        .await
-        .map_err(|error| {
-            debug_why("the person's tab certifying this computer", &error);
-            anyhow!(certify_said(&error))
-        })?;
+    let signed = certify(&host_web, &link, &agent.name, &key).await?;
+    // The host names this computer: the name asked for, or the next numbered
+    // one another device of the person reads by.
+    let label = signed.label.clone();
     let mut device = Device::of(&signed)?;
     device.workspace_name = workspace_name(&host_web, &device.workspace).await;
     store(&dir, &key, &device)?;
@@ -1169,23 +1151,6 @@ mod tests {
             assert_eq!(
                 label("Claude Code", "build-box"),
                 "Claude Code on build-box"
-            );
-            assert_eq!(label(&"a".repeat(100), "x").chars().count(), 64);
-            // A name the person's devices already read by is asked for again
-            // with the next number, so two computers of one name tell apart.
-            assert_eq!(
-                numbered_label("Claude Code on laptop", 1),
-                "Claude Code on laptop",
-                "the first asks under the plain name"
-            );
-            assert_eq!(
-                numbered_label("Claude Code on laptop", 2),
-                "Claude Code on laptop 2"
-            );
-            assert_eq!(
-                numbered_label(&"a".repeat(64), 2).chars().count(),
-                64,
-                "a numbered name still fits what a certificate carries"
             );
         }
     }

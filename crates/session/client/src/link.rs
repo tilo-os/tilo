@@ -251,6 +251,9 @@ struct Reported {
     /// Wakes that last as long as their consumer's event queue (an asker's), dropped
     /// with it.
     listeners: Vec<(Weak<Mutex<VecDeque<Event>>>, Wake)>,
+    /// Wakes for one queue, told only when that queue takes an event: a
+    /// reader that follows one kind of event and nothing else.
+    takers: Vec<(Weak<Mutex<VecDeque<Event>>>, Wake)>,
     /// The current session's bearer token for its host's fetch proxy (`tilo_net::proxy`, at
     /// `/peer/v1/fetch`); kept apart from [`PeerStatus`], which diagnostics show.
     fetch_proxy: Option<String>,
@@ -298,6 +301,7 @@ impl Reports {
             queues: Vec::new(),
             wakes: Vec::new(),
             listeners: Vec::new(),
+            takers: Vec::new(),
             fetch_proxy: None,
             live_note: None,
             inbound: None,
@@ -344,20 +348,35 @@ impl Reports {
 
     /// Hand `event` to every consumer's queue and wake them.
     pub fn emit(&self, event: &Event) {
-        let wakes = {
+        let (wakes, told) = {
             let mut reported = self.lock();
+            let mut took: Vec<Queue> = Vec::new();
             reported.queues.retain(|(queue, takes)| {
                 let Some(queue) = queue.upgrade() else {
                     return false;
                 };
                 if takes(event) {
                     queue.lock_recover().push_back(event.clone());
+                    took.push(queue);
                 }
                 true
             });
-            reported.wakes_now()
+            reported
+                .takers
+                .retain(|(queue, _)| queue.strong_count() > 0);
+            let told: Vec<Wake> = reported
+                .takers
+                .iter()
+                .filter(|(queue, _)| {
+                    queue
+                        .upgrade()
+                        .is_some_and(|queue| took.iter().any(|took| Arc::ptr_eq(took, &queue)))
+                })
+                .map(|(_, wake)| Arc::clone(wake))
+                .collect();
+            (reported.wakes_now(), told)
         };
-        for wake in &wakes {
+        for wake in wakes.iter().chain(told.iter()) {
             wake();
         }
     }
@@ -388,6 +407,13 @@ impl Reports {
     fn listen(&self, events: &Events, wake: Wake) {
         self.lock()
             .listeners
+            .push((Arc::downgrade(&events.queue), wake));
+    }
+
+    /// Call `wake` when `events` takes an event, for as long as it is read.
+    fn listen_taking(&self, events: &Events, wake: Wake) {
+        self.lock()
+            .takers
             .push((Arc::downgrade(&events.queue), wake));
     }
 
@@ -678,6 +704,13 @@ impl Link {
     /// Call `wake` whenever status or events change.
     pub fn on_change(&self, wake: Wake) {
         self.reports.lock().wakes.push(wake);
+    }
+
+    /// Call `wake` when `events` takes an event, and at no other time: a
+    /// reader that follows one kind of event, such as the person's workspace
+    /// list, rather than every change of the session.
+    pub fn on_event(&self, events: &Events, wake: Wake) {
+        self.reports.listen_taking(events, wake);
     }
 
     /// What `read` first answers of the session's status, woken by each change of it rather

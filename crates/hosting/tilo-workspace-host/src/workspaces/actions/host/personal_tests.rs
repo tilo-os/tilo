@@ -11,6 +11,7 @@
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionHost as _, ActionHostError, InvokeRequest, ReceiptStatus};
+use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_relay_session::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
     KEEP_PERSONAL, LIST_PERSONAL, PersonalList,
@@ -307,7 +308,7 @@ async fn one_record_lists_every_device_the_persons_root_certified() {
     .unwrap();
     // A browser the page's root certified, carried through this host's pairing.
     let browser = key_of(&root, "Firefox", DeviceCapabilities::member());
-    workspaces.keep_issued_device(&browser);
+    workspaces.keep_issued_device(&browser, "");
 
     let labels = |list: &PersonalList| {
         let mut labels: Vec<(String, bool)> = list
@@ -499,7 +500,7 @@ async fn a_keys_sessions_say_when_it_was_here_and_whether_it_is_now() {
     let root = SigningKey::from_bytes(&rand::random());
     let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
     // The record holds the key: a device of theirs kept their list here.
-    workspaces.keep_issued_device(&laptop);
+    workspaces.keep_issued_device(&laptop, "");
 
     workspaces.session_opened_at(&laptop, 1_000);
     let listed = workspaces.personal(&laptop, &[], &super::Listed::default());
@@ -538,7 +539,7 @@ async fn an_opening_is_written_once_a_minute_and_an_ending_always() {
     let root = SigningKey::from_bytes(&rand::random());
     let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
     let stranger = key_of(&root, "never kept", DeviceCapabilities::member());
-    workspaces.keep_issued_device(&laptop);
+    workspaces.keep_issued_device(&laptop, "");
     let record = dir.path().join("workspaces").join("personal-lists");
     let kept_bytes = || {
         std::fs::read(record.join(format!(
@@ -610,7 +611,7 @@ async fn a_keys_session_says_which_agent_it_runs() {
 
     // Another of their keys reads the same record, and the name stays.
     let phone = key_of(&root, "phone", DeviceCapabilities::member());
-    workspaces.keep_issued_device(&phone);
+    workspaces.keep_issued_device(&phone, "");
     workspaces.note_agent(&computer, "Claude Code", &stop);
     let listed = workspaces.personal(&phone, &[], &super::Listed::default());
     assert_eq!(
@@ -646,7 +647,7 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
         issuer: None,
     };
     sign_device_cert(&mut laptop, &root).unwrap();
-    workspaces.keep_issued_device(&laptop);
+    workspaces.keep_issued_device(&laptop, "");
     let online = || {
         listed_device(
             &workspaces.personal(&laptop, &[], &super::Listed::default()),
@@ -797,5 +798,139 @@ async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_changes_noth
             "{action}: {refused:?}"
         );
     }
+    relay.shutdown().await;
+}
+
+/// The next list the host pushes to a device's session, waiting for one that
+/// `ok` takes: a change lands as the host settles it, not in a fixed order.
+async fn next_list(
+    pushed: &mut tokio::sync::mpsc::Receiver<crate::transport::Envelope>,
+    ok: impl Fn(&PersonalList) -> bool + Send + Sync,
+) -> PersonalList {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let crate::transport::Envelope::PersonalList { list } =
+                pushed.recv().await.expect("the device's session")
+            else {
+                panic!("the host sends the person's list");
+            };
+            let list: PersonalList = serde_json::from_slice(&list).expect("a list");
+            if ok(&list) {
+                return list;
+            }
+        }
+    })
+    .await
+    .expect("the host sends the list as it changes")
+}
+
+/// A device of a person's is sent their workspace list as it changes — one
+/// they made, one they were admitted to, one renamed — without asking for it.
+#[tokio::test]
+async fn a_devices_session_is_sent_the_list_as_its_person_workspaces_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let root = SigningKey::from_bytes(&rand::random());
+    // The site let the person in: an invitation into its home names them.
+    let home = workspaces.create("Lounge").await.unwrap().workspace;
+    assert!(workspaces.admit_own_through(&home));
+    workspaces
+        .issue(
+            &home,
+            workspaces.serving_certificate(),
+            crate::workspaces::IssueInvitationRequest {
+                request_id: rand::random(),
+                role: tilo_peer_state::join::Role::Viewer,
+                recipient_user_public_key: Some(root.verifying_key().to_bytes()),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let desktop = key_of(&root, "studio", DeviceCapabilities::member());
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    // The session of the person's device: what the host pushes the list to.
+    let (outbound, mut pushed) = tokio::sync::mpsc::channel(8);
+    let _watch = workspaces.watch_personal(&desktop, outbound);
+
+    // A workspace the person makes is in the list at once.
+    let created: CreatedWorkspace = serde_json::from_value(
+        invoke(
+            &host,
+            &desktop,
+            CREATE_OWN_WORKSPACE,
+            json!({"name": "Second"}),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    next_list(&mut pushed, |list| {
+        list.workspaces
+            .iter()
+            .any(|one| one.workspace == created.workspace.workspace && one.name == "Second")
+    })
+    .await;
+
+    // One they are admitted to is too, without the ask that admitted them
+    // answering the list.
+    let token = [9_u8; 8];
+    let issued = workspaces
+        .pre_admit(
+            &owner,
+            crate::workspaces::PreAdmitRequest {
+                request_id: rand::random(),
+                grant: crate::workspaces::tests::signed_pre_admission(&home, &token),
+                recipient_user_public_key: None,
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let admitted = workspaces
+        .admit_proven(
+            issued.signed_invitation,
+            desktop.clone(),
+            rand::random(),
+            "Studio",
+            Some(token.as_slice()),
+        )
+        .await;
+    assert!(
+        matches!(admitted, JoinReply::Admitted { .. }),
+        "{admitted:?}"
+    );
+    {
+        let state = workspaces.workspace(&home).await.unwrap();
+        let mut governed = state.lock().await;
+        workspaces.settle(&mut governed).await.unwrap();
+    }
+    next_list(&mut pushed, |list| {
+        list.workspaces
+            .iter()
+            .any(|one| one.workspace == home && one.name == "Lounge")
+    })
+    .await;
+
+    // A renamed one reads by its new name.
+    workspaces
+        .rename(&created.workspace.workspace, "Renamed")
+        .await
+        .unwrap();
+    next_list(&mut pushed, |list| {
+        list.workspaces
+            .iter()
+            .any(|one| one.workspace == created.workspace.workspace && one.name == "Renamed")
+    })
+    .await;
+
     relay.shutdown().await;
 }

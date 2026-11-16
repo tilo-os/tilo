@@ -219,6 +219,12 @@ where
     }
 
     let grant = FetchGrant::open(&session, &peer, &tx);
+    // This device is sent its person's workspace list as it changes, so what
+    // it lists is never older than the workspaces it may enter: one made, one
+    // they joined, one renamed, one they left.
+    let personal_watch = admin
+        .as_deref()
+        .map(|admin| admin.watch_personal(&peer.cert, tx.clone()));
     // A clean EOF is only one of the ways this ends: a write to a
     // connection the peer has already closed, a frame that will not
     // decode, an envelope the handler rejects. Every one of them has to
@@ -282,6 +288,9 @@ where
         session.outbound,
     )
     .await;
+    if let (Some(admin), Some(watch)) = (admin.as_deref(), personal_watch) {
+        admin.unwatch_personal(watch);
+    }
     // A browser environment's device that was here and is not any more: its
     // environment ends, unless it is back before the host that placed it looks.
     environments.departed(peer.device_public_key);

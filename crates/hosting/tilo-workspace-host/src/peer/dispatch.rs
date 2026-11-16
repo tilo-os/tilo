@@ -193,7 +193,9 @@ pub(super) async fn handle_envelope(
         // is answered by nobody.
         | Envelope::RetiredHereRequest { .. }
         | Envelope::RetiredHereReply { .. }
-        | Envelope::FetchGrant { .. } => Ok(None),
+        | Envelope::FetchGrant { .. }
+        // The person's list is the host's to send, never a device's to set.
+        | Envelope::PersonalList { .. } => Ok(None),
     }
 }
 

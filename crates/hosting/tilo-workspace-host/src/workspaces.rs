@@ -1016,6 +1016,9 @@ struct WorkspacesInner {
     owner_invitations: host_invitations::OwnerInvitations,
     /// The workspace lists people's devices kept here ([`personal`]).
     personal: personal::PersonalLists,
+    /// The sessions of people's devices here, sent their person's workspace
+    /// list whenever it changes ([`personal::PersonalPushes`]).
+    personal_pushes: personal::PersonalPushes,
     /// How many sessions of each device key are open here now, by key: every
     /// session of every person's, so a record says which of their keys is
     /// here ([`personal`]).
@@ -1246,6 +1249,7 @@ impl Workspaces {
                 memberships: memberships::Memberships::default(),
                 owner_invitations: host_invitations::OwnerInvitations::open(&dir),
                 personal: personal::PersonalLists::new(&dir),
+                personal_pushes: personal::PersonalPushes::default(),
                 online: std::sync::Mutex::default(),
                 mcp_server: mcp_server::McpServer::default(),
                 own_address: std::sync::OnceLock::new(),
@@ -1335,6 +1339,7 @@ impl Workspaces {
     async fn start_following(&self) {
         self.follow_activity();
         self.follow_missing_surfaces();
+        self.follow_personal_changes();
         self.follow_own_address();
         #[cfg(feature = "agents")]
         self.follow_repaired_records();
@@ -1507,6 +1512,8 @@ impl Workspaces {
         self.inner.memberships.forget(workspace);
         drop(governed);
         let _ = self.inner.changes.send(workspace.to_owned());
+        // No list here names a workspace the host governs no longer.
+        self.personal_changed();
         Ok(())
     }
 
@@ -2885,6 +2892,8 @@ impl Workspaces {
             sink.settled(&name, workspace.peer().clone());
         }
         let _ = self.inner.changes.send(name);
+        // Whose workspaces those are changed: what their devices list.
+        self.personal_changed();
     }
 
     /// Archive what the relay retains of `workspace`'s document, once every

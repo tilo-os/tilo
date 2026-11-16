@@ -484,6 +484,8 @@ fn install_identity(cert: &DeviceCert, display_name: String) {
 struct Certified<'a> {
     cert: &'a DeviceCert,
     host_cert: &'a DeviceCert,
+    /// The name the host gave the device, which the page shows for it.
+    label: &'a str,
 }
 
 async fn post_decoded<T: serde::de::DeserializeOwned>(
@@ -530,7 +532,8 @@ pub async fn workspace_deleted(post: Function, workspace: String) -> Result<bool
 /// Certify this page's device key with the host its address names, as the
 /// answer to the pairing invite `inviteHex` (16 bytes as hex) the person's
 /// link named, if any. Calls `onPairingCode(code)` once the host queued the
-/// request. Resolves to `{cert, hostCert}` JSON for [`WasmPeer::start`].
+/// request. Resolves to `{cert, hostCert, label}` JSON for
+/// [`WasmPeer::start`], `label` being the name the host gave the device.
 #[wasm_bindgen(js_name = certifyDevice)]
 #[allow(
     clippy::arc_with_non_send_sync,
@@ -557,7 +560,7 @@ pub async fn certify_device(
         None => [0; 16],
     };
     let host = host_at(&address)?;
-    let (cert, host_cert) =
+    let (cert, host_cert, label) =
         tilo_relay_client::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
         })
@@ -566,6 +569,7 @@ pub async fn certify_device(
     serde_json::to_string(&Certified {
         cert: &cert,
         host_cert: &host_cert,
+        label: &label,
     })
     .map_err(js_error)
 }
@@ -959,6 +963,7 @@ pub async fn certify_with_root(
     serde_json::to_string(&Certified {
         cert: &cert,
         host_cert: &host_cert,
+        label: &label,
     })
     .map_err(js_error)
 }
@@ -1693,6 +1698,10 @@ pub struct WasmPeer {
     durable_events: Events,
     live_events: Events,
     voice_events: Events,
+    /// The person's workspace lists as their host sends them: what the
+    /// switcher offers without asking the host again.
+    personal_events: Events,
+    personal_list: RefCell<Option<tilo_relay_session::workspaces::PersonalList>>,
     /// Joined workspaces by workspace, to name them in call events.
     voice_workspaces: RefCell<std::collections::HashMap<WorkspaceId, String>>,
     listeners: Rc<RefCell<Vec<Function>>>,
@@ -1797,18 +1806,28 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// The person's workspaces as their host lists them, in the page's shape: the question this
-    /// page's device asks ([`Device::personal_list`], the one the CLI's peer asks), so a page
-    /// offers every workspace of theirs, not only the ones this browser's storage still remembers.
+    /// The person's workspaces as their host lists them, in the page's shape: the list the host
+    /// sent this session as it changed, else the question this page's device asks once
+    /// ([`Device::personal_list`], the one the CLI's peer asks), so a page offers every workspace
+    /// of theirs, not only the ones this browser's storage still remembers.
     pub(crate) async fn personal_workspaces(&self) -> Result<serde_json::Value, JsError> {
-        let list = self
-            .device
-            .personal_list(
-                &tilo_relay_session::workspaces::WorkspaceLabels::new(),
-                None,
-            )
-            .await
-            .map_err(|refusal| js_error(refusal.message))?;
+        for event in self.personal_events.drain() {
+            if let Event::Personal(list) = event {
+                self.personal_list.borrow_mut().replace(*list);
+            }
+        }
+        let pushed = self.personal_list.borrow().clone();
+        let list = match pushed {
+            Some(list) => list,
+            None => self
+                .device
+                .personal_list(
+                    &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+                    None,
+                )
+                .await
+                .map_err(|refusal| js_error(refusal.message))?,
+        };
         serde_json::to_value(&list).map_err(js_error)
     }
 }
@@ -1905,6 +1924,9 @@ impl WasmPeer {
             handle.events_where(crate::replication::takes),
             replication_store,
         )));
+        // The person's lists as the host sends them: read beside what this
+        // page remembered, never asked for again.
+        let personal_events = handle.events_where(|event| matches!(event, Event::Personal(_)));
         let listeners: Rc<RefCell<Vec<Function>>> = Rc::default();
         let changed = Arc::new(tokio::sync::Notify::new());
         handle.on_change({
@@ -1936,6 +1958,8 @@ impl WasmPeer {
             durable_events: handle.events_where(is_durable),
             live_events: handle.events_where(is_live),
             voice_events: handle.events_where(is_voice),
+            personal_events,
+            personal_list: RefCell::new(None),
             voice_workspaces: RefCell::default(),
             handle,
             device,

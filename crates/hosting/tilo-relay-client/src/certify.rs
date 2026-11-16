@@ -58,6 +58,9 @@ pub enum CertificationOutcome {
         cert: DeviceCert,
         /// The host's certificate, to pin for later sessions.
         host_cert: DeviceCert,
+        /// The name the host gave the device: its own, or the next numbered
+        /// one when another device of the person reads by that name already.
+        label: String,
     },
     /// An approver declined, or the host refused.
     Denied(String),
@@ -97,7 +100,8 @@ async fn write<T: serde::Serialize + Sync>(
 /// `user_public_key`'s devices, labeled `label`, answering the pairing invite
 /// `invite` ([0; 16] when none). `on_pending` receives the pairing code to
 /// show while the person's other device answers. Resolves to this device's
-/// certificate and the host's, to pin.
+/// certificate, the host's to pin, and the name the host gave the device (the
+/// one asked for, or the next free numbered one).
 ///
 /// # Errors
 ///
@@ -111,7 +115,7 @@ pub async fn certify(
     invite: [u8; 16],
     signer: &dyn DeviceSigner,
     on_pending: impl FnOnce(&str),
-) -> Result<(DeviceCert, DeviceCert), CertifyError> {
+) -> Result<(DeviceCert, DeviceCert, String), CertifyError> {
     let request = signed_request(user_public_key, label, invite, signer).await?;
     let dialer = Dialer::new(host.clone(), None);
     let outcome = async {
@@ -124,7 +128,11 @@ pub async fn certify(
     .await;
     dialer.close().await;
     match outcome? {
-        CertificationOutcome::Issued { cert, host_cert } => Ok((cert, host_cert)),
+        CertificationOutcome::Issued {
+            cert,
+            host_cert,
+            label,
+        } => Ok((cert, host_cert, label)),
         CertificationOutcome::Denied(reason) => Err(CertifyError::Denied(reason)),
         CertificationOutcome::Expired => Err(CertifyError::Expired),
     }
@@ -211,7 +219,11 @@ async fn request_over(
         reply = read(recv).await?;
     }
     match reply {
-        CertifyReply::Issued { cert, host_cert } => {
+        CertifyReply::Issued {
+            cert,
+            host_cert,
+            label,
+        } => {
             let now = tilo_clock::unix_now_ns();
             verify_issued_cert(
                 &request,
@@ -229,7 +241,11 @@ async fn request_over(
             if !host_cert.capabilities.can_own_workspaces {
                 return Err(codec(&"the certificate is not a person's device"));
             }
-            Ok(CertificationOutcome::Issued { cert, host_cert })
+            Ok(CertificationOutcome::Issued {
+                cert,
+                host_cert,
+                label,
+            })
         }
         CertifyReply::Denied { reason } => Ok(CertificationOutcome::Denied(reason)),
         CertifyReply::Expired => Ok(CertificationOutcome::Expired),

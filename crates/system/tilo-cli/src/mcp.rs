@@ -361,18 +361,6 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
                 .to_string(),
         );
     }
-    if request.get("method").and_then(Value::as_str) == Some(PEER_LIST_AGAIN) {
-        // Asked by `tilo folders add`, and after a workspace was made or
-        // deleted: the person's workspaces are asked for again now, and the
-        // folders are brought in line, rather than the ask waiting out how
-        // long the peer keeps a list.
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        list_again(connection).await;
-        return Some(
-            json!({"jsonrpc": "2.0", "id": id, "result": peer_status(connection).await})
-                .to_string(),
-        );
-    }
     let served = connection.served().await.and_then(|(served, session)| {
         // The person stopped this agent: its session ended for good, and every call says so.
         match session.stopped() {
@@ -390,24 +378,6 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
 /// What `tilo status` asks this computer's peer: who it is, which workspaces it shows where, and
 /// whether they are in sync.
 pub(crate) const PEER_STATUS: &str = "tilo/peer";
-
-/// What `tilo folders add` and the account commands ask the peer: ask the
-/// person's host for their workspaces again now, and bring the folders in
-/// line with the answer, answering [`PEER_STATUS`].
-pub(crate) const PEER_LIST_AGAIN: &str = "tilo/peer/list-again";
-
-/// Have the peer ask the host for the person's workspaces again, and show their
-/// folders as the answer says: the workspace just made or deleted is one the
-/// folders know at once, not at the peer's next list.
-async fn list_again<E: Enter>(connection: &Connection<E>) {
-    let Some(peer) = held::PEER.get() else {
-        return;
-    };
-    let session = connection.shared.session.lock().await.clone();
-    if let Some(session) = session {
-        peer.refresh(&session.device).await;
-    }
-}
 
 /// The peer's answer to [`PEER_STATUS`].
 async fn peer_status<E: Enter>(connection: &Connection<E>) -> Value {
@@ -446,13 +416,6 @@ async fn peer_status<E: Enter>(connection: &Connection<E>) -> Value {
 /// started for asking).
 pub(crate) fn ask_peer() -> Option<Value> {
     ask_peer_with(PEER_STATUS)
-}
-
-/// Ask the peer this computer runs to list the person's workspaces again now
-/// and bring the folders in line, answering as [`ask_peer`]; `None` when no
-/// peer runs.
-pub(crate) fn ask_peer_list_again() -> Option<Value> {
-    ask_peer_with(PEER_LIST_AGAIN)
 }
 
 /// The peer's answer to `method`, a request of its control path; `None` when

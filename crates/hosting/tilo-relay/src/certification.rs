@@ -41,7 +41,7 @@ use crate::frame::{read_frame, read_frame_or_eof, write_frame};
 use crate::handshake::{EndpointTrust, LiveIdentity};
 use crate::workspace_access;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
-use tilo_relay_protocol::certify::DEVICE_LABEL_TAKEN;
+use tilo_relay_protocol::certify::{MAX_NUMBERED_LABELS, numbered_label};
 use tilo_relay_protocol::delegation::{DelegateProposal, Delegation};
 
 /// How long a final answer may wait for the requester to read it.
@@ -56,6 +56,10 @@ const MAX_WATCHED: usize = 65_536;
 struct Pending {
     entry: PendingCertification,
     answer: watch::Sender<Option<CertifyReply>>,
+    /// The name this request's device is given when it is issued: the one it
+    /// proposed, or the next number of it no other device of the person reads
+    /// by.
+    label: String,
     /// Set for a request the host queued for an agent it supervises.
     agent: Option<DelegateProposal>,
     /// The approved delegation of such a request, once decided.
@@ -268,10 +272,12 @@ impl CertificationProtocol {
     }
 
     /// Add the certificate `reply` issues, when it issues one, to its
-    /// person's record.
+    /// person's record, under the name the host gave it.
     fn record_issued(&self, reply: &CertifyReply) {
-        if let (CertifyReply::Issued { cert, .. }, Some(records)) = (reply, self.records.get()) {
-            records.keep_issued_device(cert);
+        if let (CertifyReply::Issued { cert, label, .. }, Some(records)) =
+            (reply, self.records.get())
+        {
+            records.keep_issued_device(cert, label);
         }
     }
 
@@ -534,25 +540,15 @@ impl CertificationProtocol {
         {
             return Err("this pairing link was used already; make a new one".into());
         }
-        // A name another of the person's devices already reads by: the asking
-        // computer enrolls under the next number instead, so the person's
-        // device list never shows two alike.
-        let label = request.device_label.trim();
-        if !label.is_empty() {
-            let waiting = self
-                .pending_of(&request.user_public_key, now_ns)
-                .iter()
-                .any(|entry| entry.request.device_label.trim() == label);
-            let kept = self
-                .records
-                .get()
-                .is_some_and(|records| records.device_label_taken(&request.user_public_key, label));
-            if waiting || kept {
-                return Err(format!(
-                    "{DEVICE_LABEL_TAKEN}: a device of yours is already called “{label}”"
-                ));
-            }
-        }
+        // The name the new device reads by: its own when no other device of
+        // the person has it, else the next number of it. A device never has
+        // to ask again under another name, so the person's device list never
+        // shows two alike.
+        let label = self.free_label(
+            &request.user_public_key,
+            request.device_label.trim(),
+            now_ns,
+        );
         let digest = request.digest().map_err(|error| error.to_string())?;
         let pairing_code = request.pairing_code().map_err(|error| error.to_string())?;
         let mut pending = self.lock();
@@ -574,6 +570,7 @@ impl CertificationProtocol {
                     requested_at_ns: now_ns,
                 },
                 answer,
+                label,
                 agent,
                 delegation: None,
             },
@@ -581,6 +578,43 @@ impl CertificationProtocol {
         drop(pending);
         self.moved();
         Ok((digest, pairing_code, receiver))
+    }
+
+    /// The name a device asking under `base` takes: `base` itself when no
+    /// other device of `person` reads by it, else the first numbered one
+    /// (`Laptop 2`, `Laptop 3`, …). Requests still open are named too, so two
+    /// devices pairing at once read apart.
+    fn free_label(&self, person: &[u8; 32], base: &str, now_ns: u64) -> String {
+        if base.is_empty() {
+            return String::new();
+        }
+        let waiting: Vec<String> = {
+            let pending = self.lock();
+            pending
+                .values()
+                .filter(|entry| {
+                    !entry.decided()
+                        && entry.entry.request.user_public_key == *person
+                        && entry.entry.request.expires_at_ns > now_ns
+                })
+                .map(|entry| entry.label.clone())
+                .collect()
+        };
+        let taken = |name: &str| {
+            waiting.iter().any(|label| label == name)
+                || self
+                    .records
+                    .get()
+                    .is_some_and(|records| records.device_label_taken(person, name))
+        };
+        let mut last = numbered_label(base, 0);
+        for n in 1..=MAX_NUMBERED_LABELS {
+            last = numbered_label(base, n);
+            if !taken(&last) {
+                return last;
+            }
+        }
+        last
     }
 
     /// Whether `user` is the person this host runs for, or a member of a
@@ -822,6 +856,7 @@ impl CertificationProtocol {
         entry.answer.send_replace(Some(CertifyReply::Issued {
             cert,
             host_cert: self.identity.cert.clone(),
+            label: entry.label.clone(),
         }));
         drop(pending);
         self.moved();
@@ -948,6 +983,7 @@ impl CertificationProtocol {
                         CertifyReply::Issued {
                             cert,
                             host_cert: self.identity.cert.clone(),
+                            label: entry.label.clone(),
                         }
                     }
                     ApproverDecision::Issue(cert) => {
@@ -963,6 +999,7 @@ impl CertificationProtocol {
                         CertifyReply::Issued {
                             cert,
                             host_cert: self.identity.cert.clone(),
+                            label: entry.label.clone(),
                         }
                     }
                 };
@@ -1365,7 +1402,7 @@ mod confirmation_tests {
     }
 
     #[test]
-    fn a_computer_asking_under_a_name_another_waits_under_is_refused() {
+    fn a_computer_asking_under_a_name_another_waits_under_takes_the_next_number() {
         let protocol = protocol();
         let now = unix_now_ns();
         let request = |device: &ed25519_dalek::SigningKey, nonce: [u8; 16]| {
@@ -1387,12 +1424,22 @@ mod confirmation_tests {
         let first = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
         let second = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
         protocol.enqueue(request(&first, [1; 16]), now).unwrap();
-        let refused = protocol
-            .enqueue(request(&second, [2; 16]), now)
-            .expect_err("the name is taken");
-        assert!(
-            refused.contains(DEVICE_LABEL_TAKEN),
-            "the asking computer is told what happened: {refused}"
+        protocol.enqueue(request(&second, [2; 16]), now).unwrap();
+        let name_of = |key: &ed25519_dalek::SigningKey| {
+            protocol
+                .lock()
+                .values()
+                .find(|entry| {
+                    entry.entry.request.device_public_key == key.verifying_key().to_bytes()
+                })
+                .map(|entry| entry.label.clone())
+                .expect("queued")
+        };
+        assert_eq!(name_of(&first), "Claude Code on laptop");
+        assert_eq!(
+            name_of(&second),
+            "Claude Code on laptop 2",
+            "the host names two devices set up alike apart"
         );
     }
 }

@@ -196,6 +196,7 @@ impl Task {
             // This session's token for its host's fetch proxy, which dies
             // with the connection.
             Envelope::FetchGrant { token } => self.grant_fetch_proxy(&token),
+            Envelope::PersonalList { list } => self.personal_list(&list),
             said @ Envelope::HostSaid { .. } => self.heard_from_host(&said),
             Envelope::RecordOpened {
                 workspace_id,
@@ -255,6 +256,17 @@ impl Task {
                     }
                     self.reports.emit(&event);
                 }
+            }
+        }
+    }
+
+    /// The host says the person's workspaces changed: the list as it is now,
+    /// for whoever shows it beside the workspaces this device remembered.
+    fn personal_list(&self, list: &[u8]) {
+        match serde_json::from_slice::<tilo_relay_session::workspaces::PersonalList>(list) {
+            Ok(list) => self.reports.emit(&crate::Event::Personal(Box::new(list))),
+            Err(error) => {
+                tracing::warn!(%error, "the host's workspace list did not decode");
             }
         }
     }
