@@ -5789,17 +5789,10 @@ impl Widget for TextInput {
                 ..Default::default()
             });
         if let Some(target) = self.semantic_target() {
-            // The key is the field and item an action's text anchor names; the
-            // control is what its bindings name, the widget's own id when it
-            // has one.
-            let action_target = if self.id.is_empty() {
-                target.clone()
-            } else {
-                self.id.clone()
-            };
-            node = node
-                .with_semantic_key(target)
-                .with_action_target(action_target);
+            // A field that edits an item is addressed by what it edits: an
+            // action sent for an item it no longer shows is refused, and a
+            // replaced item gives the node a new identity.
+            node = node.with_action_target(target);
         } else if !self.id.is_empty() {
             node = node.with_semantic_key(&self.id);
         }
