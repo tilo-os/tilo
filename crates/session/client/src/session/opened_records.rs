@@ -26,13 +26,14 @@ impl Task {
         ) {
             self.open_channel(&route);
         }
+        let own = self.own_channel(&route);
         self.opened_records.insert(channel, (workspace_id, route));
         client.is_none_or(|client| {
             client
                 .send(Envelope::OpenRecord {
                     workspace_id,
                     channel,
-                    own: None,
+                    own,
                 })
                 .is_ok()
         })
@@ -78,16 +79,29 @@ impl Task {
         }
     }
 
+    /// `route` as this session's person's own record, which the host is told when
+    /// the record is opened: another person's own is answered as not theirs, written or not.
+    pub(super) fn own_channel(
+        &self,
+        route: &DocumentRoute,
+    ) -> Option<tilo_relay_protocol::OwnedChannel> {
+        tilo_relay_protocol::OwnedChannel::recognise(
+            &route.app_id,
+            &route.record,
+            self.config.cert.user_public_key,
+        )
+    }
+
     /// Open every record this session opened again on a new subscription.
     /// Returns `false` when the session could not take the requests.
     pub(super) fn reopen_records(&self, client: &RelayClient) -> bool {
         let mut sent_ok = true;
-        for (channel, (workspace_id, _)) in &self.opened_records {
+        for (channel, (workspace_id, route)) in &self.opened_records {
             sent_ok &= client
                 .send(Envelope::OpenRecord {
                     workspace_id: *workspace_id,
                     channel: *channel,
-                    own: None,
+                    own: self.own_channel(route),
                 })
                 .is_ok();
         }

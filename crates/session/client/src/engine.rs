@@ -1031,7 +1031,16 @@ impl Engine {
         let Some(link) = self.link.lock_recover().clone() else {
             return false;
         };
-        link.open_record(workspace, neighbour_wire::app_document_channel(app, record))
+        let own = tilo_relay_protocol::OwnedChannel::recognise(
+            app,
+            record,
+            self.identity.device_cert.user_public_key,
+        );
+        link.open_record(
+            workspace,
+            neighbour_wire::app_document_channel(app, record),
+            own,
+        )
     }
 
     /// What `workspace`'s host answered about `app`'s `record`: `None` while the answer to

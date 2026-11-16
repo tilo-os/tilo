@@ -90,6 +90,8 @@ mod node_workspace;
 mod on_demand_records;
 #[path = "outbox_replay.rs"]
 mod outbox_replay;
+#[path = "own_record_open.rs"]
+mod own_record_open;
 #[path = "own_workspace.rs"]
 mod own_workspace;
 #[path = "pairing.rs"]

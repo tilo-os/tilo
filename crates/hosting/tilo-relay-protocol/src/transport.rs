@@ -707,6 +707,17 @@ pub struct OwnedChannel {
 }
 
 impl OwnedChannel {
+    /// `app`'s `record` as the person `owner`'s own, of a kind its manifest
+    /// declares each member's own ([`collab_types::OwnRecord::recognise`]);
+    /// `None` for any other record.
+    #[must_use]
+    pub fn recognise(app: &str, record: &str, owner: [u8; 32]) -> Option<Self> {
+        collab_types::OwnRecord::recognise(app, record, owner).map(|record| Self {
+            app_id: app.to_owned(),
+            record,
+        })
+    }
+
     /// Whether this is the record `channel` carries.
     #[must_use]
     pub fn names(&self, channel: &[u8; 32]) -> bool {

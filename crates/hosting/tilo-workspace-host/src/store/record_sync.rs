@@ -395,6 +395,23 @@ impl WorkspaceStore {
         lineage_channel(name).is_some_and(|channel| self.classes().channels.contains_key(&channel))
     }
 
+    /// Take `own` to be `app`'s record of its kind and person, as its person's
+    /// device said opening it: before anything of it is written, every other
+    /// member opening it is told it is not theirs. The id derives from the
+    /// kind and person, so a device names no other person's record this way.
+    pub(crate) fn learn_own(&self, app: &str, own: &collab_types::OwnRecord) {
+        let record = own.record_id();
+        self.classes().learn(
+            neighbour_wire::app_document_channel(app, &record),
+            &Route {
+                app_id: app.to_owned(),
+                cluster_id: String::new(),
+                record_id: record,
+                own: Some(own.clone()),
+            },
+        );
+    }
+
     /// Take `channel` to carry `app`'s `record`, as a frame retained on it
     /// would say.
     #[cfg(test)]

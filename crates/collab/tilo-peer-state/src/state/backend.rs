@@ -239,6 +239,11 @@ impl StoredDocument {
             .sealed = sealed;
         Ok(())
     }
+    /// Encode the record again at its next durable encoding: what is kept
+    /// with it changed though the record did not.
+    pub(super) fn reencode(&mut self) {
+        self.encoded = Arc::default();
+    }
     /// The record's durable encoding as `encode` makes it for `route`,
     /// made once per state of the record.
     pub(super) fn encoded(
@@ -367,13 +372,18 @@ impl PeerCore {
         own: Option<&collab_types::OwnRecord>,
     ) {
         if let Some(own) = own.filter(|own| own.names(record)) {
-            self.own.insert(
-                Route {
-                    app: app.to_owned(),
-                    record: record.to_owned(),
-                },
-                own.clone(),
-            );
+            let route = Route {
+                app: app.to_owned(),
+                record: record.to_owned(),
+            };
+            if self.own.get(&route) == Some(own) {
+                return;
+            }
+            // The record's durable part carries what it is.
+            if let Some(document) = self.documents.get_mut(&route) {
+                document.reencode();
+            }
+            self.own.insert(route, own.clone());
         }
     }
 

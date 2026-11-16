@@ -866,9 +866,10 @@ async fn carry_out(
             .is_ok(),
         Cmd::ConnectDevice(addr) => plane.send(NetCmd::Connect { addr }).await.is_ok(),
         Cmd::Replay(ws) => plane.send(NetCmd::NativeReplay { ws }).await.is_ok(),
-        Cmd::OpenRecord { ws, channel } => {
-            plane.send(NetCmd::OpenRecord { ws, channel }).await.is_ok()
-        }
+        Cmd::OpenRecord { ws, channel, own } => plane
+            .send(NetCmd::OpenRecord { ws, channel, own })
+            .await
+            .is_ok(),
         Cmd::PublishCustody(ws) => plane.send(NetCmd::NativePublish { ws }).await.is_ok(),
         Cmd::Roster { ws, devices } => plane
             .send(NetCmd::SetWorkspaceRoster { ws, devices })

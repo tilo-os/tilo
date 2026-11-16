@@ -27,6 +27,13 @@ const fn is_false(value: &bool) -> bool {
 /// The record unit, as footprints and unit indexes name it.
 pub const RECORD_UNIT: &str = "record";
 
+/// The record kind in which the framework keeps each member's actions waiting
+/// for the part of a chain they go to (an app whose records are a chain's
+/// parts): one record per member, which an app keeping chains declares its
+/// members' own (`[resources] own`), so their waiting actions reach their own
+/// devices and nobody else's.
+pub const CHAIN_UNSENT_KIND: &str = "tilo.chain-unsent";
+
 /// The public surface of one resource kind. See the module docs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Surface {

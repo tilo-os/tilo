@@ -580,7 +580,7 @@ mod tests {
             assert!(
                 matches!(
                     said.try_recv(),
-                    Ok(Cmd::OpenRecord { ws, channel: asked })
+                    Ok(Cmd::OpenRecord { ws, channel: asked, .. })
                         if ws == topic_of(workspace) && asked == channel
                 ),
                 "the host is asked for the record"

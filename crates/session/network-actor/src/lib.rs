@@ -205,10 +205,12 @@ pub enum NetCmd {
     /// Ask the hosts of `ws` for the record on `channel` (a retained route's
     /// channel, `neighbour_wire::app_document_channel`): what they hold of it,
     /// and their changes to it from then on. A workspace that sends records
-    /// when they are opened sends nothing of a record before this.
+    /// when they are opened sends nothing of a record before this. `own` names it this device's
+    /// person's own record, which the hosts answer as theirs even before anything of it is written.
     OpenRecord {
         ws: WorkspaceId,
         channel: [u8; 32],
+        own: Option<tilo_relay_protocol::OwnedChannel>,
     },
     /// Hold an enrolled workspace's relay session over the iroh endpoint its
     /// hint names.
@@ -1236,7 +1238,7 @@ impl ActorState {
             // Every host of the workspace that retains records opens this one
             // for this device: what it holds of it, then its changes. Asking
             // a session that already opened it asks nothing again.
-            Some(NetCmd::OpenRecord { ws, channel }) => {
+            Some(NetCmd::OpenRecord { ws, channel, own }) => {
                 let sessions: Vec<_> = self
                     .host_sessions
                     .iter()
@@ -1250,7 +1252,11 @@ impl ActorState {
                     );
                 }
                 for session in sessions {
-                    if let Err(error) = session.open_record(channel) {
+                    let opened = match &own {
+                        Some(own) => session.open_own_record(own.clone()),
+                        None => session.open_record(channel),
+                    };
+                    if let Err(error) = opened {
                         tracing::debug!(ws = %ws, %error, "could not ask a host for a record");
                     }
                 }

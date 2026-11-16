@@ -752,7 +752,7 @@ impl Task {
                 .send(Envelope::OpenRecord {
                     workspace_id,
                     channel,
-                    own: None,
+                    own: self.own_channel(&route),
                 })
                 .is_err()
             {

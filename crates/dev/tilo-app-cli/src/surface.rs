@@ -1014,8 +1014,21 @@ pub fn sync_resource_kinds(app_dir: &Path) -> Result<()> {
             kinds.push(kind);
         }
     }
-    if let Some(updated) = with_resource_kinds(&text, &kinds) {
-        std::fs::write(&manifest, updated)
+    let mut text = with_resource_kinds(&text, &kinds).unwrap_or(text);
+    // Each member's actions waiting for a chain's part are theirs alone.
+    if crate::resource_kinds::keeps_waiting_actions(app_dir)? {
+        let mut own: Vec<String> = toml::from_str::<toml::Table>(&text)
+            .ok()
+            .and_then(|table| table.get("resources")?.get("own")?.clone().try_into().ok())
+            .unwrap_or_default();
+        let unsent = tilo_actions::surface::CHAIN_UNSENT_KIND.to_owned();
+        if !own.contains(&unsent) {
+            own.push(unsent);
+            text = with_resources_list(&text, "own", &own).unwrap_or(text);
+        }
+    }
+    if std::fs::read_to_string(&manifest).ok().as_deref() != Some(text.as_str()) {
+        std::fs::write(&manifest, text)
             .with_context(|| format!("writing {}", manifest.display()))?;
     }
     Ok(())
@@ -1025,22 +1038,22 @@ pub fn sync_resource_kinds(app_dir: &Path) -> Result<()> {
 /// it names them already (or the app declares none and the manifest has no
 /// such table).
 fn with_resource_kinds(manifest: &str, kinds: &[String]) -> Option<String> {
-    let declared: Option<Vec<String>> =
-        toml::from_str::<toml::Table>(manifest)
-            .ok()
-            .and_then(|table| {
-                table
-                    .get("resources")?
-                    .get("kinds")?
-                    .clone()
-                    .try_into()
-                    .ok()
-            });
+    with_resources_list(manifest, "kinds", kinds)
+}
+
+/// `manifest` with its `[resources]` list `key` set to `values`, or `None`
+/// when it names them already (or there are none and the manifest has no
+/// such list).
+fn with_resources_list(manifest: &str, key: &str, values: &[String]) -> Option<String> {
+    let kinds = values;
+    let declared: Option<Vec<String>> = toml::from_str::<toml::Table>(manifest)
+        .ok()
+        .and_then(|table| table.get("resources")?.get(key)?.clone().try_into().ok());
     if declared.as_deref() == Some(kinds) || (declared.is_none() && kinds.is_empty()) {
         return None;
     }
     let line = format!(
-        "kinds = [{}]",
+        "{key} = [{}]",
         kinds
             .iter()
             .map(|kind| format!("{kind:?}"))
@@ -1057,9 +1070,11 @@ fn with_resource_kinds(manifest: &str, kinds: &[String]) -> Option<String> {
                 at.saturating_add(1).saturating_add(offset)
             });
         let existing = (at.saturating_add(1)..end).find(|&i| {
-            lines
-                .get(i)
-                .is_some_and(|l| l.trim_start().starts_with("kinds"))
+            lines.get(i).is_some_and(|l| {
+                let l = l.trim_start();
+                l.strip_prefix(key)
+                    .is_some_and(|rest| rest.trim_start().starts_with('='))
+            })
         });
         match existing {
             Some(i) => {
@@ -1158,6 +1173,40 @@ mod tests {
             Some(added.as_str())
         );
         assert_eq!(with_resource_kinds(fresh, &[]), None, "nothing to declare");
+    }
+
+    #[test]
+    fn an_app_keeping_chains_declares_each_members_waiting_actions_their_own() {
+        let app = tempfile::tempdir().unwrap();
+        std::fs::write(
+            app.path().join("Cargo.toml"),
+            "[package]\nname = \"example\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            app.path().join("tilo-app.toml"),
+            "[package]\nid = \"so.example\"\n\n[resources]\nkinds = []\nown = [\"so.example.draft\"]\n\n[publisher]\nidentity = \"x\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir(app.path().join("src")).unwrap();
+        std::fs::write(app.path().join("src/lib.rs"), "impl Chained for Part {}\n").unwrap();
+        sync_resource_kinds(app.path()).unwrap();
+        let manifest = std::fs::read_to_string(app.path().join("tilo-app.toml")).unwrap();
+        let unsent = tilo_actions::surface::CHAIN_UNSENT_KIND;
+        assert!(
+            manifest.contains(&format!("kinds = [\"{unsent}\"]")),
+            "{manifest}"
+        );
+        assert!(
+            manifest.contains(&format!("own = [\"so.example.draft\", \"{unsent}\"]")),
+            "{manifest}"
+        );
+        sync_resource_kinds(app.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(app.path().join("tilo-app.toml")).unwrap(),
+            manifest,
+            "declared once"
+        );
     }
 
     fn resource(version: u64, title_type: &str, verbs: &[&str]) -> Value {

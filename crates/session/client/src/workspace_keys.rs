@@ -159,10 +159,17 @@ impl KeyService {
 }
 
 /// The records this device asked a workspace's hosts for, by the workspace's topic and the record's
-/// retained channel, and what each answered: `None` while the answer is owed, the frames the host
-/// sent once it came.
-type AskedRecords =
-    std::collections::HashMap<(Topic, [u8; 32]), Option<tilo_relay_protocol::RecordAnswer>>;
+/// retained channel.
+type AskedRecords = std::collections::HashMap<(Topic, [u8; 32]), AskedRecord>;
+
+/// A record this device asked a workspace's hosts for.
+#[derive(Default)]
+struct AskedRecord {
+    /// The record as this device's person's own, which every ask for it names.
+    own: Option<tilo_relay_protocol::OwnedChannel>,
+    /// What the hosts answered: `None` while the answer is owed, the frames they sent once it came.
+    answer: Option<tilo_relay_protocol::RecordAnswer>,
+}
 
 /// The workspace transport the channels' governance travels on: what this session's collaboration
 /// plane hears and says, reached from the thread that settles the groups.
@@ -441,12 +448,12 @@ impl KeyLink {
         self.park.poke();
         // A host session that just came up owes this device the records it asked for before it was
         // there: a record asked for on a session that has since ended reaches here over this one.
-        let asked: Vec<[u8; 32]> = self
+        let asked: Vec<_> = self
             .records
             .lock_recover()
-            .keys()
-            .filter(|(asked_ws, _)| *asked_ws == ws)
-            .map(|(_, channel)| *channel)
+            .iter()
+            .filter(|((asked_ws, _), _)| *asked_ws == ws)
+            .map(|((_, channel), asked)| (*channel, asked.own.clone()))
             .collect();
         self.ask_for(ws, asked);
     }
@@ -470,26 +477,41 @@ impl KeyLink {
     /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
     /// then on. Asked once per record and session; a host session that comes up later asks again
     /// ([`Self::host_ready`]). `false` when the plane is not running, so nothing was asked.
-    pub fn open_record(&self, workspace: ModelWorkspaceId, channel: [u8; 32]) -> bool {
+    pub fn open_record(
+        &self,
+        workspace: ModelWorkspaceId,
+        channel: [u8; 32],
+        own: Option<tilo_relay_protocol::OwnedChannel>,
+    ) -> bool {
         let ws = topic_of(workspace);
         {
             let mut records = self.records.lock_recover();
             if records.contains_key(&(ws, channel)) {
                 return true;
             }
-            records.insert((ws, channel), None);
+            records.insert(
+                (ws, channel),
+                AskedRecord {
+                    own: own.clone(),
+                    answer: None,
+                },
+            );
         }
-        self.ask_for(ws, [channel])
+        self.ask_for(ws, [(channel, own)])
     }
 
     /// Say [`Cmd::OpenRecord`] for each of `channels` on the plane: whether it was taken, or `true`
     /// when there is no plane to ask on.
-    fn ask_for(&self, ws: Topic, channels: impl IntoIterator<Item = [u8; 32]>) -> bool {
+    fn ask_for(
+        &self,
+        ws: Topic,
+        channels: impl IntoIterator<Item = ([u8; 32], Option<tilo_relay_protocol::OwnedChannel>)>,
+    ) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
-        channels.into_iter().all(|channel| {
+        channels.into_iter().all(|(channel, own)| {
             outgoing
                 .as_ref()
-                .is_none_or(|outgoing| outgoing.send(Cmd::OpenRecord { ws, channel }).is_ok())
+                .is_none_or(|outgoing| outgoing.send(Cmd::OpenRecord { ws, channel, own }).is_ok())
         })
     }
 
@@ -504,7 +526,9 @@ impl KeyLink {
     ) {
         self.records
             .lock_recover()
-            .insert((ws, channel), Some(answer));
+            .entry((ws, channel))
+            .or_default()
+            .answer = Some(answer);
         self.answers
             .send_modify(|count| *count = count.wrapping_add(1));
         self.park.poke();
@@ -520,8 +544,7 @@ impl KeyLink {
         self.records
             .lock_recover()
             .get(&(topic_of(workspace), *channel))
-            .copied()
-            .flatten()
+            .and_then(|asked| asked.answer)
     }
 
     /// Wait for the next record a host answered for, from a value read before the wait.

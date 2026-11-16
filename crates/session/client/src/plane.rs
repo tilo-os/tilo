@@ -363,8 +363,12 @@ pub enum Cmd {
     /// Ask the host of the joined workspace on `ws` to replay what it retains.
     Replay(Topic),
     /// Ask the hosts of the joined workspace on `ws` for the record on `channel`: what they hold of
-    /// it, and their changes to it from then on.
-    OpenRecord { ws: Topic, channel: [u8; 32] },
+    /// it, and their changes to it from then on; `own` names it this device's person's own record.
+    OpenRecord {
+        ws: Topic,
+        channel: [u8; 32],
+        own: Option<tilo_relay_protocol::OwnedChannel>,
+    },
     /// Send this device's owner's outgoing custody of the workspace on `ws` to its peers.
     PublishCustody(Topic),
     /// Say which devices workspace `ws` admits, and until when each of their certificates holds.

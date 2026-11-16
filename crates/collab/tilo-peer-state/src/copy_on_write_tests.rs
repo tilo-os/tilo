@@ -161,3 +161,59 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// What a replica learnt a member's own record is stays with the record: a
+/// replica restored from its durable state names and refuses that record's
+/// writes as before, without a write of it arriving again.
+#[test]
+fn a_restored_replica_knows_each_members_own_record() {
+    let (a, ac, _, bc, now) = fixtures();
+    let own = collab_types::OwnRecord::new("settings.root", [9; 32]).unwrap();
+    let mut peer = StatePeer::new(
+        WORKSPACE,
+        ac.clone(),
+        vec![ac.clone(), bc.clone()],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "theme", "dark").unwrap();
+    doc.commit_edit("fixture", "theme");
+    peer.install_seed(
+        SeedState {
+            workspace_changes: seed_workspace(WORKSPACE, &ac, &[ac.clone(), bc]).unwrap(),
+            documents: vec![SeedDocument {
+                app_id: "so.tilo.settings".into(),
+                record_id: own.record_id(),
+                kind: "settings.root".into(),
+                bytes: doc.save(),
+            }],
+        },
+        &a,
+        now,
+    )
+    .unwrap();
+    peer.select_exact_admissions().unwrap();
+    let before = peer.durable().unwrap();
+    peer.keep_own_record("so.tilo.settings", &own);
+    let durable = peer.durable().unwrap();
+    assert_ne!(
+        durable, before,
+        "learning what a record is changes the record's kept state"
+    );
+    let restored = StatePeer::restore(
+        &durable,
+        peer.workspace_id(),
+        peer.owner_certificates()[0].clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    assert_eq!(
+        restored.own_record("so.tilo.settings", &own.record_id()),
+        Some(own),
+        "the restored replica knows whose record it is"
+    );
+}

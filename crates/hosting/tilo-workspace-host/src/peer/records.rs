@@ -85,6 +85,13 @@ pub(super) async fn handle_open_record(
                 answer: tilo_relay_protocol::RecordAnswer::NotYours,
             }));
         }
+        // Its person's device opening their own record says whose it is.
+        if let Some(own) = own
+            .as_ref()
+            .filter(|own| own.names(&channel) && own.record.owner == peer.user_public_key)
+        {
+            runtime.store.learn_own(&own.app_id, &own.record);
+        }
         let device = &peer.device_public_key;
         runtime.hold_record(device, channel);
         if let Some(head) = head {

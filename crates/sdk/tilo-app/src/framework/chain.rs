@@ -299,7 +299,7 @@ pub(crate) type Later = Box<dyn FnOnce(Result<u64, ActionError>)>;
 type Unwritten<P> = (Vec<ChangeHash>, Option<Rc<<P as Resource>::State>>);
 
 /// The kind of the record of a person's actions waiting for their part.
-const UNSENT_KIND: &str = "tilo.chain-unsent";
+const UNSENT_KIND: &str = tilo_actions::surface::CHAIN_UNSENT_KIND;
 
 thread_local! {
     /// Who waits to be told what became of an action that waited for its

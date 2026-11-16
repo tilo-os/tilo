@@ -258,6 +258,9 @@ struct DurableDocument {
     encryption_required: bool,
     covered: BTreeMap<String, u64>,
     covered_snapshot: Option<Vec<u8>>,
+    /// The member's own record this is, as its writes named it: kept with the
+    /// record, so a restored replica sends and refuses its writes as before.
+    own: Option<collab_types::OwnRecord>,
 }
 /// Each encrypted record's sealed writes, in admission order.
 type SealedHistory = Vec<(Route, Vec<SignedOp>)>;

@@ -16,7 +16,7 @@ use crate::NeighbourMsg;
 use automerge::{ReadDoc as _, transaction::Transactable as _};
 
 /// The durable layout this build writes and reads.
-pub const DURABLE_VERSION: u32 = 7;
+pub const DURABLE_VERSION: u32 = 8;
 
 /// A replica's durable state. `exact` is the exact admission index, present
 /// once the replica selects exact admissions; `sealed` holds each encrypted
@@ -300,7 +300,8 @@ impl StatePeer {
         }
         let mut documents = Vec::with_capacity(self.core.documents.len());
         for (route, entry) in &self.core.documents {
-            documents.push(entry.encoded(route, || encode_document(route, entry))?);
+            let own = self.core.own.get(route);
+            documents.push(entry.encoded(route, || encode_document(route, entry, own))?);
         }
         // The fields of `Durable`, in order.
         let mut parts: Vec<Piece> = Vec::new();
@@ -383,6 +384,7 @@ impl StatePeer {
                     .covered_snapshot
                     .as_ref()
                     .map(|snapshot| snapshot.0.bytes.clone()),
+                own: self.core.own.get(route).cloned(),
             })
             .collect();
         let sealed: SealedHistory = self
@@ -501,6 +503,10 @@ impl StatePeer {
                 &document.covered,
                 document.covered_snapshot.as_deref(),
             )?;
+            // What the record is, as it was kept: only for the record it names.
+            if let Some(own) = document.own.filter(|own| own.names(&document.route.record)) {
+                peer.core.own.insert(document.route.clone(), own);
+            }
             let channel = InboundState {
                 last_seq_per_author: document
                     .watermarks
@@ -587,7 +593,11 @@ impl StatePeer {
 /// while the base lasts; the runs of changes since the base, each the same
 /// allocation while it lasts; the fields after the document — and its sealed
 /// history, when it holds one.
-fn encode_document(route: &Route, entry: &Document) -> Result<backend::EncodedDocument, String> {
+fn encode_document(
+    route: &Route,
+    entry: &Document,
+    own: Option<&collab_types::OwnRecord>,
+) -> Result<backend::EncodedDocument, String> {
     fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
         postcard::to_extend(value, out).map_err(err)
     }
@@ -608,6 +618,7 @@ fn encode_document(route: &Route, entry: &Document) -> Result<backend::EncodedDo
                 .covered_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.0.bytes.as_slice()),
+            own,
         ),
         Vec::new(),
     )?;
