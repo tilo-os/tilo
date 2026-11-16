@@ -461,6 +461,72 @@ async fn writes_past_a_full_sealed_history_land_after_its_compaction() {
     );
 }
 
+/// Channel keys that have not reached this device yet.
+struct NotYet;
+
+impl SealedHistoryKeys for NotYet {
+    fn open(&self, _: WorkspaceId, _: &SignedOp) -> Result<Vec<u8>, String> {
+        Err("this device holds no group keys yet".into())
+    }
+
+    fn seal_checkpoint(
+        &self,
+        _: WorkspaceId,
+        _: &str,
+        _: &str,
+        _: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        Err("this device holds no group keys yet".into())
+    }
+
+    fn renew(&self, _: WorkspaceId, _: &SignedOp) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        Err("this device holds no group keys yet".into())
+    }
+}
+
+/// A write that overflows a history not yet due waits for its compaction while the keys are on
+/// their way, and lands with the next write once they are here: a compaction that failed for
+/// want of them does not keep the record full until its history is due, which a full record
+/// never becomes.
+#[tokio::test]
+async fn a_full_history_whose_first_compaction_failed_is_compacted_once_the_keys_are_here() {
+    let joined = enrolled();
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let (_, keys) = rotated_channel();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&base(owner, workspace), 1);
+    let held = || {
+        owner
+            .with_current(workspace, |view| Ok(history(view.peer(), &keys).len()))
+            .unwrap()
+    };
+    let mut written = 0;
+    while held() < BEFORE_FULL {
+        let changes = typist.change(&format!("k{written}"));
+        assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+        written += 1;
+    }
+    let changes: Vec<Vec<u8>> = keys_typed('k', written + AT_ONCE)
+        .skip(written)
+        .map(|key| typist.change(&key))
+        .collect();
+    owner.keep_sealed_histories(Arc::new(NotYet));
+    assert!(
+        matches!(
+            write_all(owner, workspace, &keys, changes.clone(), now).await,
+            Err(WriteRefusal::HistoryFull { .. })
+        ),
+        "without the keys the history stays full"
+    );
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    assert_eq!(
+        write_all(owner, workspace, &keys, changes, now).await,
+        Ok(AT_ONCE),
+        "with the keys here, the history is compacted and the writes land"
+    );
+    assert!(held() <= 256, "the history stays within its bound");
+}
+
 /// Writes a device makes while its host is away: custody keeps every one of them, past what
 /// it keeps in its record (eight writes here) and the record's sealed history bound many times.
 const AWAY: usize = 2_000;

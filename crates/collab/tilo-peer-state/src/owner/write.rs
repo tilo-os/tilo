@@ -292,23 +292,18 @@ impl NativeWorkspaceOwner {
             Err(WriteRefusal::HistoryFull { app, record }) => (app, record),
             written => return written,
         };
-        // A compaction that failed is tried again only after the passes it waits for.
-        let waiting = self
-            .0
-            .compaction_wait
-            .lock()
-            .get(&workspace)
-            .is_some_and(|wait| *wait > 0);
-        let compacted = if waiting {
-            0
-        } else {
-            self.compact_record(workspace, (&full.0, &full.1), signer, now)
-                .await
-                .unwrap_or_else(|error| {
-                    tracing::warn!(%error, "a full sealed history stays uncompacted");
-                    0
-                })
-        };
+        // A full record takes no write of anyone's until it is compacted, so it is compacted
+        // now even while a compaction that failed before waits out its passes: those are only
+        // counted while a history is due, and a history a write overflows before it is due
+        // (one large write) would wait for them for good, its writes and every write custody
+        // holds behind them with it.
+        let compacted = self
+            .compact_record(workspace, (&full.0, &full.1), signer, now)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "a full sealed history stays uncompacted");
+                0
+            });
         if compacted == 0 {
             let (app, record) = full;
             return Err(WriteRefusal::HistoryFull { app, record });
