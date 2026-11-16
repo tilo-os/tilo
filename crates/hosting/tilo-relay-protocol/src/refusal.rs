@@ -56,26 +56,35 @@ pub fn busy_wait(message: &str) -> Option<Duration> {
 pub const TOO_MUCH_CONTENT: &str = "too much content this hour";
 /// Sending too fast: the change budget refused it.
 pub const PLAIN_TOO_FAST: &str = "You're sending too fast; slow down a moment.";
-/// The hourly content budget refused it.
-pub const PLAIN_TOO_MUCH: &str = "You've shared too much this hour; try again later.";
-/// A person's own workspace keeps as much as the host keeps for them.
-pub const PLAIN_FULL: &str = "Your workspace is full, so this change wasn't kept.";
+/// The hourly content budget refused it. The budget refills continuously and
+/// does not say how long it holds, so the words ask for a wait rather than a
+/// time.
+pub const PLAIN_TOO_MUCH: &str = "You've shared too much this hour. Try again in a little while.";
+/// A person's own workspace keeps as much as the host keeps for them, so the
+/// change was not kept: make room, then send it again.
+pub const PLAIN_FULL: &str = "Your workspace is full, so this change wasn't kept. Remove something to make room, then try again.";
 /// What a full workspace's refusal (the host account's typed refusal, as
 /// JSON) carries.
 const FULL: &str = "\"storage_full\"";
 /// The workspace's grants or its app's surface do not allow the change.
 pub const PLAIN_NOT_ALLOWED: &str = "This workspace doesn't allow that.";
+/// The same, where the reason is a grant the person does not hold: a
+/// workspace owner can give it.
+pub const PLAIN_NOT_GRANTED: &str =
+    "This workspace doesn't allow that. Ask a workspace owner for access.";
 /// The person is no longer a member, or this device no longer counts as one.
 pub const PLAIN_NOT_A_MEMBER: &str = "You're no longer a member of this workspace.";
 /// The session was not ready for the change; sending it again may work.
-pub const PLAIN_NOT_READY: &str = "The workspace wasn't ready for this change; try again.";
+pub const PLAIN_NOT_READY: &str = "The workspace wasn't ready for that change. Try again.";
 /// Anything else.
 pub const PLAIN_REFUSED: &str = "The workspace didn't accept this change.";
 
 // Wordings of the receipt check (`collab_types::ReceiptRefusal`), the
 // workspace's shared-desktop rules and its access decisions.
+/// The wording of a grant the person does not hold: the one refusal a
+/// workspace owner can lift for them.
+const NOT_GRANTED: &[&str] = &["is not granted"];
 const NOT_ALLOWED: &[&str] = &[
-    "is not granted",
     "publishes no",
     "may not write the unit",
     "which its claim does not name",
@@ -119,6 +128,8 @@ pub fn plain_reason(raw: &str) -> &'static str {
         PLAIN_NOT_A_MEMBER
     } else if has(NOT_READY) {
         PLAIN_NOT_READY
+    } else if has(NOT_GRANTED) {
+        PLAIN_NOT_GRANTED
     } else if has(NOT_ALLOWED) {
         PLAIN_NOT_ALLOWED
     } else {
@@ -191,12 +202,13 @@ mod tests {
             }
         }
 
-        phase a_verb_not_granted_reads_as_not_allowed;
+        phase a_verb_not_granted_reads_as_access_to_ask_for;
         {
-            // `ReceiptRefusal::NotGranted`'s wording.
+            // `ReceiptRefusal::NotGranted`'s wording: a workspace owner can
+            // give the grant, so the person is told to ask one.
             assert_eq!(
                 plain_reason("the author is not granted Undoable on /workspaces/r/apps/a/post"),
-                PLAIN_NOT_ALLOWED
+                PLAIN_NOT_GRANTED
             );
         }
 

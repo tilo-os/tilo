@@ -289,27 +289,29 @@ pub struct PageDeparture {
 
 impl PageDeparture {
     /// What the page is about to do, in the person's words: `send the form to
-    /// https://visa.example (POST)`. A kind this build does not know, or a
-    /// departure that names no destination, reads as what it is.
+    /// https://visa.example`, or `open https://visa.example` for a page it
+    /// fetches. A kind this build does not know, or a departure that names no
+    /// destination, reads as what it is. The HTTP method itself stays out of
+    /// the sentence: a person thinks in sending and opening, not in verbs.
     #[must_use]
     pub fn doing(&self) -> String {
-        let mut text = match self.kind.as_str() {
-            "submit" => "send the form".to_owned(),
-            "navigate" => "leave for".to_owned(),
-            "download" => "download from".to_owned(),
-            "payment" => "take a payment to".to_owned(),
-            // A request, and whatever a newer window names that this build
-            // does not know: it is a request either way.
-            _ => "send a request".to_owned(),
+        let opening = self.method.eq_ignore_ascii_case("GET");
+        let mut text = if opening {
+            "open".to_owned()
+        } else {
+            match self.kind.as_str() {
+                "submit" => "send the form".to_owned(),
+                "navigate" => "leave for".to_owned(),
+                "download" => "download from".to_owned(),
+                "payment" => "take a payment to".to_owned(),
+                // A request, and whatever a newer window names that this build
+                // does not know: it is a request either way.
+                _ => "send a request".to_owned(),
+            }
         };
         if !self.destination.is_empty() {
-            text.push_str(" to ");
+            text.push_str(if opening { " " } else { " to " });
             text.push_str(&self.destination);
-        }
-        if !self.method.is_empty() {
-            text.push_str(" (");
-            text.push_str(&self.method);
-            text.push(')');
         }
         text
     }
@@ -466,8 +468,18 @@ mod tests {
             };
             assert_eq!(
                 departure.doing(),
-                "send the form to https://consulate.example (POST)",
-                "what leaves, where to, and how"
+                "send the form to https://consulate.example",
+                "what leaves, and where to"
+            );
+            let opening = PageDeparture {
+                kind: "navigate".into(),
+                method: "GET".into(),
+                ..departure.clone()
+            };
+            assert_eq!(
+                opening.doing(),
+                "open https://consulate.example",
+                "a page it fetches is opened, not sent"
             );
             let question = PendingConfirmation {
                 action_label: departure.doing(),

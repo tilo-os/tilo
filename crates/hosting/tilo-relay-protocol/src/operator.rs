@@ -381,15 +381,19 @@ pub enum RefusalReason {
 }
 
 impl RefusalReason {
-    /// A sentence for the guest.
+    /// A sentence for the guest, in the page's words: one that showed no
+    /// unique code reloads for a fresh one, and one the workspace turned away
+    /// is told plainly.
     #[must_use]
     pub const fn message(self) -> &'static str {
         match self {
-            Self::NoMatchingRequest => "no device showed this pairing code in time",
-            Self::AmbiguousCode => {
-                "more than one device showed this pairing code; reload the page and try again"
+            Self::NoMatchingRequest => {
+                "No device showed this code in time. Reload this page for a new one."
             }
-            Self::PolicyDenied => "the workspace refused to certify this device",
+            Self::AmbiguousCode => {
+                "More than one device showed this code at once. Reload this page for a new one."
+            }
+            Self::PolicyDenied => "This workspace didn't let this browser in.",
         }
     }
 }
