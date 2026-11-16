@@ -219,7 +219,7 @@ impl Emoji {
         let Some(open) = held
             .as_ref()
             .filter(|open| open.workspace == workspace.id().to_string())
-            .filter(|open| open.person.key() == *person)
+            .filter(|open| open.person.person_id() == Some(person.as_str()))
         else {
             return false;
         };
@@ -558,7 +558,7 @@ fn added_by(
         "workspace-settings-emoji-added-by",
         &[(
             "name",
-            domain::member_row_name(names, workspace, me.id(), &id.key()).into(),
+            domain::member_row_name(names, workspace, me.id(), id).into(),
         )],
     )
 }

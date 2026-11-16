@@ -71,7 +71,7 @@ pub struct HistoryAgent {
     /// Its cursor colour: history paints it as presence does.
     pub rgb: (u8, u8, u8),
     /// The principal of the person it acts for, whose name the directory
-    /// resolves ([`AuthorDirectory::register_person`]).
+    /// resolves ([`AuthorDirectory::register_member`]).
     pub person: String,
 }
 
@@ -120,7 +120,7 @@ impl AuthorDirectory {
             }
             match id {
                 MemberId::Person(key) => {
-                    directory.register_person(key, author_for_identity(name.to_owned(), key));
+                    directory.register_member(id, author_for_identity(name.to_owned(), key));
                     directory.register_device(key, name.to_owned());
                 }
                 MemberId::Agent(agent) | MemberId::Bot(agent) => {
@@ -149,11 +149,10 @@ impl AuthorDirectory {
         directory
     }
 
-    /// Bind a person's principal (the hex of their root key, or a handle)
-    /// to how they are named, so the changes they make and the changes made
-    /// on their behalf both name them.
-    pub fn register_person(&mut self, principal: &str, author: HistoryAuthor) {
-        self.register(&principal_key(principal), author);
+    /// Bind `member` to how they are named, so the changes they make and the
+    /// changes made on their behalf both name them.
+    pub fn register_member(&mut self, member: &tilo_actions::MemberId, author: HistoryAuthor) {
+        self.register(&hex::encode(member.actor_bytes()), author);
     }
 
     /// Bind a device's actor id to its name, so a hover that names the device
@@ -211,8 +210,8 @@ impl AuthorDirectory {
     pub fn register_roster_agent(&mut self, agent: &RosterAgent) {
         let person = hex::encode(agent.person);
         if !self.by_actor.contains_key(&principal_key(&person)) {
-            self.register_person(
-                &person,
+            self.register_member(
+                &tilo_actions::MemberId::person(person.clone()),
                 author_for_identity(agent.person_name.clone(), &person),
             );
         }
@@ -624,10 +623,11 @@ impl AuthorDirectory {
         author
     }
 
-    /// Seed or replace this identity's colour so history agrees with
+    /// Seed or replace `member`'s colour so history agrees with
     /// [`crate::presence::PresenceCtx::color_for`].
-    pub fn set_color_override(&mut self, identity: impl Into<String>, rgb: (u8, u8, u8)) {
-        self.color_overrides.insert(identity.into(), rgb);
+    pub fn set_color_override(&mut self, member: &tilo_actions::MemberId, rgb: (u8, u8, u8)) {
+        let identity = String::from_utf8_lossy(&member.actor_bytes()).into_owned();
+        self.color_overrides.insert(identity, rgb);
     }
 
     /// The colour history paints `identity` in: the person's own colour
@@ -1048,7 +1048,7 @@ mod tests {
             let mut ctx = PresenceCtx::default();
             ctx.set_color_override(MemberId::person("carol"), "#112233");
             let mut dir = AuthorDirectory::new();
-            dir.set_color_override("carol", (0x11, 0x22, 0x33));
+            dir.set_color_override(&MemberId::person("carol"), (0x11, 0x22, 0x33));
             let hex = automerge::ActorId::from("carol".as_bytes()).to_hex_string();
             assert_eq!(
                 dir.resolve(&hex).rgb(),
@@ -1292,7 +1292,10 @@ mod tests {
         let device = hex::encode([7_u8; 32]);
         let person = "ada";
         let mut authors = AuthorDirectory::new();
-        authors.register_person(person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+        authors.register_member(
+            &tilo_actions::MemberId::person(person),
+            HistoryAuthor::new("Ada", 0.0, "ada00000"),
+        );
         authors.register_agent(
             &device,
             HistoryAgent {
@@ -1335,7 +1338,10 @@ mod tests {
     fn an_agent_without_a_session_reads_as_its_person_and_never_by_its_session_title() {
         let person = "ada";
         let mut authors = AuthorDirectory::new();
-        authors.register_person(person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+        authors.register_member(
+            &tilo_actions::MemberId::person(person),
+            HistoryAuthor::new("Ada", 0.0, "ada00000"),
+        );
         let invoker = tilo_actions::ActionInvoker::admitted(
             &tilo_actions::Acting::agent("claude").acting_for(tilo_actions::Acting::person(person)),
         )
@@ -1358,7 +1364,10 @@ mod tests {
     fn an_unknown_agents_session_title_is_not_its_name() {
         let person = "ada";
         let mut authors = AuthorDirectory::new();
-        authors.register_person(person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+        authors.register_member(
+            &tilo_actions::MemberId::person(person),
+            HistoryAuthor::new("Ada", 0.0, "ada00000"),
+        );
         let invoker = tilo_actions::ActionInvoker::admitted(
             &tilo_actions::Acting::agent("scribe")
                 .in_session("s1")

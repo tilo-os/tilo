@@ -783,7 +783,7 @@ fn people(
         .filter(|member| !member.name.trim().is_empty())
         .map(
             |member| tilo_desktop_search::providers::people::PersonEntry {
-                id: member.id.key(),
+                id: member.id.id().to_owned(),
                 name: member.name.clone(),
                 activity: workspace
                     .present

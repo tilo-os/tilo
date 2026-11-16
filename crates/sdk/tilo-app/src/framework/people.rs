@@ -245,8 +245,8 @@ impl People {
                         .as_deref()
                         .filter(|name| !name.trim().is_empty())
                         .unwrap_or(me);
-                    registry.register_person(
-                        me,
+                    registry.register_member(
+                        &MemberId::person(me),
                         ui_core::history_source::author_for_identity(name.to_owned(), me),
                     );
                     registry.set_reader(MemberId::person(me));

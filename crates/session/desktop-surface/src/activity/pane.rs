@@ -71,15 +71,13 @@ fn seed_roster_colours(authors: &mut AuthorDirectory, tree: &tilo_desktop_model:
         if member.name.trim().is_empty() {
             continue;
         }
-        let id = member.id.key();
         let rgb = collab_types::presence::identity_rgb(member.colour);
-        authors.set_color_override(&id, rgb);
-        let handle = automerge::ActorId::from(id.as_bytes()).to_hex_string();
-        authors.register(
-            &handle,
+        authors.set_color_override(&member.id, rgb);
+        authors.register_member(
+            &member.id,
             ui::history_source::author_coloured(
                 participant_display_label(&member.name),
-                ui::history_source::short_id(&id),
+                ui::history_source::short_id(member.id.id()),
                 rgb,
             ),
         );
@@ -1640,7 +1638,12 @@ impl WorkspaceActivityPane {
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.effect_receipts.iter())
-            .map(|receipt| (receipt.invocation.0.to_string(), receipt.actor.key()))
+            .map(|receipt| {
+                (
+                    receipt.invocation.0.to_string(),
+                    hex::encode(receipt.actor.actor_bytes()),
+                )
+            })
             .collect::<HashMap<_, _>>();
         for entry in &mut entries {
             let Some(actor) = entry
@@ -1656,11 +1659,7 @@ impl WorkspaceActivityPane {
             else {
                 continue;
             };
-            entry.author = ui::history_source::author_coloured(
-                participant_display_label(actor),
-                ui::history_source::short_id(actor),
-                self.source.authors().colour_for(actor),
-            );
+            entry.author = self.source.authors().resolve(actor);
         }
         let represented_receipts = entries
             .iter()
@@ -1674,14 +1673,12 @@ impl WorkspaceActivityPane {
                 if represented_receipts.contains(&receipt.invocation.0.to_string()) {
                     continue;
                 }
-                let actor = receipt.actor.key();
                 entries.push(HistoryEntry {
                     id: HistoryEntryId::from_bytes(*receipt.invocation.0.as_bytes()),
-                    author: ui::history_source::author_coloured(
-                        participant_display_label(&actor),
-                        ui::history_source::short_id(&actor),
-                        self.source.authors().colour_for(&actor),
-                    ),
+                    author: self
+                        .source
+                        .authors()
+                        .resolve(&hex::encode(receipt.actor.actor_bytes())),
                     entry_kind: EntryKind::Details,
                     artifact_kind: ArtifactKind::Cluster,
                     timestamp: SystemTime::UNIX_EPOCH

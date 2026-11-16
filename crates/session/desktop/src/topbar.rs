@@ -1040,10 +1040,9 @@ impl TopBarChrome {
         let local = self.explicit_local_user.as_deref();
         let own_identity = self.own_identity();
         let own = |member: &tilo_desktop_model::Member| -> bool {
-            let key = member.id.key();
-            key == "me"
-                || Some(key.as_str()) == local
-                || Some(key.as_str()) == own_identity.as_deref()
+            member.id.person_id().is_some_and(|person| {
+                person == "me" || Some(person) == local || Some(person) == own_identity.as_deref()
+            })
         };
         self.face_initials.clear();
         self.face_names.clear();

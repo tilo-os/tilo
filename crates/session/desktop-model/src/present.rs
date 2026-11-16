@@ -57,7 +57,7 @@ impl Present {
     #[must_use]
     pub fn of(member: MemberId) -> Self {
         Self {
-            device: member.key(),
+            device: member.id().to_owned(),
             member,
             tab: None,
             app: None,

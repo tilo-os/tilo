@@ -912,7 +912,10 @@ tilo_test_env::scenario! {
         doc.commit();
         let mut authors = AuthorDirectory::new();
         authors.set_reader(crate::permissions::MemberId::person("kai"));
-        authors.register_person(&person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+        authors.register_member(
+            &crate::permissions::MemberId::person(person.clone()),
+            HistoryAuthor::new("Ada", 0.0, "ada00000"),
+        );
         authors.register_agent(
             &hex::encode(device),
             HistoryAgent {

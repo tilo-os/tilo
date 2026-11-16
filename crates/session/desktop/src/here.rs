@@ -68,9 +68,9 @@ pub struct LiveMember {
     /// The person (user root, hex) the device is certified as, once its certificate was heard.
     #[serde(default)]
     pub user: Option<String>,
-    /// The workspace member this presence names, where it names one: an agent's key.
+    /// The workspace member this presence names, where it names one.
     #[serde(default)]
-    pub member: Option<String>,
+    pub member: Option<MemberId>,
     /// The member's latest wave at someone here.
     #[serde(default)]
     pub wave: Option<Wave>,
@@ -112,7 +112,7 @@ impl LiveMember {
             automatic: shown.automatic,
             place: shown.place.clone(),
             user: shown.user.clone(),
-            member: shown.member.as_ref().map(collab_types::MemberId::key),
+            member: shown.member.clone(),
             wave: shown.wave.clone(),
             layout: shown.layout.clone(),
             following: shown.following.clone(),
@@ -164,7 +164,7 @@ pub struct Person {
     pub user: Option<String>,
     /// The agent's workspace key, as its presence names it: what tells two sessions of one agent, or a
     /// client of two people, apart in the member list.
-    pub member: Option<String>,
+    pub member: Option<MemberId>,
     /// What everyone here calls them: the person's name, whichever of their devices is the one
     /// listed.
     pub label: String,
@@ -200,9 +200,7 @@ impl Person {
         if self.agent {
             return Some(
                 self.member
-                    .as_deref()
-                    .or(Some(self.id.as_str()))
-                    .and_then(MemberId::parse)
+                    .clone()
                     .filter(|member| !member.is_person())
                     .unwrap_or_else(|| MemberId::agent(&self.id)),
             );
@@ -1288,7 +1286,10 @@ pub fn register_presence(authors: &mut ui::AuthorDirectory, here: &HereState) {
         let Some((name, _)) = here.person(&user) else {
             continue;
         };
-        authors.register_person(&user, ui::history_source::author_for_identity(name, &user));
+        authors.register_member(
+            &MemberId::person(user.clone()),
+            ui::history_source::author_for_identity(name, &user),
+        );
     }
 }
 
@@ -1478,9 +1479,9 @@ fn member_of_presence(person: &Person, id: &MemberId) -> Member {
 /// The member `person` is here as: the person behind their device, or the agent its key names.
 fn member_id_of(person: &Person) -> MemberId {
     if person.agent
-        && let Some(member) = person.member.as_deref().and_then(MemberId::parse)
+        && let Some(member) = &person.member
     {
-        return member;
+        return member.clone();
     }
     MemberId::person(person.user.clone().unwrap_or_else(|| person.id.clone()))
 }

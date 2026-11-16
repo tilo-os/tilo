@@ -216,8 +216,8 @@ impl TrustedHumanDirectory {
         let mut authors = ui::history_source::AuthorDirectory::new();
         for human in &self.humans {
             let person = hex::encode(human.person.as_bytes());
-            authors.register_person(
-                &person,
+            authors.register_member(
+                &ui::tilo_actions::MemberId::person(person.clone()),
                 ui::history_source::author_for_identity(human.display_name.clone(), &person),
             );
             for device in &human.devices {

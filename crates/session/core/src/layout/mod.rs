@@ -14,8 +14,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
-use tilo_actions::{Actor, MemberId, ResourceSpec};
 use tilo_actions::remote::session_actions;
+use tilo_actions::{Actor, MemberId, ResourceSpec};
 use tilo_desktop_model::{
     FloatPlace, GroupId, Layout as Tree, LayoutKind, Strip, StripId, Tab, TabId, TileContent,
     WindowGroup, WindowWidth, Workspace, WorkspaceId,
@@ -1408,7 +1408,10 @@ impl Layout {
                 tree.active_workspace()?
                     .members
                     .iter()
-                    .find(|member| member.id.key() == self.person && !member.name.is_empty())
+                    .find(|member| {
+                        member.id.person_id() == Some(self.person.as_str())
+                            && !member.name.is_empty()
+                    })
                     .map(|member| member.name.clone())
             })
             .unwrap_or_else(|| self.person.clone())
