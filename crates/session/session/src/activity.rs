@@ -1782,15 +1782,6 @@ mod tests {
             self.frame();
         }
 
-        /// The person renames the workspace in front.
-        fn rename(&self, name: &str) {
-            self.handle
-                .apply_command(&DesktopCommand::RenameWorkspace {
-                    name: name.to_owned(),
-                })
-                .expect("the workspace takes the name");
-        }
-
         /// The person names the first strip of the workspace in front.
         fn name_strip(&self, name: &str) {
             let strip = self.handle.read(|tree| {
@@ -2094,30 +2085,27 @@ mod tests {
             "the session as it was opened is not a change"
         );
 
-        session.rename("Plans");
+        // A workspace's name is its governance's, so naming it changes no record of it;
+        // naming a strip does.
+        session.name_strip("Plans");
         session.frame();
         let feed = session.feed(&following);
-        let renamed: Vec<_> = feed
-            .entries
-            .iter()
-            .filter(|entry| entry.summary.contains("Plans"))
-            .collect();
-        let [renamed] = renamed.as_slice() else {
-            panic!("the rename is one row: {:?}", feed.entries);
+        let [named] = feed.entries.as_slice() else {
+            panic!("naming the strip is one row: {:?}", feed.entries);
         };
         // Whoever wrote it, a row names the person reading it as such: the wire says the change is
         // the reader's own, and words it as every history row does.
         assert_eq!(
-            renamed.author.relation,
+            named.author.relation,
             wire::Relation::Reader,
             "and who did it: the person here"
         );
         assert_eq!(
-            renamed.author.name, "ada",
+            named.author.name, "ada",
             "the row carries the account's name, what its face and the search read"
         );
         assert_eq!(
-            ui::wire_author_line(&renamed.author),
+            ui::wire_author_line(&named.author),
             "You",
             "and the line words the person reading it as such, never by their account's name"
         );
