@@ -133,6 +133,9 @@ public final class TiloEngine: NSObject {
     private var moves = 0
     /// The page in the view was loaded to pair, and has not been loaded again since.
     private var pairs = false
+    /// The leave whose last ask of the page is still out: the page stays until it answered.
+    private var lingering: Int?
+    private var leaves = 0
     /// Loads an address in place of the web view, for a test that fetches nothing.
     var loads: ((URL) -> Void)?
     /// What was looked up in the page's listing since it got in.
@@ -202,14 +205,47 @@ public final class TiloEngine: NSObject {
 
     /// Put the page away. The engine stands nowhere until it is asked to pair or to open
     /// again; the device's key stays in its store.
-    public func leave() {
+    ///
+    /// With `last`, the page is asked one more thing on its way out, and nobody waits for the
+    /// answer: the engine stands away at once, and the page itself is put away when it has
+    /// answered, or when the engine's patience with an ask is over. It is heard no more
+    /// meanwhile, and a page that is asked for meanwhile takes its place.
+    public func leave(asking last: (script: String, arguments: [String: Any])? = nil) {
         retrying?.cancel()
         retrying = nil
         wanted = nil
         wantedWorkspace = nil
         pairs = false
-        view.loadHTMLString("", baseURL: nil)
+        lingering = nil
+        var isIn = false
+        if case .open = state { isIn = true }
         state = .away
+        guard let last, isIn else {
+            view.loadHTMLString("", baseURL: nil)
+            return
+        }
+        leaves += 1
+        let mine = leaves
+        lingering = mine
+        let patience = askPatience
+        let giveUp = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: patience)
+            guard !Task.isCancelled else { return }
+            self?.putAway(mine)
+        }
+        view.callAsyncJavaScript(last.script, arguments: last.arguments, in: nil, in: .page) { [weak self] _ in
+            Task { @MainActor in
+                giveUp.cancel()
+                self?.putAway(mine)
+            }
+        }
+    }
+
+    /// The page whose last ask was out is put away, unless the engine was asked for a page since.
+    private func putAway(_ leave: Int) {
+        guard lingering == leave else { return }
+        lingering = nil
+        view.loadHTMLString("", baseURL: nil)
     }
 
     /// Where the device stands, from now on. The first value is where it stands now.
@@ -411,6 +447,7 @@ public final class TiloEngine: NSObject {
     private func go(to address: URL, in workspace: String?, pairing: Bool = false) {
         retrying?.cancel()
         retrying = nil
+        lingering = nil
         stops = 0
         moves = 3
         pairs = pairing
@@ -446,8 +483,9 @@ public final class TiloEngine: NSObject {
     }
 
     fileprivate func heard(_ message: WKScriptMessage) {
-        // Only the site's own page, in the main frame, speaks to the engine.
-        guard message.frameInfo.isMainFrame, TiloEngine.text(of: message.frameInfo.securityOrigin) == settings.origin,
+        // Only the site's own page, in the main frame, speaks to the engine, and not a page
+        // that is on its way out.
+        guard lingering == nil, message.frameInfo.isMainFrame, TiloEngine.text(of: message.frameInfo.securityOrigin) == settings.origin,
               let said = message.body as? [String: Any], let kind = said["kind"] as? String
         else { return }
         switch kind {
