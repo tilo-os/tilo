@@ -68,13 +68,13 @@ impl Readable {
 /// direct conversation is found by the people it is between and by nobody else, whatever they
 /// may read of the app that keeps it. An agent finds what the person it acts for takes part in,
 /// never what it takes part in itself for somebody else. What is placed anywhere else, or
-/// nowhere, is not decided here.
+/// nowhere, is not decided here. The rule is the one a listing and a read are answered by
+/// ([`super::direct::said_to`]).
 fn placed_for(person: &ui::permissions::policy::PersonId, entry: &IndexEntry) -> bool {
     let Some(place) = &entry.place else {
         return true;
     };
-    ui::permissions::MemberId::direct_conversation_members(&place.identity)
-        .is_none_or(|members| members.contains(&ui::permissions::MemberId::Person(person.clone())))
+    super::direct::said_to(person, &place.identity)
 }
 
 /// Whether `entry` is inside what a search is narrowed to: where its app says it is, and when.

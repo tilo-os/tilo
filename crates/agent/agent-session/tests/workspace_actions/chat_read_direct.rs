@@ -193,10 +193,24 @@ async fn a_read_of_chat_gives_an_agent_no_direct_conversation_its_person_takes_n
     page.peer.close();
 }
 
+/// Of each row, whether the window lists its conversation and whether the read holds it.
+fn window_and_read<'a>(
+    rows: &[(&'a str, &'a str, [bool; 3])],
+) -> Vec<(&'a str, &'a str, [bool; 2])> {
+    rows.iter()
+        .map(|(who, word, shown)| (*who, *word, [shown[0], shown[2]]))
+        .collect()
+}
+
 /// One rule for Chat's window, the service's search and the service's read: a conversation the
 /// window does not list for a person is one whose words that person's agent neither finds nor
-/// reads, and one it lists is found and read. Asked of each of the three sentences for a
-/// viewer, an editor and the owner, on a turn and outside one.
+/// reads, and the read holds exactly what the window lists. Asked of each of the three
+/// sentences for a viewer, an editor and the owner, on a turn and outside one.
+///
+/// The search is held to never finding what the window does not list. It is not held to
+/// finding all the window lists: main's search finds nothing of a person's own direct
+/// conversation for an agent of theirs that is not itself in it (the editor's agent here),
+/// which is less than the window gives and never more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_chats_window_does_not_list_is_neither_found_nor_read() {
     let mut served = Served::start(1).await;
@@ -274,9 +288,120 @@ async fn what_chats_window_does_not_list_is_neither_found_nor_read() {
     })
     .collect();
     assert_eq!(
+        window_and_read(&seen),
+        window_and_read(&expected),
+        "window and read; what each was answered:\n{}",
+        said.join("\n")
+    );
+    let wider: Vec<_> = seen
+        .iter()
+        .filter(|(_, _, shown)| shown[1] && !shown[0])
+        .collect();
+    assert!(
+        wider.is_empty(),
+        "the search found what the window does not list: {wider:?}\n{}",
+        said.join("\n")
+    );
+    page.peer.close();
+}
+
+/// The address a read of Chat's messages names the message holding `word` by: what stands in
+/// brackets at the end of its line.
+fn address_in(read: &str, word: &str) -> Option<String> {
+    let line = read.lines().find(|line| line.contains(word))?;
+    let (_, address) = line.trim_end().rsplit_once('(')?;
+    address.strip_suffix(')').map(str::to_owned)
+}
+
+/// What a read of the message at `address` answers `caller`: whether it was read, and the
+/// answer with the id it was asked for taken out, so that two answers can be compared.
+async fn read_by_id(
+    service: &turns::WorkspaceActionProvider,
+    chat: &DocumentRoute,
+    caller: &Caller,
+    address: &str,
+) -> (bool, String) {
+    let nothing = serde_json::Map::new();
+    let answered = turns::invoke_named(service, caller, chat, address, "read", nothing).await;
+    let (_, id) = address.rsplit_once('/').expect("an item's address");
+    (answered.is_ok(), format!("{answered:?}").replace(id, "ID"))
+}
+
+/// A message of a direct conversation, asked for by its id by an agent whose person takes no
+/// part in the conversation, is answered exactly as a message that does not exist: nothing
+/// tells the two apart. The agent of a person who does take part reads it by the same id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_kept_from_an_agent_is_answered_by_its_id_as_one_that_does_not_exist() {
+    let mut served = Served::start(1).await;
+    let (workspace, page, readers, _) = three_things_said(&mut served).await;
+    let chat = DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    let service = service!(served, &workspace);
+    // Every agent's own reading of the workspace has caught up with the three sentences.
+    let mut reads = Vec::new();
+    for (_, caller) in &readers {
+        reads.push(messages_read(&served, &workspace, caller, OPEN).await);
+    }
+    // Ada's sentence by the address her agent reads it at, and Cy's by his agent's.
+    let hers = address_in(&reads[4], WORDS[0]).expect("the owner's agent reads her sentence");
+    let his = address_in(&reads[2], WORDS[1]).expect("the editor's agent reads his sentence");
+    // The same address with an id no message has.
+    let nobodys = |address: &str| {
+        let (messages, id) = address.rsplit_once('/').expect("an item's address");
+        format!("{messages}/{}", "0".repeat(id.len()))
+    };
+
+    // Whoever takes part reads the message by its id.
+    let mut said: Vec<String> = Vec::new();
+    for (reader, address, word) in [
+        (4, &hers, WORDS[0]),
+        (5, &hers, WORDS[0]),
+        (2, &his, WORDS[1]),
+    ] {
+        let (who, caller) = &readers[reader];
+        let (read, answer) = read_by_id(&service, &chat, caller, address).await;
+        assert!(
+            read && answer.contains(word),
+            "{who} reads its own person's message by its id: {answer}"
+        );
+    }
+    // Whoever takes no part is answered as for an id no message has.
+    let mut seen: Vec<(&str, &str, bool, bool)> = Vec::new();
+    for (reader, address, word) in [
+        (0, &hers, WORDS[0]),
+        (1, &hers, WORDS[0]),
+        (0, &his, WORDS[1]),
+        (1, &his, WORDS[1]),
+        (2, &hers, WORDS[0]),
+        (3, &hers, WORDS[0]),
+        (4, &his, WORDS[1]),
+        (5, &his, WORDS[1]),
+    ] {
+        let (who, caller) = &readers[reader];
+        let (read, kept) = read_by_id(&service, &chat, caller, address).await;
+        let (_, none) = read_by_id(&service, &chat, caller, &nobodys(address)).await;
+        seen.push((*who, word, read, kept == none));
+        said.push(format!(
+            "{who}, {word}: by its id {kept}; by no message's id {none}"
+        ));
+    }
+    let expected: Vec<(&str, &str, bool, bool)> = vec![
+        ("a viewer's agent on a turn", "heron", false, true),
+        ("a viewer's agent outside a turn", "heron", false, true),
+        ("a viewer's agent on a turn", "plover", false, true),
+        ("a viewer's agent outside a turn", "plover", false, true),
+        ("an editor's agent on a turn", "heron", false, true),
+        ("an editor's agent outside a turn", "heron", false, true),
+        ("the owner's agent on a turn", "plover", false, true),
+        ("the owner's agent outside a turn", "plover", false, true),
+    ];
+    assert_eq!(
         seen,
         expected,
-        "window, search, read; what each was answered:\n{}",
+        "whether it was read, and whether the answer was that of an id no message has:\n{}",
         said.join("\n")
     );
     page.peer.close();

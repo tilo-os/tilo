@@ -8,10 +8,15 @@
 //! naming one resource by path reads several pages.
 
 use super::{
-    CatalogueQuery, CatalogueRow, DocumentRoute, Worker, WorkspaceState, bounded, record_provider,
+    CatalogueQuery, CatalogueRow, DocumentRoute, Worker, WorkspaceState, bounded, direct,
+    record_provider,
 };
 use tilo_actions::remote::{Caller, CataloguePage};
 use tilo_server_protocol::WorkspaceId;
+
+/// The fewest rows asked of a resource at a time where some of its rows are kept from the
+/// caller ([`Worker::shown_page`]).
+const SHOWN_STRETCH: usize = 64;
 
 impl Worker {
     /// The page `query` asks of the records at `routes`, and after them the
@@ -41,6 +46,8 @@ impl Worker {
         // The admitted rows still to pass over before the page starts.
         let mut skip = query.offset();
         let mut rows: Vec<CatalogueRow> = Vec::new();
+        // Whose conversations decide what is listed of them ([`direct`]).
+        let person = bounded.map_or_else(|| self.member.clone(), |who| who.person.clone());
         let take = |rows: &mut Vec<CatalogueRow>, skip: &mut usize, more: Vec<CatalogueRow>| {
             let admitted: Vec<CatalogueRow> =
                 more.into_iter().filter(|row| query.admits(row)).collect();
@@ -65,7 +72,9 @@ impl Worker {
                 held
             };
             let window = (skip, wanted.saturating_sub(rows.len()));
-            match self.listed_page(workspace_id, bounded, route, state, query, window) {
+            let withheld = self.kept_from(&person, route, state);
+            let whose = (bounded, &withheld);
+            match self.shown_page(workspace_id, whose, route, state, query, window) {
                 Ok((held, listed)) => {
                     self.unmounted.remove(route);
                     skip = skip.saturating_sub(held);
@@ -137,6 +146,49 @@ impl Worker {
             None => self
                 .mount(route, state)
                 .map(|mounted| mounted.app.survey_page(query, window)),
+        }
+    }
+
+    /// [`Self::listed_page`] without the rows `withheld` keeps from the caller: what is said in
+    /// a direct conversation their person takes no part in ([`direct`]). How many rows they are
+    /// listed up to the window's end, and those in the window. The window is counted in the
+    /// rows the caller is given, so a row left out leaves no gap in a page: the next one takes
+    /// its place.
+    fn shown_page(
+        &mut self,
+        workspace_id: WorkspaceId,
+        (bounded, withheld): (Option<&bounded::Bounded>, &direct::Kept),
+        route: &DocumentRoute,
+        state: &WorkspaceState,
+        query: &CatalogueQuery,
+        (skip, take): (usize, usize),
+    ) -> Result<(usize, Vec<tilo_actions::remote::CatalogueRow>), String> {
+        if withheld.is_empty() {
+            return self.listed_page(workspace_id, bounded, route, state, query, (skip, take));
+        }
+        // Asked a stretch at a time from the first row on, until the window is full or the
+        // listing ends: a stretch that comes back short was the last.
+        let stretch = take.max(SHOWN_STRETCH);
+        let mut asked = 0_usize;
+        let mut shown = 0_usize;
+        let mut page = Vec::new();
+        loop {
+            let from = (asked, stretch);
+            let (_, listed) = self.listed_page(workspace_id, bounded, route, state, query, from)?;
+            let last = listed.len() < stretch;
+            asked = asked.saturating_add(listed.len());
+            for row in listed {
+                if withheld.keeps(&row) {
+                    continue;
+                }
+                if shown >= skip && page.len() < take {
+                    page.push(row);
+                }
+                shown = shown.saturating_add(1);
+            }
+            if last || page.len() >= take {
+                return Ok((shown, page));
+            }
         }
     }
 }
