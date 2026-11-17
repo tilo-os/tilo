@@ -1047,6 +1047,8 @@ impl Workspaces {
 #[cfg(test)]
 mod accounts_tests;
 #[cfg(test)]
+mod addresses_tests;
+#[cfg(test)]
 mod asking_tests;
 mod branch;
 #[cfg(all(test, feature = "agents"))]
