@@ -551,33 +551,9 @@ pub fn view(
 /// A listing as a person reads it: the lines `tilo_ls` prints, or the same
 /// built from its rows when the host sent no text.
 fn listing_text(listed: &Value, workspace: &str, path: Option<&str>) -> String {
-    let mut said = match listed
-        .get("text")
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-    {
-        Some(text) => text.to_owned(),
-        None => {
-            let mut said = text(listed, "path").to_owned();
-            if let Some(kind) = listed.get("kind").and_then(Value::as_str) {
-                let _ = write!(said, "  ({kind})");
-            }
-            for row in listed
-                .get("rows")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let _ = write!(
-                    said,
-                    "\n{}  {}  {}",
-                    text(row, "path"),
-                    text(row, "label"),
-                    text(row, "kind")
-                );
-            }
-            said
-        }
+    let mut said = match listed.get("text").and_then(Value::as_str) {
+        Some(text) if !text.is_empty() => text.to_owned(),
+        _ => listing_rows(listed),
     };
     // A listing that goes on says which command reads the rest, whether its
     // lines came with the answer or were built here.
@@ -590,6 +566,29 @@ fn listing_text(listed: &Value, workspace: &str, path: Option<&str>) -> String {
         let _ = write!(
             said,
             "\nmore: tilo ls {what}--cursor {cursor} -w {workspace}"
+        );
+    }
+    said
+}
+
+/// A listing's rows as lines, for an answer that carries no text to print.
+fn listing_rows(listed: &Value) -> String {
+    let mut said = text(listed, "path").to_owned();
+    if let Some(kind) = listed.get("kind").and_then(Value::as_str) {
+        let _ = write!(said, "  ({kind})");
+    }
+    for row in listed
+        .get("rows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let _ = write!(
+            said,
+            "\n{}  {}  {}",
+            text(row, "path"),
+            text(row, "label"),
+            text(row, "kind")
         );
     }
     said
