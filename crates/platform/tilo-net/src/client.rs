@@ -41,6 +41,59 @@ pub(crate) struct Config {
     pub(crate) proxy: ProxyUse,
     #[cfg(not(target_family = "wasm"))]
     pub(crate) tls: Option<rustls::ClientConfig>,
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) lookup: Option<Looking>,
+}
+
+/// Resolves a name to its addresses: what a [`Client`] built with
+/// [`ClientBuilder::lookup`] dials for that name. It has the shape of the
+/// fetch proxy's own lookup, so one value serves both.
+#[cfg(not(target_family = "wasm"))]
+pub type Lookup = Arc<
+    dyn Fn(
+            String,
+        )
+            -> std::pin::Pin<Box<dyn Future<Output = std::io::Result<Vec<std::net::IpAddr>>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// The [`Lookup`] a client was given, which has no `Debug` of its own.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone)]
+pub(crate) struct Looking(pub(crate) Lookup);
+
+#[cfg(not(target_family = "wasm"))]
+impl fmt::Debug for Looking {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Lookup")
+    }
+}
+
+/// Why a [`Lookup`] would not have a name dialled, told apart from a lookup
+/// that failed.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug)]
+pub(crate) struct RefusedLookup(pub(crate) String);
+
+#[cfg(not(target_family = "wasm"))]
+impl fmt::Display for RefusedLookup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl std::error::Error for RefusedLookup {}
+
+/// What a [`Lookup`] answers for a name it refuses to have dialled, saying
+/// `why`: the request the lookup was for is not sent and ends as
+/// [`NetError::Blocked`], where a lookup that failed ends as a connection
+/// that failed.
+#[cfg(not(target_family = "wasm"))]
+#[must_use]
+pub fn refused_lookup(why: impl Into<String>) -> std::io::Error {
+    std::io::Error::other(RefusedLookup(why.into()))
 }
 
 /// An HTTP client: a connection pool on the desktop, the page's `fetch` on
@@ -207,6 +260,18 @@ impl ClientBuilder {
             tls.alpn_protocols = vec![b"http/1.1".to_vec()];
         }
         self.config.tls = Some(tls);
+        self
+    }
+
+    /// Dial, for every name, only the addresses `lookup` answers for it, in
+    /// the one lookup the connection itself makes. A caller that keeps its
+    /// requests off some addresses refuses them there ([`refused_lookup`]),
+    /// and no second lookup can answer otherwise behind that check. An
+    /// address written into the URL is not looked up, and a proxy taken from
+    /// the environment resolves what is sent through it itself.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn lookup(mut self, lookup: Lookup) -> Self {
+        self.config.lookup = Some(Looking(lookup));
         self
     }
 

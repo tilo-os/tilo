@@ -4,7 +4,7 @@ use bytes::Bytes;
 use url::Url;
 
 use super::chain;
-use crate::client::{Config, RawResponse, Redirects};
+use crate::client::{Config, Lookup, RawResponse, Redirects, RefusedLookup};
 use crate::{NetError, Request};
 
 pub(crate) struct Backend {
@@ -28,6 +28,9 @@ impl Backend {
         }
         if let Some(timeout) = config.connect_timeout {
             builder = builder.connect_timeout(timeout);
+        }
+        if let Some(looking) = config.lookup.clone() {
+            builder = builder.dns_resolver(std::sync::Arc::new(Looked(looking.0)));
         }
         let client = builder
             .build()
@@ -77,7 +80,63 @@ impl Body {
     }
 }
 
+/// What a failed lookup or a refusal travels as to the connection.
+type Failure = Box<dyn std::error::Error + Send + Sync>;
+
+/// The resolver of a client that was given its own lookup
+/// ([`crate::ClientBuilder::lookup`]): one lookup for a connection, and the
+/// addresses it answered are the ones dialled.
+struct Looked(Lookup);
+
+impl reqwest::dns::Resolve for Looked {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let lookup = std::sync::Arc::clone(&self.0);
+        let name = name.as_str().to_owned();
+        Box::pin(async move {
+            let addresses = match lookup(name.clone()).await {
+                Ok(addresses) => addresses,
+                // A refusal travels as itself, so the request's error tells
+                // it from a lookup that failed.
+                Err(error) => {
+                    return Err(match error.downcast::<RefusedLookup>() {
+                        Ok(refused) => Box::new(refused) as Failure,
+                        Err(error) => Box::new(error) as Failure,
+                    });
+                }
+            };
+            if addresses.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("{name} does not resolve"),
+                )) as Failure);
+            }
+            let addresses: reqwest::dns::Addrs = Box::new(
+                addresses
+                    .into_iter()
+                    .map(|address| std::net::SocketAddr::new(address, 0)),
+            );
+            Ok::<reqwest::dns::Addrs, Failure>(addresses)
+        })
+    }
+}
+
+/// What the client's own lookup said when it refused the name a request was
+/// for: nothing was sent.
+fn refused(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let mut source = Some(error);
+    while let Some(cause) = source {
+        if let Some(refused) = cause.downcast_ref::<RefusedLookup>() {
+            return Some(refused.0.clone());
+        }
+        source = cause.source();
+    }
+    None
+}
+
 fn map_error(error: &reqwest::Error) -> NetError {
+    if let Some(why) = refused(error) {
+        return NetError::Blocked(why);
+    }
     if error.is_timeout() {
         NetError::Timeout
     } else if error.is_builder() {

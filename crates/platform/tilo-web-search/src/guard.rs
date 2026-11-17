@@ -145,6 +145,47 @@ fn public_v6(ip: Ipv6Addr) -> bool {
         || segments.get(..6).is_some_and(|s| s.iter().all(|&x| x == 0)))
 }
 
+/// The system's resolver, as the lookup a client dials by.
+#[cfg(not(target_family = "wasm"))]
+#[must_use]
+pub fn system_lookup() -> tilo_net::Lookup {
+    std::sync::Arc::new(|name: String| {
+        Box::pin(async move {
+            Ok(tokio::net::lookup_host((name.as_str(), 0))
+                .await?
+                .map(|address| address.ip())
+                .collect())
+        })
+    })
+}
+
+/// `lookup`, answering a name only when every address it resolves to is on
+/// the public internet ([`check_address`]): the lookup of a client that
+/// reaches the public web and nothing else.
+///
+/// A name that resolves to both public and local addresses is refused,
+/// since the connection might take either. The refusal is made where the
+/// connection gets its addresses, so a name that answers differently from
+/// one lookup to the next is dialled only where this lookup saw it, and a
+/// look at the name made earlier decides nothing.
+#[cfg(not(target_family = "wasm"))]
+#[must_use]
+pub fn public_only(lookup: tilo_net::Lookup) -> tilo_net::Lookup {
+    std::sync::Arc::new(move |name: String| {
+        let lookup = std::sync::Arc::clone(&lookup);
+        Box::pin(async move {
+            let addresses = lookup(name.clone()).await?;
+            if addresses
+                .iter()
+                .any(|address| check_address(*address).is_err())
+            {
+                return Err(tilo_net::refused_lookup(Refusal::Local(name).to_string()));
+            }
+            Ok(addresses)
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

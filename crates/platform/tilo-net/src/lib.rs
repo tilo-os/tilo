@@ -33,6 +33,8 @@ pub use bytes::Bytes;
 pub use caps::{Availability, Feature, Unsupported, availability, available};
 #[cfg(feature = "http")]
 pub use client::{Client, ClientBuilder, Redirects, Request, RequestBuilder, Response};
+#[cfg(all(feature = "http", not(target_family = "wasm")))]
+pub use client::{Lookup, refused_lookup};
 pub use error::NetError;
 pub use url::Url;
 
