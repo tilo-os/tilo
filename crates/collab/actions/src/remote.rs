@@ -60,6 +60,7 @@ pub mod own_device;
 mod pending;
 pub mod person_accounts;
 pub mod person_models;
+pub mod person_telling;
 pub mod person_vault;
 mod providers;
 mod resource_read;
