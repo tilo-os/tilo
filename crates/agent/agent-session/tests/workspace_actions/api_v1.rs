@@ -828,12 +828,13 @@ async fn a_call_reaches_the_server_that_keeps_the_workspace_when_another_answers
         )
         .unwrap();
         let through = V1 { api: &front, token };
-        let (status, rows) = through
-            .get(&format!("/v1/workspaces/{workspace}/resources"))
+        // Asked of the server itself, so the answer does not wait for the workspace's apps.
+        let (status, held) = through
+            .get(&format!("/v1/workspaces/{workspace}/hosts"))
             .await;
         assert_eq!(
             status, 200,
-            "a call for her workspace reaches the server that keeps it: {rows}"
+            "a call for her workspace reaches the server that keeps it: {held}"
         );
         let (status, listed) = through.get("/v1/workspaces").await;
         assert_eq!(status, 200, "{listed}");
@@ -899,7 +900,7 @@ async fn a_call_is_served_after_the_host_it_used_goes_away() {
         let (status, listed) = home.get("/v1/workspaces").await;
         assert_eq!(status, 200, "{listed}");
 
-        // The host the call used stops serving; another takes the key's calls.
+        // The server the call used stops serving; another takes the key's calls.
         let restarted = on_relay.restart(true).await;
         let second = Server::new(
             &tilo_api::Config {
