@@ -33,8 +33,9 @@
 #  10. a key opens Browser in a hosted workspace, timed to a live window, in a
 #      VM that woke as a clone of that template (the host's own measure of the
 #      wake is printed), never a cold boot of the guest image;
-#  11. the VM it runs in: every renderer sandboxed, the session running as the
-#      image's browser user, its device key, and what the page costs in memory
+#  11. the VM the Browser is in, with the visa test page open in its window:
+#      every renderer sandboxed, the session running as the image's browser
+#      user, its device key, and what the page costs in memory
 #      (integration/vm-proofs.py);
 #  12. the agent fills the visa test page through page actions with the
 #      person asked nothing (their key operates web pages), captures it, and
@@ -429,7 +430,7 @@ if [[ $hosted == 1 ]]; then
   fi
 
   hosted_workspace= hosted_seconds=0
-  hosted_run() { # PHASE
+  hosted_flow() { # PHASE
     TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
       HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
       HOSTED_VISA_APPROVER=$approve HOSTED_VISA_ROOT=$work/startup/root \
@@ -453,7 +454,7 @@ if [[ $hosted == 1 ]]; then
   if runs_step 10; then
     step '10. a key opens Browser in a hosted workspace, in its VM'
     set +e
-    hosted_run --open 2>&1 | tee "$work/hosted-open.log"
+    hosted_flow --open 2>&1 | tee "$work/hosted-open.log"
     hosted_status=${PIPESTATUS[0]}
     set -e
     hosted_seconds=$((SECONDS - launch))
@@ -551,6 +552,11 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
     while [[ $(vm_phase) != Running ]] && ((SECONDS - waited < 600)); do sleep 2; done
     [[ $(vm_phase) == Running ]] \
       || fail "$hosted_workspace's VM is not running again in 600 s (vm_host status says $(vm_phase))"
+    # What the proofs read is an engine that renders: the window the open made
+    # shows the visa test page, which is what a person and their agent see
+    # there before anything is asked of them.
+    hosted_flow --page 2>&1 | tee "$work/hosted-page.log" \
+      || fail 'the visa test page did not open in the hosted window (see above)'
     VM_HOST_RUN="sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all tilo-legacy" \
       VM_HOST_CONTAINER=tilo-sh-vm-host-0 \
       python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_account" "$work/vm" \
@@ -572,7 +578,7 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
   if runs_step 12; then
     step '12. the agent fills, submits and is held in the hosted Browser'
     set +e
-    hosted_run --fill 2>&1 | tee "$work/hosted-fill.log"
+    hosted_flow --fill 2>&1 | tee "$work/hosted-fill.log"
     fill_status=${PIPESTATUS[0]}
     set -e
     if [[ $fill_status != 0 ]]; then

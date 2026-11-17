@@ -42,7 +42,11 @@ agent take there, with the person's answering device held by the check
      it releases: this window's next page action, and a Linux command in the
      same workspace's VM.
 
-usage: hosted-visa.py API_URL SERVER_KEY OUT_DIR FORM_URL [--open|--fill]
+usage: hosted-visa.py API_URL SERVER_KEY OUT_DIR FORM_URL [--open|--page|--fill]
+
+`--page` opens the visa test page in the window `--open` made and stops
+there, so what renders in the VM is what its proofs of the sandbox and the
+memory read.
 
 SERVER_KEY is the startup's server key (`tilo keys create`). OUT_DIR keeps
 what it found: the capture, the page as the agent read it back, the reviewer's
@@ -581,6 +585,26 @@ async def open_phase(report: dict[str, object]) -> int:
     return 0
 
 
+async def page_phase(report: dict[str, object]) -> int:
+    """The visa page open in the window the open made: what renders in the
+    VM, which is what the proofs of its sandbox and memory read."""
+    with open(os.path.join(OUT, "open.json")) as opened:
+        state = json.load(opened)
+    agent = AsyncTilo(key=state["key"], url=API_URL)
+    aws = agent.workspace(state["workspace"])
+    page = Page(aws, str(state["window"]))
+    say("b. the agent opens the visa form in the window")
+    began = time.perf_counter()
+    await outcome(page.do("navigate", url=FORM_URL))
+    await outcome(page.do("wait-page-settled", quiet_ms=300, timeout_ms=60000))
+    title = await page.title()
+    check("Visa application" in title, f"the form is the page the agent opened ({title!r})")
+    report["page_seconds"] = round(time.perf_counter() - began, 2)
+    say("   open", f"the form was open in the window in {report['page_seconds']} s")
+    await agent.aclose()
+    return 0
+
+
 async def fill_phase(report: dict[str, object]) -> int:
     """The form filled with nothing asked, refused once, submitted once, and
     a click held; the reviewer's History; the scope; and the metering."""
@@ -879,6 +903,8 @@ async def main() -> int:
     try:
         if phase == "--open":
             status = await open_phase(report)
+        elif phase == "--page":
+            status = await page_phase(report)
         elif phase == "--fill":
             status = await fill_phase(report)
         else:
