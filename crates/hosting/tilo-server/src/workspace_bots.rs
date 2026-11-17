@@ -372,6 +372,7 @@ pub mod assistant;
 pub mod attachments;
 pub mod discord;
 pub mod events;
+pub mod initiative;
 pub mod installed;
 pub mod kept;
 pub mod membership;

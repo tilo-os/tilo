@@ -368,19 +368,20 @@ pub async fn start_server_lending(
         let browsers = tilo_server::hosted_browser::HostedBrowsers::from_env()
             .map_err(anyhow::Error::msg)?
             .map(std::sync::Arc::new);
-        let (server, actions, events) = tilo_server::agents::start_serving_documents_and_events(
-            cfg,
-            identity,
-            None,
-            lent.feedback_reviewer,
-            Some(
-                tilo_server::agents::host_shells(state_root.join("shells"))
-                    .map_err(anyhow::Error::msg)?,
-            ),
-            browsers,
-        )
-        .await
-        .context("start the server serving its workspaces' records")?;
+        let (server, actions, events, initiative) =
+            tilo_server::agents::start_serving_documents_and_events(
+                cfg,
+                identity,
+                None,
+                lent.feedback_reviewer,
+                Some(
+                    tilo_server::agents::host_shells(state_root.join("shells"))
+                        .map_err(anyhow::Error::msg)?,
+                ),
+                browsers,
+            )
+            .await
+            .context("start the server serving its workspaces' records")?;
         // The agents each workspace made to run here work around the clock, on the host's model.
         let host_agents = server.workspaces().cloned().map(|workspaces| {
             // What is judged for a person is counted on their assistant's day,
@@ -398,6 +399,7 @@ pub async fn start_server_lending(
                     model.map(tilo_server::workspace_agents::model_of),
                 )
                 .with_events(events)
+                .with_initiative(initiative)
                 .run(),
             )
         });

@@ -57,9 +57,11 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
 use crate::workspace_bots::events::PersonEvents;
+use crate::workspace_bots::initiative::Initiative;
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{ModelRefusal, PersonModel, Spender};
 use tilo_actions::remote::person_events;
+use tilo_actions::remote::person_initiative;
 use turn_provider::TurnProvider;
 
 mod answers;
@@ -117,6 +119,9 @@ pub struct WorkspaceActionProvider {
     /// The events this device runs for its people, where it runs any: what an agent sets up,
     /// pauses, changes and removes for the person its turn is for.
     events: Option<PersonEvents>,
+    /// What the people's assistants find to do on their own, where this server keeps it: the
+    /// look-round an agent reads, turns on and off for the person its turn is for.
+    initiative: Option<Initiative>,
     /// What this service answers itself for the one turn it serves, beside the workspace's
     /// resources ([`TurnProvider`]).
     own: Vec<Arc<dyn TurnProvider>>,
@@ -188,8 +193,17 @@ impl WorkspaceActionProvider {
             own: Vec::new(),
             ended: None,
             kept_to: None,
+            initiative: None,
             answered: OwnAnswers::default(),
         }
+    }
+
+    /// This service, answering also for `initiative`: the server's own actions on what a
+    /// person's assistant finds to do on its own.
+    #[must_use]
+    pub fn offering_initiative(mut self, initiative: Option<Initiative>) -> Self {
+        self.initiative = initiative;
+        self
     }
 
     /// This host, answering also for `events`: the host's own actions on a person's scheduled
@@ -248,6 +262,16 @@ impl ActionProvider for WorkspaceActionProvider {
         {
             return Pending::ready(Ok(events.catalogue(self.workspace, caller, &query)));
         }
+        if let Some(initiative) = &self.initiative
+            && query.provider.as_deref() == Some(person_initiative::PROVIDER)
+        {
+            return Pending::ready(Ok(initiative.catalogue(self.workspace, caller, &query)));
+        }
+        let initiative = self
+            .initiative
+            .as_ref()
+            .filter(|_| query.provider.is_none())
+            .and_then(|initiative| initiative.provider(self.workspace, caller));
         // A listing of everything names the events' provider beside the records'.
         let events = self
             .events
@@ -287,6 +311,7 @@ impl ActionProvider for WorkspaceActionProvider {
             RemoteActionMessage::CatalogueResponse { result, .. } => result.map(|mut page| {
                 page.providers.extend(events);
                 page.providers.extend(offered);
+                page.providers.extend(initiative);
                 page
             }),
             _ => Err(unavailable()),
@@ -307,6 +332,13 @@ impl ActionProvider for WorkspaceActionProvider {
             && request.target.provider == person_events::PROVIDER
         {
             let receipt = events.invoke(self.workspace, caller, &request);
+            self.answered.keep(caller, &receipt);
+            return Pending::ready(Ok(receipt));
+        }
+        if let Some(initiative) = &self.initiative
+            && request.target.provider == person_initiative::PROVIDER
+        {
+            let receipt = initiative.invoke(self.workspace, caller, &request);
             self.answered.keep(caller, &receipt);
             return Pending::ready(Ok(receipt));
         }
@@ -457,6 +489,8 @@ pub struct HostAgents {
     events: Option<PersonEvents>,
     /// What carries out the answers to what code of this server asked.
     carriers: asks::Carriers,
+    /// What the people's assistants find to do on their own, which a turn's tools reach too.
+    initiative: Option<Initiative>,
 }
 
 impl HostAgents {
@@ -469,11 +503,20 @@ impl HostAgents {
             going: Arc::default(),
             events: None,
             carriers: Arc::default(),
+            initiative: None,
         };
         // What a turn asks its person is put to them in its conversation.
         agents.ask_in_conversations();
         agents.carry_sends();
         agents
+    }
+
+    /// These agents, whose turns reach `initiative`: an agent reads its person's look-round and
+    /// turns it on and off through the server's own actions.
+    #[must_use]
+    pub fn with_initiative(mut self, initiative: Option<Initiative>) -> Self {
+        self.initiative = initiative;
+        self
     }
 
     /// These agents, whose turns reach `events`: an agent sets its person's scheduled work and
@@ -869,6 +912,7 @@ impl HostAgents {
         let mut scope = TurnScope {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone())
+                .offering_initiative(self.initiative.clone())
                 .keeping_to(self.own_of(workspace, turn).await),
             person: Caller::authenticated(person, device).in_workspace(workspace),
             workspace: workspace.to_owned(),

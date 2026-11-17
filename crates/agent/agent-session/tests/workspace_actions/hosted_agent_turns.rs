@@ -407,14 +407,17 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
             true,
         )
         .unwrap();
-    let hosts = Arc::new(Mutex::new(Vec::new()));
+    let unasked = Arc::new(Mutex::new(Vec::new()));
     let agents = HostAgents::new(
         workspaces.clone(),
         actions,
-        Some(never_asked(Arc::clone(&hosts))),
+        Some(never_asked(Arc::clone(&unasked))),
     );
     agents.answer(&workspace, &turns[0]).await.unwrap();
-    assert!(hosts.lock().unwrap().is_empty(), "no other model is asked");
+    assert!(
+        unasked.lock().unwrap().is_empty(),
+        "no other model is asked"
+    );
     let told = said(tracker(&workspaces, &workspace, &tasks_record).await);
     assert!(
         told.iter()
@@ -1010,8 +1013,8 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
 
     // The keeper linked nothing yet, so the server's model answers the turn, and the summary's
     // question is asked as the turn was.
-    let hosts = Arc::new(Mutex::new(Vec::new()));
-    let asked = Arc::clone(&hosts);
+    let unasked = Arc::new(Mutex::new(Vec::new()));
+    let asked = Arc::clone(&unasked);
     let agents = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
@@ -1066,7 +1069,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
         reply.work
     );
     {
-        let calls = hosts.lock().unwrap();
+        let calls = unasked.lock().unwrap();
         assert_eq!(calls.len(), 2, "one call answers, one summarises");
         assert!(calls[1].tools.is_empty(), "a summary is words, no tools");
         assert!(
@@ -1168,7 +1171,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
         "a summary is words, no tools"
     );
     assert_eq!(
-        hosts.lock().unwrap().len(),
+        unasked.lock().unwrap().len(),
         2,
         "the host's model is not asked once the keeper linked their own"
     );
@@ -1373,3 +1376,7 @@ mod asks;
 /// A turn that answers with a view it wrote.
 #[path = "hosted_agent_views.rs"]
 mod views;
+
+#[cfg(test)]
+#[path = "hosted_initiative.rs"]
+mod hosted_initiative;

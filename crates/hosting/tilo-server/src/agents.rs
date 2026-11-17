@@ -471,6 +471,8 @@ struct WorkspaceRecordsServer {
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
     /// The events this host runs for its people, once its workspaces are up.
     events: Arc<std::sync::OnceLock<crate::workspace_bots::events::PersonEvents>>,
+    /// What its people's assistants find to do on their own, once its workspaces are up.
+    initiative: Arc<std::sync::OnceLock<crate::workspace_bots::initiative::Initiative>>,
 }
 
 impl crate::AppActionServer for WorkspaceRecordsServer {
@@ -485,6 +487,13 @@ impl crate::AppActionServer for WorkspaceRecordsServer {
         if crate::workspace_bots::events::addresses(&message) {
             return match self.events.get() {
                 Some(events) => events.serve(workspace_id, caller, message),
+                None => crate::workspace_bots::events::not_served(message),
+            };
+        }
+        // So is what their assistant finds to do on its own.
+        if crate::workspace_bots::initiative::addresses(&message) {
+            return match self.initiative.get() {
+                Some(initiative) => initiative.serve(workspace_id, caller, message),
                 None => crate::workspace_bots::events::not_served(message),
             };
         }
@@ -1102,7 +1111,7 @@ pub async fn start_serving_documents(
 ) -> Result<(Server, WorkspaceActions), ServerError> {
     start_serving_documents_and_events(cfg, identity, catalogue, feedback_reviewer, shell, browsers)
         .await
-        .map(|(server, actions, _)| (server, actions))
+        .map(|(server, actions, ..)| (server, actions))
 }
 
 /// [`start_serving_documents`], answering also with the events this host runs for its people
@@ -1110,6 +1119,9 @@ pub async fn start_serving_documents(
 /// happen, kept under the server's state and run from its start, with no device of theirs on. The
 /// server answers their actions for a person's device and page; whoever runs the people's agents
 /// hands the same events to their turns ([`crate::workspace_agents::HostAgents::with_events`]).
+/// With the events comes what the people's assistants find to do on their own
+/// ([`crate::workspace_bots::initiative`]): the look-round is one of a person's events, and the
+/// server looks before it hands that event's instruction on.
 /// None where the server governs no workspaces.
 ///
 /// # Errors
@@ -1126,6 +1138,7 @@ pub async fn start_serving_documents_and_events(
         Server,
         WorkspaceActions,
         Option<crate::workspace_bots::events::PersonEvents>,
+        Option<crate::workspace_bots::initiative::Initiative>,
     ),
     ServerError,
 > {
@@ -1133,11 +1146,13 @@ pub async fn start_serving_documents_and_events(
     let catalogue = app_catalogue(catalogue, browsers.as_ref());
     cfg.services.app_serving = true;
     let events_state = cfg.state_root.join("person-events");
+    let initiative_state = cfg.state_root.join("person-initiative");
     let app_server = Arc::new(WorkspaceRecordsServer {
         actions: WorkspaceActions::new(catalogue),
         stores: crate::content::stores(&cfg.state_root),
         browsers: browsers.clone(),
         events: Arc::default(),
+        initiative: Arc::default(),
     });
     let web_entry = cfg.web_entry.clone();
     let server = Server::start_with_app_serving(cfg, identity, Some(app_server.clone())).await?;
@@ -1148,17 +1163,25 @@ pub async fn start_serving_documents_and_events(
         web_entry,
         (feedback_reviewer, shell, browsers),
     )?;
-    let events = server.workspaces().cloned().map(|workspaces| {
-        crate::workspace_bots::events::PersonEvents::start(
-            workspaces,
-            events_state,
-            Some(app_server.actions.clone()),
-        )
-    });
+    let (initiative, events) = server
+        .workspaces()
+        .cloned()
+        .map(|workspaces| {
+            crate::workspace_bots::initiative::Initiative::start(
+                workspaces,
+                initiative_state,
+                events_state,
+                Some(app_server.actions.clone()),
+            )
+        })
+        .unzip();
     if let Some(events) = &events {
         let _ = app_server.events.set(events.clone());
     }
-    Ok((server, app_server.actions.clone(), events))
+    if let Some(initiative) = &initiative {
+        let _ = app_server.initiative.set(initiative.clone());
+    }
+    Ok((server, app_server.actions.clone(), events, initiative))
 }
 
 /// The workspaces of `workspaces` that hold a notebook: those whose notes a pass brings into

@@ -42,7 +42,7 @@ impl Up {
             device_cert: device.cert.clone(),
             revocations: RevocationList::new(),
         };
-        let (server, actions, events) = start_serving_documents_and_events(
+        let (server, actions, events, _) = start_serving_documents_and_events(
             cfg,
             identity,
             Some(Arc::new(crate::common::catalogue)),

@@ -105,7 +105,7 @@ pub fn not_served(message: RemoteActionMessage) -> Option<Pending<RemoteActionMe
 
 /// Who asks for a person's events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Asker {
+pub(super) enum Asker {
     /// The person themselves, on a device of theirs.
     Person,
     /// An agent on a session the person handed it.
@@ -153,6 +153,19 @@ impl PersonEvents {
         state: PathBuf,
         actions: Option<tilo_agent_session::workspace_actions::WorkspaceActions>,
     ) -> Self {
+        Self::start_behind(workspaces, state, actions, None)
+    }
+
+    /// [`Self::start`], with `before` put in front of what answers each
+    /// event's steps: it is handed what would answer and answers in its
+    /// place, so a step can be looked at before it is taken.
+    #[must_use]
+    pub fn start_behind(
+        workspaces: Workspaces,
+        state: PathBuf,
+        actions: Option<tilo_agent_session::workspace_actions::WorkspaceActions>,
+        before: Option<super::initiative::Before>,
+    ) -> Self {
         use super::assistant::{self, Starter};
         let plain = || -> StepsFor {
             let steps = assistant::host_steps(workspaces.clone());
@@ -178,6 +191,10 @@ impl PersonEvents {
                 })
             };
         let steps = actions.map_or_else(plain, starting_turns);
+        let steps: StepsFor = match before {
+            Some(before) => Arc::new(move |event: &Definition| before(steps(event))),
+            None => steps,
+        };
         Self::started(workspaces, state, steps)
     }
 
@@ -371,7 +388,7 @@ impl PersonEvents {
     /// person's. A bot, an app, and an agent no person's session stands
     /// behind are told what a caller asking for something that does not
     /// exist is told.
-    fn asking(
+    pub(super) fn asking(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
