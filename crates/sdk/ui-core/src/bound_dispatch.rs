@@ -1893,6 +1893,21 @@ fn discover_bound_resources_with_filter(
             if boundary.is_none() && (snapshot.is_none() || publishes()) {
                 let resources = binding.read_document(doc, |doc, _| {
                     let presence = crate::invocation_scope::current_presence();
+                    // Asked for one address, the component's own tree answers with the node it
+                    // names, found in its shared tree, not with every resource it publishes.
+                    if let Some(address) = address
+                        && root
+                        && presence.is_none()
+                        && let Some(found) = crate::widget::capability::capability::<
+                            dyn crate::resources::PublishesResources,
+                        >(widget)
+                        .and_then(|publisher| publisher.shared_resources_for(None, doc))
+                        .and_then(|forest| {
+                            shared_target(&forest, filtered.then_some(binding), address)
+                        })
+                    {
+                        return vec![found];
+                    }
                     let mut resources =
                         crate::resources::resources_for(widget, presence.as_ref(), doc);
                     if !root {
@@ -3066,7 +3081,7 @@ pub(crate) fn invoke_resource_action(
                     let presence = crate::invocation_scope::current_presence();
                     let resolved = presence
                         .is_none()
-                        .then(|| resolve_document_action(widget, doc, binding, &target.address.address))
+                        .then(|| resolve_published_action(widget, doc, binding, &target.address.address))
                         .flatten();
                     let resources = if let Some(resource) = resolved {
                         vec![resource]
@@ -3274,27 +3289,36 @@ pub(crate) fn invoke_resource_action(
 
 /// The resource a local invocation of `address` resolves to in `widget`'s
 /// filtered tree, read from the component's shared tree without building,
-/// copying or filtering the rest of it, when the action is a
-/// document edit: executing one reads the resource's identity and the
-/// action alone. It is exactly the node [`resolve_resource_invocation`]
-/// finds in the tree [`filter_resource`] keeps — the first, depth first,
-/// with the address's resource id that filtering does not drop — with its
-/// permitted actions and without its children. `None` defers to the whole
-/// tree: the tree does not resolve the address itself (the unbound and
-/// provider fallbacks), the action is not a permitted document edit, or
-/// anything else.
-fn resolve_document_action(
+/// copying or filtering the rest of it: executing an action reads the
+/// resource's identity and the action alone, whatever its kind ([`shared_target`]).
+/// `None` defers to the whole tree: the tree does not resolve the address
+/// itself (the unbound and provider fallbacks), or the action is not
+/// permitted there.
+fn resolve_published_action(
     widget: &dyn Widget,
     doc: &AutoCommit,
     binding: &CallbackBinding,
     address: &tilo_actions::ActionAddress,
 ) -> Option<ResourceSpec> {
-    fn collect(widget: &dyn Widget, doc: &AutoCommit, forest: &mut Vec<SharedResource>) {
-        if widget.has_separate_document_owner() {
-            return;
-        }
-        forest.extend(crate::resources::shared_resources(widget, doc));
+    if widget.has_separate_document_owner() {
+        return None;
     }
+    let forest = crate::resources::shared_resources(widget, doc);
+    shared_target(&forest, Some(binding), address)
+}
+
+/// The node `address` names in `forest`, exactly as [`resolve_resource_invocation`] finds it in
+/// the tree [`filter_resource`] keeps for `binding` (or in the whole tree, with no binding): the
+/// first, depth first, with the address's resource id that filtering does not drop. Answered as
+/// its head alone, with its permitted actions and without its children, found without building,
+/// copying or filtering the rest of the tree: a resource of thousands of items resolves one of them,
+/// or itself, for the cost of finding it. `None` when the forest does not resolve the address, or
+/// the node found does not offer the action.
+fn shared_target(
+    forest: &[SharedResource],
+    binding: Option<&CallbackBinding>,
+    address: &tilo_actions::ActionAddress,
+) -> Option<ResourceSpec> {
     fn resolves(node: &SharedResource, address: &tilo_actions::ActionAddress) -> bool {
         (node.id() == address.resource
             && node
@@ -3304,48 +3328,49 @@ fn resolve_document_action(
                 .any(|action| action.id == address.action))
             || node.children().iter().any(|child| resolves(child, address))
     }
-    fn kept(binding: &CallbackBinding, node: &SharedResource) -> bool {
-        let permissions = binding.permissions.borrow();
-        let decider = permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str());
+    fn kept(decider: &crate::permissions::ActionDecider<'_>, node: &SharedResource) -> bool {
         let head = node.head();
         head.actions
             .iter()
             .any(|action| decider.permits(&head.kind, head.id.as_str(), action))
-            || node.children().iter().any(|child| kept(binding, child))
+            || node.children().iter().any(|child| kept(decider, child))
     }
-    /// The first node with resource id `id` that filtering keeps. A node
+    /// The first node with resource id `id` that filtering keeps (any, with no decider). A node
     /// filtering drops has no kept node beneath it.
-    fn first_kept<'a>(
-        binding: &CallbackBinding,
+    fn first<'a>(
+        decider: Option<&crate::permissions::ActionDecider<'_>>,
         node: &'a SharedResource,
         id: &str,
     ) -> Option<&'a SharedResource> {
-        if node.id() == id && kept(binding, node) {
+        if node.id() == id && decider.is_none_or(|decider| kept(decider, node)) {
             return Some(node);
         }
         node.children()
             .iter()
-            .find_map(|child| first_kept(binding, child, id))
+            .find_map(|child| first(decider, child, id))
     }
-    let mut forest = Vec::new();
-    collect(widget, doc, &mut forest);
     if !forest.iter().any(|node| resolves(node, address)) {
         return None;
     }
+    let permissions = binding.map(|binding| binding.permissions.borrow());
+    let decider = binding
+        .zip(permissions.as_ref())
+        .map(|(binding, permissions)| {
+            permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str())
+        });
     let node = forest
         .iter()
-        .find_map(|node| first_kept(binding, node, &address.resource))?;
+        .find_map(|node| first(decider.as_ref(), node, &address.resource))?;
     let mut resource = node.head().clone();
-    let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str());
-    resource
-        .actions
-        .retain(|action| decider.permits(&node.head().kind, node.head().id.as_str(), action));
+    if let Some(decider) = &decider {
+        resource
+            .actions
+            .retain(|action| decider.permits(&node.head().kind, node.head().id.as_str(), action));
+    }
     resource
         .actions
         .iter()
-        .find(|action| action.id == address.action)
-        .is_some_and(|action| action.kind == tilo_actions::OperationKind::Document)
+        .any(|action| action.id == address.action)
         .then_some(resource)
 }
 
