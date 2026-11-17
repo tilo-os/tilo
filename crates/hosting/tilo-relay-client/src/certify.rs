@@ -24,8 +24,9 @@ use tilo_relay_protocol::certify::{
     ApproverReply, CertifyOpen, CertifyReply, MAX_CERTIFY_FRAME_BYTES, MemberApproval,
 };
 use tilo_user_identity::{
-    CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
-    DeviceCert, RevocationList, verify_device_cert_at, verify_issued_cert,
+    CERTIFICATION_CLOCK_ALLOWANCE_NS, CERTIFICATION_SCHEMA_VERSION, CertificationPolicy,
+    CertificationRequest, DeviceCapabilities, DeviceCert, RevocationList, verify_device_cert_at,
+    verify_issued_cert,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -139,6 +140,15 @@ pub async fn certify(
 }
 
 /// The request a device without a certificate signs.
+///
+/// It is dated [`CERTIFICATION_CLOCK_ALLOWANCE_NS`] before this device's
+/// clock. A host from before hosts allowed the clocks of a pairing to differ
+/// checks the date exactly, and refused a request dated now whenever its own
+/// clock ran a little behind this device's; such a host stays in use while
+/// its pages move on. The wait for an approver is counted from now, as
+/// before, so the request lasts that much longer than the wait, well inside
+/// the longest a request may. With a host that has the allowance, a device
+/// up to twice that far ahead still pairs; the expiry is exact everywhere.
 async fn signed_request(
     user_public_key: [u8; 32],
     label: &str,
@@ -154,7 +164,7 @@ async fn signed_request(
         requested: DeviceCapabilities::member(),
         nonce: rand::random(),
         invite,
-        issued_at_ns: now,
+        issued_at_ns: now.saturating_sub(CERTIFICATION_CLOCK_ALLOWANCE_NS),
         expires_at_ns: now.saturating_add(CERTIFICATION_WAIT_NS),
         signature: [0; 64],
     };
