@@ -150,7 +150,7 @@ as the shipped one, without wasm-opt), both built on the build server by the
 cargo drop-in TILO_SH_CARGO names (default \$CARGO) in a build directory that
 stays, and only what changed brought back; a drop-in that runs no program
 there has the bundle bound and split here. TILO_SH_BUILD=t takes them from
-t's checks instead (tilo-sh-programs, lounge-gate; web-desktop-check-bundle,
+t's checks instead (tilo-sh-programs, lounge-check; web-desktop-check-bundle,
 optimized), which start from an empty build directory: what the checks
 run, for a rehearsal of it. Caddy is
 the one TILO_SH_CADDY names, else the one on PATH, else a pinned release
@@ -305,12 +305,12 @@ remote_state=${TILO_SH_REMOTE_STATE:-$repo/target/tilo-stack/$base}
 # The programs: the release's code and opt-level without the whole-program
 # link, so a change relinks in seconds instead of LTO's minutes. Built here
 # incrementally (Cargo.toml's lounge-local) into ./target, or by t's
-# tilo-sh-programs as the Lounge's checks build them (lounge-gate). Either
+# tilo-sh-programs as the Lounge's checks build them (lounge-check). Either
 # way the services run a copy (copy_programs), never the build's own files,
 # which the next build rewrites. A caller that built them already names their
 # directory (TILO_SH_PROGRAMS, TILO_SH_LOUNGE).
 profile=lounge-local
-[[ $build != t ]] || profile=lounge-gate
+[[ $build != t ]] || profile=lounge-check
 if [[ -n ${TILO_SH_PROGRAMS:-} ]]; then
   programs=$TILO_SH_PROGRAMS
 else
@@ -1245,7 +1245,7 @@ bundle_whole() {
 
 # -- t's builds ---------------------------------------------------------------
 # With TILO_SH_BUILD=t the programs and the desktop bundle are what t's
-# checks build: tilo-sh-programs (every program, in one lounge-gate
+# checks build: tilo-sh-programs (every program, in one lounge-check
 # build), lounge-fonts (the relay's font catalog) and web-desktop-check-bundle
 # (the bundle without its whole-program link: the compile, wasm-bindgen, the
 # split and wasm-opt, all on t). Each check is cached by what it read, so a

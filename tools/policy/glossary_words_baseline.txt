@@ -10,7 +10,7 @@ run 63350
 seat 1457
 record 60034
 slot 11621
-gate 30
+gate 4
 plane 15
 lane 3
 standing 724

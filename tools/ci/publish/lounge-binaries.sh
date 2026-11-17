@@ -5,7 +5,7 @@
 # starts beside the relay. usage: lounge-binaries.sh OUT [PROFILE]
 #
 # `release` is what the image carries. A check that only runs these two
-# programs (e2e, page-tour, the tilo.sh stack) builds `lounge-gate`
+# programs (e2e, page-tour, the tilo.sh stack) builds `lounge-check`
 # instead: the same code and the same opt-level without the whole-program link,
 # which is most of a run and buys nothing a check can see.
 set -euo pipefail
@@ -23,8 +23,8 @@ case $profile in
     # thin LTO keeps these server binaries fast at a fraction of the memory and
     # time.
     export CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 ;;
-  lounge-gate) ;;
-  *) die "unknown profile $profile: release or lounge-gate" ;;
+  lounge-check) ;;
+  *) die "unknown profile $profile: release or lounge-check" ;;
 esac
 bins=(tilo-relay discord-worker)
 cargo build --locked --profile "$profile" -p tilo-relay -p discord-worker \

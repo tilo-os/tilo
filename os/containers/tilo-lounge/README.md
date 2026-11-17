@@ -119,7 +119,7 @@ are also t's checks — `lounge-binaries`, `lounge-fonts`,
 `image-lounge-context`, `image-lounge` — so a change is built by naming them.
 The checks that run the programs without an image around them (`e2e`,
 `page-tour`) ask `lounge-binaries.sh` for the profile Cargo.toml's
-`lounge-gate` names: the same code and optimisation level without the
+`lounge-check` names: the same code and optimisation level without the
 whole-program link the image's own build spends.
 `test-entrypoint.sh` asserts the environment-to-flags mapping and
 `test-image.sh` what the built image must carry.
@@ -153,8 +153,8 @@ bwrap, `TILO_SH_PROGRAMS`, `TILO_SH_LOUNGE`, `TILO_SH_SITE` and
 `TILO_SH_CADDY` naming what `tilo-sh-binaries`, `image-web-entry-context` and
 `tilo-sh-caddy` built, and `TILO_RELAY_BIN`, `TILO_CRYPTO_BIN`,
 `TILO_FONTS_DIR` and `TILO_CLI_BIN` naming built programs (the
-`lounge-gate-binaries`, `lounge-gate-tools`, `lounge-fonts` and
-`lounge-gate-cli` outputs), which the wait list's own Lounge and the setups
+`lounge-check-binaries`, `lounge-check-tools`, `lounge-fonts` and
+`lounge-check-cli` outputs), which the wait list's own Lounge and the setups
 run. Every wait in the page drivers is a
 number of steps of `TILO_STEP_SECONDS` (5 s by default; `test-e2e.sh` sets
 20 s for a node that draws every page in software), so a hang fails within its

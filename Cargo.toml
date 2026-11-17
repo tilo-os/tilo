@@ -1404,21 +1404,21 @@ strip = "symbols"
 inherits = "wasm-release"
 strip = "none"
 
-# `wasm-split` without its whole-program link, as `lounge-gate` is `release`
+# `wasm-split` without its whole-program link, as `lounge-check` is `release`
 # without it: the local tilo.sh stack's and its checks' desktop bundle, which a
 # change to one app relinks in a minute instead of fat LTO's single
 # codegen unit over every app. Same opt-level, same split, same wasm-opt; the
 # module is larger before wasm-opt and the shipped bundle stays `wasm-split`'s.
-[profile.wasm-split-gate]
+[profile.wasm-split-check]
 inherits = "wasm-split"
 lto = false
 codegen-units = 16
 
-# `wasm-split-gate` compiled incrementally: the local stack's desktop bundle
+# `wasm-split-check` compiled incrementally: the local stack's desktop bundle
 # (build.sh --profile local), built in a build directory that stays, as
-# `lounge-local` is to `lounge-gate`, in as many codegen units.
+# `lounge-local` is to `lounge-check`, in as many codegen units.
 [profile.wasm-split-local]
-inherits = "wasm-split-gate"
+inherits = "wasm-split-check"
 incremental = true
 codegen-units = 256
 lto = "off"
@@ -1547,12 +1547,12 @@ debug-assertions = true
 # reads the speed of. Release optimisation without it: the same code at the same opt-level,
 # sixteen codegen units, and each cached crate stored without the bitcode a whole-program link
 # alone needs.
-[profile.lounge-gate]
+[profile.lounge-check]
 inherits = "release"
 lto = false
 codegen-units = 16
 
-# `lounge-gate` compiled incrementally: the local tilo.sh stack's programs
+# `lounge-check` compiled incrementally: the local tilo.sh stack's programs
 # (os/containers/tilo-sh/stack.sh), built in a build directory that stays, so
 # a one-line change recompiles the parts of the crate it touched rather than
 # the whole crate. The same code at the same opt-level, in rustc's 256
@@ -1561,9 +1561,9 @@ codegen-units = 16
 # were inlined into: with sixteen units and that pass, a one-line change to
 # the relay's library took 48 s of rustc, without it 21 s. A build that
 # starts from an empty directory (a check's) gains nothing from it and keeps
-# `lounge-gate`, whose crates the compiler cache stores.
+# `lounge-check`, whose crates the compiler cache stores.
 [profile.lounge-local]
-inherits = "lounge-gate"
+inherits = "lounge-check"
 incremental = true
 codegen-units = 256
 lto = "off"

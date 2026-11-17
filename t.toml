@@ -2352,8 +2352,8 @@ git = true
 default = false
 
 # The same bundle for the local tilo.sh stack (os/containers/tilo-sh/stack.sh), built as
-# `lounge-gate-binaries` builds its programs: release optimisation without the whole-program link
-# (Cargo.toml's `wasm-split-gate`), so a change to one app compiles that app and relinks instead of
+# `lounge-check-binaries` builds its programs: release optimisation without the whole-program link
+# (Cargo.toml's `wasm-split-check`), so a change to one app compiles that app and relinks instead of
 # running fat LTO over every app in one codegen unit. Split and optimized as the shipped bundle is;
 # what ships, and what the page checks drive, stays `web-desktop-bundle`.
 [[check]]
@@ -5712,24 +5712,24 @@ outputs = ["/target/publish/lounge/binaries/**"]
 # The image's programs, built as the image ships them: a release build whose whole-program link
 # covers everything a host that serves pages carries. Only the image waits for this build; the
 # checks that run these programs themselves (e2e, page-tour, the tilo.sh stack) ask for
-# `lounge-gate-binaries` below. A release waits
+# `lounge-check-binaries` below. A release waits
 # for it, so it gets longer than a check of a change does: the whole-program link grows with the
 # graph and this is the only build of it left.
 timeout_secs = 5400
 default = false
 
 # The same two programs, for the checks that run them directly (e2e, page-tour, the tilo.sh
-# stack): the profile Cargo.toml's `lounge-gate` describes, which is release optimisation
+# stack): the profile Cargo.toml's `lounge-check` describes, which is release optimisation
 # without the whole-program link. A check starts from an empty build directory, so a run takes
 # every unit it reuses from the compiler cache, recompiles the crates the change touched and the
 # crates above them, and links whole — for a binary no check reads the speed of.
 [[check]]
-name = "lounge-gate-binaries"
+name = "lounge-check-binaries"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/lounge-binaries.sh /target/publish/lounge-gate/binaries lounge-gate"
+run = "bash tools/ci/publish/lounge-binaries.sh /target/publish/lounge-check/binaries lounge-check"
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/lounge-gate/binaries/**"]
+outputs = ["/target/publish/lounge-check/binaries/**"]
 # A node's first run of this builds the whole graph from nothing through the compiler cache; after
 # that t books it from what it measured. A change to a leaf crate recompiles that crate and what
 # depends on it, and relinks; a change to a crate the programs carry recompiles everything above
@@ -5781,7 +5781,7 @@ default = false
 # they are for the other checks that only build a program to run it): the lints themselves are
 # `clippy`'s, over every package at once.
 [[check]]
-name = "lounge-gate-tools"
+name = "lounge-check-tools"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo build --locked -p tilo-crypto --bin tilo-crypto\nrm -rf /target/publish/lounge/check-tools\nmkdir -p /target/publish/lounge/check-tools\ncp \"$CARGO_TARGET_DIR/debug/tilo-crypto\" /target/publish/lounge/check-tools/\n"
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
@@ -5790,19 +5790,19 @@ outputs = ["/target/publish/lounge/check-tools/**"]
 default = false
 
 # The tilo command an agent runs in e2e's setups, built as the relay beside it is (Cargo.toml's
-# `lounge-gate`: the release's code and opt-level without its whole-program link), from the same
+# `lounge-check`: the release's code and opt-level without its whole-program link), from the same
 # compiler cache. A change to the command recompiles the crates above the change and relinks, not
 # the command alone, and what this selection resolves differently from the relay's is its own
-# units (`lounge-gate-binaries`). The static musl build a release publishes is cli-x86_64's, which
+# units (`lounge-check-binaries`). The static musl build a release publishes is cli-x86_64's, which
 # cli-rehearsal installs the way a person does: its build from cold is no part of what a change to
 # a page waits for.
 [[check]]
-name = "lounge-gate-cli"
+name = "lounge-check-cli"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked --profile lounge-gate -p tilo-cli --bin tilo\nrm -rf /target/publish/lounge-gate/cli\nmkdir -p /target/publish/lounge-gate/cli\ncp \"$CARGO_TARGET_DIR/lounge-gate/tilo\" /target/publish/lounge-gate/cli/\n"
+run = "cargo build --locked --profile lounge-check -p tilo-cli --bin tilo\nrm -rf /target/publish/lounge-check/cli\nmkdir -p /target/publish/lounge-check/cli\ncp \"$CARGO_TARGET_DIR/lounge-check/tilo\" /target/publish/lounge-check/cli/\n"
 env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/lounge-gate/cli/**"]
+outputs = ["/target/publish/lounge-check/cli/**"]
 default = false
 
 # The web page and the stack it runs on, end to end, on every change that reaches either, in
@@ -5830,11 +5830,11 @@ on = ["idle"]
 # iroh's endpoints make) and DNS lookups: with the open network the same flows failed as without
 # it, so none of them needs either.
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e"
-needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-cli", "lounge-check-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0" }
+env = { TILO_RELAY_BIN = "/target/publish/lounge-check/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
@@ -5860,11 +5860,11 @@ name = "tilo-sh-admits-a-page"
 on = ["idle"]
 # No egress: as e2e, the page and the stack meet on loopback alone.
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/entry entry"
-needs = ["lounge-gate-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/entry/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_SH_ENTRY_VISITS = "1" }
+env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/entry/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_SH_ENTRY_VISITS = "1" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: the visitor's page and console, and the stack's own logs.
@@ -5882,11 +5882,11 @@ timeout_secs = 600
 name = "e2e-reloads"
 # No egress: as e2e, it meets the stack on loopback alone; see e2e.
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e-reloads reloads"
-needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-cli", "lounge-check-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e-reloads/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", E2E_FLOW_SECONDS = "840" }
+env = { TILO_RELAY_BIN = "/target/publish/lounge-check/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e-reloads/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", E2E_FLOW_SECONDS = "840" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 outputs = ["/target/e2e-reloads/*.log", "/target/e2e-reloads/reloads/**"]
@@ -5901,8 +5901,8 @@ name = "page-tour"
 # No egress: as e2e, the tour meets its Lounge on loopback (direct-lounge.sh) and its programs and
 # fonts are its needs'.
 run = "mkdir -p /target/page-tour-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/page-tour-cli tilo\nTILO_TOUR_IN_LOG=1 bash os/containers/tilo-lounge/test-page-tour.sh /target/publish/web-desktop/bundle /target/page-tour"
-needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle", "cli-x86_64"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/page-tour-cli/tilo" }
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-desktop-bundle", "cli-x86_64"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-check/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/page-tour-cli/tilo" }
 requires = ["arch=x86_64"]
 outputs = ["/target/page-tour/tour/**", "/target/page-tour/*.log"]
 timeout_secs = 1800
@@ -5923,14 +5923,14 @@ default = false
 
 # The programs the local tilo.sh stack's checks run, and its relay's laid-out context: built once
 # here, at the release's code and opt-level without its whole-program link (Cargo.toml's
-# `lounge-gate`), so a check's bring-up compiles nothing. The relay and its Discord worker are
-# lounge-gate-binaries' (the Lounge's page checks run those); this adds the API server, the fake Discord,
+# `lounge-check`), so a check's bring-up compiles nothing. The relay and its Discord worker are
+# lounge-check-binaries' (the Lounge's page checks run those); this adds the API server, the fake Discord,
 # the context's bots, surfaces and font catalog.
 [[check]]
 name = "tilo-sh-binaries"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/tilo-sh-binaries.sh /target/publish/tilo-sh /target/publish/lounge-gate/binaries /target/publish/lounge/fonts"
-needs = ["lounge-gate-binaries", "lounge-fonts"]
+run = "bash tools/ci/publish/tilo-sh-binaries.sh /target/publish/tilo-sh /target/publish/lounge-check/binaries /target/publish/lounge/fonts"
+needs = ["lounge-check-binaries", "lounge-fonts"]
 env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/tilo-sh/**"]
@@ -5938,7 +5938,7 @@ git = true
 default = false
 
 # The local tilo.sh stack's programs (os/containers/tilo-sh/stack.sh): the relay, the Discord
-# worker, the API server, the fake Discord and the tilo command, in one `lounge-gate` build, so a
+# worker, the API server, the fake Discord and the tilo command, in one `lounge-check` build, so a
 # change to the relay compiles it once and relinks every program at once rather than in checks
 # that wait on each other. It reads no git, so a commit that changes none of what it compiles
 # takes the last build; the stack lays the relay's context out itself.

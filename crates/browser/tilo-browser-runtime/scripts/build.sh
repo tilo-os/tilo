@@ -24,7 +24,7 @@
 # information, light optimisation), whose much smaller module wasm-bindgen
 # and the splitter get through in half the time, and no wasm-opt.
 # `check` (desktop bundle only) is `release` without its whole-program link
-# (Cargo's `wasm-split-gate`, as `lounge-gate` is to the native release): the
+# (Cargo's `wasm-split-check`, as `lounge-check` is to the native release): the
 # same opt-level, split and wasm-opt, so a change to one app compiles that app
 # and relinks rather than running fat LTO over every app in one codegen unit.
 # The web-desktop-check-bundle check builds it; what ships stays `release`.
@@ -141,9 +141,9 @@ case "$profile" in
   assert) defines_profile wasm-assert || {
     echo "--profile assert needs a workspace that declares [profile.wasm-assert], as this repository's does" >&2; exit 2; }
     cargo_profile=wasm-assert optimize=${optimize:-1} ;;
-  check) defines_profile wasm-split-gate || {
-    echo "--profile check needs a workspace that declares [profile.wasm-split-gate], as this repository's does" >&2; exit 2; }
-    cargo_profile=wasm-split-gate optimize=${optimize:-1} ;;
+  check) defines_profile wasm-split-check || {
+    echo "--profile check needs a workspace that declares [profile.wasm-split-check], as this repository's does" >&2; exit 2; }
+    cargo_profile=wasm-split-check optimize=${optimize:-1} ;;
   local) defines_profile wasm-split-local || {
     echo "--profile local needs a workspace that declares [profile.wasm-split-local], as this repository's does" >&2; exit 2; }
     cargo_profile=wasm-split-local optimize=${optimize:-0} ;;

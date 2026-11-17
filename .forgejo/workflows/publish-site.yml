@@ -142,7 +142,7 @@ jobs:
         # a fresh volume, lists itself in its directory, and hosts two
         # people's browsers in the shared shell — chat, windows and presence —
         # with the same programs and entry the deployment uses.
-        run: bash os/containers/tilo-lounge/test-integration.sh "$OUT/lounge/image.oci.tar" "$OUT/web-desktop/bundle" "$OUT/lounge-gate"
+        run: bash os/containers/tilo-lounge/test-integration.sh "$OUT/lounge/image.oci.tar" "$OUT/web-desktop/bundle" "$OUT/lounge-check"
 
       - name: Keep the check's diagnostics
         # Whatever the check found, whether or not it passed: each page's
@@ -152,11 +152,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
-          name: lounge-gate
+          name: lounge-check
           path: |
-            out/lounge-gate/people
-            out/lounge-gate/lounge.log
-            out/lounge-gate/site.log
+            out/lounge-check/people
+            out/lounge-check/lounge.log
+            out/lounge-check/site.log
           if-no-files-found: ignore
 
       - name: Publish

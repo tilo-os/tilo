@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # What t's checks of the local tilo.sh stack run natively, built once for both
 # of them: the release's code and opt-level without the whole-program link
-# (Cargo.toml's `lounge-gate`), and the relay's laid-out context, which reads
+# (Cargo.toml's `lounge-check`), and the relay's laid-out context, which reads
 # the apps' history for its surfaces (lounge-context.sh) and carries the product
 # font catalog. usage: tilo-sh-binaries.sh OUT LOUNGE_BINARIES FONTS
 #
 #   OUT           the stack's own programs in bin/ (TILO_SH_PROGRAMS) and its
 #                 lounge/ (TILO_SH_LOUNGE)
-#   LOUNGE_BINARIES  lounge-gate-binaries' output: tilo-relay and
+#   LOUNGE_BINARIES  lounge-check-binaries' output: tilo-relay and
 #                 discord-worker, built as the Lounge image ships them
 #   FONTS         lounge-fonts' output
 #
@@ -25,9 +25,9 @@ cd "$repo_root"
 target=${CARGO_TARGET_DIR:-$repo_root/target}
 rm -rf "$out"
 mkdir -p "$out/bin"
-cargo build --locked --profile lounge-gate -p tilo-api -p fake-discord \
+cargo build --locked --profile lounge-check -p tilo-api -p fake-discord \
   --bin tilo-api --bin fake-discord
-for bin in tilo-api fake-discord; do cp "$target/lounge-gate/$bin" "$out/bin/"; done
+for bin in tilo-api fake-discord; do cp "$target/lounge-check/$bin" "$out/bin/"; done
 bash tools/ci/publish/lounge-context.sh "$out/lounge" "$binaries" "$fonts"
 # Outside the image a Tilo program finds the font catalog in fonts/ beside itself,
 # and the stack reads this layout as it is (in a check, read-only).
