@@ -11,11 +11,16 @@
 //! The certificate the proof carries is issued for this answer alone: a host
 //! issues the page's device certificate when it joins a workspace, and a
 //! sign-in to a service has no workspace behind it.
+//!
+//! The service reads both certificates by its own clock the moment the
+//! answer arrives, and a person's computer is seldom the one that is behind.
+//! So both are valid from the one clock allowance before this browser's
+//! clock ([`tilo_server_client::issue_sign_in_cert`]), as a paired device's
+//! certificate is, and the service keeps its exact check.
 
 use serde::{Deserialize, Serialize};
 use tilo_server_client::{
-    DeviceSigner as _, IssuedRole, encode, grant_label, issue_agent_grant, issue_device_cert,
-    sign_in_proof,
+    DeviceSigner as _, encode, grant_label, issue_agent_grant, issue_sign_in_cert, sign_in_proof,
 };
 use tilo_user_identity::{AgentScope, DeviceCapabilities};
 use wasm_bindgen::prelude::*;
@@ -95,14 +100,9 @@ pub async fn sign_in_answer(
     let root = PageSigner::from_js(&root)?;
     let device = PageSigner::from_js(&ownership)?;
     let challenge = device_key(&ask.challenge)?;
-    let cert = issue_device_cert(
-        &root,
-        device.device_public_key(),
-        BROWSER_LABEL,
-        IssuedRole::Browser,
-    )
-    .await
-    .map_err(js_error)?;
+    let cert = issue_sign_in_cert(&root, device.device_public_key(), BROWSER_LABEL)
+        .await
+        .map_err(js_error)?;
     let proof = sign_in_proof(cert, &device, &ask.audience, challenge)
         .await
         .map_err(js_error)?;

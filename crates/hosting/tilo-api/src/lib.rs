@@ -874,7 +874,9 @@ impl Server {
     /// The page saying Tilo could not confirm it was you, with one way on: a
     /// fresh sign-in for the same thing. The reason stays in the log.
     fn unconfirmed(&self, pending: &Pending, why: &str) -> Reply {
-        tracing::info!(reason = why, "a sign-in was not answered");
+        // A warning: the person read only that it could not be confirmed, and
+        // whoever keeps the site finds the reason here.
+        tracing::warn!(reason = why, "a sign-in was not answered");
         match self.restart(pending) {
             Ok(location) => html(
                 StatusCode::FORBIDDEN,

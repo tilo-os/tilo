@@ -116,6 +116,25 @@ account key, or, for a device that holds none, through the person's other device
 that works, and what it is allowed to grant, is in
 [device-certificate-renewal.md](device-certificate-renewal.md).
 
+**Two clocks never agree, and one rule says how far they may differ: 60 seconds**
+(`CERTIFICATION_CLOCK_ALLOWANCE_NS`). Whoever dates a thing applies it; no check of a certificate
+is loosened for it, and every verifier keeps a certificate's exact start and exact expiry. A new
+device's pairing request may be dated up to that far ahead of the clock that checks it. A
+certificate the person's root issues for another machine to read the moment it arrives is valid
+from that long before the issuer's clock: the certificate of a paired device, and, since
+17 November 2026, the two a person's Tilo on the web answers a service's sign-in with (the
+browser's own, which the proof carries, and the grant's for an agent or an API key).
+
+Accepted since then that was refused before: an approval on the sign-in page from a computer whose
+clock is up to 60 seconds ahead of the API server's. Until then it was refused as not yet valid at
+any difference at all, 6.5 ms on a real site. It gives nothing to anyone who does not hold the
+person's root key and the device's key. Only the root signs the two certificates, and the device's
+key still signs the server's own challenge. The server's checks are unchanged: a computer more
+than 60 seconds ahead, a certificate past its expiry, a revoked device and another server's
+challenge are refused exactly as before. The certificates name the same keys and grant the same.
+The grant ends when the server asked, and the most it may last counts from its earlier start; the
+browser's 30 days count from the earlier start too, so nothing lasts longer than it did.
+
 ### 3.3 What this replaces
 
 Every identity in the system derives from the device certificate. There is exactly one
