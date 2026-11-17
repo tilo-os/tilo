@@ -680,7 +680,7 @@ tilo_test_env::scenario! {
             // a caller that gives up stops its own request, never another's.
             let named = WebViewCommand::Page {
                 request_id: 7,
-                actor: PageActor::named("agent:ada"),
+                actor: PageActor::listed("agent:ada"),
                 request: PageRequest::Log { since: 3 },
             };
             assert!(command_within_limits(&named));
@@ -756,7 +756,7 @@ tilo_test_env::scenario! {
                 "Newsletter": false});
             let fill = |request_id, submit| WebViewCommand::Page {
                 request_id,
-                actor: PageActor::named("agent:ada"),
+                actor: PageActor::listed("agent:ada"),
                 request: PageRequest::FillForm {
                     form: "form1".into(),
                     answers: answers.as_object().unwrap().clone(),
@@ -1182,7 +1182,7 @@ tilo_test_env::scenario! {
     // reads it as before.
     {
         use crate::webview::{AnsweredBy, PageActor};
-        let rev = || AnsweredBy::Actor(PageActor::named("agent:rev").expect("a named actor"));
+        let rev = || AnsweredBy::Actor(PageActor::listed("agent:rev").expect("a named actor"));
         assert_eq!(
             encode_command(WebViewCommand::AnswerHeldRequest {
                 id: 3,

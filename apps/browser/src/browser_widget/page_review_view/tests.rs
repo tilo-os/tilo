@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use crate::page_resource::agent_handle;
+
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::{ActionInvoker, ActionSpec, InvocationUpdate, InvokerDevice, ResourceSpec};
@@ -314,12 +316,17 @@ fn each_answer_shows_under_the_agent_that_set_it_as_the_agents_work() {
     );
 
     // Ada answers one question. The page holds her answer from then on.
-    let first = json!({"seq": 1, "actor": "agent:ada", "action": "fill_form", "ok": true,
+    let first = json!({"seq": 1, "actor": agent_handle("ada"), "action": "fill_form", "ok": true,
         "answers": [{"name": "Given names", "value": "Maria Elena"}]});
     page_holds(
         &engine,
         &[
-            ("Given names", "text", "Maria Elena", by("agent:ada", 1)),
+            (
+                "Given names",
+                "text",
+                "Maria Elena",
+                by(&agent_handle("ada"), 1),
+            ),
             ("Passport number", "text", "", Value::Null),
         ],
         std::slice::from_ref(&first),
@@ -335,13 +342,23 @@ fn each_answer_shows_under_the_agent_that_set_it_as_the_agents_work() {
     assert!(row_says(&mut app, "Passport number", &["No answer"]));
 
     // Ben answers another.
-    let second = json!({"seq": 2, "actor": "agent:ben", "action": "fill_form", "ok": true,
+    let second = json!({"seq": 2, "actor": agent_handle("ben"), "action": "fill_form", "ok": true,
         "answers": [{"name": "Passport number", "value": "P7K290XB4"}]});
     page_holds(
         &engine,
         &[
-            ("Given names", "text", "Maria Elena", by("agent:ada", 1)),
-            ("Passport number", "text", "P7K290XB4", by("agent:ben", 2)),
+            (
+                "Given names",
+                "text",
+                "Maria Elena",
+                by(&agent_handle("ada"), 1),
+            ),
+            (
+                "Passport number",
+                "text",
+                "P7K290XB4",
+                by(&agent_handle("ben"), 2),
+            ),
         ],
         &[first, second],
     );
@@ -378,7 +395,11 @@ fn each_answer_shows_under_the_agent_that_set_it_as_the_agents_work() {
         .filter(|(_, request)| matches!(request, PageRequest::FillForm { .. }))
         .map(|(actor, _)| actor.as_deref())
         .collect();
-    assert_eq!(acted, [Some("agent:ada"), Some("agent:ben")]);
+    let (ada_handle, ben_handle) = (agent_handle("ada"), agent_handle("ben"));
+    assert_eq!(
+        acted,
+        [Some(ada_handle.as_str()), Some(ben_handle.as_str())]
+    );
     assert!(
         asks.iter()
             .filter(|(_, request)| matches!(
@@ -405,9 +426,9 @@ fn an_agent_from_another_device_shows_with_the_device_it_works_from() {
 
     // Each answers one question. The engine names each by its name alone.
     let answers = [
-        (&ada, "agent:ada", "Given names", "Maria Elena"),
-        (&ben, "agent:ben", "Passport number", "P7K290XB4"),
-        (&cy, "agent:cy", "Arrival", "2027-02-03"),
+        (&ada, agent_handle("ada"), "Given names", "Maria Elena"),
+        (&ben, agent_handle("ben"), "Passport number", "P7K290XB4"),
+        (&cy, agent_handle("cy"), "Arrival", "2027-02-03"),
     ];
     let mut record = Vec::new();
     for (index, (by, actor, question, answer)) in answers.iter().enumerate() {
@@ -471,11 +492,11 @@ fn an_agent_from_another_device_shows_with_the_device_it_works_from() {
 fn a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page() {
     let (engine, mut app) = window();
     let (ada, ben) = (agent("ada"), agent("ben"));
-    let filled = json!({"seq": 1, "actor": "agent:ada", "action": "fill", "ok": true,
+    let filled = json!({"seq": 1, "actor": agent_handle("ada"), "action": "fill", "ok": true,
         "target": {"role": "textbox", "name": "Arrival"}, "text": "2027-02-03"});
     page_holds(
         &engine,
-        &[("Arrival", "date", "2027-02-03", by("agent:ada", 1))],
+        &[("Arrival", "date", "2027-02-03", by(&agent_handle("ada"), 1))],
         std::slice::from_ref(&filled),
     );
     invoke(
@@ -497,7 +518,7 @@ fn a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page() 
     // The page's own script rewrites the answer. No action ran, so nothing
     // tells the review: it finds out by reading the page, once what it read
     // is as old as it lets it get.
-    let mut changed = by("agent:ada", 1);
+    let mut changed = by(&agent_handle("ada"), 1);
     changed["changed"] = json!(true);
     page_holds(
         &engine,
@@ -532,11 +553,11 @@ fn a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page() 
     ));
 
     // Ben sets it again: the review follows, still open.
-    let again = json!({"seq": 2, "actor": "agent:ben", "action": "fill", "ok": true,
+    let again = json!({"seq": 2, "actor": agent_handle("ben"), "action": "fill", "ok": true,
         "target": {"role": "textbox", "name": "Arrival"}, "text": "2027-02-12"});
     page_holds(
         &engine,
-        &[("Arrival", "date", "2027-02-12", by("agent:ben", 2))],
+        &[("Arrival", "date", "2027-02-12", by(&agent_handle("ben"), 2))],
         &[filled, again],
     );
     invoke(
@@ -572,7 +593,7 @@ fn what_a_person_typed_is_listed_as_typing_and_a_secret_only_as_set() {
             "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"}),
         json!({"seq": 2, "actor": "", "how": "input", "ok": true, "secret": true,
             "target": {"role": "textbox", "name": "Portal password"}, "text": "hunter2-typed"}),
-        json!({"seq": 3, "actor": "agent:ada", "action": "press", "ok": true, "secret": true,
+        json!({"seq": 3, "actor": agent_handle("ada"), "action": "press", "ok": true, "secret": true,
             "message": "Pressed a key in a secret field", "text": "7",
             "target": {"role": "textbox", "name": "Card PIN"}}),
     ];
@@ -622,12 +643,12 @@ fn what_was_held_is_listed_with_who_let_it_leave() {
             "message": message, "url": FORM})
     };
     let record = [
-        json!({"seq": 1, "actor": "agent:intake", "action": "click", "ok": true,
+        json!({"seq": 1, "actor": agent_handle("intake"), "action": "click", "ok": true,
             "target": {"role": "button", "name": "Send application"}}),
-        hold(2, "agent:intake", "submit", visa),
+        hold(2, &agent_handle("intake"), "submit", visa),
         hold(3, "", "allow", visa),
         hold(4, "", "request", tracker),
-        hold(5, "agent:rev", "keep", tracker),
+        hold(5, &agent_handle("rev"), "keep", tracker),
         hold(6, "", "download", receipt),
         hold(7, "", "drop", receipt),
     ];
@@ -718,7 +739,7 @@ fn a_secrets_text_is_never_in_the_reviews_accessibility_tree() {
     let (engine, mut app) = window();
     // A read that carried a secret's text, and a resource that kept it: the
     // engine sends neither, and the review would not show them if it did.
-    let leaked = json!({"seq": 1, "actor": "agent:ada", "action": "fill", "ok": true,
+    let leaked = json!({"seq": 1, "actor": agent_handle("ada"), "action": "fill", "ok": true,
         "target": {"role": "textbox", "name": "Portal password"}, "text": "hunter2-secret"});
     page_holds(
         &engine,
@@ -727,7 +748,7 @@ fn a_secrets_text_is_never_in_the_reviews_accessibility_tree() {
                 "Portal password",
                 "secret",
                 "hunter2-secret",
-                by("agent:ada", 1),
+                by(&agent_handle("ada"), 1),
             ),
             (
                 "Card PIN",
@@ -788,11 +809,11 @@ fn the_review_follows_what_the_engine_tells_and_reads_on_no_timer() {
     let (engine, mut app) = window();
     engine.set_page_events(true);
     let ada = agent("ada");
-    let filled = json!({"seq": 1, "actor": "agent:ada", "action": "fill", "ok": true,
+    let filled = json!({"seq": 1, "actor": agent_handle("ada"), "action": "fill", "ok": true,
         "target": {"role": "textbox", "name": "Arrival"}, "text": "2027-02-03"});
     page_holds(
         &engine,
-        &[("Arrival", "date", "2027-02-03", by("agent:ada", 1))],
+        &[("Arrival", "date", "2027-02-03", by(&agent_handle("ada"), 1))],
         std::slice::from_ref(&filled),
     );
     invoke(
@@ -818,7 +839,7 @@ fn the_review_follows_what_the_engine_tells_and_reads_on_no_timer() {
     // window's clock is moved there, through each moment an engine that
     // tells nothing is read again at
     // (`a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page`).
-    let mut changed = by("agent:ada", 1);
+    let mut changed = by(&agent_handle("ada"), 1);
     changed["changed"] = json!(true);
     page_holds(
         &engine,
@@ -871,8 +892,18 @@ fn choosing_a_row_brings_its_field_into_view_on_the_page() {
     page_holds(
         &engine,
         &[
-            ("Given names", "text", "Maria Elena", by("agent:ada", 1)),
-            ("Passport number", "text", "P7K290XB4", by("agent:ben", 2)),
+            (
+                "Given names",
+                "text",
+                "Maria Elena",
+                by(&agent_handle("ada"), 1),
+            ),
+            (
+                "Passport number",
+                "text",
+                "P7K290XB4",
+                by(&agent_handle("ben"), 2),
+            ),
         ],
         &[],
     );
@@ -908,7 +939,12 @@ fn the_fields_of_a_frame_are_reviewed_under_their_frame() {
     let (engine, mut app) = window();
     page_holds(
         &engine,
-        &[("Given names", "text", "Maria Elena", by("agent:ada", 1))],
+        &[(
+            "Given names",
+            "text",
+            "Maria Elena",
+            by(&agent_handle("ada"), 1),
+        )],
         &[],
     );
     // The fields read lists the frame's fields after the page's own, each
@@ -918,13 +954,13 @@ fn the_fields_of_a_frame_are_reviewed_under_their_frame() {
         json!({"fields": [
             {"element": "d1e2", "role": "textbox", "name": "Given names",
                 "value": "Maria Elena", "form": "form1", "question": "Given names",
-                "set": by("agent:ada", 1)},
+                "set": by(&agent_handle("ada"), 1)},
             {"element": "d3e2", "role": "textbox", "name": "Card number",
                 "value": "<16 characters hidden>", "form": "form1", "question": "Card number",
                 "frame": "3", "set": {"how": "input"}},
             {"element": "d3e3", "role": "textbox", "name": "Name on card",
                 "value": "Ada Lovelace", "form": "form1", "question": "Name on card",
-                "frame": "3", "set": by("agent:ben", 2)},
+                "frame": "3", "set": by(&agent_handle("ben"), 2)},
         ]}),
     );
     invoke(&mut app, None, &BrowserEffect::ReviewPage);

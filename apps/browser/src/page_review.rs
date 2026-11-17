@@ -9,6 +9,7 @@
 //! secret's text never enters it.
 
 use serde_json::Value;
+use ui::tilo_actions::Actor;
 
 /// How many of the tab's actions the review keeps: as many as the tab's own
 /// resource holds.
@@ -50,13 +51,13 @@ impl Device {
 /// Who set what a question holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SetBy {
-    /// An actor's action: the name the action API admitted it under, empty
-    /// for the person at the window, the other device it worked from, and
+    /// An actor's action: who it was, `None` for the person at the window, the other device it
+    /// worked from, and
     /// the action's place in the resource. `device_unknown` says the answer
     /// names no device because the window no longer knows where the actor
     /// worked from, not because it worked on the device that runs the page.
     Action {
-        actor: String,
+        actor: Option<Actor>,
         device: Option<Device>,
         device_unknown: bool,
         seq: u64,
@@ -134,6 +135,11 @@ pub(crate) struct Form {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Fields {
     pub(crate) forms: Vec<Form>,
+}
+
+/// The actor `said` names at `key`.
+fn actor(said: &Value, key: &str) -> Option<Actor> {
+    serde_json::from_value(said.get(key)?.clone()).ok()
 }
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -231,7 +237,7 @@ fn set_of(field: &Value) -> Option<(SetBy, bool)> {
         "action" => {
             let device = Device::read(set);
             SetBy::Action {
-                actor: text(set, "by").to_owned(),
+                actor: actor(set, "by"),
                 device_unknown: device.is_none() && flag(set, "device_unknown"),
                 device,
                 seq: whole(set.get("seq")).unwrap_or(0),
@@ -549,9 +555,8 @@ impl HoldStep {
 pub(crate) struct Step {
     /// Its place in the resource.
     pub(crate) seq: u64,
-    /// Who asked: the name the action API admitted them under, empty for
-    /// the person at the window.
-    pub(crate) actor: String,
+    /// Who asked; `None` for the person at the window.
+    pub(crate) actor: Option<Actor>,
     /// The other device they worked from; `None` on the device that runs the
     /// page.
     pub(crate) device: Option<Device>,
@@ -619,7 +624,7 @@ impl Step {
         let device = Device::read(entry);
         Some(Self {
             seq: whole(entry.get("seq"))?,
-            actor: text(entry, "actor").to_owned(),
+            actor: actor(entry, "actor"),
             device_unknown: device.is_none() && flag(entry, "device_unknown"),
             device,
             action: text(entry, "action").to_owned(),
@@ -684,6 +689,16 @@ impl Record {
 mod tests {
     use super::*;
     use serde_json::json;
+    use ui::tilo_actions::MemberId;
+
+    /// The agent `id` as an entry names its actor.
+    fn agent(id: &str) -> Value {
+        json!({"member": {"agent": id}})
+    }
+
+    fn agent_actor(id: &str) -> Actor {
+        MemberId::agent(id).into()
+    }
 
     /// The engine's own shapes, as its tests assert them: a form two agents
     /// and a person answered, one answer rewritten behind them by the page.
@@ -706,7 +721,7 @@ mod tests {
         let fields = json!({"fields": [
             {"element": "d1e2", "role": "textbox", "name": "Given names", "value": "Maria Elena",
                 "form": "form1", "question": "Given names",
-                "set": {"how": "action", "by": "agent:ada", "seq": 1}},
+                "set": {"how": "action", "by": agent("ada"), "seq": 1}},
             {"element": "d1e4", "role": "combobox", "name": "Nationality",
                 "value": "Select a country", "required": true,
                 "form": "form1", "question": "Nationality"},
@@ -714,14 +729,14 @@ mod tests {
                 "form": "form1", "question": "Refused before?", "answer": "Yes"},
             {"element": "d1e7", "role": "radio", "name": "No", "value": "checked",
                 "form": "form1", "question": "Refused before?", "answer": "No",
-                "set": {"how": "action", "by": "agent:ben", "seq": 2.0}},
+                "set": {"how": "action", "by": agent("ben"), "seq": 2.0}},
             {"element": "d1e8", "role": "textbox", "name": "Portal password",
                 "value": "<14 characters hidden>", "required": true,
                 "form": "form1", "question": "Portal password", "set": {"how": "input"}},
             {"element": "d1e9", "role": "textbox", "name": "Arrival", "value": "2027-02-04",
                 "invalid": true, "problem": "Choose a date after today.",
                 "form": "form1", "question": "Arrival",
-                "set": {"how": "action", "by": "agent:ben", "seq": 2, "changed": true}},
+                "set": {"how": "action", "by": agent("ben"), "seq": 2, "changed": true}},
             {"element": "d1e10", "role": "checkbox", "name": "Accept terms",
                 "value": "unchecked", "required": true,
                 "form": "form1", "question": "Accept terms", "set": {"how": "page"}},
@@ -781,7 +796,7 @@ mod tests {
             assert_eq!(
                 given.set,
                 SetBy::Action {
-                    actor: "agent:ada".into(),
+                    actor: Some(agent_actor("ada")),
                     device: None,
                     device_unknown: false,
                     seq: 1
@@ -797,7 +812,7 @@ mod tests {
             assert_eq!(
                 refused.set,
                 SetBy::Action {
-                    actor: "agent:ben".into(),
+                    actor: Some(agent_actor("ben")),
                     device: None,
                     device_unknown: false,
                     seq: 2
@@ -952,11 +967,11 @@ mod tests {
                     "form": "form1", "question": name, "set": set})
             };
             let fields = json!({"fields": [
-                field("Given names", json!({"how": "action", "by": "agent:task-a", "seq": 1,
+                field("Given names", json!({"how": "action", "by": agent("task-a"), "seq": 1,
                     "device": laptop, "device_name": "Studio laptop"})),
-                field("Passport number", json!({"how": "action", "by": "agent:task-d", "seq": 2,
+                field("Passport number", json!({"how": "action", "by": agent("task-d"), "seq": 2,
                     "device": unnamed})),
-                field("Arrival", json!({"how": "action", "by": "agent:task-b", "seq": 3})),
+                field("Arrival", json!({"how": "action", "by": agent("task-b"), "seq": 3})),
             ]});
             let review = Fields::read(None, &fields);
             let from = |name: &str| match &question(&review, name).set {
@@ -977,11 +992,11 @@ mod tests {
 
             let mut record = Record::default();
             record.take(&json!({"entries": [
-                {"seq": 1, "actor": "agent:task-a", "device": laptop,
+                {"seq": 1, "actor": agent("task-a"), "device": laptop,
                     "device_name": "Studio laptop", "action": "fill_form", "ok": true},
-                {"seq": 2, "actor": "agent:task-b", "action": "click", "ok": true},
+                {"seq": 2, "actor": agent("task-b"), "action": "click", "ok": true},
                 // A name alone names no device.
-                {"seq": 3, "actor": "agent:task-c", "device_name": "Studio laptop",
+                {"seq": 3, "actor": agent("task-c"), "device_name": "Studio laptop",
                     "action": "click", "ok": true},
             ], "next": 3}));
             let devices: Vec<Option<&str>> = record
@@ -1005,13 +1020,13 @@ mod tests {
             record.take(&json!({"entries": [
                 {"seq": 1, "actor": "", "how": "input", "ok": true,
                     "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"},
-                {"seq": 2, "actor": "agent:ada", "action": "fill", "ok": true, "secret": true,
+                {"seq": 2, "actor": agent("ada"), "action": "fill", "ok": true, "secret": true,
                     "target": {"role": "textbox", "name": "Password"}, "text": "leaked",
                     "values": ["leaked"]},
             ], "next": 2, "more": false}));
             let typed = &record.steps[0];
             assert!(typed.kind == StepKind::Typed && !typed.secret);
-            assert_eq!((typed.action.as_str(), typed.actor.as_str()), ("", ""));
+            assert_eq!((typed.action.as_str(), &typed.actor), ("", &None));
             assert_eq!(typed.wrote, ["ada@example.org"]);
             let secret = &record.steps[1];
             assert!(secret.kind == StepKind::Action && secret.secret);
@@ -1025,10 +1040,10 @@ mod tests {
         {
             let mut record = Record::default();
             record.take(&json!({"entries": [
-                {"seq": 1, "actor": "agent:ada", "action": "click", "ok": true,
+                {"seq": 1, "actor": agent("ada"), "action": "click", "ok": true,
                     "message": "Clicked button \"Send\"",
                     "target": {"role": "button", "name": "Send"}},
-                {"seq": 2, "actor": "agent:ada", "how": "hold", "action": "submit", "ok": true,
+                {"seq": 2, "actor": agent("ada"), "how": "hold", "action": "submit", "ok": true,
                     "message": "POST https://visa.example", "to_url": "https://visa.example"},
                 {"seq": 3, "actor": "", "how": "hold", "action": "allow", "ok": true,
                     "message": "POST https://visa.example", "to_url": "https://visa.example"},
@@ -1040,16 +1055,16 @@ mod tests {
             assert_eq!(
                 (
                     held.action.as_str(),
-                    held.actor.as_str(),
+                    held.actor.clone(),
                     held.leaving.as_str()
                 ),
-                ("submit", "agent:ada", "POST https://visa.example")
+                ("submit", Some(agent_actor("ada")), "POST https://visa.example")
             );
             let allowed = &record.steps[2];
             assert_eq!(allowed.kind, StepKind::Hold(HoldStep::Allowed));
             assert_eq!(
-                (allowed.action.as_str(), allowed.actor.as_str()),
-                ("allow", "")
+                (allowed.action.as_str(), &allowed.actor),
+                ("allow", &None)
             );
         }
 
@@ -1078,10 +1093,10 @@ mod tests {
         {
             let mut record = Record::default();
             let first = json!({"entries": [
-                {"seq": 1, "time_ms": 1_700_000_000_000_u64, "actor": "agent:ada",
+                {"seq": 1, "time_ms": 1_700_000_000_000_u64, "actor": agent("ada"),
                     "action": "fill", "ok": true,
                     "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"},
-                {"seq": 2.0, "actor": "agent:ben", "action": "fill_form", "ok": false,
+                {"seq": 2.0, "actor": agent("ben"), "action": "fill_form", "ok": false,
                     "answers": [{"name": "Arrival", "value": "2027-02-03"}]},
             ], "next": 2, "more": true, "dropped": 0, "waiting": 0});
             assert_eq!(record.since(), 0);
@@ -1104,11 +1119,11 @@ mod tests {
                 [1, 2, 3]
             );
             // A resource that starts over is another tab's.
-            let other = json!({"entries": [{"seq": 1, "actor": "agent:cy", "action": "click"}],
+            let other = json!({"entries": [{"seq": 1, "actor": agent("cy"), "action": "click"}],
                 "next": 1, "more": false});
             assert_eq!(record.take(&other), (true, false));
             assert_eq!(record.steps.len(), 1);
-            assert_eq!(record.steps[0].actor, "agent:cy");
+            assert_eq!(record.steps[0].actor, Some(agent_actor("cy")));
         }
     }
 }

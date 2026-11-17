@@ -84,7 +84,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 use ui::framework::PersonResource;
-use ui::tilo_actions::{Acting, ActionInvoker, InvocationId, InvokerDevice};
+use ui::tilo_actions::{Acting, ActionInvoker, Actor, InvocationId, InvokerDevice};
 use ui::tilo_resource::{self, ActionCx, Atom, Map, Model, Refusal, resource};
 use ui::webview::{PageActor, PageFailure, PageReply, PageRequest, PageResourceNote};
 
@@ -132,8 +132,8 @@ pub struct PageAction {
     pub seq: u64,
     /// When it ended, in milliseconds since the Unix epoch.
     pub time_ms: u64,
-    /// The name its actor acted under; empty for the person at the window.
-    pub actor: Atom,
+    /// Who did it; `None` for the person at the window.
+    pub actor: Option<Actor>,
     /// The other device of the person's its actor worked from, by its key in
     /// hex: the device the MCP server verified the actor's connection came
     /// from. Empty for an actor on the device whose engine runs the page,
@@ -457,7 +457,9 @@ impl PageAction {
         Some(Self {
             seq,
             time_ms: entry.get("time_ms").and_then(whole).unwrap_or(0),
-            actor: text("actor", MAX_NAME_BYTES),
+            actor: entry
+                .get("actor")
+                .and_then(|actor| serde_json::from_value(actor.clone()).ok()),
             device: text("device", MAX_NAME_BYTES),
             device_name: text("device_name", MAX_NAME_BYTES),
             device_unknown: entry.get("device_unknown").and_then(Value::as_bool) == Some(true),
@@ -489,15 +491,12 @@ impl PageAction {
 
     /// Whether `author`, invoked `by` that actor, is who did this action.
     /// What was typed straight into the page, and what the tab's unnamed
-    /// actor did, is a person's. Any other action is its actor's: the name
-    /// the engine keeps `author` under.
+    /// actor did, is a person's. Any other action is its actor's.
     fn is_by(&self, author: Option<&tilo_resource::MemberId>, by: Option<&Acting>) -> bool {
-        if self.how.0 == "input" || self.actor.0.is_empty() {
+        let Some(actor) = self.actor.as_ref().filter(|_| self.how.0 != "input") else {
             return by.is_none_or(Acting::is_person);
-        }
-        author
-            .and_then(|author| PageActor::of(&author.clone().into()))
-            .is_some_and(|named| named.as_str() == self.actor.0)
+        };
+        author.is_some_and(|author| actor.member_id() == Some(author))
     }
 
     /// Whether this action names the device its actor was admitted from:
@@ -537,7 +536,9 @@ impl PageAction {
         if self.time_ms > 0 {
             entry.insert("time_ms".into(), self.time_ms.into());
         }
-        entry.insert("actor".into(), self.actor.0.clone().into());
+        if let Some(actor) = &self.actor {
+            entry.insert("actor".into(), actor_value(actor));
+        }
         if !self.device.0.is_empty() {
             entry.insert("device".into(), self.device.0.clone().into());
             if !self.device_name.0.is_empty() {
@@ -1045,8 +1046,8 @@ impl TabRecorder {
             } else {
                 (None, false)
             };
-            // A name this window does not remember is still an actor of
-            // that name, and the action is set down as theirs. Once the
+            // A handle this window does not remember is still the actor this
+            // process named by it, and the action is set down as theirs. Once the
             // window has forgotten an actor, what the API said of this one
             // may be gone: the entry then says that where they worked from
             // is not known instead of naming no device, which would read as
@@ -1058,8 +1059,10 @@ impl TabRecorder {
                 (true, Some(admitted)) if doubted => Some(admitted.from_device(None)),
                 (true, Some(admitted)) => Some(admitted),
                 (true, None) => {
-                    // A shortened name says nobody: it is not set down as anyone's.
-                    let Some(actor) = PageActor::actor_of(actor) else {
+                    // A handle no actor of this process has says nobody: it is not
+                    // set down as anyone's.
+                    let Some(actor) = PageActor::listed(actor).and_then(|actor| actor.actor())
+                    else {
                         self.cursor = seq;
                         continue;
                     };
@@ -1082,6 +1085,10 @@ impl TabRecorder {
                 }
                 if unknown {
                     fields.insert("device_unknown".into(), true.into());
+                }
+                fields.remove("actor");
+                if let Some(by) = &by {
+                    fields.insert("actor".into(), actor_value(&by.acting.by));
                 }
             }
             self.withhold(&mut entry);
@@ -1165,6 +1172,7 @@ impl TabRecorder {
     pub(crate) fn running(&self, running: &Value) -> Value {
         let mut running = running.clone();
         self.replace(&mut running);
+        type_actor(&mut running, "actor");
         running
     }
 
@@ -1180,14 +1188,12 @@ impl TabRecorder {
         }
     }
 
-    /// Name the places `note` carries as the tab's resource counts them.
+    /// Name the places and the actors `note` carries as the tab's resource counts and names them.
     pub(crate) fn places(&self, note: &mut PageResourceNote) {
-        if self.base == 0 {
-            return;
-        }
         note.seq = note.seq.map(|seq| self.base.saturating_add(seq));
         for other in &mut note.others {
             self.replace(other);
+            type_actor(other, "actor");
         }
     }
 
@@ -1226,11 +1232,7 @@ impl TabRecorder {
                 continue;
             };
             let typed = fields.get("how").and_then(Value::as_str) == Some("input");
-            let actor = fields
-                .get("actor")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
+            let actor = handle_at(fields, "actor");
             // The engine counts its own document; the tab's stands `base`
             // further on.
             let place = fields
@@ -1267,7 +1269,12 @@ impl TabRecorder {
                 state
                     .actions
                     .get(&action_key(&self.tab, place))
-                    .filter(|kept| kept.actor.0 == actor)
+                    .filter(|kept| {
+                        kept.actor
+                            .as_ref()
+                            .and_then(PageActor::of)
+                            .is_some_and(|kept| kept.as_str() == actor)
+                    })
                     .map(|kept| {
                         (
                             kept.device.0.clone(),
@@ -1330,6 +1337,7 @@ impl TabRecorder {
         };
         let news = note.seq.is_some() || !note.others.is_empty();
         self.places(note);
+        name_actors(&mut result);
         (result, news)
     }
 
@@ -1364,6 +1372,89 @@ impl TabRecorder {
     pub(crate) fn take_again(&mut self) -> bool {
         std::mem::take(&mut self.again)
     }
+}
+
+/// `actor` as the tab's resource and its readers name it.
+fn actor_value(actor: &Actor) -> Value {
+    serde_json::to_value(actor).unwrap_or(Value::Null)
+}
+
+/// Name the actor of each entry of `listing`, the engine's own list of what it set down, and of
+/// the action it says runs, as the actor it is.
+pub(crate) fn name_listed(listing: Option<&mut Value>) {
+    let Some(listing) = listing else {
+        return;
+    };
+    if let Some(Value::Array(entries)) = listing.get_mut("entries") {
+        for entry in entries {
+            type_actor(entry, "actor");
+        }
+    }
+    if let Some(running) = listing.get_mut("running") {
+        type_actor(running, "actor");
+    }
+}
+
+/// Replace the handle the engine names an actor by at `key` of `said` with the actor it is
+/// ([`PageActor::actor`]); a handle no actor of this process has names nobody.
+fn type_actor(said: &mut Value, key: &str) {
+    let Some(fields) = said.as_object_mut() else {
+        return;
+    };
+    let Some(name) = fields.get(key).and_then(Value::as_str) else {
+        return;
+    };
+    match PageActor::listed(name).and_then(|handle| handle.actor()) {
+        Some(actor) => fields.insert(key.to_owned(), actor_value(&actor)),
+        None => fields.remove(key),
+    };
+}
+
+/// The handle the engine keeps the actor `said` names at `key` under: the actor's, where the
+/// window named it already, or the engine's own.
+fn handle_at(said: &serde_json::Map<String, Value>, key: &str) -> String {
+    match said.get(key) {
+        Some(Value::String(name)) => name.clone(),
+        Some(actor) => serde_json::from_value::<Actor>(actor.clone())
+            .ok()
+            .and_then(|actor| PageActor::of(&actor))
+            .map(|handle| handle.as_str().to_owned())
+            .unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+/// Name each actor an answer of the engine's names by its handle as the actor it is: who set
+/// each field, who did each entry of a listing and the action that runs, and the other actors'
+/// work it carries.
+pub(crate) fn name_actors(result: &mut Result<PageReply, PageFailure>) {
+    let note = match result {
+        Ok(reply) => {
+            if let Some(data) = reply.data.as_mut() {
+                if let Some(Value::Array(fields)) = data.get_mut("fields") {
+                    for field in fields {
+                        if let Some(set) = field.get_mut("set") {
+                            type_actor(set, "by");
+                        }
+                    }
+                }
+                name_listed(Some(data));
+            }
+            &mut reply.record
+        }
+        Err(failure) => &mut failure.record,
+    };
+    for other in &mut note.others {
+        type_actor(other, "actor");
+    }
+}
+
+/// The handle the engine keeps the agent `id` under.
+#[cfg(test)]
+pub(crate) fn agent_handle(id: &str) -> String {
+    PageActor::of(&ui::tilo_actions::MemberId::agent(id).into())
+        .map(|handle| handle.as_str().to_owned())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

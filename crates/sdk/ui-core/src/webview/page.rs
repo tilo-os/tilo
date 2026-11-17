@@ -64,8 +64,6 @@ const MAX_CODE_BYTES: usize = 64;
 /// The longest name an engine takes for who asks, in UTF-16 units, which is
 /// how the engine counts it.
 pub const MAX_ACTOR_UNITS: usize = 64;
-/// How much of a longer actor a shortened name keeps before its digest.
-const ACTOR_HEAD_UNITS: usize = 31;
 /// The most entries of other actors' work one answer carries.
 pub const MAX_OTHERS: usize = 8;
 /// The furthest line a read of the outline may start from.
@@ -105,82 +103,51 @@ pub enum FormSubmit {
     Button(String),
 }
 
-/// Who asks a page request: the name the engine keeps an actor's reads and
-/// actions under, so each actor in a tab is told what changed since its own
-/// last read and what the others did.
+/// Who asks a page request, as the engine keeps their reads and actions, so each actor in a tab
+/// is told what changed since its own last read and what the others did.
 ///
-/// It is the actor the caller admitted, unchanged, whenever the engine
-/// can take it. An actor longer than [`MAX_ACTOR_UNITS`] is shortened the
-/// same way every time: its first 31 UTF-16 units, a `~`, and the first 128
-/// bits of its BLAKE3 digest in hex. Two long actors that begin alike
-/// still get two names, and one actor always gets the same name, so the
-/// record never merges two actors or splits one.
+/// The engine caps the name at [`MAX_ACTOR_UNITS`], which a person's root key alone fills, so
+/// the name is a handle: the first 128 bits of the BLAKE3 digest of the actor's bytes, in hex.
+/// One actor always gets the same handle and two actors two. [`PageActor::actor`] maps a handle
+/// back to the actor for every actor this process named.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PageActor(String);
 
+/// Every actor this process named, by its handle.
+static NAMED: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, tilo_actions::Actor>>,
+> = std::sync::LazyLock::new(Default::default);
+
 impl PageActor {
-    /// The name `actor` acts under, or `None` for no actor at all:
-    /// a caller nobody named is the tab's one unnamed actor.
-    pub fn named(actor: &str) -> Option<Self> {
-        if actor.is_empty() {
-            return None;
-        }
-        if actor.encode_utf16().count() <= MAX_ACTOR_UNITS {
-            return Some(Self(actor.to_owned()));
-        }
-        let mut name = String::with_capacity(MAX_ACTOR_UNITS);
-        let mut units = 0;
-        for character in actor.chars() {
-            units += character.len_utf16();
-            if units > ACTOR_HEAD_UNITS {
-                break;
-            }
-            name.push(character);
-        }
-        name.push('~');
-        let digest = blake3::hash(actor.as_bytes());
-        for byte in &digest.as_bytes()[..16] {
-            use std::fmt::Write as _;
-            let _ = write!(name, "{byte:02x}");
-        }
-        Some(Self(name))
-    }
-
-    /// The name the engine keeps `actor` under: a person's root key, `agent:<id>`, `bot:<id>`,
-    /// `automation:<id>` or `app:<id>`.
+    /// The handle the engine keeps `actor` under; `None` for nobody (a person with no id), the
+    /// tab's one unnamed actor.
     pub fn of(actor: &tilo_actions::Actor) -> Option<Self> {
-        use tilo_actions::{Actor, MemberId};
-        Self::named(&match actor {
-            Actor::Member(MemberId::Person(id)) => id.as_str().to_owned(),
-            Actor::Member(MemberId::Agent(id)) => format!("agent:{id}"),
-            Actor::Member(MemberId::Bot(id)) => format!("bot:{id}"),
-            Actor::Automation(id) => format!("automation:{}", id.as_str()),
-            Actor::App(app) => format!("app:{app}"),
-        })
-    }
-
-    /// The actor the engine lists under `name`, when [`Self::of`] made it without shortening it.
-    pub fn actor_of(name: &str) -> Option<tilo_actions::Actor> {
-        use tilo_actions::{Actor, MemberId};
-        let shortened = name.encode_utf16().count() == MAX_ACTOR_UNITS
-            && name.encode_utf16().nth(ACTOR_HEAD_UNITS) == Some(u16::from(b'~'));
-        if name.is_empty() || shortened {
+        let bytes = actor.actor_bytes();
+        if bytes.is_empty() {
             return None;
         }
-        let nonempty = |id: &str| (!id.is_empty()).then(|| id.to_owned());
-        Some(if let Some(id) = name.strip_prefix("agent:") {
-            Actor::Member(MemberId::Agent(nonempty(id)?))
-        } else if let Some(id) = name.strip_prefix("bot:") {
-            Actor::Member(MemberId::Bot(nonempty(id)?))
-        } else if let Some(id) = name.strip_prefix("automation:") {
-            Actor::automation(nonempty(id)?)
-        } else if let Some(id) = name.strip_prefix("app:") {
-            Actor::App(nonempty(id)?.into())
-        } else {
-            Actor::Member(MemberId::Person(
-                tilo_actions::policy::PersonId::parse(name).ok()?,
-            ))
-        })
+        let digest = blake3::hash(&bytes);
+        let handle = hex::encode(&digest.as_bytes()[..16]);
+        NAMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(handle.clone())
+            .or_insert_with(|| actor.clone());
+        Some(Self(handle))
+    }
+
+    /// The handle the engine lists an actor under; `None` for the tab's one unnamed actor.
+    pub fn listed(name: &str) -> Option<Self> {
+        (!name.is_empty()).then(|| Self(name.to_owned()))
+    }
+
+    /// The actor this handle names, when this process named it.
+    pub fn actor(&self) -> Option<tilo_actions::Actor> {
+        NAMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&self.0)
+            .cloned()
     }
 
     pub fn as_str(&self) -> &str {

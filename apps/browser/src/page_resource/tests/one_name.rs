@@ -2,7 +2,7 @@
 //!
 //! Every session of one MCP client acts as the same agent member: a program
 //! on the device that runs the page and one that came in from another of the
-//! person's devices are both `agent:claude-code`, and the engine keeps what
+//! person's devices are both the agent `claude-code`, and the engine keeps what
 //! they do under that one name. Where each works from is what tells them
 //! apart, and the resource says it beside the name. So the window sets an
 //! action down as the invoker of the invocation that ran it, whoever else
@@ -11,8 +11,10 @@
 use super::many_actors::{devices_in_history, ended, entries, reviewed_field, set_by, start};
 use super::*;
 
-/// The agent member every session of the client acts as.
-const MEMBER: &str = "agent:claude-code";
+/// The handle the engine keeps the agent member every session of the client acts as under.
+fn member() -> String {
+    agent_handle("claude-code")
+}
 
 /// A session of the member on the device that runs the page, by the name the
 /// host that admitted it knows it by.
@@ -28,7 +30,7 @@ fn on_laptop(name: &str) -> ActionInvoker {
 /// The member with the laptop beside it, as an entry names them.
 fn from_laptop() -> (String, Option<String>, Option<String>) {
     (
-        MEMBER.to_owned(),
+        member(),
         Some(laptop().id),
         Some("Studio laptop".to_owned()),
     )
@@ -37,7 +39,7 @@ fn from_laptop() -> (String, Option<String>, Option<String>) {
 /// The member with no device beside it: a session on the device that runs
 /// the page.
 fn from_here() -> (String, Option<String>, Option<String>) {
-    (MEMBER.to_owned(), None, None)
+    (member(), None, None)
 }
 
 /// The session each change an agent authored in the resource's history is by:
@@ -77,8 +79,8 @@ fn two_sessions_fill_at_once(
     first: &ActionInvoker,
     second: &ActionInvoker,
 ) {
-    engine_sets_down(engine, &field_filled(1, MEMBER, "Given names"));
-    engine_sets_down(engine, &field_filled(2, MEMBER, "Passport number"));
+    engine_sets_down(engine, &field_filled(1, &member(), "Given names"));
+    engine_sets_down(engine, &field_filled(2, &member(), "Passport number"));
     let holding = start(app, first, &fill("d1e2", "Maria Elena")).expect("it holds the tab");
     let waiting = start(app, second, &fill("d1e4", "P7K290XB4")).expect("it waits its turn");
     app.settle();
@@ -93,8 +95,8 @@ fn who_set_the_fields(app: &mut App, engine: &TestEngine) -> Vec<Value> {
     engine.set_page_data(
         "fields",
         json!({"fields": [
-            reviewed_field("Given names", &set_by(MEMBER, 1)),
-            reviewed_field("Passport number", &set_by(MEMBER, 2)),
+            reviewed_field("Given names", &set_by(&member(), 1)),
+            reviewed_field("Passport number", &set_by(&member(), 2)),
         ]}),
     );
     let fields =
@@ -103,7 +105,7 @@ fn who_set_the_fields(app: &mut App, engine: &TestEngine) -> Vec<Value> {
         .as_array()
         .expect("fields")
         .iter()
-        .map(|field| field["set"].clone())
+        .map(|field| as_listed(field["set"].clone()))
         .collect()
 }
 
@@ -137,9 +139,9 @@ fn a_session_from_another_device_is_told_from_one_here_under_the_same_name() {
     assert_eq!(
         who_set_the_fields(&mut app, &engine),
         [
-            json!({"how": "action", "by": MEMBER, "seq": 1,
+            json!({"how": "action", "by": member(), "seq": 1,
                 "device": laptop.id, "device_name": "Studio laptop"}),
-            json!({"how": "action", "by": MEMBER, "seq": 2}),
+            json!({"how": "action", "by": member(), "seq": 2}),
         ]
     );
     assert_eq!(
@@ -183,8 +185,8 @@ fn a_session_here_is_not_given_the_device_of_one_admitted_after_it() {
     assert_eq!(
         who_set_the_fields(&mut app, &engine),
         [
-            json!({"how": "action", "by": MEMBER, "seq": 1}),
-            json!({"how": "action", "by": MEMBER, "seq": 2,
+            json!({"how": "action", "by": member(), "seq": 1}),
+            json!({"how": "action", "by": member(), "seq": 2,
                 "device": laptop.id, "device_name": "Studio laptop"}),
         ]
     );
@@ -254,7 +256,7 @@ fn what_no_answer_places_under_a_name_two_places_share_says_its_device_is_not_kn
 
     engine.set_page_data(
         "fields",
-        json!({"fields": [reviewed_field("Given names", &set_by(MEMBER, 1))]}),
+        json!({"fields": [reviewed_field("Given names", &set_by(&member(), 1))]}),
     );
     let fields = act(
         &mut app,
@@ -263,19 +265,19 @@ fn what_no_answer_places_under_a_name_two_places_share_says_its_device_is_not_kn
     )
     .expect("the fields answer");
     assert_eq!(
-        fields["data"]["fields"][0]["set"],
-        json!({"how": "action", "by": MEMBER, "seq": 1,
+        as_listed(fields["data"]["fields"][0]["set"].clone()),
+        json!({"how": "action", "by": member(), "seq": 1,
             "device": laptop.id, "device_name": "Studio laptop"}),
         "{fields}"
     );
 
-    let held = json!({"seq": 2, "time_ms": 1_700_000_000_002_u64, "actor": MEMBER,
+    let held = json!({"seq": 2, "time_ms": 1_700_000_000_002_u64, "actor": member(),
         "how": "hold", "action": "request", "ok": true,
         "message": "POST https://orders.test", "url": PAGE,
         "to_url": "https://orders.test"});
     engine.set_page_data(
         "log",
-        json!({"entries": [field_filled(1, MEMBER, "Given names"), held],
+        json!({"entries": [field_filled(1, &member(), "Given names"), held],
             "next": 2, "more": false, "dropped": 0, "waiting": 0}),
     );
     let read = act(

@@ -116,6 +116,8 @@ impl BrowserWidget {
         result: Result<PageReply, PageFailure>,
     ) -> Option<Result<PageReply, PageFailure>> {
         if !self.page_resource.attached() {
+            let mut result = result;
+            crate::page_resource::name_actors(&mut result);
             return Some(result);
         }
         self.page_resource.engine_is(self.page_engine());

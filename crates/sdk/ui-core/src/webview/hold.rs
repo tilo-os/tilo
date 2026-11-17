@@ -201,7 +201,7 @@ mod tests {
 
         phase an_answer_names_the_actor_it_was_admitted_for_and_nobody_for_the_person;
         {
-            let rev = PageActor::named("agent:rev").expect("a named actor");
+            let rev = PageActor::listed("agent:rev").expect("a named actor");
             let by = AnsweredBy::admitted(Some(rev.clone()));
             assert_eq!(by, AnsweredBy::Actor(rev.clone()));
             assert_eq!((by.actor(), by.expired()), (Some(&rev), false));

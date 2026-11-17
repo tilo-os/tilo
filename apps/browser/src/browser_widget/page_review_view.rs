@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
-use ui::tilo_actions::{ActionBinding, ResourceSpec};
+use ui::tilo_actions::{ActionBinding, Actor, MemberId, ResourceSpec};
 use ui::tilo_resource::Resource as _;
 use ui::tokens::TextRole;
 use ui::webview::{FrameId, PageActor, PageFailure, PageReply, PageRequest, WebViewCommand};
@@ -494,7 +494,7 @@ impl BrowserWidget {
     }
 
     /// Screenshot hook: the review of a visa application two agents and a
-    /// person filled, read from the engine's own answer shapes.
+    /// person filled, read from the answer shapes the window names actors in.
     pub(super) fn stage_page_review(&mut self) {
         let now = u64::try_from(ui::clock::local_now().timestamp_millis()).unwrap_or_default();
         let (forms, fields, record) = shot_page(now);
@@ -527,20 +527,20 @@ fn counted(key: &str, count: usize) -> String {
 }
 
 /// The name an actor is shown under: an agent by its own name, anyone else
-/// by the name the action API admitted them under, and one that worked
+/// by what it is (a person by their id), and one that worked
 /// from another of the person's devices with that device, by its name or,
 /// where it has none, the start of its key. One the resource says it no
 /// longer knows the device of (`device_unknown`) is shown as that, never as
 /// an actor on this device. `None` for the tab's one unnamed actor, the
 /// person at this window.
-fn actor_name(actor: &str, device: Option<&Device>, device_unknown: bool) -> Option<String> {
-    let actor = actor.trim();
-    if actor.is_empty() {
-        return None;
-    }
-    let name = match PageActor::actor_of(actor) {
-        Some(ui::tilo_actions::Actor::Member(ui::tilo_actions::MemberId::Agent(agent))) => agent,
-        _ => actor.to_owned(),
+fn actor_name(
+    actor: Option<&Actor>,
+    device: Option<&Device>,
+    device_unknown: bool,
+) -> Option<String> {
+    let name = match actor? {
+        Actor::Member(MemberId::Agent(agent)) => agent.clone(),
+        actor => ui::history_source::actor_label(actor),
     };
     Some(match device {
         Some(device) => CATALOG.t_args(
@@ -579,7 +579,7 @@ fn set_by_text(set: &SetBy) -> Option<String> {
             device,
             device_unknown,
             ..
-        } => match actor_name(actor, device.as_ref(), *device_unknown) {
+        } => match actor_name(actor.as_ref(), device.as_ref(), *device_unknown) {
             Some(name) => named("browser-review-set-by", &name),
             None => t("browser-review-set-by-you"),
         },
@@ -703,7 +703,11 @@ fn record_section(record: &Record, secrets: &[&str]) -> Section {
 /// waits for the person, or how that ended, with what it was, who did it and
 /// when.
 fn hold_row(step: &Step, hold: HoldStep) -> Element {
-    let who = actor_name(&step.actor, step.device.as_ref(), step.device_unknown);
+    let who = actor_name(
+        step.actor.as_ref(),
+        step.device.as_ref(),
+        step.device_unknown,
+    );
     let waits = |key: &str| CATALOG.t_args(key, &[("what", ArgValue::Text(step.leaving.clone()))]);
     let title = match (hold, &who) {
         (HoldStep::Allowed, Some(name)) => named("browser-review-hold-allowed-by", name),
@@ -769,7 +773,11 @@ fn step_row(step: &Step, secrets: &[&str]) -> Element {
         // shares it: no actor's action.
         t("browser-review-by-typing")
     } else {
-        match actor_name(&step.actor, step.device.as_ref(), step.device_unknown) {
+        match actor_name(
+            step.actor.as_ref(),
+            step.device.as_ref(),
+            step.device_unknown,
+        ) {
             Some(name) => named("browser-review-by", &name),
             None => t("browser-review-by-you"),
         }
@@ -854,7 +862,8 @@ fn shot_field(
 fn shot_page(now: u64) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
     use serde_json::json;
     let ago = |seconds: u64| now.saturating_sub(seconds * 1000);
-    let by = |actor: &str, seq: u64| json!({"set": {"how": "action", "by": actor, "seq": seq}});
+    let agent = |id: &str| json!({"member": {"agent": id}});
+    let by = |actor: serde_json::Value, seq: u64| json!({"set": {"how": "action", "by": actor, "seq": seq}});
     let refused = "Refused a visa before?";
     let forms = json!({"forms": [{
         "form": "form1", "label": "Apply for a visitor visa", "method": "post",
@@ -885,12 +894,12 @@ fn shot_page(now: u64) -> (serde_json::Value, serde_json::Value, serde_json::Val
         ],
     }]});
     let fields = json!({"fields": [
-        shot_field("d1e4", "textbox", "Given names", "Maria Elena", by("agent:intake", 1)),
-        shot_field("d1e5", "textbox", "Family name", "Okonkwo-Reyes", by("agent:intake", 1)),
-        shot_field("d1e6", "combobox", "Nationality", "Portugal", by("agent:intake", 1)),
-        shot_field("d1e7", "textbox", "Passport number", "P7K290XB4", by("agent:documents", 2)),
+        shot_field("d1e4", "textbox", "Given names", "Maria Elena", by(agent("intake"), 1)),
+        shot_field("d1e5", "textbox", "Family name", "Okonkwo-Reyes", by(agent("intake"), 1)),
+        shot_field("d1e6", "combobox", "Nationality", "Portugal", by(agent("intake"), 1)),
+        shot_field("d1e7", "textbox", "Passport number", "P7K290XB4", by(agent("documents"), 2)),
         shot_field("d1e8", "textbox", "Passport expiry", "2025-03-14", json!({
-            "set": {"how": "action", "by": "agent:documents", "seq": 2},
+            "set": {"how": "action", "by": agent("documents"), "seq": 2},
             "invalid": true,
             "problem": "The passport must be valid for six months after arrival.",
         })),
@@ -900,41 +909,41 @@ fn shot_page(now: u64) -> (serde_json::Value, serde_json::Value, serde_json::Val
         })),
         shot_field("d1e11", "radio", "No", "checked", json!({
             "question": refused, "answer": "No",
-            "set": {"how": "action", "by": "agent:documents", "seq": 2},
+            "set": {"how": "action", "by": agent("documents"), "seq": 2},
         })),
         shot_field("d1e12", "textbox", "Arrival", "2027-02-10", json!({
-            "set": {"how": "action", "by": "agent:intake", "seq": 3, "changed": true},
+            "set": {"how": "action", "by": agent("intake"), "seq": 3, "changed": true},
         })),
         shot_field("d1e13", "textbox", "Email", "maria.okonkwo@example.org", json!({
             "set": {"how": "input"},
         })),
         shot_field("d1e14", "textbox", "Phone", "", json!({})),
-        shot_field("d1e15", "textbox", "Portal password", "<16 characters hidden>", by("", 4)),
+        shot_field("d1e15", "textbox", "Portal password", "<16 characters hidden>", by(serde_json::Value::Null, 4)),
         shot_field("d1e16", "checkbox", "I declare these answers are true", "checked", json!({
             "set": {"how": "page"},
         })),
     ]});
     let record = json!({"entries": [
-        {"seq": 1, "time_ms": ago(260), "actor": "agent:intake", "action": "fill_form",
+        {"seq": 1, "time_ms": ago(260), "actor": agent("intake"), "action": "fill_form",
             "ok": true, "answers": [
                 {"name": "Given names", "value": "Maria Elena"},
                 {"name": "Family name", "value": "Okonkwo-Reyes"},
                 {"name": "Nationality", "value": "Portugal"},
             ]},
-        {"seq": 2, "time_ms": ago(205), "actor": "agent:documents", "action": "fill_form",
+        {"seq": 2, "time_ms": ago(205), "actor": agent("documents"), "action": "fill_form",
             "ok": true, "answers": [
                 {"name": "Passport number", "value": "P7K290XB4"},
                 {"name": "Passport expiry", "value": "2025-03-14"},
                 {"name": refused, "value": "No"},
             ]},
-        {"seq": 3, "time_ms": ago(150), "actor": "agent:intake", "action": "fill",
+        {"seq": 3, "time_ms": ago(150), "actor": agent("intake"), "action": "fill",
             "ok": true, "target": {"role": "textbox", "name": "Arrival"}, "text": "2027-02-03"},
         {"seq": 4, "time_ms": ago(95), "actor": "", "action": "fill", "ok": true,
             "target": {"role": "textbox", "name": "Portal password"}},
-        {"seq": 5, "time_ms": ago(40), "actor": "agent:documents", "action": "click",
+        {"seq": 5, "time_ms": ago(40), "actor": agent("documents"), "action": "click",
             "ok": false, "target": {"role": "button", "name": "Send application"}},
         // The window is an agent's: what its page sends waits for the person.
-        {"seq": 6, "time_ms": ago(25), "actor": "agent:documents", "how": "hold",
+        {"seq": 6, "time_ms": ago(25), "actor": agent("documents"), "how": "hold",
             "action": "submit", "ok": true, "message": "POST https://visas.example.org",
             "to_url": "https://visas.example.org"},
         {"seq": 7, "time_ms": ago(10), "actor": "", "how": "hold", "action": "allow",

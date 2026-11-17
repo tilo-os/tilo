@@ -373,8 +373,8 @@ impl BrowserWidget {
     /// away: what it is and who asked for it.
     fn page_turn_holder(&self) -> String {
         match &self.page_operation {
-            Some(operation) => match &operation.actor {
-                Some(actor) => format!("{} by \"{actor}\"", operation.acted.action()),
+            Some(operation) => match operation.actor.as_ref().and_then(PageActor::actor) {
+                Some(actor) => format!("{} by {actor}", operation.acted.action()),
                 None => operation.acted.action().to_owned(),
             },
             None if self.page_operation_result.is_some() => {

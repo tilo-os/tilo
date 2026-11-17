@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use crate::page_resource::agent_handle;
+
 use ui::webview::{
     AnsweredBy, HeldKind, HeldRequest, PageActor, PageKey, PageRequest, WebViewCommand,
     WebViewEngine as _,
@@ -840,7 +842,7 @@ fn the_persons_allow_of_an_agents_held_action_is_answered_as_the_persons() {
         engine.commands().into_iter().any(|command| matches!(
             command,
             WebViewCommand::Page { actor: Some(actor), request: PageRequest::Submit { .. }, .. }
-                if actor.as_str() == "agent:intake"
+                if actor.as_str() == agent_handle("intake")
         )),
         "the submission reaches the page as the agent's, and its hold is set down as theirs"
     );
@@ -899,7 +901,10 @@ fn whoever_answers_a_published_hold_is_named_with_the_answer() {
             (
                 4,
                 false,
-                AnsweredBy::Actor(PageActor::named("agent:rev").expect("a named actor"))
+                AnsweredBy::Actor(
+                    PageActor::of(&ui::tilo_actions::MemberId::agent("rev").into())
+                        .expect("a named actor")
+                )
             ),
             (5, true, AnsweredBy::Person),
         ],
@@ -931,7 +936,10 @@ fn whoever_answers_a_held_download_is_named_with_the_answer() {
         vec![(
             9,
             false,
-            AnsweredBy::Actor(PageActor::named("agent:rev").expect("a named actor"))
+            AnsweredBy::Actor(
+                PageActor::of(&ui::tilo_actions::MemberId::agent("rev").into())
+                    .expect("a named actor")
+            )
         )],
         "the download's decision says who discarded it"
     );

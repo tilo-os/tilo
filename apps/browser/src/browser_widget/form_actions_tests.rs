@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 
+use crate::page_resource::agent_handle;
+
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::{
     ActionFailure, ActionInvoker, ActionSpec, ApiError, InvocationUpdate, ParamType,
@@ -370,7 +372,7 @@ fn fill(
     submit: FormSubmit,
 ) -> (Option<String>, PageRequest) {
     (
-        Some("agent:ada".to_owned()),
+        Some(agent_handle("ada")),
         PageRequest::FillForm {
             form: signature.into(),
             answers: answers.as_object().expect("answers are an object").clone(),
@@ -1072,7 +1074,7 @@ fn a_form_in_a_frame_is_answered_through_fill_page_form_with_its_frame() {
     assert_eq!(
         asked(&engine),
         [(
-            Some("agent:ada".to_owned()),
+            Some(agent_handle("ada")),
             PageRequest::FillForm {
                 form: "form1".into(),
                 answers: serde_json::json!({"Card holder": "Ada Lovelace"})

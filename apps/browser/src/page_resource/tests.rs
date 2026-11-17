@@ -209,7 +209,7 @@ fn click(element: &str) -> BrowserEffect {
 
 /// Ada's agent fills the email, as the engine sets it down at `seq`.
 fn email_filled(seq: u64) -> Value {
-    json!({"seq": seq, "time_ms": 1_700_000_000_000_u64 + seq, "actor": "agent:ada",
+    json!({"seq": seq, "time_ms": 1_700_000_000_000_u64 + seq, "actor": agent_handle("ada"),
         "action": "fill", "ok": true, "message": "Filled textbox \"Email\"", "url": PAGE,
         "navigation": "possible", "target": {"role": "textbox", "name": "Email"},
         "text": "ada@example.org"})
@@ -217,7 +217,7 @@ fn email_filled(seq: u64) -> Value {
 
 /// Ben's agent chooses a country, as the engine sets it down at `seq`.
 fn country_chosen(seq: u64) -> Value {
-    json!({"seq": seq, "time_ms": 1_700_000_000_000_u64 + seq, "actor": "agent:ben",
+    json!({"seq": seq, "time_ms": 1_700_000_000_000_u64 + seq, "actor": agent_handle("ben"),
         "action": "select", "ok": true, "message": "Chose Belgium", "url": PAGE,
         "target": {"role": "combobox", "name": "Country", "nth": 2}, "values": ["Belgium"]})
 }
@@ -225,7 +225,7 @@ fn country_chosen(seq: u64) -> Value {
 /// Ada's agent sends the form, which leaves the page, as the engine sets it
 /// down at `seq`.
 fn form_sent(seq: u64) -> Value {
-    json!({"seq": seq, "time_ms": 1_700_000_000_000_u64 + seq, "actor": "agent:ada",
+    json!({"seq": seq, "time_ms": 1_700_000_000_000_u64 + seq, "actor": agent_handle("ada"),
         "action": "click", "ok": true, "message": "Clicked button \"Send\"", "url": PAGE,
         "to_url": "https://shop.test/sent", "navigation": "started",
         "target": {"role": "button", "name": "Send"}})
@@ -255,6 +255,68 @@ fn record(app: &mut App) -> PersonResource<PageResource> {
         .expect("Browser keeps a resource of page actions")
 }
 
+/// `said` with each actor it names by the handle the engine keeps that actor under, as the
+/// engine lists it.
+fn as_listed(said: Value) -> Value {
+    match said {
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .map(|(key, value)| {
+                    let value = match (key.as_str(), &value) {
+                        ("actor" | "by", Value::Object(_)) => {
+                            serde_json::from_value::<Actor>(value.clone())
+                                .ok()
+                                .and_then(|actor| PageActor::of(&actor))
+                                .map_or(Value::Null, |handle| handle.as_str().into())
+                        }
+                        _ => as_listed(value),
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.into_iter().map(as_listed).collect()),
+        other => other,
+    }
+}
+
+/// `entry` as the window sets it down: its actor the one the engine's handle names, and none for
+/// the tab's unnamed actor.
+fn as_typed(mut entry: Value) -> Value {
+    if let Some(fields) = entry.as_object_mut() {
+        let actor = fields
+            .remove("actor")
+            .and_then(|name| PageActor::listed(name.as_str()?))
+            .and_then(|handle| handle.actor());
+        if let Some(actor) = actor {
+            fields.insert(
+                "actor".into(),
+                serde_json::to_value(actor).unwrap_or_default(),
+            );
+        }
+    }
+    entry
+}
+
+/// What `tab`'s resource keeps after the place `since`, as the engine lists it.
+fn kept_entries(record: &PersonResource<PageResource>, tab: &str, since: u64) -> Vec<Value> {
+    record.with(|state| {
+        state
+            .page(tab, since)
+            .entries
+            .into_iter()
+            .map(|entry| {
+                let mut entry = as_listed(entry);
+                if let Some(fields) = entry.as_object_mut() {
+                    fields.entry("actor").or_insert_with(|| "".into());
+                }
+                entry
+            })
+            .collect()
+    })
+}
+
 /// The one tab the resource holds.
 fn only_tab(record: &PersonResource<PageResource>) -> String {
     let tabs: Vec<String> = record.with(|state| state.tabs.keys().cloned().collect());
@@ -268,7 +330,8 @@ fn held(record: &PersonResource<PageResource>, tab: &str) -> Vec<(u64, String, S
         state
             .page(tab, 0)
             .entries
-            .iter()
+            .into_iter()
+            .map(as_listed)
             .map(|entry| {
                 (
                     entry["seq"].as_u64().unwrap_or(0),
@@ -317,12 +380,14 @@ fn steps(record: &PersonResource<PageResource>, tab: &str) -> Vec<(Actor, usize,
 /// Read the tab's resource through the page's own action, as a reviewer does.
 fn review(app: &mut App, since: Option<u64>) -> Value {
     let reviewer = agent("rev");
-    act(
-        app,
-        Some(&reviewer),
-        &BrowserEffect::ReadPageRecord { since },
+    as_listed(
+        act(
+            app,
+            Some(&reviewer),
+            &BrowserEffect::ReadPageRecord { since },
+        )
+        .expect("the resource answers"),
     )
-    .expect("the resource answers")
 }
 
 fn published(resources: &[ui::tilo_actions::ResourceSpec], id: &str) -> bool {
@@ -346,13 +411,13 @@ fn what_two_agents_did_is_the_resource_in_order_under_their_names() {
     assert_eq!(
         held(&record, &tab),
         [
-            (1, "agent:ada".to_owned(), "fill".to_owned()),
-            (2, "agent:ben".to_owned(), "select".to_owned()),
-            (3, "agent:ada".to_owned(), "click".to_owned()),
+            (1, agent_handle("ada"), "fill".to_owned()),
+            (2, agent_handle("ben"), "select".to_owned()),
+            (3, agent_handle("ada"), "click".to_owned()),
         ]
     );
     // What the engine set down of each is kept as it listed it.
-    let kept = record.with(|state| state.page(&tab, 0).entries);
+    let kept = kept_entries(&record, &tab, 0);
     assert_eq!(kept, [email_filled(1), country_chosen(2), form_sent(3)]);
     // Each is one change of the resource, by the agent that acted.
     assert_eq!(
@@ -425,7 +490,7 @@ fn field_filled(seq: u64, actor: &str, name: &str) -> Value {
 /// The actor and the device each entry names, with the device's name.
 fn named_in(entries: &Value) -> Vec<(String, Option<String>, Option<String>)> {
     let said = |entry: &Value, key: &str| entry.get(key).and_then(Value::as_str).map(str::to_owned);
-    entries
+    as_listed(entries.clone())
         .as_array()
         .expect("entries")
         .iter()
@@ -459,15 +524,27 @@ fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from
     let here = agent("task-b1");
     // The engine is told a device by nobody, and one it lists is nothing a
     // api verified: here it says the agent on this device is on the laptop.
-    let mut forged = field_filled(4, "agent:task-b1", "Arrival");
+    let mut forged = field_filled(4, &agent_handle("task-b1"), "Arrival");
     forged["device"] = laptop.id.clone().into();
     forged["device_name"] = "Studio laptop".into();
     for (by, listed) in [
-        (&first, field_filled(1, "agent:task-a1", "Given names")),
-        (&second, field_filled(2, "agent:task-a2", "Family name")),
-        (&third, field_filled(3, "agent:task-d1", "Passport number")),
+        (
+            &first,
+            field_filled(1, &agent_handle("task-a1"), "Given names"),
+        ),
+        (
+            &second,
+            field_filled(2, &agent_handle("task-a2"), "Family name"),
+        ),
+        (
+            &third,
+            field_filled(3, &agent_handle("task-d1"), "Passport number"),
+        ),
         (&here, forged),
-        (&first, field_filled(5, "agent:task-a1", "Nationality")),
+        (
+            &first,
+            field_filled(5, &agent_handle("task-a1"), "Nationality"),
+        ),
     ] {
         engine_sets_down(&engine, &listed);
         act(&mut app, Some(by), &fill("d1e2", "an answer")).expect("the fill answers");
@@ -482,15 +559,15 @@ fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from
         )
     };
     let expected = [
-        on_laptop("agent:task-a1"),
-        on_laptop("agent:task-a2"),
-        ("agent:task-d1".to_owned(), Some(unnamed.id.clone()), None),
-        ("agent:task-b1".to_owned(), None, None),
-        on_laptop("agent:task-a1"),
+        on_laptop(&agent_handle("task-a1")),
+        on_laptop(&agent_handle("task-a2")),
+        (agent_handle("task-d1"), Some(unnamed.id.clone()), None),
+        (agent_handle("task-b1"), None, None),
+        on_laptop(&agent_handle("task-a1")),
     ];
     let record = record(&mut app);
     let tab = only_tab(&record);
-    let kept = Value::Array(record.with(|state| state.page(&tab, 0).entries));
+    let kept = Value::Array(kept_entries(&record, &tab, 0));
     assert_eq!(named_in(&kept), expected, "{kept}");
 
     // A reviewer's read of the resource answers the same.
@@ -507,9 +584,9 @@ fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from
     engine.set_page_data(
         "fields",
         json!({"fields": [
-            field("Given names", set("agent:task-a1", 1)),
-            field("Passport number", set("agent:task-d1", 3)),
-            field("Arrival", set("agent:task-b1", 4)),
+            field("Given names", set(&agent_handle("task-a1"), 1)),
+            field("Passport number", set(&agent_handle("task-d1"), 3)),
+            field("Arrival", set(&agent_handle("task-b1"), 4)),
             field("Notes", json!({"how": "input"})),
         ]}),
     );
@@ -523,15 +600,15 @@ fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from
         .as_array()
         .expect("fields")
         .iter()
-        .map(|field| field["set"].clone())
+        .map(|field| as_listed(field["set"].clone()))
         .collect();
     assert_eq!(
         who,
         [
-            json!({"how": "action", "by": "agent:task-a1", "seq": 1,
+            json!({"how": "action", "by": agent_handle("task-a1"), "seq": 1,
                 "device": laptop.id, "device_name": "Studio laptop"}),
-            json!({"how": "action", "by": "agent:task-d1", "seq": 3, "device": unnamed.id}),
-            json!({"how": "action", "by": "agent:task-b1", "seq": 4}),
+            json!({"how": "action", "by": agent_handle("task-d1"), "seq": 3, "device": unnamed.id}),
+            json!({"how": "action", "by": agent_handle("task-b1"), "seq": 4}),
             json!({"how": "input"}),
         ]
     );
@@ -574,7 +651,7 @@ fn the_resource_is_read_on_by_place_with_what_the_engine_knows_now() {
     // The engine lists nothing new, and says what runs and what waits.
     engine.push_page_reply(Ok(listing(
         &[],
-        &json!({"waiting": 2, "running": {"seq": 4, "actor": "agent:ben", "action": "click"}}),
+        &json!({"waiting": 2, "running": {"seq": 4, "actor": agent_handle("ben"), "action": "click"}}),
     )));
     let all = review(&mut app, None);
     assert_eq!(all["message"], "3 actions");
@@ -588,7 +665,7 @@ fn the_resource_is_read_on_by_place_with_what_the_engine_knows_now() {
     assert_eq!(all["data"]["waiting"], 2);
     assert_eq!(
         all["data"]["running"],
-        json!({"seq": 4, "actor": "agent:ben", "action": "click"})
+        json!({"seq": 4, "actor": agent_handle("ben"), "action": "click"})
     );
     assert_eq!(all["provenance"], "web-content");
 
@@ -604,7 +681,7 @@ fn the_resource_is_read_on_by_place_with_what_the_engine_knows_now() {
 
     // An action the engine set down that no answer told the window of (its
     // caller had given up) is written when the resource is next read.
-    let late = json!({"seq": 4, "time_ms": 1_700_000_000_004_u64, "actor": "agent:ben",
+    let late = json!({"seq": 4, "time_ms": 1_700_000_000_004_u64, "actor": agent_handle("ben"),
         "action": "press", "ok": false, "code": "timeout", "message": "The page did not answer",
         "url": "https://shop.test/sent"});
     engine.push_page_reply(Ok(listing(std::slice::from_ref(&late), &json!({}))));
@@ -644,7 +721,7 @@ fn the_resource_is_still_read_after_the_engine_started_again() {
     // tab's record it stands after the three before it, and that is the
     // place its answer names.
     let ben = agent("ben");
-    let again = json!({"seq": 1, "time_ms": 1_700_000_000_100_u64, "actor": "agent:ben",
+    let again = json!({"seq": 1, "time_ms": 1_700_000_000_100_u64, "actor": agent_handle("ben"),
         "action": "click", "ok": true, "message": "Clicked link \"Orders\"",
         "url": "https://shop.test/sent", "target": {"role": "link", "name": "Orders"}});
     engine_sets_down(&second, &again);
@@ -660,10 +737,10 @@ fn the_resource_is_still_read_after_the_engine_started_again() {
     assert_eq!(
         held(&record, &tab),
         [
-            (1, "agent:ada".to_owned(), "fill".to_owned()),
-            (2, "agent:ben".to_owned(), "select".to_owned()),
-            (3, "agent:ada".to_owned(), "click".to_owned()),
-            (4, "agent:ben".to_owned(), "click".to_owned()),
+            (1, agent_handle("ada"), "fill".to_owned()),
+            (2, agent_handle("ben"), "select".to_owned()),
+            (3, agent_handle("ada"), "click".to_owned()),
+            (4, agent_handle("ben"), "click".to_owned()),
         ]
     );
     let later = review(&mut app, Some(3));
@@ -797,7 +874,7 @@ fn a_secret_filled_into_the_page_is_never_written() {
     // The engine sets a secret fill down without its text.
     engine_sets_down(
         &engine,
-        &json!({"seq": 1, "time_ms": 1_700_000_000_001_u64, "actor": "agent:ada",
+        &json!({"seq": 1, "time_ms": 1_700_000_000_001_u64, "actor": agent_handle("ada"),
             "action": "fill", "ok": true, "message": "Filled textbox \"Password\"", "url": PAGE,
             "target": {"role": "textbox", "name": "Password"}}),
     );
@@ -810,7 +887,7 @@ fn a_secret_filled_into_the_page_is_never_written() {
     // so it writes none of them.
     engine_sets_down(
         &engine,
-        &json!({"seq": 3, "time_ms": 1_700_000_000_003_u64, "actor": "agent:ada",
+        &json!({"seq": 3, "time_ms": 1_700_000_000_003_u64, "actor": agent_handle("ada"),
             "action": "fill", "ok": true, "message": "Filled textbox \"Card number\"",
             "url": PAGE, "target": {"role": "textbox", "name": "Card number"},
             "text": CARD, "values": [CARD, "Visa"],
@@ -864,11 +941,11 @@ fn a_secret_filled_into_the_page_is_never_written() {
         assert!(state.contains(written), "{written}: {state}");
         assert!(contains(&bytes, written), "{written} is in the document");
     }
-    let card = record.with(|state| state.page(&tab, 2).entries);
+    let card = kept_entries(&record, &tab, 2);
     assert_eq!(
         card,
         [
-            json!({"seq": 3, "time_ms": 1_700_000_000_003_u64, "actor": "agent:ada",
+            json!({"seq": 3, "time_ms": 1_700_000_000_003_u64, "actor": agent_handle("ada"),
             "action": "fill", "ok": true, "message": "Filled textbox \"Card number\"",
             "url": PAGE, "target": {"role": "textbox", "name": "Card number"},
             "values": ["Visa"],
@@ -909,7 +986,7 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
     engine.emit_page_resource(4, typed.clone());
     app.settle();
     assert_eq!(
-        record.with(|state| state.page(&tab, 3).entries).as_slice(),
+        kept_entries(&record, &tab, 3).as_slice(),
         std::slice::from_ref(&typed),
         "the entry is kept as the engine set it down, with no action of anyone's"
     );
@@ -922,7 +999,7 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
     // The engine sets down an agent's action and then more typing, and tells
     // of the typing before the window has read the action: the typing waits
     // for the action before it, which the window reads from the engine.
-    let next = json!({"seq": 5, "time_ms": 1_700_000_000_005_u64, "actor": "agent:ben",
+    let next = json!({"seq": 5, "time_ms": 1_700_000_000_005_u64, "actor": agent_handle("ben"),
         "action": "click", "ok": true, "message": "Clicked button \"Next\"", "url": PAGE,
         "target": {"role": "button", "name": "Next"}});
     let more = json!({"seq": 6, "time_ms": 1_700_000_000_006_u64, "actor": "", "how": "input",
@@ -943,15 +1020,12 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
         held(&record, &tab)[3..],
         [
             (4, String::new(), String::new()),
-            (5, "agent:ben".to_owned(), "click".to_owned()),
+            (5, agent_handle("ben"), "click".to_owned()),
             (6, String::new(), String::new()),
         ],
         "each in its place, once"
     );
-    assert_eq!(
-        record.with(|state| state.page(&tab, 4).entries),
-        [next, more]
-    );
+    assert_eq!(kept_entries(&record, &tab, 4), [next, more]);
     let authors: Vec<Actor> = steps(&record, &tab)
         .into_iter()
         .map(|(author, ..)| author)
@@ -974,7 +1048,7 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
     );
     app.settle();
     assert_eq!(
-        record.with(|state| state.page(&tab, 6).entries),
+        kept_entries(&record, &tab, 6),
         [
             json!({"seq": 7, "time_ms": 1_700_000_000_007_u64, "actor": "", "how": "input",
             "ok": true, "secret": true, "message": "Direct input into textbox \"Password\"",
@@ -1101,7 +1175,7 @@ fn what_the_window_held_is_set_down_with_who_answered() {
 
     assert_eq!(
         (kept["action"].as_str(), kept["actor"].as_str()),
-        (Some("keep"), Some("agent:rev")),
+        (Some("keep"), Some(agent_handle("rev").as_str())),
         "the window told the engine who kept the page"
     );
     assert_eq!(
@@ -1110,7 +1184,7 @@ fn what_the_window_held_is_set_down_with_who_answered() {
         "and that the person let the second leave"
     );
     assert_eq!(
-        record.with(|state| state.page(&tab, 3).entries),
+        kept_entries(&record, &tab, 3),
         [first, kept, second, left],
         "each is kept as the engine set it down, in its place"
     );
@@ -1156,7 +1230,12 @@ fn what_the_window_held_is_set_down_with_who_answered() {
             .collect::<Vec<_>>(),
         [
             ("hold", "request", "", "POST https://orders.test"),
-            ("hold", "keep", "agent:rev", "POST https://orders.test"),
+            (
+                "hold",
+                "keep",
+                agent_handle("rev").as_str(),
+                "POST https://orders.test"
+            ),
             ("hold", "request", "", "POST https://orders.test"),
             ("hold", "allow", "", "POST https://orders.test"),
         ]
@@ -1184,7 +1263,7 @@ fn an_entry_of_a_secret_field_says_it_was_set_and_keeps_none_of_its_text() {
         &record,
         Some(&by),
         "tab-a",
-        json!({"seq": 1, "actor": "agent:ada", "action": "fill", "ok": true, "secret": true,
+        json!({"seq": 1, "actor": agent_handle("ada"), "action": "fill", "ok": true, "secret": true,
             "message": "Filled textbox \"Password\"", "url": PAGE, "target": password,
             "text": "s3cret-text", "values": ["s3cret-value"],
             "answers": [{"name": "Password", "value": "s3cret-answer"}]}),
@@ -1194,7 +1273,7 @@ fn an_entry_of_a_secret_field_says_it_was_set_and_keeps_none_of_its_text() {
         &record,
         Some(&by),
         "tab-a",
-        json!({"seq": 2, "actor": "agent:ada", "action": "press", "ok": true, "secret": true,
+        json!({"seq": 2, "actor": agent_handle("ada"), "action": "press", "ok": true, "secret": true,
             "message": "Pressed a key in a secret field", "url": PAGE,
             "target": password}),
     )
@@ -1204,21 +1283,21 @@ fn an_entry_of_a_secret_field_says_it_was_set_and_keeps_none_of_its_text() {
         &record,
         Some(&by),
         "tab-a",
-        json!({"seq": 3, "actor": "agent:ada", "action": "fill", "ok": true, "secret": "no",
+        json!({"seq": 3, "actor": agent_handle("ada"), "action": "fill", "ok": true, "secret": "no",
             "message": "Filled textbox \"Email\"", "url": PAGE,
             "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"}),
     )
     .unwrap();
     let state = record.get();
     assert_eq!(
-        state.page("tab-a", 0).entries,
+        kept_entries(&record, "tab-a", 0),
         [
-            json!({"seq": 1, "actor": "agent:ada", "action": "fill", "ok": true, "secret": true,
+            json!({"seq": 1, "actor": agent_handle("ada"), "action": "fill", "ok": true, "secret": true,
                 "message": "Filled textbox \"Password\"", "url": PAGE, "target": password}),
-            json!({"seq": 2, "actor": "agent:ada", "action": "press", "ok": true, "secret": true,
+            json!({"seq": 2, "actor": agent_handle("ada"), "action": "press", "ok": true, "secret": true,
                 "message": "Pressed a key in a secret field", "url": PAGE,
                 "target": {"role": "textbox", "name": "Password"}}),
-            json!({"seq": 3, "actor": "agent:ada", "action": "fill", "ok": true,
+            json!({"seq": 3, "actor": agent_handle("ada"), "action": "fill", "ok": true,
                 "message": "Filled textbox \"Email\"", "url": PAGE,
                 "target": {"role": "textbox", "name": "Email"}, "text": "ada@example.org"}),
         ]
@@ -1251,7 +1330,7 @@ fn set_down(
     tab: &str,
     entry: Value,
 ) -> Result<(), String> {
-    let invoke = setting_down(tab, entry);
+    let invoke = setting_down(tab, as_typed(entry));
     match by {
         Some(by) => record.invoke_as(by, &invoke),
         None => record.invoke(&invoke),
@@ -1260,7 +1339,7 @@ fn set_down(
 }
 
 fn clicked(seq: u64) -> Value {
-    json!({"seq": seq, "time_ms": 1_700_000_000_000_u64 + seq, "actor": "agent:ada",
+    json!({"seq": seq, "time_ms": 1_700_000_000_000_u64 + seq, "actor": agent_handle("ada"),
         "action": "click", "ok": true, "message": format!("Clicked button \"{seq}\""),
         "url": PAGE, "target": {"role": "button", "name": seq.to_string()}})
 }
@@ -1277,7 +1356,7 @@ fn an_entry_is_kept_by_what_the_resource_keeps_of_one() {
         &record,
         Some(&by),
         "tab-a",
-        json!({"seq": 1.0, "time_ms": 1_700_000_000_001.0_f64, "actor": "agent:ada",
+        json!({"seq": 1.0, "time_ms": 1_700_000_000_001.0_f64, "actor": agent_handle("ada"),
             "action": "fill", "ok": true, "message": long, "url": PAGE,
             "target": {"role": "textbox", "name": "Notes", "nth": 2.0}, "text": long,
             "password": "never-kept", "cookies": {"session": "never-kept"}}),
@@ -1288,22 +1367,22 @@ fn an_entry_is_kept_by_what_the_resource_keeps_of_one() {
         &record,
         Some(&by),
         "tab-a",
-        json!({"seq": 2, "actor": "agent:ada", "action": "fill", "ok": false,
+        json!({"seq": 2, "actor": agent_handle("ada"), "action": "fill", "ok": false,
             "code": "not_editable", "message": "The field takes no text", "url": PAGE,
             "text": "refused text", "values": ["refused value"],
             "answers": [{"name": "Refused", "value": "refused answer"}]}),
     )
     .unwrap();
     let state = record.get();
-    let kept = state.page("tab-a", 0).entries;
+    let kept = kept_entries(&record, "tab-a", 0);
     let clipped = "é".repeat(100);
     assert_eq!(
         kept,
         [
-            json!({"seq": 1, "time_ms": 1_700_000_000_001_u64, "actor": "agent:ada",
+            json!({"seq": 1, "time_ms": 1_700_000_000_001_u64, "actor": agent_handle("ada"),
                 "action": "fill", "ok": true, "message": clipped, "url": PAGE,
                 "target": {"role": "textbox", "name": "Notes", "nth": 2}, "text": clipped}),
-            json!({"seq": 2, "actor": "agent:ada", "action": "fill", "ok": false,
+            json!({"seq": 2, "actor": agent_handle("ada"), "action": "fill", "ok": false,
                 "code": "not_editable", "message": "The field takes no text", "url": PAGE}),
         ]
     );
@@ -1414,14 +1493,8 @@ fn an_action_names_only_the_device_its_actor_was_admitted_from() {
 
     set_down(&record, Some(&there), "tab-a", from_laptop.clone()).unwrap();
     set_down(&record, Some(&here), "tab-b", clicked(1)).unwrap();
-    assert_eq!(
-        record.with(|state| state.page("tab-a", 0).entries),
-        [from_laptop]
-    );
-    assert_eq!(
-        record.with(|state| state.page("tab-b", 0).entries),
-        [clicked(1)]
-    );
+    assert_eq!(kept_entries(&record, "tab-a", 0), [from_laptop]);
+    assert_eq!(kept_entries(&record, "tab-b", 0), [clicked(1)]);
 }
 
 /// The resource is bounded as the engine bounds its own: a tab keeps its
@@ -1474,7 +1547,13 @@ fn a_tab_keeps_its_newest_actions_and_older_ones_stay_in_history() {
         .read(|doc| history::read_at::<PageResource>(&mut doc.clone(), &first_full))
         .expect("the resource is open")
         .expect("the resource's first version reads");
-    assert_eq!(then.page("tab-a", 0).entries, [clicked(1)]);
+    let then: Vec<Value> = then
+        .page("tab-a", 0)
+        .entries
+        .into_iter()
+        .map(as_listed)
+        .collect();
+    assert_eq!(then, [clicked(1)]);
 }
 
 /// The resource keeps the tabs that acted last: a new tab beyond the bound
@@ -1536,7 +1615,7 @@ fn nobody_at_the_api_adds_to_the_resource() {
     app.settle();
     let record = record(&mut app);
     let tab = only_tab(&record);
-    let listed = record.with(|state| state.page(&tab, 0).entries);
+    let listed = kept_entries(&record, &tab, 0);
     assert_eq!(listed, [email_filled(1)]);
 
     // The resource is at the API with what every resource offers, and without
@@ -1588,7 +1667,7 @@ fn nobody_at_the_api_adds_to_the_resource() {
     }
     app.settle();
     assert_eq!(
-        record.with(|state| state.page(&tab, 0).entries),
+        kept_entries(&record, &tab, 0),
         listed,
         "the resource holds what the engine listed, and nothing claimed"
     );
@@ -1617,8 +1696,8 @@ fn nobody_at_the_api_adds_to_the_resource() {
     assert_eq!(
         held(&record, &tab),
         [
-            (1, "agent:ada".to_owned(), "fill".to_owned()),
-            (2, "agent:ben".to_owned(), "select".to_owned()),
+            (1, agent_handle("ada"), "fill".to_owned()),
+            (2, agent_handle("ben"), "select".to_owned()),
         ]
     );
     let authors: Vec<Actor> = steps(&record, &tab)
@@ -1679,7 +1758,7 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
     let intake = agent_for_ada("intake");
 
     // The agent answers the form through the form's own action.
-    let answered = json!({"seq": 1, "time_ms": 1_700_000_000_001_u64, "actor": "agent:intake",
+    let answered = json!({"seq": 1, "time_ms": 1_700_000_000_001_u64, "actor": agent_handle("intake"),
         "action": "fill_form", "ok": true, "message": "Answered 1 question", "url": PAGE,
         "answers": [{"name": "Email", "value": "ada@example.org"}]});
     engine.set_page_data(
@@ -1725,7 +1804,7 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
     // The engine sets the hold down under the actor whose action reached it.
     engine.emit_page_resource(
         2,
-        json!({"seq": 2, "time_ms": 1_700_000_000_002_u64, "actor": "agent:intake",
+        json!({"seq": 2, "time_ms": 1_700_000_000_002_u64, "actor": agent_handle("intake"),
             "how": "hold", "action": "submit", "ok": true, "message": "POST https://shop.test",
             "url": PAGE, "to_url": "https://shop.test"}),
     );
@@ -1738,8 +1817,8 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
     assert_eq!(
         held(&record, &tab),
         [
-            (1, "agent:intake".to_owned(), "fill_form".to_owned()),
-            (2, "agent:intake".to_owned(), "submit".to_owned()),
+            (1, agent_handle("intake"), "fill_form".to_owned()),
+            (2, agent_handle("intake"), "submit".to_owned()),
         ],
         "the form's answers and its held submission stand under the agent"
     );
@@ -1778,8 +1857,8 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
             ))
             .collect::<Vec<_>>(),
         [
-            ("agent:intake", "", "fill_form"),
-            ("agent:intake", "hold", "submit")
+            (agent_handle("intake").as_str(), "", "fill_form"),
+            (agent_handle("intake").as_str(), "hold", "submit")
         ]
     );
 }
@@ -1868,7 +1947,7 @@ fn a_sign_ins_password_is_never_written() {
     // form's answer: the window sent it as a secret, so it writes none.
     engine_sets_down(
         &engine,
-        &json!({"seq": 1, "time_ms": 1_700_000_000_001_u64, "actor": "agent:ada",
+        &json!({"seq": 1, "time_ms": 1_700_000_000_001_u64, "actor": agent_handle("ada"),
             "action": "fill", "ok": true, "message": "Filled textbox \"Search\"", "url": PAGE,
             "target": {"role": "textbox", "name": "Search"},
             "text": PASSWORD, "values": [PASSWORD, "Members"],
