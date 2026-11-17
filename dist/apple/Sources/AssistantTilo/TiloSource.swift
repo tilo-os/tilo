@@ -69,6 +69,9 @@ public final class TiloSource: AssistantSource {
     /// How long after a conversation was said empty its first pieces are still what the device
     /// kept, come a moment late, and no news.
     var settling: Duration = .seconds(20)
+    /// How long an ask of her server that failed waits before it is made again, the first time.
+    /// The wait doubles each time, up to a minute.
+    var firstPause: Duration = .seconds(1)
     private static let routeKey = "TiloLiveRoute"
     private static let personKey = "TiloLivePerson"
 
@@ -787,6 +790,7 @@ public final class TiloSource: AssistantSource {
         Task { [weak self] in
             var waits = false
             var quick = 0
+            var pause = self?.firstPause ?? .seconds(1)
             // The log was read on this way in, before the conversation was said: what follows
             // is what came while she was away, and then the ask her server holds.
             if let self, self.toldFresh {
@@ -828,10 +832,18 @@ public final class TiloSource: AssistantSource {
                     // What happened while the person was away is counted at their first look after.
                     if !waits { await self.readSince() }
                     waits = true
-                } catch TiloEngine.Problem.refused {
+                    pause = self.firstPause
+                } catch TiloEngine.Problem.refused(let code, _) where TiloSource.offersNone(code) {
                     // A server that tells nothing this way is not asked again before the device gets in anew.
                     self?.toldRefused = true
                     break
+                } catch TiloEngine.Problem.refused {
+                    // Her server knows the ask and failed at it this time. One failed answer does
+                    // not end the following: the ask is made again by itself, after a pause that
+                    // grows, for as long as the page is in.
+                    try? await Task.sleep(for: pause)
+                    pause = min(pause * 2, .seconds(60))
+                    guard let self, case .open = self.engine.state else { break }
                 } catch {
                     break
                 }
@@ -854,12 +866,20 @@ public final class TiloSource: AssistantSource {
             for thing in read.told {
                 if let message = thing.message { toldByMessage[message] = thing }
             }
-        } catch TiloEngine.Problem.refused {
+        } catch TiloEngine.Problem.refused(let code, _) where TiloSource.offersNone(code) {
             // A server that tells nothing this way is not asked again before the device gets in anew.
             toldRefused = true
         } catch {
-            // Not answered: the following reads the log, and says whole what it then marks.
+            // Not answered, or her server failed at it this time: the following reads the log,
+            // and says whole what it then marks.
         }
+    }
+
+    /// Whether a refusal says that her server offers no such thing: it does not know the ask,
+    /// or this page hands the app no way to it. Any other failed answer is her server failing
+    /// at an ask it knows, this time: a write of its own that did not finish, a busy moment.
+    private static func offersNone(_ code: String) -> Bool {
+        code == "unknown_action" || code == "unavailable"
     }
 
     /// Read the conversations once more after a while, where no word of a change may come.

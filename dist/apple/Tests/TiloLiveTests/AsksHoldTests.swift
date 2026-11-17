@@ -57,6 +57,7 @@ final class AsksHoldTests: XCTestCase {
     ///   `'unanswered'`  carried out, and answered only that it was taken
     ///   `'lost'`        answered only that it was taken, and never carried out
     ///   `'empty'`       answered with nothing in it
+    ///   `'failed'`      answered that her server failed at it: an ask it knows, this time
     ///   `'never'`       not answered at all
     private static let page = #"""
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status"></span><div id="semantics"></div>
@@ -81,6 +82,7 @@ final class AsksHoldTests: XCTestCase {
         if (how === 'never') return never();
         if (how === 'lost') return {invocation: 'i', state: 'accepted'};
         if (how === 'empty') return done(null);
+        if (how === 'failed') return {invocation: 'i', state: 'failed', error: {code: 'write_timeout', message: 'The write did not finish in time'}};
         if (how?.late) await new Promise(on => setTimeout(on, how.late));
         const answer = await usual();
         return how === 'unanswered' ? {invocation: 'i', state: 'accepted'} : answer;
@@ -423,6 +425,28 @@ final class AsksHoldTests: XCTestCase {
         try await until("both stand in the main chat") { self.held.count == 2 }
         try await inPage("window.messages = []; touch()")
         try await until("the main chat is empty") { self.held.isEmpty }
+    }
+
+    /// As a server whose own writes do not finish in time: it knows the ask and fails at it.
+    func testAFailedAnswerToWhatHerServerTellsHerDoesNotEndTheFollowingAndTheAskIsMadeAgain() async throws {
+        try await start(Self.assistant)
+        source.firstPause = .milliseconds(200)
+        // The read on the way in fails, and so does the first of the following.
+        try await enter(Self.twoMessages + "; window.plan = {'tilo.telling list': ['failed', 'failed']}")
+        try await signedIn()
+        try await until("her server was asked a third time") { ((try? await self.asked("tilo.telling list")) ?? 0) >= 3 }
+        // Her reminder comes due: it is told.
+        try await inPage(Self.reminderComes)
+        try await isReminder()
+        // It came as news, which is what is told: a new piece, or a piece that turned into the reminder.
+        let asNews = changes.contains {
+            switch $0 {
+            case .added(let new): new.contains { $0.content == .reminder("Time to stretch.") }
+            case .changed(let item): item.content == .reminder("Time to stretch.")
+            default: false
+            }
+        }
+        XCTAssertTrue(asNews, "the reminder came in no change that tells it")
     }
 }
 #endif
