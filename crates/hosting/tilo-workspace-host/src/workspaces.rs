@@ -78,6 +78,9 @@ mod peer_parts;
 // workspace runs: a page has no mail connection and no vault of its own.
 #[cfg(not(target_arch = "wasm32"))]
 mod person_settings;
+// A person's own model, asked for whatever this host runs for them.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod person_model;
 mod personal;
 mod publication;
 use publication::{Change, SinceBase, starts_over, withdraws};
@@ -969,6 +972,10 @@ struct WorkspacesInner {
     /// accounts — changed, so a window following them reads them again
     /// ([`person_settings`]).
     person_settings_moved: tokio::sync::watch::Sender<u64>,
+    /// What answers people's model calls, each with that person's own
+    /// provider, model and key ([`person_model`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    models: Arc<person_model::Models>,
     /// What the changes a record's repair kept wait for, by record, so a
     /// member's write to it is only tried against them when it could release
     /// one ([`repaired_records`]).
@@ -1231,6 +1238,8 @@ impl Workspaces {
                 machines: std::sync::RwLock::default(),
                 record_writes: tokio::sync::broadcast::channel(256).0,
                 person_settings_moved: tokio::sync::watch::channel(0).0,
+                #[cfg(not(target_arch = "wasm32"))]
+                models: Arc::new(person_model::Models::new()),
                 #[cfg(feature = "agents")]
                 repairs: repaired_records::Repairs::default(),
                 content: content::ContentSlot::default(),

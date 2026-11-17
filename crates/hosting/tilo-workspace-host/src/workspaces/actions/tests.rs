@@ -1028,7 +1028,7 @@ async fn a_developer_chooses_the_version_of_an_app_the_whole_workspace_runs() {
 
 /// `request` of the person's own settings, asked by the device `device`
 /// certifies in the workspace `workspace_id` carries.
-async fn ask_own(
+pub(super) async fn ask_own(
     host: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     device: &DeviceCert,
