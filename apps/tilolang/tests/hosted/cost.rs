@@ -1684,7 +1684,7 @@ fn a_change_reindexes_the_resources_it_touched(seeded: &Chunks) {
 }
 
 /// The boundaries the window's views have rendered since it opened: every app instance the
-/// window runs, and both lanes it shows.
+/// window runs, and both levels it shows.
 fn renders(session: &Session) -> u64 {
     session
         .host
@@ -1692,11 +1692,11 @@ fn renders(session: &Session) -> u64 {
         .flat_map(|instance| {
             let instance = instance.instance();
             [
-                tilo_render_protocol::patch::Lane::Root,
-                tilo_render_protocol::patch::Lane::Detail,
+                tilo_render_protocol::patch::Level::Root,
+                tilo_render_protocol::patch::Level::Detail,
             ]
             .into_iter()
-            .filter_map(|lane| instance.view(lane))
+            .filter_map(|level| instance.view(level))
             .collect::<Vec<_>>()
         })
         .map(|view| view.borrow().stats().renders)
@@ -1957,7 +1957,7 @@ fn a_step_reaches_the_window_in_one_frame(seeded: &Chunks) {
         let counted = |session: &Session| -> (u64, u64) {
             let instance = session.instance().instance();
             let runs = instance
-                .view(tilo_render_protocol::patch::Lane::Root)
+                .view(tilo_render_protocol::patch::Level::Root)
                 .expect("the root view")
                 .borrow()
                 .stats()
@@ -2030,11 +2030,11 @@ impl Done {
             let host = instance.host().expect("the instance's host");
             let reads = host.store().read_stats();
             let renders = [
-                tilo_render_protocol::patch::Lane::Root,
-                tilo_render_protocol::patch::Lane::Detail,
+                tilo_render_protocol::patch::Level::Root,
+                tilo_render_protocol::patch::Level::Detail,
             ]
             .into_iter()
-            .filter_map(|lane| instance.view(lane))
+            .filter_map(|level| instance.view(level))
             .map(|view| view.borrow().stats().renders)
             .fold(0, u64::saturating_add);
             (
@@ -2750,11 +2750,11 @@ impl crate::motion::Framed for Session {
     }
 
     fn renders(&mut self) -> u64 {
-        use tilo_render_protocol::patch::Lane;
+        use tilo_render_protocol::patch::Level;
         let instance = self.instance().instance();
-        [Lane::Root, Lane::Detail]
+        [Level::Root, Level::Detail]
             .into_iter()
-            .filter_map(|lane| instance.view(lane))
+            .filter_map(|level| instance.view(level))
             .map(|view| view.borrow().stats().renders)
             .sum()
     }

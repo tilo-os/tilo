@@ -46,7 +46,7 @@ use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{DocumentAnswer, Events, Link};
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
-use ui::collaboration::document_content::ContentLane;
+use ui::collaboration::document_content::ContentLink;
 use ui::resource::{DocumentSync, WorkspaceAnswer};
 use ui::state::DocumentReplica;
 
@@ -1000,7 +1000,7 @@ impl Joined {
 
     /// Every record a mount has open in this workspace, as wire `(app, record)`.
     /// The route record `record` (its wire name) of app `app` travels on in
-    /// this workspace: its content lanes are this workspace's alone.
+    /// this workspace: its content content links are this workspace's alone.
     fn content_route(&self, app: &str, record: &str) -> ui::collaboration::RouteSpec {
         ui::collaboration::RouteSpec::document(app, self.cluster, record)
     }
@@ -1204,7 +1204,7 @@ impl Joined {
     }
 
     /// Ask the workspace for the content open records' windows lack: what they
-    /// queued on the records' lanes ([`ContentLane`]). Content a window
+    /// queued on the records' content links ([`ContentLink`]). Content a window
     /// stored for others is not offered from a page.
     fn ask_content(&mut self) {
         if !self.ready {
@@ -1214,9 +1214,9 @@ impl Joined {
         let now = crate::shell::now_ms();
         let records: BTreeSet<(String, String)> = self.open_resources().collect();
         for (app, record) in records {
-            // The record's windows each queue on a lane of their own.
-            for lane in ContentLane::on_route(&self.content_route(&app, &record)) {
-                for hash in lane.take_requests().wants {
+            // The record's windows each queue on a content link of their own.
+            for link in ContentLink::on_route(&self.content_route(&app, &record)) {
+                for hash in link.take_requests().wants {
                     let Some(request) = self.content.ask(
                         &device,
                         (app.clone(), record.clone()),
@@ -1231,7 +1231,7 @@ impl Joined {
                         .send(Cmd::WantContent(self.workspace, request))
                         .is_err()
                     {
-                        lane.retry_want(hash);
+                        link.retry_want(hash);
                     }
                 }
             }
@@ -1239,7 +1239,7 @@ impl Joined {
     }
 
     /// Keep a piece of content a member sent; whether it completed content
-    /// a record's window asked for, now on the record's lane.
+    /// a record's window asked for, now on the record's content link.
     fn content_piece(&mut self, frame: &[u8]) -> bool {
         let device = self.peer.status().device;
         let Some(arrived) = self
@@ -1249,8 +1249,8 @@ impl Joined {
             return false;
         };
         let (app, record) = arrived.tag;
-        for lane in ContentLane::on_route(&self.content_route(&app, &record)) {
-            lane.arrive(arrived.hash.clone(), arrived.bytes.clone());
+        for link in ContentLink::on_route(&self.content_route(&app, &record)) {
+            link.arrive(arrived.hash.clone(), arrived.bytes.clone());
         }
         true
     }

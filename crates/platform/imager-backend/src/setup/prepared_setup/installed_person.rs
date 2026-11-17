@@ -177,7 +177,7 @@ pub fn publish_original_copy_owner(
     Ok(())
 }
 /// First-login primary Home authority comes from authenticated installed consent
-/// and the actual target-owned current-device observer on the same QPE lane.
+/// and the actual target-owned current-device observer on the same QPE path.
 /// The primary backup remains its original identity kind; no member enrollment
 /// or source credential is inferred from a public certificate or request label.
 pub fn publish_retained_primary_owner(

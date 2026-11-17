@@ -964,7 +964,7 @@ impl Session {
             .expect("the window is the hosted window")
     }
 
-    /// The texts the window's views show: its overview, and the page the content lane opens.
+    /// The texts the window's views show: its overview, and the page the content level opens.
     fn shown(&mut self) -> Vec<String> {
         let view = self.hosted().view().expect("the window is connected");
         let mut out = Vec::new();
@@ -1775,9 +1775,9 @@ fn a_document_typed_after_a_list_stays_on_the_page_level_and_fills_its_editor() 
         })
         .expect("the body is the block editor");
     assert_eq!(rects.len(), 6, "one rect per block");
-    let list_lane = rects[1].x0;
+    let list_level = rects[1].x0;
     assert!(
-        rects.iter().all(|rect| rect.x0 <= list_lane),
+        rects.iter().all(|rect| rect.x0 <= list_level),
         "no block starts right of a top-level list item's line, so a quote or a code block \
          typed after the list sits on the page and not inside it: {rects:?}"
     );

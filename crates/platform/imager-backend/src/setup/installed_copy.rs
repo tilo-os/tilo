@@ -234,7 +234,7 @@ impl AuthenticatedCopyReceive {
     }
 }
 /// Fixed nonroot helper entry on inherited private sockets only. It exposes no
-/// source/mount/identity declarations and creates no new public socket lane.
+/// source/mount/identity declarations and creates no new public socket.
 pub fn run_receiver(arguments: impl Iterator<Item = std::ffi::OsString>) -> io::Result<()> {
     let mut arguments = arguments;
     fn descriptor(argument: Option<std::ffi::OsString>) -> io::Result<i32> {

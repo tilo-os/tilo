@@ -115,7 +115,7 @@ check its name and tag.
 names the missing piece with its fix. A 401/403 on the disk means the forge
 token is missing or lacks package read access. "No dev disk is published"
 means CI has not published one (or that tag). "Has no qcow2 disk for
-<arch>" means the tag exists but your architecture's lane has not published
+<arch>" means the tag exists but your architecture's job has not published
 yet, or failed: each architecture publishes on its own. Build a disk locally
 (`os/dev/build-dev-image.sh`), or ask a human for a shared VM
 (`tilo-vm vm use <name>`); `tilo-vm guide platforms` has the details. An

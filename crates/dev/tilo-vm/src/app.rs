@@ -3086,7 +3086,7 @@ impl App {
                 image: format!("ci:{tag}"),
                 problem: match &target.board {
                     Some(board) => format!(
-                        "names no {board} board image this host can pull (tried {tried}); CI builds one in each Build / OS dev run with an aarch64 lane"
+                        "names no {board} board image this host can pull (tried {tried}); CI builds one in each Build / OS dev run with an aarch64 job"
                     ),
                     None => format!("names no CI build this host can pull (tried {tried})"),
                 },

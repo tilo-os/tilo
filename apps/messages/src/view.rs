@@ -439,7 +439,7 @@ fn sources(cx: &ViewCx<Messages>) -> Sources {
     }
 }
 
-/// The workspace's people as the Tilo lane offers them: everyone the workspace names but
+/// The workspace's people as Tilo offers them: everyone the workspace names but
 /// this window's own person and its agents.
 fn workspace_people(cx: &ViewCx<Messages>) -> Vec<WorkspacePerson> {
     cx.people()

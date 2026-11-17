@@ -256,7 +256,7 @@ impl Core {
         }
         // Row text starts on the column's content edge, the column title's,
         // and the lift bleeds past it; while the list overflows, the region
-        // keeps the trailing lane free for the scroll bar.
+        // keeps the trailing gutter free for the scroll bar.
         let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
         let x0 = viewport.x0 + edge;
         let x1 = if self.list.scroller.overflows_vertically() {

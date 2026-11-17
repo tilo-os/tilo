@@ -694,7 +694,7 @@ mod tests {
     }
 
     /// An app's own icon is what every surface that lists it paints, asked of the toolkit's one
-    /// lane, and what a sandboxed app is handed as PNG bytes; both read one cache, so an icon once
+    /// path, and what a sandboxed app is handed as PNG bytes; both read one cache, so an icon once
     /// rasterised at a size is not read again. An app with no icon is no artwork: its glyph shows.
     #[test]
     fn an_apps_own_icon_is_its_artwork_everywhere_and_is_cached_per_size() {

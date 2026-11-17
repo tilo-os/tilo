@@ -30,15 +30,15 @@ pub const STOPPED_FOR: Duration = Duration::from_secs(1);
 /// bar's strip where that is shorter, so the banner stands in the bar and on nothing else.
 const CHIP_HEIGHT: f64 = 40.0;
 
-/// The bar's own middle lane: the width the clock takes at rest, and the banner's while following.
+/// The bar's own middle middle: the width the clock takes at rest, and the banner's while following.
 /// A view that is not the person's own is said where the bar's glance value stands, so the clock
 /// keeps out of its way while it is said.
 #[must_use]
-pub fn lane_width(bar_width: f64) -> f64 {
+pub fn area_width(bar_width: f64) -> f64 {
     if bar_width < NARROW_BAR_PX {
-        FOLDED_LANE_PX
+        FOLDED_AREA_PX
     } else {
-        (bar_width - WIDE_ASIDE_PX).clamp(WIDE_LANE_MIN_PX, WIDE_LANE_MAX_PX)
+        (bar_width - WIDE_ASIDE_PX).clamp(WIDE_AREA_MIN_PX, WIDE_AREA_MAX_PX)
     }
 }
 
@@ -46,21 +46,21 @@ pub fn lane_width(bar_width: f64) -> f64 {
 /// and offers Stop in words: the banner then folds into their face, with Stop beside it.
 #[must_use]
 pub fn folds(bar_width: f64) -> bool {
-    lane_width(bar_width) < CARD_MIN_PX
+    area_width(bar_width) < CARD_MIN_PX
 }
 
-/// Below this the bar is a phone's: its middle lane is the time alone, and the banner's with it.
+/// Below this the bar is a phone's: its middle middle is the time alone, and the banner's with it.
 const NARROW_BAR_PX: f64 = 720.0;
-/// The middle lane of a phone-wide bar: their face and Stop, side by side.
-const FOLDED_LANE_PX: f64 = 64.0;
-/// What a wide bar keeps for its own ends, either side of the middle lane.
+/// The middle middle of a phone-wide bar: their face and Stop, side by side.
+const FOLDED_AREA_PX: f64 = 64.0;
+/// What a wide bar keeps for its own ends, either side of the middle middle.
 const WIDE_ASIDE_PX: f64 = 580.0;
-/// A wide bar's middle lane, at least the time and its dots read at a large text size and never so
+/// A wide bar's middle middle, at least the time and its dots read at a large text size and never so
 /// long that the workspace's name starves.
-const WIDE_LANE_MIN_PX: f64 = 220.0;
-/// See [`WIDE_LANE_MIN_PX`].
-const WIDE_LANE_MAX_PX: f64 = 360.0;
-/// The narrowest lane the card's words and Stop stand in: below it the banner folds, since a card
+const WIDE_AREA_MIN_PX: f64 = 220.0;
+/// See [`WIDE_AREA_MIN_PX`].
+const WIDE_AREA_MAX_PX: f64 = 360.0;
+/// The narrowest middle the card's words and Stop stand in: below it the banner folds, since a card
 /// elided to less says less than their face and one word.
 const CARD_MIN_PX: f64 = 180.0;
 
@@ -277,9 +277,9 @@ impl FollowBanner {
     }
 }
 
-/// Where the bar and its Stop go: in the top bar's own middle lane, with their face, `label` and,
-/// while following, Stop. The lane is the clock's, so the card never reaches a control of the
-/// bar's: where the lane is too narrow for the words, the banner folds into their face with Stop
+/// Where the bar and its Stop go: in the top bar's own middle middle, with their face, `label` and,
+/// while following, Stop. The middle is the clock's, so the card never reaches a control of the
+/// bar's: where the middle is too narrow for the words, the banner folds into their face with Stop
 /// beside it, and the words it cannot show are the ones a reader is told instead.
 ///
 /// Answers the card as it stands, its label elided to the room.
@@ -304,9 +304,9 @@ pub(crate) fn rects(
     } else {
         0.0
     };
-    // The lane the bar keeps for this banner: the card stands in it and no wider, so it never
+    // The middle the bar keeps for this banner: the card stands in it and no wider, so it never
     // reaches a control either side.
-    let lane = lane_width(place.bar.width());
+    let middle = area_width(place.bar.width());
     if folded {
         let pad = f64::from(spacing.s1);
         // Stop is a square as tall as their face: the one word the bar can hold, as the mark that
@@ -317,7 +317,7 @@ pub(crate) fn rects(
         } else {
             2.0 * pad + face
         };
-        let chip = docked_in(place.bar, (width.min(lane), height), inset);
+        let chip = docked_in(place.bar, (width.min(middle), height), inset);
         let stop = if following {
             Rect::from_center_size(
                 Point::new(chip.x1 - pad - stop_side / 2.0, chip.center().y),
@@ -336,7 +336,7 @@ pub(crate) fn rects(
         };
     }
     let pad = f64::from(spacing.s3);
-    let room_for_label = (lane
+    let room_for_label = (middle
         - 2.0 * pad
         - face
         - f64::from(spacing.s2)
@@ -358,7 +358,7 @@ pub(crate) fn rects(
             0.0
         }
         + pad;
-    let chip = docked_in(place.bar, (width.min(lane), height), inset);
+    let chip = docked_in(place.bar, (width.min(middle), height), inset);
     // Stop keeps the bar's control height where the bar has it, and the banner's own where the bar
     // is shorter.
     let stop_h = (chip.height() - 6.0).clamp(16.0, 28.0);
@@ -387,7 +387,7 @@ pub(crate) struct Card {
     pub(crate) stop_label: String,
     pub(crate) chip: Rect,
     pub(crate) stop: Rect,
-    /// Their face and Stop alone: the lane is too narrow for the words.
+    /// Their face and Stop alone: the middle is too narrow for the words.
     pub(crate) folded: bool,
     /// Whether the card names someone this person follows, so Stop stands on it.
     pub(crate) following: bool,
@@ -565,21 +565,21 @@ mod tests {
             }
         }
 
-        phase a_phone_wide_bar_folds_the_banner_into_its_lane;
-        // Where the bar is a phone's, the banner folds into the middle lane's own width: their face
+        phase a_phone_wide_bar_folds_the_banner_into_its_area;
+        // Where the bar is a phone's, the banner folds into the middle middle's own width: their face
         // and Stop stand there, and the bar's people keep the room either side.
         {
             for width in [390.0, 360.0, 320.0] {
                 let (bar, _work_area, chip, stop, _windows) = placed(width, true);
-                let lane = Rect::from_center_size(bar.center(), (lane_width(width), chip.height()));
+                let middle = Rect::from_center_size(bar.center(), (area_width(width), chip.height()));
                 assert!(folds(width), "a phone-wide bar folds at {width}");
                 assert!(
-                    chip.width() <= lane.width() + 0.5,
-                    "the folded banner fits the lane at {width}: {chip:?} in {lane:?}"
+                    chip.width() <= middle.width() + 0.5,
+                    "the folded banner fits the middle at {width}: {chip:?} in {middle:?}"
                 );
                 assert!(
-                    chip.x0 >= lane.x0 - 0.5 && chip.x1 <= lane.x1 + 0.5,
-                    "and stands in it at {width}: {chip:?} in {lane:?}"
+                    chip.x0 >= middle.x0 - 0.5 && chip.x1 <= middle.x1 + 0.5,
+                    "and stands in it at {width}: {chip:?} in {middle:?}"
                 );
                 assert!(
                     stop.x0 >= chip.x0 && stop.x1 <= chip.x1 && !stop.is_zero_area(),

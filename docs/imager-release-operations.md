@@ -18,7 +18,7 @@ these runner labels:
 Manual installer-only rehearsals do not need those release labels: dispatch
 `release-imager.yml` with `installer_only=true` and `full_native=true`. The
 workflow uses the native `runner-disk-100g` and `runner-disk-100g-arm64`
-large-disk lanes for erase, prepared-alongside, and guided-alongside cycles. Their isolated
+large-disk jobs for erase, prepared-alongside, and guided-alongside cycles. Their isolated
 job containers use QEMU's slower TCG accelerator and capturable software
 framebuffer because host KVM/DRI devices are intentionally not exposed. Tagged
 releases still require hardware KVM/DRI and the dedicated six-platform fleet
@@ -76,7 +76,7 @@ or cloud credential on the native fleet.
 
 ## Automatic main downloads
 
-`Release / Tilo Installer` builds all six native Linux, Windows and macOS lanes
+`Release / Tilo Installer` builds all six native Linux, Windows and macOS jobs
 on relevant `main` pushes, after the existing exact-source Desktop catalog check.
 Linux retains signed capture qualification, AppImage runtime and installed
 Flatpak checks; Windows requires Authenticode-signed native packages; macOS
@@ -113,7 +113,7 @@ the workflow's metadata result.
 Installer media never allocate an OS generation. Set the protected
 `TILO_INSTALLER_OS_IMAGE` variable to one already-published, cosign-signed Tilo
 multi-architecture manifest-list reference of the form
-`registry.tilo.so/tilo/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
+`registry.tilo.so/tilo/tilo@sha256:<64 lowercase hex>`. Both native Linux jobs
 verify that same digest and its SLSA provenance, require its immutable `genN`
 tag to bind the exact digest, pull their native manifest,
 and require the generation embedded in the image to equal the single generation
@@ -247,7 +247,7 @@ writable, and it must not live in the checkout or runner temporary directory.
 Tagged releases fail closed when this protected variable is absent.
 The signer's server-side OIDC policy must accept only the protected `release-imager.yml`
 semantic-tag identity above. Reject all pull requests, branch rehearsals,
-dispatches and other workflows. Tag lanes run on the `imager-linux-*` hosts.
+dispatches and other workflows. Tag jobs run on the `imager-linux-*` hosts.
 
 For `linux`, `windows`, and `macos`, the broker configures the native signer and
 writes only these non-secret handles to the environment-file output, one
@@ -476,7 +476,7 @@ Full Tilo without a USB stick (design spec
 `docs/architecture/usb-free-install.md` §3) downloads a
 schema-2 internal installer bundle: a manifest plus two raw component images
 the Imager writes to staging partitions on the internal disk. Each native
-`medium` lane derives it from the live disk that has just passed the
+`medium` job derives it from the live disk that has just passed the
 installation cycles:
 
 1. **Test** (`export` or `publish`): installs `btrfs-progs`/`dosfstools`/
@@ -498,7 +498,7 @@ installation cycles:
    `https://code.tilo.so/api/packages/OWNER/generic/tilo-internal-installer/TAG/`,
    then downloads each file anonymously and compares digests. Existing files
    are never replaced; a rerun only verifies them.
-4. **Catalog** (`publish`, tags only): the lane uploads only the manifest and
+4. **Catalog** (`publish`, tags only): the job uploads only the manifest and
    its entry (artifact `tilo-internal-catalog-ARCH`). `build-release-catalog.sh`
    checks every entry against the exact manifest bytes beside it, parses the
    manifest with the exporter's own validator, requires the package URL

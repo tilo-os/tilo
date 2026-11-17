@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
             let before = root.store().get(&id).cloned();
             let secret = root.vault().get(&id);
             pane.save_calendar_selection();
-            pane.settle_lane();
+            pane.settle_queue();
             assert!(pane.form_error.is_some(), "{change}");
             assert_eq!(root.store().get(&id), before.as_ref(), "{change}");
             assert_eq!(root.vault().get(&id), secret, "{change}");

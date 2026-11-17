@@ -945,7 +945,7 @@ export async function mountDesktop(target,options={}) {
       // page's microphone runs, and what left and arrived over the live session
       // (`{phase, captureActive, counters}`) — for tests and tools reading
       // that a call's audio went both ways, or null for a page with no call
-      // lane.
+      // media queue.
       call:()=>options.peer?.voice?.call.stats()??null,
       // Name the workspace's people by the id their actions record (`[{id, name}]`), for a page that knows who it admitted.
       setPeople:people=>{if(active())runtime.set_people(id,JSON.stringify(people));},

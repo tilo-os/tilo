@@ -5,7 +5,7 @@
 //! markdown description, a status, an assignee, labels, links and a thread —
 //! are kept in numbered parts beside it ([`part`]), so a change to one costs
 //! its part whatever the tracker holds. The list nests sub-issues under their parent; the board has
-//! a lane per status, and dragging a card is one `place` action; the issue
+//! a list per status, and dragging a card is one `place` action; the issue
 //! page edits the description in the shared block editor and holds the
 //! thread. An issue assigned to an agent is that agent's: it works on the
 //! issue by the tracker's own actions, from the conversation it was asked in.
@@ -129,7 +129,7 @@ pub enum Place {
     /// Every issue, sub-issues under their parent.
     #[default]
     List,
-    /// A lane per status.
+    /// A list per status.
     Board,
     /// The tasks that have said something, as their conversations.
     Thread,
@@ -384,7 +384,7 @@ fn sidebar_sections(tasks: &Tasks, me: Option<&ui::tilo_resource::MemberId>) -> 
 }
 
 /// A row to create an issue: its title, then Enter or the button. `status`
-/// is where it starts, when the row stands in a lane of the board; `local`
+/// is where it starts, when the row stands in a list of the board; `local`
 /// makes the title's draft.
 pub(crate) fn new_issue(
     local: &dyn Fn() -> ui::LocalState<String>,

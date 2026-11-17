@@ -341,7 +341,7 @@ fn members_presence_reaches_the_other_screen() {
         assert!(
             with > 200,
             "Ada's colour {ada_colour:?} covers only {with} pixels -- a playhead \
-         down the lanes and a name on it should be plainly visible",
+         down the tracks and a name on it should be plainly visible",
         );
         assert!(
             with > without * 4,
@@ -366,7 +366,7 @@ fn members_presence_reaches_the_other_screen() {
         assert!(
             with > without + 100,
             "Ada's playhead put only {} more pixels of her colour on screen than \
-         her absence did ({without}) -- a line down every lane with her name \
+         her absence did ({without}) -- a line down every track with her name \
          on it should be unmistakable",
             with.saturating_sub(without),
         );

@@ -1,4 +1,4 @@
-//! The content a record references: its lanes and stores are the collab
+//! The content a record references: its content links and stores are the collab
 //! client's (`collaboration::document_content`); what a view reads of it, as
 //! arrivals, is the toolkit's.
 
@@ -94,18 +94,18 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    fn resource_store() -> (ContentStore, Arc<ContentLane>) {
-        let lane = Arc::new(ContentLane::default());
+    fn resource_store() -> (ContentStore, Arc<ContentLink>) {
+        let link = Arc::new(ContentLink::default());
         (
-            DocumentContent::store(ContentStore::memory(), Arc::clone(&lane)),
-            lane,
+            DocumentContent::store(ContentStore::memory(), Arc::clone(&link)),
+            link,
         )
     }
 
     #[test]
     fn content_reads_arrive_from_the_workspace_and_content_here_is_ready_at_once() {
         use crate::arriving::Arrival;
-        let (store, lane) = resource_store();
+        let (store, link) = resource_store();
         let here = store.put(b"a picture here").unwrap();
         let reads = ContentReads::new(store);
         assert_eq!(
@@ -119,14 +119,14 @@ mod tests {
         let read = reads.read(&away);
         assert!(read.get().is_pending(), "on its way from the workspace");
         assert!(
-            lane.take_requests().wants.contains(&away),
+            link.take_requests().wants.contains(&away),
             "the first read asks the workspace for it"
         );
-        lane.stands(away.clone(), ContentState::Unavailable);
+        link.stands(away.clone(), ContentState::Unavailable);
         assert_eq!(reads.read(&away).get(), Arrival::Failed(ContentUnavailable));
-        lane.stands(away.clone(), ContentState::Waiting);
+        link.stands(away.clone(), ContentState::Waiting);
         assert!(reads.read(&away).get().is_pending());
-        lane.arrive(away.clone(), bytes);
+        link.arrive(away.clone(), bytes);
         assert_eq!(reads.read(&away).get(), Arrival::Ready(()));
         assert_eq!(read.get(), Arrival::Ready(()), "the one read answers");
     }

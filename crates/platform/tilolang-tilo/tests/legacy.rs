@@ -416,7 +416,7 @@ tilo_test_env::scenario! {
         let board = root(&replica, app);
         let (cards_field, card_ty) = field(&replica, app, "Board", "cards");
         let (columns_field, column_ty) = field(&replica, app, "Board", "columns");
-        let (lane_field, _) = field(&replica, app, "Column", "cards");
+        let (list_field, _) = field(&replica, app, "Column", "cards");
         let stored = |replica: &Replica| -> Vec<(String, String)> {
             records(&replica.doc)
                 .into_iter()
@@ -441,13 +441,13 @@ tilo_test_env::scenario! {
         let titles_before = titles(&replica, &before);
         let columns = listed(&replica, &board, &columns_field);
         assert_eq!(columns.len(), 3);
-        let lanes = |replica: &Replica| -> Vec<Vec<String>> {
+        let lists = |replica: &Replica| -> Vec<Vec<String>> {
             columns
                 .iter()
-                .map(|col| listed(replica, &board.item(col, column_ty.clone()), &lane_field))
+                .map(|col| listed(replica, &board.item(col, column_ty.clone()), &list_field))
                 .collect()
         };
-        assert!(lanes(&replica).iter().all(Vec::is_empty));
+        assert!(lists(&replica).iter().all(Vec::is_empty));
 
         // Opened by the version that keeps cards in their columns, the board is migrated once: one
         // change, the migration's own action.
@@ -478,7 +478,7 @@ tilo_test_env::scenario! {
         }
 
         // Each card is in its column, in the order the board showed them, under the id it had.
-        let after = lanes(&replica);
+        let after = lists(&replica);
         assert_eq!(
             after.iter().map(Vec::len).collect::<Vec<_>>(),
             vec![4, 2, 3],
@@ -502,18 +502,18 @@ tilo_test_env::scenario! {
         assert!(replica.host.take_committed().is_empty());
         let peer = Replica::new("peer", replica.doc.clone().fork(), &packages).0;
         assert_eq!(peer.host.migrate(), 0);
-        assert_eq!(lanes(&peer), after);
+        assert_eq!(lists(&peer), after);
 
         // The cards work in their columns as any other: one moved to the top of another column.
         let card = |id: &str| Value::resource(&board.item(id, card_ty.clone()));
-        let lane = |id: &str| Value::resource(&board.item(id, column_ty.clone()));
+        let list = |id: &str| Value::resource(&board.item(id, column_ty.clone()));
         call(
             &mut replica,
             app,
             "move_before",
-            vec![lane(&columns[0]), card(&after[2][0]), card(&after[0][0])],
+            vec![list(&columns[0]), card(&after[2][0]), card(&after[0][0])],
         );
-        let moved = lanes(&replica);
+        let moved = lists(&replica);
         assert_eq!(moved[0][0], after[2][0]);
         assert_eq!(moved[2].len(), 2);
         check_index(&replica, &packages, app);
@@ -534,7 +534,7 @@ tilo_test_env::scenario! {
         );
         let (columns_field, column_ty) = field(&replica, app, "Board", "columns");
         let (cards_field, _) = field(&replica, app, "Board", "cards");
-        let (lane_field, _) = field(&replica, app, "Column", "cards");
+        let (list_field, _) = field(&replica, app, "Column", "cards");
         let columns = listed(&replica, &board, &columns_field);
         assert_eq!(columns.len(), 1, "the column the new version added");
 
@@ -547,7 +547,7 @@ tilo_test_env::scenario! {
         }
         assert_eq!(listed(&replica, &board, &columns_field), columns);
         assert!(listed(&replica, &board, &cards_field).is_empty());
-        assert!(listed(&replica, &board.item(&columns[0], column_ty), &lane_field).is_empty());
+        assert!(listed(&replica, &board.item(&columns[0], column_ty), &list_field).is_empty());
         // It ran once: the next open runs nothing.
         assert_eq!(replica.host.migrate(), 0);
         assert!(replica.host.take_committed().is_empty());

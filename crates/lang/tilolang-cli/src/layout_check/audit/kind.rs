@@ -14,7 +14,7 @@ pub enum Kind {
     /// Content is wider than the window or its scroll view, so the page scrolls sideways.
     ScrollsSideways,
     /// A scroll view with no room on the way it scrolls: what it holds cannot be scrolled into
-    /// view, so it is lost (a board lane whose height came from its content).
+    /// view, so it is lost (a board list whose height came from its content).
     LostContent,
     /// An edge between two device pixels at the display's scale, drawn blurred across both.
     OffPixel,

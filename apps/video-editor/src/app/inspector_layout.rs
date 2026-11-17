@@ -44,14 +44,14 @@ pub(super) struct InspectorLayout {
     pub(super) anchor_label_y: f64,
     pub(super) anchor: Vec<((f64, f64), Rect)>,
     pub(super) speed_presets: Vec<(f64, Rect)>,
-    /// Baseline y of the line naming which lane these two knobs belong to.
+    /// Baseline y of the line naming which track these two knobs belong to.
     /// The panel is otherwise entirely about one clip, so a control that
     /// quietly edits something shared has to say what it is editing.
     pub(super) mix_track_y: f64,
-    /// The lane's level meter, at full panel width above its fader — the same
+    /// The track's level meter, at full panel width above its fader — the same
     /// measurement the track head shows, where the number is being set.
     pub(super) mix_meter: Option<Rect>,
-    /// Back to unity and centre. Laid out only when the lane is somewhere
+    /// Back to unity and centre. Laid out only when the track is somewhere
     /// else, because a reset that resets nothing is a control that lies about
     /// having something to undo.
     pub(super) mix_reset: Option<Rect>,
@@ -587,7 +587,7 @@ impl VideoEditorApp {
             l.breaks.push(y);
         }
         // Present for a picture clip too: a shot on a video track carries its source's
-        // sound, so that lane has a level.
+        // sound, so that track has a level.
         //
         // No key control on either row: a fader is a mix decision, and a level that has
         // to move through a shot is what the clip's own volume curve is for.

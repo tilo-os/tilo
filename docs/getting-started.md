@@ -21,7 +21,7 @@ guess a release URL.
 The exact release platform contract lives in
 [`docs/install-contract.json`](install-contract.json). The website consumes the
 same contract during a release, so a new target cannot silently appear in only
-one set of instructions. A release lane that builds and install-tests an
+one set of instructions. A release job that builds and install-tests an
 architecture is a workflow fact, not a support claim: the contract stays the
 one place that says which combinations are qualified for public release.
 

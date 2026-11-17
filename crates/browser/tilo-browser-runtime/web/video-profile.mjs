@@ -92,7 +92,7 @@ export function decodeVideoObject(bytes) {
   };
 }
 
-/** Base64 of `bytes`, as the local media lane carries a picture. */
+/** Base64 of `bytes`, as the local media queue carries a picture. */
 export function base64Of(bytes) {
   let text = '';
   for (let index = 0; index < bytes.length; index += 0x8000) text += String.fromCharCode(...bytes.subarray(index, index + 0x8000));

@@ -4,8 +4,8 @@
 //! a time and in order (see [`crate::rest::Rest`]), so ops in one channel
 //! reach Discord in the order the host handed them over.
 //!
-//! Webhook sends go through a lane per webhook and thread. When a burst
-//! has emptied the webhook's bucket, the sends waiting in its lane that
+//! Webhook sends go through an outbox per webhook and thread. When a burst
+//! has emptied the webhook's bucket, the sends waiting in its outbox that
 //! share an author (username and avatar) and carry no files are merged into
 //! one Discord message, their texts joined with newlines up to Discord's
 //! 2000 characters, and every merged op settles with that message's id. A
@@ -93,7 +93,7 @@ struct Waiting {
 }
 
 #[derive(Default)]
-struct Lane {
+struct Outbox {
     queue: VecDeque<Waiting>,
     draining: bool,
 }
@@ -102,7 +102,7 @@ pub struct Performer {
     ctx: Arc<Ctx>,
     /// Attachment bytes the host sent ahead of the op that names them.
     blobs: Mutex<HashMap<String, Vec<u8>>>,
-    lanes: Mutex<HashMap<String, Lane>>,
+    outboxes: Mutex<HashMap<String, Outbox>>,
     /// Webhooks found gone from Discord, by id, with the one made in each's
     /// place: ops queued before the bridge mapped the new one still name
     /// the old.
@@ -115,7 +115,7 @@ impl Performer {
         Self {
             ctx,
             blobs: Mutex::new(HashMap::new()),
-            lanes: Mutex::new(HashMap::new()),
+            outboxes: Mutex::new(HashMap::new()),
             replaced: Mutex::new(HashMap::new()),
         }
     }
@@ -132,7 +132,7 @@ impl Performer {
 
     /// Perform `op` (a [`DiscordOp`] as JSON) and say how it went.
     ///
-    /// A send joins its lane before this returns, so sends reach Discord in
+    /// A send joins its outbox before this returns, so sends reach Discord in
     /// the order the host handed them over even though the returned futures
     /// run concurrently.
     pub fn perform(self: &Arc<Self>, op: Value) -> impl Future<Output = Outcome> + Send + 'static {
@@ -417,7 +417,7 @@ impl Performer {
         Ok((id, token))
     }
 
-    /// Queue a send in its lane (webhook and thread) and start the lane's
+    /// Queue a send in its outbox (webhook and thread) and start the outbox's
     /// drain if it is idle.
     fn enqueue(self: &Arc<Self>, op: SendOp) -> oneshot::Receiver<OpResult> {
         let key = format!(
@@ -426,13 +426,13 @@ impl Performer {
             op.thread.as_deref().unwrap_or_default()
         );
         let (answer, answered) = oneshot::channel();
-        let Ok(mut lanes) = self.lanes.lock() else {
+        let Ok(mut outboxes) = self.outboxes.lock() else {
             return answered;
         };
-        let lane = lanes.entry(key.clone()).or_default();
-        lane.queue.push_back(Waiting { op, answer });
-        let start = !std::mem::replace(&mut lane.draining, true);
-        drop(lanes);
+        let outbox = outboxes.entry(key.clone()).or_default();
+        outbox.queue.push_back(Waiting { op, answer });
+        let start = !std::mem::replace(&mut outbox.draining, true);
+        drop(outboxes);
         if start {
             let performer = Arc::clone(self);
             tokio::spawn(async move { performer.drain(key).await });
@@ -440,17 +440,17 @@ impl Performer {
         answered
     }
 
-    /// The webhook path of a lane's first send, when sends wait behind it
-    /// that could share its message. The token is held once the lane's first
+    /// The webhook path of an outbox's first send, when sends wait behind it
+    /// that could share its message. The token is held once the outbox's first
     /// send went out; before that nothing has been sent, so nothing can be
     /// flooded.
     fn flood_path(&self, key: &str) -> Option<String> {
-        let lanes = self.lanes.lock().ok()?;
-        let first = lanes
+        let outboxes = self.outboxes.lock().ok()?;
+        let first = outboxes
             .get(key)
-            .and_then(|lane| lane.queue.front().filter(|_| lane.queue.len() > 1))
+            .and_then(|outbox| outbox.queue.front().filter(|_| outbox.queue.len() > 1))
             .map(|first| (first.op.channel.clone(), first.op.webhook.clone()));
-        drop(lanes);
+        drop(outboxes);
         let (channel, webhook) = first?;
         let token = self.ctx.secrets.cached(WEBHOOK, &channel)?;
         Some(format!(
@@ -460,28 +460,28 @@ impl Performer {
         ))
     }
 
-    /// The next batch of a lane: its first send, plus the sends behind it
+    /// The next batch of an outbox: its first send, plus the sends behind it
     /// that may share its message when the webhook's bucket is empty.
     async fn batch(&self, key: &str) -> Vec<Waiting> {
-        // Only this lane's drain takes from it, so the first send asked
+        // Only this outbox's drain takes from it, so the first send asked
         // about here is the one taken below.
         let flooded = match self.flood_path(key) {
             Some(path) => self.ctx.rest.busy(&Method::POST, &path).await,
             None => false,
         };
-        let Ok(mut lanes) = self.lanes.lock() else {
+        let Ok(mut outboxes) = self.outboxes.lock() else {
             return Vec::new();
         };
-        let Some(lane) = lanes.get_mut(key) else {
+        let Some(outbox) = outboxes.get_mut(key) else {
             return Vec::new();
         };
-        let Some(first) = lane.queue.pop_front() else {
-            lanes.remove(key);
+        let Some(first) = outbox.queue.pop_front() else {
+            outboxes.remove(key);
             return Vec::new();
         };
         let mut chars = first.op.content.chars().count();
         let mut batch = vec![first];
-        while flooded && let Some(next) = lane.queue.front() {
+        while flooded && let Some(next) = outbox.queue.front() {
             let head = &batch[0].op;
             let joined = chars
                 .saturating_add(1)
@@ -495,7 +495,7 @@ impl Performer {
                 break;
             }
             chars = joined;
-            if let Some(next) = lane.queue.pop_front() {
+            if let Some(next) = outbox.queue.pop_front() {
                 batch.push(next);
             }
         }

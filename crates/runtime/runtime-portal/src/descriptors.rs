@@ -56,7 +56,7 @@ impl DescriptorSender {
         let mut outbound = self
             .0
             .lock()
-            .map_err(|_| io::Error::other("descriptor lane poisoned"))?;
+            .map_err(|_| io::Error::other("descriptor stream poisoned"))?;
         let number = outbound.next;
         if number > LAST_NUMBER {
             return Err(io::Error::other(
@@ -84,7 +84,7 @@ struct Received {
     pending: BTreeMap<u32, OwnedFd>,
 }
 
-/// The receiving side of one connection's descriptor lane: what the peer
+/// The receiving side of one connection's descriptor stream: what the peer
 /// sent and nobody has taken yet, at most `limit` at a time. A descriptor
 /// arriving while the limit is held is closed at once and its number stays
 /// empty, so only the request naming it fails.
@@ -124,7 +124,7 @@ impl ReceivedDescriptors {
         let mut received = self
             .0
             .lock()
-            .map_err(|_| io::Error::other("descriptor lane poisoned"))?;
+            .map_err(|_| io::Error::other("descriptor stream poisoned"))?;
         for fd in fds {
             let number = received.next;
             if number > LAST_NUMBER {
@@ -185,7 +185,7 @@ impl DescriptorStream {
         let mut outbound = outbound
             .0
             .lock()
-            .map_err(|_| io::Error::other("descriptor lane poisoned"))?;
+            .map_err(|_| io::Error::other("descriptor stream poisoned"))?;
         let count = outbound.queue.len().min(BATCH);
         // Descriptors beyond this batch ride on the following bytes; keep
         // enough of them back, one byte per remaining batch.
@@ -311,5 +311,5 @@ impl AsyncWrite for DescriptorStream {
 }
 
 #[cfg(test)]
-#[path = "descriptor_lane/tests.rs"]
+#[path = "descriptors/tests.rs"]
 mod tests;

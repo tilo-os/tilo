@@ -10,7 +10,7 @@ description = "Service discovery and connected-transport plumbing for Tilo runti
 
 # Tilo runtime — portal foundation: env-driven service discovery and the
 # connected streams a launcher hands its children, with the descriptor
-# lane that rides them. All higher-level service clients (collab, fs,
+# descriptor stream that rides them. All higher-level service clients (collab, fs,
 # identity) sit on top of this crate.
 
 [lib]

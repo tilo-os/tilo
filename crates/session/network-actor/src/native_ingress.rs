@@ -1,4 +1,4 @@
-//! Workspaces installed by the native durable owner, over the direct lane.
+//! Workspaces installed by the native durable owner, over the direct connection.
 //!
 //! The link itself is `tilo_peer_state::owner::session`'s: this actor keeps one
 //! route per enrolled workspace, holds it, and runs the link a hold reports as
@@ -143,7 +143,7 @@ impl Holder for NativeHolder {
 }
 
 /// A workspace's link as this actor keeps it: the device's end of the
-/// direct lane, the pin it was admitted under, and the task running it.
+/// direct connection, the pin it was admitted under, and the task running it.
 pub(super) struct NativeLink {
     pub scope: Arc<Scope>,
     pub link: Arc<DirectSync>,

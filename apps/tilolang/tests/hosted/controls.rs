@@ -30,7 +30,7 @@ impl super::Session {
                 .is_some_and(|(_, edited)| edited == field)
         };
         let view = self.hosted().view().expect("the window is connected");
-        // A window whose page is another's after it opens the page in the lane after its own;
+        // A window whose page is another's after it opens the page in the level after its own;
         // one whose page is its own (a tree beside what it shows) draws it in its content.
         if let Some(detail) = view.detail_tree() {
             let key = find(&detail, &editing)

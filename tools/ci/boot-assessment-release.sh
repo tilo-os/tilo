@@ -11,7 +11,7 @@
 # (/target/os/TARGET/release-image[-BOARD]), which must be this tree's build;
 # OUT keeps the record of every boot.
 #
-# The dev-image lane (tools/ci/boot-assessment.sh) stages its image with one layer
+# The dev-image job (tools/ci/boot-assessment.sh) stages its image with one layer
 # added, because a dev disk admits the unsigned repository it follows. A sealed
 # disk does not: /etc/containers/policy.json makes registry.tilo.so/tilo/tilo -
 # what a release installs from and updates from - require the release signature,
@@ -22,7 +22,7 @@
 # is. This node holds no release key, so the signature is a throwaway one: what a
 # sealed system decides here, it decides from the entry, its payload and the disk.
 # Staging it is the same `bootc switch` a person runs; what happens after the
-# reboot is the question this lane asks.
+# reboot is the question this job asks.
 #
 # On the installed release: every boot-entry pass succeeds, the staged
 # deployment's entry is counted before its reboot, only that deployment is made
@@ -144,7 +144,7 @@ fail() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
 step() { printf '\n=== %s\n' "$*"; }
 ok() { printf 'ok    %s\n' "$*"; }
 
-[[ $arch == x86_64 ]] || fail "a sealed release boots only on its own architecture's node, and this lane is x86_64: $target is ${arch:-unknown}"
+[[ $arch == x86_64 ]] || fail "a sealed release boots only on its own architecture's node, and this job is x86_64: $target is ${arch:-unknown}"
 [[ -z $board ]] || [[ $(image_dir_for "$arch" "$board") == "release-image-$board" ]] \
   || fail "no release image directory for $target"
 fault=${T_INPUT_FAULT:-greetd}
@@ -176,7 +176,7 @@ image_id=$(podman pull -q "oci:$image/oci")
   || fail "$image/oci is not the image $image/digest names"
 podman tag "$image_id" localhost/tilo:release
 [[ $(podman image inspect --format '{{index .Labels "org.opencontainers.image.revision"}}' localhost/tilo:release) == "$commit" ]] \
-  || fail "$image is not this tree's build ($commit): the lane boots what this commit released"
+  || fail "$image is not this tree's build ($commit): the job boots what this commit released"
 [[ $(podman image inspect --format '{{index .Labels "org.tilo.rust-lto"}}' localhost/tilo:release) == thin ]] \
   || fail 'a release ships thin-LTO binaries: the image is not os-release-image'
 release_digest=$(podman image inspect --format '{{.Digest}}' localhost/tilo:release)
@@ -184,7 +184,7 @@ ok "$image is this tree's release image, $release_digest"
 
 # --- installed the way a device installs it -----------------------------------
 # The first install seals the UKI with the composefs digest it computes, and a
-# sealed disk's /boot is the ESP itself: the layout this lane is about.
+# sealed disk's /boot is the ESP itself: the layout this job is about.
 step "install"
 export TILO_IMAGE=localhost/tilo:release TILO_SKIP_BUILD=1 TILO_DISTROBOX= TILO_VM_ARCH=$arch \
   TILO_OS_FLAVOUR=release TILO_OUTPUT=$work/install TILO_RUN=$work/install-run TMPDIR=/var/tmp

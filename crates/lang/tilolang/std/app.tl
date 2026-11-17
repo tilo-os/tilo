@@ -647,7 +647,7 @@ template view after_body(content: View) {
 /// A window that is a page of `of`: its content at the readable measure, or as a `canvas` at
 /// the window's full width, under `header`, the page's own controls, and the actions the host
 /// puts in the bar with them. A `fill` page is exactly the window's height and scrolls inside
-/// its own parts, which is what a board's lanes need; a page that grows with what it holds (a
+/// its own parts, which is what a board's lists need; a page that grows with what it holds (a
 /// grid of cards, a gallery) leaves it off. A page with nothing on it (`empty`) says so.
 view page<R>(
     of: R,

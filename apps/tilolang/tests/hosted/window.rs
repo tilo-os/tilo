@@ -182,7 +182,7 @@ fn read(session: &Session, at: &ResourceRef, field: &str) -> Option<RtValue> {
 }
 
 /// The id of what the window shows beside its list or tree, if it shows one: the resource the
-/// page's first bound field edits, in the lane after the list's or in the shell's content column.
+/// page's first bound field edits, in the level after the list's or in the shell's content column.
 fn opened(session: &mut Session) -> Option<String> {
     let view = session.hosted().view()?;
     if let Some(target) = view.detail_target() {

@@ -6307,11 +6307,11 @@ fn paint_scroll_thumb(ctx: &mut PaintCtx<'_>, area: Rect, metrics: ScrollMetrics
     if !metrics.overflows() {
         return;
     }
-    // The bar sits in the lane a `Scrollable` keeps on its trailing edge.
+    // The bar sits in the bar_area a `Scrollable` keeps on its trailing edge.
     let gutter = f64::from(ctx.theme.tokens.metrics.scrollbar_gutter);
-    let lane = Rect::new(area.x1 - gutter, area.y0, area.x1, area.y1);
+    let bar_area = Rect::new(area.x1 - gutter, area.y0, area.x1, area.y1);
     let bar = Scrollbar::vertical();
-    let track = bar.track_in(lane, ctx.theme);
+    let track = bar.track_in(bar_area, ctx.theme);
     bar.draw(ctx.scene, ctx.transform, track, metrics, ctx.theme, false);
 }
 

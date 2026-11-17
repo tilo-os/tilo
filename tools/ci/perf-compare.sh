@@ -14,7 +14,7 @@
 # perf-scheduled runs this whatever its groups' outcome (needs_any_outcome), so
 # the records of the groups that passed are still compared and published.
 # T_NEEDS_FAILED names the groups that did not pass; they fail the run, and so
-# does every group of the lane that left no records.
+# does every group of the job that left no records.
 set -uo pipefail
 shopt -s nullglob
 
@@ -34,9 +34,9 @@ for failed in ${T_NEEDS_FAILED:-}; do
   echo "$failed did not pass: its group is compared only for the records it left" >&2
   status=1
 done
-# The lane's groups are what every run owes.
+# The job's groups are what every run owes.
 groups=$(python3 -c 'import sys, tomllib
-print(",".join(tomllib.load(open(sys.argv[1], "rb"))["lanes"]["perf-scheduled"]["groups"]))' \
+print(",".join(tomllib.load(open(sys.argv[1], "rb"))["jobs"]["perf-scheduled"]["groups"]))' \
   tools/perf/kpi-budgets.toml) || exit 1
 results=("$perf"/*/*.jsonl)
 if (( ${#results[@]} == 0 )); then
@@ -52,7 +52,7 @@ if [[ -n $accept && $writes != true ]]; then
   echo "accept applies only where the store is written: a trusted run holding its token" >&2
   exit 1
 fi
-args=(--store "$store" --owner "$owner" --lane perf-scheduled --groups "$groups"
+args=(--store "$store" --owner "$owner" --job perf-scheduled --groups "$groups"
       --publish-dir "$out/publish" --run "t-${T_COMMIT:-tree}-$(date -u +%Y%m%dT%H%M%SZ)"
       --summary "$out/summary.md")
 [[ -n $accept ]] && args+=(--accept "$accept")

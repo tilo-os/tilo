@@ -1667,10 +1667,10 @@ mod tests {
                 g.ascii_x1 <= g.content.x1,
                 "the grid fits the content width: {g:?}"
             );
-            let lane = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
+            let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
             assert!(
-                (g.content.x1 - g.ascii_x1 - lane).abs() < 1.0,
-                "the ASCII column ends at the scroll bar's lane, no empty band: {g:?}"
+                (g.content.x1 - g.ascii_x1 - gutter).abs() < 1.0,
+                "the ASCII column ends at the scroll bar's gutter, no empty band: {g:?}"
             );
             for off in [0usize, 1, bpr - 1, bpr, 2 * bpr + 3] {
                 let (row, col) = (off / bpr, off % bpr);
@@ -1706,14 +1706,14 @@ mod tests {
 
         // The grid fills every width: whatever the window, the gaps absorb
         // what a whole number of bytes leaves over.
-        let lane = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
+        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
         for width in (640..=1600).step_by(37) {
             let mut view = HexView::new(vec![0; 4096], "fill.bin");
             view.state().rect = Rect::new(0.0, 0.0, f64::from(width), 700.0);
             paint_frame(&mut view, &mut tr, &theme);
             let g = &view.state().geo.clone();
             assert!(
-                (g.content.x1 - g.ascii_x1 - lane).abs() < 1.0,
+                (g.content.x1 - g.ascii_x1 - gutter).abs() < 1.0,
                 "width {width}: dead space right of the ASCII column: {g:?}"
             );
         }

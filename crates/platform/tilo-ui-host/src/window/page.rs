@@ -3,9 +3,9 @@
 
 use std::collections::BTreeSet;
 
-use tilo_render_protocol::patch::{self as wire, Lane, ResourceRef};
+use tilo_render_protocol::patch::{self as wire, Level, ResourceRef};
 
-use super::{AppWindow, UiNode, Value, lane_of};
+use super::{AppWindow, UiNode, Value, level_of};
 
 impl AppWindow {
     /// What the window is named by: the item its own view shows as its page, by the name its row
@@ -31,7 +31,7 @@ impl AppWindow {
         })
     }
 
-    /// A lane's page came to the front of a narrow window, showing `shows`' item in place where the
+    /// A level's page came to the front of a narrow window, showing `shows`' item in place where the
     /// window draws its own page: what the person types into it is that item's. Whether the press
     /// takes the keyboard into the page.
     pub(super) fn fronted(
@@ -59,15 +59,15 @@ impl AppWindow {
 
     /// The resource a field of the window's own view belongs to: a field of the page the window
     /// draws for the item its list or tree selects belongs to that item, so what the person types
-    /// into it lands in the item even when the lane has moved on to the next one. Every other field
+    /// into it lands in the item even when the level has moved on to the next one. Every other field
     /// is the window's own resource.
     pub(super) fn field_target(&self, field: &str) -> Option<ResourceRef> {
         self.field_target_for(field, None)
     }
 
     pub(super) fn field_target_for(&self, field: &str, after: Option<u64>) -> Option<ResourceRef> {
-        let (lane, _) = lane_of(field);
-        if lane == Lane::Root
+        let (level, _) = level_of(field);
+        if level == Level::Root
             && self.page_field(field)
             && let Some(item) = after
                 .and_then(|press| self.shows_by_press.get(&press))
@@ -77,7 +77,7 @@ impl AppWindow {
         {
             return Some(item);
         }
-        self.target(lane)
+        self.target(level)
     }
 
     /// Whether `field` is a control of the page the window draws for the item its view shows (a
@@ -85,8 +85,8 @@ impl AppWindow {
     /// beside it is the window's own page: its fields are the window's resource, and what the app
     /// sends for them is what they show.
     pub(super) fn page_field(&self, field: &str) -> bool {
-        let (lane, local) = lane_of(field);
-        if lane != Lane::Root {
+        let (level, local) = level_of(field);
+        if level != Level::Root {
             return false;
         }
         let Some(built) = &self.built else {

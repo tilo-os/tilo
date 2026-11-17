@@ -22,10 +22,10 @@ records of the same KPI and environment, and fails the run on
   are marketing targets and are only reported);
 - a selected benchmark that produced no record, reported as `missing` and
   counted apart from regressions. A run is owed only its own workflow's KPIs:
-  `[lanes]` in `tools/perf/kpi-budgets.toml` names the workflow (`compare.py
-  --lane`) that produces each group, and a lane may claim a single KPI of
-  another lane's group, as VM acceptance claims `render.frame_cpu_ms`. A
-  budget no lane produces does not load.
+  `[jobs]` in `tools/perf/kpi-budgets.toml` names the workflow (`compare.py
+  --job`) that produces each group, and a job may claim a single KPI of
+  another job's group, as VM acceptance claims `render.frame_cpu_ms`. A
+  budget no job produces does not load.
 
 The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
@@ -37,7 +37,7 @@ the current numbers come from there, not from `docs/benchmarks/`. Read them with
 own desktop surface to its budgets (`session_perf`, `[devices.<class>.session.*]`), and
 `search` runs the palette search's own measurement test, which fails over its budget and
 writes no record. `agent` times what an agent's calls cost through the session's agent
-action API, and `agent-native` the agent's own task loop; a whole app task is not this lane's,
+action API, and `agent-native` the agent's own task loop; a whole app task is not this job's,
 because a builder starts no app. A group's numbers are compared with the store without
 writing to it by `python3 tools/perf/compare.py --results <records.jsonl> --store
 https://code.tilo.so --groups <group>` on the records it wrote to `/target/perf/<group>/`.
@@ -52,7 +52,7 @@ test, not a measurement.
 
 The installed desktop's groups, `boot`, `session`, `idle`, `memory`, `disk` and `app`, and
 its one render KPI, `render.frame_cpu_ms` (compositor CPU per painted frame, R04), come from
-the **VM acceptance** run instead (lane `vm-acceptance`): it already boots a
+the **VM acceptance** run instead (job `vm-acceptance`): it already boots a
 dev disk in a KVM guest and opens a session on it, so its records
 (`scripts/vm-acceptance/run.py --records`) are compared with the store and published
 under the same rules, rather than the performance run booting a second VM. They name
@@ -131,7 +131,7 @@ To add a benchmark (a KPI group):
    build is a different environment from GPU, KVM or release, and is never
    compared with them.
 3. Add the group to `tools/ci/perf-scheduled.sh`, and the group to
-   `[lanes.perf-scheduled]` in `tools/perf/kpi-budgets.toml`. If the group
+   `[jobs.perf-scheduled]` in `tools/perf/kpi-budgets.toml`. If the group
    has an A/B (`tools/perf/ab.py` `GROUPS`), build the same benchmarks there.
    The check runs on the node class the KPI is defined for and consumes
    artifacts that are already built: a published tapp or image, or an example
@@ -145,7 +145,7 @@ To add a benchmark (a KPI group):
 Pull requests may check only on deterministic, runner-independent counters
 (bytes, allocation counts, raster pixels), only when the measured paths change,
 and following `tools/web/wasm_size_ratchet.py`. Wall-clock KPIs belong in
-this lane.
+this job.
 
 ## Proving a performance change (A/B)
 

@@ -45,7 +45,7 @@ use std::sync::Arc;
 
 use serde_json::Value as Json;
 use tilo_actions::{ActionAddress, ControlInvocation, InvocationId};
-use tilo_render_protocol::patch::{self as ui, Lane, ToApp, ToUi, Transport, Words};
+use tilo_render_protocol::patch::{self as ui, Level, ToApp, ToUi, Transport, Words};
 
 use crate::bundle::Bundle;
 use crate::host::{Host, Opening, Package, RootView};
@@ -256,12 +256,12 @@ impl crate::runtime::ShownHost for PlatformShown {
     }
 }
 
-/// Where an edit the window made applies: the lane's own view showing the item, the lane's view
+/// Where an edit the window made applies: the level's own view showing the item, the level's view
 /// showing another item of the same list, or a view of the item opened for the edit.
 enum Place {
-    /// The lane's own view, showing the item.
+    /// The level's own view, showing the item.
     Here(Rc<RefCell<ViewInstance>>),
-    /// The lane's own view, drawing another item of its page: `before` is the item it shows.
+    /// The level's own view, drawing another item of its page: `before` is the item it shows.
     Beside {
         view: Rc<RefCell<ViewInstance>>,
         before: ResourceRef,
@@ -271,7 +271,7 @@ enum Place {
 }
 
 impl Place {
-    /// Whether the lane shows the item the edit was made in.
+    /// Whether the level shows the item the edit was made in.
     fn shown(&self) -> bool {
         matches!(self, Self::Here(_) | Self::Beside { .. })
     }
@@ -292,8 +292,8 @@ impl Place {
 /// One of the window's two views: a resource shown through a view.
 struct Shown {
     target: ResourceRef,
-    /// The item of the window's own view this lane shows in place (a tree beside what it
-    /// shows), when it shows one there: edits to its page apply to the lane's own view.
+    /// The item of the window's own view this level shows in place (a tree beside what it
+    /// shows), when it shows one there: edits to its page apply to the level's own view.
     in_place: Option<ResourceRef>,
     /// The view `open(r, view: v)` named, when it named one; the default view of the type
     /// otherwise.
@@ -370,8 +370,8 @@ pub struct Instance {
     publication: Option<Box<dyn Publication>>,
     root: Option<Shown>,
     detail: Option<Shown>,
-    /// The space the window last said each lane's view has (`ToApp::Space`): a view opened in
-    /// the lane later starts from it.
+    /// The space the window last said each level's view has (`ToApp::Space`): a view opened in
+    /// the level later starts from it.
     root_space: Option<crate::runtime::space::Space>,
     detail_space: Option<crate::runtime::space::Space>,
     transport: Box<dyn Transport>,
@@ -394,7 +394,7 @@ pub struct Instance {
     save_again: bool,
     open_requests: Rc<RefCell<Vec<crate::effects::OpenEffect>>>,
     /// Whether the view of a shell places what it opens on the canvas, rather than opening a
-    /// detail lane of the shell's own window ([`Instance::place_opens`]).
+    /// detail level of the shell's own window ([`Instance::place_opens`]).
     place_opens: bool,
     /// The resources a view of a shell opened since the last turn: the places the session
     /// arranges on the canvas.
@@ -437,7 +437,7 @@ pub struct Instance {
     /// A later build this instance took, until its embedder asks.
     taken_build: Option<u64>,
     /// The window's keyboard focus: the bound control it is in.
-    focus: Option<(Lane, String)>,
+    focus: Option<(Level, String)>,
     composing: bool,
     /// How many presses the window sent (`ToApp::Fire`, `ToApp::Invoke`) the instance: the
     /// number each press goes by, in the order they came.
@@ -557,7 +557,7 @@ impl Instance {
         self.index_dir = dir;
     }
 
-    /// Run a package that has no root view of its own: what it shows is opened in a lane by its
+    /// Run a package that has no root view of its own: what it shows is opened in a level by its
     /// embedder ([`Self::open_with`]), as a view of another app's state is. Before the host
     /// starts.
     pub fn without_root(&mut self) {
@@ -768,17 +768,17 @@ impl Instance {
             .map(|view| view.view.borrow().tree().clone())
     }
 
-    /// The view of `lane`, to read it.
+    /// The view of `level`, to read it.
     #[must_use]
-    pub fn view(&self, lane: Lane) -> Option<Rc<RefCell<ViewInstance>>> {
-        self.lane(lane).map(|view| Rc::clone(&view.view))
+    pub fn view(&self, level: Level) -> Option<Rc<RefCell<ViewInstance>>> {
+        self.level(level).map(|view| Rc::clone(&view.view))
     }
 
-    /// The keys of the rows the view of `lane` renders now in its list `list`.
+    /// The keys of the rows the view of `level` renders now in its list `list`.
     #[must_use]
-    pub fn shown_rows(&self, lane: Lane, list: &str) -> Vec<String> {
+    pub fn shown_rows(&self, level: Level, list: &str) -> Vec<String> {
         let mut shown: Vec<String> = self
-            .lane(lane)
+            .level(level)
             .and_then(|view| view.lists.get(list))
             .map(|rows| rows.shown().iter().cloned().collect())
             .unwrap_or_default();
@@ -814,7 +814,7 @@ impl Instance {
     /// The bound control the window's keyboard focus is in, and whether an input method is
     /// composing in it.
     #[must_use]
-    pub fn focus(&self) -> (Option<&(Lane, String)>, bool) {
+    pub fn focus(&self) -> (Option<&(Level, String)>, bool) {
         (self.focus.as_ref(), self.composing)
     }
 
@@ -844,17 +844,17 @@ impl Instance {
         self.origin = origin;
     }
 
-    fn lane(&self, lane: Lane) -> Option<&Shown> {
-        match lane {
-            Lane::Root => self.root.as_ref(),
-            Lane::Detail => self.detail.as_ref(),
+    fn level(&self, level: Level) -> Option<&Shown> {
+        match level {
+            Level::Root => self.root.as_ref(),
+            Level::Detail => self.detail.as_ref(),
         }
     }
 
-    fn lane_mut(&mut self, lane: Lane) -> Option<&mut Shown> {
-        match lane {
-            Lane::Root => self.root.as_mut(),
-            Lane::Detail => self.detail.as_mut(),
+    fn level_mut(&mut self, level: Level) -> Option<&mut Shown> {
+        match level {
+            Level::Root => self.root.as_mut(),
+            Level::Detail => self.detail.as_mut(),
         }
     }
 
@@ -1049,16 +1049,16 @@ impl Instance {
             tracing::warn!(app = self.app, "the new build has no root to open");
             return;
         };
-        self.root = Some(Shown::new(target, self.spaced(Lane::Root, view)));
-        self.send_open(Lane::Root, None);
+        self.root = Some(Shown::new(target, self.spaced(Level::Root, view)));
+        self.send_open(Level::Root, None);
         self.detail = detail.and_then(|(target, with)| {
             let view = host.open_resource(&target, with.as_deref()).ok()?;
-            let mut view = Shown::new(target, self.spaced(Lane::Detail, view));
+            let mut view = Shown::new(target, self.spaced(Level::Detail, view));
             view.with = with;
             Some(view)
         });
         if self.detail.is_some() {
-            self.send_open(Lane::Detail, None);
+            self.send_open(Level::Detail, None);
         }
         self.lenses_changed = true;
         // What is published and offered follows the new build's declarations.
@@ -1443,29 +1443,29 @@ impl Instance {
         changed
     }
 
-    /// The view of `lane` has `width` by `height` rem of the window now: its `space` follows,
+    /// The view of `level` has `width` by `height` rem of the window now: its `space` follows,
     /// with a class changing only past its boundary by the hysteresis, and the view runs again
     /// only when something it read of it changed.
-    fn offer_space(&mut self, lane: Lane, width: f64, height: f64) {
-        let slot = match lane {
-            Lane::Root => &mut self.root_space,
-            Lane::Detail => &mut self.detail_space,
+    fn offer_space(&mut self, level: Level, width: f64, height: f64) {
+        let slot = match level {
+            Level::Root => &mut self.root_space,
+            Level::Detail => &mut self.detail_space,
         };
         let space = slot.map_or_else(
             || crate::runtime::space::Space::from_rem(width, height),
             |before| before.followed(width, height),
         );
         *slot = Some(space);
-        if let Some(view) = self.view(lane) {
+        if let Some(view) = self.view(level) {
             view.borrow_mut().set_space("", space);
         }
     }
 
-    /// `view`, about to be shown in `lane`, offered the space the lane has.
-    fn spaced(&self, lane: Lane, mut view: ViewInstance) -> ViewInstance {
-        let space = match lane {
-            Lane::Root => self.root_space,
-            Lane::Detail => self.detail_space,
+    /// `view`, about to be shown in `level`, offered the space the level has.
+    fn spaced(&self, level: Level, mut view: ViewInstance) -> ViewInstance {
+        let space = match level {
+            Level::Root => self.root_space,
+            Level::Detail => self.detail_space,
         };
         if let Some(space) = space {
             view.set_space("", space);
@@ -1496,10 +1496,10 @@ impl Instance {
             // Handed on by the next frame ([`Self::take_save_again`]).
             ToApp::SaveAgain => self.save_again = true,
             ToApp::Space {
-                lane,
+                level,
                 width,
                 height,
-            } => self.offer_space(lane, f64::from(width), f64::from(height)),
+            } => self.offer_space(level, f64::from(width), f64::from(height)),
             other => tracing::error!(?other, "the window told of something it does not"),
         }
     }
@@ -1514,11 +1514,11 @@ impl Instance {
         if let Err(words) = outcome {
             self.notice(words, ui::NoticeKind::Error);
             // What the controls show goes back to what they are bound to.
-            for lane in [Lane::Root, Lane::Detail] {
-                if let Some(view) = self.lane_mut(lane) {
+            for level in [Level::Root, Level::Detail] {
+                if let Some(view) = self.level_mut(level) {
                     view.bound.clear();
                 }
-                self.send_bound(lane);
+                self.send_bound(level);
             }
         }
         let tickets = self.commit_planned();
@@ -1549,16 +1549,20 @@ impl Instance {
                 Ok(())
             }
             ToApp::Fire {
-                lane,
+                level,
                 key,
                 event,
                 value,
-            } => self.fire(lane, &key, &event, value.as_ref(), ran),
+            } => self.fire(level, &key, &event, value.as_ref(), ran),
             edit @ (ToApp::Toggle { .. }
             | ToApp::Splice { .. }
             | ToApp::Edit { .. }
             | ToApp::EditRich { .. }) => self.edit_event(edit),
-            ToApp::Resolve { lane, key, approve } => self.resolve(lane, &key, approve),
+            ToApp::Resolve {
+                level,
+                key,
+                approve,
+            } => self.resolve(level, &key, approve),
             ToApp::Open { resource } => {
                 self.show_now(&resource);
                 Ok(())
@@ -1568,13 +1572,13 @@ impl Instance {
                 Ok(())
             }
             ToApp::Rows {
-                lane,
+                level,
                 list,
                 start,
                 end,
                 open,
             } => {
-                self.request_rows(lane, &list, start as usize..end as usize, open.as_deref());
+                self.request_rows(level, &list, start as usize..end as usize, open.as_deref());
                 Ok(())
             }
             ToApp::Answer(answer) => {
@@ -1664,12 +1668,12 @@ impl Instance {
         }
     }
 
-    /// Render the rows `range` of the list `list` of the view of `lane` for the window, and the
+    /// Render the rows `range` of the list `list` of the view of `level` for the window, and the
     /// document of the row `open` — the row standing open into its item where it stands, which
     /// the window shows and no other row does.
     fn request_rows(
         &mut self,
-        lane: Lane,
+        level: Level,
         list: &str,
         range: std::ops::Range<usize>,
         open: Option<&str>,
@@ -1678,7 +1682,7 @@ impl Instance {
             return;
         };
         let names = Rc::clone(&self.names);
-        let Some(view) = self.lane_mut(lane) else {
+        let Some(view) = self.level_mut(level) else {
             return;
         };
         let handle = Rc::clone(&view.view);
@@ -1686,18 +1690,18 @@ impl Instance {
             return;
         };
         let requested = rows.request(range, open);
-        let message = rows_message(&host, &*names, &handle, lane, list, requested);
+        let message = rows_message(&host, &*names, &handle, level, list, requested);
         self.out.push(message);
         // The rows rendered can hold lists of their own, and those scrolled away took theirs.
-        self.track_lists(lane);
-        self.send_bound(lane);
+        self.track_lists(level);
+        self.send_bound(level);
     }
 
-    /// Fire the event `name` of the node `key` of the view of `lane`, carrying `value`; `ran`
+    /// Fire the event `name` of the node `key` of the view of `level`, carrying `value`; `ran`
     /// takes the action it applied, what that returned and what it was run on, when it ran one.
     fn fire(
         &mut self,
-        lane: Lane,
+        level: Level,
         key: &str,
         name: &str,
         value: Option<&ui::Value>,
@@ -1706,7 +1710,7 @@ impl Instance {
         // Counted whatever comes of it: the window waits for every press it sent.
         self.fired = self.fired.saturating_add(1);
         self.last_fire = self.fired;
-        let Some(view) = self.view(lane) else {
+        let Some(view) = self.view(level) else {
             return Ok(());
         };
         let value = value.and_then(wire::runtime_value);
@@ -1722,7 +1726,7 @@ impl Instance {
             .wanting_arguments(key, name, value.as_ref())
             .map_err(|error| Words::Plain(error.to_string()))?;
         if let Some(aref) = wanting
-            && self.open_form(lane, key, Rc::clone(&view), aref)
+            && self.open_form(level, key, Rc::clone(&view), aref)
         {
             return Ok(());
         }
@@ -1765,12 +1769,12 @@ impl Instance {
         resolved_value(value, &resolve)
     }
 
-    /// Show the form of `aref`, which the control `key` of the view of `lane` ran and which
+    /// Show the form of `aref`, which the control `key` of the view of `level` ran and which
     /// still needs arguments, instead of running it. Whether it has one: what it needs is
     /// what a form can ask for.
     fn open_form(
         &mut self,
-        lane: Lane,
+        level: Level,
         key: &str,
         view: Rc<RefCell<ViewInstance>>,
         aref: ActionRef,
@@ -1792,14 +1796,14 @@ impl Instance {
         else {
             return false;
         };
-        self.open_form_with(Some((lane, key.to_owned())), view, aref, meta)
+        self.open_form_with(Some((level, key.to_owned())), view, aref, meta)
     }
 
     /// Show the form of `aref`, an action of `meta` waiting for arguments a form asks for,
     /// standing where `from` names the control that ran it, or on its own.
     fn open_form_with(
         &mut self,
-        from: Option<(Lane, String)>,
+        from: Option<(Level, String)>,
         view: Rc<RefCell<ViewInstance>>,
         aref: ActionRef,
         meta: Meta,
@@ -1861,7 +1865,7 @@ impl Instance {
         if action.unbound(args.len()).next().is_none() {
             return false;
         }
-        let Some(view) = self.view(Lane::Root) else {
+        let Some(view) = self.view(Level::Root) else {
             return false;
         };
         let aref = ActionRef {
@@ -1944,43 +1948,43 @@ impl Instance {
     fn edit_event(&mut self, message: ToApp) -> Result<(), Words> {
         match message {
             ToApp::Toggle {
-                lane,
+                level,
                 target,
                 key,
                 checked,
-            } => self.edit(lane, &target, &key, Value::Bool(checked)),
+            } => self.edit(level, &target, &key, Value::Bool(checked)),
             ToApp::Splice {
-                lane,
+                level,
                 target,
                 key,
                 seq,
                 at,
                 delete,
                 insert,
-            } => self.splice(lane, &target, &key, seq, (at, delete), &insert),
+            } => self.splice(level, &target, &key, seq, (at, delete), &insert),
             ToApp::Edit {
-                lane,
+                level,
                 target,
                 key,
                 text,
-            } => self.edit(lane, &target, &key, Value::Text(text)),
+            } => self.edit(level, &target, &key, Value::Text(text)),
             ToApp::EditRich {
-                lane,
+                level,
                 target,
                 key,
                 rich,
             } => {
                 let rich = Value::Rich(wire::runtime_rich(&rich));
-                self.edit(lane, &target, &key, rich)
+                self.edit(level, &target, &key, rich)
             }
             _ => Ok(()),
         }
     }
 
-    /// Where an edit the window made in the view of `lane` showing `target` applies.
-    fn edited(&self, lane: Lane, target: &ui::ResourceRef) -> Result<Place, Words> {
-        if let Some(shown) = self.lane(lane) {
-            // The lane's own view, showing the item the edit was made in.
+    /// Where an edit the window made in the view of `level` showing `target` applies.
+    fn edited(&self, level: Level, target: &ui::ResourceRef) -> Result<Place, Words> {
+        if let Some(shown) = self.level(level) {
+            // The level's own view, showing the item the edit was made in.
             if wire::resource(&shown.target) == *target {
                 return Ok(Place::Here(Rc::clone(&shown.view)));
             }
@@ -2008,22 +2012,22 @@ impl Instance {
         Ok(Place::Fresh(Rc::new(RefCell::new(view))))
     }
 
-    /// Apply a splice of the bound text control `key` of the view of `target` in `lane`:
+    /// Apply a splice of the bound text control `key` of the view of `target` in `level`:
     /// `delete` bytes at `at` replaced by `insert`, against the text it shows.
     fn splice(
         &mut self,
-        lane: Lane,
+        level: Level,
         target: &ui::ResourceRef,
         key: &str,
         seq: u64,
         (at, delete): (u32, u32),
         insert: &str,
     ) -> Result<(), Words> {
-        let place = self.edited(lane, target)?;
+        let place = self.edited(level, target)?;
         if place.shown()
-            && let Some(lane) = self.lane_mut(lane)
+            && let Some(level) = self.level_mut(level)
         {
-            let acked = lane.acked.entry(key.to_owned()).or_default();
+            let acked = level.acked.entry(key.to_owned()).or_default();
             *acked = (*acked).max(seq);
         }
         let current = match place.view().borrow().bound_value(key) {
@@ -2031,27 +2035,27 @@ impl Instance {
             _ => String::new(),
         };
         let text = spliced(&current, at as usize, delete as usize, insert);
-        self.edit_at(lane, target, place, key, Value::Text(text))
+        self.edit_at(level, target, place, key, Value::Text(text))
     }
 
-    /// Apply an edit of the bound control `key` of the view of `target` in `lane`.
+    /// Apply an edit of the bound control `key` of the view of `target` in `level`.
     fn edit(
         &mut self,
-        lane: Lane,
+        level: Level,
         target: &ui::ResourceRef,
         key: &str,
         value: Value,
     ) -> Result<(), Words> {
-        let place = self.edited(lane, target)?;
-        self.edit_at(lane, target, place, key, value)
+        let place = self.edited(level, target)?;
+        self.edit_at(level, target, place, key, value)
     }
 
-    /// Apply the edit of the bound control `key` made in the view of `target` in `lane`, where
+    /// Apply the edit of the bound control `key` made in the view of `target` in `level`, where
     /// the window's page draws `target` or another item: the page shows the item while the edit
     /// lands, and the window shows again the item it showed, with what the edit made.
     fn edit_at(
         &mut self,
-        lane: Lane,
+        level: Level,
         target: &ui::ResourceRef,
         place: Place,
         key: &str,
@@ -2084,18 +2088,18 @@ impl Instance {
             }
             // The page is what the window showed, drawn again whole: the frame that takes the
             // item it showed and the one it showed the edit in is one.
-            if let Some(shown) = self.lane_mut(lane) {
+            if let Some(shown) = self.level_mut(level) {
                 shown.sent = None;
                 shown.bound.clear();
             }
             outcome?;
-            self.send_open(lane, None);
+            self.send_open(level, None);
             return Ok(());
         }
         let view = place.into_view();
         Self::edit_view(&view.borrow(), key, value)?;
         if shown {
-            self.shown_by_window(lane, key);
+            self.shown_by_window(level, key);
         }
         Ok(())
     }
@@ -2135,8 +2139,8 @@ impl Instance {
         Words::Plain(error.to_string())
     }
 
-    fn resolve(&self, lane: Lane, key: &str, approve: bool) -> Result<(), Words> {
-        let (Some(host), Some(view)) = (self.host(), self.view(lane)) else {
+    fn resolve(&self, level: Level, key: &str, approve: bool) -> Result<(), Words> {
+        let (Some(host), Some(view)) = (self.host(), self.view(level)) else {
             return Ok(());
         };
         let target = view
@@ -2315,8 +2319,8 @@ impl Instance {
             if let Some(publication) = &self.publication {
                 publication.update();
             }
-            self.send_bound(Lane::Root);
-            self.send_bound(Lane::Detail);
+            self.send_bound(Level::Root);
+            self.send_bound(Level::Detail);
         } else if let Some(publication) = self.publication.as_ref().filter(|p| p.pending()) {
             publication.update();
         }
@@ -2408,8 +2412,8 @@ impl Instance {
         if person {
             // A name, a word and how a day or a time of day reads go into a node's value when it
             // is sent: every tree is sent again.
-            for lane in [Lane::Root, Lane::Detail] {
-                self.resend(lane);
+            for level in [Level::Root, Level::Detail] {
+                self.resend(level);
             }
         }
         // The presses ran and what they opened is sent: what the person typed after them can
@@ -2480,13 +2484,13 @@ impl Instance {
         Actor::Member(MemberId::Person(self.me.clone()))
     }
 
-    /// Send the window the tree of `lane` again as patches, read anew.
-    fn resend(&mut self, lane: Lane) {
+    /// Send the window the tree of `level` again as patches, read anew.
+    fn resend(&mut self, level: Level) {
         let Some(host) = self.host() else {
             return;
         };
         let names = Rc::clone(&self.names);
-        let Some(view) = self.lane_mut(lane) else {
+        let Some(view) = self.level_mut(level) else {
             return;
         };
         let tree = window_tree(&host, &*names, &view.view);
@@ -2496,7 +2500,7 @@ impl Instance {
         }
         view.sent = Some(tree);
         if !patches.is_empty() {
-            self.out.push(ToUi::Patch { lane, patches });
+            self.out.push(ToUi::Patch { level, patches });
         }
     }
 

@@ -9,7 +9,7 @@ precision touchpad with its 130x76 mm clickpad axes), and the checks drive them 
 
 What this cannot reproduce is the kernel driver: hwdb `KEYBOARD_KEY_<scan>` remaps (the
 Copilot and Fn-row keys) apply through the driver's keymap, which a uinput device lacks.
-Those need the real machine (the hardware-in-the-loop lane).
+Those need the real machine (the hardware-in-the-loop job).
 
 I03 and I04 are about state that must survive an event (a device appearing, a lock): their
 subject is the compositor's keyboard state, observed by what the next keystroke types.

@@ -52,7 +52,7 @@ python3 scripts/headless-examples/real_apps.py --start --keep --state ~/tilo-hea
 
 `cargo headless` is the same session from the tree's own build, printing the socket and the exact command to drive it; `--ready FILE` writes the same JSON for a script. Either way the session's runtime directory comes from `dist/dev/nested-session.sh --print-runtime`, so the rule that picks a short private one lives in one place.
 
-A harness whose subject is a build of its own — a release session a performance lane compiled, a demo of this tree's debug build — starts that binary through `real_apps.ScriptedSession`: a scratch profile, the same runtime rule, `TILO_TEST_CONTROL` pointed at its socket, and everything removed on stop. `full-loop.py` is the short example.
+A harness whose subject is a build of its own — a release session a performance job compiled, a demo of this tree's debug build — starts that binary through `real_apps.ScriptedSession`: a scratch profile, the same runtime rule, `TILO_TEST_CONTROL` pointed at its socket, and everything removed on stop. `full-loop.py` is the short example.
 
 By hand, one session is three lines:
 

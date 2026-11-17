@@ -111,7 +111,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
 
 FROM uki-tools AS uki
-# Empty on the first pass; the aarch64 dev lane's second pass sets it (header).
+# Empty on the first pass; the aarch64 dev job's second pass sets it (header).
 ARG TILO_CFS_DIGEST=
 ENV CFS_DIGEST=${TILO_CFS_DIGEST}
 # 0 builds os/dev/uki.sh's negative control, a UKI without tilo.generation=.

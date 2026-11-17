@@ -1592,7 +1592,7 @@ impl Host {
         self.open_layer_at(app, chosen).map(|(_, view)| view)
     }
 
-    /// [`Self::open_layer`] with the resource it opened: the window's lane keeps the root it
+    /// [`Self::open_layer`] with the resource it opened: the window's level keeps the root it
     /// shows, so what is opened is resolved once rather than once for the root and once for the
     /// view.
     pub fn open_layer_at(

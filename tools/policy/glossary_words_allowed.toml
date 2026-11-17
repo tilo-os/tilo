@@ -221,3 +221,37 @@ paths = ["apps/chip-design/*"]
 reason = "Game and studio names in save-game locations."
 words = ["gate"]
 paths = ["crates/platform/imager-backend/src/setup/source_tree/catalog.rs"]
+
+[[allow]]
+reason = "Argon2's lanes: the parallelism a key derivation runs with."
+words = ["lane"]
+paths = [
+    "apps/passwords/src/transfer.rs",
+    "crates/runtime/runtime-identity/src/backup.rs",
+    "crates/system/tilo-auth/src/wrapper.rs",
+    "crates/system/tilo-seal/src/envelope.rs",
+]
+
+[[allow]]
+reason = "Vector and SIMD lanes: the elements a vector operation or a GPU warp works on."
+words = ["lane"]
+paths = [
+    "apps/chip-design/*",
+    "apps/tube/src/sample.rs",
+    "crates/sdk/ui-core/src/part_paint/shader.rs",
+    "crates/sdk/ui-core/src/part_paint/shader/tests.rs",
+]
+
+[[allow]]
+reason = "A street or a path in sample text."
+words = ["lane"]
+paths = [
+    "apps/music/src/lyrics.rs",
+    "apps/tilolang/tests/hosted/mail.rs",
+    "apps/tilolang/tests/narrow.rs",
+    "apps/tl/mail/app.tl",
+    "crates/lang/tilolang/tests/fixtures/letters/app.tl",
+    "crates/platform/tilolang-tilo/tests/legacy/letters/app.tl",
+    "crates/session/desktop/src/topbar/shot_tests.rs",
+    "examples/agent-trials/documents-and-forms/TASKS.md",
+]

@@ -26,7 +26,7 @@ use crate::{
 
 /// Where a connection's calls hand the host descriptors, if it can.
 #[cfg(unix)]
-type Descriptors = Option<runtime_portal::descriptor_lane::DescriptorSender>;
+type Descriptors = Option<runtime_portal::descriptors::DescriptorSender>;
 #[cfg(not(unix))]
 type Descriptors = Option<std::convert::Infallible>;
 
@@ -114,8 +114,8 @@ mod shared {
             socket
         };
         socket.set_nonblocking(true)?;
-        let descriptors = runtime_portal::descriptor_lane::DescriptorSender::new();
-        let lane = descriptors.clone();
+        let descriptors = runtime_portal::descriptors::DescriptorSender::new();
+        let sender = descriptors.clone();
         let (ready, started) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             .name("tilo-svc-collab".into())
@@ -139,7 +139,7 @@ mod shared {
                         }
                     };
                     let stream =
-                        runtime_portal::descriptor_lane::DescriptorStream::sending(stream, lane);
+                        runtime_portal::descriptors::DescriptorStream::sending(stream, sender);
                     let (reader, writer) = tokio::io::split(stream);
                     let (client, carry) = crate::wire::client::Client::new(reader, writer);
                     let _ = ready.send(Ok(client));
@@ -237,31 +237,31 @@ impl CollabClient {
         &self.client
     }
 
-    /// Hand the host descriptors over `lane`, the descriptor lane of the
+    /// Hand the host descriptors over `sender`, the descriptor stream of the
     /// very connection `self` calls over; see
     /// [`ChannelHandle::local_file_clipboard_command`].
     #[cfg(unix)]
     #[must_use]
     pub fn with_descriptors(
         mut self,
-        lane: runtime_portal::descriptor_lane::DescriptorSender,
+        sender: runtime_portal::descriptors::DescriptorSender,
     ) -> Self {
-        self.descriptors = Some(lane);
+        self.descriptors = Some(sender);
         self
     }
 
-    /// [`Self::with_descriptors`] for a caller that only knows the lane
+    /// [`Self::with_descriptors`] for a caller that only knows the descriptor stream
     /// [`runtime_portal::DescriptorStreamSource`] handed it: on a host
-    /// without descriptors the lane is empty and the client stays as it was.
+    /// without descriptors the descriptor stream is empty and the client stays as it was.
     #[must_use]
-    pub fn with_optional_descriptors(mut self, lane: runtime_portal::DescriptorLane) -> Self {
+    pub fn with_optional_descriptors(mut self, sender: runtime_portal::Descriptors) -> Self {
         #[cfg(unix)]
         {
-            self.descriptors = lane;
+            self.descriptors = sender;
         }
         #[cfg(not(unix))]
         {
-            let _ = lane;
+            let _ = sender;
         }
         self
     }
@@ -670,8 +670,8 @@ impl ChannelHandle {
     ///
     /// Each selected descriptor names a descriptor open in this process, which
     /// must stay open until this returns. A duplicate of it is handed to the
-    /// host on this connection's descriptor lane, and the command sent names
-    /// it by its lane number instead.
+    /// host on this connection's descriptor stream, and the command sent names
+    /// it by its descriptor number instead.
     pub async fn local_file_clipboard_command(
         &self,
         command: &file_clipboard::Command,
@@ -680,7 +680,7 @@ impl ChannelHandle {
         if !command.valid() {
             return Err(refused("invalid local clipboard command"));
         }
-        // Measure with the widest lane number, so the bound holds whatever
+        // Measure with the widest descriptor number, so the bound holds whatever
         // numbers the descriptors receive.
         let mut widest = command.clone();
         for selected in widest.selected_mut() {
@@ -713,7 +713,7 @@ impl ChannelHandle {
     }
 
     /// Hand each selected descriptor of `command` to the host, renaming it
-    /// by its lane number.
+    /// by its descriptor number.
     fn hand_over_selected(&self, command: &mut file_clipboard::Command) -> Result<(), String> {
         let mut selected = command.selected_mut().peekable();
         if selected.peek().is_none() {
@@ -721,12 +721,12 @@ impl ChannelHandle {
         }
         #[cfg(unix)]
         {
-            let lane = self
+            let sender = self
                 .descriptors
                 .as_ref()
                 .ok_or("this connection cannot hand the host descriptors")?;
             // Duplicate every descriptor before sending any, so a closed one
-            // leaves nothing on the lane that no request names.
+            // leaves nothing on the descriptor stream that no request names.
             let selected = selected
                 .map(|selected| {
                     let raw = i32::try_from(selected.descriptor)
@@ -741,7 +741,7 @@ impl ChannelHandle {
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             for (selected, fd) in selected {
-                selected.descriptor = lane.send(fd).map_err(|error| error.to_string())?;
+                selected.descriptor = sender.send(fd).map_err(|error| error.to_string())?;
             }
             Ok(())
         }

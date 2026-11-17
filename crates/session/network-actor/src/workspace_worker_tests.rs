@@ -1,4 +1,4 @@
-use super::workspace_lane::{Direct, Lanes};
+use super::workspace_worker::{Direct, Workers};
 use super::*;
 use iroh::endpoint::Connection;
 use std::sync::atomic::AtomicUsize;
@@ -45,7 +45,7 @@ impl ProtocolHandler for Reads {
     }
 }
 
-/// A direct send on `connection`, already up: what the lanes do with a send
+/// A direct send on `connection`, already up: what the workers do with a send
 /// is the question, not how long a dial takes on a loaded machine.
 fn direct(connection: &Connection, bytes: Vec<u8>) -> Direct {
     Direct {
@@ -76,7 +76,7 @@ async fn a_stalled_send_in_one_workspace_does_not_delay_another_workspaces_send(
         .accept(SURFACE_STREAM_ALPN, Reads(read_tx))
         .spawn();
     let (internal_tx, mut internal) = mpsc::channel(16);
-    let mut lanes = Lanes::new(sender.clone(), internal_tx);
+    let mut workers = Workers::new(sender.clone(), internal_tx);
     let to_stalled = sender
         .connect(stalled.addr(), SURFACE_STREAM_ALPN)
         .await
@@ -88,7 +88,7 @@ async fn a_stalled_send_in_one_workspace_does_not_delay_another_workspaces_send(
 
     for _ in 0..3 {
         assert!(
-            lanes
+            workers
                 .queue_direct(
                     WorkspaceId::from_u128(1),
                     direct(&to_stalled, vec![0; STALLING_BYTES])
@@ -97,7 +97,7 @@ async fn a_stalled_send_in_one_workspace_does_not_delay_another_workspaces_send(
         );
     }
     assert!(
-        lanes
+        workers
             .queue_direct(
                 WorkspaceId::from_u128(2),
                 direct(&to_healthy, b"workspace two".to_vec())
@@ -107,7 +107,7 @@ async fn a_stalled_send_in_one_workspace_does_not_delay_another_workspaces_send(
 
     let event = tilo_test_env::within("workspace two's send", internal.recv())
         .await
-        .expect("the lanes report");
+        .expect("the workers report");
     let InternalEvent::DirectSent { ws, outcome } = event else {
         panic!("only direct sends were queued");
     };
@@ -126,7 +126,7 @@ async fn a_stalled_send_in_one_workspace_does_not_delay_another_workspaces_send(
         "workspace one's sends are still waiting on their device"
     );
 
-    drop(lanes);
+    drop(workers);
     stalled_router.shutdown().await.unwrap();
     healthy_router.shutdown().await.unwrap();
     sender.close().await;

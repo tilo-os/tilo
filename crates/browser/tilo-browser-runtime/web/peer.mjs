@@ -16,7 +16,7 @@
  *   on the same session link they use. Never authority;
  * - the workspace's calls (`peer.voice`, `voice-peer.mjs`): the session holds
  *   the participation and seals the page's frames, which reach the call as
- *   turns on its host's call lane (`voice.mjs`).
+ *   turns on its host's call media queue (`voice.mjs`).
  *
  * The page holds one device key (`device-key.mjs`): each tab is a
  * device of its own, with its own key, certificate and state. A page that also

@@ -1266,7 +1266,7 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
 /// once the window it replaced closed, and loads when the bytes arrive there.
 #[test]
 fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
-    use crate::collaboration::document_content::{ContentLane, DocumentContent};
+    use crate::collaboration::document_content::{ContentLink, DocumentContent};
     use crate::image_store::{HostImageLoader, ServedWindow};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1284,10 +1284,10 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
             runner_permissions(),
         )
         .unwrap();
-    let first_lane = Arc::new(ContentLane::default());
+    let first_link = Arc::new(ContentLink::default());
     first.provide_content(DocumentContent::store(
         tilo_content::ContentStore::memory(),
-        Arc::clone(&first_lane),
+        Arc::clone(&first_link),
     ));
     crate::ImageStore::serve_window(
         &first.wake_handle(),
@@ -1301,7 +1301,7 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
         .instantiate(first, LaunchTarget::New, RestoreInput::None)
         .unwrap();
 
-    // The window opens another record in its place, on a lane of its own.
+    // The window opens another record in its place, on a content link of its own.
     let (mut next, target) = component
         .reopener()
         .prepare(
@@ -1309,11 +1309,11 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
             crate::resource::DocumentId::minted(),
         )
         .unwrap();
-    let next_lane = Arc::new(ContentLane::default());
+    let next_link = Arc::new(ContentLink::default());
     let next_local = tilo_content::ContentStore::memory();
     next.provide_content(DocumentContent::store(
         next_local.clone(),
-        Arc::clone(&next_lane),
+        Arc::clone(&next_link),
     ));
     let successor = next.wake_handle();
     let replacement = runner_probe_definition()
@@ -1334,21 +1334,21 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
     assert!(store.get(&url).is_none());
 
     // The host drains the request and reads the bytes where the window
-    // reads its content: not here yet, so the window's own lane asks.
+    // reads its content: not here yet, so the window's own content link asks.
     let mut loaders = loaders.borrow_mut();
     let (loader, drawn_for) = loaders.last_mut().expect("the successor is served");
     assert_eq!(loader.next_request().as_deref(), Some(url.as_str()));
     let content = drawn_for.content().expect("the successor's content");
     assert!(!content.has(&hash));
     assert!(content.read(&hash).is_none());
-    assert_eq!(next_lane.take_requests().wants, vec![hash.clone()]);
+    assert_eq!(next_link.take_requests().wants, vec![hash.clone()]);
     assert!(
-        first_lane.take_requests().wants.is_empty(),
-        "the closed window's lane asks for nothing"
+        first_link.take_requests().wants.is_empty(),
+        "the closed window's content link asks for nothing"
     );
 
-    // The bytes arrive on the successor's lane: the host hands them over.
-    next_lane.arrive(hash.clone(), png.clone());
+    // The bytes arrive on the successor's content link: the host hands them over.
+    next_link.arrive(hash.clone(), png.clone());
     let bytes = content.read(&hash).expect("the bytes arrived");
     assert_eq!(bytes, png);
     let ticket = loader.reserve(&url).unwrap();

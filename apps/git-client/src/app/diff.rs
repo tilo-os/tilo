@@ -182,7 +182,7 @@ impl GitClientState {
                     kind: crate::model::RefKind::LocalBranch,
                 },
             ],
-            lane: 0,
+            column: 0,
             files: staged,
         };
         if let Some(prev) = self.model.commits.first_mut() {
@@ -191,7 +191,7 @@ impl GitClientState {
         }
         self.model.commits.insert(0, new);
         self.graph_layout = graph::layout(&mut self.model.commits);
-        self.model.graph_width = self.graph_layout.lanes;
+        self.model.graph_width = self.graph_layout.columns;
         self.commit_input.set_text("");
         self.set_focus(None);
         self.selected_change = first_change(&self.model);

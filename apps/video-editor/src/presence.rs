@@ -262,12 +262,12 @@ pub struct PeerTag {
     pub span: (f64, f64),
 }
 
-/// A name hangs in the ruler, above the lanes, where it covers no clip. A name
+/// A name hangs in the ruler, above the tracks, where it covers no clip. A name
 /// that would land on the local playhead's time (`taken`) or on one already
-/// placed steps down into the lanes until it finds room.
+/// placed steps down into the tracks until it finds room.
 pub fn place_peer_tags(
     presence: &PresenceCtx,
-    lanes: Rect,
+    tracks: Rect,
     taken: &[(f64, f64)],
     time_to_x: impl Fn(f64) -> f64,
     mut name_width: impl FnMut(&str) -> f64,
@@ -275,7 +275,7 @@ pub fn place_peer_tags(
     let mut placed: Vec<PeerTag> = Vec::new();
     for (i, peer) in peer_playheads(presence).iter().enumerate() {
         let x = time_to_x(peer.at);
-        if x < lanes.x0 - 0.5 || x > lanes.x1 + 0.5 {
+        if x < tracks.x0 - 0.5 || x > tracks.x1 + 0.5 {
             continue;
         }
         let w = name_width(&presence.display_name(&peer.user));
@@ -295,7 +295,7 @@ pub fn place_peer_tags(
             peer: i,
             x,
             row,
-            top: lanes.y0 + CHIP_STEP * f64::from(row),
+            top: tracks.y0 + CHIP_STEP * f64::from(row),
             span,
         });
     }
@@ -324,7 +324,7 @@ pub fn draw_peer_playheads(ctx: &mut PeerPaintCtx<'_>, tags: &[PeerTag], bottom:
 /// Each in the peer's colour, with their name.
 ///
 /// `visible` is what the timeline just drew, so an outline sits on the same
-/// geometry as the clip body. `area` is where the lanes are clipped to: a chip
+/// geometry as the clip body. `area` is where the tracks are clipped to: a chip
 /// hangs above its clip, and without the ceiling a peer on the top track would be
 /// labelled with the bottom two pixels of their name.
 pub fn draw_peer_clips(ctx: &mut PeerPaintCtx<'_>, visible: &[(ClipId, Rect)], area: Rect) {

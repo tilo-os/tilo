@@ -1,4 +1,4 @@
-"""Place an exact measured native workload; changed inputs retain the general lane."""
+"""Place an exact measured native workload; changed inputs retain the general job."""
 from __future__ import annotations
 
 import hashlib

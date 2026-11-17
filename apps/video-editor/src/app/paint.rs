@@ -736,7 +736,7 @@ pub(super) fn triangle_down(cx: f64, top: f64, s: f64) -> BezPath {
 }
 /// Built once per paint and handed down rather than asked per clip: "is anything
 /// linked to me" is a scan of every clip, and asking it inside the per-clip draw
-/// would make painting the lanes quadratic in the project.
+/// would make painting the tracks quadratic in the project.
 #[derive(Default)]
 pub(super) struct LinkMarks {
     /// `(group, members, any member selected)`, sorted by group so a lookup is

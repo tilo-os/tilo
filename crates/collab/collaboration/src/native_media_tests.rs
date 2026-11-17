@@ -124,7 +124,7 @@ fn native_media_manager_drop_tears_down_while_document_rpc_is_wedged() {
 }
 
 #[test]
-fn native_media_full_normal_lane_still_dispatches_reserved_leave() {
+fn native_media_full_normal_queue_still_dispatches_reserved_leave() {
     use runtime_collab::native_media::{Command, Request};
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
     let mut releases = Vec::new();
@@ -186,7 +186,7 @@ fn native_media_full_normal_lane_still_dispatches_reserved_leave() {
             request_id: 10,
             command: Request::new(Command::Leave)
         }),
-        "full normal lane cannot block teardown"
+        "full normal queue cannot block teardown"
     );
     tilo_test_env::wait_until("the reserved Leave to reach the broker", || {
         captures
@@ -230,7 +230,7 @@ async fn native_media_newer_effect_cannot_skip_a_queued_stop_obligation() {
                 let routes = native_media::Routes::default();
                 routes.insert("fixture-admitted-route".into(), channel);
                 let worker = native_media::start(receiver, routes);
-                // No yield: both real enqueues occur before the lane can run.
+                // No yield: both real enqueues occur before the queue can run.
                 assert!(sender.send(
                     "fixture-admitted-route".into(),
                     1,

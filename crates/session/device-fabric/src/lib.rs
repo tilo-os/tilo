@@ -1,6 +1,6 @@
 //! Policy and convergent state for one person's certified Tilo devices.
 //! Tilo does not equate proximity, Bluetooth pairing or a shared network with trust.
-//! The private same-identity lane authenticates and encrypts peers; this module
+//! The private same-identity connection authenticates and encrypts peers; this module
 //! applies one policy model to media, clipboard, roaming preferences, secret
 //! references and cross-screen input.
 
@@ -1351,7 +1351,7 @@ impl ClipboardPayload {
 
 /// Content-addressed clipboard item. Secret fields and primary-selection churn
 /// do not construct this type; a caller must explicitly classify a copy as
-/// shareable before it reaches the person's private device lane.
+/// shareable before it reaches the person's private device connection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClipboardEntry {
     pub id: [u8; 32],

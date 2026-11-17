@@ -145,7 +145,7 @@ fn voice_joins(app: &mut ChatApp) -> Vec<ui::native_media::Command> {
 }
 
 /// Answer every voice request with the broker's reply when this app has
-/// no native media lane; returns how many there were.
+/// no native media queue; returns how many there were.
 fn refuse_voice(app: &mut ChatApp) -> usize {
     use ui::widget::Collaborative as _;
     let mut sent = 0;
@@ -154,7 +154,7 @@ fn refuse_voice(app: &mut ChatApp) -> usize {
             sent += 1;
             app.handle_collab_event(&ui::collaboration::CollabEvent::NativeMediaCommandResult {
                 request_id,
-                result: Err("native media requires the bounded control lane".into()),
+                result: Err("native media requires the bounded control media queue".into()),
             });
         }
     }

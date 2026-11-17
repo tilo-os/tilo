@@ -1,4 +1,4 @@
-//! The inbound dispatcher: [`handle_envelope`] for the state lane
+//! The inbound dispatcher: [`handle_envelope`] for the state queue
 //! ([`Envelope`]), and [`unserved_private`] for the frames a v2 peer sends
 //! that this build does not serve.
 
@@ -199,7 +199,7 @@ pub(super) async fn handle_envelope(
     }
 }
 
-/// The v2 lane carries state frames and heartbeats only. Actions reach
+/// The v2 queue carries state frames and heartbeats only. Actions reach
 /// another device on its own connection now, so a peer that sends one of
 /// their frames speaks a protocol this build does not serve: the session
 /// ends rather than dropping what it cannot route.

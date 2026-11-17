@@ -31,7 +31,7 @@ tasks-row-complete = Complete
 tasks-row-reopen = Reopen
 tasks-status-with-progress = { $status }, { $closed } of { $total }
 tasks-progress = { $closed } of { $total } sub-issues closed
-tasks-lane-heading = { $status } { $count }
+tasks-list-heading = { $status } { $count }
 
 tasks-field-title = Title
 tasks-field-status = Status

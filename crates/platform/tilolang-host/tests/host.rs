@@ -25,7 +25,7 @@ use collaboration::{
 };
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
-use tilo_render_protocol::patch::{self, Lane, ToApp, ToUi, Transport as _};
+use tilo_render_protocol::patch::{self, Level, ToApp, ToUi, Transport as _};
 use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
@@ -63,7 +63,7 @@ fn counter() -> Bundle {
 struct Window {
     transport: ChannelTransport,
     root: Option<patch::Node>,
-    /// The tree of the lane beside the root: the item the window shows.
+    /// The tree of the level beside the root: the item the window shows.
     detail: Option<patch::Node>,
     /// The item the window shows beside its list: what a press showed in place, as the
     /// window heard it from the instance.
@@ -107,12 +107,12 @@ impl Window {
             for message in patch::decode_batch::<ToUi>(&batch).unwrap() {
                 match message {
                     ToUi::Open {
-                        lane: Lane::Root,
+                        level: Level::Root,
                         tree,
                         ..
                     } => self.root = Some(tree),
                     ToUi::Patch {
-                        lane: Lane::Root,
+                        level: Level::Root,
                         patches,
                     } => {
                         self.patched = self.patched.saturating_add(patches.len());
@@ -122,14 +122,14 @@ impl Window {
                         }
                     }
                     ToUi::Open {
-                        lane: Lane::Detail,
+                        level: Level::Detail,
                         tree,
                         ..
                     } => {
                         self.detail = Some(tree);
                     }
                     ToUi::Patch {
-                        lane: Lane::Detail,
+                        level: Level::Detail,
                         patches,
                     } => {
                         let detail = self.detail.as_mut().expect("a patch after the open");
@@ -445,7 +445,7 @@ tilo_test_env::scenario! {
         settle(&mut host, &mut window);
         let (key, event) = window.increment();
         window.send(&[ToApp::Fire {
-            lane: Lane::Root,
+            level: Level::Root,
             key,
             event,
             value: None,
@@ -503,7 +503,7 @@ tilo_test_env::scenario! {
         settle(&mut host, &mut window);
         let (key, event) = window.increment();
         window.send(&[ToApp::Fire {
-            lane: Lane::Root,
+            level: Level::Root,
             key,
             event,
             value: None,
@@ -1265,7 +1265,7 @@ tilo_test_env::scenario! {
         // instance still waits for its workspace.
         let (key, event) = window.increment();
         window.send(&[ToApp::Fire {
-            lane: Lane::Root,
+            level: Level::Root,
             key,
             event,
             value: None,
@@ -1700,12 +1700,12 @@ fn broker_labels(sent: &Sent) -> Vec<String> {
         .collect()
 }
 
-/// The event that puts `shown` into the field `input` of the page of `lane` showing `target`: a
+/// The event that puts `shown` into the field `input` of the page of `level` showing `target`: a
 /// rich field is edited whole, as the toolkit sends what the person typed into it, a text field
 /// by the splice each key is.
 fn key_edit(
     rich: bool,
-    lane: Lane,
+    level: Level,
     target: &patch::ResourceRef,
     input: &str,
     seq: usize,
@@ -1715,14 +1715,14 @@ fn key_edit(
 ) -> ToApp {
     if rich {
         ToApp::EditRich {
-            lane,
+            level,
             target: target.clone(),
             key: input.to_owned(),
             rich: typed_rich(shown),
         }
     } else {
         ToApp::Splice {
-            lane,
+            level,
             target: target.clone(),
             key: input.to_owned(),
             seq: (seq as u64).saturating_add(1),
@@ -1749,7 +1749,7 @@ fn press_new_note(window: &mut Window) {
         .expect("the button fires")
         .clone();
     window.send(&[ToApp::Fire {
-        lane: Lane::Root,
+        level: Level::Root,
         key: button.key,
         event,
         value: None,
@@ -1784,7 +1784,7 @@ fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
     }
     settle(&mut host, &mut window);
     // The note the press made shows beside the tree, its page the window's own: the field is
-    // in the tree's lane, as the window draws it.
+    // in the tree's level, as the window draws it.
     let field_node = node_with(
         window.root.as_ref().expect("the notebook is shown"),
         "placeholder",
@@ -1811,7 +1811,7 @@ fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
     for (seq, key) in typed.chars().enumerate() {
         let at = u32::try_from(shown.len()).unwrap();
         shown.push(key);
-        let edit = key_edit(rich, Lane::Root, &target, &input, seq, at, &shown, key);
+        let edit = key_edit(rich, Level::Root, &target, &input, seq, at, &shown, key);
         let (before, before_sweeps) = (visited(&host), swept(&host));
         let ((), phases) = tilo_resource::profiling::observe(|| {
             window.send(&[edit]);
@@ -1980,7 +1980,7 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
     // press made a second note, which the instance shows by the time the typing arrives.
     press_new_note(&mut window);
     window.send(&[ToApp::Splice {
-        lane: Lane::Root,
+        level: Level::Root,
         target: first.clone(),
         key: title,
         seq: 1,

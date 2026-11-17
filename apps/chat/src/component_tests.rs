@@ -1190,15 +1190,15 @@ fn a_chat_mounted_alone_shows_its_call_in_the_windows_row_of_slots() {
 }
 
 #[test]
-fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
-    use ui::headless::host_media::MediaLane;
+fn browser_media_queue_routes_shared_chat_actions_and_retires_closed_owners() {
+    use ui::headless::host_media::MediaQueue;
     use ui::native_media::{Command, Snapshot, State};
     let cache =
         ui::portable_storage::PortableStorage::new("browser-media-controls", "device").unwrap();
     let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let (mut frame, records, checkout) =
         component_mount_in_workspace(&cache, "author", 1, workspace);
-    let mut lane = MediaLane::default();
+    let mut queue = MediaQueue::default();
     let before = records.replication_snapshot(&checkout.id).unwrap().0;
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: 1,
@@ -1207,11 +1207,11 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     frame
         .invoke_bound_action(&address, &serde_json::Map::new())
         .unwrap();
-    let requests = lane.take(&mut frame);
+    let requests = queue.take(&mut frame);
     let joining = requests
         .iter()
         .find(|request| matches!(request.command.command, Command::Join { .. }))
-        .expect("the actual shared action enters the browser media lane");
+        .expect("the actual shared action enters the browser media queue");
     assert_eq!(joining.app, "so.tilo.chat");
     assert_eq!(joining.workspace, workspace);
     assert_eq!(joining.record, "", "Chat uses its package-primary route");
@@ -1219,7 +1219,7 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     let mut live = Snapshot::unavailable();
     live.state = State::Live;
     live.issue = None;
-    assert!(lane.complete(&mut frame, joining.ticket, Ok(live.clone())));
+    assert!(queue.complete(&mut frame, joining.ticket, Ok(live.clone())));
     // A live call is what a continuation carries.
     let continuation =
         ui::widget::capability::capability::<dyn ui::widget::Continuable>(frame.root_widget())
@@ -1229,7 +1229,7 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
         "the completed join is live in the app"
     );
     assert!(
-        !lane.complete(&mut frame, joining.ticket, Ok(live.clone())),
+        !queue.complete(&mut frame, joining.ticket, Ok(live.clone())),
         "a completion is single-use"
     );
     assert_eq!(
@@ -1240,13 +1240,13 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     frame
         .invoke_bound_action(&address, &serde_json::Map::new())
         .unwrap();
-    let pending = lane.take(&mut frame);
+    let pending = queue.take(&mut frame);
     assert!(
         !pending.is_empty(),
         "the closed-owner assertion must observe a pending command"
     );
     frame.close_components();
-    let retired = lane.take(&mut frame);
+    let retired = queue.take(&mut frame);
     assert!(
         retired
             .iter()
@@ -1255,7 +1255,7 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     );
     for request in pending {
         assert!(
-            !lane.complete(&mut frame, request.ticket, Ok(live.clone())),
+            !queue.complete(&mut frame, request.ticket, Ok(live.clone())),
             "a closed owner cannot accept a late result"
         );
     }
@@ -1320,7 +1320,7 @@ fn message_range_navigation_preserves_unicode_and_refuses_stale_offsets() {
 fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
     use tilo_actions::remote::RemoteActionMessage;
     use ui::bound_dispatch::BoundActionAddress;
-    use ui::headless::host_media::MediaLane;
+    use ui::headless::host_media::MediaQueue;
     use ui::native_media::Command;
 
     for catalogue_first in [true, false] {
@@ -1373,13 +1373,13 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
         frame
             .invoke_bound_action(&join, &serde_json::Map::new())
             .unwrap();
-        let mut lane = MediaLane::default();
+        let mut queue = MediaQueue::default();
         let (catalogues, media) = if catalogue_first {
-            let catalogues = lane.take_catalogue_requests(&mut frame);
-            (catalogues, lane.take(&mut frame))
+            let catalogues = queue.take_catalogue_requests(&mut frame);
+            (catalogues, queue.take(&mut frame))
         } else {
-            let media = lane.take(&mut frame);
-            (lane.take_catalogue_requests(&mut frame), media)
+            let media = queue.take(&mut frame);
+            (queue.take_catalogue_requests(&mut frame), media)
         };
         assert!(catalogues.iter().any(|message| matches!(message,
             RemoteActionMessage::CatalogueRequest {query, ..}
@@ -1391,7 +1391,7 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
                 .any(|request| matches!(request.command.command, Command::Join { .. })),
             "catalogue polling must preserve the actual shared join action"
         );
-        assert!(lane.take_catalogue_requests(&mut frame).is_empty());
+        assert!(queue.take_catalogue_requests(&mut frame).is_empty());
         frame.close_components();
     }
 }
@@ -1399,7 +1399,7 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
 #[test]
 fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
     use ui::bound_dispatch::BoundActionAddress;
-    use ui::headless::host_media::MediaLane;
+    use ui::headless::host_media::MediaQueue;
     use ui::native_media::Command;
     let cache =
         ui::portable_storage::PortableStorage::new("catalogue-media-retirement", "device").unwrap();
@@ -1415,10 +1415,10 @@ fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
             &serde_json::Map::new(),
         )
         .unwrap();
-    let mut lane = MediaLane::default();
-    assert!(lane.take_catalogue_requests(&mut frame).is_empty());
+    let mut queue = MediaQueue::default();
+    assert!(queue.take_catalogue_requests(&mut frame).is_empty());
     frame.close_components();
-    let media = lane.take(&mut frame);
+    let media = queue.take(&mut frame);
     assert!(
         media
             .iter()

@@ -210,7 +210,7 @@ area at least 24 px wide under touch.
 - **Every drop target is drawn while it would accept**: an insertion bar in a
   gap, a lift on a group to join, the target strip's ribbon segment, the target
   display's outline. Dragging against a display's outer
-  edge scrolls that lane, faster the closer to the edge; resting a drag on a
+  edge scrolls that section, faster the closer to the edge; resting a drag on a
   background tab for half a second brings that tab to the front.
 
 ## Resizing a window
@@ -301,7 +301,7 @@ so the infinite-strip change of 2026-09-20 kept only the left window moving,
 and the 2026-10-12 change that added leading edges wrote that down as the
 rule ("the border is the first window's trailing edge") and pinned it in a test
 (`[40, 0, 0]` for the middle window's left edge). Each fix stacked another hit
-target (window grips, a leading grip only at a lane's start, the border), and
+target (window grips, a leading grip only at a section's start, the border), and
 which window moved fell out of dispatch order. The same handle drag also left
 the strip's re-framing on, so the pan moved under the pointer. Now the owner
 is decided by a named function with tests per case, the border widget resizes

@@ -1579,7 +1579,7 @@ async fn detached_replay_catches_up_pending_without_replaying_selected_baseline(
         fixture.enqueue(kind).await;
     }
     // The held replay barrier makes this an ordering assertion: owner work can
-    // finish only if detached preparation released the mutation lane. It is
+    // finish only if detached preparation released the mutation queue. It is
     // not a latency budget; a preparation that blocks the owner hangs here and
     // nextest's slow-timeout reports it.
     fixture.drained_wait().await;

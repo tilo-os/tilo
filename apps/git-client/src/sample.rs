@@ -1,7 +1,7 @@
 //! A bundled repository fixture the screenshot scenarios and tests show in place of
 //! an on-disk repository: staged, unstaged and untracked changes with real diffs,
 //! and a history with two side branches and a merge so the graph uses several
-//! lanes. Everything here is static data; nothing touches disk.
+//! columns. Everything here is static data; nothing touches disk.
 
 use crate::diff::{language_for, parse_unified};
 use crate::graph;
@@ -21,7 +21,7 @@ fn fc(path: &str, area: ChangeArea, kind: ChangeKind, add: u32, del: u32) -> Fil
     }
 }
 
-/// Build the sample model, with the graph lanes assigned and a per-file diff for each changed file.
+/// Build the sample model, with the graph columns assigned and a per-file diff for each changed file.
 pub fn model() -> (RepoModel, DiffMap) {
     let diffs = sample_diffs();
     let counted = |mut changes: Vec<FileChange>| {
@@ -55,7 +55,7 @@ pub fn model() -> (RepoModel, DiffMap) {
         remotes: sample_remotes(),
         worktrees: Vec::new(),
         worktree_error: None,
-        graph_width: layout.lanes,
+        graph_width: layout.columns,
         author_name: MIRA.0.into(),
         author_email: MIRA.1.into(),
     };
@@ -294,7 +294,7 @@ impl Sample<'_> {
             time,
             parents: self.parents.iter().map(|p| (*p).to_string()).collect(),
             refs: self.refs,
-            lane: 0,
+            column: 0,
             files: self.files,
         }
     }
@@ -304,7 +304,7 @@ fn touched(path: &str, kind: ChangeKind, add: u32, del: u32) -> FileChange {
     fc(path, ChangeArea::Staged, kind, add, del)
 }
 
-/// Newest first; `parents` name ids, structured so the graph uses two lanes with a merge. Times are
+/// Newest first; `parents` name ids, structured so the graph uses two columns with a merge. Times are
 /// relative to the toolkit clock, so a capture shows the same ages on every run.
 fn commit_history() -> Vec<Commit> {
     let now = ui::clock::local_now().timestamp();
@@ -315,8 +315,8 @@ fn commit_history() -> Vec<Commit> {
         .collect()
 }
 
-/// The four most recent commits: the wgpu-pipeline merge, its two-lane
-/// history, and the commits both lanes branch from (part of
+/// The four most recent commits: the wgpu-pipeline merge, its two-column
+/// history, and the commits both columns branch from (part of
 /// [`commit_history`]).
 fn commit_history_recent() -> Vec<Sample<'static>> {
     vec![

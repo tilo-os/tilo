@@ -459,7 +459,7 @@ Usage:
 uses debug builds only, deploys executable files into a disposable VM, then
 hands off to a normal UI logout/login so wrapper cleanup is exercised.
 
-The Fedora 44 lane uses its own container-local sccache server and cache
+The Fedora 44 job uses its own container-local sccache server and cache
 directory. This is required: a copied host server could compile SPA/PipeWire C
 shims in the host's header namespace rather than Fedora 44's.
 EOF

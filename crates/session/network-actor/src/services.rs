@@ -1,7 +1,7 @@
 //! What the actor asks of the session that runs it.
 //!
 //! The actor is the transport: it keeps the endpoint, the topics, the host
-//! sessions and the person's private lane. Some of what arrives on them is
+//! sessions and the person's private connection. Some of what arrives on them is
 //! the session's business, not the transport's: a host's questions for an
 //! approver, an early-boot device asking for its unlock half, a host at
 //! another peer protocol version. The session installs those once when it

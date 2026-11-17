@@ -74,7 +74,7 @@ fn german_editor() -> Editor {
     })
     .into_iter()
     .next()
-    .expect("the sample project places Drone_Coastline.mov on a lane");
+    .expect("the sample project places Drone_Coastline.mov on a track");
     app.harness()
         .perform_a11y_action(clip, &ui::a11y::Action::Activate)
         .unwrap();

@@ -52,7 +52,7 @@ d-ks6wodcv = Einträge
 d-crrlhv3r = Entwurf
 
 d-knnd7epb = Release
-    .doc = Die Einträge des Teams auf einem Board, eine Spur je Stufe.
+    .doc = Die Einträge des Teams auf einem Board, eine Liste je Stufe.
     .noun = { $count ->
         [one] Release
        *[other] Releases

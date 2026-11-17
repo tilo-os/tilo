@@ -103,13 +103,13 @@ fn titled_page() -> Vec<ToUi> {
     page.children.push(input);
     vec![
         ToUi::Open {
-            lane: Lane::Root,
+            level: Level::Root,
             target: doc(),
             tree: page,
             front: None,
         },
         ToUi::Bound {
-            lane: Lane::Root,
+            level: Level::Root,
             key: "title".to_owned(),
             value: Value::text("Q3"),
             acked: 0,
@@ -117,15 +117,15 @@ fn titled_page() -> Vec<ToUi> {
     ]
 }
 
-fn spaces(app: &mut local::End) -> Vec<(Lane, f32, f32)> {
+fn spaces(app: &mut local::End) -> Vec<(Level, f32, f32)> {
     sent(app)
         .into_iter()
         .filter_map(|message| match message {
             ToApp::Space {
-                lane,
+                level,
                 width,
                 height,
-            } => Some((lane, width, height)),
+            } => Some((level, width, height)),
             _ => None,
         })
         .collect()
@@ -149,7 +149,7 @@ fn a_view_is_told_the_space_layout_gave_it_when_it_changes_by_more_than_a_step()
     flush(&mut harness);
     let rem = f64::from(ui::widget::arrange::rem_of(harness.theme()));
     let told = spaces(&mut app);
-    let [(Lane::Root, width, height)] = told[..] else {
+    let [(Level::Root, width, height)] = told[..] else {
         panic!("the root view is told its space once: {told:?}");
     };
     assert!(
@@ -165,7 +165,7 @@ fn a_view_is_told_the_space_layout_gave_it_when_it_changes_by_more_than_a_step()
     flush(&mut harness);
     let told = spaces(&mut app);
     assert!(
-        matches!(told[..], [(Lane::Root, width, _)] if (f64::from(width) * rem - 1280.0).abs() < 1.0),
+        matches!(told[..], [(Level::Root, width, _)] if (f64::from(width) * rem - 1280.0).abs() < 1.0),
         "{told:?}"
     );
 }
@@ -183,7 +183,7 @@ fn typing_is_sent_as_splices_and_what_the_app_sent_before_it_saw_them_is_not_sho
     assert_eq!(
         sent(&mut app),
         [ToApp::Splice {
-            lane: Lane::Root,
+            level: Level::Root,
             target: doc(),
             key: "title".to_owned(),
             seq: 1,
@@ -196,7 +196,7 @@ fn typing_is_sent_as_splices_and_what_the_app_sent_before_it_saw_them_is_not_sho
     send(
         &mut app,
         &[ToUi::Bound {
-            lane: Lane::Root,
+            level: Level::Root,
             key: "title".to_owned(),
             value: Value::text("Q3"),
             acked: 0,
@@ -218,7 +218,7 @@ fn typing_is_sent_as_splices_and_what_the_app_sent_before_it_saw_them_is_not_sho
     send(
         &mut app,
         &[ToUi::Bound {
-            lane: Lane::Root,
+            level: Level::Root,
             key: "title".to_owned(),
             value: Value::text("Q3 plans"),
             acked: 2,
@@ -248,7 +248,7 @@ fn typing_after_a_press_goes_to_the_field_as_the_press_left_it_once_the_app_ran_
     // to that note's title, at its end.
     let mut opened = titled_page();
     opened[1] = ToUi::Bound {
-        lane: Lane::Root,
+        level: Level::Root,
         key: "title".to_owned(),
         value: Value::text("Untitled"),
         acked: 0,
@@ -260,7 +260,7 @@ fn typing_after_a_press_goes_to_the_field_as_the_press_left_it_once_the_app_ran_
     assert_eq!(
         sent(&mut app),
         [ToApp::Splice {
-            lane: Lane::Root,
+            level: Level::Root,
             target: doc(),
             key: "title".to_owned(),
             seq: 1,
@@ -312,7 +312,7 @@ fn typing_held_for_a_press_lands_after_what_was_typed_before_it_whatever_the_app
         &mut app,
         &[
             ToUi::Bound {
-                lane: Lane::Root,
+                level: Level::Root,
                 key: "title".to_owned(),
                 value: Value::text("Q3"),
                 acked: 0,
@@ -361,13 +361,13 @@ fn opened_note(id: &str, title: &str) -> Vec<ToUi> {
     page.children.push(input);
     vec![
         ToUi::Open {
-            lane: Lane::Detail,
+            level: Level::Detail,
             target: note(id),
             tree: page,
             front: Some(wire::Front::Input),
         },
         ToUi::Bound {
-            lane: Lane::Detail,
+            level: Level::Detail,
             key: "title".to_owned(),
             value: Value::text(title),
             acked: 0,
@@ -403,7 +403,7 @@ fn typing_into_a_field_put_the_keyboard_in_while_a_press_runs_stays_with_its_not
     assert_eq!(
         sent(&mut app),
         [ToApp::Splice {
-            lane: Lane::Detail,
+            level: Level::Detail,
             target: note("a"),
             key: "title".to_owned(),
             seq: 0,
@@ -444,7 +444,7 @@ fn typing_after_a_press_in_the_field_that_still_had_the_keyboard_follows_into_wh
     assert_eq!(
         sent(&mut app),
         [ToApp::Splice {
-            lane: Lane::Detail,
+            level: Level::Detail,
             target: note("b"),
             key: "title".to_owned(),
             seq: 1,
@@ -491,7 +491,7 @@ fn typing_between_what_a_press_opened_and_its_took_follows_into_the_opened_field
 fn a_batch_that_breaks_the_protocol_shows_the_error_state_and_nothing_else() {
     let (mut app, mut window) = window();
     let unknown = vec![ToUi::Open {
-        lane: Lane::Root,
+        level: Level::Root,
         target: ResourceRef {
             id: "doc".to_owned(),
             ty: "app.Root".to_owned(),
@@ -668,7 +668,7 @@ fn keyed_menu(key: &str) -> Vec<ToUi> {
     actions.children.push(button);
     shell.children.push(actions);
     vec![ToUi::Open {
-        lane: Lane::Root,
+        level: Level::Root,
         target: doc(),
         tree: shell,
         front: None,
@@ -703,7 +703,7 @@ fn a_declared_shortcut_runs_the_action_through_its_button() {
     assert_eq!(
         fired(&mut app),
         [ToApp::Fire {
-            lane: Lane::Root,
+            level: Level::Root,
             key: "archive".to_owned(),
             event: "press".to_owned(),
             value: None,
@@ -912,7 +912,7 @@ fn the_primary_actions_key_in_the_entry_commits_what_was_typed() {
     assert_eq!(
         fires,
         [ToApp::Fire {
-            lane: Lane::Root,
+            level: Level::Root,
             key: "field".to_owned(),
             event: "submit".to_owned(),
             value: Some(Value::text("Buy milk")),
@@ -951,14 +951,14 @@ fn a_press_runs_the_action_of_the_item_the_keyboard_is_on() {
         item.children.push(title);
         page.children.push(item);
         page_open.push(ToUi::Bound {
-            lane: Lane::Root,
+            level: Level::Root,
             key: format!("{key}#title"),
             value: Value::text(format!("{name} task")),
             acked: 0,
         });
     }
     let mut open = vec![ToUi::Open {
-        lane: Lane::Root,
+        level: Level::Root,
         target: doc(),
         tree: page,
         front: None,
@@ -978,7 +978,7 @@ fn a_press_runs_the_action_of_the_item_the_keyboard_is_on() {
     assert_eq!(
         fired(&mut app),
         [ToApp::Fire {
-            lane: Lane::Root,
+            level: Level::Root,
             key: "b#complete".to_owned(),
             event: "press".to_owned(),
             value: None,
@@ -1013,7 +1013,7 @@ fn a_fields_own_keys_edit_its_text_before_any_action_declares_them() {
     assert_eq!(
         fired(&mut app),
         [ToApp::Fire {
-            lane: Lane::Root,
+            level: Level::Root,
             key: "erase".to_owned(),
             event: "press".to_owned(),
             value: None,
@@ -1085,13 +1085,13 @@ fn bound_page(kind: &str, props: &[(&str, Value)], value: Value) -> Vec<ToUi> {
     page.children.push(control);
     vec![
         ToUi::Open {
-            lane: Lane::Root,
+            level: Level::Root,
             target: doc(),
             tree: page,
             front: None,
         },
         ToUi::Bound {
-            lane: Lane::Root,
+            level: Level::Root,
             key: "field".to_owned(),
             value,
             acked: 0,
@@ -1271,7 +1271,7 @@ fn a_picked_day_is_sent_as_the_day_the_field_now_holds() {
         assert_eq!(
             told(&mut app),
             [ToApp::Edit {
-                lane: Lane::Root,
+                level: Level::Root,
                 target: doc(),
                 key: "field".to_owned(),
                 text: "2026-07-01".to_owned(),
@@ -1292,7 +1292,7 @@ fn a_picked_day_is_sent_as_the_day_the_field_now_holds() {
         send(
             &mut app,
             &[ToUi::Bound {
-                lane: Lane::Root,
+                level: Level::Root,
                 key: "field".to_owned(),
                 value: Value::some(Value::text("2026-07-05")),
                 acked: 1,
@@ -1330,7 +1330,7 @@ fn a_mark_or_a_turn_is_sent_as_the_state_the_control_now_holds() {
     assert_eq!(
         told(&mut app),
         [ToApp::Toggle {
-            lane: Lane::Root,
+            level: Level::Root,
             target: doc(),
             key: "field".to_owned(),
             checked: true,
@@ -1352,7 +1352,7 @@ fn a_mark_or_a_turn_is_sent_as_the_state_the_control_now_holds() {
     assert_eq!(
         told(&mut app),
         [ToApp::Toggle {
-            lane: Lane::Root,
+            level: Level::Root,
             target: doc(),
             key: "field".to_owned(),
             checked: true,
@@ -1378,7 +1378,7 @@ fn list_page_keyed(key: &str) -> Vec<ToUi> {
     let mut shell = UiNode::empty("ui.NavShell", key);
     shell.children.push(overview);
     vec![ToUi::Open {
-        lane: Lane::Root,
+        level: Level::Root,
         target: doc(),
         tree: shell,
         front: None,
@@ -1451,7 +1451,7 @@ fn the_row_of_the_view_beside_the_list_is_selected_once_the_rows_arrive() {
     send(
         &mut app,
         &[ToUi::Rows {
-            lane: Lane::Root,
+            level: Level::Root,
             list: "list".to_owned(),
             len: 2,
             start: 0,
@@ -1554,7 +1554,7 @@ fn the_list_a_window_moves_to_brings_its_actions_placed_into_the_one_bar() {
         ],
     );
     let (mut app, mut harness) = drawn(&[ToUi::Open {
-        lane: Lane::Root,
+        level: Level::Root,
         target: doc(),
         tree: root,
         front: None,
@@ -1587,7 +1587,7 @@ fn the_list_a_window_moves_to_brings_its_actions_placed_into_the_one_bar() {
     send(
         &mut app,
         &[ToUi::Open {
-            lane: Lane::Detail,
+            level: Level::Detail,
             target: note("p"),
             tree: project,
             front: None,
@@ -1634,7 +1634,7 @@ fn listed_rows(items: &[(&str, &str)]) -> Vec<ToUi> {
         rows.push(item);
     }
     vec![ToUi::Rows {
-        lane: Lane::Root,
+        level: Level::Root,
         list: "list".to_owned(),
         len: u32::try_from(keys.len()).expect("a few rows"),
         start: 0,
@@ -1679,7 +1679,7 @@ fn a_window_showing_an_item_as_its_page_is_named_by_the_item() {
     send(
         &mut app,
         &[ToUi::Open {
-            lane: Lane::Root,
+            level: Level::Root,
             target: doc(),
             tree: opened,
             front: None,
@@ -1775,7 +1775,7 @@ fn a_choice_of_several_rows_outlasts_the_rows_the_app_sends_again() {
     send(
         &mut app,
         &[ToUi::Patch {
-            lane: Lane::Root,
+            level: Level::Root,
             patches: vec![wire::Patch::SetProp {
                 path: vec![
                     "overview".to_owned(),
@@ -1928,7 +1928,7 @@ fn answer_rows(app: &mut local::End, items: &[(&str, &str)]) -> bool {
         send(
             app,
             &[ToUi::RowsChanged {
-                lane: Lane::Root,
+                level: Level::Root,
                 list: "list".to_owned(),
                 len: u32::try_from(items.len()).expect("a few rows"),
                 changes: vec![wire::RowChange::Reset],
@@ -1996,7 +1996,7 @@ fn a_bound_entry_takes_the_next_typing_after_it_sends() {
     send(
         &mut app,
         &[ToUi::Bound {
-            lane: Lane::Root,
+            level: Level::Root,
             key: "field".to_owned(),
             value: Value::text(""),
             acked: 1,
@@ -2050,13 +2050,13 @@ fn searching_list_page(rows: i64) -> Vec<ToUi> {
         .insert("search".to_owned(), crate::Event::default());
     vec![
         ToUi::Open {
-            lane: Lane::Root,
+            level: Level::Root,
             target: doc(),
             tree: shell,
             front: None,
         },
         ToUi::Rows {
-            lane: Lane::Root,
+            level: Level::Root,
             list: "list".to_owned(),
             len: u32::try_from(rows).expect("a list's length"),
             start: 0,
@@ -2104,7 +2104,7 @@ fn the_window_s_search_narrows_the_list_its_frame_declares() {
     send(
         &mut app,
         &[ToUi::RowsChanged {
-            lane: Lane::Root,
+            level: Level::Root,
             list: "list".to_owned(),
             len: 3,
             changes: Vec::new(),
@@ -2188,7 +2188,7 @@ fn action_shell(listing: bool) -> Vec<ToUi> {
     target.ty = "test.tasks".to_owned();
     vec![
         ToUi::Open {
-            lane: Lane::Root,
+            level: Level::Root,
             target,
             tree: shell,
             front: None,
@@ -2306,7 +2306,7 @@ fn an_entry_the_app_clears_after_its_submit_takes_the_next_item() {
         &mut app,
         &[
             ToUi::Bound {
-                lane: Lane::Root,
+                level: Level::Root,
                 key: "field".to_owned(),
                 value: Value::text(""),
                 acked,

@@ -622,8 +622,8 @@ impl Staged {
     }
 
     /// The trees of the rows the window's lists show, each with its key, in the order the window
-    /// lists them: the lists of the window's own lane first and the lists of every other lane after
-    /// them, each lane's by key, and each list's rows as its own model orders them.
+    /// lists them: the lists of the window's own level first and the lists of every other level after
+    /// them, each level's by key, and each list's rows as its own model orders them.
     pub fn rows(&mut self) -> Vec<(String, tilo_ui_host::UiNode)> {
         let Some(window) = self.window() else {
             return Vec::new();
@@ -634,7 +634,7 @@ impl Staged {
             .map(|list| {
                 let elsewhere = window
                     .rows_of(&list)
-                    .is_some_and(|rows| rows.borrow().lane() != tilo_ui_host::Lane::Root);
+                    .is_some_and(|rows| rows.borrow().level() != tilo_ui_host::Level::Root);
                 (elsewhere, list)
             })
             .collect();
@@ -779,7 +779,7 @@ impl Staged {
     }
 
     /// Show `resource` with the view `view` (an id) in the window's detail
-    /// lane: a view the system shows on a surface of its own (a row view as
+    /// level: a view the system shows on a surface of its own (a row view as
     /// a search result, a proposal view in its card), laid out as a window
     /// is.
     pub fn open_with(&mut self, resource: &ResourceRef, view: &str) {

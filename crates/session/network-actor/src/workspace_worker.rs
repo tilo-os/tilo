@@ -1,4 +1,4 @@
-//! Each workspace's direct sends, on a lane of its own.
+//! Each workspace's direct sends, on a worker of its own.
 //!
 //! The actor keeps every workspace's state and decides what goes where; the
 //! sending itself (a write to one device on its direct connection) waits on
@@ -7,7 +7,7 @@
 //! task, and the actor only queues them there and never waits for them. How
 //! a send went comes back as an [`InternalEvent`].
 //!
-//! A lane's queue is bounded: a workspace whose devices stall fills only its own
+//! A worker's queue is bounded: a workspace whose devices stall fills only its own
 //! queue, and what no longer fits goes another way or not at all.
 
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ use neighbour_wire::NeighbourMsg;
 /// How many direct sends one workspace may have waiting. Beyond it the workspace's
 /// devices are not keeping up, and more waiting would only send stale
 /// state late.
-const LANE_DEPTH: usize = 256;
+const WORKER_DEPTH: usize = 256;
 
 /// How long a direct connection may take to come up.
 const DIRECT_DIAL: Duration = Duration::from_millis(300);
@@ -48,19 +48,19 @@ pub(super) struct DirectOutcome {
     pub(super) delivered: bool,
 }
 
-/// Every workspace's lane.
-pub(super) struct Lanes {
+/// Every workspace's worker.
+pub(super) struct Workers {
     endpoint: Endpoint,
     internal_tx: mpsc::Sender<InternalEvent>,
-    workspaces: HashMap<WorkspaceId, Lane>,
+    workspaces: HashMap<WorkspaceId, Worker>,
 }
 
-struct Lane {
+struct Worker {
     queue: mpsc::Sender<Direct>,
     task: tokio::task::JoinHandle<()>,
 }
 
-impl Lanes {
+impl Workers {
     pub(super) fn new(endpoint: Endpoint, internal_tx: mpsc::Sender<InternalEvent>) -> Self {
         Self {
             endpoint,
@@ -69,23 +69,23 @@ impl Lanes {
         }
     }
 
-    /// `ws`'s lane, started when the workspace has none yet.
-    fn lane(&mut self, ws: WorkspaceId) -> &Lane {
+    /// `ws`'s worker, started when the workspace has none yet.
+    fn worker(&mut self, ws: WorkspaceId) -> &Worker {
         self.workspaces.entry(ws).or_insert_with(|| {
-            let (queue, rx) = mpsc::channel(LANE_DEPTH);
+            let (queue, rx) = mpsc::channel(WORKER_DEPTH);
             let task = tokio::spawn(run(ws, rx, self.endpoint.clone(), self.internal_tx.clone()));
-            Lane { queue, task }
+            Worker { queue, task }
         })
     }
 
-    /// Queue `direct` on `ws`'s lane. Gives its message back when the
-    /// workspace's lane is full, for the caller to send another way.
+    /// Queue `direct` on `ws`'s worker. Gives its message back when the
+    /// workspace's worker is full, for the caller to send another way.
     pub(super) fn queue_direct(
         &mut self,
         ws: WorkspaceId,
         direct: Direct,
     ) -> Result<(), Box<NeighbourMsg>> {
-        match self.lane(ws).queue.try_reserve() {
+        match self.worker(ws).queue.try_reserve() {
             Ok(permit) => {
                 permit.send(direct);
                 Ok(())
@@ -94,30 +94,30 @@ impl Lanes {
         }
     }
 
-    /// The workspace was left: what its lane still had to send goes with it.
+    /// The workspace was left: what its worker still had to send goes with it.
     pub(super) fn close(&mut self, ws: WorkspaceId) {
-        if let Some(lane) = self.workspaces.remove(&ws) {
-            lane.task.abort();
+        if let Some(worker) = self.workspaces.remove(&ws) {
+            worker.task.abort();
         }
     }
 }
 
-impl Drop for Lanes {
+impl Drop for Workers {
     fn drop(&mut self) {
-        for lane in self.workspaces.values() {
-            lane.task.abort();
+        for worker in self.workspaces.values() {
+            worker.task.abort();
         }
     }
 }
 
-/// One workspace's lane: its direct sends, in the order they were queued.
+/// One workspace's worker: its direct sends, in the order they were queued.
 async fn run(
     ws: WorkspaceId,
     mut work: mpsc::Receiver<Direct>,
     endpoint: Endpoint,
     internal_tx: mpsc::Sender<InternalEvent>,
 ) {
-    // Connections this lane brought up and the actor has not yet heard of.
+    // Connections this worker brought up and the actor has not yet heard of.
     let mut connections: HashMap<EndpointId, Connection> = HashMap::new();
     while let Some(mut direct) = work.recv().await {
         let target = direct.addr.id;

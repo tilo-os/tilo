@@ -1247,7 +1247,7 @@ impl Widget for Music {
 
     fn needs_animation_frame(&self) -> bool {
         // Settled playback needs observation updates, not a repaint at every refresh: leave the
-        // executor its PCM lane. Startup, worker replies and animations still wake it.
+        // executor its PCM queue. Startup, worker replies and animations still wake it.
         (self.pb.playing && ui::time::now() >= self.last_tick + super::PLAYBACK_POLL_INTERVAL)
             || self.audio.needs_poll()
             || self.resource_stream_invocation.is_some()

@@ -1,4 +1,4 @@
-//! The bar's lane across the passes of one layout.
+//! The bar's gutter across the passes of one layout.
 
 use std::collections::HashMap;
 
@@ -41,7 +41,7 @@ fn pass(
 
 /// A parent sizing itself to its content lays the view out in a box other than the one it gets.
 #[test]
-fn a_lane_needed_only_in_a_box_measured_on_the_way_is_given_back() {
+fn a_gutter_needed_only_in_a_box_measured_on_the_way_is_given_back() {
     let mut lines = Column::new().with_intrinsic_height();
     for i in 0..4 {
         lines = lines.push(Box::new(Text::new(&format!("line {i}"))));
@@ -52,16 +52,16 @@ fn a_lane_needed_only_in_a_box_measured_on_the_way_is_given_back() {
     let node = scroll.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
 
     assert!(pass(&mut scroll, &mut taffy, node, &nodes, 20.0));
-    let lane = |taffy: &TaffyTree<()>| {
+    let gutter = |taffy: &TaffyTree<()>| {
         taffy.style(node).unwrap().padding.right != taffy::LengthPercentage::length(0.0)
     };
-    assert!(lane(&taffy), "the short box overflows: a lane");
+    assert!(gutter(&taffy), "the short box overflows: a gutter");
 
     let settled = (0..4).any(|_| !pass(&mut scroll, &mut taffy, node, &nodes, 300.0));
     assert!(settled, "the real box settles");
     assert!(
-        !lane(&taffy),
-        "the content fits the box it gets, so its bar's lane is given back"
+        !gutter(&taffy),
+        "the content fits the box it gets, so its bar's gutter is given back"
     );
 }
 
@@ -69,7 +69,7 @@ fn a_lane_needed_only_in_a_box_measured_on_the_way_is_given_back() {
 /// scroll view no width, where the wrapped page is far taller than the window, and the next
 /// gives it its place, where the page fits.
 #[test]
-fn content_that_overflowed_before_the_view_had_its_place_keeps_no_lane() {
+fn content_that_overflowed_before_the_view_had_its_place_keeps_no_gutter() {
     let page = || -> crate::widget::Element {
         let mut column = Column::new().with_intrinsic_height();
         for _ in 0..6 {
@@ -108,22 +108,22 @@ fn content_that_overflowed_before_the_view_had_its_place_keeps_no_lane() {
         harness
             .resize((width, 760))
             .unwrap_or_else(|error| panic!("{width} px: {error:?}"));
-        let lane = harness
+        let gutter = harness
             .with_widget_mut(|scroll: &mut Scrollable| scroll.reserve_vertical)
             .unwrap();
-        assert!(!lane, "{width} px: the page fits, so no lane is kept");
+        assert!(!gutter, "{width} px: the page fits, so no gutter is kept");
     }
 }
 
 /// A place on a canvas that hugs what it holds, up to a cap: the region
 /// measures the scroll view at its natural height (a probe solve, in a copy of
 /// the tree) and places it no taller than the cap. Words longer than the cap
-/// overflow the real box, so its bar keeps its lane there; in the probe the
+/// overflow the real box, so its bar keeps its gutter there; in the probe the
 /// view is as tall as its words and needs none. Both solves run the same
-/// widget, and the lane one tree decided must not be taken for the other's,
+/// widget, and the gutter one tree decided must not be taken for the other's,
 /// or the window settles on no frame at all.
 #[test]
-fn a_view_measured_at_its_natural_height_and_placed_at_a_cap_settles_with_its_lane() {
+fn a_view_measured_at_its_natural_height_and_placed_at_a_cap_settles_with_its_gutter() {
     use crate::widget::{Manual, MeasureConstraint};
     const CAP: f64 = 120.0;
     let mut words = Column::new().with_intrinsic_height();
@@ -165,7 +165,7 @@ fn a_view_measured_at_its_natural_height_and_placed_at_a_cap_settles_with_its_la
     harness.relayout();
     assert_eq!(harness.take_skip_report(), None, "every frame lays out");
     harness.recompose().expect("a frame after settles too");
-    let (lane, height) = harness
+    let (gutter, height) = harness
         .with_widget_mut(|scroll: &mut Scrollable| (scroll.reserve_vertical, scroll.rect.height()))
         .unwrap();
     assert!(
@@ -173,7 +173,7 @@ fn a_view_measured_at_its_natural_height_and_placed_at_a_cap_settles_with_its_la
         "the view stands at the cap: {height}"
     );
     assert!(
-        lane,
-        "the words overflow the cap, so the bar keeps its lane"
+        gutter,
+        "the words overflow the cap, so the bar keeps its gutter"
     );
 }

@@ -12,9 +12,9 @@ fn canonical(evidence: &ContinuationEvidence) -> Vec<u8> {
 }
 
 tilo_test_env::scenario! {
-    fn an_effective_primitive_fires_the_same_on_every_lane;
+    fn an_effective_primitive_fires_the_same_on_every_endpoint;
 
-    phase effective_primitive_fixed_approval_is_what_every_lane_fires;
+    phase effective_primitive_fixed_approval_is_what_every_endpoint_fires;
     {
         let original = encoded(1);
         let spec =

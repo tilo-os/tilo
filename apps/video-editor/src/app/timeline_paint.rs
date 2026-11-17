@@ -94,7 +94,7 @@ impl VideoEditorApp {
     #[allow(
         clippy::indexing_slicing,
         clippy::too_many_lines,
-        reason = "timeline rendering indexes validated lane geometry and keeps ruler, headers, clips, and scrollbars in one coordinate pass"
+        reason = "timeline rendering indexes validated track geometry and keeps ruler, headers, clips, and scrollbars in one coordinate pass"
     )]
     #[expect(
         clippy::many_single_char_names,
@@ -136,7 +136,7 @@ impl VideoEditorApp {
         // readings rather than one run of digits.
         let tick_step = nice_tick(self.zoom / self.text_scale);
         let start_t = self.scroll.max(0.0);
-        let end_t = self.x_to_time(r.lanes.x1, &r.lanes);
+        let end_t = self.x_to_time(r.tracks.x1, &r.tracks);
         let first_tick = (start_t / tick_step).floor();
         let ticks = (0u32..)
             .map(|k| (first_tick + f64::from(k)) * tick_step)
@@ -153,9 +153,9 @@ impl VideoEditorApp {
         let peer_name = caption(theme);
         let peer_tags = crate::presence::place_peer_tags(
             presence,
-            r.lanes,
+            r.tracks,
             &claimed,
-            |t| self.time_to_x(t, &r.lanes),
+            |t| self.time_to_x(t, &r.tracks),
             // The chip's label plus its insets either side.
             |name| text_width(tr, name, &peer_name) + 2.0 * S2,
         );
@@ -171,7 +171,7 @@ impl VideoEditorApp {
             if on_clip.is_some() || m.name.is_empty() {
                 continue;
             }
-            let x = self.time_to_x(*at, &r.lanes) + S2;
+            let x = self.time_to_x(*at, &r.tracks) + S2;
             let span = (x, x + text_width(tr, &m.name, &name_style));
             let all: Vec<(f64, f64)> = claimed.iter().chain(&marker_names).copied().collect();
             if clear_of(&all, span.0, span.1) && span.1 <= chip_x0 - S1 {
@@ -181,7 +181,7 @@ impl VideoEditorApp {
         }
         claimed.extend(marker_names);
         for t in ticks {
-            let x = self.time_to_x(t, &r.lanes);
+            let x = self.time_to_x(t, &r.tracks);
             if x >= r.ruler.x0 - 1.0 && x <= r.ruler.x1 {
                 stroke_line(scene, tf, tick_ink, x, r.ruler.y1 - S2, x, r.ruler.y1, 1.0);
                 let words = timecode(t, self.project.fps);
@@ -193,11 +193,11 @@ impl VideoEditorApp {
                 if b <= chip_x0 - S1 && clear_of(&claimed, a, b) {
                     text(scene, tr, tf, &words, &label, c.text_dim, x + S1, label_top);
                 }
-                // faint grid line down the lanes, while there are clips
+                // faint grid line down the tracks, while there are clips
                 // to read against it
                 let grid_bottom = self.playhead_bottom(r);
-                if grid_bottom > r.lanes.y0 {
-                    stroke_line(scene, tf, grid_ink, x, r.lanes.y0, x, grid_bottom, 1.0);
+                if grid_bottom > r.tracks.y0 {
+                    stroke_line(scene, tf, grid_ink, x, r.tracks.y0, x, grid_bottom, 1.0);
                 }
             }
         }
@@ -206,7 +206,7 @@ impl VideoEditorApp {
         // Knowing the mix clipped and not knowing where means scrubbing ninety seconds;
         // these marks stay until the levels change.
         for over in &self.mix.overs {
-            let x = self.time_to_x(*over, &r.lanes);
+            let x = self.time_to_x(*over, &r.tracks);
             if x < r.ruler.x0 || x > r.ruler.x1 {
                 continue;
             }
@@ -224,8 +224,12 @@ impl VideoEditorApp {
         // timeline needs a reason on screen.
         if self.project.has_marks() {
             let (from, to) = self.project.export_range();
-            let ax = self.time_to_x(from, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
-            let bx = self.time_to_x(to, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
+            let ax = self
+                .time_to_x(from, &r.tracks)
+                .clamp(r.tracks.x0, r.tracks.x1);
+            let bx = self
+                .time_to_x(to, &r.tracks)
+                .clamp(r.tracks.x0, r.tracks.x1);
             let mark = c.text_primary;
             if bx > ax {
                 fill_rect(
@@ -238,8 +242,8 @@ impl VideoEditorApp {
             // A bracket at each mark, opening towards the span it keeps.
             for (at, towards) in [(self.project.mark_in, 1.0), (self.project.mark_out, -1.0)] {
                 let Some(t) = at else { continue };
-                let x = self.time_to_x(t, &r.lanes);
-                if x < r.lanes.x0 - S2 || x > r.lanes.x1 + S2 {
+                let x = self.time_to_x(t, &r.tracks);
+                if x < r.tracks.x0 - S2 || x > r.tracks.x1 + S2 {
                     continue;
                 }
                 let far = x + towards * S2;
@@ -250,7 +254,7 @@ impl VideoEditorApp {
                     mark,
                 );
                 // Only down the ruler: the veil below already draws the
-                // boundary across the lanes.
+                // boundary across the tracks.
                 stroke_line(scene, tf, mark, x, r.ruler.y0, x, r.ruler.y1, 2.0);
             }
         }
@@ -258,7 +262,7 @@ impl VideoEditorApp {
         // --- markers ---
         // The project's own, plus each clip's rebased onto where that clip sits.
         for (at, marker, on_clip) in self.project.all_markers() {
-            let x = self.time_to_x(at, &r.lanes);
+            let x = self.time_to_x(at, &r.tracks);
             if x < r.ruler.x0 - 1.0 || x > r.ruler.x1 {
                 continue;
             }
@@ -268,7 +272,7 @@ impl VideoEditorApp {
                 tf,
                 with_alpha(col, 0.55),
                 x,
-                r.lanes.y0,
+                r.tracks.y0,
                 x,
                 r.timeline.y1,
                 1.0,
@@ -300,34 +304,34 @@ impl VideoEditorApp {
             }
         }
 
-        // --- lanes + headers + clips ---
-        // Lanes scroll under the ruler: their stripes and heads stay inside
+        // --- tracks + headers + clips ---
+        // Tracks scroll under the ruler: their stripes and heads stay inside
         // the band below it.
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             tf,
-            &Rect::new(r.timeline.x0, r.lanes.y0, r.timeline.x1, r.timeline.y1),
+            &Rect::new(r.timeline.x0, r.tracks.y0, r.timeline.x1, r.timeline.y1),
         );
-        let lanes = self.lane_rects(r);
-        // One lift of the ground for a lane and its head, so the two read as
+        let tracks = self.track_rects(r);
+        // One lift of the ground for a track and its head, so the two read as
         // one row of the timeline.
         let stripe = c.lift_on(ground, 0.5);
         let head_radius = f64::from(theme.tokens.radii.item);
-        for (tid, _, lane) in &lanes {
-            let stripe_rect = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
+        for (tid, _, track) in &tracks {
+            let stripe_rect = Rect::new(r.tracks.x0, track.y0, r.tracks.x1, track.y1);
             fill_rect(scene, tf, stripe_rect, stripe);
-            // The head: the same lift a step clear of its lane stripe, with
+            // The head: the same lift a step clear of its track stripe, with
             // its name, toggles, mix readout and meter on the measured bands of
             // `chrome_layout::track_head` — the same bands the hit-test reads.
-            let header = VideoEditorApp::track_head_rect(r, lane);
+            let header = VideoEditorApp::track_head_rect(r, track);
             let head = self.track_head_layout(header);
             fill_round(scene, tf, header, head_radius, stripe);
             let track = self.project.track(*tid);
             let name = track.map_or("?", |t| t.name.as_str());
             // Elided to its band, which ends a step short of the toggles: a
-            // lane a member named "Voiceover" must not run under them.
+            // track a member named "Voiceover" must not run under them.
             let name_style = theme.text(TextRole::Label).strong();
             let name = elide_at(name, head.name.width() as f32, &name_style, tr);
             let name_y = text_baseline(head.name, &name_style, tr);
@@ -341,7 +345,7 @@ impl VideoEditorApp {
                 head.name.x0,
                 name_y,
             );
-            // Once off unity or centre, say where: a lane at +6 dB that says so nowhere
+            // Once off unity or centre, say where: a track at +6 dB that says so nowhere
             // is how a mix ends up loud for a reason nobody can find.
             let line = match track.filter(|t| t.mix_is_set()) {
                 Some(t) if t.gain_db.abs() > 1e-9 && t.pan.abs() > 1e-9 => {
@@ -366,7 +370,7 @@ impl VideoEditorApp {
             );
             // Fed from the mix that made the sound, so this is the measurement the master
             // meter and the clip warning read, never a second opinion. Drawn only on a
-            // lane that can carry sound: a bar that can never move reads as a broken
+            // track that can carry sound: a bar that can never move reads as a broken
             // output.
             if crate::audio::track_carries_sound(&self.project, *tid) {
                 let level = self.mix.track(*tid);
@@ -410,36 +414,36 @@ impl VideoEditorApp {
         }
 
         scene.pop_layer();
-        // Clip bodies clipped to the lane area so they don't bleed over the gutter/ruler.
+        // Clip bodies clipped to the track area so they don't bleed over the gutter/ruler.
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             tf,
-            &Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1),
+            &Rect::new(r.tracks.x0, r.tracks.y0, r.tracks.x1, r.timeline.y1),
         );
-        // A locked lane is hatched across its width, under its clips, so "my drag did
+        // A locked track is hatched across its width, under its clips, so "my drag did
         // nothing" has a visible reason rather than reading as a dead app.
-        for (tid, _kind, lane) in &lanes {
+        for (tid, _kind, track) in &tracks {
             if self.project.track(*tid).is_some_and(|t| t.locked) {
-                let full = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
+                let full = Rect::new(r.tracks.x0, track.y0, r.tracks.x1, track.y1);
                 hatch_rect(scene, tf, ui::surface::edge_on(ground), full, 0.0);
             }
         }
         let links = LinkMarks::build(&self.project, &self.selection);
         let mut drawn: Vec<(ClipId, Rect)> = Vec::new();
         let mut tied: Vec<(Uuid, Rect)> = Vec::new();
-        for (tid, kind, lane) in &lanes {
+        for (tid, kind, track) in &tracks {
             for clip in self.project.clips_on(*tid) {
                 self.draw_clip(
                     &mut PaintCtx::new(scene, tf, tr, theme),
                     clip,
-                    lane,
+                    track,
                     *kind,
                     r,
                     &links,
                 );
-                let rect = self.clip_rect(clip, lane, r);
+                let rect = self.clip_rect(clip, track, r);
                 drawn.push((clip.id, rect));
                 if let Some(link) = clip.link.filter(|_| links.group_selected(clip)) {
                     tied.push((link, rect));
@@ -461,8 +465,8 @@ impl VideoEditorApp {
             if link_a != link_b {
                 continue;
             }
-            let x = above.x0.max(below.x0).clamp(r.lanes.x0, r.lanes.x1) + 1.0;
-            if x <= r.lanes.x0 || x >= r.lanes.x1 {
+            let x = above.x0.max(below.x0).clamp(r.tracks.x0, r.tracks.x1) + 1.0;
+            if x <= r.tracks.x0 || x >= r.tracks.x1 {
                 continue;
             }
             stroke_line(scene, tf, c.intent.you, x, above.y1, x, below.y0, 1.5);
@@ -484,11 +488,15 @@ impl VideoEditorApp {
         // like one that will.
         if self.project.has_marks() {
             let (from, to) = self.project.export_range();
-            let ax = self.time_to_x(from, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
-            let bx = self.time_to_x(to, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
+            let ax = self
+                .time_to_x(from, &r.tracks)
+                .clamp(r.tracks.x0, r.tracks.x1);
+            let bx = self
+                .time_to_x(to, &r.tracks)
+                .clamp(r.tracks.x0, r.tracks.x1);
             for out in [
-                Rect::new(r.lanes.x0, r.lanes.y0, ax, r.timeline.y1),
-                Rect::new(bx, r.lanes.y0, r.lanes.x1, r.timeline.y1),
+                Rect::new(r.tracks.x0, r.tracks.y0, ax, r.timeline.y1),
+                Rect::new(bx, r.tracks.y0, r.tracks.x1, r.timeline.y1),
             ] {
                 if out.width() > 0.5 {
                     fill_rect(scene, tf, out, veil);
@@ -496,12 +504,12 @@ impl VideoEditorApp {
             }
         }
         // Over the mute and lock veils: a peer's selection has to stay legible on a
-        // greyed lane, which is exactly when knowing someone else is on a locked clip
+        // greyed track, which is exactly when knowing someone else is on a locked clip
         // matters.
         crate::presence::draw_peer_clips(
             &mut crate::presence::PeerPaintCtx::new(scene, tf, tr, theme, presence),
             &drawn,
-            Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1),
+            Rect::new(r.tracks.x0, r.tracks.y0, r.tracks.x1, r.timeline.y1),
         );
 
         // Live rubber band, over the clips it is sweeping: your colour, as a
@@ -525,8 +533,8 @@ impl VideoEditorApp {
         // The editor's own cursor through time: primary ink, the strongest
         // mark the timeline draws that is not a person.
         let head_ink = c.text_primary;
-        let px = self.time_to_x(self.playhead, &r.lanes);
-        if px >= r.lanes.x0 - 0.5 && px <= r.lanes.x1 + 0.5 {
+        let px = self.time_to_x(self.playhead, &r.tracks);
+        if px >= r.tracks.x0 - 0.5 && px <= r.tracks.x1 + 0.5 {
             stroke_line(
                 scene,
                 tf,
@@ -591,13 +599,13 @@ impl VideoEditorApp {
             Button::paint(scene, tf, tr, theme, &face);
         }
 
-        // Lanes that go on past the band fade out there.
-        let band = Rect::new(r.timeline.x0, r.lanes.y0, r.timeline.x1, r.timeline.y1);
-        let m = self.lanes_metrics(r);
-        if self.lane_scroll > 0.5 {
+        // Tracks that go on past the band fade out there.
+        let band = Rect::new(r.timeline.x0, r.tracks.y0, r.timeline.x1, r.timeline.y1);
+        let m = self.tracks_metrics(r);
+        if self.track_scroll > 0.5 {
             ui::surface::content_edge_fade(scene, tf, band, ui::surface::ContentEdge::Top, ground);
         }
-        if m.max_scroll() - self.lane_scroll > 0.5 {
+        if m.max_scroll() - self.track_scroll > 0.5 {
             ui::surface::content_edge_fade(
                 scene,
                 tf,
@@ -607,10 +615,10 @@ impl VideoEditorApp {
             );
         }
 
-        // Horizontal scrollbar, floated over the bottom of the lane area,
-        // and the lanes' vertical one at their trailing edge.
+        // Horizontal scrollbar, floated over the bottom of the track area,
+        // and the tracks' vertical one at their trailing edge.
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Timeline, r);
-        self.draw_scrollbar(scene, tf, theme, ScrollPane::Lanes, r);
+        self.draw_scrollbar(scene, tf, theme, ScrollPane::Tracks, r);
     }
 
     /// The tag stops a sibling step short of the zoom chip rather than running under it,
@@ -625,7 +633,7 @@ impl VideoEditorApp {
         let tag_style = caption(theme).numeric().strong();
         let tw = text_width(tr, &tag, &tag_style);
         let th = line_height(tr, &tag_style);
-        let px = self.time_to_x(self.playhead, &r.lanes);
+        let px = self.time_to_x(self.playhead, &r.tracks);
         let chip = self.zoom_chip_rect(r);
         let tagx = (px + S2).min(chip.x0 - tw - S1 - S2).max(r.ruler.x0 + S1);
         let tag_top = r.ruler.y0 + (r.ruler.height() - th) / 2.0;
@@ -663,7 +671,7 @@ impl VideoEditorApp {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "each clip's linked, selected, media, and accessibility treatments must share the exact same lane geometry"
+        reason = "each clip's linked, selected, media, and accessibility treatments must share the exact same track geometry"
     )]
     #[expect(
         clippy::many_single_char_names,
@@ -673,15 +681,15 @@ impl VideoEditorApp {
         &self,
         ctx: &mut PaintCtx<'_>,
         clip: &Clip,
-        lane: &Rect,
+        track: &Rect,
         kind: TrackKind,
         r: &Regions,
         links: &LinkMarks,
     ) {
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let cr = self.clip_rect(clip, lane, r);
-        if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
+        let cr = self.clip_rect(clip, track, r);
+        if cr.x1 < r.tracks.x0 || cr.x0 > r.tracks.x1 {
             return;
         }
         let radius = f64::from(theme.tokens.radii.item);
@@ -834,18 +842,18 @@ impl VideoEditorApp {
                     .paint(ctx.scene, ctx.transform, ctx.text, theme);
             }
         }
-        // A clip that will not be heard or seen, or whose lane is locked, greys back so
-        // the lane's state is legible from the clips and not only the header.
+        // A clip that will not be heard or seen, or whose track is locked, greys back so
+        // the track's state is legible from the clips and not only the header.
         let dimmed = !self.project.track_audible(clip.track)
             || self.project.track(clip.track).is_some_and(|t| t.locked);
         if dimmed {
             fill_round(ctx.scene, ctx.transform, cr, radius, clip_veil(theme));
             head_col = c.text_primary;
         }
-        // The lane layer is clipped, so a clip scrolled off to the left had its name,
+        // The track layer is clipped, so a clip scrolled off to the left had its name,
         // badge and head marker drawn outside the strip. Everything below anchors here.
-        let vx0 = cr.x0.max(r.lanes.x0);
-        let vx1 = cr.x1.min(r.lanes.x1);
+        let vx0 = cr.x0.max(r.tracks.x0);
+        let vx1 = cr.x1.min(r.tracks.x1);
         let seen = (vx1 - vx0).max(0.0);
 
         // name label
@@ -935,15 +943,15 @@ impl VideoEditorApp {
                 ctx.scene,
                 ctx.transform,
                 strip_fill,
-                (cr.x0 + 3.0).max(r.lanes.x0),
+                (cr.x0 + 3.0).max(r.tracks.x0),
                 y,
-                (cr.x1 - 3.0).min(r.lanes.x1),
+                (cr.x1 - 3.0).min(r.tracks.x1),
                 y,
                 1.0,
             );
             for t in key_times {
-                let x = self.time_to_x(t, &r.lanes);
-                if x < cr.x0 - 1.0 || x > cr.x1 + 1.0 || x < r.lanes.x0 || x > r.lanes.x1 {
+                let x = self.time_to_x(t, &r.tracks);
+                if x < cr.x0 - 1.0 || x > cr.x1 + 1.0 || x < r.tracks.x0 || x > r.tracks.x1 {
                     continue;
                 }
                 let s = 3.5;

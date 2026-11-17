@@ -454,7 +454,7 @@ impl CliError {
             Self::NoDiskForHost {
                 arch, local_build, ..
             } => format!(
-                "each architecture publishes on its own, so {arch}'s lane may still be running or may have failed: fgj run list -R tilo/tilo   |   pick a tag that has one: tilo-vm vm create <name> --tag <tag>   |   {}",
+                "each architecture publishes on its own, so {arch}'s job may still be running or may have failed: fgj run list -R tilo/tilo   |   pick a tag that has one: tilo-vm vm create <name> --tag <tag>   |   {}",
                 no_disk_help(local_build.as_deref())
             ),
             Self::NoHypervisor(missing) => missing.fix.clone(),

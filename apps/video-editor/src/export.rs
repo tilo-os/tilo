@@ -1638,7 +1638,10 @@ mod tests {
             );
 
             let p = project_with_tone(&clip, &tone, 1.5, false);
-            assert!(crate::audio::has_audio(&p), "the project has an audio lane");
+            assert!(
+                crate::audio::has_audio(&p),
+                "the project has an audio track"
+            );
 
             let out = std::env::temp_dir().join(format!("tilo-ve-audio-{pid}.mp4"));
             std::fs::remove_file(&out).ok();

@@ -19,7 +19,7 @@
 //! A program the API runs (`POST …/programs`) runs in a program session of
 //! its own: the `tilo` tool's session (its `let`s, the references its answers
 //! showed, the preview `confirm` applies, the steps `undo` takes back) on a
-//! lane of the workspace's session that only that program session's calls
+//! queue of the workspace's session that only that program session's calls
 //! take. The caller names the program session each later program continues;
 //! at most [`MAX_PROGRAM_SESSIONS`] are kept, the least recently used ending
 //! first.
@@ -108,10 +108,10 @@ pub struct Session {
     connection: Arc<Connection>,
     /// The server, which answers the account's own actions.
     server: std::sync::Weak<crate::Server>,
-    /// The sessions in workspaces the relay hosts, by [`lane`], each entered
+    /// The sessions in workspaces the relay hosts, by [`queue`], each entered
     /// under its own lock.
     served: tokio::sync::Mutex<HashMap<String, Entered<Served>>>,
-    /// The sessions in workspaces the person's devices host, by [`lane`].
+    /// The sessions in workspaces the person's devices host, by [`queue`].
     on_devices: tokio::sync::Mutex<HashMap<String, Entered<OnDevice>>>,
     /// The program sessions, `(workspace, id)`, the most recently used last.
     programs: tokio::sync::Mutex<Vec<(String, String)>>,
@@ -290,7 +290,7 @@ impl Session {
     ) -> Result<Arc<Served>, RelayError> {
         let slot = {
             let mut runs = self.served.lock().await;
-            let slot = Arc::clone(runs.entry(lane(workspace, program)).or_default());
+            let slot = Arc::clone(runs.entry(queue(workspace, program)).or_default());
             drop(runs);
             slot
         };
@@ -327,7 +327,7 @@ impl Session {
         self.serve_in(workspace, None, request).await
     }
 
-    /// [`Self::serve`], on the lane of the program session `program` when it
+    /// [`Self::serve`], on the queue of the program session `program` when it
     /// names one.
     async fn serve_in(&self, workspace: &str, program: Option<&str>, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
@@ -408,14 +408,14 @@ impl Session {
         workspace: &str,
         program: Option<&str>,
     ) -> Result<Option<Arc<OnDevice>>, String> {
-        let lane = lane(workspace, program);
+        let queue = queue(workspace, program);
         // A workspace the session already works in on the relay is the relay's.
-        if self.served.lock().await.contains_key(&lane) {
+        if self.served.lock().await.contains_key(&queue) {
             return Ok(None);
         }
         let slot = {
             let mut runs = self.on_devices.lock().await;
-            let slot = Arc::clone(runs.entry(lane).or_default());
+            let slot = Arc::clone(runs.entry(queue).or_default());
             drop(runs);
             slot
         };
@@ -754,12 +754,12 @@ impl Session {
         let over = sessions.len().saturating_sub(MAX_PROGRAM_SESSIONS);
         let ended: Vec<String> = sessions
             .drain(..over)
-            .map(|(workspace, id)| lane(&workspace, Some(&id)))
+            .map(|(workspace, id)| queue(&workspace, Some(&id)))
             .collect();
         drop(sessions);
-        for lane in &ended {
-            self.served.lock().await.remove(lane);
-            self.on_devices.lock().await.remove(lane);
+        for queue in &ended {
+            self.served.lock().await.remove(queue);
+            self.on_devices.lock().await.remove(queue);
         }
         Ok(id)
     }
@@ -803,9 +803,9 @@ impl Session {
     }
 }
 
-/// The key a workspace's run is kept under: the workspace, or the lane of
+/// The key a workspace's run is kept under: the workspace, or the queue of
 /// one program session there.
-fn lane(workspace: &str, program: Option<&str>) -> String {
+fn queue(workspace: &str, program: Option<&str>) -> String {
     program.map_or_else(|| workspace.to_owned(), |id| format!("{workspace} {id}"))
 }
 

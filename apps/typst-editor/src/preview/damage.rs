@@ -78,12 +78,12 @@ impl PreviewPane {
         };
         let mut fixed: Vec<Piece> = self
             .viewport
-            .scrollbar_lanes()
+            .scrollbar_gutters()
             .into_iter()
             .zip(0..)
-            .map(|(lane, key)| Piece {
+            .map(|(gutter, key)| Piece {
                 key,
-                rect: lane,
+                rect: gutter,
                 paint: bars,
             })
             .collect();
@@ -130,7 +130,7 @@ impl PreviewPane {
                     colors.intent.selection_tint,
                 ],
             },
-            overlays: self.viewport.scrollbar_lanes(),
+            overlays: self.viewport.scrollbar_gutters(),
             pieces,
             fixed,
         });

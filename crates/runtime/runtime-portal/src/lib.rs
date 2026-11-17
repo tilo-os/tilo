@@ -242,40 +242,40 @@ mod tests {
 pub mod fd_transport;
 
 #[cfg(unix)]
-pub mod descriptor_lane;
+pub mod descriptors;
 
 #[cfg(unix)]
-pub type DescriptorLane = Option<descriptor_lane::DescriptorSender>;
+pub type Descriptors = Option<descriptors::DescriptorSender>;
 #[cfg(not(unix))]
-pub type DescriptorLane = Option<std::convert::Infallible>;
+pub type Descriptors = Option<std::convert::Infallible>;
 
-/// A connected stream that carries a descriptor lane on the hosts that have
-/// one. The wrapping lives here, beside the lane it makes, so a caller never
+/// A connected stream that carries a descriptor stream on the hosts that have
+/// one. The wrapping lives here, beside the descriptor stream it makes, so a caller never
 /// selects a target to hand a service what the person selected.
 #[cfg(unix)]
 pub trait DescriptorStreamSource: AsyncRead + AsyncWrite + Sized {
-    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane);
+    fn with_descriptors(self) -> (impl AsyncRead + AsyncWrite, Descriptors);
 }
 
 #[cfg(unix)]
 impl DescriptorStreamSource for UnixStream {
-    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane) {
-        let lane = descriptor_lane::DescriptorSender::new();
+    fn with_descriptors(self) -> (impl AsyncRead + AsyncWrite, Descriptors) {
+        let sender = descriptors::DescriptorSender::new();
         (
-            descriptor_lane::DescriptorStream::sending(self, lane.clone()),
-            Some(lane),
+            descriptors::DescriptorStream::sending(self, sender.clone()),
+            Some(sender),
         )
     }
 }
 
 #[cfg(not(unix))]
 pub trait DescriptorStreamSource: AsyncRead + AsyncWrite + Sized {
-    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane);
+    fn with_descriptors(self) -> (impl AsyncRead + AsyncWrite, Descriptors);
 }
 
 #[cfg(not(unix))]
 impl<T: AsyncRead + AsyncWrite> DescriptorStreamSource for T {
-    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane) {
+    fn with_descriptors(self) -> (impl AsyncRead + AsyncWrite, Descriptors) {
         (self, None)
     }
 }

@@ -281,7 +281,7 @@ fn attributed_agent(actor: &super::BrokerActor, person: Option<&str>) -> Result<
 }
 
 struct HandedRelease {
-    descriptors: Option<runtime_portal::descriptor_lane::ReceivedDescriptors>,
+    descriptors: Option<runtime_portal::descriptors::ReceivedDescriptors>,
     numbers: Vec<u32>,
 }
 impl Drop for HandedRelease {

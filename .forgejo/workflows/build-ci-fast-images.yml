@@ -30,7 +30,7 @@ concurrency:
 jobs:
   build:
     # Both images are x86_64 only: ci-fast copies the builder's x86_64 Rust
-    # toolchain, and every lane that uses them is an amd64 runner.
+    # toolchain, and every job that uses them is an amd64 runner.
     runs-on: runner
     timeout-minutes: 45
     env:

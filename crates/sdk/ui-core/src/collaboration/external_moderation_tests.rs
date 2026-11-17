@@ -1,6 +1,6 @@
-//! The external-moderation lane as a dispatched operation target and an
+//! The external-moderation endpoint as a dispatched operation target and an
 //! invocation scope use it: the exact record route, the exact invocation and
-//! operation, one bounded lane per route.
+//! operation, one bounded endpoint per route.
 
 use crate::collaboration::external_moderation::{admit_for_test, enqueue};
 use crate::collaboration::{CollabRequest, RouteSpec};

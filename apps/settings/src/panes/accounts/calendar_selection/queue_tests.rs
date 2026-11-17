@@ -37,7 +37,7 @@ fn a_pending_calendar_vault_read_does_not_block_cancel_or_accept_changed_scope()
         }
         let before = root.store().get(&id).cloned();
         release.send(()).unwrap();
-        pane.settle_lane();
+        pane.settle_queue();
         assert_eq!(root.store().get(&id), before.as_ref(), "{change}");
         assert!(
             root.store()

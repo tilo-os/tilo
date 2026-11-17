@@ -3860,6 +3860,9 @@
             "format": "uint64",
             "minimum": 0
           },
+          "detail": {
+            "description": "Why it failed: the trap's words, or what did not compile."
+          },
           "steps": {
             "type": "array",
             "items": true,
@@ -16376,6 +16379,10 @@
                     "body": {
                       "type": "string"
                     },
+                    "column": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
                     "files": {
                       "items": {
                         "additionalProperties": false,
@@ -16433,10 +16440,6 @@
                     "id": {
                       "type": "string"
                     },
-                    "lane": {
-                      "minimum": 0,
-                      "type": "integer"
-                    },
                     "parents": {
                       "items": {
                         "type": "string"
@@ -16488,7 +16491,7 @@
                     "time",
                     "parents",
                     "refs",
-                    "lane",
+                    "column",
                     "files"
                   ],
                   "type": "object"
@@ -27977,7 +27980,7 @@
         ],
         "description": ""
       },
-      "video-editor.project.trim-lanes.Arguments": {
+      "video-editor.project.trim-tracks.Arguments": {
         "type": "object",
         "properties": {
           "tracks": {
@@ -34391,8 +34394,8 @@
     {
       "app": "so.tilo.video-editor",
       "resource": "video-editor.project",
-      "action": "trim-lanes",
-      "arguments": "#/components/schemas/video-editor.project.trim-lanes.Arguments"
+      "action": "trim-tracks",
+      "arguments": "#/components/schemas/video-editor.project.trim-tracks.Arguments"
     },
     {
       "app": "so.tilo.video-editor",

@@ -144,7 +144,7 @@ tilo_test_env::scenario! {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
-    phase deferred_both_actual_encoder_lanes_build_once_per_invocation;
+    phase deferred_both_actual_encoder_inputs_build_once_per_invocation;
     {
         let calls = Arc::new(AtomicUsize::new(0));
         let resources = [resource(spec(&calls))];
@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
-    phase deferred_wrong_builder_type_refuses_both_lanes;
+    phase deferred_wrong_builder_type_refuses_both_inputs;
     {
         let calls = Arc::new(AtomicUsize::new(0));
         let count = calls.clone();
@@ -201,7 +201,7 @@ tilo_test_env::scenario! {
     {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut changed = spec(&calls);
-        let Lane::Deferred { type_id } = &mut changed.type_mut().lane else {
+        let InputMode::Deferred { type_id } = &mut changed.type_mut().input else {
             panic!("deferred")
         };
         *type_id = "test.replaced".into();

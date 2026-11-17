@@ -291,7 +291,7 @@ Fedora's `linux-firmware` does not ship the AP6256 files `brcmfmac` loads.
 `brcmfmac43456-sdio.{bin,clm_blob,txt}`, pinned by SHA-256 in
 `os/external-assets/github-assets.tsv`, into
 `os/hardware/firmware/orangepi-3b-v2-1/` with their manifest; the aarch64 dev
-lane runs it before building the board image. The SDIO node has no
+job runs it before building the board image. The SDIO node has no
 `brcm,board-type`, so the driver first asks for names carrying the machine's
 compatible string, `brcmfmac43456-sdio.xunlong,orangepi-3b-v2.1.*`; the
 profile installs both sets. The NVRAM text names Broadcom's sample MAC
@@ -326,18 +326,18 @@ builds mainline U-Boot for `orangepi-3b-rk3566` and
 UKI. The first partition must start at or after LBA 32768; a closer partition
 is refused before any loader byte is written.
 
-The main development ARM lane builds an unsigned, unvalidated Orange Pi disk
+The main development ARM job builds an unsigned, unvalidated Orange Pi disk
 candidate. It is not a release or an accepted device update.
 
 A signed source-pinned board image uses Build / OS's explicit main-branch
 `workflow_dispatch` with `release=true` and `hardware_profile=orangepi-3b-v2-1`.
 Leave Lenovo firmware inputs empty: Orange Pi firmware and loader inputs are
-checksum-pinned in the repository. The native release ARM lane independently
+checksum-pinned in the repository. The native release ARM job independently
 rebuilds, seals and disk-installs the board image, then uses the existing release
 signer, SBOM, freshness and provenance checks. Promotion verifies the exact
 source, aarch64 profile and hardware-definition hash before publishing
 `code.tilo.so/tilo/tilo:orangepi-3b-v2-1-<full-source-commit>` by preserved digest.
-Registry/signing access failures stop the lane; no development trust is accepted.
+Registry/signing access failures stop the job; no development trust is accepted.
 Orange Pi uses the ordinary public Tilo image repository with repository-pinned
 firmware. The owner-visibility restriction applies to independently imported Lenovo
 firmware; selecting Orange Pi cannot admit those Lenovo firmware inputs.

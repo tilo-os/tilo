@@ -187,7 +187,7 @@ async fn plain_subscription_discards_stale_lag_after_explicit_unsubscribe() {
     paused_state_roundtrip(Some(LagBoundary::Unsubscribed), false).await;
 }
 
-/// A read-only state request whose reply queues on the state lane like any
+/// A read-only state request whose reply queues on the state queue like any
 /// other: a stand-in for replies waiting behind a held writer.
 fn reply_filler(workspace_id: WorkspaceId) -> Vec<u8> {
     tilo_delivery_protocol::transport_v2::encode_state(&Envelope::VoiceCalls { workspace_id })
@@ -1242,7 +1242,7 @@ async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
     }
 }
 
-/// A build that still opens the retired private action lane ends its session
+/// A build that still opens the retired private action queue ends its session
 /// instead of having its frames read as state.
 #[tokio::test]
 async fn a_retired_private_action_frame_ends_the_session() {

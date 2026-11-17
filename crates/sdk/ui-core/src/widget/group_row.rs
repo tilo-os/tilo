@@ -171,7 +171,7 @@ pub struct GroupRow {
     handle_nodes: Vec<Option<(NodeId, Style)>>,
     node: Option<NodeId>,
     run_nodes: Vec<NodeId>,
-    laid_lanes: Vec<usize>,
+    laid_sections: Vec<usize>,
     laid_collapsed: Vec<bool>,
     rect: Rect,
     node_ids: Vec<NodeId>,
@@ -192,10 +192,10 @@ pub struct GroupRow {
     /// would have drawn with.
     /// One per display the strip is partitioned across, left to right.
     /// Empty when the strip is one continuous row (a single display).
-    lanes: Vec<Lane>,
-    group_lanes: HashMap<u64, usize>,
-    focus_lane: usize,
-    pending_split_lane: Option<usize>,
+    sections: Vec<Section>,
+    group_sections: HashMap<u64, usize>,
+    focus_section: usize,
+    pending_split_section: Option<usize>,
     pending_cross_strip_detach: Option<CrossStripDetach>,
     scroll_dirty: bool,
     leading_inset: f64,
@@ -208,7 +208,7 @@ pub struct GroupRow {
     touch_pan: Option<TouchPan>,
     pointer_pan: Option<PointerPan>,
     group_reorder_target: Option<usize>,
-    group_reorder_lane: Option<usize>,
+    group_reorder_section: Option<usize>,
     pending_group_reorder: Option<(u64, usize)>,
     /// The next press carries the window it lands in from anywhere in it, its body included, as a
     /// press on its bar does: the press was made with Super held.
@@ -380,17 +380,17 @@ pub struct OutputSpan {
 }
 
 /// One display's share of a strip partitioned across displays: each holds its own groups, laid out
-/// and clipped inside its lane only, so none straddles a border and panning one never reveals
+/// and clipped inside its section only, so none straddles a border and panning one never reveals
 /// another's.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct StripLane {
+pub struct StripSection {
     pub output: u32,
     pub area: Rect,
     pub usable: f64,
     pub leading: bool,
 }
 
-/// Horizontal pan of one run of groups (the whole row, or one lane): canvas-x is the
+/// Horizontal pan of one run of groups (the whole row, or one section): canvas-x is the
 /// unscrolled coordinate, `scroll_x` how far it is panned past the viewport's edge.
 #[derive(Clone, Debug, Default)]
 pub struct Pan {
@@ -860,15 +860,15 @@ impl Pan {
 }
 
 #[derive(Clone, Debug)]
-struct Lane {
-    spec: StripLane,
+struct Section {
+    spec: StripSection,
     pan: Pan,
     built_viewport: Rect,
     shift: f64,
 }
 
-impl Lane {
-    /// The lane's area where its row rests: never inverted.
+impl Section {
+    /// The section's area where its row rests: never inverted.
     fn area(&self) -> Rect {
         let area = self.spec.area;
         Rect::new(area.x0, area.y0, area.x1.max(area.x0), area.y1.max(area.y0))
@@ -909,7 +909,7 @@ impl GroupRow {
             handle_nodes: Vec::new(),
             node: None,
             run_nodes: Vec::new(),
-            laid_lanes: Vec::new(),
+            laid_sections: Vec::new(),
             laid_collapsed: Vec::new(),
             rect: Rect::ZERO,
             node_ids: Vec::new(),
@@ -923,10 +923,10 @@ impl GroupRow {
             drag_reach: DragReach::default(),
             pan: Pan::default(),
             scroll_quantum: None,
-            lanes: Vec::new(),
-            group_lanes: HashMap::new(),
-            focus_lane: 0,
-            pending_split_lane: None,
+            sections: Vec::new(),
+            group_sections: HashMap::new(),
+            focus_section: 0,
+            pending_split_section: None,
             pending_cross_strip_detach: None,
             scroll_dirty: false,
             leading_inset: 0.0,
@@ -939,7 +939,7 @@ impl GroupRow {
             touch_pan: None,
             pointer_pan: None,
             group_reorder_target: None,
-            group_reorder_lane: None,
+            group_reorder_section: None,
             pending_group_reorder: None,
             carry_press: false,
             pending_topology_change: false,
@@ -996,18 +996,18 @@ impl GroupRow {
         reach.x1 + dx > self.rect.x0 && reach.x0 + dx < x1
     }
 
-    fn offset_lane(&mut self, lane: usize, dx: f64) {
-        let in_lane: Vec<bool> = (0..self.groups.len())
-            .map(|index| self.lane_index_of(index) == lane)
+    fn offset_section(&mut self, section: usize, dx: f64) {
+        let in_section: Vec<bool> = (0..self.groups.len())
+            .map(|index| self.section_index_of(index) == section)
             .collect();
         for (index, group) in self.groups.iter_mut().enumerate() {
-            if in_lane.get(index).copied().unwrap_or(false) {
+            if in_section.get(index).copied().unwrap_or(false) {
                 group.offset_layout(dx);
             }
         }
         for (index, handle) in self.handles.iter_mut().enumerate() {
-            let left = in_lane.get(index).copied().unwrap_or(false);
-            let right = in_lane
+            let left = in_section.get(index).copied().unwrap_or(false);
+            let right = in_section
                 .get(index.saturating_add(1))
                 .copied()
                 .unwrap_or(false);
@@ -1047,10 +1047,10 @@ impl GroupRow {
         if group.maximized || self.fullscreen_group == Some(group.id) {
             return false;
         }
-        let lane = self.lane_index_of(i);
+        let section = self.section_index_of(i);
         self.groups.iter().enumerate().any(|(j, other)| {
             j != i
-                && self.lane_index_of(j) == lane
+                && self.section_index_of(j) == section
                 && (other.maximized || self.fullscreen_group == Some(other.id))
         })
     }
@@ -1179,7 +1179,7 @@ impl GroupRow {
     }
 
     /// Reserve a canvas-x gutter before the first group so it pans with `scroll_x`; on a
-    /// partitioned strip only the leading lane carries it.
+    /// partitioned strip only the leading section carries it.
     #[must_use]
     pub fn with_leading_inset(mut self, px: f64) -> Self {
         self.leading_inset = px;
@@ -1196,19 +1196,19 @@ impl GroupRow {
     pub fn set_trailing_clear(&mut self, px: f64) {
         let px = px.max(0.0);
         self.pan.clear = px;
-        for lane in &mut self.lanes {
-            lane.pan.clear = px;
+        for section in &mut self.sections {
+            section.pan.clear = px;
         }
     }
 
     pub fn set_leading_inset(&mut self, px: f64) {
         if (self.leading_inset - px).abs() > f64::EPSILON {
             self.leading_inset = px;
-            if self.lanes.is_empty() {
+            if self.sections.is_empty() {
                 self.pan.inset = px;
             }
-            for lane in &mut self.lanes {
-                lane.pan.inset = if lane.spec.leading { px } else { 0.0 };
+            for section in &mut self.sections {
+                section.pan.inset = if section.spec.leading { px } else { 0.0 };
             }
             self.scroll_dirty = true;
         }
@@ -1226,47 +1226,47 @@ impl GroupRow {
         &self.output_spans
     }
 
-    /// Partition the strip across displays: one lane per display, left to right, and each group's
-    /// display. Fewer than two lanes restores the one continuous row, and a lane keeps its pan
-    /// while its display stays. Groups must already be ordered lane by lane.
-    pub fn set_lanes(&mut self, lanes: &[StripLane], assignment: &HashMap<u64, u32>) {
-        if lanes.len() < 2 {
-            if !self.lanes.is_empty() {
+    /// Partition the strip across displays: one section per display, left to right, and each group's
+    /// display. Fewer than two sections restores the one continuous row, and a section keeps its pan
+    /// while its display stays. Groups must already be ordered section by section.
+    pub fn set_sections(&mut self, sections: &[StripSection], assignment: &HashMap<u64, u32>) {
+        if sections.len() < 2 {
+            if !self.sections.is_empty() {
                 let keep = self
-                    .lanes
+                    .sections
                     .iter()
-                    .position(|lane| lane.spec.leading)
+                    .position(|section| section.spec.leading)
                     .unwrap_or(0);
-                let mut pan = std::mem::take(&mut self.lanes)
+                let mut pan = std::mem::take(&mut self.sections)
                     .into_iter()
                     .nth(keep)
-                    .map(|lane| lane.pan)
+                    .map(|section| section.pan)
                     .unwrap_or_default();
                 pan.inset = self.leading_inset;
                 self.pan = pan;
-                self.group_lanes.clear();
-                self.focus_lane = 0;
+                self.group_sections.clear();
+                self.focus_section = 0;
                 self.structure_dirty = true;
             }
             return;
         }
-        let specs_changed = self.lanes.len() != lanes.len()
+        let specs_changed = self.sections.len() != sections.len()
             || self
-                .lanes
+                .sections
                 .iter()
-                .zip(lanes.iter())
+                .zip(sections.iter())
                 .any(|(have, want)| have.spec != *want);
         if specs_changed {
-            let mut previous = std::mem::take(&mut self.lanes);
-            self.lanes = lanes
+            let mut previous = std::mem::take(&mut self.sections);
+            self.sections = sections
                 .iter()
                 .map(|spec| {
                     let pan = previous
                         .iter()
-                        .position(|lane| lane.spec.output == spec.output)
+                        .position(|section| section.spec.output == spec.output)
                         .map(|i| previous.swap_remove(i).pan)
                         .unwrap_or_default();
-                    Lane {
+                    Section {
                         spec: *spec,
                         pan: Pan {
                             inset: if spec.leading {
@@ -1283,63 +1283,65 @@ impl GroupRow {
                 .collect();
             self.structure_dirty = true;
         }
-        let group_lanes: HashMap<u64, usize> = assignment
+        let group_sections: HashMap<u64, usize> = assignment
             .iter()
             .filter_map(|(&group, &output)| {
-                lanes
+                sections
                     .iter()
-                    .position(|lane| lane.output == output)
-                    .map(|lane| (group, lane))
+                    .position(|section| section.output == output)
+                    .map(|section| (group, section))
             })
             .collect();
-        let mut merged = group_lanes;
-        for (&group, &lane) in &self.group_lanes {
+        let mut merged = group_sections;
+        for (&group, &section) in &self.group_sections {
             if !assignment.contains_key(&group) && self.groups.iter().any(|g| g.id == group) {
-                merged.entry(group).or_insert(lane);
+                merged.entry(group).or_insert(section);
             }
         }
-        if merged != self.group_lanes {
-            self.group_lanes = merged;
+        if merged != self.group_sections {
+            self.group_sections = merged;
             self.structure_dirty = true;
         }
-        self.focus_lane = self.focus_lane.min(self.lanes.len().saturating_sub(1));
+        self.focus_section = self
+            .focus_section
+            .min(self.sections.len().saturating_sub(1));
     }
 
-    /// Show this strip on `outputs` only: its other lanes move off their display, so it neither
+    /// Show this strip on `outputs` only: its other sections move off their display, so it neither
     /// draws nor takes input there, and a display coming back draws it where it was left.
     pub fn set_shown_outputs(&mut self, outputs: &[u32]) {
-        for lane in &mut self.lanes {
-            lane.shift = if outputs.contains(&lane.spec.output) {
+        for section in &mut self.sections {
+            section.shift = if outputs.contains(&section.spec.output) {
                 0.0
             } else {
-                lane.area().height()
+                section.area().height()
             };
         }
     }
 
-    /// Put `group_id` in `display`'s lane before the shell's next [`Self::set_lanes`], so the
+    /// Put `group_id` in `display`'s section before the shell's next [`Self::set_sections`], so the
     /// display a window opens on owns it from the first frame.
     pub fn set_group_display(&mut self, group_id: u64, display: u32) {
-        let Some(lane) = self
-            .lanes
+        let Some(section) = self
+            .sections
             .iter()
-            .position(|lane| lane.spec.output == display)
+            .position(|section| section.spec.output == display)
         else {
             return;
         };
-        if self.group_lanes.insert(group_id, lane) != Some(lane) {
+        if self.group_sections.insert(group_id, section) != Some(section) {
             self.structure_dirty = true;
         }
     }
 
-    /// The lanes this strip is partitioned into; empty for one continuous row.
-    pub fn lanes(&self) -> Vec<StripLane> {
-        self.lanes.iter().map(|lane| lane.spec).collect()
+    /// The sections this strip is partitioned into; empty for one continuous row.
+    pub fn sections(&self) -> Vec<StripSection> {
+        self.sections.iter().map(|section| section.spec).collect()
     }
 
     /// Whether the strip is partitioned across displays.
     pub fn is_partitioned(&self) -> bool {
-        !self.lanes.is_empty()
+        !self.sections.is_empty()
     }
 
     /// The shown group a left press at the remembered cursor lands in; mouse buttons carry
@@ -1359,78 +1361,86 @@ impl GroupRow {
             .map(|(_, group)| group.id)
     }
 
-    /// Whether logical point `p` is over this strip: inside one of its lanes when it is
+    /// Whether logical point `p` is over this strip: inside one of its sections when it is
     /// partitioned, else within its row's band.
     pub fn covers(&self, p: Point) -> bool {
-        if self.lanes.is_empty() {
+        if self.sections.is_empty() {
             p.y >= self.rect.y0 && p.y <= self.rect.y1
         } else {
-            self.lanes
+            self.sections
                 .iter()
-                .any(|lane| !lane.off_display() && lane.viewport().contains(p))
+                .any(|section| !section.off_display() && section.viewport().contains(p))
         }
     }
 
-    fn lane_index_of(&self, idx: usize) -> usize {
-        if self.lanes.is_empty() {
+    fn section_index_of(&self, idx: usize) -> usize {
+        if self.sections.is_empty() {
             return 0;
         }
         let assigned = |i: usize| {
             self.groups
                 .get(i)
-                .and_then(|g| self.group_lanes.get(&g.id).copied())
+                .and_then(|g| self.group_sections.get(&g.id).copied())
         };
         (0..=idx)
             .rev()
             .find_map(assigned)
             .or_else(|| (idx..self.groups.len()).find_map(assigned))
             .unwrap_or(0)
-            .min(self.lanes.len().saturating_sub(1))
+            .min(self.sections.len().saturating_sub(1))
     }
 
-    /// The lane `group_id` is laid out in; `None` when the strip is one continuous row or
+    /// The section `group_id` is laid out in; `None` when the strip is one continuous row or
     /// the group isn't in it.
-    pub fn lane_of_group(&self, group_id: u64) -> Option<usize> {
-        if self.lanes.is_empty() {
+    pub fn section_of_group(&self, group_id: u64) -> Option<usize> {
+        if self.sections.is_empty() {
             return None;
         }
         let idx = self.groups.iter().position(|g| g.id == group_id)?;
-        Some(self.lane_index_of(idx))
+        Some(self.section_index_of(idx))
     }
 
     /// The display `group_id` is laid out on, when the strip is partitioned.
     pub fn output_of_group(&self, group_id: u64) -> Option<u32> {
-        let lane = self.lane_of_group(group_id)?;
-        self.lanes.get(lane).map(|lane| lane.spec.output)
+        let section = self.section_of_group(group_id)?;
+        self.sections
+            .get(section)
+            .map(|section| section.spec.output)
     }
 
-    fn lane_range(&self, lane: usize) -> std::ops::Range<usize> {
-        if self.lanes.is_empty() {
+    fn section_range(&self, section: usize) -> std::ops::Range<usize> {
+        if self.sections.is_empty() {
             return 0..self.groups.len();
         }
-        let lanes: Vec<usize> = (0..self.groups.len())
-            .map(|i| self.lane_index_of(i))
+        let sections: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.section_index_of(i))
             .collect();
-        let start = lanes.iter().position(|&l| l >= lane).unwrap_or(lanes.len());
-        let end = lanes.iter().position(|&l| l > lane).unwrap_or(lanes.len());
+        let start = sections
+            .iter()
+            .position(|&l| l >= section)
+            .unwrap_or(sections.len());
+        let end = sections
+            .iter()
+            .position(|&l| l > section)
+            .unwrap_or(sections.len());
         start..end.max(start)
     }
 
-    /// The lane under logical point `p`, else the lane nearest to it horizontally.
-    pub fn lane_at(&self, p: Point) -> Option<usize> {
-        if self.lanes.is_empty() {
+    /// The section under logical point `p`, else the section nearest to it horizontally.
+    pub fn section_at(&self, p: Point) -> Option<usize> {
+        if self.sections.is_empty() {
             return None;
         }
-        self.lanes
+        self.sections
             .iter()
-            .position(|lane| !lane.off_display() && lane.viewport().contains(p))
+            .position(|section| !section.off_display() && section.viewport().contains(p))
             .or_else(|| {
-                self.lanes
+                self.sections
                     .iter()
-                    .position(|lane| p.x >= lane.spec.area.x0 && p.x < lane.spec.area.x1)
+                    .position(|section| p.x >= section.spec.area.x0 && p.x < section.spec.area.x1)
             })
             .or_else(|| {
-                self.lanes
+                self.sections
                     .iter()
                     .enumerate()
                     .min_by(|(_, a), (_, b)| {
@@ -1443,54 +1453,54 @@ impl GroupRow {
     }
 
     /// Point keyboard-driven panning (direct strip pans, the visible span launches consult)
-    /// at the lane of display `output`.
+    /// at the section of display `output`.
     pub fn set_focus_output(&mut self, output: u32) {
-        if let Some(lane) = self
-            .lanes
+        if let Some(section) = self
+            .sections
             .iter()
-            .position(|lane| lane.spec.output == output)
+            .position(|section| section.spec.output == output)
         {
-            self.focus_lane = lane;
+            self.focus_section = section;
         }
     }
 
-    fn pan_of_lane(&self, lane: usize) -> &Pan {
-        self.lanes.get(lane).map_or(&self.pan, |l| &l.pan)
+    fn pan_of_section(&self, section: usize) -> &Pan {
+        self.sections.get(section).map_or(&self.pan, |l| &l.pan)
     }
 
-    fn pan_of_lane_mut(&mut self, lane: usize) -> &mut Pan {
-        match self.lanes.get_mut(lane) {
+    fn pan_of_section_mut(&mut self, section: usize) -> &mut Pan {
+        match self.sections.get_mut(section) {
             Some(l) => &mut l.pan,
             None => &mut self.pan,
         }
     }
 
     fn pans(&self) -> Vec<&Pan> {
-        if self.lanes.is_empty() {
+        if self.sections.is_empty() {
             vec![&self.pan]
         } else {
-            self.lanes.iter().map(|lane| &lane.pan).collect()
+            self.sections.iter().map(|section| &section.pan).collect()
         }
     }
 
-    /// The pan of display `output`'s lane, when the strip is partitioned.
+    /// The pan of display `output`'s section, when the strip is partitioned.
     pub fn output_pan(&self, output: u32) -> Option<&Pan> {
-        self.lanes
+        self.sections
             .iter()
-            .find(|lane| lane.spec.output == output)
-            .map(|lane| &lane.pan)
+            .find(|section| section.spec.output == output)
+            .map(|section| &section.pan)
     }
 
     fn leading_pan(&self) -> &Pan {
-        self.lanes
+        self.sections
             .iter()
-            .find(|lane| lane.spec.leading)
-            .map_or(&self.pan, |lane| &lane.pan)
+            .find(|section| section.spec.leading)
+            .map_or(&self.pan, |section| &section.pan)
     }
 
     fn pan_of_group_mut(&mut self, group_id: u64) -> &mut Pan {
-        let lane = self.lane_of_group(group_id).unwrap_or(0);
-        self.pan_of_lane_mut(lane)
+        let section = self.section_of_group(group_id).unwrap_or(0);
+        self.pan_of_section_mut(section)
     }
 
     /// Usable width a group at canvas-x `x` resolves its width fraction against: canvas, not
@@ -1518,8 +1528,8 @@ impl GroupRow {
     /// window at the default width takes it, so a neighbour closing widens it and a new one
     /// narrows it again.
     pub fn alone_per_group(&self) -> Vec<bool> {
-        let lanes: Vec<usize> = (0..self.groups.len())
-            .map(|i| self.lane_index_of(i))
+        let sections: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.section_index_of(i))
             .collect();
         let open: Vec<bool> = self
             .groups
@@ -1529,11 +1539,13 @@ impl GroupRow {
         (0..self.groups.len())
             .map(|i| {
                 open.get(i).copied().unwrap_or(false)
-                    && !lanes
+                    && !sections
                         .iter()
                         .zip(&open)
                         .enumerate()
-                        .any(|(j, (&lane, &other))| j != i && other && Some(&lane) == lanes.get(i))
+                        .any(|(j, (&section, &other))| {
+                            j != i && other && Some(&section) == sections.get(i)
+                        })
             })
             .collect()
     }
@@ -1541,12 +1553,14 @@ impl GroupRow {
     /// Per-group usable width in strip order, from stored widths and pushed spans alone, so it is
     /// stable on the first frame.
     pub fn usable_per_group(&self) -> Vec<f64> {
-        if !self.lanes.is_empty() {
+        if !self.sections.is_empty() {
             return (0..self.groups.len())
                 .map(|i| {
-                    self.lanes
-                        .get(self.lane_index_of(i))
-                        .map_or(DEFAULT_STRIP_USABLE_PX, |lane| lane.spec.usable.max(1.0))
+                    self.sections
+                        .get(self.section_index_of(i))
+                        .map_or(DEFAULT_STRIP_USABLE_PX, |section| {
+                            section.spec.usable.max(1.0)
+                        })
                 })
                 .collect();
         }
@@ -1568,25 +1582,25 @@ impl GroupRow {
     }
 
     /// Each group's `(id, left, right)` in unscrolled canvas space, derived like the usable width
-    /// so a group spliced in this frame already has a span; on a partitioned strip each lane's
+    /// so a group spliced in this frame already has a span; on a partitioned strip each section's
     /// canvas starts at its display's edge.
     pub fn group_canvas_spans(&self) -> Vec<(u64, f64, f64)> {
         let alone = self.alone_per_group();
         let floating = self.floating_flags();
-        if !self.lanes.is_empty() {
+        if !self.sections.is_empty() {
             let usable = self.usable_per_group();
             let mut cursor: Vec<f64> = self
-                .lanes
+                .sections
                 .iter()
-                .map(|lane| lane.spec.area.x0 + lane.pan.inset)
+                .map(|section| section.spec.area.x0 + section.pan.inset)
                 .collect();
             return self
                 .groups
                 .iter()
                 .enumerate()
                 .map(|(i, g)| {
-                    let lane = self.lane_index_of(i);
-                    let x0 = cursor.get(lane).copied().unwrap_or(0.0);
+                    let section = self.section_index_of(i);
+                    let x0 = cursor.get(section).copied().unwrap_or(0.0);
                     if floating.get(i).copied().unwrap_or(false) {
                         return (g.id, x0, x0);
                     }
@@ -1594,7 +1608,7 @@ impl GroupRow {
                         usable.get(i).copied().unwrap_or(DEFAULT_STRIP_USABLE_PX),
                         alone.get(i).copied().unwrap_or(false),
                     );
-                    if let Some(c) = cursor.get_mut(lane) {
+                    if let Some(c) = cursor.get_mut(section) {
                         *c = x0 + width + HANDLE_SLOT_PX;
                     }
                     (g.id, x0, x0 + width)
@@ -1619,10 +1633,11 @@ impl GroupRow {
             .collect()
     }
 
-    fn dest_content_w(&self, lane: usize) -> f64 {
-        let inset = self.pan_of_lane(lane).inset;
+    fn dest_content_w(&self, section: usize) -> f64 {
+        let inset = self.pan_of_section(section).inset;
         let collapsed = self.groups.iter().enumerate().any(|(i, g)| {
-            self.lane_index_of(i) == lane && (g.maximized || self.fullscreen_group == Some(g.id))
+            self.section_index_of(i) == section
+                && (g.maximized || self.fullscreen_group == Some(g.id))
         });
         if collapsed {
             return inset;
@@ -1631,7 +1646,7 @@ impl GroupRow {
         let mut x = inset;
         let mut prev = false;
         for i in 0..self.groups.len() {
-            if self.lane_index_of(i) != lane {
+            if self.section_index_of(i) != section {
                 continue;
             }
             let Some(g) = self.groups.get(i) else {
@@ -1661,10 +1676,10 @@ impl GroupRow {
             .enumerate()
             .filter(|(i, g)| {
                 let r = g.get_rect();
-                let view = if self.lanes.is_empty() {
+                let view = if self.sections.is_empty() {
                     self.rect
                 } else {
-                    self.pan_of_lane(self.lane_index_of(*i)).viewport
+                    self.pan_of_section(self.section_index_of(*i)).viewport
                 };
                 r.width() > 0.0 && r.x1 > view.x0 && r.x0 < view.x1
             })
@@ -1673,15 +1688,15 @@ impl GroupRow {
     }
 
     /// The visible viewport shifted by the pan, in the same space as the group canvas spans; on a
-    /// partitioned strip, the focused display's lane.
+    /// partitioned strip, the focused display's section.
     pub fn visible_canvas_span(&self) -> (f64, f64) {
-        if self.lanes.is_empty() {
+        if self.sections.is_empty() {
             return (
                 self.rect.x0 + self.pan.scroll_x,
                 self.rect.x1 + self.pan.scroll_x,
             );
         }
-        let pan = self.pan_of_lane(self.focus_lane);
+        let pan = self.pan_of_section(self.focus_section);
         (
             pan.viewport.x0 + pan.scroll_x,
             pan.viewport.x1 + pan.scroll_x,
@@ -1690,15 +1705,15 @@ impl GroupRow {
 
     /// Ids of the groups laid out on display `output`, in order.
     pub fn group_ids_on(&self, output: u32) -> Vec<u64> {
-        let Some(lane) = self
-            .lanes
+        let Some(section) = self
+            .sections
             .iter()
-            .position(|lane| lane.spec.output == output)
+            .position(|section| section.spec.output == output)
         else {
             return self.group_ids();
         };
         self.groups
-            .get(self.lane_range(lane))
+            .get(self.section_range(section))
             .unwrap_or(&[])
             .iter()
             .map(|g| g.id)
@@ -1746,7 +1761,7 @@ impl GroupRow {
         let Some(idx) = self.groups.iter().position(|g| g.id == group_id) else {
             return false;
         };
-        let lane = self.lane_of_group(group_id);
+        let section = self.section_of_group(group_id);
         let usable_per_group = self.usable_per_group();
         let usable = usable_per_group
             .get(idx)
@@ -1757,7 +1772,7 @@ impl GroupRow {
                 !g.is_closing()
                     && !g.maximized
                     && !self.is_floating(g.id)
-                    && self.lane_of_group(g.id) == lane
+                    && self.section_of_group(g.id) == section
             })
         };
         let neighbour = match idx.checked_sub(1) {
@@ -1800,7 +1815,7 @@ impl GroupRow {
         let Some(idx) = self.groups.iter().position(|g| g.id == group_id) else {
             return false;
         };
-        let lane = self.lane_of_group(group_id);
+        let section = self.section_of_group(group_id);
         let usable_per_group = self.usable_per_group();
         let usable = usable_per_group
             .get(idx)
@@ -1811,7 +1826,7 @@ impl GroupRow {
                 !g.is_closing()
                     && !g.maximized
                     && !self.is_floating(g.id)
-                    && self.lane_of_group(g.id) == lane
+                    && self.section_of_group(g.id) == section
             })
         };
         let neighbour = match idx.checked_sub(1) {
@@ -1966,7 +1981,7 @@ impl GroupRow {
     /// [`Pan::canvas_pad`] on the presenter's pan step, rounded up so the
     /// canvas keeps at least that much margin: with whole-device-pixel pans,
     /// a canvas shift (`pan + pad`) is then whole device pixels too.
-    fn lane_canvas_pad(&self, pan: &Pan) -> f64 {
+    fn section_canvas_pad(&self, pan: &Pan) -> f64 {
         let pad = pan.canvas_pad();
         match self.scroll_quantum {
             Some(step) => on_binary_grid((pad / step).ceil() * step),
@@ -2021,7 +2036,7 @@ impl GroupRow {
     /// Area a retained canvas keeps left of the content and right of the furthest pan, in
     /// layout pixels.
     pub fn canvas_pad(&self) -> f64 {
-        self.lane_canvas_pad(self.leading_pan())
+        self.section_canvas_pad(self.leading_pan())
     }
 
     /// A frame was presented: each group may step its width spring once
@@ -2043,7 +2058,7 @@ impl GroupRow {
         if !requested.is_finite() {
             return false;
         }
-        let pan = self.pan_of_lane_mut(self.focus_lane);
+        let pan = self.pan_of_section_mut(self.focus_section);
         pan.absolute = true;
         let next = requested.clamp(0.0, pan.max_scroll_x());
         let changed = (next - pan.scroll_x).abs() > f64::EPSILON
@@ -2079,28 +2094,29 @@ impl GroupRow {
     }
 
     /// `0.0` before the first layout pass. On a partitioned strip, the
-    /// focused lane's.
+    /// focused section's.
     pub fn content_width(&self) -> f64 {
-        self.pan_of_lane(self.focus_lane).content_w
+        self.pan_of_section(self.focus_section).content_w
     }
 
     pub fn max_scroll_x(&self) -> f64 {
-        self.pan_of_lane(self.focus_lane).max_scroll_x()
+        self.pan_of_section(self.focus_section).max_scroll_x()
     }
 
     /// Furthest legal resting offset for direct strip panning. Unlike the
     /// content-tight focus bound, this leaves a deliberate glimpse of canvas
     /// after the final app. Content which already fits stays pinned at home.
     pub fn pan_max_scroll_x(&self) -> f64 {
-        self.pan_of_lane(self.focus_lane).pan_max_scroll_x()
+        self.pan_of_section(self.focus_section).pan_max_scroll_x()
     }
 
     /// Rebase total-travel updates onto the strip's current visual position.
     /// A fresh axis lock calls this even if a prior stream lost its End at a
     /// lock/session boundary, preventing stale gesture state from jumping.
-    /// On a partitioned strip only the focused display's lane pans.
+    /// On a partitioned strip only the focused display's section pans.
     pub fn begin_strip_pan(&mut self) {
-        self.pan_of_lane_mut(self.focus_lane).begin_strip_pan();
+        self.pan_of_section_mut(self.focus_section)
+            .begin_strip_pan();
     }
 
     /// Track a three-finger horizontal gesture in direct-manipulation space. `travel` is total
@@ -2111,7 +2127,7 @@ impl GroupRow {
     /// whatever the touchpad's report rate.
     pub fn update_strip_pan(&mut self, travel: f64, at: Instant) -> bool {
         let moved = self
-            .pan_of_lane_mut(self.focus_lane)
+            .pan_of_section_mut(self.focus_section)
             .update_strip_pan(travel, at);
         if moved {
             self.scroll_dirty = true;
@@ -2126,7 +2142,7 @@ impl GroupRow {
     /// total and lets go with [`Self::cancel_strip_pan`], so a pull past an
     /// end springs back as a released trackpad pan does.
     pub fn hold_strip_pull(&mut self, requested: f64, at: Instant) -> bool {
-        let pan = self.pan_of_lane_mut(self.focus_lane);
+        let pan = self.pan_of_section_mut(self.focus_section);
         pan.begin_strip_pan();
         pan.strip_pan_origin = Some(0.0);
         let moved = pan.update_strip_pan(requested, at);
@@ -2151,7 +2167,11 @@ impl GroupRow {
     }
 
     fn finish_strip_pan(&mut self, now: Instant, throw: bool) -> bool {
-        if self.pan_of_lane(self.focus_lane).strip_pan_origin.is_some() {
+        if self
+            .pan_of_section(self.focus_section)
+            .strip_pan_origin
+            .is_some()
+        {
             crate::control_hints::performed::note(
                 crate::control_hints::performed::Performed::PannedView,
             );
@@ -2159,7 +2179,7 @@ impl GroupRow {
         let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
         let settle = self.move_timing(MotionSource::Gesture);
         let settling = self
-            .pan_of_lane_mut(self.focus_lane)
+            .pan_of_section_mut(self.focus_section)
             .end_strip_pan(now, throw, motion, settle);
         if settling {
             self.scroll_dirty = true;
@@ -2172,7 +2192,7 @@ impl GroupRow {
     /// view. A wheel spin stops wherever its notches took the strip, often
     /// with windows cut at both edges.
     pub fn hold_strip_pan(&mut self) {
-        self.pan_of_lane_mut(self.focus_lane).absolute = true;
+        self.pan_of_section_mut(self.focus_section).absolute = true;
     }
 
     /// Whether a layout pass has given `group_id` its place. A group
@@ -2185,7 +2205,7 @@ impl GroupRow {
         self.laid_group_ids.contains(&group_id) && self.groups.iter().any(|g| g.id == group_id)
     }
 
-    /// Pan `group_id`'s run (the row, or its display's lane) so the group is fully inside the
+    /// Pan `group_id`'s run (the row, or its display's section) so the group is fully inside the
     /// viewport (Niri's "focused column follows into view"). Call after a layout pass (it uses the
     /// group's live rect). Cancels any in-flight wheel-snap so a snap-back does not override it.
     pub fn scroll_group_into_view(&mut self, group_id: u64) -> bool {
@@ -2251,14 +2271,14 @@ impl GroupRow {
     /// its first frames' rect ends the pan short, and the host's edge-triggered framing (keying on
     /// destination widths) then never frames it, leaving the focused new window off screen.
     fn scroll_target_for(&self, group_id: u64) -> Option<f64> {
-        let (lane, rect) = self.settled_rect_of(group_id)?;
-        self.pan_of_lane(lane)
-            .reveal_target(rect, self.settled_max_scroll_x(lane))
+        let (section, rect) = self.settled_rect_of(group_id)?;
+        self.pan_of_section(section)
+            .reveal_target(rect, self.settled_max_scroll_x(section))
     }
 
-    fn settled_max_scroll_x(&self, lane: usize) -> f64 {
-        self.pan_of_lane(lane)
-            .max_scroll_x_of(self.dest_content_w(lane))
+    fn settled_max_scroll_x(&self, section: usize) -> f64 {
+        self.pan_of_section(section)
+            .max_scroll_x_of(self.dest_content_w(section))
     }
 
     /// Pan so that `keep` and `also` are both wholly in view when they fit
@@ -2266,7 +2286,7 @@ impl GroupRow {
     /// [`Self::scroll_group_into_view_animated`]. For a window that opened
     /// beside the one the person is in without taking their focus: both
     /// are shown, and if they cannot be, the person keeps what they were
-    /// looking at. `false` when neither has been laid out in one lane or
+    /// looking at. `false` when neither has been laid out in one section or
     /// nothing has to move.
     pub fn scroll_groups_into_view_animated(
         &mut self,
@@ -2275,19 +2295,19 @@ impl GroupRow {
         now: Instant,
         source: MotionSource,
     ) -> bool {
-        let (Some((lane, kept)), Some((also_lane, added))) =
+        let (Some((section, kept)), Some((also_section, added))) =
             (self.settled_rect_of(keep), self.settled_rect_of(also))
         else {
             return self.scroll_group_into_view_animated(keep, now, source);
         };
-        let pan = self.pan_of_lane(lane);
+        let pan = self.pan_of_section(section);
         let both = kept.union(added);
-        let rect = if also_lane == lane && both.width() <= pan.viewport.width() {
+        let rect = if also_section == section && both.width() <= pan.viewport.width() {
             both
         } else {
             kept
         };
-        let Some(sx) = pan.reveal_target(rect, self.settled_max_scroll_x(lane)) else {
+        let Some(sx) = pan.reveal_target(rect, self.settled_max_scroll_x(section)) else {
             return false;
         };
         self.pan_of_group_mut(keep).absolute = false;
@@ -2307,20 +2327,20 @@ impl GroupRow {
         if !self.laid_group_ids.contains(&group_id) {
             return None;
         }
-        let lane = self.lane_of_group(group_id).unwrap_or(0);
+        let section = self.section_of_group(group_id).unwrap_or(0);
         let mut rect = g.get_rect();
         let mut shift = 0.0;
         for earlier in &self.groups {
             if earlier.id == group_id {
                 break;
             }
-            if self.lane_of_group(earlier.id).unwrap_or(0) == lane {
+            if self.section_of_group(earlier.id).unwrap_or(0) == section {
                 shift += earlier.dest_width_px() - earlier.layout_width_px();
             }
         }
         let own = g.dest_width_px() - g.layout_width_px();
         rect = Rect::new(rect.x0 + shift, rect.y0, rect.x1 + shift + own, rect.y1);
-        Some((lane, rect))
+        Some((section, rect))
     }
 
     /// Ids of groups the viewport edges are cutting through right now.
@@ -2363,11 +2383,11 @@ impl GroupRow {
         let mut moved = false;
         let snap = self.snap_timing(MotionSource::Pointer);
         let hold = self.shift_hold.filter(|_| !self.moves.is_empty());
-        if self.lanes.is_empty() {
+        if self.sections.is_empty() {
             moved = self.pan.tick_snap_at(now, snap, hold);
         }
-        for lane in &mut self.lanes {
-            moved |= lane.pan.tick_snap_at(now, snap, hold);
+        for section in &mut self.sections {
+            moved |= section.pan.tick_snap_at(now, snap, hold);
         }
         // Must invalidate the parent's subtree cache or needs_redraw()
         // stays false and it re-emits the pre-snap cached scene.
@@ -2499,8 +2519,8 @@ impl GroupRow {
                 return None;
             }
         }
-        if let Some(lane) = self.lane_at(release_point) {
-            let run = self.lane_range(lane);
+        if let Some(section) = self.section_at(release_point) {
+            let run = self.section_range(section);
             let Some(first) = self.groups.get(run.start).filter(|_| !run.is_empty()) else {
                 return Some(run.start);
             };
@@ -2563,14 +2583,14 @@ impl GroupRow {
         let mut new_group = WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
         new_group.start_spawn_animation();
         let clamped = gap_idx.min(self.groups.len());
-        if !self.lanes.is_empty() {
-            let lane = self
-                .pending_split_lane
+        if !self.sections.is_empty() {
+            let section = self
+                .pending_split_section
                 .take()
-                .unwrap_or_else(|| self.lane_index_of(src));
-            self.group_lanes.insert(new_id, lane);
+                .unwrap_or_else(|| self.section_index_of(src));
+            self.group_sections.insert(new_id, section);
         }
-        self.pending_split_lane = None;
+        self.pending_split_section = None;
         self.groups.insert(clamped, new_group);
         self.structure_dirty = true;
         if src_now_empty {
@@ -2717,10 +2737,10 @@ impl GroupRow {
         self.group_drag.is_some_and(|drag| drag.moved && !drag.held)
     }
 
-    /// How fast, in px/s, the lane under `p` pans for a drag at `p`:
+    /// How fast, in px/s, the section under `p` pans for a drag at `p`:
     /// negative leftwards, `0` outside the edge bands or with nowhere to go.
     fn drag_edge_velocity(&self, p: Point) -> f64 {
-        let pan = self.pan_of_lane(self.lane_at(p).unwrap_or(self.focus_lane));
+        let pan = self.pan_of_section(self.section_at(p).unwrap_or(self.focus_section));
         let view = pan.viewport;
         if !view.contains(p) {
             return 0.0;
@@ -2765,8 +2785,8 @@ impl GroupRow {
         let velocity = self.drag_edge_velocity(p);
         let step = self.drag_reach.edge.advance(velocity, now);
         if step != 0.0 {
-            let lane = self.lane_at(p).unwrap_or(self.focus_lane);
-            let pan = self.pan_of_lane_mut(lane);
+            let section = self.section_at(p).unwrap_or(self.focus_section);
+            let pan = self.pan_of_section_mut(section);
             let next = (pan.scroll_x + step).clamp(0.0, pan.max_scroll_x());
             let travel = next - pan.scroll_x;
             if travel.abs() > f64::EPSILON {
@@ -2774,12 +2794,12 @@ impl GroupRow {
                 pan.jump_to(next);
                 self.scroll_dirty = true;
                 moved = true;
-                let in_lane = self.lanes.is_empty()
+                let in_section = self.sections.is_empty()
                     || self
                         .group_drag
-                        .and_then(|drag| self.lane_of_group(drag.group_id))
-                        == Some(lane);
-                if in_lane
+                        .and_then(|drag| self.section_of_group(drag.group_id))
+                        == Some(section);
+                if in_section
                     && self.group_drag_moving()
                     && let Some(drag) = self.group_drag.as_mut()
                 {
@@ -2939,24 +2959,24 @@ impl GroupRow {
     }
 
     fn group_insertion_for(&self, p: Point) -> (usize, Option<usize>) {
-        let lane = match self.group_drag {
-            Some(drag) if !self.lanes.is_empty() => Some(
-                self.lane_at(p)
-                    .unwrap_or_else(|| self.lane_index_of(drag.src_idx)),
+        let section = match self.group_drag {
+            Some(drag) if !self.sections.is_empty() => Some(
+                self.section_at(p)
+                    .unwrap_or_else(|| self.section_index_of(drag.src_idx)),
             ),
             _ => None,
         };
-        let run = lane.map_or(0..self.groups.len(), |lane| self.lane_range(lane));
+        let run = section.map_or(0..self.groups.len(), |section| self.section_range(section));
         for i in run.clone() {
             if self
                 .groups
                 .get(i)
                 .is_some_and(|g| p.x < g.get_rect().center().x)
             {
-                return (i, lane);
+                return (i, section);
             }
         }
-        (run.end, lane)
+        (run.end, section)
     }
 
     fn commit_group_reorder(
@@ -2964,26 +2984,27 @@ impl GroupRow {
         src: usize,
         group_id: u64,
         insert_at: usize,
-        lane: Option<usize>,
+        section: Option<usize>,
     ) {
         if src >= self.groups.len() {
             return;
         }
-        let changes_lane =
-            lane.is_some_and(|lane| !self.lanes.is_empty() && self.lane_index_of(src) != lane);
+        let changes_section = section.is_some_and(|section| {
+            !self.sections.is_empty() && self.section_index_of(src) != section
+        });
         let final_idx = if insert_at > src {
             insert_at.saturating_sub(1)
         } else {
             insert_at
         };
         let dest = final_idx.min(self.groups.len().saturating_sub(1));
-        if dest == src && !changes_lane {
+        if dest == src && !changes_section {
             return;
         }
         let g = self.groups.remove(src);
         self.groups.insert(dest, g);
-        if let Some(lane) = lane.filter(|_| changes_lane) {
-            self.group_lanes.insert(group_id, lane);
+        if let Some(section) = section.filter(|_| changes_section) {
+            self.group_sections.insert(group_id, section);
         }
         self.structure_dirty = true;
         self.pending_group_reorder = Some((group_id, dest));
@@ -3062,9 +3083,9 @@ impl GroupRow {
             if lifted && let Some(group) = self.groups.iter_mut().find(|g| g.id == drag.group_id) {
                 group.cancel_press_for_carry();
             }
-            let (target, lane) = self.group_insertion_for(self.last_cursor);
+            let (target, section) = self.group_insertion_for(self.last_cursor);
             self.group_reorder_target = Some(target);
-            self.group_reorder_lane = lane;
+            self.group_reorder_section = section;
             return true;
         }
         false
@@ -3089,7 +3110,7 @@ impl GroupRow {
                 self.group_resist_back = Some((drag.group_id, pulled));
             }
             self.group_reorder_target = None;
-            self.group_reorder_lane = None;
+            self.group_reorder_section = None;
             return claimed;
         }
         if self.canvas.is_some() {
@@ -3099,14 +3120,14 @@ impl GroupRow {
         if self.float_drag_from.is_some() {
             self.put_down_float(drag.group_id, commit && drag.moved);
             self.group_reorder_target = None;
-            self.group_reorder_lane = None;
+            self.group_reorder_section = None;
             return claimed;
         }
         if commit && drag.moved && !self.covers(self.last_cursor) {
             self.lift_from_drag(drag.group_id);
             return claimed;
         }
-        let lane = self.group_reorder_lane.take();
+        let section = self.group_reorder_section.take();
         if commit && drag.moved {
             crate::control_hints::performed::note(
                 crate::control_hints::performed::Performed::MovedWindow,
@@ -3116,7 +3137,7 @@ impl GroupRow {
             && drag.moved
             && let Some(insert_at) = self.group_reorder_target.take()
         {
-            self.commit_group_reorder(drag.src_idx, drag.group_id, insert_at, lane);
+            self.commit_group_reorder(drag.src_idx, drag.group_id, insert_at, section);
         }
         self.group_reorder_target = None;
         claimed
@@ -3153,8 +3174,10 @@ impl GroupRow {
     /// Display under `p` when this strip is partitioned; `None` on a
     /// single continuous row, so a same-row swipe is never a rehome.
     fn output_at(&self, p: Point) -> Option<u32> {
-        let lane = self.lane_at(p)?;
-        self.lanes.get(lane).map(|lane| lane.spec.output)
+        let section = self.section_at(p)?;
+        self.sections
+            .get(section)
+            .map(|section| section.spec.output)
     }
 
     /// The finger left the display it started on. That is a group rehome,
@@ -3403,8 +3426,8 @@ impl GroupRow {
                 let mut new_group =
                     WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
                 new_group.start_spawn_animation();
-                if let Some(lane) = self.lane_at(self.last_cursor) {
-                    self.group_lanes.insert(new_id, lane);
+                if let Some(section) = self.section_at(self.last_cursor) {
+                    self.group_sections.insert(new_id, section);
                 }
                 self.groups
                     .insert(gap_index.min(self.groups.len()), new_group);
@@ -3594,14 +3617,14 @@ impl FloatingSurfaceProvider for GroupRow {
 }
 
 struct RowPlan {
-    lane_of: Vec<usize>,
+    section_of: Vec<usize>,
     maximized_in: Vec<Option<usize>>,
 }
 
 impl RowPlan {
-    fn collapsed(&self, lanes: usize) -> Vec<bool> {
-        (0..lanes)
-            .map(|lane| self.maximized_in.get(lane).copied().flatten().is_some())
+    fn collapsed(&self, sections: usize) -> Vec<bool> {
+        (0..sections)
+            .map(|section| self.maximized_in.get(section).copied().flatten().is_some())
             .collect()
     }
 }
@@ -3685,19 +3708,19 @@ impl GroupRow {
     }
 
     fn plan_layout(&self) -> RowPlan {
-        let lane_of: Vec<usize> = (0..self.groups.len())
-            .map(|i| self.lane_index_of(i))
+        let section_of: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.section_index_of(i))
             .collect();
-        let runs = self.lanes.len().max(1);
+        let runs = self.sections.len().max(1);
         let mut maximized_in: Vec<Option<usize>> = vec![None; runs];
         if self.canvas.is_some() {
             return RowPlan {
-                lane_of,
+                section_of,
                 maximized_in,
             };
         }
         if let Some(fs) = self.fullscreen_idx()
-            && let Some(slot) = maximized_in.get_mut(lane_of.get(fs).copied().unwrap_or(0))
+            && let Some(slot) = maximized_in.get_mut(section_of.get(fs).copied().unwrap_or(0))
         {
             *slot = Some(fs);
         }
@@ -3705,26 +3728,26 @@ impl GroupRow {
             if !g.maximized {
                 continue;
             }
-            if let Some(slot) = maximized_in.get_mut(lane_of.get(i).copied().unwrap_or(0))
+            if let Some(slot) = maximized_in.get_mut(section_of.get(i).copied().unwrap_or(0))
                 && slot.is_none()
             {
                 *slot = Some(i);
             }
         }
         RowPlan {
-            lane_of,
+            section_of,
             maximized_in,
         }
     }
 
     /// Whether the borders between windows have nodes: always in a
-    /// partitioned strip (one between two lanes is parked out of layout),
+    /// partitioned strip (one between two sections is parked out of layout),
     /// and while no window is maximized otherwise.
     fn handles_laid(&self, plan: &RowPlan) -> bool {
         if self.canvas.is_some() {
             return false;
         }
-        !self.lanes.is_empty() || plan.maximized_in.first().copied().flatten().is_none()
+        !self.sections.is_empty() || plan.maximized_in.first().copied().flatten().is_none()
     }
 
     /// The style the row gives window `i`'s node over the window's `own`. `flex_shrink: 0.0` on
@@ -3741,8 +3764,8 @@ impl GroupRow {
         }
         let mut style = own;
         style.flex_shrink = 0.0;
-        let lane = plan.lane_of.get(i).copied().unwrap_or(0);
-        if let Some(max_i) = plan.maximized_in.get(lane).copied().flatten() {
+        let section = plan.section_of.get(i).copied().unwrap_or(0);
+        if let Some(max_i) = plan.maximized_in.get(section).copied().flatten() {
             if i == max_i {
                 style.size.width = Dimension::auto();
                 style = crate::widget::layout::filling(style, 1.0e6);
@@ -3787,7 +3810,7 @@ impl GroupRow {
         } else {
             Display::Flex
         };
-        let children: Vec<NodeId> = if self.lanes.is_empty() || self.canvas.is_some() {
+        let children: Vec<NodeId> = if self.sections.is_empty() || self.canvas.is_some() {
             let mut children: Vec<NodeId> = Vec::with_capacity(group_nodes.len().saturating_mul(2));
             for (i, gn) in group_nodes.iter().enumerate() {
                 children.push(*gn);
@@ -3799,21 +3822,22 @@ impl GroupRow {
             children
         } else {
             let row = self.rect;
-            let mut lane_children: Vec<Vec<NodeId>> = vec![Vec::new(); self.lanes.len()];
+            let mut section_children: Vec<Vec<NodeId>> = vec![Vec::new(); self.sections.len()];
             let mut parked: Vec<NodeId> = Vec::new();
-            let collapsed = plan.collapsed(self.lanes.len());
+            let collapsed = plan.collapsed(self.sections.len());
             for (i, gn) in group_nodes.iter().enumerate() {
-                let lane = plan.lane_of.get(i).copied().unwrap_or(0);
-                if let Some(run) = lane_children.get_mut(lane) {
+                let section = plan.section_of.get(i).copied().unwrap_or(0);
+                if let Some(run) = section_children.get_mut(section) {
                     run.push(*gn);
                 }
                 let Some(Some((hn, own))) = self.handle_nodes.get(i) else {
                     continue;
                 };
-                let same_lane = plan.lane_of.get(i.saturating_add(1)).copied() == Some(lane);
+                let same_section =
+                    plan.section_of.get(i.saturating_add(1)).copied() == Some(section);
                 let mut style = own.clone();
-                if same_lane && !collapsed.get(lane).copied().unwrap_or(false) {
-                    if let Some(run) = lane_children.get_mut(lane) {
+                if same_section && !collapsed.get(section).copied().unwrap_or(false) {
+                    if let Some(run) = section_children.get_mut(section) {
                         run.push(*hn);
                     }
                 } else {
@@ -3822,11 +3846,11 @@ impl GroupRow {
                 }
                 restyle(taffy, *hn, style);
             }
-            let reuse = self.run_nodes.len() == self.lanes.len();
-            let mut children = Vec::with_capacity(self.lanes.len().saturating_add(parked.len()));
-            for (k, (lane, run)) in self.lanes.iter_mut().zip(lane_children).enumerate() {
-                let viewport = lane.area();
-                lane.built_viewport = viewport;
+            let reuse = self.run_nodes.len() == self.sections.len();
+            let mut children = Vec::with_capacity(self.sections.len().saturating_add(parked.len()));
+            for (k, (section, run)) in self.sections.iter_mut().zip(section_children).enumerate() {
+                let viewport = section.area();
+                section.built_viewport = viewport;
                 let style = Style {
                     position: Position::Absolute,
                     inset: taffy::Rect {
@@ -4138,8 +4162,8 @@ impl Widget for GroupRow {
             self.handle_nodes.push(node);
         }
         let (children, style) = self.assemble(taffy, &plan, &group_nodes);
-        self.laid_lanes.clone_from(&plan.lane_of);
-        self.laid_collapsed = plan.collapsed(self.lanes.len());
+        self.laid_sections.clone_from(&plan.section_of);
+        self.laid_collapsed = plan.collapsed(self.sections.len());
         let node = taffy.widget_node(style, &children, node_map, self);
         self.node = Some(node);
         node
@@ -4152,7 +4176,7 @@ impl Widget for GroupRow {
         }
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         // A floating window is laid out at its own rect, never in the flow
-        // of a lane or canvas: what the strip measures stays its own.
+        // of a section or canvas: what the strip measures stays its own.
         self.mark_floating();
         let floating = self.floating_flags();
         // Portable hosts learn their width here. Rebuild provisional widths
@@ -4165,30 +4189,30 @@ impl Widget for GroupRow {
             self.recheck_edge_hover();
             return;
         }
-        if self.lanes.is_empty() {
+        if self.sections.is_empty() {
             self.pan.viewport = self.rect;
             self.pan.inset = self.leading_inset;
         }
-        for lane in &mut self.lanes {
-            let area = lane.area();
-            if (area.y0 - lane.built_viewport.y0).abs() > 0.5
-                || (area.height() - lane.built_viewport.height()).abs() > 0.5
-                || (area.x0 - lane.built_viewport.x0).abs() > 0.5
+        for section in &mut self.sections {
+            let area = section.area();
+            if (area.y0 - section.built_viewport.y0).abs() > 0.5
+                || (area.height() - section.built_viewport.height()).abs() > 0.5
+                || (area.x0 - section.built_viewport.x0).abs() > 0.5
             {
                 self.structure_dirty = true;
             }
-            lane.pan.viewport = lane.viewport();
-            lane.pan.inset = if lane.spec.leading {
+            section.pan.viewport = section.viewport();
+            section.pan.inset = if section.spec.leading {
                 self.leading_inset
             } else {
                 0.0
             };
         }
-        let lane_of: Vec<usize> = (0..self.groups.len())
-            .map(|i| self.lane_index_of(i))
+        let section_of: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.section_index_of(i))
             .collect();
-        let runs = self.lanes.len().max(1);
-        let insets: Vec<f64> = (0..runs).map(|k| self.pan_of_lane(k).inset).collect();
+        let runs = self.sections.len().max(1);
+        let insets: Vec<f64> = (0..runs).map(|k| self.pan_of_section(k).inset).collect();
         let mut content_w: Vec<f64> = insets.clone();
         let mut edges: Vec<Vec<f64>> = vec![Vec::new(); runs];
         // Only trustworthy when taffy has a node per group — a pass
@@ -4201,7 +4225,7 @@ impl Widget for GroupRow {
                 continue;
             }
             let cl = taffy.layout(cn).copied().unwrap_or_default();
-            let k = lane_of
+            let k = section_of
                 .get(i)
                 .copied()
                 .unwrap_or(0)
@@ -4239,7 +4263,7 @@ impl Widget for GroupRow {
             .collect();
         for (k, ((w, e), s)) in content_w.into_iter().zip(edges).zip(spans).enumerate() {
             let dest = dest_w.get(k).copied().unwrap_or(0.0);
-            let pan = self.pan_of_lane_mut(k);
+            let pan = self.pan_of_section_mut(k);
             // The strip the springs are going to, not where they are: a slot in flight can lay out
             // wider for a moment and must not make the strip scrollable meanwhile.
             pan.content_w = if dest > pan.inset { dest } else { w };
@@ -4283,14 +4307,14 @@ impl Widget for GroupRow {
         let collapsed: Vec<bool> = (0..runs)
             .map(|k| {
                 self.groups.iter().enumerate().any(|(i, g)| {
-                    lane_of.get(i).copied().unwrap_or(0) == k
+                    section_of.get(i).copied().unwrap_or(0) == k
                         && (g.maximized || self.fullscreen_group == Some(g.id))
                 })
             })
             .collect();
         let origins: Vec<Point> = (0..runs)
             .map(|k| {
-                let pan = self.pan_of_lane(k);
+                let pan = self.pan_of_section(k);
                 let (inset, scroll) = if collapsed.get(k).copied().unwrap_or(false) {
                     (0.0, 0.0)
                 } else {
@@ -4309,7 +4333,7 @@ impl Widget for GroupRow {
             if floating.get(i).copied().unwrap_or(false) {
                 continue;
             }
-            let k = lane_of.get(i).copied().unwrap_or(0);
+            let k = section_of.get(i).copied().unwrap_or(0);
             let origin = origins.get(k).copied().unwrap_or(Point::ORIGIN);
             g.apply_layout(taffy, *child_id, origin);
         }
@@ -4358,27 +4382,27 @@ impl Widget for GroupRow {
             return;
         }
         self.scroll_dirty = false;
-        let lane_of: Vec<usize> = (0..self.groups.len())
-            .map(|i| self.lane_index_of(i))
+        let section_of: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.section_index_of(i))
             .collect();
-        let runs: Vec<(usize, Rect)> = if self.lanes.is_empty() {
+        let runs: Vec<(usize, Rect)> = if self.sections.is_empty() {
             vec![(0, self.rect)]
         } else {
-            self.lanes
+            self.sections
                 .iter()
                 .enumerate()
-                .filter(|(_, lane)| !lane.off_display())
-                .map(|(k, lane)| (k, lane.pan.viewport))
+                .filter(|(_, section)| !section.off_display())
+                .map(|(k, section)| (k, section.pan.viewport))
                 .collect()
         };
         for (k, viewport) in runs {
             if viewport.width() <= 0.0 || viewport.height() <= 0.0 {
                 continue;
             }
-            let pan = self.pan_of_lane(k);
+            let pan = self.pan_of_section(k);
             let scroll = self.drawn_pan_x(pan);
             let max_scroll = pan.max_scroll_x();
-            let pad = self.lane_canvas_pad(pan);
+            let pad = self.section_canvas_pad(pan);
             let unbake = crate::retained_present::unbake_scroll()
                 && self.canvas.is_none()
                 && pan_within_canvas(scroll, max_scroll, pad);
@@ -4393,7 +4417,7 @@ impl Widget for GroupRow {
             let kept = if let Some((_, kept, was_screen, drawn)) = self
                 .strip_canvas_shift
                 .iter_mut()
-                .find(|(lane, ..)| *lane == k)
+                .find(|(section, ..)| *section == k)
             {
                 if !unbake && *was_screen {
                     *kept = rested;
@@ -4408,7 +4432,7 @@ impl Widget for GroupRow {
             let drawn_shift = if unbake { kept } else { kept - rested };
             self.drawing_shift = Affine::translate((drawn_shift, 0.0));
             if shifted {
-                self.offset_lane(k, shift);
+                self.offset_section(k, shift);
             }
             // The stretch of the canvas this draw's pan shows: the viewport, moved by the shift
             // that took the groups there. On a canvas, windows stand anywhere, panned past the
@@ -4422,9 +4446,9 @@ impl Widget for GroupRow {
                 x1: clip_right,
                 ..bounds
             };
-            self.apart_window =
-                unbake.then(|| self.apart_window_of_lane(k, viewport, shift, (clip.y0, clip.y1)));
-            let in_run: Vec<bool> = lane_of.iter().map(|&lane| lane == k).collect();
+            self.apart_window = unbake
+                .then(|| self.apart_window_of_section(k, viewport, shift, (clip.y0, clip.y1)));
+            let in_run: Vec<bool> = section_of.iter().map(|&section| section == k).collect();
             let maximized_idx =
                 self.fullscreen_idx()
                     .filter(|&i| in_run.get(i).copied().unwrap_or(false))
@@ -4433,19 +4457,19 @@ impl Widget for GroupRow {
                             g.maximized && in_run.get(i).copied().unwrap_or(false)
                         })
                     });
-            // A maximized window at rest inside the viewport is the lane's only drawing: the clip
+            // A maximized window at rest inside the viewport is the section's only drawing: the clip
             // would cut nothing, and left out, the window's client frame stays the last thing
             // drawn, which a display can scan out instead of compositing.
             let clipped = !maximized_idx
                 .and_then(|i| self.groups.get(i))
                 .is_some_and(|group| !shifted && clip.contains_rect(group.drawn_rect()));
             if clipped {
-                // A clipped lane is one damage part, there whichever of its groups draw, bounded by
+                // A clipped section is one damage part, there whichever of its groups draw, bounded by
                 // the clip that bounds them: a group the row leaves out and draws again changes
-                // only parts inside the lane, which then damages the lane alone, not every display.
+                // only parts inside the section, which then damages the section alone, not every display.
                 crate::scene_parts::begin(
                     scene,
-                    crate::scene_parts::PartKey::new("ui.strip-lane", k),
+                    crate::scene_parts::PartKey::new("ui.strip-section", k),
                 );
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
@@ -4480,7 +4504,7 @@ impl Widget for GroupRow {
                 crate::scene_parts::end(scene, vec![transform.transform_rect_bbox(clip)]);
             }
             if shifted {
-                self.offset_lane(k, -shift);
+                self.offset_section(k, -shift);
             }
         }
         if self.apart_window.take().is_none() {
@@ -4791,11 +4815,11 @@ impl Widget for GroupRow {
             return false;
         }
         let plan = self.plan_layout();
-        let partitioned = !self.lanes.is_empty() && self.canvas.is_none();
+        let partitioned = !self.sections.is_empty() && self.canvas.is_none();
         if partitioned
-            && (plan.lane_of != self.laid_lanes
-                || plan.collapsed(self.lanes.len()) != self.laid_collapsed
-                || self.run_nodes.len() != self.lanes.len())
+            && (plan.section_of != self.laid_sections
+                || plan.collapsed(self.sections.len()) != self.laid_collapsed
+                || self.run_nodes.len() != self.sections.len())
         {
             return false;
         }
@@ -4907,8 +4931,8 @@ impl GroupRow {
             },
             "ResizeHandle pool must mirror inter-group gap count after build_layout",
         );
-        let lanes_match: Vec<bool> = (0..self.handles.len())
-            .map(|i| self.lane_index_of(i) == self.lane_index_of(i.saturating_add(1)))
+        let sections_match: Vec<bool> = (0..self.handles.len())
+            .map(|i| self.section_index_of(i) == self.section_index_of(i.saturating_add(1)))
             .collect();
         for (i, h) in self.handles.iter_mut().enumerate() {
             let Some(left) = self.groups.get(i).map(WindowGroup::get_rect) else {
@@ -4921,7 +4945,7 @@ impl GroupRow {
             else {
                 continue;
             };
-            if !lanes_match.get(i).copied().unwrap_or(true) {
+            if !sections_match.get(i).copied().unwrap_or(true) {
                 h.set_neighbour_rects(Rect::ZERO, Rect::ZERO);
                 continue;
             }
@@ -5086,7 +5110,7 @@ impl GroupRow {
         }
     }
 
-    fn apart_window_of_lane(
+    fn apart_window_of_section(
         &mut self,
         k: usize,
         viewport: Rect,
@@ -5095,7 +5119,10 @@ impl GroupRow {
     ) -> ApartWindow {
         let span = (viewport.x0 + shift, viewport.x1 + shift);
         let bits = |(x0, x1): (f64, f64)| (x0.to_bits(), x1.to_bits());
-        let last = self.apart_spans.iter_mut().find(|(lane, _)| *lane == k);
+        let last = self
+            .apart_spans
+            .iter_mut()
+            .find(|(section, _)| *section == k);
         let panning = last
             .as_ref()
             .is_some_and(|(_, last)| bits(*last) != bits(span));
@@ -5136,7 +5163,7 @@ impl GroupRow {
         // the strip's pixels rasterises only where a group's drawing changed
         // (a window off screen that changed while the strip rested: none of
         // the screen). Everything it paints stays inside its sprites' reach
-        // and the lane's clip.
+        // and the section's clip.
         let key = crate::scene_parts::PartKey::new("ui.strip-group", id);
         let bounds = vec![transform.transform_rect_bbox(Rect::new(
             reach.x0,
@@ -5445,14 +5472,17 @@ impl GroupRow {
             return;
         }
         let end_offset = HANDLE_SLOT_PX / 2.0;
-        let (run, band) = match self.lane_at(self.last_cursor) {
-            Some(lane) => (self.lane_range(lane), self.pan_of_lane(lane).viewport),
+        let (run, band) = match self.section_at(self.last_cursor) {
+            Some(section) => (
+                self.section_range(section),
+                self.pan_of_section(section).viewport,
+            ),
             None => (0..self.groups.len(), self.rect),
         };
         let gap_x = if run.is_empty() {
             band.x0
                 + self
-                    .pan_of_lane(self.lane_at(self.last_cursor).unwrap_or(0))
+                    .pan_of_section(self.section_at(self.last_cursor).unwrap_or(0))
                     .inset
         } else if ins <= run.start {
             self.groups
@@ -5678,7 +5708,7 @@ impl GroupRow {
                 tab_index,
             }) => self.move_tab_into_group(src_idx, tab_id, group_id, tab_index),
             Some(TabDropTarget::GroupGap { gap_index }) => {
-                self.pending_split_lane = self.lane_at(self.last_cursor);
+                self.pending_split_section = self.section_at(self.last_cursor);
                 self.split_tab_into_new_group(src_idx, tab_id, gap_index)
             }
             None => false,
@@ -7845,7 +7875,7 @@ mod tests {
         phase one_finger_swipe_onto_another_display_rehomes_the_group;
         {
             let (mut row, taffy, root) =
-                relayout_row_owned(super::lane_tests::partitioned_row(), 1800.0);
+                relayout_row_owned(super::section_tests::partitioned_row(), 1800.0);
             // Leftmost group: its grab sits on display 0. Group 200 can hang
             // across the border, so a grab there never "crosses".
             let start = group_grab_point(&row, 0);
@@ -8121,22 +8151,22 @@ mod tests {
         phase a_strip_past_its_viewport_never_widens_its_container;
         {
             let viewport_w = 2000.0;
-            let lanes = [
-                StripLane {
+            let sections = [
+                StripSection {
                     output: 0,
                     area: Rect::new(0.0, 0.0, 1200.0, 600.0),
                     usable: 1200.0,
                     leading: false,
                 },
-                StripLane {
+                StripSection {
                     output: 1,
                     area: Rect::new(1200.0, 0.0, viewport_w, 600.0),
                     usable: 800.0,
                     leading: false,
                 },
             ];
-            for (what, lanes) in [("one run", &[][..]), ("a lane per display", &lanes[..])] {
-                let (rect, max_scroll) = column_around_strip(8, viewport_w, lanes);
+            for (what, sections) in [("one run", &[][..]), ("a section per display", &sections[..])] {
+                let (rect, max_scroll) = column_around_strip(8, viewport_w, sections);
                 assert!(
                     max_scroll > 0.0,
                     "{what}: eight groups overflow, so the strip pans ({max_scroll})"
@@ -8596,7 +8626,11 @@ mod tests {
         (row, taffy, root)
     }
 
-    fn column_around_strip(count: usize, viewport_w: f64, lanes: &[StripLane]) -> (Rect, f64) {
+    fn column_around_strip(
+        count: usize,
+        viewport_w: f64,
+        sections: &[StripSection],
+    ) -> (Rect, f64) {
         use crate::widget::Column;
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Size as TSize};
@@ -8611,9 +8645,9 @@ mod tests {
         let assignment: HashMap<u64, u32> = row
             .groups
             .iter()
-            .map(|g| (g.id, lanes.first().map_or(0, |lane| lane.output)))
+            .map(|g| (g.id, sections.first().map_or(0, |section| section.output)))
             .collect();
-        row.set_lanes(lanes, &assignment);
+        row.set_sections(sections, &assignment);
         let mut column = Column::new().with_no_padding().push(Box::new(row));
         let theme = Theme::dark();
         let mut rect = Rect::ZERO;
@@ -10427,14 +10461,14 @@ mod float_tests;
 #[path = "group_row_keyboard_tests.rs"]
 mod keyboard_tests;
 #[cfg(test)]
-#[path = "group_row_lane_tests.rs"]
-mod lane_tests;
-#[cfg(test)]
 #[path = "group_row_pacing_tests.rs"]
 mod pacing_tests;
 #[cfg(test)]
 #[path = "group_row_presence_tests.rs"]
 mod presence_tests;
+#[cfg(test)]
+#[path = "group_row_section_tests.rs"]
+mod section_tests;
 #[cfg(test)]
 #[path = "group_row_sharing_tests.rs"]
 mod sharing_tests;

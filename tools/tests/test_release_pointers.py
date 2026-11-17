@@ -69,12 +69,12 @@ class PublishedPointers(unittest.TestCase):
             for name in ("dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh"):
                 (tree / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(ROOT / name, tree / name)
-            lane = tree / "dist/ci-output/fedora-44-amd64"
-            lane.mkdir(parents=True)
-            (lane / "tilo-desktop-os-x86_64.tar.gz").write_bytes(b"payload")
-            digest = subprocess.run(["sha256sum", "tilo-desktop-os-x86_64.tar.gz"], cwd=lane, check=True,
+            job = tree / "dist/ci-output/fedora-44-amd64"
+            job.mkdir(parents=True)
+            (job / "tilo-desktop-os-x86_64.tar.gz").write_bytes(b"payload")
+            digest = subprocess.run(["sha256sum", "tilo-desktop-os-x86_64.tar.gz"], cwd=job, check=True,
                                     capture_output=True, text=True, timeout=HANG_BOUND).stdout
-            (lane / "tilo-desktop-os-x86_64.tar.gz.sha256").write_text(digest)
+            (job / "tilo-desktop-os-x86_64.tar.gz.sha256").write_text(digest)
             bin_dir = Path(temp) / "bin"
             bin_dir.mkdir()
             # The package registry answers every upload with 201.

@@ -1478,7 +1478,7 @@ const CHIP_PAD_Y: f64 = 1.5;
 const CHIP_GAP: f64 = 2.0;
 
 /// How big a name chip will be. A caller that has to fit one somewhere — a
-/// lane area that clips its contents, a viewport edge — needs this before it
+/// area that clips its contents, a viewport edge — needs this before it
 /// can decide where the chip goes.
 fn chip_size(theme: &Theme, text_renderer: &mut TextRenderer, name: &str) -> (f64, f64) {
     let label_style = theme.text(TextRole::Caption);
@@ -2301,7 +2301,7 @@ mod tests {
             let theme = Theme::default();
             let mut tr = TextRenderer::new();
             let user = MemberId::person("charlie");
-            // The lane area starts at y=20; the object sits 2px inside its top,
+            // The area starts at y=20; the object sits 2px inside its top,
             // so a chip hung above would start above y=20 and be cut off.
             let bounds = Rect::new(0.0, 20.0, 200.0, 120.0);
             let object = Rect::new(10.0, 22.0, 160.0, 90.0);

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-editor@292027a7bde8cd96";
+export const SURFACE = "so.tilo.video-editor@b13adfe68cf2bbc6";
 
 export interface ChromaKey {
   enabled: boolean;
@@ -237,8 +237,8 @@ export interface ResetMixArgs {
   track: string;
 }
 
-/** The arguments of `trim-lanes`. */
-export interface TrimLanesArgs {
+/** The arguments of `trim-tracks`. */
+export interface TrimTracksArgs {
   tracks: string[];
   db: number;
   headroom: number;
@@ -479,13 +479,13 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `reset-mix` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   resetMixMany(items: ResetMixArgs[]): Promise<tilo.ActionAnswer[]>;
-  trimLanes(args: {
+  trimTracks(args: {
     tracks: string[];
     db: number;
     headroom: number;
   }): Promise<void>;
-  /** Runs `trim-lanes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  trimLanesMany(items: TrimLanesArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `trim-tracks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  trimTracksMany(items: TrimTracksArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteTrack(args: {
     track: string;
   }): Promise<void>;
@@ -636,7 +636,7 @@ export interface Project extends tilo.Resource {
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["setFrameSize", "setFrameSizeMany", "setFrameRate", "setFrameRateMany", "setRenderRange", "setRenderRangeMany", "markIn", "markInMany", "markOut", "markOutMany", "clearMarks", "clearMarksMany", "addTitle", "setTitle", "addClip", "moveClip", "setClip", "removeClip", "addMarker", "addMarkerMany", "placeTwoAngles", "placeTwoAnglesMany", "unplaceTwoAngles", "unplaceTwoAnglesMany", "removeMarker", "removeMarkerMany", "addTrack", "addTrackMany", "resetMix", "resetMixMany", "trimLanes", "trimLanesMany", "deleteTrack", "deleteTrackMany", "placeClip", "placeClipMany", "deleteMedia", "deleteMediaMany", "useAsProjectFormat", "useAsProjectFormatMany", "delete", "deleteMany", "rippleDelete", "rippleDeleteMany", "splitClip", "splitClipMany", "trimInClip", "trimInClipMany", "trimOutClip", "trimOutClipMany", "setSpeed", "setSpeedMany", "toggleReverse", "toggleReverseMany", "resetSpeed", "resetSpeedMany", "setParam", "setParamMany", "addEffect", "addEffectMany", "removeEffect", "removeEffectMany", "moveEffect", "moveEffectMany", "setEffectAmount", "setEffectAmountMany", "clearEffects", "clearEffectsMany", "unlink", "unlinkMany", "linkAudio", "linkAudioMany", "linkWith", "linkWithMany", "exportTimelineContent", "renderTimeline", "exportVideoContent", "exportVideoStatus", "cancelVideoExport", "viewFrameContent"] as const;
+export const PROJECT_ACTIONS = ["setFrameSize", "setFrameSizeMany", "setFrameRate", "setFrameRateMany", "setRenderRange", "setRenderRangeMany", "markIn", "markInMany", "markOut", "markOutMany", "clearMarks", "clearMarksMany", "addTitle", "setTitle", "addClip", "moveClip", "setClip", "removeClip", "addMarker", "addMarkerMany", "placeTwoAngles", "placeTwoAnglesMany", "unplaceTwoAngles", "unplaceTwoAnglesMany", "removeMarker", "removeMarkerMany", "addTrack", "addTrackMany", "resetMix", "resetMixMany", "trimTracks", "trimTracksMany", "deleteTrack", "deleteTrackMany", "placeClip", "placeClipMany", "deleteMedia", "deleteMediaMany", "useAsProjectFormat", "useAsProjectFormatMany", "delete", "deleteMany", "rippleDelete", "rippleDeleteMany", "splitClip", "splitClipMany", "trimInClip", "trimInClipMany", "trimOutClip", "trimOutClipMany", "setSpeed", "setSpeedMany", "toggleReverse", "toggleReverseMany", "resetSpeed", "resetSpeedMany", "setParam", "setParamMany", "addEffect", "addEffectMany", "removeEffect", "removeEffectMany", "moveEffect", "moveEffectMany", "setEffectAmount", "setEffectAmountMany", "clearEffects", "clearEffectsMany", "unlink", "unlinkMany", "linkAudio", "linkAudioMany", "linkWith", "linkWithMany", "exportTimelineContent", "renderTimeline", "exportVideoContent", "exportVideoStatus", "cancelVideoExport", "viewFrameContent"] as const;
 
 /** The `video-editor.project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {

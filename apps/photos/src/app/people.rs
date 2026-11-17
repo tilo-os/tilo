@@ -487,8 +487,8 @@ impl Photos {
                 }
             }
             PeopleIntent::Page(forward) => {
-                let step = self.people_layout.lanes.height();
-                let max = (self.people_layout.lanes_content - step).max(0.0);
+                let step = self.people_layout.sections.height();
+                let max = (self.people_layout.sections_content - step).max(0.0);
                 self.people_scroll =
                     (self.people_scroll + if forward { step } else { -step }).clamp(0.0, max);
             }
@@ -585,11 +585,11 @@ impl Photos {
             }
             y = row_y + control_h + group;
 
-            let lanes_top = y;
-            let viewport = Rect::new(frame.x0, lanes_top, frame.x1, self.canvas_rect.y1);
+            let sections_top = y;
+            let viewport = Rect::new(frame.x0, sections_top, frame.x1, self.canvas_rect.y1);
             let extent = ui::widget::MediaSize::Small.extent(theme);
             let side_by_side = frame.width() >= 2.0 * extent + group;
-            let lanes = if side_by_side {
+            let sections = if side_by_side {
                 let mid = frame.x0 + (frame.width() - group) / 2.0;
                 [(frame.x0, mid), (mid + group, frame.x1)]
             } else {
@@ -597,7 +597,7 @@ impl Photos {
             };
             let label_h = related + body + 2.0 * caption;
             let mut y = 0.0;
-            let mut lanes_bottom = 0.0_f64;
+            let mut sections_bottom = 0.0_f64;
             let mut placed: Vec<(usize, Rect)> = Vec::new();
             let mut headings = Vec::with_capacity(2);
             let mut empties = Vec::with_capacity(2);
@@ -606,7 +606,7 @@ impl Photos {
                 PeopleIntent::OpenSuggestion(String::new()),
             ]
             .into_iter()
-            .zip(lanes)
+            .zip(sections)
             {
                 if side_by_side {
                     y = 0.0;
@@ -635,13 +635,13 @@ impl Photos {
                     empties.push(None);
                     y += index.div_ceil(columns) as f64 * (card_h + group);
                 }
-                lanes_bottom = lanes_bottom.max(y);
+                sections_bottom = sections_bottom.max(y);
             }
-            let content_h = lanes_bottom - group + f64::from(rhythm.section);
+            let content_h = sections_bottom - group + f64::from(rhythm.section);
             self.people_scroll = self
                 .people_scroll
                 .clamp(0.0, (content_h - viewport.height()).max(0.0));
-            let shift = Vec2::new(0.0, lanes_top - self.people_scroll);
+            let shift = Vec2::new(0.0, sections_top - self.people_scroll);
             for (position, rect) in placed {
                 if let Some(control) = self.people_controls.get_mut(position) {
                     control.bounds = rect + shift;
@@ -655,8 +655,8 @@ impl Photos {
                 .map(|rect| rect.map(|rect| rect + shift));
             layout.people_empty = empties.next().flatten();
             layout.suggestions_empty = empties.next().flatten();
-            layout.lanes = viewport;
-            layout.lanes_content = content_h;
+            layout.sections = viewport;
+            layout.sections_content = content_h;
         } else {
             let gap = f64::from(rhythm.related);
             let side = ((frame.width() - 3.0 * gap) / 4.0)
@@ -913,13 +913,18 @@ impl Photos {
             None,
         );
 
-        let lanes = layout.lanes;
+        let sections = layout.sections;
         ctx.scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             transform,
-            &Rect::new(self.canvas_rect.x0, lanes.y0, self.canvas_rect.x1, lanes.y1),
+            &Rect::new(
+                self.canvas_rect.x0,
+                sections.y0,
+                self.canvas_rect.x1,
+                sections.y1,
+            ),
         );
         for (at, key) in [
             (layout.people_heading, "photos-people"),
@@ -983,7 +988,7 @@ impl Photos {
                 }
                 _ => continue,
             };
-            if control.bounds.y1 < lanes.y0 || control.bounds.y0 > lanes.y1 {
+            if control.bounds.y1 < sections.y0 || control.bounds.y0 > sections.y1 {
                 continue;
             }
             let art = photo_ids
@@ -998,7 +1003,8 @@ impl Photos {
                 .title(&name)
                 .meta(&count_line)
                 .interaction(ui::widget::Interaction {
-                    hovered: control.bounds.contains(self.pointer) && lanes.contains(self.pointer),
+                    hovered: control.bounds.contains(self.pointer)
+                        && sections.contains(self.pointer),
                     focused: control.button.is_focused(),
                     ..Default::default()
                 });
@@ -1008,12 +1014,16 @@ impl Photos {
             face.paint(&mut ctx, control.bounds);
         }
         ctx.scene.pop_layer();
-        let metrics = ScrollMetrics::new(layout.lanes_content, lanes.height(), self.people_scroll);
+        let metrics = ScrollMetrics::new(
+            layout.sections_content,
+            sections.height(),
+            self.people_scroll,
+        );
         if metrics.overflows() {
             ui::widget::scrollbar::Scrollbar::vertical().draw(
                 ctx.scene,
                 transform,
-                Self::scroll_track(lanes, theme),
+                Self::scroll_track(sections, theme),
                 metrics,
                 theme,
                 false,

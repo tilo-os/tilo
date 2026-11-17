@@ -2794,7 +2794,7 @@ fn a_wheel_scrolls_the_window_under_the_pointer_not_the_one_before_it() {
 mod actions;
 
 /// A shell nobody touches has nothing to draw: a settled shell declines the frame its host offers, so
-/// a window's bar and its search lane paint nothing until what they show changes.
+/// a window's bar and its search area paint nothing until what they show changes.
 #[test]
 fn a_settled_idle_shell_repaints_nothing() {
     let (mut driver, _handle, _) = mount();

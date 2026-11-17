@@ -26,7 +26,7 @@ Each adapter reads what a benchmark already prints and emits records through
   caller's KPI ids' `first_frame` (chord to the first frame shown), `settled`
   (chord to the resting frame shown after the frame run) and `dropped_frames`
   (refresh intervals in the run that showed no new frame).
-  `scripts/perf/device_latency_bench.py` (the reference-hardware lane) calls it
+  `scripts/perf/device_latency_bench.py` (the reference-hardware job) calls it
   for `hw.workspace_switch.*`.
 - `framework-open LOG...`: the `FRAMEWORK-OPEN tasks=<n> samples_ms=<a,b,...>
   allocations=<x> heap_per_task=<y>` lines of
@@ -423,7 +423,7 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     """Records for one relay load bench run, priced with `prices`.
 
     The nightly requires exactly today's KPIs. `require_all=False` is the
-    same-job A/B lane (tools/perf/ab.py), which also reads an older bench: it
+    same-job A/B job (tools/perf/ab.py), which also reads an older bench: it
     records the known KPIs the report has and leaves out any it does not know.
     """
     members = int(report["members"])
@@ -503,7 +503,7 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
     The report must have measured the environment the records claim: its
     WebGPU adapter is the env's renderer, its bundle a build of the env's
     commit in the env's profile, clean unless `require_clean=False` (the A/B
-    lane, whose output directory sits untracked in the checkout it builds),
+    job, whose output directory sits untracked in the checkout it builds),
     and its page CPU unthrottled: a throttled run stands in for older
     hardware and is never this series. The demo's and the typing workload's
     KPIs come from a run with that workload and only from one.

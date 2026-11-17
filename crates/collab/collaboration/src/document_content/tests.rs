@@ -6,103 +6,103 @@ fn route(app: &str, record: &str) -> super::super::RouteSpec {
     super::super::RouteSpec::document(app, uuid::Uuid::from_u128(1), record)
 }
 
-fn resource_store(record: &str) -> (ContentStore, Arc<ContentLane>) {
-    let lane = ContentLane::of(&route("so.tilo.record-content-test", record));
+fn resource_store(record: &str) -> (ContentStore, Arc<ContentLink>) {
+    let link = ContentLink::of(&route("so.tilo.record-content-test", record));
     (
-        DocumentContent::store(ContentStore::memory(), Arc::clone(&lane)),
-        lane,
+        DocumentContent::store(ContentStore::memory(), Arc::clone(&link)),
+        link,
     )
 }
 
 #[test]
-fn a_window_reads_its_record_content_on_the_lane_it_keeps() {
+fn a_window_reads_its_record_content_on_the_link_it_keeps() {
     let scope = crate::WakeScope::new();
     let _entry = scope.enter();
-    let kept = ContentLane::of(&route("so.tilo.record-content-kept-lane-test", "a record"));
-    keep_lane(&scope.handle(), Arc::clone(&kept));
+    let kept = ContentLink::of(&route("so.tilo.record-content-kept-link-test", "a record"));
+    keep_link(&scope.handle(), Arc::clone(&kept));
     assert!(
-        Arc::ptr_eq(&ContentLane::of_window(), &kept),
-        "the window asks on the lane it keeps, not the process's lane for the record",
+        Arc::ptr_eq(&ContentLink::of_window(), &kept),
+        "the window asks on the content link it keeps, not the process's content link for the record",
     );
 }
 
 #[test]
-fn two_windows_of_one_record_each_ask_on_their_own_lane() {
+fn two_windows_of_one_record_each_ask_on_their_own_link() {
     // A package's primary record travels as the route with no record, so a
-    // lane per record is one lane for every window showing it: what one
+    // content link per record is one content link for every window showing it: what one
     // window wants, another window would fetch.
     let mine = crate::WakeScope::new();
     let theirs = crate::WakeScope::new();
-    let my_lane = {
+    let my_link = {
         let _mine = mine.enter();
-        let lane = ContentLane::of_window();
-        keep_lane(&mine.handle(), Arc::clone(&lane));
-        lane
+        let link = ContentLink::of_window();
+        keep_link(&mine.handle(), Arc::clone(&link));
+        link
     };
-    let their_lane = {
+    let their_link = {
         let _theirs = theirs.enter();
-        let lane = ContentLane::of_window();
-        keep_lane(&theirs.handle(), Arc::clone(&lane));
-        lane
+        let link = ContentLink::of_window();
+        keep_link(&theirs.handle(), Arc::clone(&link));
+        link
     };
     assert!(
-        !Arc::ptr_eq(&my_lane, &their_lane),
-        "each window keeps its own lane, not the process's one for the record",
+        !Arc::ptr_eq(&my_link, &their_link),
+        "each window keeps its own content link, not the process's one for the record",
     );
     let hash = tilo_content::hash_bytes(b"a picture one window shows");
-    let my_window = DocumentContent::store(ContentStore::memory(), Arc::clone(&my_lane));
+    let my_window = DocumentContent::store(ContentStore::memory(), Arc::clone(&my_link));
     assert_eq!(my_window.read(&hash), None);
-    assert_eq!(my_lane.take_requests().wants, vec![hash.clone()]);
+    assert_eq!(my_link.take_requests().wants, vec![hash.clone()]);
     assert!(
-        their_lane.take_requests().wants.is_empty(),
+        their_link.take_requests().wants.is_empty(),
         "the other window of the same record asked for nothing",
     );
 }
 
 #[test]
-fn a_window_that_closed_leaves_the_next_one_its_own_lane() {
+fn a_window_that_closed_leaves_the_next_one_its_own_link() {
     let mut closed = crate::WakeScope::new();
-    let closed_lane = {
+    let closed_link = {
         let _entry = closed.enter();
-        let lane = ContentLane::of_window();
-        keep_lane(&closed.handle(), Arc::clone(&lane));
-        lane
+        let link = ContentLink::of_window();
+        keep_link(&closed.handle(), Arc::clone(&link));
+        link
     };
     closed.close();
-    // The lane a closed window kept is not what the next window on this
+    // The content link a closed window kept is not what the next window on this
     // thread reads its record's content on.
     let next = crate::WakeScope::new();
     let _entry = next.enter();
-    let next_lane = ContentLane::of_window();
-    keep_lane(&next.handle(), Arc::clone(&next_lane));
+    let next_link = ContentLink::of_window();
+    keep_link(&next.handle(), Arc::clone(&next_link));
     assert!(
-        !Arc::ptr_eq(&closed_lane, &next_lane),
-        "a closed window's lane is not the next window's lane",
+        !Arc::ptr_eq(&closed_link, &next_link),
+        "a closed window's content link is not the next window's content link",
     );
-    let store = DocumentContent::store(ContentStore::memory(), Arc::clone(&next_lane));
+    let store = DocumentContent::store(ContentStore::memory(), Arc::clone(&next_link));
     let hash = tilo_content::hash_bytes(b"the next window's picture");
     assert_eq!(store.read(&hash), None);
-    assert_eq!(next_lane.take_requests().wants, vec![hash]);
+    assert_eq!(next_link.take_requests().wants, vec![hash]);
     assert!(
-        closed_lane.take_requests().wants.is_empty(),
+        closed_link.take_requests().wants.is_empty(),
         "what one window wants is not another window's to fetch",
     );
 }
 
 tilo_test_env::scenario! {
-    /// A record's content store over its lane, each case on a record no other case names.
-    fn a_records_store_asks_offers_and_resolves_content_on_its_own_lane;
+    /// A record's content store over its content link, each case on a record no other case names.
+    fn a_records_store_asks_offers_and_resolves_content_on_its_own_link;
 
     phase stored_content_is_offered_on_the_record_route;
     {
-        let (store, lane) = resource_store("offered");
+        let (store, link) = resource_store("offered");
         let hash = store.put(b"a picture").unwrap();
         assert!(
             tilo_content::is_sealed(&hash),
             "a record's content is sealed"
         );
         let address = tilo_content::content_address(&hash).unwrap();
-        let requests = lane.take_requests();
+        let requests = link.take_requests();
         let [(offered, sealed)] = requests.offers.as_slice() else {
             panic!("one offer, got {:?}", requests.offers.len());
         };
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
     // below it are kept as they come, under the address the reference names.
     {
         let (lent, inner) = resource_store("lent");
-        let outer = ContentLane::of(&route("so.tilo.record-content-test", "outer"));
+        let outer = ContentLink::of(&route("so.tilo.record-content-test", "outer"));
         let store = DocumentContent::store(lent.clone(), Arc::clone(&outer));
         let reference = store.put(b"a picture").unwrap();
         let address = tilo_content::content_address(&reference).unwrap();
@@ -139,29 +139,29 @@ tilo_test_env::scenario! {
 
     phase missing_content_is_asked_for_once_and_reads_pending_until_it_arrives;
     {
-        let (store, lane) = resource_store("wanted");
+        let (store, link) = resource_store("wanted");
         let bytes = b"bytes on another device".to_vec();
         let hash = tilo_content::hash_bytes(&bytes);
         assert_eq!(store.read(&hash), None);
         assert_eq!(store.state(&hash), ContentState::Pending);
         assert_eq!(store.read(&hash), None);
         assert_eq!(
-            lane.take_requests().wants,
+            link.take_requests().wants,
             vec![hash.clone()],
             "asked once, however often it is read"
         );
 
         // Bytes that are not the content are dropped.
-        lane.arrive(hash.clone(), b"forged".to_vec());
+        link.arrive(hash.clone(), b"forged".to_vec());
         assert_eq!(store.read(&hash), None);
         assert_eq!(store.state(&hash), ContentState::Pending);
 
-        lane.arrive(hash.clone(), bytes.clone());
+        link.arrive(hash.clone(), bytes.clone());
         assert_eq!(store.read(&hash), Some(bytes));
         assert_eq!(store.state(&hash), ContentState::Resolved);
     }
 
-    phase each_record_has_its_own_lane;
+    phase each_record_has_its_own_link;
     {
         let (store, _) = resource_store("one-record");
         let (_, other) = resource_store("another-record");
@@ -175,14 +175,14 @@ tilo_test_env::scenario! {
     // compares, whichever way it came; a read that finds nothing does not
     // need to.
     {
-        let (store, lane) = resource_store("arrivals");
+        let (store, link) = resource_store("arrivals");
         let bytes = b"arriving later".to_vec();
         let hash = tilo_content::hash_bytes(&bytes);
         // Other tests run in parallel and move the count too: only that it
         // moved is asserted.
         let before = arrivals();
         assert_eq!(store.read(&hash), None);
-        lane.arrive(hash.clone(), bytes.clone());
+        link.arrive(hash.clone(), bytes.clone());
         let arrived = arrivals();
         assert!(arrived > before, "content that arrived on the route counts");
         assert_eq!(store.read(&hash), Some(bytes));
@@ -193,31 +193,31 @@ tilo_test_env::scenario! {
 
     phase missing_content_reads_where_its_host_says_the_want_stands;
     {
-        let (store, lane) = resource_store("known");
+        let (store, link) = resource_store("known");
         let bytes = b"bytes on a device that is offline".to_vec();
         let hash = tilo_content::hash_bytes(&bytes);
         assert_eq!(store.read(&hash), None);
         let looked = arrivals();
 
-        lane.stands(hash.clone(), ContentState::Waiting);
+        link.stands(hash.clone(), ContentState::Waiting);
         assert_eq!(store.state(&hash), ContentState::Waiting);
         assert_ne!(arrivals(), looked, "a window waiting for it looks again");
 
-        lane.stands(hash.clone(), ContentState::Pending);
+        link.stands(hash.clone(), ContentState::Pending);
         assert_eq!(
             store.state(&hash),
             ContentState::Pending,
             "a holder connected"
         );
 
-        lane.arrive(hash.clone(), bytes.clone());
+        link.arrive(hash.clone(), bytes.clone());
         assert_eq!(store.read(&hash), Some(bytes));
         assert_eq!(store.state(&hash), ContentState::Resolved);
 
         // Content nobody here asked for has no access.
         let other = tilo_content::hash_bytes(b"never asked");
-        lane.stands(other.clone(), ContentState::Unavailable);
-        assert_eq!(lane.known(&other), None);
+        link.stands(other.clone(), ContentState::Unavailable);
+        assert_eq!(link.known(&other), None);
     }
 }
 
@@ -229,20 +229,20 @@ tilo_test_env::scenario! {
     {
         let app = "so.tilo.person-content-test";
         let person = super::super::RouteSpec::document(app, uuid::Uuid::from_u128(7), "history");
-        let store = ContentLane::resource_store(&person);
+        let store = ContentLink::resource_store(&person);
         let hash = store.put(b"a poster").unwrap();
-        let again = ContentLane::resource_store(&person);
+        let again = ContentLink::resource_store(&person);
         assert_eq!(
             again.read(&hash).as_deref(),
             Some(&b"a poster"[..]),
             "one store per record"
         );
-        let routed = ContentLane::routed(app);
-        let [(route, lane)] = routed.as_slice() else {
-            panic!("one routed lane, got {}", routed.len());
+        let routed = ContentLink::routed(app);
+        let [(route, link)] = routed.as_slice() else {
+            panic!("one routed content link, got {}", routed.len());
         };
         assert_eq!(route, &person);
-        let offers = lane.take_requests().offers;
+        let offers = link.take_requests().offers;
         assert_eq!(
             offers
                 .iter()
@@ -251,28 +251,28 @@ tilo_test_env::scenario! {
             vec![tilo_content::content_address(&hash).unwrap()]
         );
         assert!(
-            ContentLane::routed("so.tilo.record-content-test").is_empty(),
+            ContentLink::routed("so.tilo.record-content-test").is_empty(),
             "a window's own record sends on the window's route"
         );
     }
 
-    phase the_records_route_reaches_the_lanes_of_the_windows_showing_it;
+    phase the_records_route_reaches_the_links_of_the_windows_showing_it;
     // A process that carries a record's content for every window (a browser
-    // page's replication) reaches each window's own lane through the record's
+    // page's replication) reaches each window's own content link through the record's
     // route: what a window asks for is asked, what arrives reaches the window,
-    // and a window that let its lane go is not asked again.
+    // and a window that let its content link go is not asked again.
     {
         let app = "so.tilo.record-content-route-test";
-        let window = Arc::new(ContentLane::default());
-        ContentLane::show_on_route(&route(app, ""), &window);
+        let window = Arc::new(ContentLink::default());
+        ContentLink::show_on_route(&route(app, ""), &window);
         let store = DocumentContent::store(ContentStore::memory(), Arc::clone(&window));
         let picture = b"a picture the page lacks".to_vec();
         let hash = tilo_content::hash_bytes(&picture);
         assert_eq!(store.read(&hash), None);
 
-        let wanted: Vec<String> = ContentLane::on_route(&route(app, ""))
+        let wanted: Vec<String> = ContentLink::on_route(&route(app, ""))
             .iter()
-            .flat_map(|lane| lane.take_requests().wants)
+            .flat_map(|link| link.take_requests().wants)
             .collect();
         assert_eq!(
             wanted,
@@ -280,17 +280,17 @@ tilo_test_env::scenario! {
             "the window's want is the route's"
         );
 
-        for lane in ContentLane::on_route(&route(app, "")) {
-            lane.arrive(hash.clone(), picture.clone());
+        for link in ContentLink::on_route(&route(app, "")) {
+            link.arrive(hash.clone(), picture.clone());
         }
         assert_eq!(store.read(&hash), Some(picture), "the window has it");
 
         drop(store);
         drop(window);
         assert_eq!(
-            ContentLane::on_route(&route(app, "")).len(),
+            ContentLink::on_route(&route(app, "")).len(),
             1,
-            "only the record's own lane is left once the window let its lane go"
+            "only the record's own content link is left once the window let its content link go"
         );
     }
 
@@ -308,19 +308,19 @@ tilo_test_env::scenario! {
             tilo_seal::SymmetricKey::generate().unwrap(),
             tilo_seal::SymmetricKey::generate().unwrap(),
         );
-        let window_a = Arc::new(ContentLane::default());
-        let window_b = Arc::new(ContentLane::default());
-        ContentLane::show_on_route(&in_a, &window_a);
-        ContentLane::show_on_route(&in_b, &window_b);
-        ContentLane::of(&in_a).hold_secret(Some(secret_a.clone()));
-        ContentLane::of(&in_b).hold_secret(Some(secret_b.clone()));
+        let window_a = Arc::new(ContentLink::default());
+        let window_b = Arc::new(ContentLink::default());
+        ContentLink::show_on_route(&in_a, &window_a);
+        ContentLink::show_on_route(&in_b, &window_b);
+        ContentLink::of(&in_a).hold_secret(Some(secret_a.clone()));
+        ContentLink::of(&in_b).hold_secret(Some(secret_b.clone()));
         let store_a = DocumentContent::store(ContentStore::memory(), Arc::clone(&window_a));
         let store_b = DocumentContent::store(ContentStore::memory(), Arc::clone(&window_b));
 
         let sealed_under = |secret: &tilo_seal::SymmetricKey, bytes: &[u8]| {
-            let lane = Arc::new(ContentLane::default());
-            lane.hold_secret(Some(secret.clone()));
-            DocumentContent::store(ContentStore::memory(), lane)
+            let link = Arc::new(ContentLink::default());
+            link.hold_secret(Some(secret.clone()));
+            DocumentContent::store(ContentStore::memory(), link)
                 .put(bytes)
                 .unwrap()
         };
@@ -343,28 +343,28 @@ tilo_test_env::scenario! {
             assert_eq!(store.read(&reference), Some(picture.clone()));
         }
         assert!(
-            ContentLane::on_route(&in_a)
+            ContentLink::on_route(&in_a)
                 .iter()
-                .all(|lane| !Arc::ptr_eq(lane, &window_b)),
+                .all(|link| !Arc::ptr_eq(link, &window_b)),
             "a window in B is not on A's route"
         );
     }
 }
 
 #[test]
-fn a_package_primary_window_asks_on_its_own_lane() {
+fn a_package_primary_window_asks_on_its_own_link() {
     let app = "so.tilo.record-content-primary-test";
-    let window = ContentLane::of_window();
+    let window = ContentLink::of_window();
     let store = DocumentContent::store(ContentStore::memory(), Arc::clone(&window));
     let hash = tilo_content::hash_bytes(b"a posted picture");
     assert_eq!(store.read(&hash), None);
     assert_eq!(window.take_requests().wants, vec![hash]);
     assert!(
-        ContentLane::of(&route(app, ""))
+        ContentLink::of(&route(app, ""))
             .take_requests()
             .wants
             .is_empty(),
-        "a package's primary record travels as its route, its lane is the window's",
+        "a package's primary record travels as its route, its content link is the window's",
     );
 }
 
@@ -373,10 +373,10 @@ fn the_same_bytes_stored_twice_on_a_record_of_one_workspace_are_one_item() {
     const APP: &str = "so.tilo.record-content-convergent-test";
     let picture = b"a picture two windows of the workspace place".repeat(500);
     let secret = tilo_seal::SymmetricKey::generate().unwrap();
-    let mine = Arc::new(ContentLane::default());
-    let theirs = Arc::new(ContentLane::default());
-    ContentLane::show_on_route(&route(APP, "a record"), &mine);
-    ContentLane::show_on_route(&route(APP, "another record"), &theirs);
+    let mine = Arc::new(ContentLink::default());
+    let theirs = Arc::new(ContentLink::default());
+    ContentLink::show_on_route(&route(APP, "a record"), &mine);
+    ContentLink::show_on_route(&route(APP, "another record"), &theirs);
     let local = ContentStore::memory();
     let my_window = DocumentContent::store(local.clone(), Arc::clone(&mine));
     let their_window = DocumentContent::store(local.clone(), Arc::clone(&theirs));
@@ -388,8 +388,8 @@ fn the_same_bytes_stored_twice_on_a_record_of_one_workspace_are_one_item() {
     );
     mine.take_requests();
 
-    ContentLane::of(&route(APP, "a record")).hold_secret(Some(secret.clone()));
-    ContentLane::of(&route(APP, "another record")).hold_secret(Some(secret));
+    ContentLink::of(&route(APP, "a record")).hold_secret(Some(secret.clone()));
+    ContentLink::of(&route(APP, "another record")).hold_secret(Some(secret));
     let reference = my_window.put(&picture).unwrap();
     assert_eq!(my_window.put(&picture).unwrap(), reference);
     assert_eq!(
@@ -416,12 +416,12 @@ fn the_same_bytes_stored_twice_on_a_record_of_one_workspace_are_one_item() {
         "an item sealed under a fresh key still opens"
     );
 
-    let elsewhere = Arc::new(ContentLane::default());
+    let elsewhere = Arc::new(ContentLink::default());
     // The same record's name, in another workspace.
     let in_another_workspace =
         super::super::RouteSpec::document(APP, uuid::Uuid::from_u128(2), "a record");
-    ContentLane::show_on_route(&in_another_workspace, &elsewhere);
-    ContentLane::of(&in_another_workspace)
+    ContentLink::show_on_route(&in_another_workspace, &elsewhere);
+    ContentLink::of(&in_another_workspace)
         .hold_secret(Some(tilo_seal::SymmetricKey::generate().unwrap()));
     let other = DocumentContent::store(ContentStore::memory(), elsewhere)
         .put(&picture)

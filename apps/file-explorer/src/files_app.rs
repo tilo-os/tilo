@@ -418,7 +418,7 @@ pub struct StartupInputs {
 #[derive(Clone)]
 pub struct HostedFileServices {
     pub thumbnails: Option<Arc<ThumbnailService>>,
-    /// The host supplies the native clipboard lane; this is availability, not a grant.
+    /// The host supplies the native clipboard descriptor stream; this is availability, not a grant.
     pub local_clipboard: bool,
 }
 

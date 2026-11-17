@@ -33,7 +33,7 @@ on:
         type: string
         default: ""
       full_native:
-        description: "Build Linux, Windows, and macOS on both architectures instead of the Linux x86_64 smoke lane."
+        description: "Build Linux, Windows, and macOS on both architectures instead of the Linux x86_64 smoke job."
         type: boolean
         required: false
         default: false
@@ -70,7 +70,7 @@ on:
 
 concurrency:
   # Tagged package promotion and the website manifest are mutable "latest"
-  # pointers, so tags share a non-cancelling lane. Repeated manual rehearsals
+  # pointers, so tags share a non-cancelling job. Repeated manual rehearsals
   # on one ref supersede stale queued work when a native host is unavailable.
   group: release-imager-${{ startsWith(github.ref, 'refs/tags/imager-v') && 'promotion' || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/imager-v') }}
@@ -96,8 +96,8 @@ jobs:
     timeout-minutes: 15
     runs-on: runner
     outputs:
-      linux-matrix: ${{ steps.lanes.outputs.linux-matrix }}
-      medium-matrix: ${{ steps.lanes.outputs.medium-matrix }}
+      linux-matrix: ${{ steps.jobs.outputs.linux-matrix }}
+      medium-matrix: ${{ steps.jobs.outputs.medium-matrix }}
       version: ${{ steps.identity.outputs.version }}
       release-tag: ${{ steps.identity.outputs.release-tag }}
       ref-protected: ${{ steps.protection.outputs.ref-protected }}
@@ -136,8 +136,8 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 apps/imager/packaging/continuous-release.py identity apps/imager/Cargo.toml >> "$GITHUB_OUTPUT"
-      - name: Select native Linux lanes
-        id: lanes
+      - name: Select native Linux jobs
+        id: jobs
         env:
           FULL_NATIVE: ${{ github.event.inputs.full_native }}
           LENOVO_TARGET_IMAGE: ${{ github.event.inputs.lenovo_target_image }}
@@ -944,7 +944,7 @@ jobs:
       - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         if: startsWith(github.ref, 'refs/tags/imager-v')
         with:
-          # All media are needed: each native lane signs its catalogued boards.
+          # All media are needed: each native job signs its catalogued boards.
           path: release-medium
       - name: Install native schema compiler
         run: |
@@ -961,7 +961,7 @@ jobs:
           fi
           capnp --version
       - name: Install native capture assembly prerequisites
-        # This explicit release lane owns the GPGME C probe and signed runtime
+        # This explicit release job owns the GPGME C probe and signed runtime
         # assembly. Ordinary commits do not rebuild or alter the CI images.
         run: |
           set -euo pipefail
@@ -1341,9 +1341,9 @@ jobs:
             dist/tilo-imager/tilo-imager-macos-*.dmg.sha256
           if-no-files-found: error
 
-  # A branch push publishes the Linux media only: the Windows and macOS lanes
+  # A branch push publishes the Linux media only: the Windows and macOS jobs
   # need hosts this fleet does not serve, so they run on a release tag or an
-  # explicit full-native dispatch, and a skipped lane still publishes here.
+  # explicit full-native dispatch, and a skipped job still publishes here.
   publish:
     timeout-minutes: 60
     if: always() && needs.linux.result == 'success' && (needs.windows.result == 'success' || needs.windows.result == 'skipped') && (needs.macos.result == 'success' || needs.macos.result == 'skipped') && (startsWith(github.ref, 'refs/tags/imager-v') || (github.event_name == 'push' && github.ref == 'refs/heads/stable'))

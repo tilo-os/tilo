@@ -70,7 +70,7 @@ impl Personal {
     /// Take the store to the person's other devices from `endpoint` : dial the ones this device has
     /// no link to, hand what they write to this session's apps through `channels` and `fanout` ,
     /// and keep the store beside this session's state as it changes.
-    /// `dials` opens the other lane to the same devices: the session between two of the person's
+    /// `dials` opens the other connection to the same devices: the session between two of the person's
     /// sessions is where they tell each other what they hold — their workspaces and their hosts — so
     /// one adopts what the other keeps. Without it a device keeps only what it was there to make.
     /// The session must answer [`Self::protocol`] on `endpoint` for as long as the links: it is what

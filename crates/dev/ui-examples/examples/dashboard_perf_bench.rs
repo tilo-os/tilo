@@ -2397,11 +2397,11 @@ fn redraw_frame_samples(histo: &[Phase]) -> String {
 }
 
 /// `TILO_UI_DASH_SAMPLES=<path>`: write every redrawing frame's total, so the
-/// scheduled performance lane records the distribution rather than the
+/// scheduled performance job records the distribution rather than the
 /// printed summary.
 #[allow(
     clippy::exit,
-    reason = "a run that cannot hand its samples to the performance lane must not pass as recorded"
+    reason = "a run that cannot hand its samples to the performance job must not pass as recorded"
 )]
 fn write_frame_samples(histo: &[Phase], path: &std::path::Path) {
     let samples = redraw_frame_samples(histo);

@@ -13,6 +13,7 @@
 mod agent_queries;
 mod atomic;
 mod blobs;
+mod board_lists;
 mod bundle;
 mod capture;
 mod chained;
@@ -38,7 +39,6 @@ mod incremental;
 mod index;
 mod inline_views;
 mod items;
-mod lanes;
 mod legacy;
 mod legibility;
 mod library;

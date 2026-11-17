@@ -19,7 +19,7 @@ class Worker {
 function setup(options={}) {
   const workers=[];
   const pool=createComputeDomains({workerFactory:()=>{const w=new Worker();workers.push(w);return w;}, yieldTask:tick, ...options});
-  const owner=(n,lane='background',signal)=>pool.bindOwner({owner:n,lifetime:`life-${n}`,domain:'images',lane,signal,authorize:()=>true});
+  const owner=(n,priority='background',signal)=>pool.bindOwner({owner:n,lifetime:`life-${n}`,domain:'images',priority,signal,authorize:()=>true});
   const request=(o, extra={}, consume=async()=>{})=>o.decode({bytes:new Uint8Array([1,2]),source:'ticket',maxDimension:1,...extra},consume);
   return {pool,workers,owner,request};
 }
@@ -106,10 +106,10 @@ test('managed cap includes simultaneous full worker and page RGBA staging',async
 });
 test('host authorization checked again before dispatch and delivery; reentrant close wins',async()=>{
   const {pool,workers}=setup();let permitted=true,calls=0;
-  const a=pool.bindOwner({owner:'a',lifetime:'l',domain:'d',lane:'foreground',authorize:()=>{calls++;return permitted;}});
+  const a=pool.bindOwner({owner:'a',lifetime:'l',domain:'d',priority:'foreground',authorize:()=>{calls++;return permitted;}});
   const p=a.decode({bytes:new Uint8Array([1]),source:'s',maxDimension:1},async()=>assert.fail('unauthorized consumer'));
   const rejected=assert.rejects(p,/closed/);await tick();permitted=false;workers[0].reply();await rejected;assert.ok(calls>=3);
-  let b;b=pool.bindOwner({owner:'b',lifetime:'l',domain:'d',lane:'foreground',authorize:()=>{b.close();return true;}});
+  let b;b=pool.bindOwner({owner:'b',lifetime:'l',domain:'d',priority:'foreground',authorize:()=>{b.close();return true;}});
   await assert.rejects(b.decode({bytes:new Uint8Array([1]),source:'s',maxDimension:1},async()=>{}),/closed/);assert.equal(pool.snapshot().jobs,0);
 });
 test('shared, detached and accessor-bearing requests are refused without spawn',async()=>{
@@ -130,14 +130,14 @@ test('abort during partial output discards staging and duplicate terminal messag
 test('duplicate live canonical owner/lifetime binding cannot bypass one active lease',()=>{
   const {pool,owner}=setup();const a=owner('a');
   assert.throws(()=>owner('a','foreground'),/binding/);
-  assert.throws(()=>pool.bindOwner({owner:'a',lifetime:'life-a',domain:'another',lane:'foreground',authorize:()=>true}),/binding/);
+  assert.throws(()=>pool.bindOwner({owner:'a',lifetime:'life-a',domain:'another',priority:'foreground',authorize:()=>true}),/binding/);
   a.close();assert.doesNotThrow(()=>owner('a'));
 });
 for(const change of ['close','revoke']) {
   test(`queued owner authorization cannot deliver after ${change}`,async()=>{
     const {pool,workers,request}=setup();let live=true,delivered=0;
-    const a=pool.bindOwner({owner:'a',lifetime:'a1',domain:'images',lane:'background',authorize:()=>live});
-    const b=pool.bindOwner({owner:'b',lifetime:'b1',domain:'images',lane:'background',authorize:()=>{if(change==='close')a.close();else live=false;return true;}});
+    const a=pool.bindOwner({owner:'a',lifetime:'a1',domain:'images',priority:'background',authorize:()=>live});
+    const b=pool.bindOwner({owner:'b',lifetime:'b1',domain:'images',priority:'background',authorize:()=>{if(change==='close')a.close();else live=false;return true;}});
     const p=request(a,{},async()=>{delivered++;});const refused=assert.rejects(p,/closed/);refused.catch(()=>{});
     const q=request(b);await tick();assert.equal(workers.length,1);workers[0].reply();
     await tick();workers[1].reply();await q;await refused;

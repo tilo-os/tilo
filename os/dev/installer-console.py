@@ -6,7 +6,7 @@ The installer and the greeter answer the tilo-control action protocol
 on the virtio-serial port os/dev/vm.sh attaches, whose host end is the Unix
 socket `vm.sh console` prints. Windows WHPX uses a loopback `tcp://host:port`
 socket instead. `tilo-control --socket <path> ...` speaks the
-same protocol; this stdlib-only client exists for release lanes that do not
+same protocol; this stdlib-only client exists for release jobs that do not
 build the compositor's CLI, and adds what a long boot needs: waiting, a `seq`
 field so an answer to an abandoned request is never mistaken for the current
 one, and secrets taken from the environment so they never reach argv.

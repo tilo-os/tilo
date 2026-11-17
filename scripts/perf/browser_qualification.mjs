@@ -66,7 +66,7 @@
 // display, bounds the demo's frame rate, and the 120 fps goal is measurable.
 //
 // Goals (reported in the summary; enforced only with --enforce-goals, which a
-// hardware qualification uses — budgets on the scheduled lane are
+// hardware qualification uses — budgets on the scheduled job are
 // compare.py's):
 //   demo minimum   30 fps: p95 frame interval <= 33.3 ms
 //   demo goal      120 fps: p50 frame interval and p95 frame work <= 8.33 ms

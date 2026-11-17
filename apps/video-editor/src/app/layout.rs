@@ -18,7 +18,7 @@ pub(super) struct Regions {
     pub(super) timeline: Rect,
     pub(super) ruler: Rect,
     pub(super) gutter: Rect,
-    pub(super) lanes: Rect,
+    pub(super) tracks: Rect,
     pub(super) scrim: Rect,
     /// `true` when the bin is collapsed to an overlay flap (narrow window).
     pub(super) bin_overlay: bool,
@@ -130,7 +130,7 @@ impl VideoEditorApp {
             timeline.x0 + gutter_w,
             timeline.y1,
         );
-        let lanes = Rect::new(
+        let tracks = Rect::new(
             timeline.x0 + gutter_w,
             timeline.y0 + self.ruler_height(),
             timeline.x1,
@@ -145,7 +145,7 @@ impl VideoEditorApp {
             timeline,
             ruler,
             gutter,
-            lanes,
+            tracks,
             scrim,
             bin_overlay: overlay,
             inspector_overlay,

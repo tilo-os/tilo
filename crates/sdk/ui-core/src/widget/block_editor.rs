@@ -1442,9 +1442,9 @@ impl BlockEditor {
         self
     }
 
-    /// The handle gutter of a block document: the lane its drag handles hang in, outside the text
+    /// The handle gutter of a block document: the gutter its drag handles hang in, outside the text
     /// column, as wide as a handle and the gap to the text. Zero when the editor shows no handles.
-    /// A page that holds the editor keeps its one content gutter outside this lane: it places the
+    /// A page that holds the editor keeps its one content gutter outside this gutter: it places the
     /// editor's rect on its gutter and lines its title and metadata up with the text
     /// ([`Self::text_inset`] in from the rect), so a hovered handle stands a full gutter clear of
     /// the sidebar or window edge.

@@ -73,10 +73,10 @@ pub(super) struct LocalAppConnection {
     /// ([`tilo_action_policy::EarlierIds::documents_under`]).
     pub(super) earlier: Vec<String>,
     process: PeerProcess,
-    /// What Files hands over on its connection's descriptor lane: the only
+    /// What Files hands over on its connection's descriptor stream: the only
     /// app whose selected objects this broker takes. Other apps' descriptors
     /// are closed on receipt.
-    pub(super) descriptors: Option<runtime_portal::descriptor_lane::ReceivedDescriptors>,
+    pub(super) descriptors: Option<runtime_portal::descriptors::ReceivedDescriptors>,
     connected: AtomicBool,
 }
 
@@ -237,9 +237,7 @@ impl LocalAppConnection {
         process.alive().then(|| {
             Arc::new(Self {
                 descriptors: (app_id == FILES).then(|| {
-                    runtime_portal::descriptor_lane::ReceivedDescriptors::new(
-                        MAX_HANDED_DESCRIPTORS,
-                    )
+                    runtime_portal::descriptors::ReceivedDescriptors::new(MAX_HANDED_DESCRIPTORS)
                 }),
                 app_id,
                 workspace_id,
@@ -492,7 +490,7 @@ impl JoinedChannel {
     }
 
     /// Selected objects the launcher-attested Files process handed over on
-    /// its own connection's descriptor lane, taken by lane number. The broker
+    /// its own connection's descriptor stream, taken by descriptor number. The broker
     /// never reaches into the app for a descriptor: that needs ptrace-attach
     /// rights, which a hardened host withholds from everyone.
     pub(super) fn clipboard_descriptor_source(
@@ -518,10 +516,10 @@ impl JoinedChannel {
         }))
     }
 
-    /// The descriptor lane of this connection's launcher-attested Files process.
+    /// The descriptor stream of this connection's launcher-attested Files process.
     pub(super) fn handed_descriptors(
         &self,
-    ) -> Option<runtime_portal::descriptor_lane::ReceivedDescriptors> {
+    ) -> Option<runtime_portal::descriptors::ReceivedDescriptors> {
         self.lease
             .as_ref()
             .and_then(|lease| lease.local_media.as_ref())
@@ -561,7 +559,7 @@ mod tests;
 
 #[cfg(test)]
 mod descriptor_tests {
-    /// Selected objects reach this broker only on the app's descriptor lane.
+    /// Selected objects reach this broker only on the app's descriptor stream.
     /// Pulling them out of the app's process (a pidfd descriptor grab, ptrace, process
     /// memory access) needs ptrace-attach rights that hardened hosts withhold
     /// from everyone (`kernel.yama.ptrace_scope = 3`), so no broker source may

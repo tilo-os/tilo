@@ -161,14 +161,14 @@ fn bin_track_heads_and_captions_keep_token_clearances() {
     {
         let app = app_sized(1280.0, 800.0);
         let r = app.regions();
-        let lanes = app.lane_rects(&r);
-        assert!(lanes.len() >= 4, "the sample project has four lanes");
-        for pair in lanes.windows(2) {
-            assert_close(pair[1].2.y0 - pair[0].2.y1, S1, "lane ↔ lane");
+        let tracks = app.track_rects(&r);
+        assert!(tracks.len() >= 4, "the sample project has four tracks");
+        for pair in tracks.windows(2) {
+            assert_close(pair[1].2.y0 - pair[0].2.y1, S1, "track ↔ track");
         }
-        for (_, kind, lane) in &lanes {
-            let head = VideoEditorApp::track_head_rect(&r, lane);
-            assert_close(lane.x0 - head.x1, S1, "head ↔ lane stripe");
+        for (_, kind, track) in &tracks {
+            let head = VideoEditorApp::track_head_rect(&r, track);
+            assert_close(track.x0 - head.x1, S1, "head ↔ track stripe");
             let h = chrome_layout::track_head(head);
             assert!(
                 h.meter.y0 - h.kind.y1 >= S1,
@@ -180,12 +180,12 @@ fn bin_track_heads_and_captions_keep_token_clearances() {
                 "{kind:?}: every band inside the head"
             );
         }
-        // The add-track footer sits an `S2` under the last lane, and its two
+        // The add-track footer sits an `S2` under the last track, and its two
         // buttons an `S2` apart.
-        let last = lanes.last().unwrap().2;
+        let last = tracks.last().unwrap().2;
         let buttons = app.add_track_buttons(&r);
         assert_eq!(buttons.len(), 2, "both add-track buttons fit at 800px");
-        assert_close(buttons[0].1.y0 - last.y1, S2, "last lane ↔ add-track row");
+        assert_close(buttons[0].1.y0 - last.y1, S2, "last track ↔ add-track row");
         assert_close(x_gap(buttons[0].1, buttons[1].1), S2, "+ Video ↔ + Audio");
     }
     {

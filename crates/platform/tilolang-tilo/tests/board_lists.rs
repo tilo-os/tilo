@@ -1,7 +1,7 @@
-//! Lanes: the items of a collection grouped by a field, each group a filter that compares the
+//! Lists: the items of a collection grouped by a field, each group a filter that compares the
 //! field with a value the view holds (`b.cards.filter(c -> c.column == col)`). The index
 //! answers each from the field's column, where the items holding one value are one run: a view
-//! showing every lane with its count and first card reads per lane the run's bounds and the
+//! showing every list with its count and first card reads per list the run's bounds and the
 //! page it starts on, however many cards the board holds, and checks no card one by one.
 
 use automerge::AutoCommit;
@@ -9,7 +9,7 @@ use tilolang_runtime::{Actor, InvokeOutcome, Value};
 
 use crate::fixtures::Replica;
 
-const BOARD: &str = r#"app so.tilo.lang.lanes "Lanes"
+const BOARD: &str = r#"app so.tilo.lang.lists "Lists"
 
 type Column {
     title: Text
@@ -55,7 +55,7 @@ view board(b: Board) {
 }
 "#;
 
-const APP: &str = "so.tilo.lang.lanes";
+const APP: &str = "so.tilo.lang.lists";
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
@@ -132,7 +132,7 @@ fn board(per: usize) -> (Replica, Vec<Value>, Vec<Value>) {
 }
 
 #[test]
-fn each_lane_lists_the_cards_of_its_column_and_follows_a_move() {
+fn each_list_lists_the_cards_of_its_column_and_follows_a_move() {
     let (mut ada, columns, cards) = board(2);
     let mut view = ada.view(APP);
     assert_eq!(
@@ -163,7 +163,7 @@ fn each_lane_lists_the_cards_of_its_column_and_follows_a_move() {
 }
 
 #[test]
-fn lanes_read_their_runs_not_every_card() {
+fn lists_read_their_runs_not_every_card() {
     let work = |per: usize| {
         let (ada, _, _) = board(per);
         let before = ada.host.store().read_stats();

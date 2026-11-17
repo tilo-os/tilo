@@ -2,7 +2,7 @@ name: Dev / apps-macos
 
 # Every app that runs on macOS (tools/ci/macos_apps.py reads the manifests)
 # must keep building and passing its tests there, and the SDK must keep
-# turning one app source into a working .app. No Linux lane observes either.
+# turning one app source into a working .app. No Linux job observes either.
 #
 # One persistent development Mac (`macos-aarch64`) serves all macOS jobs, and
 # building and testing every app takes it over an hour even with a warm
@@ -102,7 +102,7 @@ jobs:
       # A separate direct --list prewarm discards that discovery and launches
       # the binaries again outside the shared test environment. In run 106607
       # it spent its entire 20-minute budget before Nextest began discovery.
-      # One process per test, as the Linux lanes run them: tests that share
+      # One process per test, as the Linux jobs run them: tests that share
       # process-wide state (the shell's live activity, frozen clocks) would
       # otherwise interfere on cargo test's shared threads.
       - name: Test every macOS app

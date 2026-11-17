@@ -263,11 +263,11 @@ fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
 
 #[test]
 fn a_shared_document_not_on_this_device_opens_once_it_arrives() {
-    use ui::collaboration::document_content::{ContentLane, DocumentContent};
+    use ui::collaboration::document_content::{ContentLink, DocumentContent};
     let bytes = std::fs::read(concat!(env!("OUT_DIR"), "/sample.pdf")).expect("the fixture");
     let hash = tilo_content::hash_bytes(&bytes);
-    let lane = std::sync::Arc::new(ContentLane::default());
-    let content = DocumentContent::store(ContentStore::memory(), std::sync::Arc::clone(&lane));
+    let link = std::sync::Arc::new(ContentLink::default());
+    let content = DocumentContent::store(ContentStore::memory(), std::sync::Arc::clone(&link));
     let mut app = PdfApp::empty_with_content(content);
     app.record_source = Some(crate::markup::PinnedSource {
         source: ui::tilo_resource::Bytes::kept_as(&bytes, &hash),
@@ -279,21 +279,21 @@ fn a_shared_document_not_on_this_device_opens_once_it_arrives() {
     assert_eq!(app.load_error, None, "nothing failed yet");
     assert_eq!(title(&app), Some(crate::t("pdf-empty-arriving-title")));
     assert_eq!(
-        lane.take_requests().wants,
+        link.take_requests().wants,
         vec![hash.clone()],
         "the document is asked of the workspace"
     );
 
-    lane.stands(hash.clone(), ContentState::Waiting);
+    link.stands(hash.clone(), ContentState::Waiting);
     app.reopen_pinned_source();
     assert_eq!(title(&app), Some(crate::t("pdf-empty-waiting-title")));
-    lane.stands(hash.clone(), ContentState::Unavailable);
+    link.stands(hash.clone(), ContentState::Unavailable);
     app.reopen_pinned_source();
     let (waited, message, error) = app.source_wait_text().unwrap();
     assert_eq!(waited, crate::t("pdf-empty-elsewhere-title"));
     assert!(error && message.contains("shared.pdf"), "{message}");
 
-    lane.arrive(hash, bytes);
+    link.arrive(hash, bytes);
     app.reopen_pinned_source();
     assert_eq!(title(&app), None);
     assert!(app.pending_open.is_some(), "the arrived document opens");

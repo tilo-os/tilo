@@ -1,5 +1,5 @@
 //! The invoker a delivered invocation runs for on this thread, and the
-//! one-shot replies the collaboration lanes answer an invocation with.
+//! one-shot replies the collaboration endpoints answer an invocation with.
 //! The toolkit's invocation scope (`ui::invocation_scope`) builds the API's
 //! ownership on these.
 
@@ -50,7 +50,10 @@ pub struct WriteAttributionReceipt(std::sync::mpsc::Receiver<Result<(), String>>
 impl WriteAttributionReceipt {
     #[cfg_attr(
         not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker lane answers a write attribution")
+        allow(
+            dead_code,
+            reason = "only the broker endpoint answers a write attribution"
+        )
     )]
     pub(crate) fn new(receive: std::sync::mpsc::Receiver<Result<(), String>>) -> Self {
         Self(receive)

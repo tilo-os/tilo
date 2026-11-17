@@ -81,7 +81,7 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                     }
                     StorageRequest::RetiredBindExternalSource
                     | StorageRequest::RetiredBindExternalReadSource => {
-                        StorageResponse::Error("no external source lane is served".into())
+                        StorageResponse::Error("no external source is served".into())
                     }
                 };
                 if STORAGE_FRAMING

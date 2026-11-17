@@ -269,7 +269,7 @@ fn a_render_of_content_the_workspace_lacks_or_a_size_too_large_is_refused_before
 }
 
 /// One agent brings footage into a new project and places it on V1, the
-/// lane a new project lacks until a clip names it; another member's
+/// track a new project lacks until a clip names it; another member's
 /// replica of the same record, on the workspace's content, views a frame of it.
 #[test]
 fn a_second_presence_views_a_frame_of_footage_the_first_imported() {

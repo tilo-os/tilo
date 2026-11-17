@@ -591,7 +591,7 @@ impl StoredResource {
         let (package, home) = self.store.app_and_home();
         let workspace = uuid::Uuid::parse_str(&home).ok()?;
         Some(
-            crate::collaboration::document_content::ContentLane::resource_store(
+            crate::collaboration::document_content::ContentLink::resource_store(
                 &crate::collaboration::RouteSpec::document(
                     package,
                     workspace,

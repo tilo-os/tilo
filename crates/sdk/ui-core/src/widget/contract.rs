@@ -353,7 +353,7 @@ pub trait Widget {
     }
 
     /// Offsets along `axis` that this widget, as a scroll view's content, offers it to settle on,
-    /// measured from its own leading edge: a board's lanes ([`crate::widget::Board`]).
+    /// measured from its own leading edge: a board's lists ([`crate::widget::Board`]).
     fn snap_points(&self, axis: crate::widget::ScrollAxis, out: &mut Vec<f32>) {
         let _ = (axis, out);
     }

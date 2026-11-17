@@ -54,7 +54,7 @@ fn pdfium_present() -> bool {
 
 fn engine() -> Option<Engine> {
     if !pdfium_present() {
-        // A lane that requires the confined helper must not pass by skipping.
+        // A job that requires the confined helper must not pass by skipping.
         assert!(
             std::env::var_os(tilo_pdf::REQUIRE_SANDBOX_ENV).is_none(),
             "{} is set but no pdfium library is installed (set TILO_PDFIUM_LIB)",

@@ -92,7 +92,7 @@ pub struct Hydrator {
     scheduler: ranges::Scheduler,
     ranged_bytes: std::sync::atomic::AtomicU64,
     blob_bytes: std::sync::atomic::AtomicU64,
-    /// Pooled blob-protocol connections per peer, by lane: batches use lane 0, large content spreads
+    /// Pooled blob-protocol connections per peer, by number: batches use connection 0, large content spreads
     /// over several.
     blob_connections:
         AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,

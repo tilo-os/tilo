@@ -19,7 +19,7 @@ use std::sync::Arc;
 use collaboration::{CollabRequest, CollaborationManager, RouteSpec};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
-use tilo_render_protocol::patch::{self, Lane, ToUi, Transport as _};
+use tilo_render_protocol::patch::{self, Level, ToUi, Transport as _};
 use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
@@ -94,12 +94,12 @@ fn main() {
             for message in patch::decode_batch::<ToUi>(&batch).unwrap() {
                 match message {
                     ToUi::Open {
-                        lane: Lane::Root,
+                        level: Level::Root,
                         tree,
                         ..
                     } => root = Some(tree),
                     ToUi::Patch {
-                        lane: Lane::Root,
+                        level: Level::Root,
                         patches,
                     } => {
                         let root = root.as_mut().expect("a patch after the open");

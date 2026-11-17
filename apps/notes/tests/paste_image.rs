@@ -327,14 +327,14 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
             .image_decoded_for_test(&source, ui::time::Duration::ZERO),
         "the bytes are not on this device yet"
     );
-    // The lane this window keeps: what it asked for is its own to ask, not
-    // the process's lane for the resource.
-    let lane = app
+    // The content link this window keeps: what it asked for is its own to ask, not
+    // the process's content link for the resource.
+    let link = app
         .harness()
-        .component_document_content_lane()
-        .expect("the window keeps a lane for its resource's content");
+        .component_document_content_link()
+        .expect("the window keeps a content link for its resource's content");
     assert_eq!(
-        lane.take_requests().wants,
+        link.take_requests().wants,
         vec![digest.clone()],
         "the window asked the resource's route for the bytes"
     );
@@ -373,7 +373,7 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
         "nothing arrived meanwhile"
     );
 
-    lane.arrive(digest, picture);
+    link.arrive(digest, picture);
     app.harness().relayout();
     assert!(
         app.surface_mut::<notes::NotesApp>()

@@ -1,8 +1,8 @@
-//! Host capabilities a test may need, and lanes that must provide them. Some tests need something
+//! Host capabilities a test may need, and jobs that must provide them. Some tests need something
 //! only certain machines have (a Vulkan adapter, an audio endpoint, media codecs, `/dev/fuse`,
 //! fanotify permission, a filesystem with fs-verity): on a developer machine without it the test
-//! says so and passes, while on a CI lane set up to provide it a missing capability is a broken
-//! lane, and a skipped test must not look like a passing one.
+//! says so and passes, while on a CI job set up to provide it a missing capability is a broken
+//! job, and a skipped test must not look like a passing one.
 //! [`require_capability!`](crate::require_capability) does both: it skips with a message naming the
 //! capability, unless `TILO_REQUIRE_<CAP>=1` is set, in which case it fails the test instead.
 

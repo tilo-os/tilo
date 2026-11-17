@@ -33,11 +33,11 @@ pub trait PcmSource {
 pub struct AudioLayer {
     pub clip: ClipId,
     pub media: MediaId,
-    /// The lane the meter attributes the level to, so "the mix is clipping" can
+    /// The track the meter attributes the level to, so "the mix is clipping" can
     /// be narrowed to "on A1".
     pub track: TrackId,
     pub source_time: f64,
-    /// **Clip volume × fade envelope × the lane's fader.**
+    /// **Clip volume × fade envelope × the track's fader.**
     ///
     /// The first two are a 0..1 trim; the third reaches
     /// [`MAX_GAIN_DB`](crate::model::MAX_GAIN_DB), so this runs `0.0 ..= 4.0` and
@@ -58,7 +58,7 @@ fn soloing(project: &Project, kind: TrackKind) -> bool {
 
 /// Whether this clip contributes sound.
 ///
-/// A clip on an audio lane always does. So does one on a picture lane, carrying
+/// A clip on an audio track always does. So does one on a picture track, carrying
 /// its source's own sound (`has_audio` from the container, read at import) —
 /// unless that sound has been split off onto an audio clip of its own
 /// ([`Clip::sound_split`]), which would otherwise play the shot twice.
@@ -109,7 +109,7 @@ pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
         let level = clip.param_at(crate::param::Param::Volume, t);
         // Volume goes through the animation api, so a keyframed level is just a
         // different number here. Clip volume and envelope are a 0..1 trim and the
-        // lane's fader scales the result, so no clamp at 1.0: that is what made a
+        // track's fader scales the result, so no clamp at 1.0: that is what made a
         // quiet clip unfixable.
         let gain = (level * clip.envelope(t)).clamp(0.0, 1.0) * track.gain();
         out.push(AudioLayer {
@@ -125,10 +125,10 @@ pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
     out
 }
 
-/// An audio lane always can; a picture lane only when something on it carries its
+/// An audio track always can; a picture track only when something on it carries its
 /// source's own sound.
 ///
-/// A meter that can never move reads as a broken output, so a lane without sound
+/// A meter that can never move reads as a broken output, so a track without sound
 /// gets no meter rather than one at zero.
 pub fn track_carries_sound(project: &Project, track: TrackId) -> bool {
     let Some(t) = project.track(track) else {
@@ -241,7 +241,7 @@ fn clamp_block(out: &mut [f32]) {
     }
 }
 
-/// The summed, **unclamped** block, and each lane's own contribution when
+/// The summed, **unclamped** block, and each track's own contribution when
 /// `per_track` is given. One core, so the plain and the metered mix cannot drift
 /// apart about what is audible.
 fn mix_core(
@@ -271,7 +271,7 @@ fn mix_core(
             continue;
         };
         // Per channel, so the multiplier alternates; at centre both are the
-        // lane's plain gain.
+        // track's plain gain.
         let (pl, pr) = project
             .track(layer.track)
             .map_or((1.0, 1.0), crate::model::Track::pan_gains);
@@ -508,9 +508,9 @@ impl MixSnapshot {
         self.tracks.iter().find(|t| t.track == id)
     }
 
-    /// The lanes to name in a warning are the ones caught over; the lanes to move
+    /// The tracks to name in a warning are the ones caught over; the tracks to move
     /// are all of them, because the mix is their sum. See
-    /// [`Project::lanes_trimmed_by`](crate::model::Project::lanes_trimmed_by).
+    /// [`Project::tracks_trimmed_by`](crate::model::Project::tracks_trimmed_by).
     pub fn measured_tracks(&self) -> Vec<TrackId> {
         self.tracks.iter().map(|t| t.track).collect()
     }
@@ -1282,7 +1282,7 @@ mod tests {
                 let mut src = constant(&[(m1, 0.25), (m2, 0.5)]);
                 assert!(
                     (mix_block(&p, 1.0, 16, &mut src)[0] - 0.5).abs() < 1e-6,
-                    "only audio lanes are mixed",
+                    "only audio tracks are mixed",
                 );
             }
             {
@@ -1558,8 +1558,8 @@ mod tests {
         }
     }
 
-    fn apply_lanes(p: &mut Project, lanes: Vec<Track>) {
-        for next in lanes {
+    fn apply_tracks(p: &mut Project, tracks: Vec<Track>) {
+        for next in tracks {
             if let Some(dst) = p.tracks.iter_mut().find(|t| t.id == next.id) {
                 *dst = next;
             }
@@ -1592,8 +1592,8 @@ mod tests {
             let snap = meters.snapshot();
             assert!(snap.clipped());
 
-            let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
-            apply_lanes(&mut p, trimmed);
+            let trimmed = p.tracks_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
+            apply_tracks(&mut p, trimmed);
 
             let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
             assert!(
@@ -1608,7 +1608,7 @@ mod tests {
                 after.master.loudest(),
             );
         }
-        // The balance survives: every lane moves by the same number of decibels.
+        // The balance survives: every track moves by the same number of decibels.
         {
             let (mut p, a1, a2, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -1622,11 +1622,11 @@ mod tests {
             let snap = meters.snapshot();
             let gap = |p: &Project| p.track(a1).unwrap().gain_db - p.track(a2).unwrap().gain_db;
             let was = gap(&p);
-            let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
-            apply_lanes(&mut p, trimmed);
+            let trimmed = p.tracks_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
+            apply_tracks(&mut p, trimmed);
             assert!(
                 (gap(&p) - was).abs() < 1e-9,
-                "the lanes are still {was} dB apart, not {}",
+                "the tracks are still {was} dB apart, not {}",
                 gap(&p),
             );
             assert!(p.track(a1).unwrap().gain_db < 6.0 - 1e-9);
@@ -1642,8 +1642,8 @@ mod tests {
             meters.record(1.0, &before);
             let snap = meters.snapshot();
 
-            let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db() + 3.0);
-            apply_lanes(&mut p, trimmed);
+            let trimmed = p.tracks_trimmed_by(&snap.measured_tracks(), snap.worst_over_db() + 3.0);
+            apply_tracks(&mut p, trimmed);
             let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
             let want = crate::model::db_to_linear(-3.0) as f32;
             assert!(
@@ -1652,8 +1652,8 @@ mod tests {
                 after.master.loudest(),
             );
         }
-        // Two lanes each under full scale can add up to a mix that is over, and no
-        // lane is in `clipped_tracks` to blame; a trim that moved only those would
+        // Two tracks each under full scale can add up to a mix that is over, and no
+        // track is in `clipped_tracks` to blame; a trim that moved only those would
         // leave the mix clipping.
         {
             let (mut p, _, _, _) = project_with_audio();
@@ -1667,7 +1667,7 @@ mod tests {
             let snap = meters.snapshot();
             assert!(
                 snap.clipped_tracks().is_empty(),
-                "neither lane is over on its own, so neither is to blame",
+                "neither track is over on its own, so neither is to blame",
             );
             assert_eq!(
                 snap.measured_tracks().len(),
@@ -1675,8 +1675,8 @@ mod tests {
                 "but both were in the sum, so both are what a trim moves",
             );
 
-            let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
-            apply_lanes(&mut p, trimmed);
+            let trimmed = p.tracks_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
+            apply_tracks(&mut p, trimmed);
             let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
             assert!(
                 !after.master.over(),
@@ -1686,17 +1686,17 @@ mod tests {
         }
         {
             let (p, _, _, _) = project_with_audio();
-            let lanes: Vec<TrackId> = p.tracks.iter().map(|t| t.id).collect();
-            assert!(p.lanes_trimmed_by(&lanes, 0.0).is_empty());
-            assert!(p.lanes_trimmed_by(&lanes, -3.0).is_empty());
-            assert!(p.lanes_trimmed_by(&lanes, f64::NAN).is_empty());
+            let tracks: Vec<TrackId> = p.tracks.iter().map(|t| t.id).collect();
+            assert!(p.tracks_trimmed_by(&tracks, 0.0).is_empty());
+            assert!(p.tracks_trimmed_by(&tracks, -3.0).is_empty());
+            assert!(p.tracks_trimmed_by(&tracks, f64::NAN).is_empty());
         }
         // A meter that can never move is not a quiet meter, it is a broken one.
         {
             let (mut p, a1, _, _) = project_with_audio();
             assert!(
                 track_carries_sound(&p, a1),
-                "an audio lane is an audio lane whatever is on it",
+                "an audio track is an audio track whatever is on it",
             );
             let empty = Uuid::new_v4();
             p.tracks.push(Track {
@@ -1728,13 +1728,13 @@ mod tests {
             p.add_clip(vid, mid, 0.0).expect("media exists");
             assert!(
                 !track_carries_sound(&p, vid),
-                "silent footage gives its lane no level to show",
+                "silent footage gives its track no level to show",
             );
 
             p.media.iter_mut().find(|m| m.id == mid).unwrap().has_audio = true;
             assert!(
                 track_carries_sound(&p, vid),
-                "a talking head on a video lane is heard, so it is metered",
+                "a talking head on a video track is heard, so it is metered",
             );
 
             assert!(!track_carries_sound(&p, Uuid::new_v4()));
@@ -2001,7 +2001,7 @@ mod tests {
             assert!(!has_audio(&p), "an empty project has nothing to mix");
             let (with_audio, _, _, _) = project_with_audio();
             assert!(has_audio(&with_audio));
-            // A project with only video lanes is video-only.
+            // A project with only video tracks is video-only.
             p.tracks.push(Track {
                 id: Uuid::new_v4(),
                 name: "V1".into(),

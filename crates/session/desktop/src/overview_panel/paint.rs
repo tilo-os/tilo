@@ -214,12 +214,12 @@ impl OverviewPanel {
         if !metrics.overflows() {
             return;
         }
-        let lane = Rect::new(self.content_rect().x1, viewport.y0, panel.x1, viewport.y1);
+        let area = Rect::new(self.content_rect().x1, viewport.y0, panel.x1, viewport.y1);
         let bar = ui::widget::Scrollbar::vertical();
         bar.draw(
             scene,
             transform,
-            bar.track_in(lane, theme),
+            bar.track_in(area, theme),
             metrics,
             theme,
             false,

@@ -253,7 +253,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             self.wrote = "live";
             authorize_state_frame(&frame, cx.peer, cx.session).await?;
             // Presence and host-authored deltas are fan-out; the
-            // rest of this lane answers or addresses one device.
+            // rest of this queue answers or addresses one device.
             let live = matches!(
                 frame,
                 Envelope::Delta { .. } | Envelope::RetiredPresence { .. }

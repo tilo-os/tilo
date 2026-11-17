@@ -105,7 +105,7 @@ fn track_entry(track: &Track) -> SearchEntry {
         .with_icon("layers")
 }
 
-/// A lane's kind as a person reads it.
+/// A track's kind as a person reads it.
 fn track_kind_words(kind: crate::model::TrackKind) -> String {
     crate::resource::CATALOG.t(match kind {
         crate::model::TrackKind::Video => "video-editor-a11y-track-kind-video",

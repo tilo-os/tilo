@@ -52,7 +52,7 @@ pub fn load(path: &Path) -> Option<(RepoModel, DiffMap)> {
     }
 
     let layout = crate::graph::layout(&mut model.commits);
-    model.graph_width = layout.lanes;
+    model.graph_width = layout.columns;
 
     Some((model, diffs))
 }
@@ -273,7 +273,7 @@ fn read_history(repo: &Repository, model: &mut RepoModel, _diffs: &mut DiffMap) 
             }
         }
     }
-    // Include side branches, so the graph shows lanes other than HEAD's.
+    // Include side branches, so the graph shows columns other than HEAD's.
     if let Ok(branches) = repo.branches(None) {
         for b in branches.flatten() {
             if let Some(oid) = b.0.get().target() {
@@ -311,7 +311,7 @@ fn read_history(repo: &Repository, model: &mut RepoModel, _diffs: &mut DiffMap) 
             time,
             parents,
             refs: ref_map.get(&id).cloned().unwrap_or_default(),
-            lane: 0,
+            column: 0,
             files: vec![],
         });
     }

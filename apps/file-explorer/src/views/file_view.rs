@@ -391,7 +391,7 @@ impl FileView {
                 .min(self.entries.len())
     }
 
-    /// The bottom lane is the host's; a row partly under it still counts as visible.
+    /// The bottom gutter is the host's; a row partly under it still counts as visible.
     fn fits_viewport_bottom(rect: Rect, vp: Option<Rect>) -> bool {
         vp.is_none_or(|viewport| rect.y1 <= viewport.y1)
     }
@@ -1491,7 +1491,7 @@ mod tests {
             rows_outside_the_scroll_viewport_are_culled();
             visible_range_avoids_scanning_a_large_directory();
             grid_drop_targets_are_limited_to_visible_folders();
-            grid_leaves_a_reserved_bottom_lane_clear();
+            grid_leaves_a_reserved_bottom_gutter_clear();
         }
 
         phase list_geometry_follows_width_zoom_and_text_scale;
@@ -2119,7 +2119,7 @@ mod tests {
         );
     }
 
-    fn grid_leaves_a_reserved_bottom_lane_clear() {
+    fn grid_leaves_a_reserved_bottom_gutter_clear() {
         let sink = new_sink();
         let sel = SelectionModel::new();
         let mut entries = items(20);
@@ -2153,7 +2153,7 @@ mod tests {
                 .borrow()
                 .iter()
                 .all(|target| target.rect.y1 <= viewport.y1),
-            "no partial folder remains a drop target in the status lane"
+            "no partial folder remains a drop target in the status gutter"
         );
     }
 
@@ -2776,7 +2776,7 @@ mod tests {
             );
         }
 
-        phase list_rows_and_drop_targets_stay_above_the_status_lane;
+        phase list_rows_and_drop_targets_stay_above_the_status_gutter;
         {
             let mut entries = items(60);
             for entry in &mut entries {
@@ -2790,7 +2790,7 @@ mod tests {
             let table = laid.view.list.rect();
             assert!(
                 table.y1 <= 600.0 - 64.0 + 0.5,
-                "the table ends above the status lane: {table:?}"
+                "the table ends above the status gutter: {table:?}"
             );
             let published = targets.borrow();
             assert!(
@@ -2802,7 +2802,7 @@ mod tests {
                 published
                     .iter()
                     .all(|target| target.rect.y1 <= table.y1 + 0.5 && target.rect.y0 >= table.y0),
-                "no drop target lies in the status lane"
+                "no drop target lies in the status gutter"
             );
         }
 

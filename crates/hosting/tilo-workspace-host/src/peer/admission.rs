@@ -474,11 +474,11 @@ pub(super) async fn enqueue_state_inner(
         pending_work: None,
     };
     // What this host authors itself (workspace and channel governance) has a
-    // lane of its own, so it never waits behind a crowd's member traffic.
-    let lane = if source.is_none() {
-        crate::persistence::Lane::Host
+    // queue of its own, so it never waits behind a crowd's member traffic.
+    let queue = if source.is_none() {
+        crate::persistence::Queue::Host
     } else {
-        crate::persistence::Lane::Member
+        crate::persistence::Queue::Member
     };
     let publisher = StatePublisher {
         workspace: workspace.clone(),
@@ -494,7 +494,7 @@ pub(super) async fn enqueue_state_inner(
         },
     };
     let completion = Box::pin(owner.submit_commit_wait(
-        lane,
+        queue,
         charge,
         preparation,
         move |state, prepared| turn.step(state, prepared),

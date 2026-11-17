@@ -31,7 +31,7 @@ tasks-row-complete = Erledigen
 tasks-row-reopen = Wieder öffnen
 tasks-status-with-progress = { $status }, { $closed } von { $total }
 tasks-progress = { $closed } von { $total } Unteraufgaben erledigt
-tasks-lane-heading = { $status } { $count }
+tasks-list-heading = { $status } { $count }
 
 tasks-field-title = Titel
 tasks-field-status = Status

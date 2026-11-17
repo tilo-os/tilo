@@ -139,7 +139,7 @@ pub(super) fn hold_workspace_keys(
     workspace: &str,
 ) -> Result<(), LaunchError> {
     let route = super::app::resource_route(context)?;
-    ui_core::collaboration::document_content::ContentLane::of(&route)
+    ui_core::collaboration::document_content::ContentLink::of(&route)
         .hold_secret(workspace_secret(workspace));
     Ok(())
 }

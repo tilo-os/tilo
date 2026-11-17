@@ -3,12 +3,12 @@ use runtime_collab::approved_checks::{Receipt, Report, ReportedProgressUpdate, R
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::lane::{Lane, Registration};
+use crate::route_endpoints::{Registration, RouteEndpoints};
 
 const MAX_PENDING: usize = 2;
 type Reply = Result<Receipt, String>;
 type ReportedReply = (oneshot::Receiver<Reply>, watch::Receiver<Option<Report>>);
-/// One check queued on a lane, as the broker worker takes it.
+/// One check queued on an endpoint, as the broker worker takes it.
 pub struct Job {
     pub request: Request,
     pub reply: oneshot::Sender<Reply>,
@@ -16,12 +16,12 @@ pub struct Job {
 }
 pub(crate) struct Endpoint(mpsc::Sender<Job>);
 
-/// The routes this kind of lane serves.
-static LANE: Lane<Endpoint> = Lane::new("approved-check");
+/// The routes this kind of endpoint serves.
+static ENDPOINTS: RouteEndpoints<Endpoint> = RouteEndpoints::new("approved-check");
 
 pub fn enqueue(route: &str, request: Request) -> Result<oneshot::Receiver<Reply>, String> {
     request.encode()?;
-    let endpoint = LANE.endpoint(route)?;
+    let endpoint = ENDPOINTS.endpoint(route)?;
     let (reply, receive) = oneshot::channel();
     endpoint
         .0
@@ -30,13 +30,13 @@ pub fn enqueue(route: &str, request: Request) -> Result<oneshot::Receiver<Reply>
             reply,
             reports: None,
         })
-        .map_err(|_| "approved-check bounded lane unavailable or full")?;
+        .map_err(|_| "approved-check bounded endpoint unavailable or full")?;
     Ok(receive)
 }
 
 pub fn enqueue_reported(route: &str, request: Request) -> Result<ReportedReply, String> {
     request.encode()?;
-    let endpoint = LANE.endpoint(route)?;
+    let endpoint = ENDPOINTS.endpoint(route)?;
     let (reply, receive) = oneshot::channel();
     let (reports, observe) = watch::channel(None);
     endpoint
@@ -46,7 +46,7 @@ pub fn enqueue_reported(route: &str, request: Request) -> Result<ReportedReply, 
             reply,
             reports: Some(reports),
         })
-        .map_err(|_| "approved-check bounded lane unavailable or full")?;
+        .map_err(|_| "approved-check bounded endpoint unavailable or full")?;
     Ok((receive, observe))
 }
 
@@ -58,7 +58,7 @@ pub(super) fn register(
 ) -> Result<Registration<Endpoint>, String> {
     let (send, mut receive) = mpsc::channel::<Job>(MAX_PENDING);
     let endpoint = Arc::new(Endpoint(send));
-    LANE.admit(route, &endpoint)?;
+    ENDPOINTS.admit(route, &endpoint)?;
     let worker = tokio::task::spawn_local(async move {
         while let Some(mut job) = receive.recv().await {
             if job.reply.is_closed() {
@@ -101,22 +101,22 @@ pub(super) fn register(
     Ok(Registration::new(endpoint, worker))
 }
 
-/// A lane admitted on `route` for the toolkit's tests, which take its jobs
-/// from the returned receiver; dropping it retires the lane.
+/// An endpoint admitted on `route` for the toolkit's tests, which take its jobs
+/// from the returned receiver; dropping it retires the endpoint.
 #[cfg(any(test, feature = "test-support"))]
-pub struct LaneForTest(
-    #[allow(dead_code, reason = "held to keep the lane admitted")] Arc<Endpoint>,
+pub struct EndpointForTest(
+    #[allow(dead_code, reason = "held to keep the endpoint admitted")] Arc<Endpoint>,
 );
 
-/// Admit a lane on `route` for a test, as the broker worker admits one on an
+/// Admit an endpoint on `route` for a test, as the broker worker admits one on an
 /// acknowledged record route.
 ///
 /// # Errors
-/// When `route` is invalid, already has a live lane, or too many are live.
+/// When `route` is invalid, already has a live endpoint, or too many are live.
 #[cfg(any(test, feature = "test-support"))]
-pub fn admit_for_test(route: String) -> Result<(LaneForTest, mpsc::Receiver<Job>), String> {
+pub fn admit_for_test(route: String) -> Result<(EndpointForTest, mpsc::Receiver<Job>), String> {
     let (send, receive) = mpsc::channel(MAX_PENDING);
     let endpoint = Arc::new(Endpoint(send));
-    LANE.admit(route, &endpoint)?;
-    Ok((LaneForTest(endpoint), receive))
+    ENDPOINTS.admit(route, &endpoint)?;
+    Ok((EndpointForTest(endpoint), receive))
 }

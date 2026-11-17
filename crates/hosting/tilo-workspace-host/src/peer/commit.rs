@@ -471,8 +471,8 @@ async fn remember_commit(
     ws: &SharedWorkspace,
     mut record: crate::store::CommitEntry,
 ) -> Result<u64, PeerError> {
-    let lane = ws.lock().await.commit_log_lane.clone();
-    let _writing = lane.lock().await;
+    let queue = ws.lock().await.commit_log_queue.clone();
+    let _writing = queue.lock().await;
     let (log, store) = {
         let mut runtime = ws.lock().await;
         if record.seq == 0 {

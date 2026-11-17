@@ -255,7 +255,7 @@ fn settle_probes(pane: &mut AccountsPane) {
             && pane.reauth_probe.is_none()
             && !pane.form_saving
             && !pane.reauth_saving
-            && pane.lane.is_idle()
+            && pane.queue.is_idle()
         {
             return;
         }
@@ -818,7 +818,7 @@ fn a_stalled_vault_never_holds_the_window() {
 
             hold.release();
             let deadline = tilo_test_env::hang_deadline();
-            while removed.borrow().is_none() || !pane.lane.is_idle() {
+            while removed.borrow().is_none() || !pane.queue.is_idle() {
                 assert!(Instant::now() < deadline, "the removal lands");
                 let _ = pane.poll();
                 std::thread::yield_now();

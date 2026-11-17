@@ -431,7 +431,7 @@ class SelectorTests(unittest.TestCase):
         self.assertTrue(ci_select.make_plan(
             self.metadata, self.root, ["apps/tl/notes/app.tl"], 2)["full"])
 
-    def test_android_lane_follows_selected_apps_with_an_android_example(self):
+    def test_android_job_follows_selected_apps_with_an_android_example(self):
         self.setUp()
         for package in self.metadata["packages"]:
             if package["name"] == "leaf":
@@ -468,7 +468,7 @@ class SelectorTests(unittest.TestCase):
              "android_required=false", "android_packages="],
         )
 
-    def test_wasm_lane_follows_selected_browser_crates(self):
+    def test_wasm_job_follows_selected_browser_crates(self):
         self.setUp()
         for package in self.metadata["packages"]:
             if package["name"] == "leaf":
@@ -556,7 +556,7 @@ class SelectorTests(unittest.TestCase):
         runner = (REPO_ROOT / ci_select.VENDORED_TEST_RUNNER).read_text()
         self.assertIn("from ci.package_sets import VENDORED_TEST_CRATES", runner)
 
-    def test_wasm_lane_builds_selected_examples_and_all_when_the_web_build_changes(self):
+    def test_wasm_job_builds_selected_examples_and_all_when_the_web_build_changes(self):
         self.setUp()
         self.metadata["packages"].append({
             "name": "example-counter",

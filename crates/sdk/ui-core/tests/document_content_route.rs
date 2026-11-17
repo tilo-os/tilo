@@ -17,7 +17,7 @@ use tilo_actions::{
     MissingContent, Verified, dispatch_with_context, entry_of, verify_change,
 };
 use tilo_content::ContentStore;
-use tilo_ui::collaboration::document_content::{ContentLane, DocumentContent, keep_lane};
+use tilo_ui::collaboration::document_content::{ContentLink, DocumentContent, keep_link};
 use tilo_ui::collaboration::{CollabEvent, RouteSpec};
 use tilo_ui::widget::{Column, Text};
 use tilo_ui::{App, State, WakeScope};
@@ -36,17 +36,17 @@ impl Action for Paste {
 }
 
 /// A window showing the record `route` names: the store its code reads is
-/// the host's local store joined to the lane the window keeps and offers on
+/// the host's local store joined to the content link the window keeps and offers on
 /// the record's route, as a native window's framework lends it to the app.
 fn window_store(
     route: &RouteSpec,
     local: ContentStore,
     window: &WakeScope,
-) -> (ContentStore, Arc<ContentLane>) {
-    let lane = ContentLane::of_window();
-    keep_lane(&window.handle(), Arc::clone(&lane));
-    ContentLane::show_on_route(route, &lane);
-    (DocumentContent::store(local, Arc::clone(&lane)), lane)
+) -> (ContentStore, Arc<ContentLink>) {
+    let link = ContentLink::of_window();
+    keep_link(&window.handle(), Arc::clone(&link));
+    ContentLink::show_on_route(route, &link);
+    (DocumentContent::store(local, Arc::clone(&link)), link)
 }
 
 /// A window of the app showing `route`'s record, as the session mounts one.
@@ -67,7 +67,7 @@ fn a_paste_arriving_on_the_records_route_reaches_the_store_the_peer_window_reads
     // Ada's window: what its code records of the paste is kept as the
     // record's content, sealed, and offered on the record's route.
     let ada = WakeScope::new();
-    let (ada_store, ada_lane) = {
+    let (ada_store, ada_link) = {
         let _in_ada = ada.enter();
         window_store(&route, ContentStore::memory(), &ada)
     };
@@ -95,7 +95,7 @@ fn a_paste_arriving_on_the_records_route_reaches_the_store_the_peer_window_reads
         !parts.is_empty(),
         "the body past the history budget is kept as content"
     );
-    let offers = ada_lane.take_requests().offers;
+    let offers = ada_link.take_requests().offers;
     assert!(
         parts.iter().all(|part| {
             let address = tilo_content::content_address(part).unwrap_or_else(|| part.clone());
@@ -108,7 +108,7 @@ fn a_paste_arriving_on_the_records_route_reaches_the_store_the_peer_window_reads
     // action cannot decode there yet, and reading it asks the route for the
     // parts.
     let grace = WakeScope::new();
-    let (grace_store, grace_lane) = {
+    let (grace_store, grace_link) = {
         let _in_grace = grace.enter();
         window_store(&route, ContentStore::memory(), &grace)
     };
@@ -121,7 +121,7 @@ fn a_paste_arriving_on_the_records_route_reaches_the_store_the_peer_window_reads
         .expect("a recorded action resolves")
         .expect_err("the body is not on Grace's device yet");
     assert!(matches!(missing, MissingContent(_)), "{missing:?}");
-    let wanted: Vec<String> = grace_lane.take_requests().wants;
+    let wanted: Vec<String> = grace_link.take_requests().wants;
     assert!(
         parts.iter().any(|part| {
             let address = tilo_content::content_address(part).unwrap_or_else(|| part.clone());

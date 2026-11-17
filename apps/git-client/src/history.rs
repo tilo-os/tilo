@@ -32,7 +32,7 @@ pub struct Metrics {
     chip_h: f64,
     inset: f64,
     pad_x: f64,
-    lane_w: f64,
+    column_w: f64,
     dot_r: f64,
 }
 
@@ -59,7 +59,7 @@ impl Metrics {
             chip_h,
             inset: f64::from(s.s2),
             pad_x: f64::from(s.s3),
-            lane_w: f64::from(s.s4),
+            column_w: f64::from(s.s4),
             dot_r: f64::from(s.s1),
         }
     }
@@ -146,7 +146,7 @@ pub fn paint_list(ctx: &mut PaintCtx<'_>, area: Rect, input: &ListInput<'_>) -> 
     }
     let graph_x = area.x0 + m.inset + m.pad_x;
     paint_graph(ctx, input, &m, graph_x, &row_at, area);
-    let text_x = text_left(area, input.layout.lanes, &m, ctx.theme);
+    let text_x = text_left(area, input.layout.columns, &m, ctx.theme);
     for &(i, row) in &rows {
         if let Some(commit) = input.model.commits.get(i) {
             paint_row_text(ctx, commit, row, text_x, &m, &input.model.head);
@@ -159,11 +159,11 @@ pub fn paint_list(ctx: &mut PaintCtx<'_>, area: Rect, input: &ListInput<'_>) -> 
     }
 }
 
-fn text_left(area: Rect, lanes: usize, m: &Metrics, theme: &Theme) -> f64 {
+fn text_left(area: Rect, columns: usize, m: &Metrics, theme: &Theme) -> f64 {
     area.x0
         + m.inset
         + m.pad_x
-        + ui::num::f64_of_usize(lanes.max(1)) * m.lane_w
+        + ui::num::f64_of_usize(columns.max(1)) * m.column_w
         + f64::from(theme.tokens.spacing.s2)
 }
 
@@ -177,7 +177,7 @@ fn paint_graph(
 ) {
     let theme = ctx.theme;
     let colors = &theme.tokens.colors;
-    let lane_x = |lane: usize| graph_x + lane as f64 * m.lane_w + m.lane_w / 2.0;
+    let column_x = |column: usize| graph_x + column as f64 * m.column_w + m.column_w / 2.0;
     let centre_y = |row: usize| row_at(row).center().y;
     let stroke = Stroke::new(2.0 * f64::from(theme.ui_scale));
     for edge in &input.layout.edges {
@@ -185,7 +185,7 @@ fn paint_graph(
         if y0.max(y1) < area.y0 - m.row_h || y0.min(y1) > area.y1 + m.row_h {
             continue;
         }
-        let (x0, x1) = (lane_x(edge.from_lane), lane_x(edge.to_lane));
+        let (x0, x1) = (column_x(edge.from_column), column_x(edge.to_column));
         let mut path = BezPath::new();
         path.move_to(Point::new(x0, y0));
         if (x0 - x1).abs() < 0.5 {
@@ -205,7 +205,7 @@ fn paint_graph(
             path.line_to(Point::new(x0, bend));
             path.curve_to(Point::new(x0, mid), Point::new(x1, mid), Point::new(x1, y1));
         }
-        let colour = colors.presence.series(edge.to_lane.max(edge.from_lane));
+        let colour = colors.presence.series(edge.to_column.max(edge.from_column));
         ctx.scene
             .stroke(&stroke, ctx.transform, colour, None, &path);
     }
@@ -214,9 +214,9 @@ fn paint_graph(
         if y < area.y0 - m.row_h || y > area.y1 + m.row_h {
             continue;
         }
-        let lane = input.layout.lane_of.get(row).copied().unwrap_or(0);
-        let centre = Point::new(lane_x(lane), y);
-        let colour = colors.presence.series(lane);
+        let column = input.layout.column_of.get(row).copied().unwrap_or(0);
+        let centre = Point::new(column_x(column), y);
+        let colour = colors.presence.series(column);
         let r = m.dot_r + stroke.width / 2.0;
         let dot = Rect::from_center_size(centre, (2.0 * r, 2.0 * r));
         if commit.parents.len() > 1 {
@@ -615,7 +615,7 @@ pub fn paint_detail(
     }
 }
 
-fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> (f64, Vec<Rect>) {
+fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, column: Rect, y: f64) -> (f64, Vec<Rect>) {
     let theme = ctx.theme;
     let s = &theme.tokens.spacing;
     let pad = ui::chrome::row_bleed(theme);
@@ -625,7 +625,7 @@ fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> (
             .1,
     )
     .max(BadgeFace::height(theme));
-    let band = Rect::new(lane.x0, y, lane.x1, y + header_h);
+    let band = Rect::new(column.x0, y, column.x1, y + header_h);
     let title = t("git-changed-files");
     let title_w = f64::from(
         ctx.text
@@ -676,7 +676,7 @@ fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> (
             face = face.separator(false);
         }
         let h = face.height(ctx.text, theme);
-        let rect = Rect::new(lane.x0 - pad, y, lane.x1 + pad, y + h);
+        let rect = Rect::new(column.x0 - pad, y, column.x1 + pad, y + h);
         face.paint(ctx, rect);
         rows.push(rect);
         y += h;
@@ -737,7 +737,7 @@ mod tests {
             let layout = crate::graph::layout(&mut model.commits);
             let width = f64::from(theme.tokens.metrics.overview_width);
             let area = Rect::new(0.0, 0.0, width, 800.0);
-            let left = text_left(area, layout.lanes, &m, &theme);
+            let left = text_left(area, layout.columns, &m, &theme);
             let room = area.x1 - m.inset - m.pad_x - left;
             let gap = f64::from(theme.tokens.spacing.s2);
             let width_of = |text: &mut TextRenderer, s: &str, style: &TextStyle| {

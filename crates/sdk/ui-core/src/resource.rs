@@ -2325,7 +2325,7 @@ fn read_resource(
 impl ResourceStore {
     /// The route record `id` travels on: its workspace, the app and its wire name, unchecked
     /// against the record's document. What names a record across workspaces in one process (its
-    /// content lane) keys by it.
+    /// content content link) keys by it.
     pub fn wire_route(
         &self,
         id: &DocumentId,

@@ -29,7 +29,7 @@ pub trait Shown {
         true
     }
     /// What the scroller paints over its content inside [`Self::clip`] that does not move
-    /// with it (a scroll bar's lane, an edge fade, a banner).
+    /// with it (a scroll bar's gutter, an edge fade, a banner).
     fn overlays(&self, out: &mut Vec<Rect>);
 }
 

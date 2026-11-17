@@ -2566,7 +2566,7 @@ pub fn render(report: &Report) -> String {
 mod windows;
 
 #[cfg(test)]
-mod board_lane {
+mod board_list {
     use std::path::Path;
     use std::rc::Rc;
 
@@ -2599,7 +2599,7 @@ mod board_lane {
     }
 
     /// Whether `rect` stands whole inside `clip`: a card cut by
-    /// the view that scrolls its lane is not one a person sees.
+    /// the view that scrolls its list is not one a person sees.
     fn inside(clip: Rect, rect: Rect) -> bool {
         /// `layout` places edges on fractions of a pixel.
         const SLACK: f64 = 1.0;
@@ -2640,11 +2640,11 @@ mod board_lane {
         }
     }
 
-    /// A board's page stands the window's height, so its lanes are as tall as the window: a lane
+    /// A board's page stands the window's height, so its lists are as tall as the window: a list
     /// holding as many cards as the window shows draws every one of them under its heading, and a
-    /// lane holding more keeps them inside the view that scrolls it.
+    /// list holding more keeps them inside the view that scrolls it.
     #[test]
-    fn a_lane_draws_every_card_the_window_has_room_for() {
+    fn a_list_draws_every_card_the_window_has_room_for() {
         tilo_ui_host::i18n::ensure();
         let packages = packages();
         let staged = stage::Staged::over(
@@ -2670,8 +2670,8 @@ mod board_lane {
         let mut whole = Vec::new();
         whole_cards(root, window, &mut whole);
         assert!(!whole.is_empty(), "the board draws its cards");
-        // Lanes stand side by side: the leftmost holds six cards, which the window shows at once,
-        // and the rightmost thirty, more than its lane has room for.
+        // Lists stand side by side: the leftmost holds six cards, which the window shows at once,
+        // and the rightmost thirty, more than its list has room for.
         let left = whole
             .iter()
             .map(|rect| rect.x0)
@@ -2680,26 +2680,26 @@ mod board_lane {
             .iter()
             .map(|rect| rect.x0)
             .fold(f64::NEG_INFINITY, f64::max);
-        assert!(right > left + 1.0, "the board shows more than one lane");
-        let lane = |x: f64| {
+        assert!(right > left + 1.0, "the board shows more than one list");
+        let list = |x: f64| {
             whole
                 .iter()
                 .filter(|rect| (rect.x0 - x).abs() < 1.0)
                 .count()
         };
         assert_eq!(
-            lane(left),
+            list(left),
             6,
-            "the first lane draws all six cards the window has room for"
+            "the first list draws all six cards the window has room for"
         );
         assert!(
-            lane(right) < 30,
-            "the third lane scrolls its thirty cards instead of growing past the window"
+            list(right) < 30,
+            "the third list scrolls its thirty cards instead of growing past the window"
         );
     }
 
-    /// The board's sideways scroller under `root`: the lane strip it scrolls, the part of that
-    /// strip the pane shows, and the lanes on the strip in lane order.
+    /// The board's sideways scroller under `root`: the list strip it scrolls, the part of that
+    /// strip the pane shows, and the lists on the strip in list order.
     fn across(root: &dyn Widget) -> (&ui::widget::Scrollable, Rect, Rect, Vec<Rect>) {
         let mut scrolls = Vec::new();
         named(root, "Scrollable", &mut scrolls);
@@ -2721,27 +2721,27 @@ mod board_lane {
             .children()
             .first()
             .map(|content| content.get_rect())
-            .expect("the board's lanes stand on a strip");
-        let lanes = pane
+            .expect("the board's lists stand on a strip");
+        let lists = pane
             .children()
             .iter()
             .flat_map(|content| content.children())
             .map(Widget::get_rect)
             .collect();
-        (pane, viewed, strip, lanes)
+        (pane, viewed, strip, lists)
     }
 
-    /// The width a lane reads at, which every board gives it (`metrics.board_lane_width`).
-    fn lane_measure() -> f64 {
-        f64::from(ui::Theme::light().tokens.metrics.board_lane_width)
+    /// The width a list reads at, which every board gives it (`metrics.board_list_width`).
+    fn list_measure() -> f64 {
+        f64::from(ui::Theme::light().tokens.metrics.board_list_width)
     }
 
-    /// A pane narrower than a board's lanes scrolls them sideways instead of cutting them off: each
-    /// lane keeps its measure and stands whole on the strip, the strip keeps the same gutter at
-    /// each end, every lane the viewport shows is whole from its heading to its foot, and the last
-    /// lane comes whole into view at the end of the scroll.
+    /// A pane narrower than a board's lists scrolls them sideways instead of cutting them off: each
+    /// list keeps its measure and stands whole on the strip, the strip keeps the same gutter at
+    /// each end, every list the viewport shows is whole from its heading to its foot, and the last
+    /// list comes whole into view at the end of the scroll.
     #[test]
-    fn a_narrow_board_scrolls_its_lanes_whole_across_the_pane() {
+    fn a_narrow_board_scrolls_its_lists_whole_across_the_pane() {
         tilo_ui_host::i18n::ensure();
         let packages = packages();
         let staged = stage::Staged::over(
@@ -2755,36 +2755,36 @@ mod board_lane {
         )
         .expect("the board stages");
         let root = staged.harness().root_widget();
-        let (pane, viewed, strip, lanes) = across(root);
-        assert_eq!(lanes.len(), 3, "three lanes: {lanes:?}");
+        let (pane, viewed, strip, lists) = across(root);
+        assert_eq!(lists.len(), 3, "three lists: {lists:?}");
         assert!(
             pane.horizontal_overflows(),
-            "three lanes of {measure} outrun the 864 pane, so it scrolls them: {strip:?} in {viewed:?}",
-            measure = lane_measure()
+            "three lists of {measure} outrun the 864 pane, so it scrolls them: {strip:?} in {viewed:?}",
+            measure = list_measure()
         );
-        for lane in &lanes {
+        for list in &lists {
             assert!(
-                (lane.width() - lane_measure()).abs() < 1.0,
-                "a lane keeps its measure: {lane:?} at {measure}",
-                measure = lane_measure()
+                (list.width() - list_measure()).abs() < 1.0,
+                "a list keeps its measure: {list:?} at {measure}",
+                measure = list_measure()
             );
             assert!(
-                inside(strip, *lane),
-                "a lane stands whole on the strip: {lane:?} in {strip:?}"
+                inside(strip, *list),
+                "a list stands whole on the strip: {list:?} in {strip:?}"
             );
         }
-        let start = lanes[0].x0 - strip.x0;
-        let end = strip.x1 - lanes[2].x1;
+        let start = lists[0].x0 - strip.x0;
+        let end = strip.x1 - lists[2].x1;
         assert!(
             start > 1.0,
-            "the first lane keeps clear of the strip's edge: {strip:?}"
+            "the first list keeps clear of the strip's edge: {strip:?}"
         );
         assert!(
             (start - end).abs() < 1.0,
-            "the lanes keep the same gutter at both ends of the strip: {start} before, {end} after"
+            "the lists keep the same gutter at both ends of the strip: {start} before, {end} after"
         );
         // The strip is the pane's whole width and height: it stands inside the page it is shown in,
-        // so nothing but the lanes' scroll moves it.
+        // so nothing but the lists' scroll moves it.
         let mut pages = Vec::new();
         named(root, "Page", &mut pages);
         assert_eq!(pages.len(), 1, "the board is one page");
@@ -2794,35 +2794,35 @@ mod board_lane {
             pane.get_rect(),
             pages[0].get_rect()
         );
-        // Every lane the pane shows now is whole from its heading to its foot: only the lanes
+        // Every list the pane shows now is whole from its heading to its foot: only the lists
         // scrolled out of view are out of reach until the person scrolls to them.
-        let shown: Vec<Rect> = lanes
+        let shown: Vec<Rect> = lists
             .iter()
             .copied()
-            .filter(|lane| lane.x1 > viewed.x0 && lane.x0 < viewed.x1)
+            .filter(|list| list.x1 > viewed.x0 && list.x0 < viewed.x1)
             .collect();
-        assert!(!shown.is_empty(), "the pane shows lanes: {viewed:?}");
-        for lane in &shown {
+        assert!(!shown.is_empty(), "the pane shows lists: {viewed:?}");
+        for list in &shown {
             assert!(
-                lane.height() > 1.0 && lane.y0 >= viewed.y0 - 1.0 && lane.y1 <= viewed.y1 + 1.0,
-                "a lane the pane shows is whole, heading to foot: {lane:?} in {viewed:?}"
+                list.height() > 1.0 && list.y0 >= viewed.y0 - 1.0 && list.y1 <= viewed.y1 + 1.0,
+                "a list the pane shows is whole, heading to foot: {list:?} in {viewed:?}"
             );
         }
-        // The end of the scroll brings the last lane whole into view, less the gutter after it.
+        // The end of the scroll brings the last list whole into view, less the gutter after it.
         let shift = strip.width() - viewed.width();
         let reached = Rect::new(viewed.x0 + shift, viewed.y0, viewed.x1 + shift, viewed.y1);
         assert!(
-            inside(reached, lanes[2]),
-            "the last lane comes whole into view at the end of the scroll: {:?} in {reached:?}",
-            lanes[2]
+            inside(reached, lists[2]),
+            "the last list comes whole into view at the end of the scroll: {:?} in {reached:?}",
+            lists[2]
         );
     }
 
-    /// A pane wide enough for a board's lanes shows them all at rest and offers no sideways scroll:
+    /// A pane wide enough for a board's lists shows them all at rest and offers no sideways scroll:
     /// each keeps its measure, the strip ends inside the pane, and the room the wider pane leaves
-    /// open stays beside the lanes rather than stretching them.
+    /// open stays beside the lists rather than stretching them.
     #[test]
-    fn a_board_with_room_for_its_lanes_offers_no_sideways_scroll() {
+    fn a_board_with_room_for_its_lists_offers_no_sideways_scroll() {
         tilo_ui_host::i18n::ensure();
         let packages = packages();
         let staged = stage::Staged::over(
@@ -2836,24 +2836,24 @@ mod board_lane {
         )
         .expect("the board stages");
         let root = staged.harness().root_widget();
-        let (pane, viewed, strip, lanes) = across(root);
-        assert_eq!(lanes.len(), 3, "three lanes: {lanes:?}");
+        let (pane, viewed, strip, lists) = across(root);
+        assert_eq!(lists.len(), 3, "three lists: {lists:?}");
         assert!(
             !pane.horizontal_overflows(),
-            "the lanes fit the pane, so it scrolls across nothing: {strip:?} in {viewed:?}"
+            "the lists fit the pane, so it scrolls across nothing: {strip:?} in {viewed:?}"
         );
         assert!(
             strip.x1 <= viewed.x1 + 1.0,
             "the strip ends inside the pane: {strip:?} in {viewed:?}"
         );
-        for lane in &lanes {
+        for list in &lists {
             assert!(
-                (lane.width() - lane_measure()).abs() < 1.0,
-                "a lane keeps its measure where the pane has room to spare: {lane:?}"
+                (list.width() - list_measure()).abs() < 1.0,
+                "a list keeps its measure where the pane has room to spare: {list:?}"
             );
             assert!(
-                inside(viewed, *lane),
-                "every lane stands whole in a pane wide enough for it: {lane:?} in {viewed:?}"
+                inside(viewed, *list),
+                "every list stands whole in a pane wide enough for it: {list:?} in {viewed:?}"
             );
         }
     }

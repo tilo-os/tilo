@@ -400,7 +400,7 @@
     },
     {
       "name": "Board",
-      "doc": "Cards in lanes, side by side: a kanban board, a pipeline, tasks by status.",
+      "doc": "Cards in lists, side by side: a kanban board, a pipeline, tasks by status.",
       "props": [
         {
           "name": "name",
@@ -412,10 +412,10 @@
       ],
       "parts": [
         {
-          "name": "lanes",
-          "doc": "The lanes, in order.",
+          "name": "lists",
+          "doc": "The lists, in order.",
           "accepts": {
-            "component": "BoardLane"
+            "component": "BoardList"
           },
           "many": true,
           "default": true
@@ -4596,7 +4596,7 @@
         },
         {
           "name": "across",
-          "doc": "Scroll sideways instead: a row wider than its column, such as a board's lanes.",
+          "doc": "Scroll sideways instead: a row wider than its column, such as a board's lists.",
           "type": "bool"
         },
         {
@@ -6419,12 +6419,12 @@
       }
     },
     {
-      "name": "BoardLane",
-      "doc": "One lane of a board: a heading and its cards, in order.",
+      "name": "BoardList",
+      "doc": "One list of a board: a heading and its cards, in order.",
       "props": [
         {
           "name": "item",
-          "doc": "The resource the lane stands for: a column, a status.",
+          "doc": "The resource the list stands for: a column, a status.",
           "type": {
             "option": "resource"
           },
@@ -6432,21 +6432,21 @@
         },
         {
           "name": "title",
-          "doc": "What the lane is called, as its heading.",
+          "doc": "What the list is called, as its heading.",
           "type": {
             "option": "text"
           }
         },
         {
           "name": "count",
-          "doc": "How many cards the lane holds, beside its heading.",
+          "doc": "How many cards the list holds, beside its heading.",
           "type": {
             "option": "int"
           }
         },
         {
           "name": "action",
-          "doc": "The label of the one action that adds to the lane, at its foot under the cards: \"New card\".",
+          "doc": "The label of the one action that adds to the list, at its foot under the cards: \"New card\".",
           "type": {
             "option": "text"
           }
@@ -6464,18 +6464,18 @@
         },
         {
           "name": "foot",
-          "doc": "What stands at the lane's foot, under its cards: the entry that adds to the lane.",
+          "doc": "What stands at the list's foot, under its cards: the entry that adds to the list.",
           "accepts": "view"
         }
       ],
       "events": [
         {
           "name": "act",
-          "doc": "The lane's action was pressed."
+          "doc": "The list's action was pressed."
         },
         {
           "name": "drop",
-          "doc": "A card was dropped into the lane: carries the card and its place among the lane's other cards, from 0.",
+          "doc": "A card was dropped into the list: carries the card and its place among the list's other cards, from 0.",
           "value": "resource",
           "at": "int"
         }
@@ -6488,7 +6488,7 @@
     },
     {
       "name": "BoardCard",
-      "doc": "One card of a lane: a summary of the resource it stands for, which a press opens.",
+      "doc": "One card of a list: a summary of the resource it stands for, which a press opens.",
       "props": [
         {
           "name": "item",

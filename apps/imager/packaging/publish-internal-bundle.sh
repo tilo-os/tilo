@@ -17,7 +17,7 @@
 #
 # because the Imager fetches each component by replacing the manifest URL's
 # last segment. Why a generic package and not a release attachment: the two
-# architectures publish independently from their own native lanes (no shared
+# architectures publish independently from their own native jobs (no shared
 # draft to race), the root image exceeds the default attachment limit, and
 # the bytes never travel through workflow artifacts or reach the GitHub
 # release. Why code.tilo.so: the Imager accepts internal manifests from that

@@ -1307,7 +1307,7 @@ impl DesktopSurface {
             };
             // While cards stand in the column, a window the strip brings into view stands clear of
             // it where it fits.
-            let lane = self
+            let section = self
                 .shared
                 .borrow()
                 .dock
@@ -1315,7 +1315,7 @@ impl DesktopSurface {
                 .values()
                 .map(|card| card.size.0 + 2.0 * ui::floating_layer::EDGE_INSET)
                 .fold(0.0_f64, f64::max);
-            row.set_trailing_clear(lane);
+            row.set_trailing_clear(section);
             // A window the record put back in its strip after floating is the one the person just
             // snapped back: its strip brings it into view as it does a window that opens or takes
             // the focus, or the window lands where the pan left the strip rather than where it
@@ -1824,7 +1824,7 @@ impl DesktopSurface {
             }
             row.insert_group(built, index);
             // The window opens on the display the person works on, so it
-            // owns that display's lane before anything is shared: it is
+            // owns that display's section before anything is shared: it is
             // placed whole on screen beside the window it opened next to,
             // sharing the display with it if need be, as on the native
             // desktop — revealing it alone pans the window in use half off
@@ -2099,7 +2099,7 @@ impl Widget for DesktopSurface {
         let arrivals = self.arrival_hints.build_layout(taffy, theme, node_map);
         let hung = self.hung_apps.build_layout(taffy, theme, node_map);
         // The rows, each over the whole surface and drawing only in its
-        // displays' lanes, come first, then the views windows embed to work in,
+        // displays' sections, come first, then the views windows embed to work in,
         // then the arrival hints and the cards of apps that stopped answering.
         // Search, the notifications and the confirmations are drawn over the
         // windows, by the host above them, not in this tree.

@@ -258,7 +258,7 @@ impl ApprovedCheckServices for HeldProgressProbe {
         &self,
         context: &ApprovedCheckContext,
     ) -> Result<runtime_collab::approved_checks::Receipt, String> {
-        use runtime_collab::approved_checks::{LaneRefusal, ReportObservation};
+        use runtime_collab::approved_checks::{EndpointRefusal, ReportObservation};
         self.calls.fetch_add(1, Ordering::SeqCst);
         for (phase, completed) in [("Synthesis", 1), ("Routing", 2)] {
             context.report(ReportObservation::Reported {
@@ -283,7 +283,7 @@ impl ApprovedCheckServices for HeldProgressProbe {
                 .is_err()
         );
         context.report(ReportObservation::Disabled {
-            reason: LaneRefusal::InvalidReport,
+            reason: EndpointRefusal::InvalidReport,
         })?;
         assert!(
             context
@@ -293,7 +293,7 @@ impl ApprovedCheckServices for HeldProgressProbe {
                     total: None
                 })
                 .is_err(),
-            "disabled informational lane cannot restart"
+            "disabled informational endpoint cannot restart"
         );
         Err("held fixture executed no guest check".into())
     }
@@ -377,7 +377,7 @@ async fn approved_check_reported_progress_preserves_original_ownership_replay_an
                     ReportObservation::Disabled { .. }
                 ));
                 update = tilo_test_env::within(
-                    "disabled lane retains final observation",
+                    "disabled endpoint retains final observation",
                     progress.read(),
                 )
                 .await;
@@ -487,7 +487,7 @@ impl ApprovedCheckServices for TerminalProgressProbe {
         context: &ApprovedCheckContext,
     ) -> Result<runtime_collab::approved_checks::Receipt, String> {
         use runtime_collab::approved_checks::{
-            Binding, Diagnostic, LaneRefusal, Outcome, Receipt, ReportObservation,
+            Binding, Diagnostic, EndpointRefusal, Outcome, Receipt, ReportObservation,
         };
         self.calls.fetch_add(1, Ordering::SeqCst);
         assert!(
@@ -495,7 +495,7 @@ impl ApprovedCheckServices for TerminalProgressProbe {
             "deliberate host adapter panic before observed execution"
         );
         context.report(ReportObservation::Disabled {
-            reason: LaneRefusal::InvalidReport,
+            reason: EndpointRefusal::InvalidReport,
         })?;
         // This typed host fixture claims no command execution or cleanup. Its
         // exact failed receipt tests transport finality, not hardware evidence.
@@ -537,7 +537,7 @@ impl ApprovedCheckServices for TerminalProgressProbe {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn approved_check_reported_progress_preserves_terminal_receipt_after_disabled_lane_and_host_panic()
+async fn approved_check_reported_progress_preserves_terminal_receipt_after_disabled_endpoint_and_host_panic()
  {
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -571,7 +571,7 @@ async fn approved_check_reported_progress_preserves_terminal_receipt_after_disab
                     .await
                     .unwrap();
                 let mut update = tilo_test_env::within(
-                    "terminal outcome cannot depend on informational lane",
+                    "terminal outcome cannot depend on informational endpoint",
                     progress.read(),
                 )
                 .await;

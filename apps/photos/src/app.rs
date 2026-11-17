@@ -349,8 +349,8 @@ struct PeopleLayout {
     detail_title: Option<Point>,
     detail_text: Rect,
     name_label: Option<Point>,
-    lanes: Rect,
-    lanes_content: f64,
+    sections: Rect,
+    sections_content: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

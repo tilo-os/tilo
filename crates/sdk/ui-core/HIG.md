@@ -517,7 +517,7 @@ completeness does not exempt a screen from these requirements.
   after a short rest on it and stays open by menu aim (the pointer's path
   heading for what it revealed), not by a long timer (`widget::hover_intent`).
 - **A maximized window is all app; its bar comes when reached for.** The
-  client fills the window (no lane above it, no margin below it). The
+  client fills the window (no area above it, no margin below it). The
   window's bar — title, Full screen, Restore, close — hides at rest and fades
   in *over* the window's top edge when the person reaches for it: a rest in
   the thin band at the very top, or a fast climb that brakes there (Fitts);
@@ -1371,7 +1371,7 @@ edge kept at full strength, so rest and disabled never look the same.
 | Checkbox | unchecked `surfaces.raised`, checked `intent.on_state`; always the largest square in its rect, `radii.item` | `edge_on(raised)`, kept at full strength when disabled (as a switch's) |
 | ProgressBar | track `intent.selection` (a lift of the ground, as a slider's unfilled half), fill `intent.value_fill`, `radii.detail` | none |
 | TimePicker | value cells `surfaces.raised` at `radii.control`; step arrows are `Icon::ChevronUp` / `ChevronDown`, lifted under the pointer | `edge_on(raised)`; the focused cell `border_focus` |
-| Scroll thumb | `text_tertiary` at rest (a third lighter on a light ground), `text_dim` active stepped to 3:1 on the ground; `metrics.scroll_thumb` thick, centred in its lane | none; a `Scrollable` (or a painted `ScrollRegion`) keeps `metrics.scrollbar_gutter` (thumb plus `s1` each side) free on its trailing edge while its content overflows, and on its bottom edge for a horizontal bar |
+| Scroll thumb | `text_tertiary` at rest (a third lighter on a light ground), `text_dim` active stepped to 3:1 on the ground; `metrics.scroll_thumb` thick, centred in its area | none; a `Scrollable` (or a painted `ScrollRegion`) keeps `metrics.scrollbar_gutter` (thumb plus `s1` each side) free on its trailing edge while its content overflows, and on its bottom edge for a horizontal bar |
 | DataTable header and rules | the region's ground (no fill of its own) | `edge_on(ground)` under the header and, with `.ruled()`, between columns |
 | StatTile, PropertyList, Section | the ground | none: separated by space |
 | MediaCard art | the art | a `hairline_on(ground)` just inside the art's outline; badges over the art use the floating material |

@@ -42,10 +42,10 @@ fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError)
     error.to_string()
 }
 
-mod workspace_lane;
-#[cfg(test)]
-mod workspace_lane_tests;
 mod workspace_members;
+mod workspace_worker;
+#[cfg(test)]
+mod workspace_worker_tests;
 use workspace_members::Admission;
 pub use workspace_members::RosterDevice;
 
@@ -108,9 +108,9 @@ pub enum PersonalFabricPayload {
     /// Ephemeral, exact-target command encoded independently of snapshot
     /// schema so it is never persisted or relayed through workspace history.
     Action(Vec<u8>),
-    /// The one lane for file bytes between a person's devices: Nearby sends
+    /// The one worker for file bytes between a person's devices: Nearby sends
     /// and media handoffs alike. Offers and resume checkpoints travel as
-    /// authenticated actions; this lane carries bounded bytes only.
+    /// authenticated actions; this worker carries bounded bytes only.
     NearbyTransfer(PersonalNearbyTransferFrame),
     /// One signed mutation of a record in the person's own store. Its scope is
     /// implied by the route: the fabric only ever joins one person's devices.
@@ -604,10 +604,10 @@ enum InternalEvent {
         outcome: PersonalTransferOutcome,
         sent_bytes: u64,
     },
-    /// A direct send queued on a workspace's lane went, or did not.
+    /// A direct send queued on a workspace's worker went, or did not.
     DirectSent {
         ws: WorkspaceId,
-        outcome: Box<workspace_lane::DirectOutcome>,
+        outcome: Box<workspace_worker::DirectOutcome>,
     },
 }
 
@@ -967,8 +967,8 @@ struct ActorState {
     /// The topics only the person's hosts carry that this device joined.
     topics: HashMap<WorkspaceId, HostedTopic>,
     /// Each workspace's direct sends, so one workspace's slow devices hold up no
-    /// other workspace ([`workspace_lane`]).
-    lanes: workspace_lane::Lanes,
+    /// other workspace ([`workspace_worker`]).
+    workers: workspace_worker::Workers,
     subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
     /// The person's other devices ([`NetCmd::Connect`]), where each is
     /// reached.
@@ -987,7 +987,7 @@ struct ActorState {
     sibling_events: Option<mpsc::Sender<NetEvent>>,
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
-    /// Each joined workspace's link, on the direct lane.
+    /// Each joined workspace's link, on the direct connection.
     native_links: HashMap<WorkspaceId, native_ingress::NativeLink>,
     /// The devices that take part in this device's workspaces through it
     /// ([`NetCmd::ServeMembers`]).
@@ -1196,7 +1196,7 @@ impl ActorState {
                 self.native_links.remove(&ws);
                 self.subscribers.remove(&ws);
                 self.set_workspace_roster(ws, Vec::new(), false);
-                self.lanes.close(ws);
+                self.workers.close(ws);
                 let leaving: Vec<_> = self
                     .host_sessions
                     .keys()
@@ -1726,7 +1726,7 @@ impl ActorState {
         let msg = match target {
             Some(target) if self.is_surface_member(ws, target) => {
                 match self.publish_direct(ws, target, msg) {
-                    // How it went comes back from the workspace's lane.
+                    // How it went comes back from the workspace's worker.
                     Ok(()) => return,
                     Err(msg) => *msg,
                 }
@@ -1765,7 +1765,7 @@ impl ActorState {
     }
 
     /// Queue one message for exactly `target` on the authenticated direct
-    /// surface/control peer network, on the workspace's lane: the peer must be live on
+    /// surface/control peer network, on the workspace's worker: the peer must be live on
     /// this workspace. Gives the message back when it cannot go that way
     /// now; how a queued one went comes back as
     /// [`InternalEvent::DirectSent`] ([`Self::direct_sent`]).
@@ -1796,7 +1796,7 @@ impl ActorState {
         let Ok(bytes) = postcard::to_allocvec(&wire) else {
             return Err(Box::new(wire.message));
         };
-        let direct = workspace_lane::Direct {
+        let direct = workspace_worker::Direct {
             addr: self
                 .own_devices
                 .get(&target)
@@ -1807,16 +1807,16 @@ impl ActorState {
             bytes,
             budget,
         };
-        self.lanes.queue_direct(ws, direct).inspect_err(|_| {
+        self.workers.queue_direct(ws, direct).inspect_err(|_| {
             tracing::warn!(ws = %ws, peer = %target, "workspace's remote work is backed up; not sent directly");
         })
     }
 
-    /// A direct send queued on `ws`'s lane went (or did not): keep its
+    /// A direct send queued on `ws`'s worker went (or did not): keep its
     /// connection, and send what failed the way it would have gone without
     /// a direct route.
-    fn direct_sent(&mut self, ws: WorkspaceId, outcome: workspace_lane::DirectOutcome) {
-        let workspace_lane::DirectOutcome {
+    fn direct_sent(&mut self, ws: WorkspaceId, outcome: workspace_worker::DirectOutcome) {
+        let workspace_worker::DirectOutcome {
             target,
             msg,
             connection,
@@ -2871,7 +2871,7 @@ async fn run(
         })
         .spawn();
     let reporting_addrs = report_addrs(&endpoint, listen_addrs);
-    let lanes = workspace_lane::Lanes::new(endpoint.clone(), internal_tx.clone());
+    let workers = workspace_worker::Workers::new(endpoint.clone(), internal_tx.clone());
     let mut state = ActorState {
         reachability,
         endpoint,
@@ -2879,7 +2879,7 @@ async fn run(
         host_identity,
         native_routes: native_ingress::Routes::default(),
         local_host,
-        lanes,
+        workers,
         internal_tx,
         topics: HashMap::new(),
         subscribers: HashMap::new(),

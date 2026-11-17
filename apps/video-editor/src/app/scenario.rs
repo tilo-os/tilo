@@ -51,7 +51,7 @@ pub enum ShotScenario {
     /// reason's wrapping can be reviewed in the details surface.
     ExportFailedDialog,
     /// In and out marks on the timeline: the band across the ruler, the
-    /// bracket at each mark, and the lanes outside the range greyed back — so
+    /// bracket at each mark, and the tracks outside the range greyed back — so
     /// what a render will and will not cover can be seen at a glance.
     RenderRange,
     /// The project's own format, with nothing selected: the PROJECT section
@@ -72,13 +72,13 @@ pub enum ShotScenario {
     /// naming the direction and the rate, and the play button wearing the
     /// pause glyph because something is already moving.
     Shuttle,
-    /// Two shots whose sound was split onto its own lane: one pair selected, so the
+    /// Two shots whose sound was split onto its own track: one pair selected, so the
     /// anchor's outline, the other half's dashed one and the tie between them are all on
     /// screen, and one pair resting.
     LinkedAudio,
     /// A mix that has been played and went over: faders off unity, meters showing it, the
     /// standing CLIP warning, the marks saying where, and the MIX section open with the
-    /// keyboard cursor on the button that puts the lane back.
+    /// keyboard cursor on the button that puts the track back.
     Mix,
 }
 
@@ -441,7 +441,7 @@ impl VideoEditorApp {
             ShotScenario::Mix => {
                 // Written through the same action a drag commits: A1 pushed up for a
                 // voice under music, A2 pulled down and opened out to the left.
-                let lanes: Vec<(TrackId, f64, f64)> = self
+                let tracks: Vec<(TrackId, f64, f64)> = self
                     .project
                     .display_tracks()
                     .iter()
@@ -455,7 +455,7 @@ impl VideoEditorApp {
                         }
                     })
                     .collect();
-                for (tid, gain_db, pan) in lanes {
+                for (tid, gain_db, pan) in tracks {
                     if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                         t.gain_db = gain_db;
                         t.pan = pan;
@@ -467,16 +467,16 @@ impl VideoEditorApp {
                 // A run of ordinary blocks and three that went over, staged through the
                 // production recording path, so the latch, the merge and the positions are
                 // the real ones.
-                let audio_lanes: Vec<TrackId> = self
+                let audio_tracks: Vec<TrackId> = self
                     .project
                     .tracks
                     .iter()
                     .filter(|t| t.kind == TrackKind::Audio)
                     .map(|t| t.id)
                     .collect();
-                let block = |l: f32, r: f32, lanes: &[TrackId]| crate::audio::MixReport {
+                let block = |l: f32, r: f32, tracks: &[TrackId]| crate::audio::MixReport {
                     master: crate::audio::BlockMeter { peak: [l, r] },
-                    tracks: lanes
+                    tracks: tracks
                         .iter()
                         .enumerate()
                         .map(|(i, id)| {
@@ -497,9 +497,9 @@ impl VideoEditorApp {
                     (16.0, 1.18, 1.04),
                     (21.0, 0.61, 0.72),
                 ] {
-                    self.stage_mix_block(at, &block(l, r, &audio_lanes));
+                    self.stage_mix_block(at, &block(l, r, &audio_tracks));
                 }
-                self.stage_mix_block(24.0, &block(0.74, 0.66, &audio_lanes));
+                self.stage_mix_block(24.0, &block(0.74, 0.66, &audio_tracks));
                 self.playhead = 24.0;
             }
             ShotScenario::RenderRange => {
@@ -549,7 +549,7 @@ impl VideoEditorApp {
         use ui::permissions::MemberId;
         let mut ctx = PresenceCtx::empty();
         // Clips to hand out, one per track walked from the top, so the pick is the same on
-        // every run and two members are never stacked on one lane. The first lands on
+        // every run and two members are never stacked on one track. The first lands on
         // the topmost track, where a name chip has no room above it and falls inside the
         // clip.
         let clips: Vec<(ClipId, f64, f64)> = self
@@ -685,23 +685,23 @@ impl VideoEditorApp {
                 }
             }
             ShotScenario::DragToTimeline => {
-                // A video bin item mid-drag over the V1 lane.
+                // A video bin item mid-drag over the V1 track.
                 let item = self
                     .bin_item_rects(r)
                     .into_iter()
                     .find(|(m, _)| self.project.media(*m).is_some_and(|mm| mm.kind.is_visual()));
-                let lane = self
-                    .lane_rects(r)
+                let track = self
+                    .track_rects(r)
                     .into_iter()
                     .find(|(_, k, _)| *k == TrackKind::Video);
-                if let (Some((mid, row)), Some((_, _, lane))) = (item, lane) {
+                if let (Some((mid, row)), Some((_, _, track))) = (item, track) {
                     self.selected_media = Some(mid);
                     self.bin_drag = Some(BinDrag {
                         media: mid,
                         origin: row.center(),
                         active: true,
                     });
-                    self.last_mouse = Point::new(lane.x0 + 470.0, lane.center().y);
+                    self.last_mouse = Point::new(track.x0 + 470.0, track.center().y);
                 }
             }
             ShotScenario::Effects => {
@@ -937,7 +937,7 @@ impl VideoEditorApp {
             }
             ShotScenario::MultiSelect => {
                 let mut ids: Vec<ClipId> = self
-                    .lane_rects(r)
+                    .track_rects(r)
                     .into_iter()
                     .take(2)
                     .flat_map(|(tid, _, _)| self.project.clips_on(tid))
@@ -948,7 +948,7 @@ impl VideoEditorApp {
                 self.playhead = 8.0;
             }
             ShotScenario::LockedTrack => {
-                if let Some((tid, _, _)) = self.lane_rects(r).into_iter().next() {
+                if let Some((tid, _, _)) = self.track_rects(r).into_iter().next() {
                     if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                         t.locked = true;
                     }
@@ -966,21 +966,21 @@ impl VideoEditorApp {
                 self.scroll_to_time(self.playhead, r);
             }
             ShotScenario::ClipMenu => {
-                if let Some((tid, _, lane)) = self.lane_rects(r).into_iter().next()
+                if let Some((tid, _, track)) = self.track_rects(r).into_iter().next()
                     && let Some(clip) = self.project.clips_on(tid).first().copied()
                 {
-                    let cr = self.clip_rect(clip, &lane, r);
+                    let cr = self.clip_rect(clip, &track, r);
                     self.last_mouse = cr.center();
                     self.open_clip_menu(clip.id, Point::new(cr.center().x, cr.y0 + 10.0));
                 }
             }
             ShotScenario::Marquee => {
-                if let Some((_, _, lane)) = self.lane_rects(r).into_iter().next() {
+                if let Some((_, _, track)) = self.track_rects(r).into_iter().next() {
                     let band = Rect::new(
-                        r.lanes.x0 + 60.0,
-                        lane.y0 - 6.0,
-                        r.lanes.x0 + 430.0,
-                        lane.y1 + 34.0,
+                        r.tracks.x0 + 60.0,
+                        track.y0 - 6.0,
+                        r.tracks.x0 + 430.0,
+                        track.y1 + 34.0,
                     );
                     self.drag = Some(Drag::Marquee {
                         origin: Point::new(band.x0, band.y0),

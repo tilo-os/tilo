@@ -21,12 +21,12 @@
 # A budgeted KPI whose group ran but produced no record fails the run as
 # `missing`, so list every KPI a benchmark is expected to report.
 #
-# [lanes.<lane>] say which run produces which KPIs, so a run is owed
-# only its own: compare.py --lane names the run's lane. `groups` are the
-# KPI id prefixes the run produces, each in exactly one lane; `kpis`
-# claims single KPIs whose prefix is another lane's group. Every budgeted KPI
-# needs exactly one lane, or the budgets do not load; tools/perf/test_compare.py
-# holds each run's groups (its t checks) equal to its lane.
+# [jobs.<job>] say which run produces which KPIs, so a run is owed
+# only its own: compare.py --job names the run's job. `groups` are the
+# KPI id prefixes the run produces, each in exactly one job; `kpis`
+# claims single KPIs whose prefix is another job's group. Every budgeted KPI
+# needs exactly one job, or the budgets do not load; tools/perf/test_compare.py
+# holds each run's groups (its t checks) equal to its job.
 
 [defaults]
 p50_tolerance = 1.10
@@ -36,20 +36,20 @@ baseline_min_runs = 1
 min_delta = 0.0
 
 # The scheduled run (tools/ci/perf-scheduled.sh): one t check per group,
-# perf-<group>; perf-scheduled compares them with the default lane.
-[lanes.perf-scheduled]
+# perf-<group>; perf-scheduled compares them with the default job.
+[jobs.perf-scheduled]
 groups = ["fs", "footprint", "agent", "render", "hosting", "browser"]
 
 # VM acceptance (t's vm-acceptance, tools/ci/vm-acceptance.sh): the installed
 # desktop in a KVM guest. Its R04 measures compositor CPU per painted frame on
 # that desktop, a render KPI the headless render benches cannot produce.
-[lanes.vm-acceptance]
+[jobs.vm-acceptance]
 groups = ["boot", "session", "idle", "memory", "disk", "app"]
 kpis = ["render.frame_cpu_ms"]
 
 # The reference machines' weekly run (scripts/perf/device_latency_bench.py,
 # docs/benchmarks/reference-hardware.md), compared read-only.
-[lanes.reference-hardware]
+[jobs.reference-hardware]
 groups = ["hw"]
 
 # tilo-fs latency benchmarks (crates/system/fs/tests/performance_timing.rs), a
@@ -332,7 +332,7 @@ source = "#4003: 9,067,894,573 B on db91126b44, plus 5 %; #4055: -83,213,633 B"
 # so the rule is a ceiling, with a wide relative tolerance that still fails
 # when updates stay several times larger: before content-based layers an update
 # re-sent 3.7 GB; a per-build app key re-sent 215 MB of identical apps; the
-# release lane's commit-time epoch renewed the 116 MB UKI and the rpmdb in
+# release job's commit-time epoch renewed the 116 MB UKI and the rpmdb in
 # every build. Consecutive rechunked main builds on 10-10 and 10-11 sent
 # 420-830 MB (x86_64) and 420-820 MB (aarch64), before the runtimes and Tilo's
 # programs got layers of their own.
@@ -428,7 +428,7 @@ source = "provisional: derived from the no-op p50 target"
 # ms in order, 105 ms pipelined and 1.7 idle round trips per step. `idle` is
 # the host round trips per step that brought no news while a step ran (the
 # plan in order). Reported, not enforced, until three nightly records exist.
-# A whole app task is not this lane's: a builder starts no app, so only the
+# A whole app task is not this job's: a builder starts no app, so only the
 # agent's own loop is timed here.
 [kpi."agent.task.native.pipelined.wall"]
 unit = "ms"
@@ -507,7 +507,7 @@ source = "KPI: Workspace switch, dropped frames at 144 Hz"
 # Render frame time at native 4K (scripts/perf/render_bench.py timing): the
 # toolkit's dashboard harness (redrawing frames of 1,000 events). It drives
 # damage-limited frames, so the ceiling is the KPI's damage-limited target.
-# This lane renders with lavapipe on the shared `runner` class: the CPU
+# This job renders with lavapipe on the shared `runner` class: the CPU
 # rasterises, so the ceiling is reported, never enforced, and the relative
 # rule catches regressions. The session's own desktop surface is held to its
 # budgets in [devices.x86.session.*] by session_perf, in the same check.
@@ -689,7 +689,7 @@ source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 i
 # nothing can trap focus. The shared x86_64 runner takes two to three times as
 # long (1.3-2.0 / 5.5-13 ms at 1,000 and 2,500 items, its p95 at 1,000 items up
 # to 4.1 ms), so the 1,000 item recomputations are the enforced ceiling: the
-# smallest size the scheduled lane measures (500 items is not one of them, so a
+# smallest size the scheduled job measures (500 items is not one of them, so a
 # ceiling there would be a budget that never runs), at 5 ms p95, far under what
 # a per-node walk costs; the 2,500 item figures are reported.
 #
@@ -716,7 +716,7 @@ p95 = 2.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation in the test harness, 500 items (about 2,000 widgets; measured when the lane is asked for it)"
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 500 items (about 2,000 widgets; measured when the job is asked for it)"
 
 [kpi."render.framework_focus.native_recompute_ms.500"]
 unit = "ms"
@@ -724,7 +724,7 @@ p95 = 2.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation of the live window, 500 items (about 2,000 widgets; measured when the lane is asked for it)"
+source = "framework-scaling focus, one focus-order recomputation of the live window, 500 items (about 2,000 widgets; measured when the job is asked for it)"
 
 [kpi."render.framework_focus.recompute_ms.1k"]
 unit = "ms"
@@ -1444,10 +1444,10 @@ source = "resource entries that started before the desktop's first presented fra
 # build-time budget keeps, rounded up to 64 KiB.
 #
 # It is the only budget on the bytes the page serves: tools/web/wasm-size-budget
-# holds the raw bytes of the desktop bundle the app-sdk lane builds
+# holds the raw bytes of the desktop bundle the app-sdk job builds
 # (`tilo-app build --target web`), a different and smaller program than the
 # runtime's own `build.sh --bundle desktop` output that ships (19.4 MB of
-# start-module function bodies against 26.4 MB: the SDK lane's desktop mount
+# start-module function bodies against 26.4 MB: the SDK job's desktop mount
 # carries no peer, MoQ transport or shader translation). Both are optimized
 # with the same arguments (tools/web/wasm-opt-flags). A cut that moves either
 # one lowers this ceiling too.

@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use page::{chosen_item, content_nodes, node_of_key};
 use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
-use tilo_render_protocol::patch::{self as wire, Answer, Lane, ToApp, ToUi, Transport, Words};
+use tilo_render_protocol::patch::{self as wire, Answer, Level, ToApp, ToUi, Transport, Words};
 use ui::tokens::{MotionSource, Rhythm, TextRole};
 use ui::widget::arrange::{Fit, Part, Row, Stack};
 use ui::widget::toast::ToastKind;
@@ -34,12 +34,12 @@ use crate::{ResourceRef, UiNode, Value};
 /// Every virtual list of the window's views, by the key of its node in the window's tree.
 pub type Registry = Rc<RefCell<HashMap<String, Rc<RefCell<RemoteRows>>>>>;
 
-/// A list whose rows the window keeps: its key in the window's tree, the lane and prefix of the
+/// A list whose rows the window keeps: its key in the window's tree, the level and prefix of the
 /// view it is in, the kind of component a row is, and the words of the heading over its rows where
 /// one heads them.
 struct Rows {
     key: String,
-    lane: Lane,
+    level: Level,
     prefix: &'static str,
     list: String,
     item: String,
@@ -49,14 +49,14 @@ struct Rows {
 impl Rows {
     fn new(
         prefix: &'static str,
-        lane: Lane,
+        level: Level,
         list: &str,
         item: String,
         heading: Option<String>,
     ) -> Self {
         Self {
             key: format!("{prefix}{list}"),
-            lane,
+            level,
             prefix,
             list: list.to_owned(),
             item,
@@ -305,7 +305,7 @@ pub struct AppWindow {
     opened: Option<u64>,
     /// One `rem` in logical pixels under the theme the window was last laid out in.
     rem: f32,
-    /// The space last told the app each lane's view has, in rem.
+    /// The space last told the app each level's view has, in rem.
     root_space: Option<(f32, f32)>,
     detail_space: Option<(f32, f32)>,
     /// The column a narrow window keeps in front: what a person's tap or the app's open brought
@@ -557,7 +557,7 @@ impl AppWindow {
             && !matches!(
                 message,
                 ToUi::Open {
-                    lane: Lane::Root,
+                    level: Level::Root,
                     ..
                 }
             )
@@ -586,18 +586,18 @@ impl AppWindow {
                     Err(error) => tracing::warn!(%error, "what the app heard does not read"),
                 },
                 ToUi::Open {
-                    lane,
+                    level,
                     target,
                     tree,
                     front: brought,
                 } => {
-                    opened_for_input |= self.opened(lane, target, tree, brought);
+                    opened_for_input |= self.opened(level, target, tree, brought);
                     content = true;
                     front = brought.or(front);
                 }
                 ToUi::Close => {
                     if self.detail.take().is_some() {
-                        self.forget_lane(Lane::Detail);
+                        self.forget_level(Level::Detail);
                         content = true;
                     }
                 }
@@ -608,10 +608,10 @@ impl AppWindow {
                     front = Some(brought);
                     opened_for_input |= self.fronted(brought, shows);
                 }
-                ToUi::Patch { lane, patches } => {
-                    let view = match lane {
-                        Lane::Root => self.root.as_mut(),
-                        Lane::Detail => self.detail.as_mut(),
+                ToUi::Patch { level, patches } => {
+                    let view = match level {
+                        Level::Root => self.root.as_mut(),
+                        Level::Detail => self.detail.as_mut(),
                     }
                     .ok_or("a patch to a view the window does not show")?;
                     for patch in patches {
@@ -623,11 +623,11 @@ impl AppWindow {
                     content = true;
                 }
                 ToUi::Bound {
-                    lane,
+                    level,
                     key,
                     value,
                     acked,
-                } => self.take_bound(lane, &key, value, acked),
+                } => self.take_bound(level, &key, value, acked),
                 rows @ (ToUi::Rows { .. } | ToUi::RowsChanged { .. }) => {
                     self.take_rows(rows);
                     // A row that arrived can hold a list of its own (the document of a row standing
@@ -671,23 +671,23 @@ impl AppWindow {
         Ok(())
     }
 
-    /// The lane `lane` opened on `target` with the tree `tree`, coming to the front of a narrow
+    /// The level `level` opened on `target` with the tree `tree`, coming to the front of a narrow
     /// window when `brought` names the press that opened it. Whether that press takes the keyboard
     /// into the page.
     fn opened(
         &mut self,
-        lane: Lane,
+        level: Level,
         target: ResourceRef,
         tree: UiNode,
         brought: Option<wire::Front>,
     ) -> bool {
-        if lane == Lane::Root {
+        if level == Level::Root {
             self.failed = None;
         }
-        self.forget_lane(lane);
+        self.forget_level(level);
         let view = View { target, tree };
-        match lane {
-            Lane::Root => {
+        match level {
+            Level::Root => {
                 self.root = Some(view);
                 // What the window's own view showed in place is no part of a view that opened
                 // again.
@@ -695,10 +695,10 @@ impl AppWindow {
                 self.page_focus = None;
                 self.page_focus_tries = 0;
             }
-            Lane::Detail => self.detail = Some(view),
+            Level::Detail => self.detail = Some(view),
         }
         self.track_rows();
-        if lane == Lane::Detail && brought == Some(wire::Front::Input) {
+        if level == Level::Detail && brought == Some(wire::Front::Input) {
             // Its Took may come in a later batch: what is typed until then follows the press into
             // it.
             self.opened = Some(self.fired);
@@ -760,25 +760,25 @@ impl AppWindow {
     fn take_rows(&self, message: ToUi) {
         match message {
             ToUi::Rows {
-                lane,
+                level,
                 list,
                 len,
                 start,
                 keys,
                 rows,
             } => {
-                if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
+                if let Some(held) = self.rows.borrow().get(&composed_key(level, &list)) {
                     held.borrow_mut()
                         .rows(len as usize, start as usize, keys, rows);
                 }
             }
             ToUi::RowsChanged {
-                lane,
+                level,
                 list,
                 len,
                 changes,
             } => {
-                if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
+                if let Some(held) = self.rows.borrow().get(&composed_key(level, &list)) {
                     held.borrow_mut().changed(len as usize, changes);
                 }
             }
@@ -824,10 +824,10 @@ impl AppWindow {
         self.structure_dirty = true;
     }
 
-    fn forget_lane(&mut self, lane: Lane) {
-        let prefix = match lane {
-            Lane::Root => None,
-            Lane::Detail => Some(DETAIL),
+    fn forget_level(&mut self, level: Level) {
+        let prefix = match level {
+            Level::Root => None,
+            Level::Detail => Some(DETAIL),
         };
         let ours = |key: &String| match prefix {
             Some(prefix) => key.starts_with(prefix),
@@ -837,8 +837,8 @@ impl AppWindow {
         self.bound.borrow_mut().retain(|key, _| !ours(key));
         self.texts.retain(|key, _| !ours(key));
         self.seqs.retain(|key, _| !ours(key));
-        // The field a press opened for this lane is gone with it: what was typed for it goes to the
-        // resource it was typed into, wherever the lane shows now.
+        // The field a press opened for this level is gone with it: what was typed for it goes to the
+        // resource it was typed into, wherever the level shows now.
         if self.landing.as_ref().is_some_and(ours) {
             self.landing = None;
         }
@@ -846,20 +846,20 @@ impl AppWindow {
 
     fn track_rows(&self) {
         let mut wanted: Vec<Rows> = Vec::new();
-        for (view, lane, prefix) in [
-            (self.root.as_ref(), Lane::Root, ""),
-            (self.detail.as_ref(), Lane::Detail, DETAIL),
+        for (view, level, prefix) in [
+            (self.root.as_ref(), Level::Root, ""),
+            (self.detail.as_ref(), Level::Detail, DETAIL),
         ] {
             let Some(view) = view else { continue };
             for (list, item, heading) in crate::rows::lists(&view.tree) {
-                wanted.push(Rows::new(prefix, lane, &list, item, heading));
+                wanted.push(Rows::new(prefix, level, &list, item, heading));
             }
         }
         // A row a list holds can hold a list of its own — the document of a row held open where
         // it stands — and so can that list's rows.
         let mut at = 0;
         while let Some(rows) = wanted.get(at) {
-            let (lane, prefix, heading) = (rows.lane, rows.prefix, rows.heading.clone());
+            let (level, prefix, heading) = (rows.level, rows.prefix, rows.heading.clone());
             let inner: Vec<(String, String, Option<String>)> = self
                 .rows
                 .borrow()
@@ -874,7 +874,7 @@ impl AppWindow {
                 })
                 .unwrap_or_default();
             for (list, item, heading) in inner {
-                wanted.push(Rows::new(prefix, lane, &list, item, heading));
+                wanted.push(Rows::new(prefix, level, &list, item, heading));
             }
             at = at.saturating_add(1);
         }
@@ -882,13 +882,13 @@ impl AppWindow {
         registry.retain(|key, rows| {
             wanted
                 .iter()
-                .any(|want| &want.key == key && rows.borrow().reads(want.lane, &want.list))
+                .any(|want| &want.key == key && rows.borrow().reads(want.level, &want.list))
         });
         for rows in wanted {
             let kept = registry.entry(rows.key.clone()).or_insert_with(|| {
                 let reader = Rc::new(RefCell::new(Reconciler::sharing(&self.reconciler.borrow())));
                 Rc::new(RefCell::new(RemoteRows::new(
-                    rows.lane,
+                    rows.level,
                     &rows.list,
                     &rows.item,
                     rows.prefix,
@@ -900,14 +900,14 @@ impl AppWindow {
         }
     }
 
-    /// What the bound control `key` of `lane` shows now, as the app sends it: taken unless the
+    /// What the bound control `key` of `level` shows now, as the app sends it: taken unless the
     /// person typed into it since what the app took (`acked`).
-    fn take_bound(&mut self, lane: Lane, key: &str, value: Value, acked: u64) {
-        let key = composed_key(lane, key);
+    fn take_bound(&mut self, level: Level, key: &str, value: Value, acked: u64) {
+        let key = composed_key(level, key);
         self.app_bound.insert(key.clone(), value.clone());
         // The field keeps what the person typed into it while a press was running, while it still
         // shows the resource they typed into.
-        let shows = self.target(lane);
+        let shows = self.target(level);
         // The app sent it before it took every splice the window sent of the field: it is the
         // field as it was before some of the person's typing, which the app still applies after it.
         let before_our_splices = self.seqs.get(&key).is_some_and(|sent| *sent > acked);
@@ -1020,7 +1020,7 @@ impl AppWindow {
     fn compose(&mut self) {
         if self.shape == Shape::Part && self.root.is_none() {
             // A part whose whole view is another app's state has no root of its own: what it shows
-            // is the detail lane's view, keyed as a window's detail view is so a press reaches the
+            // is the detail level's view, keyed as a window's detail view is so a press reaches the
             // view that drew it.
             let Some(detail) = self.detail.as_ref() else {
                 return;
@@ -1256,9 +1256,9 @@ impl AppWindow {
         let (shown, mut sheet) = crate::form::Shown::build(form, &mut reconciler.borrow_mut());
         // A form of a field or two is a popover beside the control that ran it.
         if crate::form::fits_a_popover(form)
-            && let Some((lane, key)) = &form.from
+            && let Some((level, key)) = &form.from
         {
-            sheet.set_anchor(rect_of(self.body.as_ref(), &composed_key(*lane, key)));
+            sheet.set_anchor(rect_of(self.body.as_ref(), &composed_key(*level, key)));
         }
         self.form = Some(shown);
         self.set_body_part(Self::FORM_PART, Box::new(sheet), Fit::hug());
@@ -1308,15 +1308,15 @@ impl AppWindow {
         if std::mem::take(&mut self.input) {
             self.follow_focus();
         }
-        let wanted: Vec<(Lane, String, crate::rows::Asked)> = self
+        let wanted: Vec<(Level, String, crate::rows::Asked)> = self
             .rows
             .borrow()
             .values()
             .filter_map(|rows| rows.borrow_mut().take_wanted())
             .collect();
-        for (lane, list, asked) in wanted {
+        for (level, list, asked) in wanted {
             self.out.push(ToApp::Rows {
-                lane,
+                level,
                 list,
                 start: u32::try_from(asked.range.start).unwrap_or(u32::MAX),
                 end: u32::try_from(asked.range.end).unwrap_or(u32::MAX),
@@ -1352,7 +1352,7 @@ impl AppWindow {
             return;
         }
         self.out.push(ToApp::Focus {
-            at: now.as_deref().map(lane_of),
+            at: now.as_deref().map(level_of),
         });
         self.focus = now;
     }
@@ -1385,18 +1385,18 @@ impl AppWindow {
         }
         let message = match event {
             UiEvent::Press(key) => {
-                let (lane, key) = lane_of(&key);
+                let (level, key) = level_of(&key);
                 ToApp::Fire {
-                    lane,
+                    level,
                     key,
                     event: "press".to_owned(),
                     value: None,
                 }
             }
             UiEvent::Fire(key, event, value) => {
-                let (lane, key) = lane_of(&key);
+                let (level, key) = level_of(&key);
                 ToApp::Fire {
-                    lane,
+                    level,
                     key,
                     event,
                     value,
@@ -1411,20 +1411,24 @@ impl AppWindow {
                 None => return,
             },
             UiEvent::Toggle(key, checked) => {
-                let (lane, key) = lane_of(&key);
-                let Some(target) = self.target(lane) else {
+                let (level, key) = level_of(&key);
+                let Some(target) = self.target(level) else {
                     return;
                 };
                 ToApp::Toggle {
-                    lane,
+                    level,
                     target,
                     key,
                     checked,
                 }
             }
             UiEvent::Resolve(key, approve) => {
-                let (lane, key) = lane_of(&key);
-                ToApp::Resolve { lane, key, approve }
+                let (level, key) = level_of(&key);
+                ToApp::Resolve {
+                    level,
+                    key,
+                    approve,
+                }
             }
             UiEvent::Open(resource) => ToApp::Open { resource },
             UiEvent::OpenReference(reference) => ToApp::OpenReference { reference },
@@ -1454,7 +1458,7 @@ impl AppWindow {
     /// a press it was typed after has not run yet; then it waits, like every control that takes
     /// typing ([`Self::hold`]).
     fn bound_text(&mut self, composed: &str, held: Held) -> Option<ToApp> {
-        let (lane, key) = lane_of(composed);
+        let (level, key) = level_of(composed);
         // A control that edits no text (a number, a date) sends the value it now holds: how its
         // edits merge, as its component's description says. A control no component built holds text
         // when what it shows is text.
@@ -1473,9 +1477,9 @@ impl AppWindow {
             let Held::Text { now, .. } = held else {
                 return None;
             };
-            let target = self.target(lane)?;
+            let target = self.target(level)?;
             return Some(ToApp::Edit {
-                lane,
+                level,
                 target,
                 key,
                 text: now,
@@ -1488,18 +1492,18 @@ impl AppWindow {
         // Typing after a press the app has not run yet waits for it: the press may open something
         // else into the field the person types into.
         if self.fired > self.took {
-            self.hold(composed, lane, held, shown);
+            self.hold(composed, level, held, shown);
             return None;
         }
         match held {
             Held::Text { base, now } => self.splice(composed, &base, now),
             Held::Rich { now, .. } => {
-                let target = self.target(lane)?;
+                let target = self.target(level)?;
                 self.bound
                     .borrow_mut()
                     .insert(composed.to_owned(), Value::Rich(now.clone()));
                 Some(ToApp::EditRich {
-                    lane,
+                    level,
                     target,
                     key,
                     rich: now,
@@ -1508,12 +1512,12 @@ impl AppWindow {
         }
     }
 
-    /// Hold what the person typed in the bound control `composed` of `lane` until the presses the
+    /// Hold what the person typed in the bound control `composed` of `level` until the presses the
     /// app has not run yet did, showing `shown` meanwhile: what they typed goes where the keyboard
     /// would have been had the press run at once.
-    fn hold(&mut self, composed: &str, lane: Lane, held: Held, shown: Value) {
+    fn hold(&mut self, composed: &str, level: Level, held: Held, shown: Value) {
         let fired = self.fired;
-        let target = self.target(lane);
+        let target = self.target(level);
         let same_field =
             |typed: &Typed| typed.key.as_deref() == Some(composed) && typed.target == target;
         // The person moved on to another field meanwhile: what they typed before stays where they
@@ -1578,8 +1582,8 @@ impl AppWindow {
             .detail
             .as_ref()
             .and_then(|detail| first_field(&detail.tree))
-            .map(|field| (composed_key(Lane::Detail, &field.key), Lane::Detail));
-        let (field, lane) = if let Some(page) = page {
+            .map(|field| (composed_key(Level::Detail, &field.key), Level::Detail));
+        let (field, level) = if let Some(page) = page {
             page
         } else {
             let Some(root) = self.root.as_ref() else {
@@ -1588,18 +1592,18 @@ impl AppWindow {
             let Some(field) = content_nodes(&root.tree).into_iter().find_map(first_field) else {
                 return;
             };
-            (field.key.clone(), Lane::Root)
+            (field.key.clone(), Level::Root)
         };
         // What was typed with no field focused after the press the app just ran, not after a later
         // one.
         let took = self.took;
-        let target = self.target(lane);
+        let target = self.target(level);
         // What the field the keyboard goes to holds: a body's rich text typed into a title is
         // words, and the title takes words.
         let rich = self
             .built
             .as_ref()
-            .and_then(|built| node_of_key(built, lane_of(&field).1.as_str()))
+            .and_then(|built| node_of_key(built, level_of(&field).1.as_str()))
             .is_some_and(|node| node.kind == crate::adapter::kind("RichInput"));
         // The fields the typing leaves show what the app has of them again, not the words that went
         // elsewhere.
@@ -1642,7 +1646,7 @@ impl AppWindow {
         for key in left {
             self.show_bound_again(&key);
         }
-        if lane == Lane::Root && self.detail.is_none() {
+        if level == Level::Root && self.detail.is_none() {
             self.page_focus = Some(field.clone());
             self.page_focus_tries = 0;
         }
@@ -1672,8 +1676,8 @@ impl AppWindow {
     /// press opened, showing it there as they type: it goes when the keyboard arrives.
     fn hold_for_landing(&mut self, field: &str, text: &str) {
         let after = self.fired;
-        let (lane, _) = lane_of(field);
-        let target = self.target(lane);
+        let (level, _) = level_of(field);
+        let target = self.target(level);
         if let Some(typed) = self
             .typed
             .back_mut()
@@ -1991,7 +1995,7 @@ impl AppWindow {
         if typed.moved && typed.sent.is_none() {
             typed.sent = self.bound.borrow().get(&key).cloned();
         }
-        let (lane, field) = lane_of(&key);
+        let (level, field) = level_of(&key);
         // The resource the field belongs to, when it is the one the person typed into: the item the
         // press before their typing showed, where the window draws the page itself.
         let target = self.field_target_for(&key, Some(typed.after));
@@ -2010,24 +2014,24 @@ impl AppWindow {
             },
         };
         if still_shown && let Some(target) = target {
-            self.send_typed_into_field(&key, lane, field, target, &typed.held, &shown);
+            self.send_typed_into_field(&key, level, field, target, &typed.held, &shown);
             return;
         }
-        // The lane moved on to another resource: what they typed goes to the one it was typed into,
-        // and the field the lane shows now keeps what it shows.
+        // The level moved on to another resource: what they typed goes to the one it was typed into,
+        // and the field the level shows now keeps what it shows.
         let Some(target) = typed.target else {
             return;
         };
-        let message = self.typed_elsewhere(&key, lane, field, target, &typed.held, &shown);
+        let message = self.typed_elsewhere(&key, level, field, target, &typed.held, &shown);
         self.out.push(message);
     }
 
-    /// Send what the person typed in `key` of `lane` into the field the lane shows now (`target`),
+    /// Send what the person typed in `key` of `level` into the field the level shows now (`target`),
     /// against what it shows (`shown`).
     fn send_typed_into_field(
         &mut self,
         key: &str,
-        lane: Lane,
+        level: Level,
         field: String,
         target: ResourceRef,
         held: &Held,
@@ -2041,7 +2045,7 @@ impl AppWindow {
                     .borrow_mut()
                     .insert(key.to_owned(), Value::Rich(rich.clone()));
                 self.out.push(ToApp::EditRich {
-                    lane,
+                    level,
                     target,
                     key: field,
                     rich,
@@ -2062,14 +2066,14 @@ impl AppWindow {
                     .borrow_mut()
                     .insert(key.to_owned(), Value::Rich(now.clone()));
                 self.out.push(ToApp::EditRich {
-                    lane,
+                    level,
                     target,
                     key: field,
                     rich: now.clone(),
                 });
             }
             (_, Held::Text { now, .. }) => self.out.push(ToApp::Edit {
-                lane,
+                level,
                 target,
                 key: field,
                 text: now.clone(),
@@ -2093,12 +2097,12 @@ impl AppWindow {
         )
     }
 
-    /// What the person typed into the field of a resource the lane left: an edit of the resource
+    /// What the person typed into the field of a resource the level left: an edit of the resource
     /// they typed into.
     fn typed_elsewhere(
         &self,
         key: &str,
-        lane: Lane,
+        level: Level,
         field: String,
         target: ResourceRef,
         held: &Held,
@@ -2107,13 +2111,13 @@ impl AppWindow {
         let (show_at, delete, insert) = Self::place_of(held, shown);
         match (held, shown) {
             (Held::Rich { base, .. }, _) => ToApp::EditRich {
-                lane,
+                level,
                 target,
                 key: field,
                 rich: rich_spliced_at(base, show_at, delete, &insert),
             },
             (Held::Text { .. }, Value::Rich(before)) => ToApp::EditRich {
-                lane,
+                level,
                 target,
                 key: field,
                 rich: rich_spliced_at(before, show_at, delete, &insert),
@@ -2127,7 +2131,7 @@ impl AppWindow {
                     splice_text(&before, (show_at, show_at.saturating_add(delete)), &insert);
                 let (at, delete, insert) = splice_between(&before, &typed_text);
                 ToApp::Splice {
-                    lane,
+                    level,
                     target,
                     key: field,
                     seq: self.seqs.get(key).copied().unwrap_or_default(),
@@ -2168,8 +2172,8 @@ impl AppWindow {
 
     /// The splice of the bound text control `composed` from `before` to `text`, which it now shows.
     fn splice(&mut self, composed: &str, before: &str, text: String) -> Option<ToApp> {
-        let (lane, key) = lane_of(composed);
-        // Of the resource the field belongs to: the app applies it there, whatever the lane shows
+        let (level, key) = level_of(composed);
+        // Of the resource the field belongs to: the app applies it there, whatever the level shows
         // by the time it takes it.
         let target = self.field_target(composed)?;
         let (at, delete, insert) = splice_between(before, &text);
@@ -2183,7 +2187,7 @@ impl AppWindow {
             .insert(composed.to_owned(), Value::Text(text.clone()));
         self.texts.insert(composed.to_owned(), text);
         Some(ToApp::Splice {
-            lane,
+            level,
             target,
             key,
             seq,
@@ -2193,10 +2197,10 @@ impl AppWindow {
         })
     }
 
-    fn target(&self, lane: Lane) -> Option<ResourceRef> {
-        match lane {
-            Lane::Root => self.root.as_ref(),
-            Lane::Detail => self.detail.as_ref(),
+    fn target(&self, level: Level) -> Option<ResourceRef> {
+        match level {
+            Level::Root => self.root.as_ref(),
+            Level::Detail => self.detail.as_ref(),
         }
         .map(|view| view.target.clone())
     }
@@ -2295,10 +2299,10 @@ impl AppWindow {
     }
 }
 
-fn composed_key(lane: Lane, key: &str) -> String {
-    match lane {
-        Lane::Root => key.to_owned(),
-        Lane::Detail => format!("{DETAIL}{key}"),
+fn composed_key(level: Level, key: &str) -> String {
+    match level {
+        Level::Root => key.to_owned(),
+        Level::Detail => format!("{DETAIL}{key}"),
     }
 }
 
@@ -2323,10 +2327,10 @@ fn rect_of(widget: &dyn Widget, key: &str) -> Option<ui::kurbo::Rect> {
         .find_map(|child| rect_of(child, key))
 }
 
-fn lane_of(key: &str) -> (Lane, String) {
+fn level_of(key: &str) -> (Level, String) {
     match key.strip_prefix(DETAIL) {
-        Some(own) => (Lane::Detail, own.to_owned()),
-        None => (Lane::Root, key.to_owned()),
+        Some(own) => (Level::Detail, own.to_owned()),
+        None => (Level::Root, key.to_owned()),
     }
 }
 
@@ -2355,11 +2359,11 @@ fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
     if !one_line(field) || field.events.contains_key("submit") {
         return None;
     }
-    let lane = lane_of(key).0;
+    let level = level_of(key).0;
     nodes
         .get(at.saturating_add(1)..)?
         .iter()
-        .find(|node| takes_typing(node) && lane_of(&node.key).0 == lane)
+        .find(|node| takes_typing(node) && level_of(&node.key).0 == level)
         .map(|node| node.key.clone())
 }
 
@@ -2671,9 +2675,9 @@ impl AppWindow {
             self.root.as_ref().map(|view| view.tree.key.clone()),
             self.detail
                 .as_ref()
-                .map(|view| composed_key(Lane::Detail, &view.tree.key)),
+                .map(|view| composed_key(Level::Detail, &view.tree.key)),
         ];
-        for (lane, key) in [Lane::Root, Lane::Detail].into_iter().zip(keys) {
+        for (level, key) in [Level::Root, Level::Detail].into_iter().zip(keys) {
             let Some(rect) = key
                 .and_then(|key| keyed(self.body.as_ref(), &key).map(Widget::get_rect))
                 .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
@@ -2684,9 +2688,9 @@ impl AppWindow {
                 rect.width() as f32 / self.rem,
                 rect.height() as f32 / self.rem,
             );
-            let told = match lane {
-                Lane::Root => &mut self.root_space,
-                Lane::Detail => &mut self.detail_space,
+            let told = match level {
+                Level::Root => &mut self.root_space,
+                Level::Detail => &mut self.detail_space,
             };
             let moved = told.is_none_or(|(width, height)| {
                 (width - space.0).abs() >= SPACE_STEP_REM
@@ -2695,7 +2699,7 @@ impl AppWindow {
             if moved {
                 *told = Some(space);
                 self.out.push(ToApp::Space {
-                    lane,
+                    level,
                     width: space.0,
                     height: space.1,
                 });
@@ -2744,7 +2748,7 @@ impl AppWindow {
         if !shell.events.contains_key(SEARCH) {
             return;
         }
-        let (lane, key) = lane_of(&shell.key);
+        let (level, key) = level_of(&shell.key);
         if text.is_empty() {
             self.search_total = None;
         } else if self.search_total.is_none() {
@@ -2752,7 +2756,7 @@ impl AppWindow {
             self.search_total = self.shown_rows();
         }
         self.out.push(ToApp::Fire {
-            lane,
+            level,
             key,
             event: SEARCH.to_owned(),
             value: Some(Value::text(text)),

@@ -129,7 +129,7 @@ impl TopBarChrome {
         };
         let height = ChipFace::height(theme);
         let right = right_x - f64::from(theme.tokens.spacing.s2);
-        let left_limit = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
+        let left_limit = self.center_area.x1 + f64::from(theme.tokens.spacing.s4);
         let width =
             ChipFace::intrinsic_width(&shown.text, ChipLead::None, false, text_renderer, theme)
                 .min(right - left_limit);

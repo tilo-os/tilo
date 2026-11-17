@@ -318,25 +318,25 @@ pub(super) async fn join_route(
         tracing::warn!(%error, "collab: late-join snapshot request failed");
     }
 
-    // Each of these lanes is optional: without it the channel runs, and the
+    // Each of these queues is optional: without it the channel runs, and the
     // warn the `map_err` closure writes says which feature it lost and why.
     let checks = super::super::approved_checks::register(channel_id.clone(), channel.clone())
         .map_err(|error| {
-            tracing::warn!(%error, "collab: approved project check lane unavailable");
+            tracing::warn!(%error, "collab: approved project check queue unavailable");
             error
         })
         .ok();
     let moderation =
         super::super::external_moderation::register(channel_id.clone(), channel.clone())
             .map_err(|error| {
-                tracing::warn!(%error, "collab: external moderation lane unavailable");
+                tracing::warn!(%error, "collab: external moderation queue unavailable");
                 error
             })
             .ok();
     let attribution =
-        super::super::write_attribution_lane::register(channel_id.clone(), channel.clone())
+        super::super::write_attribution_endpoint::register(channel_id.clone(), channel.clone())
             .map_err(|error| {
-                tracing::warn!(%error, "collab: write attribution lane unavailable");
+                tracing::warn!(%error, "collab: write attribution queue unavailable");
                 error
             })
             .ok();

@@ -85,7 +85,7 @@ ROLE_PAGE_TAB_LIST = 38
 DOCUMENT_ROLES = frozenset({82, 92, 93, 94, 95, 96})
 LAUNCH_TIMEOUT_SECONDS = 120
 PAGE_TITLE = "Tilo browser engine check"
-# Typing the address and starting the engine, under emulation on some lanes.
+# Typing the address and starting the engine, under emulation on some jobs.
 PAGE_TIMEOUT_SECONDS = 300
 BROWSER_TREE_NODE_LIMIT = 512
 

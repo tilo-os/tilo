@@ -5,13 +5,13 @@ type Card {
     title: Text
 }
 
-/// One lane of the board: its heading and its cards, in order.
+/// One list of the board: its heading and its cards, in order.
 type Column {
     title: Text
     cards: Collection<Card>
 }
 
-/// A board whose lanes hold cards, some as many as a pane shows and some more.
+/// A board whose lists hold cards, some as many as a pane shows and some more.
 type Board {
     columns: Collection<Column>
 }
@@ -20,7 +20,7 @@ root Board
 
 default view board for Board
 
-/// The board as an app shows one: lanes in a page that is the window's, so the lanes are as
+/// The board as an app shows one: lists in a page that is the window's, so the lists are as
 /// tall as the pane and their cards scroll under the heading that offers to add another.
 view board(b: Board) {
     std.page(b, canvas: true, fill: true) {
@@ -28,7 +28,7 @@ view board(b: Board) {
             ui.Board {
                 for col in b.columns {
                     let title: Option<Text> = if col.title == "" { .none } else { .some(col.title) }
-                    ui.BoardLane(
+                    ui.BoardList(
                         col,
                         title: title,
                         count: col.cards.len(),
@@ -46,9 +46,9 @@ view board(b: Board) {
     }
 }
 
-/// A board nobody named: a project with no sections, whose one lane heads nothing, so the
+/// A board nobody named: a project with no sections, whose one list heads nothing, so the
 /// cards start where a list's first row does.
-scenario "a board no lane heads" {
+scenario "a board no list heads" {
     let b = root Board
     let loose = b.columns.insert(Column(title: ""))
     loose.cards.insert(Card(title: "Order boxes and tape"))
@@ -61,8 +61,8 @@ view card_row(card: Card) {
     row(card.title)
 }
 
-/// A board of three lanes: six cards in the first, which a window shows at once; one in the
-/// second; and thirty in the third, more than a lane has room for.
+/// A board of three lists: six cards in the first, which a window shows at once; one in the
+/// second; and thirty in the third, more than a list has room for.
 scenario "a board" {
     let b = root Board
     let todo = b.columns.insert(Column(title: "To do"))

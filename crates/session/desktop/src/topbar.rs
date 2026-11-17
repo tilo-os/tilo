@@ -133,7 +133,7 @@ fn bar_style(presence: TopBarPresence, theme: &Theme) -> Style {
     }
 }
 
-/// Below this width the bar narrows its centre lane to the time alone,
+/// Below this width the bar narrows its centre area to the time alone,
 /// leaving the rest to the workspace name and the people beside it.
 const NARROW_MENU_BAR_PX: f64 = 720.0;
 
@@ -144,7 +144,7 @@ const BAR_CONTROL_LOGICAL: f32 =
     ui::tokens::Metrics::BASE.bar_control_height - ui::tokens::Spacing::BASE.s1;
 const BAR_CONTROL_PX: f64 = BAR_CONTROL_LOGICAL as f64;
 
-/// Inset of a lane-filling centre widget (the system monitor, the calendar, a live activity) from
+/// Inset of an area-filling centre widget (the system monitor, the calendar, a live activity) from
 /// its pill's ends, the same each side so the content is centred in the band.
 const CENTER_INSET_PX: f64 = 12.0;
 
@@ -183,7 +183,7 @@ struct CacheFingerprint {
     activity_headline: Option<String>,
     activity_unread: usize,
     activity_visible: bool,
-    /// Whether the middle lane is the following banner's rather than the clock's.
+    /// Whether the middle area is the following banner's rather than the clock's.
     following: bool,
     time_bucket: u64,
     /// Quantised, not [`SystemStatus`] itself — it carries an `f32` volume that would never match
@@ -381,7 +381,7 @@ pub struct TopBarChrome {
     /// How many of the people present the last draw stood a face for: the rest the "+N" badge
     /// counts. The bar stands as many as it has room for, the one this person follows first.
     faces_shown: usize,
-    /// Whether this person's view follows someone here: the bar's middle lane then belongs to the
+    /// Whether this person's view follows someone here: the bar's middle area then belongs to the
     /// banner that says whose view it is and offers Stop, so the clock stands aside rather than
     /// under it.
     following: bool,
@@ -423,7 +423,7 @@ pub struct TopBarChrome {
     tilo_mark: Option<bool>,
     /// Whether the device the bar is drawn on shows the time itself at phone width, as a phone
     /// does above a web page ([`TopBarChrome::with_device_clock`]): the bar's clock then gives way
-    /// there, and the workspace name gets its lane.
+    /// there, and the workspace name gets its area.
     device_clock: bool,
     /// The person's own avatar, as last painted.
     own_avatar_rect: Rect,
@@ -496,15 +496,15 @@ pub struct TopBarChrome {
     /// it.
     with_window: ui::motion::Presence,
     /// The centre selector's width following its content (the time, or a live activity filling the
-    /// lane) on the standard expand/collapse motion (`ui::motion::Extent`), so the selector grows
-    /// into the lane and shrinks back to the time rather than jumping.
+    /// area) on the standard expand/collapse motion (`ui::motion::Extent`), so the selector grows
+    /// into the area and shrinks back to the time rather than jumping.
     center_width: ui::motion::Extent,
     /// The centre selector as painted and hit-tested: as wide as its content needs, never wider
-    /// than [`Self::center_lane`].
+    /// than [`Self::center_area`].
     center_rect: Rect,
-    /// The centre lane the bar reserves for the selector (see [`Self::center_band_width`]). Its
-    /// neighbours lay out against the lane, so they hold still while the selector changes widget.
-    center_lane: Rect,
+    /// The centre area the bar reserves for the selector (see [`Self::center_band_width`]). Its
+    /// neighbours lay out against the area, so they hold still while the selector changes widget.
+    center_area: Rect,
     /// winit delivers position with `CursorMoved` but not `MouseInput`,
     /// so it's cached here for click hit-testing.
     last_cursor: Option<Point>,
@@ -609,7 +609,7 @@ impl TopBarChrome {
             with_window: ui::motion::Presence::opened(),
             center_width: ui::motion::Extent::default(),
             center_rect: Rect::ZERO,
-            center_lane: Rect::ZERO,
+            center_area: Rect::ZERO,
             last_cursor: None,
             focused: false,
             focused_control: None,
@@ -819,7 +819,7 @@ impl TopBarChrome {
     /// [`Self::place_session_clusters`] left it. It stands left of everything else there: the
     /// faces, the people button and the notices keep their places, and the ask takes the room left
     /// of them — the band's own, or, where that room cannot hold its words, the band itself — and
-    /// waits as the avatar's dot where even the band cannot. Laid out after the clock, whose lane
+    /// waits as the avatar's dot where even the band cannot. Laid out after the clock, whose area
     /// it may take.
     fn place_ask_beside(
         &mut self,
@@ -862,15 +862,15 @@ impl TopBarChrome {
         }
         let left = self.ws_pill_rect.x1.max(self.ws_strip_rect.x1) + gap;
         if self.center_rect.x0 + dx < left {
-            // Its lane closes up where the names end: what yields to the clock (the ask) still
+            // Its area closes up where the names end: what yields to the clock (the ask) still
             // stops there.
-            self.center_lane = Rect::new(left, self.center_lane.y0, left, self.center_lane.y1);
+            self.center_area = Rect::new(left, self.center_area.y0, left, self.center_area.y1);
             self.center_rect = Rect::ZERO;
             return None;
         }
         let moved = Affine::translate((dx, 0.0));
         self.center_rect = moved.transform_rect_bbox(self.center_rect);
-        self.center_lane = moved.transform_rect_bbox(self.center_lane);
+        self.center_area = moved.transform_rect_bbox(self.center_area);
         Some(dx)
     }
 
@@ -1592,8 +1592,8 @@ impl Widget for TopBarChrome {
                 node
             })
             .collect();
-        // The time: read, not pressed. While following, the middle lane is the banner's, and where
-        // the device shows the time itself the lane stands empty: no time stands in it then, so a
+        // The time: read, not pressed. While following, the middle area is the banner's, and where
+        // the device shows the time itself the area stands empty: no time stands in it then, so a
         // reader is not told one the person cannot see.
         if !self.following && !self.clock_gives_way() {
             children.push(

@@ -1,6 +1,6 @@
 //! Render-friendly data model for the git client, the single source the UI draws
 //! from: a flat, cloneable description of the working state, a selected file's
-//! diff, the history with its lanes, and the side panels. It is decoupled from
+//! diff, the history with its columns, and the side panels. It is decoupled from
 //! `git2` — [`crate::repo`] fills it from a repository and the sample fixture fills
 //! it for screenshots — and nothing here performs IO.
 
@@ -157,7 +157,7 @@ impl FileDiff {
     }
 }
 
-/// A node in the commit graph: `lane` is the column its dot sits in, and `parents` name the commits
+/// A node in the commit graph: `column` is the column its dot sits in, and `parents` name the commits
 /// its edges connect.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct Commit {
@@ -170,7 +170,7 @@ pub struct Commit {
     pub time: i64,
     pub parents: Vec<String>,
     pub refs: Vec<RefLabel>,
-    pub lane: usize,
+    pub column: usize,
     pub files: Vec<FileChange>,
 }
 

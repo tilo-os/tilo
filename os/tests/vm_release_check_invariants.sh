@@ -241,7 +241,7 @@ case "$(uname -m)" in
 esac
 if "$repo/os/dev/assert-native-arch.sh" "$(uname -m)" >/dev/null \
   && ! "$repo/os/dev/assert-native-arch.sh" "$wrong_arch" >/dev/null 2>&1; then
-  ok 'native architecture assertion accepts the host and rejects a mismatched lane'
+  ok 'native architecture assertion accepts the host and rejects a mismatched job'
 else
   bad 'native architecture assertion does not fail closed'
 fi

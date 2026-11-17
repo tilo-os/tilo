@@ -462,7 +462,7 @@ inputs = ["dist/", "os/registry-runtime-publisher.hex", "tools/ci/publish/cli-re
 suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/ci/tests/test_failed_rpm_retention.py",
-  "dist/ci/tests/test_package_lane.py",
+  "dist/ci/tests/test_package_job.py",
   "dist/session/tests/vm-e2e-exit-status.py",
   "dist/session/tests/vm-e2e-input-import.py",
   "dist/session/tests/test-files-workspace.py",
@@ -506,7 +506,7 @@ inputs = [
   "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
   # tools/perf/test_compare.py and test_ab.py hold the scheduled groups, their
   # benchmarks, and vm-acceptance-perf's groups equal to the
-  # budgets' lanes and the A/B groups.
+  # budgets' jobs and the A/B groups.
   "tools/ci/perf-scheduled.sh", "tools/ci/perf-compare.sh",
   # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the check's SLOs
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
@@ -593,7 +593,7 @@ reason = "launches the repository's own Chrome through tools/web/chrome.mjs to m
 
 [[unrequired]]
 suite = "crates/agent/agent-session/tests/mounted_resource/accounts.test.mjs"
-reason = "requires live Chromium and browser storage; executed by the required app SDK browser lane after provisioning Chromium, not the hermetic ci-fast image"
+reason = "requires live Chromium and browser storage; executed by the required app SDK browser job after provisioning Chromium, not the hermetic ci-fast image"
 
 [[group]]
 name = "browser-runtime-web"

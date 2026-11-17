@@ -376,7 +376,7 @@ impl Surface {
         let mut out = Vec::new();
         if let Some(view) = self
             .instance
-            .view(tilo_render_protocol::patch::Lane::Detail)
+            .view(tilo_render_protocol::patch::Level::Detail)
         {
             walk(view.borrow().tree(), kind, &mut out);
         }
@@ -387,7 +387,7 @@ impl Surface {
     pub(crate) fn press(&mut self, key: &str) {
         let view = self
             .instance
-            .view(tilo_render_protocol::patch::Lane::Detail)
+            .view(tilo_render_protocol::patch::Level::Detail)
             .expect("the view is open");
         view.borrow().press(key).expect("the press runs");
         self.exchange();

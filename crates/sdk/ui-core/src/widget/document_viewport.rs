@@ -605,9 +605,9 @@ impl ViewportState {
         }
     }
 
-    /// Where the scroll bars paint over the content without moving with it: each bar's lane
+    /// Where the scroll bars paint over the content without moving with it: each bar's gutter
     /// (screen space).
-    pub fn scrollbar_lanes(&self) -> Vec<Rect> {
+    pub fn scrollbar_gutters(&self) -> Vec<Rect> {
         [self.v_track(), self.h_track()]
             .into_iter()
             .flatten()

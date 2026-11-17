@@ -787,7 +787,7 @@ mod tests {
                 let mode = if path.is_dir() { 0o700 } else { 0o600 };
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
             }
-            // Bound the child so a wedged fixture fails the lane instead of
+            // Bound the child so a wedged fixture fails the job instead of
             // stalling it; timeout exits 124 and the status check below fails.
             let mut child = std::process::Command::new("timeout");
             child

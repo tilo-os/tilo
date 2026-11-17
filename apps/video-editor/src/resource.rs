@@ -338,7 +338,7 @@ impl Project {
     /// Add an empty track.
     #[action]
     pub fn add_track(&mut self, #[param("Video or audio")] kind: TrackKind) {
-        self.new_lane(kind);
+        self.new_track(kind);
     }
 
     /// Put a track's gain and pan back to unity and centre.
@@ -351,9 +351,9 @@ impl Project {
         Ok(())
     }
 
-    /// Bring every lane named down by the same amount, keeping the balance.
+    /// Bring every track named down by the same amount, keeping the balance.
     #[action]
-    pub fn trim_lanes(
+    pub fn trim_tracks(
         &mut self,
         #[param("The tracks to bring down")] tracks: Vec<Id>,
         #[param("Decibels to bring each down by")] db: f64,
@@ -366,10 +366,10 @@ impl Project {
         if !(db.is_finite() && headroom.is_finite()) {
             return Err(Refusal::new("decibels are finite numbers"));
         }
-        let lanes = tracks.iter().map(uuid).collect::<Result<Vec<_>, _>>()?;
+        let tracks = tracks.iter().map(uuid).collect::<Result<Vec<_>, _>>()?;
         // Negative headroom would leave the mix clipping, which is what this
         // exists to end.
-        let trimmed = self.lanes_trimmed_by(&lanes, db + headroom.max(0.0));
+        let trimmed = self.tracks_trimmed_by(&tracks, db + headroom.max(0.0));
         if trimmed.is_empty() {
             return Err(Refusal::new("nothing to trim"));
         }

@@ -11,24 +11,24 @@ flags, defaults, value parsing, dependencies, and diagnostic caveats. Historic
 measurements belong in version control; they are not evidence for the current
 checkout.
 
-Current results come from the scheduled performance lane, not from this page.
+Current results come from the scheduled performance job, not from this page.
 Each benchmark writes records with `tools/perf/record.py`, and the records are
 stored in the `tilo-perf-results` package. See
 [Performance results](measurements/performance.md) for how a benchmark
-such as `ui-perf` joins that lane.
+such as `ui-perf` joins that job.
 
 ## Where this runs
 
-`scripts/perf/render_bench.py` runs `ui-perf` the same way in each lane. Every
-lane starts with the pixel-equivalence preflight below, and a lane whose
+`scripts/perf/render_bench.py` runs `ui-perf` the same way in each job. Every
+job starts with the pixel-equivalence preflight below, and a job whose
 preflight fails records nothing.
 
-| Lane | When | What it checks |
+| Job | When | What it checks |
 |---|---|---|
 | Counters | By hand, on changes to `crates/sdk/ui-core`, the vendored renderer stack (`vello*`, `wgpu*`, `cosmic-text`) or this harness. It is not a required check. | `render_bench.py counters`: the 4K redraw check's allocator calls and bytes per redraw and its raster pixels per redraw (200 events), and the no-redraw check's allocations per 1,000 events (100,000 events). It uses the budgets below and never compares a clock. |
 | The performance run's `render` group (`tools/ci/perf-scheduled.sh render`) | When the performance run is run | `render_bench.py timing`: `render.ui.frame_us.4k` (redrawing frames of 1,000 dashboard events), then the same counters. |
 
-Both lanes run on the shared `runner` class, which has no GPU. Lavapipe
+Both jobs run on the shared `runner` class, which has no GPU. Lavapipe
 rasterises on the CPU, so the nightly records carry `renderer=lavapipe` and are
 compared only with each other. They follow regressions and never support a
 4K/144 Hz claim.

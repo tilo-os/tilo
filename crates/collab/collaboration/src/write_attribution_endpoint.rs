@@ -1,4 +1,4 @@
-//! The lane on which an app names the paths it is about to write for one of
+//! The endpoint on which an app names the paths it is about to write for one of
 //! its own invocations, so the host can record the agent behind them
 //! ([`runtime_collab::write_attribution`]). It sends no actor: the host takes
 //! that from its own ownership of the invocation.
@@ -6,7 +6,7 @@ use crate::invocation_scope::WriteAttributionReceipt;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::lane::{Lane, Registration};
+use crate::route_endpoints::{Registration, RouteEndpoints};
 
 const MAX_PENDING: usize = 4;
 
@@ -18,8 +18,8 @@ struct Request {
 
 pub(crate) struct Endpoint(mpsc::Sender<Request>);
 
-/// The routes this kind of lane serves.
-static LANE: Lane<Endpoint> = Lane::new("write attribution");
+/// The routes this kind of endpoint serves.
+static ENDPOINTS: RouteEndpoints<Endpoint> = RouteEndpoints::new("write attribution");
 
 /// Ask the host on `route` to name the agent behind `invocation` as the
 /// cause of the writes to `paths` this app is about to make.
@@ -30,7 +30,7 @@ pub fn enqueue(
 ) -> Result<WriteAttributionReceipt, String> {
     let command = runtime_collab::write_attribution::Request::new(paths);
     command.validate()?;
-    let endpoint = LANE.endpoint(route)?;
+    let endpoint = ENDPOINTS.endpoint(route)?;
     let (reply, receive) = std::sync::mpsc::sync_channel(1);
     endpoint
         .0
@@ -39,18 +39,18 @@ pub fn enqueue(
             invocation,
             reply,
         })
-        .map_err(|_| "write attribution lane unavailable or full")?;
+        .map_err(|_| "write attribution endpoint unavailable or full")?;
     Ok(WriteAttributionReceipt::new(receive))
 }
 
-/// Serve the lane for `route` over `channel` while the registration lives.
+/// Serve the endpoint for `route` over `channel` while the registration lives.
 pub(super) fn register(
     route: String,
     channel: runtime_collab::ChannelHandle,
 ) -> Result<Registration<Endpoint>, String> {
     let (send, mut receive) = mpsc::channel(MAX_PENDING);
     let endpoint = Arc::new(Endpoint(send));
-    LANE.admit(route, &endpoint)?;
+    ENDPOINTS.admit(route, &endpoint)?;
     let worker = tokio::task::spawn_local(async move {
         while let Some(request) = receive.recv().await {
             let result = channel
@@ -67,15 +67,15 @@ pub(super) fn register(
 mod tests {
     use super::*;
 
-    /// A route without the lane, or a request naming no clean path, never
+    /// A route without the endpoint, or a request naming no clean path, never
     /// reaches the host; an unanswered receipt gives up at its deadline.
     #[test]
-    fn requests_need_a_lane_and_clean_paths() {
+    fn requests_need_a_endpoint_and_clean_paths() {
         let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
         assert!(enqueue("no-such-route", invocation, vec!["/var/workspace/a".into()]).is_err());
         let (send, receive) = mpsc::channel(MAX_PENDING);
         let endpoint = Arc::new(Endpoint(send));
-        LANE.admit("files-route".into(), &endpoint).unwrap();
+        ENDPOINTS.admit("files-route".into(), &endpoint).unwrap();
         assert!(enqueue("files-route", invocation, vec!["relative".into()]).is_err());
         let receipt = enqueue("files-route", invocation, vec!["/var/workspace/a".into()]).unwrap();
         drop(receive);

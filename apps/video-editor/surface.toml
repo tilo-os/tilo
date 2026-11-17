@@ -272,7 +272,7 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "trim-lanes"
+id = "trim-tracks"
 kind = "undoable"
 params = [
   { name = "tracks", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },

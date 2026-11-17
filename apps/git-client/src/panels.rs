@@ -325,11 +325,11 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &PanelsInput<'_>) -> Pan
     let s = &theme.tokens.spacing;
     let gutter = f64::from(s.s6);
     let column_gap = f64::from(s.s8);
-    let lane = ui::content_layout::FocusedContentLane::new()
+    let focused = ui::content_layout::FocusedContentArea::new()
         .gutter(gutter)
         .layout(area);
     let two_columns =
-        lane.width() >= 2.0 * f64::from(theme.tokens.metrics.detail_min_width) + column_gap;
+        focused.width() >= 2.0 * f64::from(theme.tokens.metrics.detail_min_width) + column_gap;
     let all = sections(input.model, input.can_create);
     let mut out = PanelsDraw {
         targets: Vec::new(),
@@ -347,18 +347,18 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &PanelsInput<'_>) -> Pan
     );
     let top = area.y0 + gutter - input.scroll;
     let columns: Vec<(Rect, Vec<&SectionRows<'_>>)> = if two_columns {
-        let w = (lane.width() - column_gap) / 2.0;
+        let w = (focused.width() - column_gap) / 2.0;
         let (left, right): (Vec<_>, Vec<_>) = all
             .iter()
             .filter(|section| !section.rows.is_empty() || section.form != SectionForm::None)
             .partition(|section| section.leading);
         vec![
-            (Rect::new(lane.x0, top, lane.x0 + w, area.y1), left),
-            (Rect::new(lane.x1 - w, top, lane.x1, area.y1), right),
+            (Rect::new(focused.x0, top, focused.x0 + w, area.y1), left),
+            (Rect::new(focused.x1 - w, top, focused.x1, area.y1), right),
         ]
     } else {
         vec![(
-            Rect::new(lane.x0, top, lane.x1, area.y1),
+            Rect::new(focused.x0, top, focused.x1, area.y1),
             all.iter()
                 .filter(|section| !section.rows.is_empty() || section.form != SectionForm::None)
                 .collect(),

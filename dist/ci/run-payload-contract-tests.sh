@@ -26,7 +26,7 @@ grep -Fq -- '--env SOURCE_DATE_EPOCH="$source_epoch"' "$package_job"
 grep -Fq -- '--env GITHUB_SHA="$source_revision"' "$package_job"
 test "$(grep -Fc 'source tools/ci/sccache.sh prepare-shell' "$package_job")" -eq 3
 if grep -Fq 'export RUSTC_WRAPPER=/usr/local/bin/sccache' "$package_job"; then
-    echo "package lanes bypass the shared fail-open compiler-cache probe" >&2
+    echo "package jobs bypass the shared fail-open compiler-cache probe" >&2
     exit 1
 fi
 if sed -n '/^fedora-44)/,/^    ;;/p' "$package_job" | grep -Eq '\bgit[[:space:]]'; then
@@ -298,7 +298,7 @@ if "$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$other_arch" >/dev/null 2>&
 fi
 
 # The OS hand-off is deterministic and contains only the native desktop binaries
-# produced by the distro package lane.
+# produced by the distro package job.
 payload_bin=$work/payload-bin
 mkdir -p "$payload_bin" "$work/payload-a" "$work/payload-b"
 for binary in tilo-session tilo-launcher tilo-runtime-mcp tilo-unlock-helper; do

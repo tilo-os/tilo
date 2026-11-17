@@ -1,4 +1,4 @@
-//! [`Board`] as a described component: lanes of cards, a card moved by dragging it (a press and a drag
+//! [`Board`] as a described component: lists of cards, a card moved by dragging it (a press and a drag
 //! with a pointer, a hold and a drag on a touchscreen).
 
 use std::collections::HashMap;
@@ -12,49 +12,49 @@ use crate::widget::{
 
 use super::{Board, BoardDrop};
 
-/// Cards in lanes, side by side: a kanban board, a pipeline, tasks by status.
+/// Cards in lists, side by side: a kanban board, a pipeline, tasks by status.
 #[derive(Component, Default)]
 #[component(name = "Board", role = "Group", label = "name")]
 pub struct BoardProps {
     /// What the board is, for assistive technology.
     pub name: Option<String>,
-    /// The lanes, in order.
+    /// The lists, in order.
     #[component(part(default))]
-    pub lanes: Vec<BoardLaneProps>,
+    pub lists: Vec<BoardListProps>,
 }
 
-/// One lane of a board: a heading and its cards, in order.
+/// One list of a board: a heading and its cards, in order.
 #[derive(Component, Default)]
-#[component(name = "BoardLane", role = "Group", label = "title", presents = "item")]
-pub struct BoardLaneProps {
-    /// The lane's stable key.
+#[component(name = "BoardList", role = "Group", label = "title", presents = "item")]
+pub struct BoardListProps {
+    /// The list's stable key.
     #[component(key)]
     pub key: String,
-    /// The resource the lane stands for: a column, a status.
+    /// The resource the list stands for: a column, a status.
     #[component(positional)]
     pub item: Option<ResourceId>,
-    /// What the lane is called, as its heading.
+    /// What the list is called, as its heading.
     pub title: Option<String>,
-    /// How many cards the lane holds, beside its heading.
+    /// How many cards the list holds, beside its heading.
     pub count: Option<i64>,
-    /// The label of the one action that adds to the lane, at its foot under the cards: "New card".
+    /// The label of the one action that adds to the list, at its foot under the cards: "New card".
     pub action: Option<String>,
     /// The cards, in order.
     #[component(part(default))]
     pub cards: Vec<BoardCardProps>,
-    /// What stands at the lane's foot, under its cards: the entry that adds to the lane.
+    /// What stands at the list's foot, under its cards: the entry that adds to the list.
     #[component(part)]
     pub foot: Option<Element>,
-    /// The lane's action was pressed.
+    /// The list's action was pressed.
     #[component(event)]
     pub act: Event,
-    /// A card was dropped into the lane: carries the card and its place among the lane's other cards, from
+    /// A card was dropped into the list: carries the card and its place among the list's other cards, from
     /// 0.
     #[component(event(value = ResourceId, at = i64))]
     pub drop: Event,
 }
 
-/// One card of a lane: a summary of the resource it stands for, which a press opens.
+/// One card of a list: a summary of the resource it stands for, which a press opens.
 #[derive(Component, Default)]
 #[component(name = "BoardCard", role = "Generic", presents = "item")]
 pub struct BoardCardProps {
@@ -93,21 +93,21 @@ fn read_all<T>(
     Ok(out)
 }
 
-/// A board's lanes: [`BoardLaneProps`] only.
-impl PartType for Vec<BoardLaneProps> {
+/// A board's lists: [`BoardListProps`] only.
+impl PartType for Vec<BoardListProps> {
     const MANY: bool = true;
 
     fn accepts() -> crate::component::Accepts {
-        crate::component::Accepts::Component(BoardLaneProps::NAME.into())
+        crate::component::Accepts::Component(BoardListProps::NAME.into())
     }
 
     fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
-        *self = read_all(source, part, BoardLaneProps::from_source)?;
+        *self = read_all(source, part, BoardListProps::from_source)?;
         Ok(())
     }
 }
 
-/// A lane's cards: [`BoardCardProps`] only.
+/// A list's cards: [`BoardCardProps`] only.
 impl PartType for Vec<BoardCardProps> {
     const MANY: bool = true;
 
@@ -253,8 +253,8 @@ fn show_as_card(widget: &mut dyn Widget, selected: bool, activate: Event) -> boo
     show_as_card(children.remove(0), selected, activate)
 }
 
-struct Lanes {
-    /// Each lane's key, heading, cards and foot, in order.
+struct Lists {
+    /// Each list's key, heading, cards and foot, in order.
     columns: Vec<(
         String,
         Option<Element>,
@@ -265,25 +265,25 @@ struct Lanes {
     items: HashMap<String, ResourceId>,
     /// What lands before each card that takes drops itself.
     before: HashMap<String, Event>,
-    /// Each lane's own drop, with the keys of its cards in order.
-    lane_drops: HashMap<String, (Event, Vec<String>)>,
+    /// Each list's own drop, with the keys of its cards in order.
+    list_drops: HashMap<String, (Event, Vec<String>)>,
 }
 
-fn lanes_of(lanes: Vec<BoardLaneProps>) -> Lanes {
-    // Whether any lane of the board heads itself: a lane nobody named heads nothing, but
-    // keeps a heading's height while a lane beside it has one, so the lanes' cards line up.
-    // On a board no lane heads, no lane keeps it, and the cards start where a list's first
+fn lists_of(lists: Vec<BoardListProps>) -> Lists {
+    // Whether any list of the board heads itself: a list nobody named heads nothing, but
+    // keeps a heading's height while a list beside it has one, so the lists' cards line up.
+    // On a board no list heads, no list keeps it, and the cards start where a list's first
     // row stands.
-    let headed = lanes.iter().any(|lane| lane.title.is_some());
-    let mut built = Lanes {
-        columns: Vec::with_capacity(lanes.len()),
+    let headed = lists.iter().any(|list| list.title.is_some());
+    let mut built = Lists {
+        columns: Vec::with_capacity(lists.len()),
         items: HashMap::new(),
         before: HashMap::new(),
-        lane_drops: HashMap::new(),
+        list_drops: HashMap::new(),
     };
-    for lane in lanes {
-        let BoardLaneProps {
-            key: lane_key,
+    for list in lists {
+        let BoardListProps {
+            key: list_key,
             item: _,
             title,
             count,
@@ -292,7 +292,7 @@ fn lanes_of(lanes: Vec<BoardLaneProps>) -> Lanes {
             foot,
             act,
             drop,
-        } = lane;
+        } = list;
         let named = title.is_some();
         let heading = (named || headed).then(|| {
             let heading = SectionHeader::group(title.unwrap_or_default());
@@ -304,7 +304,7 @@ fn lanes_of(lanes: Vec<BoardLaneProps>) -> Lanes {
         });
         let foot = foot.or_else(|| {
             let label = action?;
-            let button = crate::widget::Button::new(&format!("{lane_key}-act"), &label)
+            let button = crate::widget::Button::new(&format!("{list_key}-act"), &label)
                 .with_icon(Icon::Plus);
             let button = match act {
                 Event::None => button,
@@ -326,24 +326,24 @@ fn lanes_of(lanes: Vec<BoardLaneProps>) -> Lanes {
             order.push(card_key.clone());
             widgets.push((card_key, widget));
         }
-        built.lane_drops.insert(lane_key.clone(), (drop, order));
-        built.columns.push((lane_key, heading, widgets, foot));
+        built.list_drops.insert(list_key.clone(), (drop, order));
+        built.columns.push((list_key, heading, widgets, foot));
     }
     built
 }
 
-fn drop_handler(built: &Lanes) -> Box<dyn FnMut(BoardDrop)> {
-    let Lanes {
+fn drop_handler(built: &Lists) -> Box<dyn FnMut(BoardDrop)> {
+    let Lists {
         columns: _,
         items,
         before,
-        lane_drops,
+        list_drops,
     } = built;
-    let (items, before, lane_drops) = (items.clone(), before.clone(), lane_drops.clone());
+    let (items, before, list_drops) = (items.clone(), before.clone(), list_drops.clone());
     Box::new(
         move |BoardDrop {
                   card,
-                  lane,
+                  list,
                   before: next,
               }| {
             let Some(moved) = items.get(&card) else {
@@ -354,7 +354,7 @@ fn drop_handler(built: &Lanes) -> Box<dyn FnMut(BoardDrop)> {
                 target.fire(Some(moved));
                 return;
             }
-            let Some((drop, order)) = lane_drops.get(&lane) else {
+            let Some((drop, order)) = list_drops.get(&list) else {
                 return;
             };
             let others = order.iter().filter(|key| **key != card);
@@ -372,34 +372,34 @@ impl Described for Board {
     type Props = BoardProps;
 
     fn from_props(key: &str, props: BoardProps) -> Self {
-        let BoardProps { name, lanes } = props;
-        let built = lanes_of(lanes);
+        let BoardProps { name, lists } = props;
+        let built = lists_of(lists);
         let on_drop = drop_handler(&built);
         let mut board = Self::new().with_id(key.to_owned());
         board.name = name;
-        board.set_lanes(built.columns);
+        board.set_lists(built.columns);
         board.set_on_drop(on_drop);
         board
     }
 
     fn set_props(&mut self, props: BoardProps) -> bool {
-        let BoardProps { name, lanes } = props;
-        let shaped: Vec<(String, Vec<String>)> = lanes
+        let BoardProps { name, lists } = props;
+        let shaped: Vec<(String, Vec<String>)> = lists
             .iter()
-            .map(|lane| {
+            .map(|list| {
                 (
-                    lane.key.clone(),
-                    lane.cards.iter().map(|card| card.key.clone()).collect(),
+                    list.key.clone(),
+                    list.cards.iter().map(|card| card.key.clone()).collect(),
                 )
             })
             .collect();
         if !self.holds(&shaped) {
             return false;
         }
-        let built = lanes_of(lanes);
+        let built = lists_of(lists);
         let on_drop = drop_handler(&built);
         self.name = name;
-        self.set_lanes(built.columns);
+        self.set_lists(built.columns);
         self.set_on_drop(on_drop);
         true
     }
@@ -432,21 +432,21 @@ mod tests {
     fn props(queue: &Intents<Fired>) -> BoardProps {
         BoardProps {
             name: Some("Plan".into()),
-            lanes: vec![
-                BoardLaneProps {
+            lists: vec![
+                BoardListProps {
                     key: "todo".into(),
                     title: Some("To do".into()),
                     count: Some(2),
                     cards: vec![card_props(queue, "a"), card_props(queue, "b")],
                     drop: Event::View(Intent::new(queue, "todo", "drop")),
-                    ..BoardLaneProps::default()
+                    ..BoardListProps::default()
                 },
-                BoardLaneProps {
+                BoardListProps {
                     key: "done".into(),
                     title: Some("Done".into()),
                     cards: vec![card_props(queue, "c")],
                     drop: Event::View(Intent::new(queue, "done", "drop")),
-                    ..BoardLaneProps::default()
+                    ..BoardListProps::default()
                 },
             ],
         }
@@ -523,7 +523,7 @@ mod tests {
                 "board",
                 BoardProps {
                     name: Some("Plan".into()),
-                    lanes: vec![BoardLaneProps {
+                    lists: vec![BoardListProps {
                         key: "todo".into(),
                         cards: vec![BoardCardProps {
                             key: "a".into(),
@@ -532,7 +532,7 @@ mod tests {
                             activate: Event::Action(bound),
                             ..BoardCardProps::default()
                         }],
-                        ..BoardLaneProps::default()
+                        ..BoardListProps::default()
                     }],
                 },
             );
@@ -550,8 +550,8 @@ mod tests {
         }
     }
 
-    fn lane(key: &str, keys: &[&str]) -> BoardLaneProps {
-        BoardLaneProps {
+    fn list(key: &str, keys: &[&str]) -> BoardListProps {
+        BoardListProps {
             key: key.into(),
             cards: keys
                 .iter()
@@ -562,7 +562,7 @@ mod tests {
                     ..BoardCardProps::default()
                 })
                 .collect(),
-            ..BoardLaneProps::default()
+            ..BoardListProps::default()
         }
     }
 
@@ -579,25 +579,25 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// Lane headings, measures and card rows of a board.
+        /// List headings, measures and card rows of a board.
         /// Each phase was a test of its own and builds its own fixture.
-        fn a_board_lays_its_lanes_out_like_lists;
+        fn a_board_lays_its_lists_out_like_lists;
 
-        phase a_board_no_lane_heads_starts_its_cards_where_a_list_starts_its_first_row;
-        // A board no lane heads has nothing to line its cards up with: no lane keeps a heading's height,
+        phase a_board_no_list_heads_starts_its_cards_where_a_list_starts_its_first_row;
+        // A board no list heads has nothing to line its cards up with: no list keeps a heading's height,
         // so the first card stands where the first row of a list of the same items does.
         {
             let host = laid_out(BoardProps {
                 name: Some("Loose".into()),
-                lanes: vec![lane("loose", &["a", "b"])],
+                lists: vec![list("loose", &["a", "b"])],
             });
-            let (card, lane) = {
+            let (card, band) = {
                 let root = host.root::<Board>();
-                (root.card_rects(0)[0], root.lane_rects()[0])
+                (root.card_rects(0)[0], root.list_rects()[0])
             };
             assert!(
-                (card.y0 - lane.y0).abs() < 0.5,
-                "no band stands over the cards: {card:?} in a lane from {lane:?}"
+                (card.y0 - band.y0).abs() < 0.5,
+                "no band stands over the cards: {card:?} in a list from {band:?}"
             );
             let list = crate::headless::FrameHarness::for_root(
                 crate::State::new(),
@@ -622,40 +622,40 @@ mod tests {
             assert_eq!(
                 headings(&host.inspection()),
                 0,
-                "no lane of the board heads itself, so no heading row stands over the cards"
+                "no list of the board heads itself, so no heading row stands over the cards"
             );
         }
 
-        phase a_lane_nobody_named_keeps_the_heading_row_of_the_lanes_beside_it;
-        // A lane nobody named keeps a heading's height while a lane beside it has one, so the cards of
-        // every lane line up and the unnamed lane heads nothing.
+        phase a_list_nobody_named_keeps_the_heading_row_of_the_lists_beside_it;
+        // A list nobody named keeps a heading's height while a list beside it has one, so the cards of
+        // every list line up and the unnamed list heads nothing.
         {
-            let mut named = lane("doing", &["c"]);
+            let mut named = list("doing", &["c"]);
             named.title = Some("Doing".into());
             let host = laid_out(BoardProps {
                 name: Some("Plan".into()),
-                lanes: vec![lane("loose", &["a"]), named],
+                lists: vec![list("loose", &["a"]), named],
             });
             let (loose, doing, top) = {
                 let root = host.root::<Board>();
                 (
                     root.card_rects(0)[0],
                     root.card_rects(1)[0],
-                    root.lane_rects()[0].y0,
+                    root.list_rects()[0].y0,
                 )
             };
             assert!(
                 (loose.y0 - doing.y0).abs() < 0.5,
-                "the lanes' cards line up: {loose:?} against {doing:?}"
+                "the lists' cards line up: {loose:?} against {doing:?}"
             );
             assert!(
                 loose.y0 > top,
-                "the headings stand over the cards: {loose:?} in a lane from {top}"
+                "the headings stand over the cards: {loose:?} in a list from {top}"
             );
             assert_eq!(
                 headings(&host.inspection()),
                 2,
-                "the unnamed lane keeps the heading row of the lane beside it"
+                "the unnamed list keeps the heading row of the list beside it"
             );
         }
 
@@ -663,7 +663,7 @@ mod tests {
         {
             let mut props = props(&Intents::default());
             let row = crate::widget::ListRow::new("row", "Measure the new study").meta("Thursday");
-            props.lanes[0].cards[0].body = vec![Box::new(crate::widget::ContextMenuArea::new(
+            props.lists[0].cards[0].body = vec![Box::new(crate::widget::ContextMenuArea::new(
                 Box::new(
                     crate::widget::Container::new()
                         .with_no_padding()
@@ -686,65 +686,65 @@ mod tests {
             );
         }
 
-        phase a_lane_keeps_a_comfortable_measure;
+        phase a_list_keeps_a_comfortable_measure;
         {
             let theme = Theme::dark();
-            let lane = f64::from(Board::lane_width(&theme, 1280.0));
-            assert!((300.0..=340.0).contains(&lane), "a lane reads {lane} wide");
-            // Wider panes leave the extra width open beside the lanes instead of stretching them.
+            let list = f64::from(Board::list_width(&theme, 1280.0));
+            assert!((300.0..=340.0).contains(&list), "a list reads {list} wide");
+            // Wider panes leave the extra width open beside the lists instead of stretching them.
             assert_eq!(
-                Board::lane_width(&theme, 2000.0),
-                Board::lane_width(&theme, 1280.0)
+                Board::list_width(&theme, 2000.0),
+                Board::list_width(&theme, 1280.0)
             );
-            // A pane too narrow for one lane and the board's gutters gives its lane the pane, so
-            // the next lane does not show as a sliver.
+            // A pane too narrow for one list and the board's gutters gives its list the pane, so
+            // the next list does not show as a sliver.
             let narrow = 350.0;
-            assert!((f64::from(Board::lane_width(&theme, narrow)) - (narrow - 48.0)).abs() < 0.5);
+            assert!((f64::from(Board::list_width(&theme, narrow)) - (narrow - 48.0)).abs() < 0.5);
             let least = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
-            assert!(f64::from(Board::lane_width(&theme, least)) >= least);
+            assert!(f64::from(Board::list_width(&theme, least)) >= least);
         }
 
-        phase a_board_in_a_sideways_pane_keeps_its_lanes_a_comfortable_measure;
+        phase a_board_in_a_sideways_pane_keeps_its_lists_a_comfortable_measure;
         {
             let board = Board::from_props("board", props(&Intents::default()));
             let pane = crate::widget::Scrollable::new_horizontal()
                 .with_content_min_viewport_width()
                 .with_child(Box::new(board));
             // The visible width of the pane: 656 wide, a column of the window.
-            let column = crate::widget::Container::new()
+            let window = crate::widget::Container::new()
                 .with_no_padding()
                 .with_width(656.0)
                 .with_child(Box::new(pane));
             let mut host = crate::headless::FrameHarness::for_root(
                 crate::State::new(),
-                column,
+                window,
                 (656, 600),
                 Theme::dark(),
             );
-            let mut column = host.root_mut::<crate::widget::Container>();
-            let mut column_children = crate::widget::Widget::children_mut(&mut *column);
-            let scroll = column_children[0]
+            let mut window = host.root_mut::<crate::widget::Container>();
+            let mut window_children = crate::widget::Widget::children_mut(&mut *window);
+            let scroll = window_children[0]
                 .as_any_mut()
                 .and_then(|any| any.downcast_mut::<crate::widget::Scrollable>())
-                .expect("the column shows the pane");
+                .expect("the window shows the pane");
             let mut pane_children = crate::widget::Widget::children_mut(scroll);
             let board = pane_children[0]
                 .as_any_mut()
                 .and_then(|any| any.downcast_mut::<Board>())
                 .expect("the pane shows the board");
-            let lanes = board.lane_rects();
-            assert_eq!(lanes.len(), 2);
+            let lists = board.list_rects();
+            assert_eq!(lists.len(), 2);
             let theme = Theme::dark();
-            let lane = f64::from(theme.tokens.metrics.board_lane_width);
-            for (index, rect) in lanes.iter().enumerate() {
+            let list = f64::from(theme.tokens.metrics.board_list_width);
+            for (index, rect) in lists.iter().enumerate() {
                 assert!(
-                    (rect.width() - lane).abs() < 0.5,
-                    "lane {index} reads {rect:?}, a comfortable measure {lane} wide"
+                    (rect.width() - list).abs() < 0.5,
+                    "list {index} reads {rect:?}, a comfortable measure {list} wide"
                 );
             }
             assert!(
-                (lanes[1].x1 - lanes[0].x0 - (2.0 * lane + 12.0)).abs() < 0.5,
-                "{lanes:?}"
+                (lists[1].x1 - lists[0].x0 - (2.0 * list + 12.0)).abs() < 0.5,
+                "{lists:?}"
             );
         }
     }
@@ -768,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn a_card_dropped_below_a_lanes_last_card_is_reported_by_the_lane_with_its_place() {
+    fn a_card_dropped_below_a_lists_last_card_is_reported_by_the_list_with_its_place() {
         let queue = Intents::default();
         let mut host = harness(&queue);
         let root = host.root::<Board>();
@@ -789,11 +789,11 @@ mod tests {
     }
 
     #[test]
-    fn where_cards_take_no_drops_the_lane_reports_the_place_among_its_other_cards() {
+    fn where_cards_take_no_drops_the_list_reports_the_place_among_its_other_cards() {
         let queue = Intents::default();
         let mut props = props(&queue);
-        for lane in &mut props.lanes {
-            for card in &mut lane.cards {
+        for list in &mut props.lists {
+            for card in &mut list.cards {
                 card.drop = Event::None;
             }
         }
@@ -807,7 +807,7 @@ mod tests {
         let [a, b] = [root.card_rects(0)[0], root.card_rects(0)[1]];
         let c = root.card_rects(1)[0];
         host.drag_at((b.center().x, b.center().y), (a.center().x, a.y0 + 5.0));
-        // Into the other lane, above its only card.
+        // Into the other list, above its only card.
         let root = host.root::<Board>();
         let a = root.card_rects(0)[0];
         host.drag_at((a.center().x, a.center().y), (c.center().x, c.y0 + 5.0));

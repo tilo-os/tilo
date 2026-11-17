@@ -248,7 +248,7 @@ pub enum FsReply {
     FilesystemStats(Option<DirectoryFilesystemStats>),
     Recoveries(Option<RecoveryPage>),
     Poll(Option<JobPoll>),
-    /// Retired with the retained source's replacement lane; the bytes a reply carries are read only
+    /// Retired with the retained source's replacement path; the bytes a reply carries are read only
     /// by the build that asked for them. Kept at their places so no other reply moves.
     RetiredReplacementObservation,
     RetiredPendingObservation,

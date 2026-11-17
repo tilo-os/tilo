@@ -56,7 +56,7 @@ impl TopBarChrome {
         self.face_rects.get(drawn).copied()
     }
 
-    /// Whether this bar is a phone's: its middle lane is the time alone (or the folded banner of
+    /// Whether this bar is a phone's: its middle area is the time alone (or the folded banner of
     /// following someone), and it has room beside the people button for one face.
     pub(super) fn phone_wide(&self) -> bool {
         !self.is_compact() && crate::follow_banner::folds(self.rect.width())
@@ -146,18 +146,18 @@ impl TopBarChrome {
         pill.x0 - f64::from(theme.tokens.spacing.s1)
     }
 
-    /// Whether the invite button has room without pressing into the banner's lane. While this
-    /// person follows someone, the bar's middle lane belongs to the banner that says whose view
+    /// Whether the invite button has room without pressing into the banner's area. While this
+    /// person follows someone, the bar's middle area belongs to the banner that says whose view
     /// this is, and the controls beside it keep the bar's own control gap clear of it. A bar too
     /// narrow for the invite, the people button and the banner keeps the banner and who is here:
     /// the invite waits in the panel the people button opens, and comes back when following ends.
-    fn invite_clears_the_lane(
+    fn invite_clears_the_area(
         &self,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         right_x: f64,
     ) -> bool {
-        if !self.following || self.center_lane.is_zero_area() {
+        if !self.following || self.center_area.is_zero_area() {
             return true;
         }
         let gap = f64::from(theme.tokens.spacing.s2);
@@ -166,8 +166,8 @@ impl TopBarChrome {
         let people_w =
             glyph_chip_width(&t("topbar-show-people"), USERS_GLYPH, text_renderer, theme);
         // The people button ends where the invite leaves it, and its own gap on either side is
-        // the bar's: what stands left of this cluster must still clear the lane by one gap.
-        right_x - invite_w - gap - people_w - inset >= self.center_lane.x1 + gap
+        // the bar's: what stands left of this cluster must still clear the area by one gap.
+        right_x - invite_w - gap - people_w - inset >= self.center_area.x1 + gap
     }
 
     /// The invite button's chip: a person-plus glyph in the place the next person takes, lifting
@@ -198,7 +198,7 @@ impl TopBarChrome {
         // one who did something last beside the people button, and the clock. The invite waits in
         // the panel that button opens ("Invite people"), and comes back once nobody else is here.
         if !self.can_invite()
-            || !self.invite_clears_the_lane(text_renderer, theme, right_x)
+            || !self.invite_clears_the_area(text_renderer, theme, right_x)
             || (self.phone_wide() && self.anyone_else())
         {
             self.invite_rect = Rect::ZERO;
@@ -227,24 +227,24 @@ impl TopBarChrome {
         let stack = ui::presence::FaceStack::BAR;
         let gap = f64::from(theme.tokens.spacing.s2);
         let pill_right = self.ws_pill_rect.x1.max(self.rect.x0);
-        // The faces keep off the clock's lane, standing between it and the people cluster where
+        // The faces keep off the clock's area, standing between it and the people cluster where
         // that is room enough. What does not fit joins the "+N" badge, and with no room for even
         // the badge the people button beside them is who is here. A phone-wide bar has no room
         // right of the clock and the gap before it where they fit: they stand there rather than
         // folding everyone out of the bar, so the agent this person follows is still on it.
-        // What the middle of the bar keeps for itself: the banner's lane while this view follows
-        // someone, else the clock's own drawing. The lane is the clock's place, with the room its
+        // What the middle of the bar keeps for itself: the banner's area while this view follows
+        // someone, else the clock's own drawing. The area is the clock's place, with the room its
         // hands may sweep through; a phone's bar is a couple of pixels short of a face beside
         // that place, and the clock's ink is not, so the faces stand clear of the drawing rather
         // than of the place.
         let middle = if self.center_rect.is_zero_area() {
-            self.center_lane
+            self.center_area
         } else {
             Rect::new(
                 self.center_rect.x0,
-                self.center_lane.y0,
+                self.center_area.y0,
                 self.center_rect.x1,
-                self.center_lane.y1,
+                self.center_area.y1,
             )
         };
         let (anchor, room) = if middle.is_zero_area() {
@@ -358,15 +358,15 @@ impl TopBarChrome {
     /// something last, agents included, so someone who arrives, comes back or starts working is on
     /// the bar the moment they do. Everyone else here is the stack's own "+N" badge beside that
     /// face. The one this view follows is not drawn twice: the banner's face is theirs. The stack
-    /// keeps the bar's gap from the banner's lane and from the workspace's name; the clock yields
+    /// keeps the bar's gap from the banner's area and from the workspace's name; the clock yields
     /// to it (`center_yield`). With no room for the face it keeps the badge alone, counting
     /// everyone, and with no room for that the people button stands for who is here.
     fn place_phone_face(&mut self, theme: &Theme, center_y: f64, right_x: f64) -> Rect {
         let stack = ui::presence::FaceStack::BAR;
         let gap = f64::from(theme.tokens.spacing.s2);
         let mut left = self.ws_pill_rect.x1.max(self.rect.x0) + gap;
-        if self.following && !self.center_lane.is_zero_area() {
-            left = left.max(self.center_lane.x1 + gap);
+        if self.following && !self.center_area.is_zero_area() {
+            left = left.max(self.center_area.x1 + gap);
         }
         let others = self
             .face_ids
@@ -681,7 +681,7 @@ mod tests {
 
         phase a_wave_is_worded_beside_the_faces_on_a_laptop_wide_bar;
         // On a laptop-wide bar a wave still says who waved, in words, beside the faces: the notice
-        // yields to the clock, not to the whole lane kept for an activity.
+        // yields to the clock, not to the whole area kept for an activity.
         {
             let tree = shell(&[(MemberId::person("gd"), "Gentle Dolphin")]);
             let (mut bar, chrome) = bar_over(&tree, true);
@@ -835,7 +835,7 @@ mod tests {
 
         phase following_keeps_the_people_beside_it_on_a_phone;
         // Following someone never costs the bar the people beside them: while the banner that says
-        // whose view this is stands in the middle lane, the people button, the workspace's name and
+        // whose view this is stands in the middle area, the people button, the workspace's name and
         // the faces keep their room either side of it, and Stop stands in the banner at every width.
         {
             let mut tree = shell(&[(MemberId::person("ada"), "Ada Lovelace"), (MemberId::agent("cc"), "Claude Code")]);
@@ -844,17 +844,17 @@ mod tests {
             for width in [390.0f32, 360.0] {
                 let (bar, _chrome) = phone_bar(&tree, width);
                 assert!(bar.following, "the bar knows this view is not its own");
-                let lane = crate::follow_banner::lane_width(f64::from(width));
+                let area = crate::follow_banner::area_width(f64::from(width));
                 assert!(
-                    (bar.center_lane.width() - lane).abs() < 0.5,
-                    "the middle lane is the banner's, where the clock stood: {:?} at {width}",
-                    bar.center_lane
+                    (bar.center_area.width() - area).abs() < 0.5,
+                    "the middle area is the banner's, where the clock stood: {:?} at {width}",
+                    bar.center_area
                 );
                 assert!(
                     bar.center_rect.is_zero_area(),
                     "and the clock stands aside at {width}"
                 );
-                // The banner as it stands on this bar: their face and Stop in the lane.
+                // The banner as it stands on this bar: their face and Stop in the area.
                 let bar_rect = bar.bar_rect();
                 let mut text = TextRenderer::new();
                 let card = crate::follow_banner::rects(
@@ -910,9 +910,9 @@ mod tests {
                         "and Stop keeps it from {what} at {width}: {stop:?} beside {rect:?}"
                     );
                 }
-                // Whatever the bar can hold, nothing of who is here stands in the banner's lane...
+                // Whatever the bar can hold, nothing of who is here stands in the banner's area...
                 assert!(
-                    people.x0 >= bar.center_lane.x1 + gap,
+                    people.x0 >= bar.center_area.x1 + gap,
                     "the people button keeps clear of the banner at {width}: {people:?}"
                 );
                 // ...and where it cannot hold the invite too, the invite waits in the panel the
@@ -925,7 +925,7 @@ mod tests {
                     );
                 }
                 assert!(
-                    bar.ws_pill_rect.x1 <= bar.center_lane.x0,
+                    bar.ws_pill_rect.x1 <= bar.center_area.x0,
                     "the workspace keeps its name and chevron at {width}: {:?}",
                     bar.ws_pill_rect
                 );

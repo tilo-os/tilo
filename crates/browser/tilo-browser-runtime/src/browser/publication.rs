@@ -135,7 +135,7 @@ pub fn component_publications(id: u64) -> Result<String, JsValue> {
 }
 
 /// Native catalogue requests, answered by the page's existing certified peer.
-/// Shares the retained request collector with the local media lane.
+/// Shares the retained request collector with the local media queue.
 /// # Errors
 /// Refuses closed mounts or unencodable requests.
 #[wasm_bindgen]

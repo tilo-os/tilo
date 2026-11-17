@@ -1,5 +1,5 @@
 //! Page actions as an agent reaches them: published on `browser.page`, admitted
-//! through the resource operation lane, answered by the engine and reported through the
+//! through the resource operation path, answered by the engine and reported through the
 //! invocation's terminal update.
 
 use std::sync::Arc;

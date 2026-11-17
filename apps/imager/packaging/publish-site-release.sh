@@ -108,7 +108,7 @@ fi
 # The install contract is the canonical statement of which hosts, architectures
 # and downloads the release carries, and the workflow publishes one artifact set
 # for each of them. Every page entry is derived from it rather than from a
-# second list kept in step by hand: an architecture the release lane stops
+# second list kept in step by hand: an architecture the release job stops
 # building fails below, and one it starts building is published instead of
 # silently missing from the page. Each declaration names the release file it
 # links and the page entry that links it, so neither is read off its label, and

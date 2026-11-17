@@ -1058,7 +1058,7 @@ impl Reconciler {
             Page::new()
         };
         // A page that fills takes the height its pane gives it: a canvas's content (a board's
-        // lanes) is on the pane's floor, and what it holds scrolls inside it.
+        // levels) is on the pane's floor, and what it holds scrolls inside it.
         if flag(node, "fill") {
             page = page.filling();
         }

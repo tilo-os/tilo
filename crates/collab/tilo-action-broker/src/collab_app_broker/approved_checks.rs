@@ -205,7 +205,7 @@ fn start(context: &ApprovedCheckContext) -> Result<tokio::sync::oneshot::Receive
 }
 
 /// Latest informational report, bounded independently of captured command bytes.
-/// The final receipt replaces it and permanently freezes this lane.
+/// The final receipt replaces it and permanently freezes this endpoint.
 #[derive(Clone)]
 enum Frame {
     Report(Report),
@@ -229,9 +229,9 @@ impl ReportPublisher {
         let mut frontier = self
             .state
             .lock()
-            .map_err(|_| "approved-check report lane unavailable")?;
+            .map_err(|_| "approved-check report endpoint unavailable")?;
         if frontier.finished || frontier.disabled {
-            return Err("approved-check report lane already finished or disabled".into());
+            return Err("approved-check report endpoint already finished or disabled".into());
         }
         let sequence = frontier
             .sequence
@@ -349,7 +349,7 @@ impl ReportReader {
                         return Ok(Frame::Final(Arc::new(reply)));
                     }
                     changed = self.receive.changed() => {
-                        changed.map_err(|_| "approved-check report lane retired")?;
+                        changed.map_err(|_| "approved-check report endpoint retired")?;
                     }
                 }
             } else {
@@ -371,7 +371,7 @@ mod report_delivery_tests {
     use super::*;
 
     #[tokio::test]
-    async fn completion_observation_remains_available_when_informational_lane_cannot_publish() {
+    async fn completion_observation_remains_available_when_informational_endpoint_cannot_publish() {
         let (_informational, receive) = watch::channel(None);
         let (send, completion) = tokio::sync::oneshot::channel();
         let mut reader = ReportReader {

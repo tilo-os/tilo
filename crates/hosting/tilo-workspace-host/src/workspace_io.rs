@@ -1,5 +1,5 @@
 //! Filesystem authority work is independent of state persistence. Admission is
-//! bounded before spawning work; one authorization lane serializes each workspace's
+//! bounded before spawning work; one authorization queue serializes each workspace's
 //! reads and writes. No routing or registry guard crosses filesystem work.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -113,7 +113,7 @@ fn watched_generation(runtime: &mut WorkspaceRuntime) -> Option<DiskGeneration> 
 /// the daemon's membership watch saw it change (or on every call while no live
 /// watch covers the workspace). Callers must recheck certificate, policy, workspace and
 /// exact sessions using the returned routing guard. A reload holds the
-/// authorization lane, and releases it while that guard remains held, so a
+/// authorization queue, and releases it while that guard remains held, so a
 /// newer update cannot be overwritten by this read or slip between this read
 /// and the caller's check. In-process writers narrow the in-memory set under
 /// the routing lock before any filesystem work, so a read that needs no reload
@@ -131,7 +131,7 @@ pub async fn fresh_membership(
         let runtime = workspace.lock().await;
         crate::timing::window("workspace.lock", locking);
         if runtime.membership_is_current() {
-            // No disk IO, no worker, no lane.
+            // No disk IO, no worker, no queue.
             return Ok(runtime);
         }
     }
@@ -145,15 +145,15 @@ async fn reload_membership(
     workspace: &SharedWorkspace,
 ) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
     let _slot = admit_work().await?;
-    let (store, lane, generation) = reload_handles(workspace).await;
-    let _lane = lane.lock_owned().await;
+    let (store, queue, generation) = reload_handles(workspace).await;
+    let _queue = queue.lock_owned().await;
     // Observed before the read: a change during it moves the generation on,
     // and the next call reads again.
     let observed = generation.as_ref().and_then(DiskGeneration::current);
     if observed.is_some() {
         let runtime = workspace.lock().await;
         if runtime.loaded_generation == observed {
-            // Another reload finished while this one waited for the lane.
+            // Another reload finished while this one waited for the queue.
             return Ok(runtime);
         }
     }
@@ -222,8 +222,8 @@ pub(crate) async fn admit_member(
     let workspace = workspace.clone();
     tokio::spawn(async move {
         let _slot = slot;
-        let (store, lane) = authority_handles(&workspace).await;
-        let _lane = lane.lock_owned().await;
+        let (store, queue) = authority_handles(&workspace).await;
+        let _queue = queue.lock_owned().await;
         let reader = store.clone();
         let mut members = authorization_io(move || reader.load_membership()).await?;
         {
@@ -257,7 +257,7 @@ pub(crate) async fn admit_member(
 }
 
 /// Serialize admin replacement with fresh reads/admissions. Removals deny as
-/// soon as this operation obtains the lane; additions grant only after commit.
+/// soon as this operation obtains the queue; additions grant only after commit.
 /// A failed write keeps removals denied in this process until a successful
 /// explicit replacement, so a later read of the old file cannot resurrect them.
 #[cfg(test)]
@@ -269,8 +269,8 @@ pub(crate) async fn replace_membership(
     let workspace = workspace.clone();
     tokio::spawn(async move {
         let _slot = slot;
-        let (store, lane) = authority_handles(&workspace).await;
-        let _lane = lane.lock_owned().await;
+        let (store, queue) = authority_handles(&workspace).await;
+        let _queue = queue.lock_owned().await;
         {
             let mut runtime = workspace.lock().await;
             runtime.membership_revision = runtime
@@ -319,8 +319,8 @@ pub(crate) async fn replace_governed_access(
     let workspace = workspace.clone();
     tokio::spawn(async move {
         let _slot = slot;
-        let (store, lane) = authority_handles(&workspace).await;
-        let _lane = lane.lock_owned().await;
+        let (store, queue) = authority_handles(&workspace).await;
+        let _queue = queue.lock_owned().await;
         // The governor's projection: from here on governance owns who joins.
         let access = GovernedAccessRecord {
             governed: true,
@@ -360,7 +360,7 @@ pub(crate) async fn replace_governed_access(
             let governed_before =
                 std::mem::replace(&mut runtime.admission, AdmissionMode::Governed)
                     == AdmissionMode::Governed;
-            // Refuse while the authority lane is held so the writer can deliver
+            // Refuse while the authority queue is held so the writer can deliver
             // NotAuthorised before a waiting access audit closes the session.
             runtime.refuse_removed_live_members(&removed);
             (

@@ -91,7 +91,7 @@ def revoked(report, selected):
 
 
 def verify(control, candidate, account, services, log, deadline, selected, subjects):
-    # Same actual NSS user/paths/session SecretService as the default cloud lane;
+    # Same actual NSS user/paths/session SecretService as the default cloud job;
     # no developer credentials or isolated alternative Browser session.
     user_environment(account)
     require(os.getuid() == account.pw_uid == 1000, 'actual receiving account required')

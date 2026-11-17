@@ -1853,7 +1853,7 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
 /// opened beside it; then "my notes" found at a click left of the inbox; then a pan and a zoom.
 /// Every frame lays out: the shell reports no frame skipped and no part that did not settle, and
 /// every place stays drawn. (The turn's long scrolling answer itself is the toolkit's, in
-/// `scrollable::lane_tests`: Chat's process is not part of this session, so its turns here stand
+/// `scrollable::gutter_tests`: Chat's process is not part of this session, so its turns here stand
 /// in for its record.)
 #[test]
 fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {

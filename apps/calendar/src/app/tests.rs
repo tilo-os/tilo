@@ -343,15 +343,15 @@ tilo_test_env::scenario! {
         let area = h.app.view_rect();
         let g = h.app.timeline.test_layout_geometry(area);
         let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 195);
-        let lane = h
+        let split = h
             .app
             .timeline_spans(&[day])
             .into_iter()
             .find(|span| span.id == id)
             .unwrap()
-            .lane;
-        let lane_w = block.width() / lane.of as f64;
-        let x = block.x0 + lane_w * (lane.index as f64 + 0.5);
+            .split;
+        let split_w = block.width() / split.of as f64;
+        let x = block.x0 + split_w * (split.index as f64 + 0.5);
         h.click(Point::new(x, block.y0 + 1.0));
         h.mouse_button(ElementState::Released);
         h.relayout();
@@ -874,7 +874,7 @@ tilo_test_env::scenario! {
                 );
                 assert!(
                     app.form.conflict.y1 <= app.form.location.y0,
-                    "warning reserves its own lane before location at {width}px / {text_scale}×"
+                    "warning reserves its own split before location at {width}px / {text_scale}×"
                 );
                 for control in event_controls(&app.form) {
                     assert!(

@@ -1,5 +1,5 @@
 //! One link per enrolled workspace: dialling the host its enrollment pins,
-//! holding the link ([`hold`]) over the direct lane, admitting what arrives
+//! holding the link ([`hold`]) over the direct connection, admitting what arrives
 //! into this device's owner, and publishing what the owner holds.
 mod hold;
 mod reach;

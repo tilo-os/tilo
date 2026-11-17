@@ -215,7 +215,7 @@ mod speakers;
 pub use speakers::*;
 
 /// Maximum encoded size of one Nearby Send control command or reply. Transfer
-/// bytes never use this lane; the shell's existing resumable object transport
+/// bytes never use this media queue; the shell's existing resumable object transport
 /// owns payload delivery.
 pub const MAX_NEARBY_TRANSFER_WIRE_BYTES: usize = 64 * 1024;
 /// Maximum certified devices returned to one picker snapshot.

@@ -224,7 +224,7 @@ jobs:
   # The boundary invariants run five fixture binaries built from the merged
   # tree. Build
   # them where the compiler and cache are warm: the checks themselves are
-  # mostly text, but their first cold build on a 2-CPU lane spent a 30-minute
+  # mostly text, but their first cold build on a 2-CPU job spent a 30-minute
   # timeout inside one invariant and reported no result at all.
   security-fixtures:
     if: needs.select.outputs.security_required == 'true'
@@ -278,7 +278,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 60
     env:
-      # The complete suite passes in the quality lane's 2 CPU / 5 GiB job limit
+      # The complete suite passes in the quality job's 2 CPU / 5 GiB job limit
       # once its fixtures are built (security-fixtures); t declares the same
       # check as a 1-core, minutes-long job.
       CARGO_BUILD_JOBS: '2'

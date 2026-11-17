@@ -41,7 +41,7 @@ const SENDER_MEDIA_BOX_DOMAIN: &[u8] = b"tilo-sender-media-keys-v1";
 /// streams it publishes, and the tag space is larger than any device's.
 const MAX_SENDER_MEDIA_KEYS: usize = 256;
 
-/// Length of the tag naming one media stream: its lane and its source.
+/// Length of the tag naming one media stream: its kind of stream and its source.
 pub const MEDIA_STREAM_TAG_LEN: usize = 2;
 
 /// Domain of the per-stream media keys, so a key one of them derives is
@@ -182,7 +182,7 @@ impl ContentKeys {
     /// `"tilo-call-media-v1" ‖ workspace ‖ epoch ‖ sender ‖ stream`.
     ///
     /// `sender` is the sending device's public key and `stream` the two
-    /// bytes naming the lane and, within it, the source (a call lane's own
+    /// bytes naming the kind of stream and, within it, the source (a call stream's own
     /// vocabulary, so nothing but bytes of it lives here). Every holder of
     /// the epoch's content key derives the same value, which is why a member
     /// that joined later opens frames a lagging sender still seals under an

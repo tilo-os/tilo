@@ -1633,7 +1633,7 @@ impl AppComponent {
         self.context.record()
     }
     /// The content store this component reads its record's content from: the host's store joined to the
-    /// lane this window keeps, so what the window asks for is its to ask.
+    /// content link this window keeps, so what the window asks for is its to ask.
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         self.context.content().cloned()
     }

@@ -33,7 +33,7 @@ case ${1:-} in
     arch=${2:?usage: extension-manifests.sh resolve ARCH OUT}
     out=${3:?}
     [[ $(uname -m) == "$arch" ]] || die "extensions resolve natively, not $arch on $(uname -m)"
-    case $arch in x86_64) platform=amd64 ;; aarch64) platform=arm64 ;; *) die "no lane for $arch" ;; esac
+    case $arch in x86_64) platform=amd64 ;; aarch64) platform=arm64 ;; *) die "no job for $arch" ;; esac
     dnf install -y --setopt=install_weak_deps=False podman skopeo fuse-overlayfs jq python3 >/dev/null
     read -r -a images <<< "${T_INPUT_IMAGES:-}"
     explicit=true
@@ -46,7 +46,7 @@ case ${1:-} in
         || die 'qualification requires one immutable image and a reviewed content hash'
     fi
     mkdir -p "$out"
-    lanes=0
+    jobs=0
     for image in "${images[@]}"; do
       [[ $image =~ ^(registry\.tilo\.so/tilo/tilo(-ci|-vm)?)(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$ ]] \
         || die "not a published OS image: $image"
@@ -105,9 +105,9 @@ case ${1:-} in
         fi
       fi
       podman rmi -f "$child" >/dev/null 2>&1 || true
-      lanes=$((lanes + 1))
+      jobs=$((jobs + 1))
     done
-    echo "resolved $lanes $arch image(s)"
+    echo "resolved $jobs $arch image(s)"
     ;;
   publish)
     shift
@@ -122,7 +122,7 @@ case ${1:-} in
       || die 'could not read the extension-manifest public key from KMS'
     cmp --silent keys/extensions.pub "$public_key" || die 'the KMS extension-manifest key does not match keys/extensions.pub'
     mapfile -t manifests < <(find "$@" -type f -name '*.json' -print 2>/dev/null | LC_ALL=C sort)
-    ((${#manifests[@]})) || die 'no lane resolved a manifest'
+    ((${#manifests[@]})) || die 'no job resolved a manifest'
     mode=()
     if [[ $promote == false ]]; then
       [[ -n $expected ]] || die 'a sign-only run qualifies one image against a reviewed content hash'

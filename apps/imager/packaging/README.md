@@ -248,7 +248,7 @@ missing, duplicate, unsupported, or conflicting catalogs fail before packaging.
 Schema 1 remains supported for generic media. Schema 2 also identifies media
 for a specific hardware profile.
 
-Each Linux signing lane checks the catalog archive size and SHA-256 before
+Each Linux signing job checks the catalog archive size and SHA-256 before
 signing every listed medium for its architecture. Promotion authenticates the
 selected catalog with the independently expected OpenPGP identity, then verifies
 every listed medium against both that catalog and its detached signature. Both

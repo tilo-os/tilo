@@ -12,7 +12,7 @@ use super::{
 use ui::widget::{STRIP_BOTTOM_GUTTER_PX, STRIP_TOP_GAP_PX};
 
 /// The strip's node style over the row's `own` : every strip stands on the whole surface, its
-/// displays' lanes placing its windows, so the strips the other displays show lie over it rather
+/// displays' sections placing its windows, so the strips the other displays show lie over it rather
 /// than beside it in a share of the height. Tiled windows keep wallpaper above and below them, so
 /// the strip reads as its own row under the bar and their borders and corners show; a window
 /// filling the strip or taken across the display takes both bands instead.

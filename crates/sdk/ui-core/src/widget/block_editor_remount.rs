@@ -91,7 +91,7 @@ impl BlockEditor {
         if remount.set_children(node, &children).is_err() {
             return false;
         }
-        // The editor's own box carries what its change made of it: its handle lane and the
+        // The editor's own box carries what its change made of it: its handle gutter and the
         // column its blocks stand in. Where the box stands in the host's page is the host's:
         // every host places the editor itself, absolutely, under the header or the title it
         // draws, with the insets its page leaves. Writing the whole style again would move the
@@ -117,7 +117,7 @@ impl BlockEditor {
     /// a column, the drag handles standing in its own leading column so a host leaves no gutter
     /// for them and they are never clipped by the window edge at any text scale.
     ///
-    /// A document's body hangs its handle lane outside the text column, so its text starts on
+    /// A document's body hangs its handle gutter outside the text column, so its text starts on
     /// the page's content edge, under the title, and still runs to the column's end, as native
     /// Notes lines a note's title up with its text. It is placed there, not margined there: a
     /// margin would have the layout ask the block stack for heights at a second width than the

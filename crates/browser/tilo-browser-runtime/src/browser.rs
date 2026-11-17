@@ -464,7 +464,7 @@ pub(crate) struct Mount {
     frame: FrameHarness,
     /// How far following an agent brought the view inside its window.
     followed_view: ui::headless::FollowedView,
-    media: ui::headless::host_media::MediaLane,
+    media: ui::headless::host_media::MediaQueue,
     store: Rc<durable_store::MemoryStore>,
     /// Every package record owner the mount opened, flushed together.
     stores: Rc<RefCell<Vec<ResourceStore>>>,
@@ -1464,7 +1464,7 @@ fn files_of_the_workspace(
         true,
     );
     // The files' bytes are the tree record's content: read through that record's
-    // lane, so a file whose bytes are not here yet is asked of the workspace and
+    // media queue, so a file whose bytes are not here yet is asked of the workspace and
     // its words are read when it arrives. A plain store would answer what the
     // page happens to keep and never ask, so search would know each file's name
     // and nothing it says.
@@ -1477,9 +1477,9 @@ fn files_of_the_workspace(
             );
             // Bytes that arrive ask for the pass that reads their words, so
             // the palette finds what a file says without a keystroke to wake it.
-            ui::collaboration::document_content::ContentLane::of(&route)
+            ui::collaboration::document_content::ContentLink::of(&route)
                 .attach(ui::WakeHandle::new());
-            ui::collaboration::document_content::ContentLane::resource_store(&route)
+            ui::collaboration::document_content::ContentLink::resource_store(&route)
         }
         Err(_) => content.clone(),
     };
@@ -1883,7 +1883,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         window: Arc::clone(&window),
         canvas,
         frame,
-        media: ui::headless::host_media::MediaLane::default(),
+        media: ui::headless::host_media::MediaQueue::default(),
         store,
         stores,
         checkout,

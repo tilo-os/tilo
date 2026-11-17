@@ -369,7 +369,7 @@ fn a_new_project_takes_its_first_clips_on_the_tracks_they_name() {
         json!({ "media": title["media"], "track": "v2", "at": 0.0, "out": 2.0 }),
     )
     .unwrap();
-    assert_eq!(over["placed"]["track"], "V2", "a lane's name in any case");
+    assert_eq!(over["placed"]["track"], "V2", "a track's name in any case");
     let sound = call(
         &mut app,
         "add-clip",
@@ -385,19 +385,19 @@ fn a_new_project_takes_its_first_clips_on_the_tracks_they_name() {
     .unwrap();
 
     let state = app.state();
-    let lanes: Vec<(&str, TrackKind, u32)> = state
+    let tracks: Vec<(&str, TrackKind, u32)> = state
         .display_tracks()
         .into_iter()
         .map(|t| (t.name.as_str(), t.kind, t.index))
         .collect();
     assert_eq!(
-        lanes,
+        tracks,
         vec![
             ("V2", TrackKind::Video, 2),
             ("V1", TrackKind::Video, 1),
             ("A1", TrackKind::Audio, 1),
         ],
-        "each named lane is made once, and V2 is over V1"
+        "each named track is made once, and V2 is over V1"
     );
     assert_eq!(state.clips.len(), 4);
     let read = read_timeline(&state, None).unwrap();
@@ -407,7 +407,7 @@ fn a_new_project_takes_its_first_clips_on_the_tracks_they_name() {
     assert_eq!(
         app.state().display_tracks().first().map(|t| t.name.clone()),
         Some("V3".to_owned()),
-        "add-track still makes the next lane"
+        "add-track still makes the next track"
     );
 }
 
@@ -893,7 +893,7 @@ fn promo() -> Project {
     words.color = [1.0, 212.0 / 255.0, 0.0, 1.0];
     words.size = 0.12;
     let title = source("Title", MediaKind::Text, Some(words));
-    let mut lane = |name: &str, kind: TrackKind, index: u32| {
+    let mut track = |name: &str, kind: TrackKind, index: u32| {
         let id = Uuid::new_v4();
         project.tracks.push(Track {
             id,
@@ -904,9 +904,9 @@ fn promo() -> Project {
         });
         id
     };
-    let v1 = lane("V1", TrackKind::Video, 1);
-    let v2 = lane("V2", TrackKind::Video, 2);
-    let a1 = lane("A1", TrackKind::Audio, 1);
+    let v1 = track("V1", TrackKind::Video, 1);
+    let v2 = track("V2", TrackKind::Video, 2);
+    let a1 = track("A1", TrackKind::Audio, 1);
     for (track, media, start, (in_point, out_point), fade_out) in [
         (v1, a, 0.0, (1.0, 4.0), 0.0),
         (v1, c, 3.333, (0.5, 3.5), 1.0),

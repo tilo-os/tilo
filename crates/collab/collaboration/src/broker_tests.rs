@@ -3875,7 +3875,7 @@ tilo_test_env::scenario! {
     phase answers_the_app_is_behind_on_wait_in_order_without_blocking_their_sender;
     // Answers to the app's own requests never wait on the app (it may be
     // waiting for the task answering), yet none is lost or reordered when
-    // it is behind: they queue in the reply lane until it reads again.
+    // it is behind: they queue in the reply queue until it reads again.
     {
         let state = BridgeState::new();
         let (tx, mut rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);

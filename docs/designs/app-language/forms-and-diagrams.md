@@ -107,7 +107,7 @@ Rust, and apps describe data.
 |---|---|---|
 | `ui.Chart` | line, area, bar, scatter; several series | axes, ticks, units and locale formatting picked from the data |
 | `ui.Graph` | nodes and edges | `.layered` (dependencies, flows), `.tree`, `.force`, or `.free` (positions stored on the resource) |
-| `ui.Timeline` | items with spans in lanes | time axis that zooms from hours to years |
+| `ui.Timeline` | items with spans in rows | time axis that zooms from hours to years |
 | `ui.Sparkline` | one small series inside text or a row | fills its slot |
 
 ### Data in, actions out

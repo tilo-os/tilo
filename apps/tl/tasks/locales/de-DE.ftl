@@ -32,7 +32,7 @@ d-fbioszhs = Projekt
     .doc = Das Projekt, zu dem sie gehört; keines, solange sie im Eingang wartet.
 
 d-v56iknh2 = Abschnitt
-    .doc = Die Spur im Board ihres Projekts, in der sie steht; keine für die erste Spur.
+    .doc = Die Liste im Board ihres Projekts, in der sie steht; keine für die erste Liste.
 
 d-4sriymst = Priorität
 
@@ -72,7 +72,7 @@ d-c5pgzhqt = Notizen
     .doc = Wofür es da ist, und alles, was sich darüber zu merken lohnt.
 
 d-5wdrqcpl = Abschnitt
-    .doc = Ein Abschnitt eines Projekts: eine Spur seines Boards, etwa „In Arbeit“.
+    .doc = Ein Abschnitt eines Projekts: eine Liste seines Boards, etwa „In Arbeit“.
     .noun = { $count ->
         [one] Abschnitt
        *[other] Abschnitte
@@ -114,7 +114,7 @@ d-clxahlh2 = Hoch
 d-d6avlyc5 = Dringend
 
 d-rs3ubifz = Neue Aufgabe
-    .doc = Legt eine Aufgabe im Eingang oder in `p` an, in der Spur `s` seines Boards: der Eintrag am Ende einer Liste füllt `title` mit den Worten, die sonst niemand dort aufnimmt, dazu den Tag, den Zeitpunkt und die Person, die er nennt, sodass „Vermieter fr 10 Uhr anrufen @Bo“ eine Aufgabe ist, fällig Freitag um zehn, für Bo.
+    .doc = Legt eine Aufgabe im Eingang oder in `p` an, in der Liste `s` seines Boards: der Eintrag am Ende einer Liste füllt `title` mit den Worten, die sonst niemand dort aufnimmt, dazu den Tag, den Zeitpunkt und die Person, die er nennt, sodass „Vermieter fr 10 Uhr anrufen @Bo“ eine Aufgabe ist, fällig Freitag um zehn, für Bo.
 
 d-zjuy7y7f = Neues Projekt
     .doc = Beginnt ein Projekt.
@@ -222,15 +222,15 @@ d-xmsyxvog = Abschnitt umbenennen
     .doc = Benennt einen Abschnitt um.
 
 d-vi6srojh = Abschnitt löschen
-    .doc = Löscht einen Abschnitt; seine Aufgaben gehen in die erste Spur des Projekts.
+    .doc = Löscht einen Abschnitt; seine Aufgaben gehen in die erste Liste des Projekts.
 
 d-pcn3xgni = Neue Aufgabe
-    .doc = Fügt einem Projekt eine Aufgabe hinzu, am Ende der Spur `s` seines Boards (keine für die erste).
+    .doc = Fügt einem Projekt eine Aufgabe hinzu, am Ende der Liste `s` seines Boards (keine für die erste).
 
 d-scjlkb6d = Im Board platzieren
-    .doc = Setzt eine Aufgabe in die Spur `s` des Boards ihres Projekts (keine für die erste), an die Stelle `at` unter den Aufgaben, die schon dort stehen: was das Ziehen einer Karte nennt.
+    .doc = Setzt eine Aufgabe in die Liste `s` des Boards ihres Projekts (keine für die erste), an die Stelle `at` unter den Aufgaben, die schon dort stehen: was das Ziehen einer Karte nennt.
     .w-it-is-in-no-project-s = Sie steht in keinem Board
-    .w-that-lane-belongs-to-another-project = Diese Spur gehört zu einem anderen Projekt
+    .w-that-list-belongs-to-another-project = Diese Liste gehört zu einem anderen Projekt
 
 d-kjbukd2o = Umbenennen
     .doc = Benennt ein Projekt um.

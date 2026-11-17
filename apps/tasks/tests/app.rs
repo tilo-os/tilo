@@ -893,7 +893,7 @@ fn the_sidebar_names_what_it_narrows_and_the_bar_names_the_place() {
 }
 
 tilo_test_env::scenario! {
-    fn the_list_and_the_board_follow_the_sidebars_filter_and_a_lane_adds_to_itself;
+    fn the_list_and_the_board_follow_the_sidebars_filter_and_a_list_adds_to_itself;
 
     phase the_sidebar_narrows_the_list_and_the_board_to_a_filter;
     // The sidebar narrows the list to what a person is looking for — their own
@@ -973,7 +973,7 @@ tilo_test_env::scenario! {
         assert_eq!(shown.len(), 1, "one issue carries the label: {shown:?}");
 
         // The board follows the same choice: the agent's issue is the only card
-        // in a lane.
+        // in a list.
         choose(&mut app, "An agent's");
         press_view(&mut app, "Board");
         let harness = app.harness();
@@ -994,10 +994,10 @@ tilo_test_env::scenario! {
         assert_eq!(rows(&mut app).len(), 3, "every issue shows again");
     }
 
-    phase a_lanes_foot_adds_the_issue_to_that_lane;
-    // A lane of the board adds at its foot, in its own lane: what is typed
-    // there is made in that lane's status, and the board itself carries no
-    // entry of its own above the lanes.
+    phase a_lists_foot_adds_the_issue_to_that_list;
+    // A list of the board adds at its foot, in its own list: what is typed
+    // there is made in that list's status, and the board itself carries no
+    // entry of its own above the lists.
     {
         let mut app = open();
         press_view(&mut app, "Board");
@@ -1006,12 +1006,12 @@ tilo_test_env::scenario! {
             !app.harness()
                 .targets()
                 .contains_key("tasks-board-new-title"),
-            "the board carries no entry of its own above the lanes"
+            "the board carries no entry of its own above the lists"
         );
         let add = |app: &mut TestApp<App>, status: Status, title: &str| {
             app.harness()
                 .click_named(&format!("tasks-board-new-{}-title", status.label_key()))
-                .unwrap_or_else(|error| panic!("the {status:?} lane is addable: {error}"));
+                .unwrap_or_else(|error| panic!("the {status:?} list is addable: {error}"));
             app.harness().type_text(title);
             app.harness().key("Enter");
             app.settle();
@@ -1027,11 +1027,11 @@ tilo_test_env::scenario! {
             .collect();
         assert!(
             statuses.contains(&("Ship the launch", Status::Todo)),
-            "what the to-do lane's entry makes starts there: {statuses:?}"
+            "what the to-do list's entry makes starts there: {statuses:?}"
         );
         assert!(
             statuses.contains(&("Archive the banner", Status::InProgress)),
-            "and the working lane's entry starts a card that is being worked on: {statuses:?}"
+            "and the working list's entry starts a card that is being worked on: {statuses:?}"
         );
         assert_eq!(statuses.len(), 2, "one card per entry, nothing else");
     }

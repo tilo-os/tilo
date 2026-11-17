@@ -832,7 +832,7 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::Lane;
+    use super::super::Level;
     use super::*;
 
     fn validator() -> Validator<'static> {
@@ -852,7 +852,7 @@ mod tests {
 
     fn open(tree: Node) -> Vec<ToUi> {
         vec![ToUi::Open {
-            lane: Lane::Root,
+            level: Level::Root,
             target: ResourceRef {
                 id: "doc".to_owned(),
                 ty: "notes.Notebook".to_owned(),

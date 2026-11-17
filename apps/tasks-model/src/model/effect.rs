@@ -54,7 +54,7 @@ pub enum TasksEffect {
 
     /// Show the board
     ///
-    /// Show a lane per status.
+    /// Show a list per status.
     #[effect(view, idempotent)]
     ShowBoard,
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The desktop package lane builds every userspace of its architecture."""
+"""The desktop package job builds every userspace of its architecture."""
 import os
 from pathlib import Path
 import shutil
@@ -13,11 +13,11 @@ CI = Path(__file__).resolve().parents[1]
 OWNER = "ab" * 32
 
 
-def run_lane(root, fail="", owner=OWNER, lint_status=0):
-    """Run the real lane in `root` with stub jobs; `fail` is shell run first in each job."""
+def run_job(root, fail="", owner=OWNER, lint_status=0):
+    """Run the real job in `root` with stub jobs; `fail` is shell run first in each job."""
     ci = root / "dist/ci"
     ci.mkdir(parents=True)
-    for name in ("package-lane.sh", "package-targets.sh", "package-targets.txt"):
+    for name in ("package-job.sh", "package-targets.sh", "package-targets.txt"):
         shutil.copy2(CI / name, ci / name)
     (ci / "fetch-package-env-runtime.sh").write_text("#!/bin/sh\ntouch fetched\n")
     (root / "dist/rpm").mkdir(parents=True)
@@ -36,7 +36,7 @@ def run_lane(root, fail="", owner=OWNER, lint_status=0):
     env.pop("TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY", None)
     if owner is not None:
         env["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"] = owner
-    return subprocess.run(["bash", str(ci / "package-lane.sh"), "amd64"], cwd=root, env=env,
+    return subprocess.run(["bash", str(ci / "package-job.sh"), "amd64"], cwd=root, env=env,
                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
 
 
@@ -45,11 +45,11 @@ def built(root):
                   for p in (root / "dist/ci-output").glob("*/built"))
 
 
-class PackageLaneTests(unittest.TestCase):
+class PackageJobTests(unittest.TestCase):
     def test_every_target_builds_even_when_a_job_reads_stdin(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            result = run_lane(root)
+            result = run_job(root)
             self.assertEqual(result.returncode, 0, result.stderr)
             targets = subprocess.check_output(["bash", str(CI / "package-targets.sh"), "amd64"],
                                               text=True).splitlines()
@@ -57,10 +57,10 @@ class PackageLaneTests(unittest.TestCase):
             self.assertIn("fedora-44", distros, "host-session-e2e consumes the fedora-44 RPMs")
             self.assertEqual(built(root), distros)
 
-    def test_a_failing_userspace_fails_the_lane_after_the_others_build(self):
+    def test_a_failing_userspace_fails_the_job_after_the_others_build(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            result = run_lane(root, 'case "$1" in nix) exit 3;; esac\n')
+            result = run_job(root, 'case "$1" in nix) exit 3;; esac\n')
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("failed userspaces: nix", result.stderr)
             self.assertIn("fedora-44", built(root))
@@ -71,7 +71,7 @@ class PackageLaneTests(unittest.TestCase):
             with self.subTest(owner=owner, lint_status=lint_status), \
                     tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                result = run_lane(root, owner=owner, lint_status=lint_status)
+                result = run_job(root, owner=owner, lint_status=lint_status)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse((root / "fetched").exists())
                 self.assertEqual(built(root), [])

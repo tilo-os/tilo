@@ -18,7 +18,7 @@ use std::sync::Arc;
 use collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
-use tilo_render_protocol::patch::{self, Lane, ToUi, Transport as _};
+use tilo_render_protocol::patch::{self, Level, ToUi, Transport as _};
 use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
@@ -73,12 +73,12 @@ impl Window {
                 let _ = writeln!(self.sent, "{message:?}");
                 match message {
                     ToUi::Open {
-                        lane: Lane::Root,
+                        level: Level::Root,
                         tree,
                         ..
                     } => self.root = Some(tree),
                     ToUi::Patch {
-                        lane: Lane::Root,
+                        level: Level::Root,
                         patches,
                     } => {
                         let root = self.root.as_mut().expect("a patch after the open");

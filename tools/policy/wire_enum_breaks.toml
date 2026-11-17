@@ -146,17 +146,17 @@ reason = "write-only: one JSON line a session's lease carries to the app that as
 [[break]]
 file = "crates/collab/collab-types/src/peer.rs"
 enum = "PeerPresencePayload"
-reason = "postcard presence frames between devices and between an app and its runtime, which speak only at an equal peer and runtime version; that variant said which services carried a page's media into a call, which calls riding the call lane no longer have, and both numbers were raised past its removal, so no device or app reads a frame written before it"
+reason = "postcard presence frames between devices and between an app and its runtime, which speak only at an equal peer and runtime version; that variant said which services carried a page's media into a call, which calls riding the call stream no longer have, and both numbers were raised past its removal, so no device or app reads a frame written before it"
 
 [[break]]
 file = "crates/runtime/runtime-collab/src/wire.rs"
 enum = "Topic"
-reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation topic went with the private lane it named, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
+reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation topic went with the private connection it named, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
 
 [[break]]
 file = "crates/runtime/runtime-collab/src/wire.rs"
 enum = "Event"
-reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation event went with the private lane that delivered it, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
+reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation event went with the private connection that delivered it, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
 
 [[break]]
 file = "crates/browser/tilo-browser-runtime/src/shell.rs"
@@ -166,12 +166,12 @@ reason = "write-only: the desktop hands its embedded page a JSON list of request
 [[break]]
 file = "crates/session/messaging-service/src/service"
 enum = "Call"
-reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the calls that carried private Tilo texts went with that lane, and no byte of the wire is kept"
+reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the calls that carried private Tilo texts went with that connection, and no byte of the wire is kept"
 
 [[break]]
 file = "crates/session/messaging-service/src/service"
 enum = "Reply"
-reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the reply carrying a device certificate went with the private Tilo lane, and no byte of the wire is kept"
+reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the reply carrying a device certificate went with the private Tilo connection, and no byte of the wire is kept"
 
 [[break]]
 file = "crates/session/messaging-service/src/service"

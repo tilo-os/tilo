@@ -193,7 +193,7 @@ pub struct WorkspaceRuntime {
     /// Held from a commit's [`Self::remember_commit`] until its log write
     /// is done, so log writes reach the file in the order they were
     /// remembered.
-    pub(crate) commit_log_lane: Arc<AsyncMutex<()>>,
+    pub(crate) commit_log_queue: Arc<AsyncMutex<()>>,
 }
 
 /// The commits a workspace is admitting, by author and operation id, each with
@@ -410,7 +410,7 @@ impl WorkspaceRuntime {
             last_seq: 0,
             commits,
             commit_claims: Arc::default(),
-            commit_log_lane: Arc::new(AsyncMutex::new(())),
+            commit_log_queue: Arc::new(AsyncMutex::new(())),
         })
     }
 
@@ -450,7 +450,7 @@ impl WorkspaceRuntime {
 
     /// Remember an admitted commit. The returned write makes it durable, so
     /// a resend is recognised also after a host restart; run it off the
-    /// workspace lock and in remembering order (see `commit_log_lane`).
+    /// workspace lock and in remembering order (see `commit_log_queue`).
     pub fn remember_commit(&mut self, record: CommitEntry) -> CommitLogWrite {
         self.commits.insert(record);
         self.commits.logged = self.commits.logged.saturating_add(1);

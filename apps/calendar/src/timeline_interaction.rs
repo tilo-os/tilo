@@ -21,54 +21,54 @@ use ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 pub(super) const TIMELINE_SNAP_MIN: i64 = 15;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct Lane {
+pub(super) struct Split {
     pub index: usize,
     pub of: usize,
 }
 
-pub(super) fn lanes(intervals: &[(i64, i64)]) -> Vec<Lane> {
+pub(super) fn splits(intervals: &[(i64, i64)]) -> Vec<Split> {
     let mut order: Vec<(usize, i64, i64)> = intervals
         .iter()
         .enumerate()
         .map(|(i, &(start, end))| (i, start, end.max(start + 1)))
         .collect();
     order.sort_by_key(|&(_, start, end)| (start, -end));
-    let mut placed: Vec<(usize, Lane)> = Vec::with_capacity(order.len());
-    let mut lane_ends: Vec<i64> = Vec::new();
+    let mut placed: Vec<(usize, Split)> = Vec::with_capacity(order.len());
+    let mut split_ends: Vec<i64> = Vec::new();
     let mut cluster_start = 0;
     let mut cluster_end = i64::MIN;
-    let close = |placed: &mut [(usize, Lane)], from: usize, of: usize| {
-        for (_, lane) in placed.iter_mut().skip(from) {
-            lane.of = of.max(1);
+    let close = |placed: &mut [(usize, Split)], from: usize, of: usize| {
+        for (_, split) in placed.iter_mut().skip(from) {
+            split.of = of.max(1);
         }
     };
     for (i, start, end) in order {
         if start >= cluster_end && placed.len() > cluster_start {
-            close(&mut placed, cluster_start, lane_ends.len());
+            close(&mut placed, cluster_start, split_ends.len());
             cluster_start = placed.len();
-            lane_ends.clear();
+            split_ends.clear();
         }
-        let index = if let Some((free, slot)) = lane_ends
+        let index = if let Some((free, slot)) = split_ends
             .iter_mut()
             .enumerate()
-            .find(|(_, lane_end)| **lane_end <= start)
+            .find(|(_, split_end)| **split_end <= start)
         {
             *slot = end;
             free
         } else {
-            lane_ends.push(end);
-            lane_ends.len() - 1
+            split_ends.push(end);
+            split_ends.len() - 1
         };
         cluster_end = if placed.len() == cluster_start {
             end
         } else {
             cluster_end.max(end)
         };
-        placed.push((i, Lane { index, of: 1 }));
+        placed.push((i, Split { index, of: 1 }));
     }
-    close(&mut placed, cluster_start, lane_ends.len());
+    close(&mut placed, cluster_start, split_ends.len());
     placed.sort_by_key(|&(i, _)| i);
-    placed.into_iter().map(|(_, lane)| lane).collect()
+    placed.into_iter().map(|(_, split)| split).collect()
 }
 
 const RESIZE_GRIP: f64 = ui::tokens::Layout::BASE.resize_grip as f64;
@@ -80,7 +80,7 @@ pub(super) struct TimelineSpan {
     pub day: NaiveDate,
     pub start_min: i64,
     pub end_min: i64,
-    pub lane: Lane,
+    pub split: Split,
 }
 
 pub(super) struct TimelineRenderEvent<'a> {
@@ -93,7 +93,7 @@ pub(super) struct TimelineRenderEvent<'a> {
     pub end_min: i64,
     pub clock_end_min: i64,
     pub all_day: bool,
-    pub lane: Lane,
+    pub split: Split,
 }
 
 pub(super) struct TimelineRenderModel<'a, 'event> {
@@ -382,7 +382,7 @@ impl TimelineInteraction {
     fn span_rect(&self, area: Rect, days_len: usize, col: usize, span: &TimelineSpan) -> Rect {
         let geom = self.geometry(area);
         let block = self.block_rect(area, days_len, geom, col, span.start_min, span.end_min);
-        in_lane(block, span.lane)
+        in_split(block, span.split)
     }
 
     /// Whether `point` is on the bottom edge of `span`'s block, where a
@@ -788,7 +788,7 @@ impl TimelineInteraction {
                 .iter()
                 .filter(|event| event.day == *day && !event.all_day && Some(event.id) != moving_id)
             {
-                let block = in_lane(
+                let block = in_split(
                     self.block_rect(
                         area,
                         model.days.len(),
@@ -797,7 +797,7 @@ impl TimelineInteraction {
                         event.start_min,
                         event.end_min,
                     ),
-                    event.lane,
+                    event.split,
                 );
                 let color = event.color.color(theme);
                 let tinted = colors.tinted_chip_on(
@@ -1100,13 +1100,13 @@ struct Ghost<'a> {
     edge: vello::peniko::Color,
 }
 
-fn in_lane(block: Rect, lane: Lane) -> Rect {
-    if lane.of <= 1 {
+fn in_split(block: Rect, split: Split) -> Rect {
+    if split.of <= 1 {
         return block;
     }
-    let width = block.width() / lane.of as f64;
-    let x0 = block.x0 + width * lane.index as f64;
-    let gap = if lane.index + 1 < lane.of { 1.0 } else { 0.0 };
+    let width = block.width() / split.of as f64;
+    let x0 = block.x0 + width * split.index as f64;
+    let gap = if split.index + 1 < split.of { 1.0 } else { 0.0 };
     Rect::new(x0, block.y0, x0 + width - gap, block.y1)
 }
 
@@ -1185,7 +1185,7 @@ mod tests {
                     day: days[1],
                     start_min: 10 * 60,
                     end_min: 11 * 60,
-                    lane: Lane::default(),
+                    split: Split::default(),
                 };
                 let from = point_at(1, 10 * 60 + 15);
                 assert!(controller.begin_drag(area(), &days, &[span], from));
@@ -1212,7 +1212,7 @@ mod tests {
                     day: days[0],
                     start_min: 8 * 60,
                     end_min: 9 * 60,
-                    lane: Lane::default(),
+                    split: Split::default(),
                 };
                 let point = point_at(0, 8 * 60 + 30);
                 controller.pointer = point;
@@ -1244,7 +1244,7 @@ mod tests {
                 day: days[2],
                 start_min: 9 * 60,
                 end_min: 10 * 60,
-                lane: Lane::default(),
+                split: Split::default(),
             };
             let mut grip = point_at(2, 10 * 60);
             grip.y -= 2.0;
@@ -1272,32 +1272,32 @@ mod tests {
 
         phase overlapping_events_share_their_day_side_by_side;
         {
-            let lane = |index, of| Lane { index, of };
+            let split = |index, of| Split { index, of };
             assert_eq!(
-                lanes(&[(540, 600), (570, 660), (600, 630), (720, 780)]),
-                vec![lane(0, 2), lane(1, 2), lane(0, 2), lane(0, 1)]
+                splits(&[(540, 600), (570, 660), (600, 630), (720, 780)]),
+                vec![split(0, 2), split(1, 2), split(0, 2), split(0, 1)]
             );
             assert_eq!(
-                lanes(&[(540, 600), (540, 600), (540, 600)]),
-                vec![lane(0, 3), lane(1, 3), lane(2, 3)]
+                splits(&[(540, 600), (540, 600), (540, 600)]),
+                vec![split(0, 3), split(1, 3), split(2, 3)]
             );
             assert_eq!(
-                lanes(&[(540, 600), (600, 660)]),
-                vec![lane(0, 1), lane(0, 1)]
+                splits(&[(540, 600), (600, 660)]),
+                vec![split(0, 1), split(0, 1)]
             );
             let mut controller = TimelineInteraction::new();
             controller.test_set_offset_y(0.0);
             let days = days();
             let (left, right) = (Uuid::new_v4(), Uuid::new_v4());
-            let span = |id, lane| TimelineSpan {
+            let span = |id, split| TimelineSpan {
                 id,
                 original: days[0],
                 day: days[0],
                 start_min: 9 * 60,
                 end_min: 10 * 60,
-                lane,
+                split,
             };
-            let spans = [span(left, lane(0, 2)), span(right, lane(1, 2))];
+            let spans = [span(left, split(0, 2)), span(right, split(1, 2))];
             let mid = point_at(0, 9 * 60 + 30);
             let geom = TimelineInteraction::test_geometry(area());
             let quarter = TimelineInteraction::column_width(area(), 7, geom) / 4.0;

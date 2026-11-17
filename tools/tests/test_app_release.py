@@ -20,8 +20,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class AppReleaseTests(unittest.TestCase):
-    def test_release_architectures_default_to_both_lanes_and_fail_closed(self):
-        with self.subTest(phase='ordinary builds default to both native lanes'):
+    def test_release_architectures_default_to_both_jobs_and_fail_closed(self):
+        with self.subTest(phase='ordinary builds default to both native jobs'):
             for ref, event in [("refs/heads/stable", "push"), ("refs/pull/17/merge", "pull_request")]:
                 with self.subTest(event=event):
                     self.assertEqual(

@@ -4,7 +4,7 @@
 )]
 use super::*;
 
-/// The three toggles a lane carries, the name the router addresses each by and
+/// The three toggles a track carries, the name the router addresses each by and
 /// the catalogue message a reader hears for it. The written name is the router's
 /// alone, so a route survives the window's language.
 const TRACK_TOGGLES: [(&str, &str); 3] = [
@@ -520,7 +520,7 @@ impl VideoEditorApp {
                         ),
                 );
             }
-            // The lane's fader, its pan and whether it has been caught
+            // The track's fader, its pan and whether it has been caught
             // clipping ride on the group's value. A meter is a picture, and a
             // picture is the one thing a reader cannot have — so everything
             // the bar says has to be said here too, in the place a reader is
@@ -539,7 +539,7 @@ impl VideoEditorApp {
         }
         tracks.extend(self.a11y_timeline_empty(&self.regions()));
         // The master strip, as the first thing in the pane. A reader meets
-        // the mix's state before the lanes, which is the order the screen
+        // the mix's state before the tracks, which is the order the screen
         // puts it in — and when it has clipped, the node is a *button*,
         // because pressing it walks the playhead to the next place it did.
         if let Some(words) = self.mix_words() {
@@ -1107,17 +1107,17 @@ impl VideoEditorApp {
             (Section::Mix, Some(c)) => match self.project.track(c.track) {
                 Some(t) => {
                     let level = self.mix.track(t.id);
-                    let lane = format!("{} {}", t.gain_words(), t.pan_words());
+                    let track = format!("{} {}", t.gain_words(), t.pan_words());
                     if level.is_some_and(|l| l.clipped) {
                         crate::resource::CATALOG.t_args(
                             "video-editor-summary-clipping",
-                            &[("level", ui::i18n::ArgValue::Text(lane))],
+                            &[("level", ui::i18n::ArgValue::Text(track))],
                         )
                     } else {
-                        format!("{}, {lane}", t.name)
+                        format!("{}, {track}", t.name)
                     }
                 }
-                None => crate::resource::CATALOG.t("video-editor-a11y-no-lane"),
+                None => crate::resource::CATALOG.t("video-editor-a11y-no-track"),
             },
             (Section::Key, Some(c)) => Self::a11y_key_summary(c, at),
             (Section::Mask, Some(c)) => Self::a11y_mask_summary(c, at),
@@ -1970,7 +1970,7 @@ impl VideoEditorApp {
         if f.is_media() {
             self.dispatch_selected_media();
         } else if f.is_track() {
-            // The lane fader writes the lane, exactly as the drag commits it.
+            // The track fader writes the track, exactly as the drag commits it.
             // Dispatching a clip write here would report success and change
             // nothing — a keyboard and a pointer must not disagree about what
             // they did.

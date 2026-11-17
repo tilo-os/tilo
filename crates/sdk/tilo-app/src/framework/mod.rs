@@ -437,7 +437,7 @@ pub use workspace::{ResourceOpener, WorkspaceResource};
 
 /// Record content, canonical hashing and picture headers. Use the store
 /// borrowed through `SurfaceCx::content` or `LaunchInput::content` so the host
-/// binds reads and writes to the resource's content lane.
+/// binds reads and writes to the resource's content content link.
 pub mod content {
     pub use tilo_content::{
         ContentStore, ImageFormat, content_address, hash_bytes, image_format, image_size,

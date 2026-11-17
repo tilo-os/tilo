@@ -171,7 +171,7 @@ otherwise this host does (needs podman here). Tilo images on
 `registry.tilo.so` are public, so neither pull needs a login. Whether a
 commit built your architecture:
 `skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`
-lists the platforms; the aarch64 lane builds the newest main commit only, so
+lists the platforms; the aarch64 job builds the newest main commit only, so
 an older one may lack arm64.
 
 ## Apps (`app:<dir>`)

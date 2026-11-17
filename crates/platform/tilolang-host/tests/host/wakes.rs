@@ -77,7 +77,7 @@ tilo_test_env::scenario! {
         );
         let mut second = Window::over(ChannelTransport::new(theirs).unwrap());
         second.send(&[ToApp::Fire {
-            lane: Lane::Root,
+            level: Level::Root,
             key: "early".to_owned(),
             event: "pressed before it opened".to_owned(),
             value: None,
@@ -93,7 +93,7 @@ tilo_test_env::scenario! {
         // What a running window sends wakes the loop, and its frame takes it.
         let (key, event) = window.increment();
         window.send(&[ToApp::Fire {
-            lane: Lane::Root,
+            level: Level::Root,
             key,
             event,
             value: None,

@@ -769,7 +769,7 @@ view shelf(s: Shelf) {
             Some(&Value::Opt(Some(Box::new(Value::Int(0))))),
             "the window opens on the list"
         );
-        // Choosing the board shows the project through it: a lane per section, and no row.
+        // Choosing the board shows the project through it: a list per section, and no row.
         window
             .fire_with(&tabs.key, "change", Some(&Value::Int(1)))
             .unwrap();

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Copy and cut files in Files, paste them into another folder, check the bytes.
 
-Files reaches the session's file clipboard through its hosted lane: the shell
+Files reaches the session's file clipboard through its hosted job: the shell
 answers the capture, the publication and the paste, and the session's paste
 engine writes the files. The steps wait for the bytes on disk, because a key
 sent while the app is still reading a folder is one the app can only drop; a

@@ -515,14 +515,14 @@ fn the_playhead_ends_at_the_last_track_clear_of_the_add_track_row() {
             }
             let r = app.regions();
             assert!(!app.project.clips.is_empty(), "fixture: there are clips");
-            let px = app.time_to_x(app.playhead, &r.lanes);
+            let px = app.time_to_x(app.playhead, &r.tracks);
             let line = Rect::new(px - 1.0, r.ruler.y0, px + 1.0, app.playhead_bottom(&r));
-            let lanes = app.lane_rects(&r);
-            let last = lanes.last().map(|(_, _, lane)| *lane).expect("a track");
+            let tracks = app.track_rects(&r);
+            let last = tracks.last().map(|(_, _, track)| *track).expect("a track");
             assert!(
                 (line.y1 - last.y1).abs() < 1e-9 && line.y1 > r.ruler.y1,
                 "{width} px, {} tracks: the playhead ends at the last track: {line:?} vs {last:?}",
-                lanes.len()
+                tracks.len()
             );
             let buttons = app.add_track_buttons(&r);
             assert!(!buttons.is_empty(), "fixture: the add-track row is in view");
@@ -532,7 +532,7 @@ fn the_playhead_ends_at_the_last_track_clear_of_the_add_track_row() {
                     line.intersect(row).area() <= 0.0,
                     "{width} px, {} tracks: the playhead {line:?} crosses the \
                      add-track row at {kind:?} {row:?}",
-                    lanes.len()
+                    tracks.len()
                 );
             }
         }
@@ -544,7 +544,7 @@ fn an_empty_timelines_playhead_stays_in_the_ruler() {
     for width in [420.0, 1280.0] {
         let mut app = sample(width);
         let r = app.regions();
-        let last_track = app.lane_rects(&r).last().map(|(_, _, lane)| lane.y1);
+        let last_track = app.track_rects(&r).last().map(|(_, _, track)| track.y1);
         assert_eq!(
             Some(app.playhead_bottom(&r)),
             last_track,

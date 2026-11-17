@@ -19,7 +19,7 @@ case $arches in
     # Ten package artifacts plus the native OS payload pair, four public
     # RPM-key trust artifacts, the maintained verified repo definition, and
     # a public broker request/receipt pair per architecture.
-    # ARM adds its package/payload set, but only the x86 lane publishes the
+    # ARM adds its package/payload set, but only the x86 job publishes the
     # duplicate-free key and repo trust bundle.
     amd64) expected_count=20 ;;
     amd64,arm64) expected_count=30 ;;

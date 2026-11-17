@@ -844,7 +844,7 @@ measures it in, read as one with `Duration(n)`.
   action on an item while that item has the keyboard, an action on the app's root window-wide.
   The host's bar and menus show it, and so does the palette. The key is checked when the app
   compiles, and two actions of one target cannot answer the same keys.
-- A slot that holds a component (`ui.BoardLane` holds `ui.BoardCard`s) takes a view of the
+- A slot that holds a component (`ui.BoardList` holds `ui.BoardCard`s) takes a view of the
   package whose body is that component: views are components.
 - `require <condition> "<reason>"` lines head an action's body: when the action is available
   on its target. Where it would be offered on the target (`actions(r)`: the host's bar and a

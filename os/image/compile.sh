@@ -184,7 +184,7 @@ export LC_ALL=C.UTF-8 TZ=UTC CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=0
 : "${TILO_CARGO_TIMINGS:=}"
 : "${TILO_REQUIRE_COMPILER_CACHE:=0}"
 # `local` compiles through sccache over SCCACHE_DIR unless the caller gives a
-# wrapper of its own (t's). `off` is the independent reproduction lane of a
+# wrapper of its own (t's). `off` is the independent reproduction job of a
 # publication: with no cache at all, a planted object in a shared cache makes the
 # two builds differ. It runs no wrapper, and refuses compiler-cache settings.
 : "${TILO_COMPILER_CACHE:=local}"

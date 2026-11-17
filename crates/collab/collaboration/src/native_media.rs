@@ -1,4 +1,4 @@
-//! Bounded control lane on the same admitted channel, independent of document RPCs.
+//! Bounded control queue on the same admitted channel, independent of document RPCs.
 use super::{CollabEvent, InboundBridge};
 use runtime_collab::native_media::{
     Command, PICTURES_DEADLINE, REPLY_TIMEOUT, Request, Snapshot, WATCH_DEADLINE,
@@ -99,7 +99,7 @@ impl Sender {
             return false;
         }
         // Exhaustion permanently disables new effects on this retained route;
-        // only the terminal Leave sentinel may cross the reserved stop lane.
+        // only the terminal Leave sentinel may cross the reserved stop queue.
         if effect {
             if let Some(next) = floor
                 .intent
@@ -372,7 +372,7 @@ pub(super) fn start(receiver: Receiver, routes: Routes) -> Worker {
                     );
                     continue;
                 }
-                // A held watch has its own lane, and so has collecting
+                // A held watch has its own queue, and so has collecting
                 // pictures: a status read or an effect never cancels either,
                 // and a newer one of the same kind replaces it.
                 let watch = matches!(job.request.command, Command::Watch { .. });

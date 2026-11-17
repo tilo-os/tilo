@@ -1,4 +1,4 @@
-//! What this desktop's session provides of the fabric: the link over its peer lane and what it carries.
+//! What this desktop's session provides of the fabric: the link over its peer connection and what it carries.
 
 mod session;
 

@@ -9934,7 +9934,7 @@ async fn drive_connection(
     // descriptors are closed on receipt.
     let served = if let Some(received) = handed_descriptors {
         let (reader, writer) = tokio::io::split(
-            runtime_portal::descriptor_lane::DescriptorStream::receiving(stream, received),
+            runtime_portal::descriptors::DescriptorStream::receiving(stream, received),
         );
         wire::serve(connection, outgoing, reader, writer).await
     } else {

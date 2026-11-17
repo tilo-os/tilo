@@ -1028,7 +1028,7 @@ impl ShellPart {
         if let Some(host) = part.instance.host() {
             host.declare_rust_views();
         }
-        // What a composed view opens is a place on the canvas, never a lane of the shell's own
+        // What a composed view opens is a place on the canvas, never a level of the shell's own
         // window.
         part.instance.place_opens(true);
         part
@@ -1574,7 +1574,7 @@ impl ShellPart {
             }
         }
         // What a composed view opened (a video row pressed on a channel's page): a place the
-        // session arranges on the canvas, one step of the person's, never a detail lane of the
+        // session arranges on the canvas, one step of the person's, never a detail level of the
         // shell's own window (one-app-model.md §2, shell.md §8).
         self.place_opens();
         // The exchanges ran until neither side had more to say, unless they ran out first:

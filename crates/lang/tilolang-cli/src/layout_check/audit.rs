@@ -194,7 +194,7 @@ fn words_of(node: &InspectionNode) -> String {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Scrolls {
     down: bool,
-    /// Content may go on past its sides (a board's lanes in `ui.Scroll(across: true)`).
+    /// Content may go on past its sides (a board's lists in `ui.Scroll(across: true)`).
     across: bool,
 }
 
@@ -1237,9 +1237,9 @@ impl Walk<'_> {
         // The content stands in the room a scroller keeps for its bar, which the bar at the foot
         // does not: a column the measure bounds centres in it, half that room to the other side,
         // and a column as wide as the viewport keeps its whole width of it at the trailing edge.
-        let lane = (rect(content.rect).width() - rect(column_page.rect).width()).max(0.0);
-        if (bar.width() - column.width()).abs() <= lane + 1.0
-            && (bar.x0 - column.x0).abs() <= lane / 2.0 + 1.0
+        let spare = (rect(content.rect).width() - rect(column_page.rect).width()).max(0.0);
+        if (bar.width() - column.width()).abs() <= spare + 1.0
+            && (bar.x0 - column.x0).abs() <= spare / 2.0 + 1.0
         {
             return;
         }

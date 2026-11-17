@@ -535,7 +535,7 @@ jobs:
           # Advancing main must not invalidate an already-running immutable build.
 
   build:
-    # PR compilation belongs to the focused CI lane. Packaging remains available
+    # PR compilation belongs to the focused CI job. Packaging remains available
     # through workflow_dispatch (publish=false) before requesting publication.
     if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.count != '0' && needs.plan.outputs.engine_runtime_only != 'true' && needs.plan.outputs.signal_provider_only != 'true'"
     needs: [plan, authorize-publish]

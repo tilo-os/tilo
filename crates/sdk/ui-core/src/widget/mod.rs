@@ -2306,7 +2306,7 @@ pub use date_indexed_scrollbar::{
     ProjectedDateMarker,
 };
 pub mod board;
-pub use board::{Board, BoardCardProps, BoardDrop, BoardLaneProps, BoardProps};
+pub use board::{Board, BoardCardProps, BoardDrop, BoardListProps, BoardProps};
 pub use drag_bus::{InFlight, Landed};
 pub use drag_run::{DragDrop, DragRun, RunAxis, RunGroup, RunItem};
 pub use drag_run_component::{DragItemProps, DragRunProps};
@@ -2417,7 +2417,7 @@ mod group_row;
 pub use group_row::{
     CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FLOAT_CARD_MARGIN,
     FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, GroupRow, GroupTopology, HintPlaces, JUMP_PX_PER_DETENT,
-    OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX, StripLane,
+    OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX, StripSection,
     TabDropTarget, WheelJumpAccum, keep_float_inside, pan_within_canvas, wheel_jump_detents,
 };
 mod finger_path;

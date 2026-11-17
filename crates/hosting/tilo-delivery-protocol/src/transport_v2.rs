@@ -38,7 +38,7 @@ pub use presence::{
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EnvelopeV2 {
     State(Envelope),
-    /// Retired: a device opened the broker private lane in a workspace. Actions
+    /// Retired: a device opened the broker private connection in a workspace. Actions
     /// travel to another device on its own connection now; nothing sends
     /// this, and its place is kept so stored bytes still decode.
     RetiredEnableActions,
@@ -52,9 +52,9 @@ pub enum EnvelopeV2 {
     /// Retired: [`Self::RetiredDirected`] with the source user the relay
     /// attested.
     RetiredDelivered,
-    /// Retired: a lane spoke the broker's protocol extensions.
+    /// Retired: a connection spoke the broker's protocol extensions.
     RetiredEnableBrokerClient,
-    /// Retired: a lane named the durable broker host of its workspace.
+    /// Retired: a connection named the durable broker host of its workspace.
     RetiredRegisterBroker,
     /// Retired: [`Self::RetiredDelivered`] carrying the source's certificate.
     RetiredCertifiedDelivered,
@@ -90,8 +90,8 @@ pub enum EnvelopeV2 {
 }
 
 impl EnvelopeV2 {
-    /// Whether this frame is one of the retired private-lane frames: a
-    /// device's action lane went with the host that routed it, so a peer
+    /// Whether this frame is one of the retired private-connection frames: a
+    /// device's action connection went with the host that routed it, so a peer
     /// sending one speaks a protocol this build does not serve.
     pub const fn is_retired(&self) -> bool {
         matches!(
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn retired_private_frames_keep_their_places() {
-        // The private lane's ten frames are gone; each keeps its
+        // The private connection's ten frames are gone; each keeps its
         // discriminant so a frame a peer of the old build sends still
         // decodes as the tombstone in its place.
         for (kind, frame) in [

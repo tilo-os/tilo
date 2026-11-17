@@ -21,14 +21,14 @@ For every record of the run:
 - **Absolute budgets.** `tools/perf/kpi-budgets.toml` ceilings on p50, p95,
   p99 or max. An `enforce = true` miss fails at once; otherwise the miss is
   reported as a target not yet met.
-- **Missing results.** Each budgeted KPI is owed by one lane, the workflow
-  that produces it (`[lanes]` in kpi-budgets.toml): a group, the KPI id's
-  first segment, belongs to one lane, and a lane may also claim single KPIs of
-  another lane's group. A KPI the run's `--lane` owes, in a selected group,
+- **Missing results.** Each budgeted KPI is owed by one job, the workflow
+  that produces it (`[jobs]` in kpi-budgets.toml): a group, the KPI id's
+  first segment, belongs to one job, and a job may also claim single KPIs of
+  another job's group. A KPI the run's `--job` owes, in a selected group,
   that produced no record fails as `missing`, and so does a selected group
   with no record at all: a benchmark that stopped reporting is not a pass. A
   missing result is reported and counted apart from a regression, and a KPI
-  another lane owes is never charged to this one.
+  another job owes is never charged to this one.
 
 `--accept KPI[,KPI]` (or `all`) records the run's values as the new baseline
 start for an intended change; budgets still apply. `--synthetic SERIES
@@ -37,7 +37,7 @@ proves the check end to end: synthetic records never enter a real baseline and
 only see the previous record of their own series.
 
     python3 tools/perf/compare.py --results results/*.jsonl \
-        --store https://code.tilo.so --lane perf-scheduled --groups fs,footprint \
+        --store https://code.tilo.so --job perf-scheduled --groups fs,footprint \
         --publish-dir out --run "$RUN_ID-$ATTEMPT" --summary summary.md
 
 The exit status is 1 when any record fails, after the annotated records and
@@ -64,13 +64,13 @@ BUDGETS = Path(__file__).resolve().parent / "kpi-budgets.toml"
 CEILINGS = ("p50", "p95", "p99", "max")
 REGRESSED = frozenset({"regression-pending", "regression"})
 FAILING = frozenset({"regression", "unit-mismatch"})
-DEFAULT_LANE = "perf-scheduled"
+DEFAULT_JOB = "perf-scheduled"
 DEFAULTS = {"p50_tolerance": 1.10, "p99_tolerance": 1.20, "baseline_runs": 5,
             "baseline_min_runs": 1, "min_delta": 0.0}
 
 
 @dataclasses.dataclass(frozen=True)
-class Lane:
+class Job:
     """The workflow that produces a set of budgeted KPIs."""
 
     groups: frozenset[str]
@@ -82,54 +82,54 @@ class Budgets:
     defaults: dict[str, float]
     kpis: dict[str, dict[str, Any]]
     # Empty: no ownership declared, so a run owes every budget of its groups.
-    lanes: dict[str, Lane] = dataclasses.field(default_factory=dict)
+    jobs: dict[str, Job] = dataclasses.field(default_factory=dict)
 
     def setting(self, kpi: str, name: str) -> float:
         return float(self.kpis.get(kpi, {}).get(name, self.defaults[name]))
 
     def owner(self, kpi: str) -> str | None:
-        """The lane that owes `kpi`: the one claiming it by id, else its group's."""
+        """The job that owes `kpi`: the one claiming it by id, else its group's."""
         group = kpi.split(".", 1)[0]
-        claimed = [name for name, lane in self.lanes.items() if kpi in lane.kpis]
-        grouped = [name for name, lane in self.lanes.items() if group in lane.groups]
+        claimed = [name for name, job in self.jobs.items() if kpi in job.kpis]
+        grouped = [name for name, job in self.jobs.items() if group in job.groups]
         return (claimed or grouped or [None])[0]
 
-    def owes(self, lane: str, kpi: str) -> bool:
-        return not self.lanes or self.owner(kpi) == lane
+    def owes(self, job: str, kpi: str) -> bool:
+        return not self.jobs or self.owner(kpi) == job
 
-    def lane_groups(self, lane: str) -> set[str]:
-        """Every group in which `lane` produces a KPI."""
-        entry = self.lanes[lane]
+    def job_groups(self, job: str) -> set[str]:
+        """Every group in which `job` produces a KPI."""
+        entry = self.jobs[job]
         return set(entry.groups) | {kpi.split(".", 1)[0] for kpi in entry.kpis}
 
 
-def load_lanes(path: Path, data: dict[str, Any], kpis: dict[str, Any]) -> dict[str, Lane]:
-    lanes: dict[str, Lane] = {}
+def load_jobs(path: Path, data: dict[str, Any], kpis: dict[str, Any]) -> dict[str, Job]:
+    jobs: dict[str, Job] = {}
     for name, entry in data.items():
         unknown = set(entry) - {"groups", "kpis"}
         if unknown:
-            raise ValueError(f"{path}: lane {name} has unknown keys {sorted(unknown)}")
-        lane = Lane(frozenset(entry.get("groups", [])), frozenset(entry.get("kpis", [])))
-        for group in sorted(lane.groups):
-            other = next((seen for seen, known in lanes.items() if group in known.groups), None)
+            raise ValueError(f"{path}: job {name} has unknown keys {sorted(unknown)}")
+        job = Job(frozenset(entry.get("groups", [])), frozenset(entry.get("kpis", [])))
+        for group in sorted(job.groups):
+            other = next((seen for seen, known in jobs.items() if group in known.groups), None)
             if other is not None:
-                raise ValueError(f"{path}: group {group} belongs to lanes {other} and {name}; a group "
-                                 "has one producer (a lane claims another's KPI with kpis = [...])")
-        for kpi in sorted(lane.kpis):
+                raise ValueError(f"{path}: group {group} belongs to jobs {other} and {name}; a group "
+                                 "has one producer (a job claims another's KPI with kpis = [...])")
+        for kpi in sorted(job.kpis):
             if kpi not in kpis:
-                raise ValueError(f"{path}: lane {name} claims {kpi}, which has no budget")
-            other = next((seen for seen, known in lanes.items() if kpi in known.kpis), None)
+                raise ValueError(f"{path}: job {name} claims {kpi}, which has no budget")
+            other = next((seen for seen, known in jobs.items() if kpi in known.kpis), None)
             if other is not None:
-                raise ValueError(f"{path}: {kpi} is claimed by lanes {other} and {name}")
-        lanes[name] = lane
-    return lanes
+                raise ValueError(f"{path}: {kpi} is claimed by jobs {other} and {name}")
+        jobs[name] = job
+    return jobs
 
 
 def load_budgets(path: Path) -> Budgets:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     defaults = {**DEFAULTS, **data.get("defaults", {})}
     kpis = data.get("kpi", {})
-    lanes = load_lanes(path, data.get("lanes", {}), kpis)
+    jobs = load_jobs(path, data.get("jobs", {}), kpis)
     allowed = {"unit", "enforce", "source", *CEILINGS, *DEFAULTS}
     for kpi, entry in kpis.items():
         if not record.KPI.fullmatch(kpi):
@@ -141,11 +141,11 @@ def load_budgets(path: Path) -> Budgets:
             raise ValueError(f"{path}: {kpi} needs a unit from {sorted(record.UNITS)}")
         if not any(name in entry for name in CEILINGS):
             raise ValueError(f"{path}: {kpi} names no ceiling ({', '.join(CEILINGS)})")
-    budgets = Budgets(defaults, kpis, lanes)
-    orphans = sorted(kpi for kpi in kpis if lanes and budgets.owner(kpi) is None)
+    budgets = Budgets(defaults, kpis, jobs)
+    orphans = sorted(kpi for kpi in kpis if jobs and budgets.owner(kpi) is None)
     if orphans:
-        raise ValueError(f"{path}: no lane produces {', '.join(orphans)}; add its group, or the KPI, "
-                         "to the [lanes] entry of the workflow that measures it")
+        raise ValueError(f"{path}: no job produces {', '.join(orphans)}; add its group, or the KPI, "
+                         "to the [jobs] entry of the workflow that measures it")
     return budgets
 
 
@@ -274,26 +274,26 @@ def judge(item: record.Record, history: list[record.Record], budgets: Budgets, a
 
 
 def compare(current: list[record.Record], history: list[record.Record], budgets: Budgets,
-            groups: set[str], accept: set[str], lane: str = DEFAULT_LANE) -> list[Row]:
+            groups: set[str], accept: set[str], job: str = DEFAULT_JOB) -> list[Row]:
     seen = {item.kpi for item in current}
     if len(seen) != len(current):
         raise ValueError("the run holds two records for one KPI")
-    if budgets.lanes:
-        if lane not in budgets.lanes:
-            raise ValueError(f"unknown lane {lane!r} (lanes: {', '.join(sorted(budgets.lanes))})")
-        foreign = sorted(groups - budgets.lane_groups(lane))
+    if budgets.jobs:
+        if job not in budgets.jobs:
+            raise ValueError(f"unknown job {job!r} (jobs: {', '.join(sorted(budgets.jobs))})")
+        foreign = sorted(groups - budgets.job_groups(job))
         if foreign:
-            raise ValueError(f"lane {lane} produces no KPI of group {', '.join(foreign)} "
-                             f"(its groups: {', '.join(sorted(budgets.lane_groups(lane)))})")
+            raise ValueError(f"job {job} produces no KPI of group {', '.join(foreign)} "
+                             f"(its groups: {', '.join(sorted(budgets.job_groups(job)))})")
     rows = [judge(item, history, budgets, "all" in accept or item.kpi in accept) for item in current]
     produced = {item.group for item in current}
     for group in sorted(groups - produced):
         rows.append(Row(None, f"{group}.*", "missing", True,
                         f"no result (not a regression): group {group} was selected and produced no record"))
     for kpi in sorted(budgets.kpis):
-        if kpi.split(".", 1)[0] in groups & produced and kpi not in seen and budgets.owes(lane, kpi):
+        if kpi.split(".", 1)[0] in groups & produced and kpi not in seen and budgets.owes(job, kpi):
             rows.append(Row(None, kpi, "missing", True,
-                            f"no result (not a regression): {lane} owes this budgeted KPI and did not report it"))
+                            f"no result (not a regression): {job} owes this budgeted KPI and did not report it"))
     return rows
 
 
@@ -352,8 +352,8 @@ def main(argv: list[str] | None = None, now: datetime.datetime | None = None) ->
     parser.add_argument("--store", required=True, help="a forge URL or a local store directory")
     parser.add_argument("--owner", default="tilo")
     parser.add_argument("--budgets", type=Path, default=BUDGETS)
-    parser.add_argument("--lane", default=DEFAULT_LANE,
-                        help="the workflow this run is ([lanes] in the budgets); only its KPIs can be missing")
+    parser.add_argument("--job", default=DEFAULT_JOB,
+                        help="the workflow this run is ([jobs] in the budgets); only its KPIs can be missing")
     parser.add_argument("--groups", default="", help="comma-separated KPI groups this run was meant to produce")
     parser.add_argument("--accept", default="", help="comma-separated KPI ids (or all) to accept as the new baseline")
     parser.add_argument("--synthetic", default="", help="tag the run as this synthetic series")
@@ -372,7 +372,7 @@ def main(argv: list[str] | None = None, now: datetime.datetime | None = None) ->
         history = store.history(store.open_store(args.store, args.owner), months)
         groups = {group for group in args.groups.split(",") if group}
         accept = {kpi for kpi in args.accept.split(",") if kpi}
-        rows = compare(current, history, load_budgets(args.budgets), groups, accept, args.lane)
+        rows = compare(current, history, load_budgets(args.budgets), groups, accept, args.job)
     except ValueError as error:
         print(f"compare.py: {error}", file=sys.stderr)
         return 1

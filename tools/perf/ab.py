@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Same-job A/B: prove a performance change despite runner noise.
 
-The scheduled lane compares a run with earlier nights on other hosts, and on
+The scheduled job compares a run with earlier nights on other hosts, and on
 the shared `runner` class that spread is larger than most changes (the same
 relay bench measured 15.9 and 31.2 CPU-seconds per member-hour on two
 runs). This tool builds two commits in one checkout, one after the other, and

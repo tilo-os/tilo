@@ -46,7 +46,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 # Fedora 44 Cloud Base (Generic), the release image: the stock Fedora the
-# fedora-44 RPM lane builds for. Pinned by the CHECKSUM Fedora publishes.
+# fedora-44 RPM job builds for. Pinned by the CHECKSUM Fedora publishes.
 IMAGE_URL = ("https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/"
              "x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2")
 IMAGE_SHA256 = "28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f"
@@ -381,7 +381,7 @@ def compositor_health(st: dict, pid: str) -> list[str]:
 def record_source(rpms_dir: Path, producer: str) -> dict:
     """What the report says it tested: each RPM's name, size and SHA-256, the check that built
     them and the commit and reference of this run (t's T_COMMIT and T_REF where it sets them).
-    These are the lane's unsigned, install-tested packages; nothing here claims a signature."""
+    These are the job's unsigned, install-tested packages; nothing here claims a signature."""
     rpms = sorted(rpms_dir.glob("*.rpm"))
     if not rpms:
         raise Fail(f"no RPMs in {rpms_dir}")

@@ -39,7 +39,7 @@ use crate::model::{Calendar, Event, Id, ListSel, Palette, Priority, Task, View};
 use crate::tasks::{TasksAction, TasksSource, TasksView};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
-    TimelineRenderModel, TimelineSpan, lanes as timeline_lanes,
+    TimelineRenderModel, TimelineSpan, splits as timeline_splits,
 };
 #[cfg(test)]
 use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
@@ -3036,8 +3036,8 @@ impl CalendarApp {
                 .iter()
                 .map(|it| Self::block_minutes(it, *day))
                 .collect();
-            for ((it, (start_min, end_min)), lane) in
-                timed.iter().zip(&minutes).zip(timeline_lanes(&minutes))
+            for ((it, (start_min, end_min)), split) in
+                timed.iter().zip(&minutes).zip(timeline_splits(&minutes))
             {
                 spans.push(TimelineSpan {
                     id: it.event.id,
@@ -3045,7 +3045,7 @@ impl CalendarApp {
                     day: *day,
                     start_min: *start_min,
                     end_min: *end_min,
-                    lane,
+                    split,
                 });
             }
         }
@@ -3074,12 +3074,12 @@ impl CalendarApp {
                 .filter(|(it, _)| !it.event.all_day)
                 .map(|(_, minutes)| *minutes)
                 .collect();
-            let mut lanes = timeline_lanes(&timed).into_iter();
+            let mut splits = timeline_splits(&timed).into_iter();
             for (it, (start_min, end_min)) in shown.iter().zip(minutes) {
-                let lane = if it.event.all_day {
-                    crate::timeline_interaction::Lane::default()
+                let split = if it.event.all_day {
+                    crate::timeline_interaction::Split::default()
                 } else {
-                    lanes.next().unwrap_or_default()
+                    splits.next().unwrap_or_default()
                 };
                 let clock_end_min = if it.end.date() == *day {
                     i64::from(it.end.hour()) * 60 + i64::from(it.end.minute())
@@ -3096,7 +3096,7 @@ impl CalendarApp {
                     start_min,
                     end_min,
                     all_day: it.event.all_day,
-                    lane,
+                    split,
                 });
             }
         }

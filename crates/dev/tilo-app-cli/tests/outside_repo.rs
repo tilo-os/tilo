@@ -15,7 +15,7 @@
 //! the public DNS lookup and the owner's review itself.
 //!
 //! It is a cold build of the whole SDK graph in a fresh directory, so it is
-//! ignored by default. CI's SDK lane runs it:
+//! ignored by default. CI's SDK job runs it:
 //!
 //! ```sh
 //! cargo test -p tilo-app-cli --test it outside_repo -- --ignored --nocapture
@@ -41,7 +41,7 @@ const PUBLISHER_KEY: &str =
 const APP_ID: &str = "com.example.hello";
 
 #[test]
-#[ignore = "cold build of the SDK graph outside the workspace; run in CI's SDK lane"]
+#[ignore = "cold build of the SDK graph outside the workspace; run in CI's SDK job"]
 fn a_generated_app_goes_from_new_to_a_release_awaiting_review() {
     let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()

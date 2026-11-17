@@ -440,8 +440,8 @@ impl ActivityLayer {
             banners: self.banners.now(),
             readout: self.readout.now().map(local),
             // A field inside a card is the card's own: the card is what the person types in. A
-            // docked window's field is its own wherever it stands in the window's lane, folded to
-            // its header or open; the strip keeps the windows it shows clear of that lane.
+            // docked window's field is its own wherever it stands in the window's area, folded to
+            // its header or open; the strip keeps the windows it shows clear of that area.
             caret: self
                 .typing
                 .borrow()

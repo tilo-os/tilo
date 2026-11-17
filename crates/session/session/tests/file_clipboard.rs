@@ -2,8 +2,8 @@
 //! pastes it into another folder, the copy also lands on the desktop's clipboard so any other app
 //! can take it, and a cut moves the file out of the folder it came from.
 //! The app speaks exactly as Files does: one launcher-attested connection to the session's app wire,
-//! its selected objects handed over on that connection's descriptor lane, and the commands it sends
-//! naming them by lane number.
+//! its selected objects handed over on that connection's descriptor stream, and the commands it sends
+//! naming them by descriptor number.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -80,11 +80,11 @@ fn connect(socket: &Path) -> CollabClient {
         .set_nonblocking(true)
         .expect("the connection is ready for the runtime");
     let stream = tokio::net::UnixStream::from_std(stream).expect("a runtime stream");
-    let (stream, lane) = stream.with_descriptor_lane();
+    let (stream, sender) = stream.with_descriptors();
     let (reader, writer) = tokio::io::split(stream);
     let (client, carrying) = CollabClient::over(reader, writer);
     tokio::spawn(carrying);
-    client.with_optional_descriptors(lane)
+    client.with_optional_descriptors(sender)
 }
 
 /// The channel key of Files' own route in the workspace.

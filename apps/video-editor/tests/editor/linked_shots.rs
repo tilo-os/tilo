@@ -1,7 +1,7 @@
 //! A shot whose source carries sound is two clips, picture and sound, linked:
 //! the edits that keep them in sync take both halves, the ones that make the
 //! sound worth being a clip of its own (levels, fades) take one, and a locked
-//! lane refuses the whole shot.
+//! track refuses the whole shot.
 
 use crate::hosted_editor as hosted;
 
@@ -94,11 +94,11 @@ fn placing_a_source_with_sound_lands_a_linked_pair() {
 }
 
 #[test]
-fn a_locked_sound_lane_refuses_every_edit_of_the_shot() {
+fn a_locked_sound_track_refuses_every_edit_of_the_shot() {
     for gesture in ["i", "o", "s", "Delete", "nudge"] {
         let (mut app, picture, sound) = linked_shot();
-        let lane = track_name(&app.state(), sound);
-        press(&mut app, &format!("Lock {lane}"));
+        let track = track_name(&app.state(), sound);
+        press(&mut app, &format!("Lock {track}"));
         assert!(
             app.state()
                 .track_locked(app.state().clip(sound).unwrap().track)
@@ -113,7 +113,7 @@ fn a_locked_sound_lane_refuses_every_edit_of_the_shot() {
         assert_eq!(
             app.state(),
             before,
-            "{gesture} edited a shot on a locked lane"
+            "{gesture} edited a shot on a locked track"
         );
         assert!(app.state().clip(picture).is_some());
     }
@@ -124,12 +124,12 @@ fn trims_take_both_halves_once_unlocked_and_one_once_unlinked() {
     for unlink in [false, true] {
         for key in ["i", "o"] {
             let (mut app, picture, sound) = linked_shot();
-            let lane = format!("Lock {}", track_name(&app.state(), sound));
-            press(&mut app, &lane);
-            press(&mut app, &lane);
+            let track = format!("Lock {}", track_name(&app.state(), sound));
+            press(&mut app, &track);
+            press(&mut app, &track);
             if unlink {
                 press(&mut app, "Unlink audio and video");
-                press(&mut app, &lane);
+                press(&mut app, &track);
             }
             select_on(&mut app, MARKET, "V1");
             go_to(&mut app, "0:21");
@@ -175,13 +175,13 @@ fn deleting_either_way_takes_the_whole_shot() {
 }
 
 #[test]
-fn splitting_a_shot_cuts_both_lanes_into_two_linked_pairs() {
+fn splitting_a_shot_cuts_both_tracks_into_two_linked_pairs() {
     let (mut app, picture, sound) = linked_shot();
     let clips = app.state().clips.len();
     go_to(&mut app, "0:22");
     app.harness().key("s");
     let project = app.state();
-    assert_eq!(project.clips.len(), clips + 2, "both lanes were cut");
+    assert_eq!(project.clips.len(), clips + 2, "both tracks were cut");
     let heads = project.clip(picture).unwrap().link;
     assert_eq!(project.clip(sound).unwrap().link, heads);
     let tails: Vec<_> = project
@@ -194,7 +194,7 @@ fn splitting_a_shot_cuts_both_lanes_into_two_linked_pairs() {
 }
 
 #[test]
-fn nudging_one_half_carries_the_other_on_its_own_lane() {
+fn nudging_one_half_carries_the_other_on_its_own_track() {
     let (mut app, picture, sound) = linked_shot();
     let before = app.state();
     with_modifier(&mut app, "shift", "ArrowRight");
@@ -224,8 +224,8 @@ fn re_timing_the_picture_re_times_its_sound() {
 #[test]
 fn levels_and_fades_stay_with_the_clip_they_were_set_on() {
     let (mut app, picture, sound) = linked_shot();
-    let lane = track_name(&app.state(), sound);
-    select_on(&mut app, MARKET, &lane);
+    let track = track_name(&app.state(), sound);
+    select_on(&mut app, MARKET, &track);
     let before = app.state();
     for field in ["Fade in", "Gain"] {
         hosted::act(&mut app, field, &ui::a11y::Action::Increment).unwrap();

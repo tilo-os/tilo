@@ -510,8 +510,8 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_lanes_header_counts_the_cards_it_holds;
-    // A lane's header counts the cards the lane holds: the open tasks filed in it, not the
+    phase a_lists_header_counts_the_cards_it_holds;
+    // A list's header counts the cards the list holds: the open tasks filed in it, not the
     // project's tasks, the ones it leaves out (done, or a step under a task), or another
     // project's.
     {
@@ -586,16 +586,16 @@ tilo_test_env::scenario! {
         view.poll_patches().unwrap();
         let ids = |ts: &[&Value]| ts.iter().map(|t| target(t)).collect::<Vec<_>>();
         assert_eq!(
-            lanes(&view),
+            lists(&view),
             [
                 (None, None, ids(&[&boxes, &tape])),
                 (Some("Packing".to_owned()), Some(1), ids(&[&kitchen])),
                 (Some("Booked".to_owned()), Some(0), vec![]),
             ]
         );
-        for (title, count, cards) in lanes(&view) {
+        for (title, count, cards) in lists(&view) {
             let Some(count) = count else {
-                assert!(title.is_none(), "a lane with a heading has a count");
+                assert!(title.is_none(), "a list with a heading has a count");
                 continue;
             };
             assert_eq!(
@@ -784,28 +784,28 @@ fn two_people_change_one_task_at_once_and_both_changes_stay() {
     }
 }
 
-/// A lane's title as its node carries it: none for the lane of the tasks in no section.
-fn lane_title(node: &UiNode) -> Option<String> {
+/// A list's title as its node carries it: none for the list of the tasks in no section.
+fn list_title(node: &UiNode) -> Option<String> {
     match node.props.get("title") {
         Some(Value::Text(title)) => Some(title.clone()),
         None | Some(Value::Unit | Value::Opt(None)) => None,
-        other => panic!("a lane's title: {other:?}"),
+        other => panic!("a list's title: {other:?}"),
     }
 }
 
-/// A lane as a board's window shows it: what it is called (none for the lane of the tasks in no
+/// A list as a board's window shows it: what it is called (none for the list of the tasks in no
 /// section), the count its header shows (none where it has no heading), and its cards' tasks.
-type Lane = (Option<String>, Option<i64>, Vec<Option<String>>);
+type List = (Option<String>, Option<i64>, Vec<Option<String>>);
 
-/// The lanes of a board as its window shows them, in the order they stand.
-fn lanes(view: &ViewInstance) -> Vec<Lane> {
-    fn walk(node: &UiNode, out: &mut Vec<Lane>) {
-        if node.kind == "ui.BoardLane" {
-            let title = lane_title(node);
+/// The lists of a board as its window shows them, in the order they stand.
+fn lists(view: &ViewInstance) -> Vec<List> {
+    fn walk(node: &UiNode, out: &mut Vec<List>) {
+        if node.kind == "ui.BoardList" {
+            let title = list_title(node);
             let count = match node.props.get("count") {
                 Some(Value::Int(count)) => Some(*count),
                 None | Some(Value::Unit | Value::Opt(None)) => None,
-                other => panic!("a lane's count: {other:?}"),
+                other => panic!("a list's count: {other:?}"),
             };
             let mut cards = Vec::new();
             let mut stack: Vec<&UiNode> = node.children.iter().rev().collect();
@@ -840,7 +840,7 @@ pub(crate) fn key_of(view: &ViewInstance, kind: &str, holds: &dyn Fn(&UiNode) ->
 }
 
 #[test]
-fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
+fn on_a_projects_board_a_dropped_task_lands_in_its_list_where_it_was_dropped() {
     let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     ada.commit();
@@ -875,33 +875,33 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
     view.poll_patches().unwrap();
     let ids = |ts: &[&Value]| ts.iter().map(|t| target(t)).collect::<Vec<_>>();
     assert_eq!(
-        lanes(&view),
+        lists(&view),
         [
             (None, None, ids(&[&boxes, &van, &books, &bedworkspace])),
             (Some("Doing".to_owned()), Some(0), vec![]),
         ]
     );
-    let drop = |view: &mut ViewInstance, lane: Option<&str>, task: &Value, at: i64| {
-        let key = key_of(view, "ui.BoardLane", &|l| match lane {
-            Some(lane) => lane_title(l).as_deref() == Some(lane),
-            None => lane_title(l).is_none(),
+    let drop = |view: &mut ViewInstance, list: Option<&str>, task: &Value, at: i64| {
+        let key = key_of(view, "ui.BoardList", &|l| match list {
+            Some(list) => list_title(l).as_deref() == Some(list),
+            None => list_title(l).is_none(),
         });
         let carried = Value::List(vec![task.clone(), Value::Int(at)]);
         view.fire_with(&key, "drop", Some(&carried)).unwrap();
     };
-    // Into the empty lane, then a second card above it.
+    // Into the empty list, then a second card above it.
     drop(&mut view, Some("Doing"), &books, 0);
     drop(&mut view, Some("Doing"), &van, 0);
-    // Within a lane: the last card to the top.
+    // Within a list: the last card to the top.
     drop(&mut view, None, &bedworkspace, 0);
-    // Below a lane's last card.
+    // Below a list's last card.
     drop(&mut view, Some("Doing"), &boxes, 2);
     ada.commit();
     // A window hears of a change once, after the document holds it: it runs again now, and shows
     // the cards where they landed.
     view.poll_patches().unwrap();
     assert_eq!(
-        lanes(&view),
+        lists(&view),
         [
             (None, None, ids(&[&bedworkspace])),
             (

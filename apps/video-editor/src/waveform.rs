@@ -2,7 +2,7 @@
 //! directly, everything else decoded to PCM under `--features decode`.
 //!
 //! When no samples can be had — an un-hydrated reference, no audio, no decoder
-//! linked — the answer is [`WaveformState::Unavailable`] and the lane is drawn
+//! linked — the answer is [`WaveformState::Unavailable`] and the track is drawn
 //! as a flat line. Never a synthesized envelope: it cannot be told apart from
 //! real peaks, so it would hide the absence it stands for.
 //!

@@ -18,7 +18,7 @@ use automerge::ChangeHash;
 use collab_types::document::DocumentId;
 use collaboration::document::ResourceSaveStatus;
 use collaboration::document::save::{open_stored, resource_document};
-use collaboration::document_content::{ContentLane, DocumentContent};
+use collaboration::document_content::{ContentLink, DocumentContent};
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::{self, HistoryEdit};
@@ -120,10 +120,10 @@ pub struct InstanceDocument {
     /// Whether this device governs the workspace: the document's origin (convergence.md §1), whose
     /// copy needs no committed read from another host.
     governs: bool,
-    /// The document's content store ([`Self::content`]), and the lane it meets the document's route
+    /// The document's content store ([`Self::content`]), and the content link it meets the document's route
     /// in: what it keeps is offered on the route, and what it lacks is asked of it.
     content: ContentStore,
-    lane: Arc<ContentLane>,
+    link: Arc<ContentLink>,
     /// Whether the document runs on this device alone ([`Self::open_local`]): there is no workspace
     /// to hand its changes to, so they are kept on disk and counted as handed over.
     local: bool,
@@ -314,14 +314,14 @@ impl InstanceDocument {
             .docs()
             .map(|(chunk, doc)| (chunk, doc.committed_heads()))
             .collect();
-        // The document's own lane: its wants and what arrives for it are this document's, whichever
+        // The document's own content link: its wants and what arrives for it are this document's, whichever
         // other workspace's document of the app this process holds. Its content is sealed under the
         // secret of the members who read the document, once its route holds their keys.
-        let lane = Arc::new(ContentLane::default());
-        ContentLane::show_on_route(&route, &lane);
+        let link = Arc::new(ContentLink::default());
+        ContentLink::show_on_route(&route, &link);
         Self {
-            content: DocumentContent::store(ContentStore::memory(), Arc::clone(&lane)),
-            lane,
+            content: DocumentContent::store(ContentStore::memory(), Arc::clone(&link)),
+            link,
             chunks: Docs::Own(chunks),
             moved: true,
             manager,
@@ -382,7 +382,7 @@ impl InstanceDocument {
     /// keep as content outlives the instance, and is read back when the document opens again.
     #[must_use]
     pub fn keeping_content_in(mut self, local: ContentStore) -> Self {
-        self.content = DocumentContent::store(local, Arc::clone(&self.lane));
+        self.content = DocumentContent::store(local, Arc::clone(&self.link));
         self
     }
 
@@ -400,15 +400,15 @@ impl InstanceDocument {
     /// content a change names reaches the document's host with the change, and what a change here
     /// names and this device lacks is fetched. The store wakes the window's code when it has more.
     fn send_content(&mut self) {
-        self.lane.attach(tilo_wake::WakeHandle::new());
-        let requests = self.lane.take_requests();
+        self.link.attach(tilo_wake::WakeHandle::new());
+        let requests = self.link.take_requests();
         for hash in requests.wants {
             if let Err(error) = self
                 .manager
                 .try_send(CollabRequest::WantContent { hash: hash.clone() })
             {
                 tracing::debug!(%error, "workspace: a content request waits for the route");
-                self.lane.retry_want(hash);
+                self.link.retry_want(hash);
             }
         }
         for (hash, bytes) in requests.offers {
@@ -417,7 +417,7 @@ impl InstanceDocument {
                 bytes: bytes.clone(),
             }) {
                 Ok(()) | Err(collaboration::CollabSendError::TooLarge { .. }) => {}
-                Err(_) => self.lane.retry_offer(hash, bytes),
+                Err(_) => self.link.retry_offer(hash, bytes),
             }
         }
     }
@@ -1858,11 +1858,11 @@ impl InstanceDocument {
                 // Content the document names arrived, or where a want of it stands: the document's
                 // store keeps it on its next read.
                 CollabEvent::DocumentContent { route, hash, bytes } if route == self.route => {
-                    self.lane.arrive(hash, bytes);
+                    self.link.arrive(hash, bytes);
                     continue;
                 }
                 CollabEvent::DocumentContentState { route, hash, state } if route == self.route => {
-                    self.lane.stands(hash, state);
+                    self.link.stands(hash, state);
                     continue;
                 }
                 CollabEvent::DocumentSnapshotRequested { route } => {

@@ -1,4 +1,4 @@
-"""Check enabled release lanes and execute the real artifact check without builds."""
+"""Check enabled release jobs and execute the real artifact check without builds."""
 import hashlib
 from pathlib import Path
 import subprocess
@@ -50,7 +50,7 @@ class EnabledImagerPlatforms(unittest.TestCase):
             self.setUp()
             macos = section(self.workflow, "macos", 2)
             # macOS and Windows need hosts this fleet does not serve, so a
-            # promotion publishes the Linux media and these lanes wait for a
+            # promotion publishes the Linux media and these jobs wait for a
             # tag or for a dispatch that names them.
             self.assertIn(
                 "    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')",

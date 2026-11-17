@@ -1472,7 +1472,7 @@ mod tests {
             tilo_view::patch::validate::PatchLimits::default(),
         );
         let batch = vec![tilo_view::patch::ToUi::Open {
-            lane: tilo_view::patch::Lane::Root,
+            level: tilo_view::patch::Level::Root,
             target: ResourceRef {
                 id: "chat.workspace/channels/c_crit".to_owned(),
                 ty: "chat.workspace.channels".to_owned(),

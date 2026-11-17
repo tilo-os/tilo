@@ -409,10 +409,10 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_menu_deep_inside_damages_its_window_not_the_lane_around_it;
+    phase a_menu_deep_inside_damages_its_window_not_the_section_around_it;
     {
-        let (closed, closed_parts) = lane(true, false);
-        let (open, open_parts) = lane(true, true);
+        let (closed, closed_parts) = strip_section(true, false);
+        let (open, open_parts) = strip_section(true, true);
         assert_eq!(
             damage(&closed, &closed_parts, &open, &open_parts),
             Ok(vec![B])
@@ -423,38 +423,43 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_window_a_lane_draws_again_damages_that_lane_alone;
+    phase a_window_a_section_draws_again_damages_that_section_alone;
     {
-        let (away, away_parts) = lane(false, false);
-        let (back, back_parts) = lane(true, false);
-        let lane_rect = Rect::new(0.0, 0.0, 200.0, 50.0);
+        let (away, away_parts) = strip_section(false, false);
+        let (back, back_parts) = strip_section(true, false);
+        let section_rect = Rect::new(0.0, 0.0, 200.0, 50.0);
         assert_eq!(
             damage(&away, &away_parts, &back, &back_parts),
-            Ok(vec![lane_rect])
+            Ok(vec![section_rect])
         );
         assert_eq!(
             damage(&back, &back_parts, &away, &away_parts),
-            Ok(vec![lane_rect])
+            Ok(vec![section_rect])
         );
     }
 }
 
-fn lane(shown: bool, open: bool) -> (Box<Scene>, SectionParts) {
-    const LANE: Rect = Rect::new(0.0, 0.0, 200.0, 50.0);
+fn strip_section(shown: bool, open: bool) -> (Box<Scene>, SectionParts) {
+    const SECTION: Rect = Rect::new(0.0, 0.0, 200.0, 50.0);
     section(move |scene| {
-        part(scene, PartKey::new("lane", 0_u64), vec![LANE], |scene| {
-            fill(scene, Affine::IDENTITY, LANE, Color::BLACK);
-            if shown {
-                part(scene, PartKey::new("window", 0_u64), vec![B], |scene| {
-                    fill(scene, Affine::IDENTITY, B, Color::WHITE);
-                    if open {
-                        part(scene, PartKey::new("menu", 0_u64), vec![B], |scene| {
-                            fill(scene, Affine::IDENTITY, B, Color::BLACK);
-                        });
-                    }
-                });
-            }
-        });
+        part(
+            scene,
+            PartKey::new("strip_section", 0_u64),
+            vec![SECTION],
+            |scene| {
+                fill(scene, Affine::IDENTITY, SECTION, Color::BLACK);
+                if shown {
+                    part(scene, PartKey::new("window", 0_u64), vec![B], |scene| {
+                        fill(scene, Affine::IDENTITY, B, Color::WHITE);
+                        if open {
+                            part(scene, PartKey::new("menu", 0_u64), vec![B], |scene| {
+                                fill(scene, Affine::IDENTITY, B, Color::BLACK);
+                            });
+                        }
+                    });
+                }
+            },
+        );
         part(
             scene,
             PartKey::new("caret", 0_u64),
@@ -472,7 +477,7 @@ tilo_test_env::scenario! {
         let tile = Rect::new(100.0, 0.0, 140.0, 40.0);
         let frame = |menu: bool, from: u64, to: u64| {
             section(move |scene| {
-                part(scene, PartKey::new("lane", 0_u64), vec![tile], |scene| {
+                part(scene, PartKey::new("strip_section", 0_u64), vec![tile], |scene| {
                     part(scene, PartKey::new("tile", 0_u64), vec![tile], |scene| {
                         let hint = DamageHint {
                             source: 7,

@@ -293,7 +293,7 @@ mod tests {
             assert!(!parser.disabled);
         }
 
-        phase untrusted_frames_refuse_only_the_informational_lane;
+        phase untrusted_frames_refuse_only_the_informational_endpoint;
         {
             for (key, value, reason) in [
                 (

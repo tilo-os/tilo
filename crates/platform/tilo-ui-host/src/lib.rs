@@ -29,6 +29,6 @@ pub mod shell;
 pub mod window;
 
 pub use tilo_render_protocol::patch::{
-    Actor, Binding, Event, Invocation, Lane, Node as UiNode, ResourceRef, Value,
+    Actor, Binding, Event, Invocation, Level, Node as UiNode, ResourceRef, Value,
 };
 pub use window::AppWindow;

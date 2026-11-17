@@ -7,7 +7,7 @@
 run.py select()): comma-separated check ids or areas, empty for the whole suite. It
 prints the KPI groups those checks record, comma-separated: a dispatch that narrowed the
 run to one app check is owed that check's measurements, never those of every check in
-the lane. A group a selected check produces still has to report every budget the lane
+the job. A group a selected check produces still has to report every budget the job
 owes in it (tools/perf/compare.py): the selection narrows which groups are owed, not
 which measurements a group must hold.
 

@@ -460,7 +460,7 @@ tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 # signal, as a power cut ends a machine.
 libc.workspace = true
 # A call's tone and played samples with no device stack: a test hears the
-# same encoder, lane and playout a device's call uses.
+# same encoder, stream and playout a device's call uses.
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "test-support"] }
 # Reporting an ending to a session's apps as its spawner would, with the
 # memory cause a launcher remembers.

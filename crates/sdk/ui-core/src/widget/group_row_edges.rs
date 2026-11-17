@@ -31,7 +31,7 @@ pub(super) struct RowEdgeDrag {
     drag: EdgeDrag,
     grabbed_id: u64,
     other_id: Option<u64>,
-    lane: usize,
+    section: usize,
     press_x: f64,
     pointer_x: f64,
     origin_scroll: f64,
@@ -48,7 +48,7 @@ impl RowEdgeDrag {
 impl GroupRow {
     /// The window edge a press at `p` would resize, by the border rule
     /// ([`border_owner`]): on a border, the focused window's edge, else the
-    /// half's; at either end of a lane, its outer window's outer edge.
+    /// half's; at either end of a section, its outer window's outer edge.
     /// `None` off every edge, on a maximized or fullscreen window, or where
     /// the viewport clips the edge away.
     pub fn edge_grab_at(&self, p: Point) -> Option<EdgeGrab> {
@@ -66,16 +66,16 @@ impl GroupRow {
                     && !g.is_closing()
                     && g.get_rect().width() > 0.0
             })
-            .map(|(i, g)| (i, self.lane_index_of(i), g.get_rect()))
+            .map(|(i, g)| (i, self.section_index_of(i), g.get_rect()))
             .collect();
-        let lane = shown
+        let section = shown
             .iter()
             .find(|(_, _, r)| {
                 r.inflate(RESIZE_HANDLE_PX + super::HANDLE_SLOT_PX, 0.0)
                     .contains(p)
             })
-            .map(|&(_, lane, _)| lane)?;
-        if !self.pan_of_lane(lane).viewport.contains(p) {
+            .map(|&(_, section, _)| section)?;
+        if !self.pan_of_section(section).viewport.contains(p) {
             return None;
         }
         if !self.external_navigation
@@ -141,7 +141,7 @@ impl GroupRow {
 
     fn zero_sum_partner(&self, grab: EdgeGrab) -> Option<usize> {
         let other = grab.across(self.groups.len())?;
-        (self.lane_index_of(other) == self.lane_index_of(grab.group)
+        (self.section_index_of(other) == self.section_index_of(grab.group)
             && !self.layout_hides_group(other)
             && self.groups.get(other).is_some_and(|g| !g.is_closing()))
         .then_some(other)
@@ -287,8 +287,8 @@ impl GroupRow {
             return;
         };
         let other = other.and_then(|i| window(i, grab.edge.opposite()));
-        let lane = self.lane_index_of(grab.group);
-        let pan = self.pan_of_lane_mut(lane);
+        let section = self.section_index_of(grab.group);
+        let pan = self.pan_of_section_mut(section);
         let origin_scroll = pan.scroll_x;
         pan.jump_to(origin_scroll);
         pan.absolute = false;
@@ -300,7 +300,7 @@ impl GroupRow {
             },
             grabbed_id,
             other_id: other.map(|(id, _)| id),
-            lane,
+            section,
             press_x: x,
             pointer_x: x,
             origin_scroll,
@@ -329,7 +329,7 @@ impl GroupRow {
         {
             group.set_live_width(width);
         }
-        let pan = self.pan_of_lane_mut(drag.lane);
+        let pan = self.pan_of_section_mut(drag.section);
         pan.scroll_x = drag.origin_scroll + resize.pan + drag.autoscroll;
         self.scroll_dirty = true;
     }
@@ -359,7 +359,7 @@ impl GroupRow {
         let now = crate::motion::frame_now();
         let timing = self.move_timing(crate::tokens::MotionSource::Pointer);
         let reduce_motion = self.reduce_motion;
-        let pan = self.pan_of_lane_mut(drag.lane);
+        let pan = self.pan_of_section_mut(drag.section);
         pan.scroll_x = if commit {
             pan.scroll_x + settle
         } else {
@@ -398,7 +398,7 @@ impl GroupRow {
         let mut next = drag;
         next.autoscroll += step;
         let after = drag.drag.resize(next.travel());
-        let pan = self.pan_of_lane(drag.lane);
+        let pan = self.pan_of_section(drag.section);
         let scroll = drag.origin_scroll + after.pan + next.autoscroll;
         let current = pan.scroll_x;
         // Never further past the strip's start or end than it already is.
@@ -428,7 +428,7 @@ impl GroupRow {
     /// where it was pressed: a window edge at the display's edge, grabbed and
     /// held, stays as it is.
     fn edge_autoscroll_velocity(&self, drag: &RowEdgeDrag) -> f64 {
-        let view = self.pan_of_lane(drag.lane).viewport;
+        let view = self.pan_of_section(drag.section).viewport;
         edge_autoscroll::velocity_past_press(
             drag.pointer_x,
             drag.press_x,

@@ -81,7 +81,7 @@ impl SessionCarrier for LinkCarrier {
     fn disconnect(&self) -> BoxFuture<()> {
         let link = self.link.clone();
         Box::pin(async move {
-            link.close("broker lane disconnected");
+            link.close("broker connection disconnected");
             link.closed().await;
         })
     }

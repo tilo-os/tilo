@@ -7,9 +7,9 @@ does not fan out into unrelated builds:
 |---|---|---|---|
 | Relay, Lounge, web entry, `tilo` command | A `vX.Y.Z` tag (t's `tag:vX.Y.Z` checks), or a dispatch of one of them on that tag | The frozen RPM set of each architecture that has a build node, the images, the musl builds of the command | Images under `sha-<commit>`, the version and `latest`; the CLI archives; the published `set-<fingerprint>-<arch>` RPM snapshots |
 | Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned tapps and immutable collection bundles |
-| Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
+| Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package jobs; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
 | OS | `tools/ci/publish/os-release.sh` dispatched on a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
-| Tilo Installer | Relevant protected `main` pushes; `imager-vX.Y.Z` for releases | Six native host-package lanes; signed installer media only on tags/manual rehearsals | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
+| Tilo Installer | Relevant protected `main` pushes; `imager-vX.Y.Z` for releases | Six native host-package jobs; signed installer media only on tags/manual rehearsals | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
 | Python and TypeScript SDKs | A `vX.Y.Z` tag (t's `publish-sdks`, `on = ["tag:v…"]`) | The two packages built and read back, and their suites, which the publish needs | `tilo-sdk` on PyPI and `tilo-sdk` on npm, at the tag's version; re-running the tag's step skips what is already published |
 
 The SDKs are the one family with no build artifact of their own: the tag's version is written
@@ -42,7 +42,7 @@ is not published.
 
 ## Fast validation versus release checks
 
-Pull requests use the cheapest lane that proves the affected boundary:
+Pull requests use the cheapest job that proves the affected boundary:
 
 - Rust tests use the affected-package graph in **Check affected workspace packages**.
 - **Release / apps** does not run on PRs; it plans and packages on `main`.
@@ -55,7 +55,7 @@ Pull requests use the cheapest lane that proves the affected boundary:
   runtime, built from the pinned CEF distribution in the image build.
 - Installer changes retain affected-package checks. Relevant protected `main`
   pushes also publish signed native Installer prereleases on all six existing
-  platform/architecture lanes, subject to the exact-source qualification checks.
+  platform/architecture jobs, subject to the exact-source qualification checks.
   Main reuses reviewed, signed published media; it does not build media or OS
   images. Stable tags retain distribution and website promotion. Manual runs
   default to Linux x86_64; tags, automatic main publication or `full_native`
@@ -77,17 +77,17 @@ again.
 The desktop release retains its complete ARM64 matrix and verifier behind the
 `TILO_DESKTOP_ARM64_RELEASES` capability switch. It is currently `"1"`: tagged
 and explicit full-native builds run the native amd64 and the native
-`runner-large-arm64` package lanes. Weekly and default manual builds use the
-amd64 lane; PRs run preflight only. Desktop package publication requires a tag.
+`runner-large-arm64` package jobs. Weekly and default manual builds use the
+amd64 job; PRs run preflight only. Desktop package publication requires a tag.
 No package or artifact definition needs to change if scheduling is paused.
 
 This describes workflow selection, not accepted release support:
 [the install contract](install-contract.json) still marks ARM64 desktop sessions as
 planned. Architecture-specific install/release receipts and the product owner's
 support-matrix decision remain
-separate from enabling the lane.
+separate from enabling the job.
 
-The Fedora desktop lane also emits a small deterministic OS payload containing
+The Fedora desktop job also emits a small deterministic OS payload containing
 the same install-tested `tilo-session`, `tilo-launcher`, `tilo-runtime-mcp`
 and `tilo-unlock-helper` binaries. A successful `main` build publishes it
 immutably and advances `TILO_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`.
@@ -118,7 +118,7 @@ preserves the source-build fallback for bootstrap work.
 Successful default-collection publications from `main` advance the URL and
 digest variables automatically. Architecture-specific
 `TILO_APP_COLLECTION_{URL,SHA256}_{X86_64,AARCH64}` variables are maintained as
-both native lanes publish; the unsuffixed pair remains the x86_64
+both native jobs publish; the unsuffixed pair remains the x86_64
 compatibility channel.
 
 App publication requires `TILO_PACKAGE_PUBLIC_BASE_URL`, set to the public
@@ -245,9 +245,9 @@ signed with the OS release authority: each is signed with the development key
   `tools/ci/publish/os-dev-publish.sh`, which moves `tilo-vm:<arch>-ci`, the architecture's dev
   channel, forward to it. Installed disks follow that tag.
 - `registry.tilo.so/tilo/tilo-vm:<tag>`: an OCI index of every child of `<tag>`
-  published so far. It is rebuilt from the child tags, and each lane repeats
+  published so far. It is rebuilt from the child tags, and each job repeats
   that until a fresh read agrees, so it grows from one architecture to both
-  without either lane waiting. `latest` follows the newest revision's index, only forward, for `main` and
+  without either job waiting. `latest` follows the newest revision's index, only forward, for `main` and
   release-tag runs.
 - `tilo-vm-disk/<tag>/tilo-vm-<tag>-<arch>.<format>` in the generic package
   registry, each with a `.sha256` sidecar. qcow2 uses zstd-compressed clusters,
@@ -256,7 +256,7 @@ signed with the OS release authority: each is signed with the development key
   revision, image and base digests, the ARM64 direct-boot companion files, and
   one entry per disk with its format, URL, SHA-256, size and virtual size. It
   is written last and is the commit point for that architecture: an
-  architecture is published once its file exists, and a lane whose file exists
+  architecture is published once its file exists, and a job whose file exists
   has nothing left to do.
 
 `<tag>` is `main-<sha7>-ci`.

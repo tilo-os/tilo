@@ -147,7 +147,7 @@ video-editor-add-track = Added a { $kind ->
    *[other] picture
 } track
 video-editor-reset-mix = Reset a track's level and pan
-video-editor-trim-lanes = Lowered the level of the tracks
+video-editor-trim-tracks = Lowered the level of the tracks
 video-editor-delete-track = Deleted a track
 video-editor-place-clip = Placed a clip on the timeline
 video-editor-delete-media = Deleted a source
@@ -273,9 +273,9 @@ video-editor-picture-in-picture = Picture in picture
 video-editor-side-by-side = Side by side
 video-editor-crop = Crop
 video-editor-anchor = Anchor
-video-editor-lane-clip-only = Lane { $lane }, this clip only
-video-editor-lane-one-other = Lane { $lane }, with 1 other clip
-video-editor-lane-other-clips = Lane { $lane }, with { $count } other clips
+video-editor-track-clip-only = Track { $track }, this clip only
+video-editor-track-one-other = Track { $track }, with 1 other clip
+video-editor-track-other-clips = Track { $track }, with { $count } other clips
 video-editor-key-colour = Key colour
 video-editor-words = Words
 video-editor-accept-cancel-keys = Ctrl+Enter to accept, Esc to cancel
@@ -379,7 +379,7 @@ video-editor-project-remove-marker = Remove marker
 video-editor-project-remove-marker-here = Remove marker “{ $name }”
 video-editor-project-add-track = Add track
 video-editor-project-reset-mix = Reset track mix
-video-editor-project-trim-lanes = Trim lanes
+video-editor-project-trim-tracks = Trim tracks
 video-editor-project-delete-track = Delete track
 video-editor-project-place-clip = Place clip
 video-editor-project-delete-media = Delete media
@@ -584,7 +584,7 @@ video-editor-menu-duplicate = Duplicate
 video-editor-menu-split = Split at playhead
 video-editor-menu-ripple-delete = Ripple delete
 
-## What a reader is told about a lane, a clip, a source and the selection
+## What a reader is told about a track, a clip, a source and the selection
 video-editor-a11y-clip-value = { $start } to { $end }, { $length } long, on { $track }
 video-editor-a11y-bin-downloading = { $kind }, { $length }, not downloaded yet
 video-editor-a11y-bin-kind-length = { $kind }, { $length }
@@ -599,7 +599,7 @@ video-editor-a11y-track-kind-audio = audio
 video-editor-a11y-timeline-value = playhead at { $playhead }, { $count } of { $total } clips selected, timeline view starts at { $view }
 video-editor-a11y-geometry = scale { $scale }×, position { $x }, { $y }, rotation { $rotation }°
 video-editor-a11y-animated = { $geometry }, animated
-video-editor-a11y-no-lane = no lane
+video-editor-a11y-no-track = no track
 video-editor-a11y-key-nothing = on, but the tolerance keys nothing
 video-editor-a11y-key-values = keying { $tolerance }% tolerance, { $softness }% softness, { $spill }% spill removal
 video-editor-a11y-mask-values = { $shape } { $width }% by { $height }%, { $side }

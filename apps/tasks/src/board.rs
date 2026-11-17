@@ -1,8 +1,8 @@
-//! The board: a lane per status, each issue the sidebar's filter shows a
-//! card in its lane.
+//! The board: a list per status, each issue the sidebar's filter shows a
+//! card in its list.
 //!
 //! Dragging a card is one `place` action: its status and its place in the
-//! lane, one undo step. A card opens its issue; its status changes there
+//! list, one undo step. A card opens its issue; its status changes there
 //! too, so nothing needs a pointer.
 
 use crate::model::{Issue, Status, Tracker};
@@ -21,12 +21,12 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element 
         let me = me.clone();
         let shown = window.clone();
         cx.switch(&window.tasks, move |cx, tasks| {
-            lanes(cx, &shown, &tasks.issues(), &filter, me.as_ref())
+            lists(cx, &shown, &tasks.issues(), &filter, me.as_ref())
         })
     });
     // The board's name is the window's location: the bar says where the
-    // window is, so nothing here titles it a second time. Each lane adds at
-    // its foot, in its own place: what is typed there lands in that lane.
+    // window is, so nothing here titles it a second time. Each list adds at
+    // its foot, in its own place: what is typed there lands in that list.
     Box::new(
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Group)
@@ -39,14 +39,14 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element 
     )
 }
 
-/// The status a lane stands for, by its key.
-fn status_of(lane: &str) -> Option<Status> {
+/// The status a list stands for, by its key.
+fn status_of(list: &str) -> Option<Status> {
     Status::ALL
         .into_iter()
-        .find(|status| status.label_key() == lane)
+        .find(|status| status.label_key() == list)
 }
 
-fn lanes(
+fn lists(
     cx: &ViewCx<Tracker>,
     window: &Window,
     issues: &Issues<'_>,
@@ -62,14 +62,14 @@ fn lanes(
             .map(|(id, issue)| (id.to_string(), card(window, issues, id, issue, &people)))
             .collect();
         let header = Text::new(&crate::locales::CATALOG.t_args(
-            "tasks-lane-heading",
+            "tasks-list-heading",
             &[
                 ("status", tr(status.label_key()).into()),
                 ("count", cards.len().into()),
             ],
         ))
         .with_role(TextRole::Subheading);
-        board = board.lane(
+        board = board.list(
             status.label_key(),
             Some(Box::new(header) as Element),
             cards,
@@ -87,7 +87,7 @@ fn lanes(
     let place = IssuePart::PLACE.try_map(move |drop: BoardDrop| {
         Some(issue_part::Place {
             issue: Id::from_raw(drop.card),
-            status: status_of(&drop.lane)?,
+            status: status_of(&drop.list)?,
             before: drop
                 .before
                 .map(|id| ui::tilo_resource::items::Ref::from(Id::from_raw(id))),

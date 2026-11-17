@@ -189,7 +189,7 @@ work on a device too, beside the device's session.
   recently used) under the image's digest, so swapping the same build again
   costs one registry lookup (`skopeo inspect --raw`) and no pull, and no
   upload either when the device still holds that layer (after a rollback, say). The aarch64
-  lane builds the newest main commit only, so check that a commit has arm64
+  job builds the newest main commit only, so check that a commit has arm64
   first (`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`).
 - **Your worktree on a remote builder of the device's architecture**
   (`--builder remote`, the default for a device whose architecture has a

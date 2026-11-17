@@ -33,7 +33,7 @@ d-fbioszhs = Project
     .doc = The project it belongs to; none while it waits in the inbox.
 
 d-v56iknh2 = Section
-    .doc = The lane of its project's board it is in; none for the first lane.
+    .doc = The list of its project's board it is in; none for the first list.
 
 d-4sriymst = Priority
 
@@ -73,7 +73,7 @@ d-c5pgzhqt = Notes
     .doc = What it is for, and anything worth remembering about it.
 
 d-5wdrqcpl = Section
-    .doc = A section of a project: one lane of its board, such as "Doing".
+    .doc = A section of a project: one list of its board, such as "Doing".
     .noun = { $count ->
         [one] section
        *[other] sections
@@ -115,7 +115,7 @@ d-clxahlh2 = High
 d-d6avlyc5 = Urgent
 
 d-rs3ubifz = New task
-    .doc = Adds a task to the inbox or to `p`, in the lane `s` of its board: the entry at a list's end fills `title` with the words nothing else there takes, and the day, moment and person they name, so "Call the landlord fri 10am @Bo" is a task due Friday at ten, for Bo.
+    .doc = Adds a task to the inbox or to `p`, in the list `s` of its board: the entry at a list's end fills `title` with the words nothing else there takes, and the day, moment and person they name, so "Call the landlord fri 10am @Bo" is a task due Friday at ten, for Bo.
 
 d-rs3ubifz-p = P
 
@@ -267,19 +267,19 @@ d-xmsyxvog = Rename section
 d-xmsyxvog-name = Name
 
 d-vi6srojh = Delete section
-    .doc = Deletes a section; its tasks go to the project's first lane.
+    .doc = Deletes a section; its tasks go to the project's first list.
 
 d-pcn3xgni = New task
-    .doc = Adds a task to a project, at the end of the lane `s` of its board (none for the first).
+    .doc = Adds a task to a project, at the end of the list `s` of its board (none for the first).
 
 d-pcn3xgni-title = Title
 
 d-pcn3xgni-s = S
 
 d-scjlkb6d = Place in board
-    .doc = Puts a task into the lane `s` of its project's board (none for the first) at the place `at` among the tasks already there: what a card's drag names.
+    .doc = Puts a task into the list `s` of its project's board (none for the first) at the place `at` among the tasks already there: what a card's drag names.
     .w-it-is-in-no-project-s = It is in no project's board
-    .w-that-lane-belongs-to-another-project = That lane belongs to another project
+    .w-that-list-belongs-to-another-project = That list belongs to another project
 
 d-scjlkb6d-s = S
 

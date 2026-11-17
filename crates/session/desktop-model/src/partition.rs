@@ -196,7 +196,7 @@ impl OutputPartition {
     /// `strip`'s groups in the order its row lays them out: display by
     /// display in reading order, each display's in strip order. The strip's
     /// own order on one display.
-    pub fn lane_order<'a>(&self, strip: &'a Strip) -> Vec<&'a WindowGroup> {
+    pub fn section_order<'a>(&self, strip: &'a Strip) -> Vec<&'a WindowGroup> {
         let mut groups: Vec<&WindowGroup> = strip.window_groups.iter().collect();
         if self.displays.len() < 2 {
             return groups;
@@ -549,7 +549,7 @@ mod tests {
             let strip = &ws[0].strips[0];
             let mut p = OutputPartition::default();
             let ids = |p: &OutputPartition| -> Vec<GroupId> {
-                p.lane_order(strip).into_iter().map(|g| g.id).collect()
+                p.section_order(strip).into_iter().map(|g| g.id).collect()
             };
             assert_eq!(ids(&p), vec![1, 2, 3, 4], "one display: the strip's order");
             p.reconcile(&ws, &docked());

@@ -68,7 +68,7 @@ mod tests {
             assert_ne!(project(&field), Some(baseline));
         }
 
-        phase directory_effective_stream_binds_both_actual_fixed_lanes_and_locus;
+        phase directory_effective_stream_binds_both_actual_fixed_inputs_and_locus;
         {
             let original = fixed(1);
             let baseline = observation(original.clone()).expect("actual Fixed builders support comparison");

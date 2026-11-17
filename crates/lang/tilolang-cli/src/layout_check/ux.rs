@@ -668,7 +668,6 @@ fn collect_adders<'a>(
 pub(super) fn is_list(node: &InspectionNode) -> bool {
     matches!(role(node), Some(Role::List | Role::Tree | Role::Table))
         || node.widget.to_ascii_lowercase().ends_with("list")
-        || node.widget.to_ascii_lowercase().ends_with("lane")
 }
 
 /// A heading over a page: its words, and where it stands; none for the title a window's bar paints,
@@ -1774,15 +1773,15 @@ mod tests {
             assert!(found(Kind::SeveralAdds, &chrome, (1280, 800)).is_empty());
 
             // One add entry, at the end of each list: rows of a board each offer their own.
-            let lanes = holding(
+            let lists = holding(
                 "Board",
                 "board",
                 None,
                 (0..3)
                     .map(|index| {
                         holding(
-                            "BoardLane",
-                            &format!("lane{index}"),
+                            "BoardList",
+                            &format!("list{index}"),
                             Some(Role::List),
                             vec![named(
                                 "Button",
@@ -1795,7 +1794,7 @@ mod tests {
                     })
                     .collect(),
             );
-            assert!(found(Kind::SeveralAdds, &lanes, (1280, 800)).is_empty());
+            assert!(found(Kind::SeveralAdds, &lists, (1280, 800)).is_empty());
 
             let mut row_called_new = named(
                 "ListRow",

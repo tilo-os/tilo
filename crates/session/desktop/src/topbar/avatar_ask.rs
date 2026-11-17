@@ -4,7 +4,7 @@
 //! Open, it is a small pill in the bar's own band, left of the avatar and of
 //! the faces, people button and notices beside it, sized to its words: the
 //! question, what answering brings where there is room, "Not now" and the
-//! answer. Where it does not fit beside the clock's lane it takes that lane
+//! answer. Where it does not fit beside the clock's area it takes that area
 //! too, over the glance value it covers, and a bar narrow enough to leave no
 //! room anywhere gives it the band up to the person's own face: the ask stands
 //! on the bar and on nothing else, whatever the width, and the face it stops
@@ -15,7 +15,7 @@
 //! the band, from the control that opened them. Its question stands whole,
 //! never cut with an ellipsis: a bar with no room for the whole question —
 //! a phone's band, where the question and its answer do not both fit, or the
-//! band whose middle lane is the banner's that says whose view this is and
+//! band whose middle area is the banner's that says whose view this is and
 //! offers Stop — leaves the ask waiting as the avatar's dot, which says what
 //! it asks to a reader and whose card offers it.
 //!
@@ -92,20 +92,20 @@ impl TopBarChrome {
         let gap = f64::from(theme.tokens.spacing.s4);
         let inset = f64::from(theme.tokens.spacing.s3);
         // The band's rooms for it, right to left. First the ones that keep the bar's own glance
-        // values — beside the clock's lane, the lane's free room up to the clock, the clock's lane —
+        // values — beside the clock's area, the area's free room up to the clock, the clock's area —
         // then the strip past the workspace's own chip, then the band itself: a bar too narrow to
         // keep them all gives the ask the band, so the question stands on the bar and on nothing
         // else, whatever the width.
-        // While this view follows someone the lane is the banner's, which says whose view it is and
+        // While this view follows someone the area is the banner's, which says whose view it is and
         // offers Stop: the ask never takes it (behind "Following Claude Code" its words were cut
         // off), and stands either side of it instead.
         let past_workspace = self.ws_pill_rect.x1 + gap;
-        let mut rooms = vec![Room::beside(right_x, self.center_lane.x1 + gap)];
+        let mut rooms = vec![Room::beside(right_x, self.center_area.x1 + gap)];
         if self.following {
-            rooms.push(Room::beside(self.center_lane.x0 - gap, past_workspace));
+            rooms.push(Room::beside(self.center_area.x0 - gap, past_workspace));
         } else {
             rooms.push(Room::beside(right_x, self.center_rect.x1 + gap));
-            rooms.push(Room::beside(right_x, self.center_lane.x0 + gap));
+            rooms.push(Room::beside(right_x, self.center_area.x0 + gap));
             rooms.push(Room::beside(right_x, past_workspace));
             // The band taken whole stops short of the person's own face and of the people beside
             // it, which the bar draws at its end: each face stays its own to press, and the ask's
@@ -793,7 +793,7 @@ mod tests {
         }
     }
 
-    /// While this view follows someone, the middle lane is the banner's: the ask stands beside it
+    /// While this view follows someone, the middle area is the banner's: the ask stands beside it
     /// or waits as the avatar's dot, and never in it, at every width.
     #[test]
     fn the_open_ask_never_stands_in_the_following_banner() {
@@ -808,10 +808,10 @@ mod tests {
             let (frame, _) = asking_desktop_over(viewport, &followed);
             let bar = frame.bar();
             assert!(bar.following, "{viewport:?}: the bar follows");
-            let lane = bar.center_lane;
+            let area = bar.center_area;
             assert!(
-                !lane.is_zero_area(),
-                "{viewport:?}: the banner keeps its lane"
+                !area.is_zero_area(),
+                "{viewport:?}: the banner keeps its area"
             );
             let bar_rect = bar_rect(&frame);
             for part in [bar.ask.pill, bar.ask.answer, bar.ask.later] {
@@ -819,8 +819,8 @@ mod tests {
                     continue;
                 }
                 assert!(
-                    part.intersect(lane).is_zero_area(),
-                    "{viewport:?}: the ask's {part:?} stands in the banner's lane {lane:?}"
+                    part.intersect(area).is_zero_area(),
+                    "{viewport:?}: the ask's {part:?} stands in the banner's area {area:?}"
                 );
                 assert!(
                     part.y0 >= bar_rect.y0 && part.y1 <= bar_rect.y1,
@@ -835,8 +835,8 @@ mod tests {
                     "{viewport:?}: the ask stands beside the banner"
                 );
                 assert!(
-                    bar.ask.pill.x1 <= lane.x0,
-                    "{viewport:?}: the ask {:?} stands before the banner's lane {lane:?}",
+                    bar.ask.pill.x1 <= area.x0,
+                    "{viewport:?}: the ask {:?} stands before the banner's area {area:?}",
                     bar.ask.pill
                 );
             }

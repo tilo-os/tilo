@@ -101,18 +101,18 @@ impl Hydrator {
     /// The pooled blob-protocol connection to `peer`, opened on first use
     /// and reused for every later request until it closes.
     pub async fn blob_connection(&self, peer: &EndpointAddr) -> Result<Connection> {
-        self.blob_connection_lane(peer, 0).await
+        self.pooled_blob_connection(peer, 0).await
     }
 
-    /// The pooled connection to `peer` in `lane`. One QUIC connection is
+    /// The pooled connection number `number` to `peer`. One QUIC connection is
     /// processed by one task on each side, which bounds its throughput;
-    /// large transfers therefore spread their requests over a few lanes.
-    pub(super) async fn blob_connection_lane(
+    /// large transfers therefore spread their requests over a few connections.
+    pub(super) async fn pooled_blob_connection(
         &self,
         peer: &EndpointAddr,
-        lane: usize,
+        number: usize,
     ) -> Result<Connection> {
-        let key = (peer.id, lane);
+        let key = (peer.id, number);
         {
             let pool = self.blob_connections.lock().await;
             if let Some(connection) = pool.get(&key)

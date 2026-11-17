@@ -264,7 +264,7 @@ fn a_view_longer_and_wider_than_its_window_scrolls_inside_it() {
 const FRAMES_PER_LAYOUT: u64 = 30;
 
 /// The layout nodes one layout may build: every node of the tree the frame rebuilds, 142 of them
-/// for a board of lanes and cards.
+/// for a board of lists and cards.
 const NODES_PER_LAYOUT: u64 = 180;
 
 /// The text shaped outside the renderer's cache, per layout: these strings are the same on every
@@ -274,8 +274,8 @@ const SHAPED_PER_LAYOUT: u64 = 14;
 
 /// One check of the board fixture, read for what it found and then for what it cost.
 ///
-/// A board's lanes are as tall as the page they are in: a lane holding as many cards as the pane
-/// shows draws every one of them under its heading, and a lane holding more keeps them all inside
+/// A board's lists are as tall as the page they are in: a list holding as many cards as the pane
+/// shows draws every one of them under its heading, and a list holding more keeps them all inside
 /// the view that scrolls them.
 ///
 /// What a layout costs is held in the toolkit's own units rather than in time: a check lays every
@@ -285,7 +285,7 @@ const SHAPED_PER_LAYOUT: u64 = 14;
 /// builds and the text it shapes outside the cache — counters that the same sources give the
 /// same numbers on any machine, in any build profile.
 #[test]
-fn a_board_lane_draws_every_card_it_has_room_for_and_a_layout_costs_no_more_work_than_it_did() {
+fn a_board_list_draws_every_card_it_has_room_for_and_a_layout_costs_no_more_work_than_it_did() {
     let report = layout_check::check(&Options {
         dirs: vec![manifest().join("tests/layout_check/board")],
         ..Options::default()
@@ -299,7 +299,7 @@ fn a_board_lane_draws_every_card_it_has_room_for_and_a_layout_costs_no_more_work
     );
     assert!(
         report.findings.is_empty(),
-        "no lane loses the cards it has room for:\n{}",
+        "no list loses the cards it has room for:\n{}",
         layout_check::render(&report)
     );
 

@@ -1521,7 +1521,7 @@ fn the_shells_preset_reaches_the_screen() {
     );
     let view = part
         .instance
-        .view(tilo_render_protocol::patch::Lane::Root)
+        .view(tilo_render_protocol::patch::Level::Root)
         .unwrap();
     let stats = view.borrow().stats();
     assert!(

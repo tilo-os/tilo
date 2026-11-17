@@ -222,7 +222,7 @@ impl Surface {
     /// with their actions, and each package's actions that take no document (the instance's own
     /// app's with what every app publishes).
     ///
-    /// `shown` bounds what a document publishes to what the window reaches: its lane's target and
+    /// `shown` bounds what a document publishes to what the window reaches: its level's target and
     /// the rows on screen. `None` is the whole workspace, what a caller that asks the directory
     /// reads.
     ///

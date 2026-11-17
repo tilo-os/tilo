@@ -88,7 +88,7 @@ grep -Fq 'sccache server start attempt 1/3 failed; retrying' "$work/slow-start.l
 grep -Fq 'remote compiler cache enabled' "$work/slow-start.log"
 test "$(wc -l < "$work/starts")" -eq 2
 
-# Retries are bounded; ordinary lanes still fail open afterwards.
+# Retries are bounded; ordinary jobs still fail open afterwards.
 : > "$GITHUB_ENV"
 : > "$work/starts"
 FAKE_SCCACHE_STARTS="$work/starts" FAKE_SCCACHE_FAILED_STARTS=99 \
@@ -100,32 +100,32 @@ grep -Fq 'sccache wrapper or backend is unavailable; compiling normally' \
   "$work/never-starts.log"
 refute 'fake debug start log' "$work/never-starts.log"
 
-# A lane that measures the cache fails with a debug start log instead.
+# A job that measures the cache fails with a debug start log instead.
 : > "$GITHUB_ENV"
 : > "$work/starts"
 if TILO_SCCACHE_REQUIRED=1 FAKE_SCCACHE_STARTS="$work/starts" FAKE_SCCACHE_FAILED_STARTS=99 \
   bash "$repo/tools/ci/sccache.sh" prepare > "$work/required.log" 2>&1; then
-  echo 'required cache lane passed without a cache' >&2
+  echo 'required cache job passed without a cache' >&2
   exit 1
 fi
 test "$(wc -l < "$work/starts")" -eq 3
 grep -Fxq 'RUSTC_WRAPPER=' "$GITHUB_ENV"
-grep -Fq '::error::sccache wrapper or backend is unavailable; this lane requires' \
+grep -Fq '::error::sccache wrapper or backend is unavailable; this job requires' \
   "$work/required.log"
 if command -v timeout >/dev/null 2>&1; then
   grep -Fq 'fake debug start log=debug no_daemon=1' "$work/required.log"
 fi
 
-# A required lane with a working cache is unaffected.
+# A required job with a working cache is unaffected.
 : > "$GITHUB_ENV"
 TILO_SCCACHE_REQUIRED=1 bash "$repo/tools/ci/sccache.sh" prepare > "$work/required-ok.log"
 grep -Fxq "RUSTC_WRAPPER=$work/bin/sccache" "$GITHUB_ENV"
 
-# A required lane also fails when the backend rejects the first compile.
+# A required job also fails when the backend rejects the first compile.
 : > "$GITHUB_ENV"
 if TILO_SCCACHE_REQUIRED=1 FAKE_SCCACHE_PROBE_STATUS=1 \
   bash "$repo/tools/ci/sccache.sh" prepare > "$work/required-probe.log" 2>&1; then
-  echo 'required cache lane passed with a rejected backend' >&2
+  echo 'required cache job passed with a rejected backend' >&2
   exit 1
 fi
 refute 'fake debug start log' "$work/required-probe.log"

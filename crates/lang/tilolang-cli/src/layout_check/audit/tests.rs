@@ -399,9 +399,9 @@ tilo_test_env::scenario! {
     // A column of a board as a height it did not get leaves it: the view scrolling its cards has no
     // room, so the cards under its heading cannot be brought into view.
     {
-        let lane = |height: f64| {
+        let list = |height: f64| {
             let mut scrolling = stack_node(
-                "lane",
+                "list",
                 [0.0, 40.0, 240.0, height],
                 (0..7)
                     .map(|index| {
@@ -426,12 +426,12 @@ tilo_test_env::scenario! {
                 .collect::<Vec<_>>()
         };
         assert_eq!(
-            lost(&lane(0.0)),
-            vec![vec!["lane".to_owned(), "window".to_owned()]],
+            lost(&list(0.0)),
+            vec![vec!["list".to_owned(), "window".to_owned()]],
             "a scroll view with no height holds seven cards in none of it"
         );
         assert!(
-            lost(&lane(600.0)).is_empty(),
+            lost(&list(600.0)).is_empty(),
             "given the room of a pane, the same cards are there to scroll through"
         );
     }
@@ -1691,7 +1691,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_heading_with_nothing_in_it_is_caught;
-    // A heading nobody named takes its band's height over a lane's cards all the same: the strip says
+    // A heading nobody named takes its band's height over a list's cards all the same: the strip says
     // nothing, and the cards start below it.
     {
         let heading = |name: &str| {
@@ -1719,7 +1719,7 @@ tilo_test_env::scenario! {
             )];
             header
         };
-        let lane = |header: Option<InspectionNode>| {
+        let board_list = |header: Option<InspectionNode>| {
             let top = if header.is_some() { 117.0 } else { 80.0 };
             let cards = stack_node(
                 "cards",
@@ -1731,26 +1731,26 @@ tilo_test_env::scenario! {
                 header.into_iter().chain([cards]).collect(),
             );
             holding(
-                node("Container", "lane", [304.0, 80.0, 320.0, 300.0], None),
+                node("Container", "list", [304.0, 80.0, 320.0, 300.0], None),
                 vec![column],
             )
         };
-        let board = |lane: InspectionNode| {
+        let board = |board_list: InspectionNode| {
             holding(
                 node("Row", "board", [280.0, 80.0, 1000.0, 600.0], None),
-                vec![lane],
+                vec![board_list],
             )
         };
-        let found = empty_headings(&board(lane(Some(heading("")))));
+        let found = empty_headings(&board(board_list(Some(heading("")))));
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].keys.first().map(String::as_str), Some("heading"));
         assert!(
-            empty_headings(&board(lane(Some(heading("Doing"))))).is_empty(),
-            "a named heading is the lane's words"
+            empty_headings(&board(board_list(Some(heading("Doing"))))).is_empty(),
+            "a named heading is the list's words"
         );
         assert!(
-            empty_headings(&board(lane(None))).is_empty(),
-            "a lane no heading heads starts its cards at its top"
+            empty_headings(&board(board_list(None))).is_empty(),
+            "a list no heading heads starts its cards at its top"
         );
     }
 

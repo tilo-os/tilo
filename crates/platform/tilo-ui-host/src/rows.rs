@@ -18,14 +18,14 @@ use ui::widget::virtual_list::ListModelChange;
 use crate::adapter::{NodeSource, description_of};
 use crate::reconcile::Reconciler;
 use crate::shell::prefixed;
-use crate::{Lane, UiNode};
+use crate::{Level, UiNode};
 
 /// What the bound controls of the window show, by their keys in the composed tree: rows read later
 /// show what theirs are bound to.
 pub type BoundValues = Rc<RefCell<HashMap<String, crate::Value>>>;
 
 pub struct RemoteRows {
-    lane: Lane,
+    level: Level,
     list: String,
     /// The kind of the component a row is: the list's item, or a tree's node.
     item: String,
@@ -64,7 +64,7 @@ pub struct Asked {
 impl RemoteRows {
     #[must_use]
     pub fn new(
-        lane: Lane,
+        level: Level,
         list: &str,
         item: &str,
         prefix: &str,
@@ -72,7 +72,7 @@ impl RemoteRows {
         bound: BoundValues,
     ) -> Self {
         Self {
-            lane,
+            level,
             list: list.to_owned(),
             item: item.to_owned(),
             prefix: prefix.to_owned(),
@@ -100,11 +100,11 @@ impl RemoteRows {
         self.wanted.is_some()
     }
 
-    pub fn take_wanted(&mut self) -> Option<(Lane, String, Asked)> {
+    pub fn take_wanted(&mut self) -> Option<(Level, String, Asked)> {
         let asked = self.wanted.take()?;
         self.asked = Some(asked.clone());
         self.awaiting = true;
-        Some((self.lane, self.list.clone(), asked))
+        Some((self.level, self.list.clone(), asked))
     }
 
     /// The app's rows: the list has `len`, the keys from `start` on are `keys`, and `rows` are
@@ -244,8 +244,8 @@ impl RemoteRows {
     }
 
     #[must_use]
-    pub fn reads(&self, lane: Lane, list: &str) -> bool {
-        self.lane == lane && self.list == list
+    pub fn reads(&self, level: Level, list: &str) -> bool {
+        self.level == level && self.list == list
     }
 
     #[must_use]
@@ -256,8 +256,8 @@ impl RemoteRows {
     }
 
     #[must_use]
-    pub fn lane(&self) -> Lane {
-        self.lane
+    pub fn level(&self) -> Level {
+        self.level
     }
 
     /// The keys of the rows the list holds, in the order it lists them: the model's order, which
@@ -489,7 +489,7 @@ mod tests {
     fn rows() -> RemoteRows {
         let reconciler = Rc::new(RefCell::new(Reconciler::new(Rc::default())));
         RemoteRows::new(
-            Lane::Root,
+            Level::Root,
             "list",
             &kind("ListItem"),
             "",
@@ -569,7 +569,7 @@ mod tests {
         let reconciler = Rc::new(RefCell::new(Reconciler::new(Rc::default())));
         let bound = BoundValues::default();
         let mut rows = RemoteRows::new(
-            Lane::Root,
+            Level::Root,
             "list",
             &kind("ListItem"),
             "",
@@ -614,7 +614,7 @@ mod tests {
         let today = ui::clock::today();
         let day = today.format("%Y-%m-%d").to_string();
         let mut rows = RemoteRows::new(
-            Lane::Root,
+            Level::Root,
             "list",
             &kind("ListItem"),
             "",
@@ -684,7 +684,7 @@ mod tests {
         assert_eq!(
             rows.take_wanted(),
             Some((
-                Lane::Root,
+                Level::Root,
                 "list".to_owned(),
                 Asked {
                     range: 0..20,

@@ -391,7 +391,7 @@ pub(super) fn flush_live_activity() {
 /// only so the `JoinHandle` isn't detached.
 pub(super) struct BrokerTransport {
     outbound_tx: tokio_mpsc::Sender<QueuedSdkCommand>,
-    /// Native media rides its own bounded lane so a wedged document RPC can
+    /// Native media rides its own bounded queue so a wedged document RPC can
     /// never delay a stop obligation.
     media: Option<native_media::Sender>,
     inbound_rx: tokio_mpsc::Receiver<QueuedCollabEvent>,
@@ -1842,16 +1842,16 @@ trait HostAsyncIo: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite> HostAsyncIo for T {}
 type HostAsyncStream = Pin<Box<dyn HostAsyncIo>>;
 
-/// The descriptor lane of a host session's collaboration stream, when it
+/// The descriptor stream of a host session's collaboration stream, when it
 /// has one: what the app hands the broker (Files' selected objects) rides
 /// that stream as SCM_RIGHTS ([`runtime_portal::DescriptorStreamSource`]).
-type HostDescriptorLane = runtime_portal::DescriptorLane;
+type HostDescriptors = runtime_portal::Descriptors;
 
 type HostSessionFuture = std::pin::Pin<
     Box<
         dyn std::future::Future<
                 Output = Result<
-                    (HostAsyncStream, HostAsyncStream, HostDescriptorLane),
+                    (HostAsyncStream, HostAsyncStream, HostDescriptors),
                     runtime_portal::NotAvailable,
                 >,
             >,
@@ -1900,8 +1900,8 @@ impl HostSessionConnector {
     /// writes also carry the descriptors the app hands the broker, as the
     /// launcher's inherited service connection does, so an in-process app
     /// can hand Files' selected objects over exactly as a launched one. A
-    /// host whose streams carry no descriptors gives an empty lane.
-    pub fn with_descriptor_lane<F, Fut, C, I>(connect: F) -> Self
+    /// host whose streams carry no descriptors gives an empty queue.
+    pub fn with_descriptors<F, Fut, C, I>(connect: F) -> Self
     where
         F: FnOnce(RouteSpec) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(C, I), runtime_portal::NotAvailable>> + 'static,
@@ -1912,11 +1912,11 @@ impl HostSessionConnector {
             connect: Box::new(move |route| {
                 Box::pin(async move {
                     let (collaboration, identity) = connect(route).await?;
-                    let (collaboration, lane) = collaboration.with_descriptor_lane();
+                    let (collaboration, descriptors) = collaboration.with_descriptors();
                     Ok((
                         Box::pin(collaboration) as HostAsyncStream,
                         Box::pin(identity) as HostAsyncStream,
-                        lane,
+                        descriptors,
                     ))
                 })
             }),
@@ -3486,7 +3486,7 @@ fn run_shovel(
                 // session or says why it could not; no clock here guesses
                 // that it never will.
                 match (connector.connect)(route).await {
-                    Ok((collaboration_stream, identity_stream, lane)) => {
+                    Ok((collaboration_stream, identity_stream, descriptors)) => {
                         let identity =
                             runtime_identity::AsyncBrokerSigningIdentity::from_connected_io(
                                 identity_stream,
@@ -3501,7 +3501,7 @@ fn run_shovel(
                                             runtime_collab::CollabClient::connected_local(
                                                 collaboration_stream,
                                             );
-                                        let client = client.with_optional_descriptors(lane);
+                                        let client = client.with_optional_descriptors(descriptors);
                                         Ok(((client, end), identity))
                                     }
                                     Err(error) => Err(error),
@@ -3656,7 +3656,7 @@ async fn drive_shovel(
     #[cfg(test)]
     let mut key_timer_rounds = 0_usize;
     let signer: SharedSigner = std::rc::Rc::new(tokio::sync::Mutex::new(signer));
-    let lane = DocumentLane::start(signer.clone(), inbound_tx.clone());
+    let queue = DocumentQueue::start(signer.clone(), inbound_tx.clone());
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
     let mut member_handle: Option<String> = None;
@@ -3935,7 +3935,7 @@ async fn drive_shovel(
             continue;
         }
         if orders_after_documents(&command) {
-            lane.drained().await;
+            queue.drained().await;
             // A document that did not reach the broker ended the bridge:
             // nothing queued after it goes out, an invocation's outcome
             // least of all.
@@ -4017,7 +4017,7 @@ async fn drive_shovel(
                     published = dispatch_sdk_request(
                         route,
                         request,
-                        &lane,
+                        &queue,
                         &inbound_tx,
                         RouteRole::App,
                         _reservation,
@@ -4066,7 +4066,7 @@ async fn drive_shovel(
                     published = dispatch_sdk_request(
                         route,
                         request,
-                        &lane,
+                        &queue,
                         &inbound_tx,
                         RouteRole::Record,
                         _reservation,
@@ -4105,7 +4105,7 @@ async fn drive_shovel(
                 // A superseded receipt may have no receiver. Its prefix still ran.
                 // A latched, specific publication failure (a refused signature
                 // or commit) outranks the generic "did not reach" marker.
-                let unpublished = lane.unpublished.take();
+                let unpublished = queue.unpublished.take();
                 replies.answer(&inbound_tx.state.publication_result().and_then(|()| {
                     unpublished.map_or(Ok(()), |reason| {
                         Err(DocumentPublicationError::Failed(reason))
@@ -4264,7 +4264,8 @@ async fn drive_shovel(
             }
         }
         if document && !published {
-            lane.unpublished
+            queue
+                .unpublished
                 .borrow_mut()
                 .get_or_insert_with(|| "a document mutation did not reach the broker".into());
         }
@@ -4283,7 +4284,7 @@ async fn drive_shovel(
             }
         }
     }
-    lane.close().await;
+    queue.close().await;
 }
 
 #[allow(
@@ -4452,9 +4453,10 @@ struct SdkJoinContext<'a> {
 }
 
 struct SdkRoute {
-    _checks: Option<crate::lane::Registration<super::approved_checks::Endpoint>>,
-    _moderation: Option<crate::lane::Registration<super::external_moderation::Endpoint>>,
-    _attribution: Option<crate::lane::Registration<super::write_attribution_lane::Endpoint>>,
+    _checks: Option<crate::route_endpoints::Registration<super::approved_checks::Endpoint>>,
+    _moderation: Option<crate::route_endpoints::Registration<super::external_moderation::Endpoint>>,
+    _attribution:
+        Option<crate::route_endpoints::Registration<super::write_attribution_endpoint::Endpoint>>,
     document: DocumentRoute,
     presence: Option<runtime_collab::PresenceHandle>,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
@@ -4462,7 +4464,7 @@ struct SdkRoute {
 }
 
 /// What publishing a route's document takes: its channel and its keys,
-/// shared with the connection's [`DocumentLane`].
+/// shared with the connection's [`DocumentQueue`].
 #[derive(Clone)]
 struct DocumentRoute {
     spec: RouteSpec,
@@ -4484,8 +4486,8 @@ impl std::ops::Deref for SdkRoute {
 /// index delta. Everything else still goes out after the documents asked
 /// before it ([`orders_after_documents`]): an invocation's outcome never
 /// reaches the host ahead of its change.
-struct DocumentLane {
-    jobs: tokio_mpsc::UnboundedSender<LaneJob>,
+struct DocumentQueue {
+    jobs: tokio_mpsc::UnboundedSender<QueuedJob>,
     task: tokio::task::JoinHandle<()>,
     /// Publications asked and not yet made.
     queued: std::rc::Rc<std::cell::Cell<usize>>,
@@ -4494,11 +4496,11 @@ struct DocumentLane {
     unpublished: std::rc::Rc<std::cell::RefCell<Option<String>>>,
 }
 
-/// The signer a connection's routes and its document lane share; a document
+/// The signer a connection's routes and its document queue share; a document
 /// holds it only while it signs and sends.
 type SharedSigner = std::rc::Rc<tokio::sync::Mutex<LocalSdkDocumentSigner>>;
 
-enum LaneJob {
+enum QueuedJob {
     Publish {
         route: DocumentRoute,
         request: CollabRequest,
@@ -4514,7 +4516,7 @@ enum LaneJob {
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
-impl DocumentLane {
+impl DocumentQueue {
     fn start(signer: SharedSigner, inbound: InboundBridge) -> Self {
         let (jobs, mut received) = tokio_mpsc::unbounded_channel();
         let queued = std::rc::Rc::new(std::cell::Cell::new(0_usize));
@@ -4523,7 +4525,7 @@ impl DocumentLane {
         let task = tokio::task::spawn_local(async move {
             while let Some(job) = received.recv().await {
                 match job {
-                    LaneJob::Publish {
+                    QueuedJob::Publish {
                         route,
                         request,
                         role,
@@ -4536,7 +4538,7 @@ impl DocumentLane {
                         }
                         count.set(count.get().saturating_sub(1));
                     }
-                    LaneJob::Drained(done) => {
+                    QueuedJob::Drained(done) => {
                         let _ = done.send(());
                     }
                 }
@@ -4559,7 +4561,7 @@ impl DocumentLane {
         reservation: ByteReservation,
     ) {
         self.queued.set(self.queued.get().saturating_add(1));
-        let _ = self.jobs.send(LaneJob::Publish {
+        let _ = self.jobs.send(QueuedJob::Publish {
             route: route.clone(),
             request,
             role,
@@ -4570,7 +4572,7 @@ impl DocumentLane {
     /// Wait until every publication asked so far is made.
     async fn drained(&self) {
         let (done, wait) = tokio::sync::oneshot::channel();
-        if self.queued.get() != 0 && self.jobs.send(LaneJob::Drained(done)).is_ok() {
+        if self.queued.get() != 0 && self.jobs.send(QueuedJob::Drained(done)).is_ok() {
             let _ = wait.await;
         }
     }
@@ -4716,7 +4718,7 @@ async fn spawn_content_stream(
     let Ok(stream) = channel.subscribe_blobs().await else {
         return;
     };
-    super::document_content::ContentLane::of(&route).serve();
+    super::document_content::ContentLink::of(&route).serve();
     let inbound_tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
         while let Ok(event) = stream.read().await {
@@ -6513,7 +6515,7 @@ async fn answer_beside<T: 'static>(
 async fn dispatch_sdk_request(
     route: &mut SdkRoute,
     request: CollabRequest,
-    lane: &DocumentLane,
+    queue: &DocumentQueue,
     inbound_tx: &InboundBridge,
     role: RouteRole,
     reservation: ByteReservation,
@@ -6529,7 +6531,7 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::Hello { .. } => {}
         request @ (CollabRequest::SignedOperation { .. } | CollabRequest::Document { .. }) => {
-            lane.publish(route, request, role, reservation);
+            queue.publish(route, request, role, reservation);
         }
         CollabRequest::OfferContent { hash, bytes } => {
             if let Err(error) = route.channel.offer_blob(&hash, &bytes).await {
@@ -6727,7 +6729,7 @@ async fn dispatch_sdk_request(
         CollabRequest::NativeMediaCommand { request_id, .. } => {
             let _ = inbound_tx.send_reply(CollabEvent::NativeMediaCommandResult {
                 request_id,
-                result: Err("native media requires the bounded control lane".into()),
+                result: Err("native media requires the bounded control queue".into()),
             });
         }
         CollabRequest::RealtimeCommand {

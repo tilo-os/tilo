@@ -3,7 +3,7 @@
 A workspace is the one unit of collaboration. It is the same thing on the
 native desktop, on a workspace host, in the standalone runtime and in the
 browser. There is no second unit beside or under it: no personal space, no
-continuity lane.
+continuity path.
 
 A workspace has three parts:
 
@@ -225,7 +225,7 @@ other fields are declared for the parts that apply them.
 Devices talk over iroh, and nothing else. A device reaches the other devices
 that hold a workspace, directly or through any device that stores it;
 store-and-forward is what a store does. There is no separate relay protocol,
-no second send path, and no gossip lane beside it.
+no second send path, and no gossip path beside it.
 
 A device is one iroh endpoint, under its device key, and one member of each
 workspace's key group; both are its engine's. Whatever else its session asks a

@@ -8,10 +8,10 @@ latency targets:
 - **Workspace switch:** first frame within one refresh, no dropped frame,
   at most 300 ms in total.
 
-One lane measures them: a weekly, report-only run on a reference machine below,
+One job measures them: a weekly, report-only run on a reference machine below,
 through `tilo-vm`. It never blocks a merge.
 
-| Lane | Where | Clock | KPI ids |
+| Job | Where | Clock | KPI ids |
 |---|---|---|---|
 | Weekly, report-only | a reference machine below, through `tilo-vm` | kernel input event → KMS presentation (the flip's vblank) | `hw.key_to_present.notes.<hz>hz`, `hw.workspace_switch.{first_frame,settled,dropped_frames}.<hz>hz` |
 
@@ -36,7 +36,7 @@ Every record carries the environment `profile/gpu/none/device-<name>`, the DMI
 product and CPU (`hardware`), the deployed shell's commit, and in `meta` the
 panel refresh (`panel_hz`) and the booted image (`image_digest`).
 
-## Running the weekly lane
+## Running the weekly job
 
 The device is shared: book it as a `tilo-vm` slot (AGENTS.md, "Dev VMs"), never
 with raw ssh. Deploy the build under test, unlock the session, open one Notes

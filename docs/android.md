@@ -170,7 +170,7 @@ way instead:
    ```
 
 When an app declares that example the CLI builds it with `--features
-android`; otherwise it builds the library. The CI lane below selects every
+android`; otherwise it builds the library. The CI job below selects every
 affected app that declares the example.
 
 Everything the toolkit writes to stdout and stderr, including `tracing` and

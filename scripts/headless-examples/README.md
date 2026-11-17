@@ -60,7 +60,7 @@ apps, services and bus too.
 `cargo headless` is the same session from the tree's build with no window, and
 prints how to drive it; `--ready FILE` writes the same JSON. A harness that has
 to drive a build of its own (this tree's debug binaries, a release session a
-performance lane compiled) starts it through `real_apps.ScriptedSession`, which
+performance job compiled) starts it through `real_apps.ScriptedSession`, which
 keeps the same rules: a scratch profile, the runtime directory
 `dist/dev/nested-session.sh --print-runtime` names for it, and nothing left
 behind.

@@ -554,7 +554,7 @@ impl TopBarChrome {
             self.sharing_indicator_rect = Rect::ZERO;
             return right_x;
         };
-        let available = (right_x - self.center_lane.x1 - 48.0).clamp(28.0, 180.0);
+        let available = (right_x - self.center_area.x1 - 48.0).clamp(28.0, 180.0);
         let width = self
             .sharing_chip(theme, &label, available)
             .width(text_renderer, theme);
@@ -603,7 +603,7 @@ impl TopBarChrome {
         let gap = f64::from(theme.tokens.spacing.s2);
         let height = 24.0;
         let right = self.people_left_x - f64::from(theme.tokens.spacing.s3);
-        let left_limit = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
+        let left_limit = self.center_area.x1 + f64::from(theme.tokens.spacing.s4);
         let dismiss_w = height;
         let lead = ChipLead::Glyph(ui::icons::Icon::Monitor);
         let natural = ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);

@@ -291,7 +291,7 @@ partition untouched and logs why; an interrupted reclaim resumes from the
 disk's actual state on the next run.
 
 The VM round trip `os/dev/test-internal-install-cycle.sh` (CI: the opt-in
-`internal-install-cycle` job of the release lane) exercises this path end to
+`internal-install-cycle` job of the release workflow) exercises this path end to
 end. It uses a real Fedora Cloud Base guest pinned by SHA-256, with at least
 120 GiB unallocated after its root:
 1. The real Imager stages the bundle from Fedora.

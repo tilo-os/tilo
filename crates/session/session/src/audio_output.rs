@@ -147,7 +147,7 @@ impl Entry {
     }
 
     /// Stop playing, and let a thread of its own join the stream: a `PipeWire` teardown never runs
-    /// on the lane that answers the app.
+    /// on the queue that answers the app.
     fn fence(&mut self) {
         self.alive.store(false, Ordering::Release);
         if let Ok(mut pcm) = self.pcm.lock() {
@@ -158,9 +158,9 @@ impl Entry {
                 .name("tilo-app-output-retire".into())
                 .spawn(move || drop(stream))
         {
-            // The stream was joined on this lane instead, which is what the thread was there to
+            // The stream was joined on this queue instead, which is what the thread was there to
             // keep off it: rare, and never silent.
-            tracing::warn!(%error, "an app's output stream could not be retired off this lane");
+            tracing::warn!(%error, "an app's output stream could not be retired off this queue");
         }
     }
 }
@@ -239,7 +239,7 @@ impl Shared {
         playing
     }
 
-    /// The device's stream for `config`, opened off the lane that answers the app: it waits on
+    /// The device's stream for `config`, opened off the queue that answers the app: it waits on
     /// `PipeWire`.
     async fn play(
         &self,

@@ -922,14 +922,14 @@ impl FrameHarness {
         Ok((root, wake, history))
     }
 
-    /// The lane the mounted component's record content travels on: the lane its window keeps, read as
+    /// The content link the mounted component's record content travels on: the content link its window keeps, read as
     /// the window reads it, so a test asking what the window asked for looks here.
-    pub fn component_document_content_lane(
+    pub fn component_document_content_link(
         &self,
-    ) -> Option<std::sync::Arc<crate::collaboration::document_content::ContentLane>> {
+    ) -> Option<std::sync::Arc<crate::collaboration::document_content::ContentLink>> {
         let binding = &self.component_wake.as_ref()?.binding;
         let _entry = binding.lifetime.enter_if_open().ok()?;
-        Some(crate::collaboration::document_content::ContentLane::of_window())
+        Some(crate::collaboration::document_content::ContentLink::of_window())
     }
 
     /// The record the mounted component shows.

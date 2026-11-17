@@ -53,7 +53,7 @@ d-ks6wodcv = Items
 d-crrlhv3r = Draft
 
 d-knnd7epb = Release
-    .doc = The team's items on a board, a lane per stage.
+    .doc = The team's items on a board, a list per stage.
     .noun = { $count ->
         [one] release
        *[other] releases

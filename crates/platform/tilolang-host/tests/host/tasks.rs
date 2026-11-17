@@ -381,7 +381,7 @@ fn choose_place(host: &mut TilolangHost, window: &mut Window, label: &str) {
         .expect("a place is chosen")
         .clone();
     window.send(&[ToApp::Fire {
-        lane: Lane::Root,
+        level: Level::Root,
         key: place.key,
         event: pick,
         value: None,
@@ -406,7 +406,7 @@ fn add_to_inbox(host: &mut TilolangHost, window: &mut Window, title: &str) {
         .0
         .clone();
     window.send(&[ToApp::Fire {
-        lane: Lane::Root,
+        level: Level::Root,
         key: entry.key,
         event: submit,
         value: Some(patch::Value::text(title)),
@@ -465,7 +465,7 @@ fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
                 .0
                 .clone();
             window.send(&[ToApp::Fire {
-                lane: Lane::Root,
+                level: Level::Root,
                 key: entry.key,
                 event,
                 value: Some(patch::Value::text("File the report")),
@@ -809,7 +809,7 @@ fn today_reads_tasks_from_its_document_and_clears_it_at_its_api() {
         .expect("the button fires")
         .clone();
     shell.today.send(&[ToApp::Fire {
-        lane: Lane::Root,
+        level: Level::Root,
         key: button.key,
         event,
         value: None,

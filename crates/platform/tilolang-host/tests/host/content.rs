@@ -157,7 +157,7 @@ fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
         settle(&mut host, &mut window);
         let (field, note) = body_field(&window);
         let edit = |text: &str| ToApp::EditRich {
-            lane: Lane::Root,
+            level: Level::Root,
             target: note.clone(),
             key: field.clone(),
             rich: typed_rich(text),
@@ -215,7 +215,7 @@ fn a_paragraph_of_the_whole_limit_is_kept_aloud() {
     // Every character two bytes: half as many characters is the same text in bytes.
     let kept = "é".repeat(tilo_actions::MAX_TEXT_BYTES / 2);
     window.send(&[ToApp::EditRich {
-        lane: Lane::Root,
+        level: Level::Root,
         target: note.clone(),
         key: field,
         rich: typed_rich(&kept),
@@ -247,7 +247,7 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
     settle(&mut host, &mut window);
     let (field, note) = body_field(&window);
     window.send(&[ToApp::EditRich {
-        lane: Lane::Root,
+        level: Level::Root,
         target: note.clone(),
         key: field.clone(),
         rich: typed_rich("draft"),
@@ -260,7 +260,7 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
     let body = pasted_body(paragraphs);
     let pasting = std::time::Instant::now();
     window.send(&[ToApp::EditRich {
-        lane: Lane::Root,
+        level: Level::Root,
         target: note.clone(),
         key: field,
         rich: body,

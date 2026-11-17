@@ -1,4 +1,4 @@
-//! The test environment a lane promises reaches every test, wherever the
+//! The test environment a job promises reaches every test, wherever the
 //! tests run.
 //!
 //! nextest's `ci` profile sets it up on the machine that executes the tests

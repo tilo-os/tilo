@@ -171,9 +171,9 @@ pub mod external_moderation;
 pub mod handoff;
 mod history;
 #[cfg(feature = "broker-transport")]
-mod lane;
+mod route_endpoints;
 #[cfg(feature = "broker-transport")]
-pub mod write_attribution_lane;
+pub mod write_attribution_endpoint;
 
 pub use runtime_collab::{SurfaceDelta, SurfacePublication, SurfaceTable};
 pub mod document_content;

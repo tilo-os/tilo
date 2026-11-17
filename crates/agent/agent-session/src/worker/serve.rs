@@ -14,7 +14,7 @@ use ui::application::{
     ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
-use ui::collaboration::document_content::{ContentLane, DocumentContent};
+use ui::collaboration::document_content::{ContentLink, DocumentContent};
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, SharedPermissions};
 use ui::portable_storage::{PortableStorage, StorageKey};
@@ -170,8 +170,8 @@ struct Worker {
 struct WorkerContent {
     /// What the supervisor put and the app stored.
     local: ContentStore,
-    lane: Arc<ContentLane>,
-    /// `local` joined to `lane`: the store the view is lent.
+    link: Arc<ContentLink>,
+    /// `local` joined to `link`: the store the view is lent.
     store: ContentStore,
 }
 
@@ -181,9 +181,9 @@ impl WorkerContent {
         // holds, of its one workspace, so a reference an action names
         // resolves in it.
         let local = ContentStore::memory().for_one_workspace();
-        let lane = Arc::new(ContentLane::default());
-        let store = DocumentContent::store(local.clone(), Arc::clone(&lane));
-        Self { local, lane, store }
+        let link = Arc::new(ContentLink::default());
+        let store = DocumentContent::store(local.clone(), Arc::clone(&link));
+        Self { local, link, store }
     }
 
     fn put(&self, bytes: &[u8]) -> Reply {
@@ -196,7 +196,7 @@ impl WorkerContent {
     /// What the app stored since the last take, up to a batch, and what it
     /// asked for and lacks.
     fn take(&self) -> Reply {
-        let requests = self.lane.take_requests();
+        let requests = self.link.take_requests();
         let mut offered = Vec::new();
         let mut size = 0usize;
         for (hash, bytes) in requests.offers {
@@ -207,7 +207,7 @@ impl WorkerContent {
                 size = size.saturating_add(bytes.len());
                 offered.push(bytes);
             } else {
-                self.lane.retry_offer(hash, bytes);
+                self.link.retry_offer(hash, bytes);
             }
         }
         let wanted = requests

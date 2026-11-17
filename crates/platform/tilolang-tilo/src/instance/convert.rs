@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_render_protocol::patch::{self as ui, Lane, ToUi};
+use tilo_render_protocol::patch::{self as ui, Level, ToUi};
 
 use super::rows;
 use super::wire::{self, Convert};
@@ -459,12 +459,12 @@ pub(crate) fn invokes(
     })
 }
 
-/// The window's message of rows `requested` of the list `list` of the view `view` of `lane`.
+/// The window's message of rows `requested` of the list `list` of the view `view` of `level`.
 pub(crate) fn rows_message(
     host: &Host,
     names: &dyn NameHost,
     view: &Rc<RefCell<ViewInstance>>,
-    lane: Lane,
+    level: Level,
     list: &str,
     requested: rows::Requested,
 ) -> ToUi {
@@ -472,7 +472,7 @@ pub(crate) fn rows_message(
         requested.rows.iter().map(|row| convert.node(row)).collect()
     });
     ToUi::Rows {
-        lane,
+        level,
         list: list.to_owned(),
         len: u32::try_from(requested.len).unwrap_or(u32::MAX),
         start: u32::try_from(requested.start).unwrap_or(u32::MAX),

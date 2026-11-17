@@ -27,7 +27,7 @@ pub(super) struct MenuRow {
 /// What every row of a menu shares.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct MenuColumns {
-    /// A leading lane for the state or icon of a row that has one.
+    /// A leading area for the state or icon of a row that has one.
     pub(super) gutter: bool,
 }
 

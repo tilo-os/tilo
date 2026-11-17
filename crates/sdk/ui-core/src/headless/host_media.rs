@@ -1,4 +1,4 @@
-//! A retained component's local media lane for in-process hosts. Requests retain their exact component
+//! A retained component's local media queue for in-process hosts. Requests retain their exact component
 //! lifetime; a reply cannot reach a replacement.
 use super::FrameHarness;
 use crate::bound_dispatch::{CallbackBinding, ComponentRequest};
@@ -19,14 +19,14 @@ pub struct MediaRequest {
 }
 
 #[derive(Default)]
-pub struct MediaLane {
+pub struct MediaQueue {
     next: u64,
     pending: BTreeMap<u64, (CallbackBinding, u64)>,
     owners: BTreeMap<String, (CallbackBinding, MediaRequest)>,
     ready: Vec<MediaRequest>,
     catalogues: Vec<(CallbackBinding, tilo_actions::remote::RemoteActionMessage)>,
 }
-impl MediaLane {
+impl MediaQueue {
     /// Take local media commands from each retained component under its bound callback context.
     pub fn take(&mut self, frame: &mut FrameHarness) -> Vec<MediaRequest> {
         self.pump(frame);
@@ -70,7 +70,7 @@ impl MediaLane {
                          widget: &mut dyn crate::widget::AppWidget,
                          _: &tilo_actions::ActionRegistry| {
             // Every app may ask the workspace's host to run an action; only
-            // Chat holds a call, so only it reaches the media lane.
+            // Chat holds a call, so only it reaches the media queue.
             let media = binding.app_id == "so.tilo.chat";
             let route = binding.broker_route()?;
             for request in crate::widget::take_collab_requests(widget) {
@@ -99,7 +99,7 @@ impl MediaLane {
                             widget,
                             &CollabEvent::NativeMediaCommandResult {
                                 request_id,
-                                result: Err("local media lane is unavailable".into()),
+                                result: Err("local media queue is unavailable".into()),
                             },
                         );
                         continue;
@@ -178,7 +178,7 @@ fn host_runs(provider: &str) -> bool {
         || provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
 }
 
-/// Why the lane refuses an invocation of `provider` with `queued` already waiting for the host, if it
+/// Why the media queue refuses an invocation of `provider` with `queued` already waiting for the host, if it
 /// does.
 fn refusal(provider: &str, queued: usize) -> Option<&'static str> {
     if !host_runs(provider) {
@@ -199,7 +199,7 @@ fn queue_catalogue(
     use tilo_actions::remote::{
         ActionHostError, InvocationReceipt, ReceiptStatus, RemoteActionMessage,
     };
-    // An action the workspace's host runs travels this lane to it, and the host
+    // An action the workspace's host runs travels this media queue to it, and the host
     // admits it by the person's own standing in the workspace: a page cannot
     // grant itself anything. The workspace's membership actions become the
     // host's governed workspace requests, decided by the workspace's policy there.
@@ -235,7 +235,7 @@ fn queue_catalogue(
                 message: RemoteActionMessage::CatalogueResponse {
                     correlation: *correlation,
                     result: Err(ActionHostError::Unavailable {
-                        reason: "local catalogue lane is busy".into(),
+                        reason: "local catalogue media queue is busy".into(),
                     }),
                 },
             },

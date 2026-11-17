@@ -336,7 +336,7 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
     commit_entry(&host, here, &host_key, "founded here");
     commit_entry(&far, elsewhere, &far_key, "founded elsewhere");
 
-    // The separate host serves its workspaces on the direct lane, as a device
+    // The separate host serves its workspaces on the direct connection, as a device
     // holding workspaces does.
     let far_frames = tempfile::tempdir().expect("a frames directory");
     let far_store = std::sync::Arc::new(

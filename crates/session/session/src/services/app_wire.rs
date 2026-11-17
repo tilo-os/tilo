@@ -429,7 +429,7 @@ fn calls_service(
     let sync = sync?;
     calls.follow(sync, None);
     let service = tilo_native_media::NativeMediaService::new();
-    // A call's lane runs on the session's own endpoint, sealed with the workspace's channel keys
+    // A call's stream runs on the session's own endpoint, sealed with the workspace's channel keys
     // and admitted by the workspace's governance: what every member of the workspace needs to be in
     // the channel's call.
     let roster = sync.engine().map_or_else(

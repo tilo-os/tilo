@@ -1,5 +1,5 @@
-//! The approved-check lane as a dispatched operation target uses it: one
-//! lane per acknowledged record route, bounded, retired with its transport.
+//! The approved-check endpoint as a dispatched operation target uses it: one
+//! endpoint per acknowledged record route, bounded, retired with its transport.
 
 use crate::collaboration::approved_checks::{admit_for_test, enqueue};
 use runtime_collab::approved_checks::{Report, Request};
@@ -135,7 +135,7 @@ tilo_test_env::scenario! {
         let second = enqueue(&route, request.clone()).unwrap();
         assert!(
             enqueue(&route, request.clone()).is_err(),
-            "actual typed lane refuses a third queued job"
+            "actual typed endpoint refuses a third queued job"
         );
         assert_eq!(receive.try_recv().unwrap().request, request);
         assert!(

@@ -145,7 +145,7 @@ async fn a_peer_that_cannot_be_traced_still_hands_over_its_descriptor() {
     assert_eq!(identity(&taken), expected);
 
     // Pulling the same descriptor out of the peer is refused: the path this
-    // lane replaces could not work against this peer.
+    // descriptor stream replaces could not work against this peer.
     // SAFETY: plain syscalls on a live child pid and its pidfd.
     unsafe {
         let pidfd = libc::syscall(libc::SYS_pidfd_open, pid, 0);

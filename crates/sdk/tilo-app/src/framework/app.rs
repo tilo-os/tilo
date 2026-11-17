@@ -1539,16 +1539,16 @@ fn document_content(context: &mut HostContext) -> Result<(), LaunchError> {
         return Ok(());
     };
     let route = resource_route(context)?;
-    let lane = ui_core::collaboration::document_content::ContentLane::of_window();
-    // The window keeps its lane: another window of the app on this thread
+    let link = ui_core::collaboration::document_content::ContentLink::of_window();
+    // The window keeps its content link: another window of the app on this thread
     // reads its own, never this one's queue of wants.
-    ui_core::collaboration::document_content::keep_lane(&context.wake_handle(), Arc::clone(&lane));
+    ui_core::collaboration::document_content::keep_link(&context.wake_handle(), Arc::clone(&link));
     // Whatever carries the record's content for the process (a browser
     // page's replication) asks for and hands over this window's too, and
     // what it stores is sealed for the members of the record's workspace.
-    ui_core::collaboration::document_content::ContentLane::show_on_route(&route, &lane);
+    ui_core::collaboration::document_content::ContentLink::show_on_route(&route, &link);
     context.provide_content(
-        ui_core::collaboration::document_content::DocumentContent::store(local, lane),
+        ui_core::collaboration::document_content::DocumentContent::store(local, link),
     );
     Ok(())
 }

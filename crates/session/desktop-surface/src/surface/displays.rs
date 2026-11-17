@@ -1,17 +1,17 @@
 //! Each display holds its own window groups.
 //!
-//! With more than one display a strip is one lane per display: every window
+//! With more than one display a strip is one section per display: every window
 //! group belongs to exactly one display (the tree's
 //! [`OutputPartition`](tilo_desktop_model::OutputPartition)), is laid out,
 //! panned and clipped there only, and is never drawn on another. Every
-//! display keeps the strip's edge gutters at both ends of its lane. New
+//! display keeps the strip's edge gutters at both ends of its section. New
 //! windows open on the display with focus; focus moves between displays by
 //! stepping past a display's last window, by pressing on a display, or by
 //! asking for a display; a window moves to the neighbouring display on
 //! request. The strip's order stays the shared one; the row lays it out
-//! display by display ([`OutputPartition::lane_order`]).
+//! display by display ([`OutputPartition::section_order`]).
 //!
-//! [`OutputPartition::lane_order`]: tilo_desktop_model::OutputPartition::lane_order
+//! [`OutputPartition::section_order`]: tilo_desktop_model::OutputPartition::section_order
 
 use std::collections::HashMap;
 
@@ -20,7 +20,7 @@ use ui::kurbo::{Affine, Point, Rect};
 use ui::presence::PresenceCtx;
 use ui::taffy::NodeId;
 use ui::vello::Scene;
-use ui::widget::{EventCtx, GroupRow, STRIP_EDGE_GUTTER_PX, StripLane, Widget as _};
+use ui::widget::{EventCtx, GroupRow, STRIP_EDGE_GUTTER_PX, StripSection, Widget as _};
 use ui::winit::event::WindowEvent;
 use ui::{TextRenderer, Theme};
 
@@ -176,17 +176,17 @@ pub(crate) fn carry_topology(
     changed
 }
 
-/// One lane per display of `displays` (in the surface's coordinates), in
+/// One section per display of `displays` (in the surface's coordinates), in
 /// `order`, for a row laid out at `row` in a surface at `surface`: each
-/// display's lane keeps the insets the row keeps from the surface's edges,
+/// display's section keeps the insets the row keeps from the surface's edges,
 /// taken from that display's own top and bottom, and the strip's gutters
 /// at both its ends.
-pub(crate) fn lanes(
+pub(crate) fn sections(
     displays: &[Display],
     order: &[u32],
     surface: Rect,
     row: Rect,
-) -> Vec<StripLane> {
+) -> Vec<StripSection> {
     let row = if row.height() > 0.0 { row } else { surface };
     let top = (row.y0 - surface.y0).max(0.0);
     let bottom = (surface.y1 - row.y1).max(0.0);
@@ -202,7 +202,7 @@ pub(crate) fn lanes(
                 x0 + display.width,
                 (y0 + display.height - bottom).max(y0 + top),
             );
-            StripLane {
+            StripSection {
                 output: display.id,
                 area,
                 usable: (display.width - 2.0 * STRIP_EDGE_GUTTER_PX).max(1.0),
@@ -213,7 +213,7 @@ pub(crate) fn lanes(
 }
 
 /// What one strip on the shell is laid out and shown as: the displays it is shown on, its window
-/// groups in lane order (display by display), and which display each belongs to.
+/// groups in section order (display by display), and which display each belongs to.
 pub(crate) struct StripPlan {
     pub(crate) strip: StripId,
     pub(crate) displays: Vec<u32>,
@@ -251,7 +251,7 @@ pub(crate) fn display_strips(tree: &Layout) -> Vec<StripPlan> {
         };
         plan.groups = tree
             .outputs
-            .lane_order(strip)
+            .section_order(strip)
             .into_iter()
             .map(|g| g.id)
             .collect();
@@ -412,7 +412,7 @@ impl Shared {
 impl DesktopSurface {
     /// Build the rows of the strips the other displays show, so every display has the strip it
     /// keeps. The one the person works in is the shown row; these are drawn behind it, each in its
-    /// own display's lane.
+    /// own display's section.
     pub(super) fn show_display_strips(&mut self) {
         let shared = std::rc::Rc::clone(&self.shared);
         let shared = shared.borrow();
@@ -537,7 +537,7 @@ pub(super) fn drawn_rows_mut<'a>(
 impl DesktopHandle {
     /// The displays the desktop spreads over, primary first, in the surface's coordinates; a mirror
     /// set is one display. Groups move between them as [`OutputPartition::reconcile`] says, and the
-    /// surface lays each display's lane out on its next pass. Whether anything changed.
+    /// surface lays each display's section out on its next pass. Whether anything changed.
     ///
     /// [`OutputPartition::reconcile`]: tilo_desktop_model::OutputPartition::reconcile
     pub fn set_displays(&self, displays: &[Display]) -> bool {
@@ -644,8 +644,8 @@ impl DesktopSurface {
     /// Bring the partition and every display's row in line with the
     /// displays: a window without a display gets the focused one, the
     /// display of the focused window is the focused display, and each
-    /// display's strip lays its windows out in that display's lane, display
-    /// by display. A strip shown on several displays keeps a lane on each;
+    /// display's strip lays its windows out in that display's section, display
+    /// by display. A strip shown on several displays keeps a section on each;
     /// the strips the other displays show are laid out behind it. On one
     /// display the shown row is one continuous strip again.
     pub(super) fn lay_out_displays(&mut self) {
@@ -675,7 +675,7 @@ impl DesktopSurface {
         let Some((plans, all, order, focused)) = plans else {
             self.behind.clear();
             if let Some(row) = shown.and_then(|strip| self.rows.get_mut(&strip)) {
-                row.set_lanes(&[], &HashMap::new());
+                row.set_sections(&[], &HashMap::new());
             }
             return;
         };
@@ -687,9 +687,9 @@ impl DesktopSurface {
             let Some(row) = self.rows.get_mut(&plan.strip) else {
                 continue;
             };
-            put_in_lane_order(row, &plan.groups);
-            let lanes = lanes(&all, &order, surface, row.get_rect());
-            row.set_lanes(&lanes, &plan.assignment);
+            put_in_section_order(row, &plan.groups);
+            let sections = sections(&all, &order, surface, row.get_rect());
+            row.set_sections(&sections, &plan.assignment);
             row.set_shown_outputs(&plan.displays);
             if let Some(focused) = focused.filter(|focused| plan.displays.contains(focused)) {
                 row.set_focus_output(focused);
@@ -740,7 +740,7 @@ impl DesktopSurface {
 
 /// Order `row`'s groups as `groups` (the strip's, display by display),
 /// leaving any the row still shows closing after them.
-fn put_in_lane_order(row: &mut GroupRow, groups: &[GroupId]) {
+fn put_in_section_order(row: &mut GroupRow, groups: &[GroupId]) {
     let mut at = 0usize;
     for id in groups {
         let Some(position) = row.groups.iter().position(|g| g.id == *id) else {
@@ -819,7 +819,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn each_display_has_its_lane_and_takes_its_own_presses;
+        fn each_display_has_its_section_and_takes_its_own_presses;
 
         phase shell_surfaces_stand_on_the_display_the_person_works_on;
         {
@@ -838,18 +838,18 @@ mod tests {
             assert_eq!(working_display(&Layout::default()), None, "one display");
         }
 
-        phase each_display_gets_a_lane_with_the_rows_insets_and_its_own_gutters;
+        phase each_display_gets_a_section_with_the_rows_insets_and_its_own_gutters;
         {
             let displays = [display(0, 0.0), display(1, 800.0)];
             let surface = Rect::new(0.0, 0.0, 1600.0, 600.0);
             let row = Rect::new(0.0, 40.0, 1600.0, 588.0);
-            let lanes = lanes(&displays, &[1, 0], surface, row);
-            assert_eq!(lanes.len(), 2);
-            assert_eq!(lanes[0].output, 1, "in the order asked");
-            assert_eq!(lanes[0].area, Rect::new(800.0, 40.0, 1600.0, 588.0));
-            assert_eq!(lanes[1].area, Rect::new(0.0, 40.0, 800.0, 588.0));
-            assert!(lanes.iter().all(|lane| lane.leading));
-            assert_eq!(lanes[1].usable, 800.0 - 2.0 * STRIP_EDGE_GUTTER_PX);
+            let sections = sections(&displays, &[1, 0], surface, row);
+            assert_eq!(sections.len(), 2);
+            assert_eq!(sections[0].output, 1, "in the order asked");
+            assert_eq!(sections[0].area, Rect::new(800.0, 40.0, 1600.0, 588.0));
+            assert_eq!(sections[1].area, Rect::new(0.0, 40.0, 800.0, 588.0));
+            assert!(sections.iter().all(|section| section.leading));
+            assert_eq!(sections[1].usable, 800.0 - 2.0 * STRIP_EDGE_GUTTER_PX);
         }
 
         phase a_shorter_display_keeps_the_bottom_gutter_above_its_own_edge;
@@ -858,11 +858,11 @@ mod tests {
             short.height = 400.0;
             let surface = Rect::new(0.0, 0.0, 1600.0, 600.0);
             let row = Rect::new(0.0, 40.0, 1600.0, 588.0);
-            let lanes = lanes(&[display(0, 0.0), short], &[0, 1], surface, row);
-            assert_eq!(lanes[1].area, Rect::new(800.0, 40.0, 1600.0, 388.0));
+            let sections = sections(&[display(0, 0.0), short], &[0, 1], surface, row);
+            assert_eq!(sections[1].area, Rect::new(800.0, 40.0, 1600.0, 388.0));
         }
 
-        phase one_strip_on_both_displays_is_one_row_with_a_lane_each;
+        phase one_strip_on_both_displays_is_one_row_with_a_section_each;
         {
             let tree = docked(&[1, 2, 3], 2);
             let plans = display_strips(&tree);
@@ -964,7 +964,7 @@ mod tests {
         assert_eq!(
             plans[0].groups,
             [1, 2, 3],
-            "the strip lays every group out in its own display's lane"
+            "the strip lays every group out in its own display's section"
         );
         assert_eq!(plans[0].assignment.get(&3), Some(&1));
         assert_eq!(plans[1].groups, [4], "the other display's own strip");

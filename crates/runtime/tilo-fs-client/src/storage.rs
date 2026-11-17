@@ -202,7 +202,7 @@ pub enum StorageRequest {
         workspace: String,
         keep: bool,
     },
-    /// Retired with the external source lane. Kept at its place so a request from another build is
+    /// Retired with the external source path. Kept at its place so a request from another build is
     /// refused as unknown rather than read as another ask.
     RetiredBindExternalSource,
     RetiredBindExternalReadSource,
@@ -221,7 +221,7 @@ pub enum StorageResponse {
     Kept {
         keep: bool,
     },
-    /// Retired with the external source lane; nothing asks for them now.
+    /// Retired with the external source path; nothing asks for them now.
     RetiredExternalSourceBinding,
     RetiredExternalReadSourceBinding,
 }

@@ -2,7 +2,7 @@
 //! its successor; callers only wait on receipts and cannot cancel admitted work.
 //!
 //! Commits this host authors itself (workspace and channel governance) queue in
-//! a lane of their own ([`Lane::Host`]), with their own admission budget,
+//! a queue of their own ([`Queue::Host`]), with their own admission budget,
 //! and the owner takes them ahead of the members' queue: a workspace's governance
 //! never waits behind a crowd's traffic. Host order (`seq`) is still the
 //! order of owner turns, and so of publication.
@@ -193,7 +193,7 @@ async fn release_group(state: &Arc<Mutex<State>>, workers: &Arc<Semaphore>) {
 /// Which of an owner's ordered queues a job is admitted to. Both take their
 /// sequences from one counter; each is FIFO, and the owner prefers the host's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Lane {
+pub(crate) enum Queue {
     /// Members' state and every other ordered job.
     Member,
     /// Commits this host authors itself ([`HOST_MESSAGES`]).
@@ -290,24 +290,24 @@ impl AdmissionBudgets {
         }
     }
 
-    /// The message and byte budgets of `lane`.
-    const fn lane(&self, lane: Lane) -> (&Arc<Semaphore>, &Arc<Semaphore>) {
-        match lane {
-            Lane::Member => (&self.normal_messages, &self.normal_bytes),
-            Lane::Host => (&self.host_messages, &self.host_bytes),
+    /// The message and byte budgets of `queue`.
+    const fn queue(&self, queue: Queue) -> (&Arc<Semaphore>, &Arc<Semaphore>) {
+        match queue {
+            Queue::Member => (&self.normal_messages, &self.normal_bytes),
+            Queue::Host => (&self.host_messages, &self.host_bytes),
         }
     }
 }
 
 fn charged_bytes(bytes: usize) -> Result<u32, StoreError> {
-    charged_lane_bytes(Lane::Member, bytes)
+    charged_queue_bytes(Queue::Member, bytes)
 }
 
-fn charged_lane_bytes(lane: Lane, bytes: usize) -> Result<u32, StoreError> {
+fn charged_queue_bytes(queue: Queue, bytes: usize) -> Result<u32, StoreError> {
     let bytes = bytes.max(1);
-    let capacity = match lane {
-        Lane::Member => NORMAL_BYTES,
-        Lane::Host => HOST_BYTES,
+    let capacity = match queue {
+        Queue::Member => NORMAL_BYTES,
+        Queue::Host => HOST_BYTES,
     };
     if bytes > capacity {
         return Err(error("state byte backpressure"));
@@ -516,7 +516,7 @@ fn start(
     }));
     let (owner_running, ended) = tokio::sync::watch::channel(());
     tokio::spawn(async move {
-        run_owner_lanes(Lanes::new(rx, host_rx), replay_rx, state).await;
+        run_owner_queues(Queues::new(rx, host_rx), replay_rx, state).await;
         drop(owner_running);
     });
     let handle = Persistence {
@@ -589,9 +589,9 @@ fn note_idle_turn(state: &Mutex<State>) {
         .or_insert(1);
 }
 
-/// An owner's two ordered queues ([`Lane`]): the host's first, but never
+/// An owner's two ordered queues ([`Queue`]): the host's first, but never
 /// more than [`HOST_BURST`] host jobs in a row while a member job waits.
-struct Lanes {
+struct Queues {
     member: mpsc::Receiver<NormalJob>,
     host: mpsc::Receiver<NormalJob>,
     member_open: bool,
@@ -600,7 +600,7 @@ struct Lanes {
     host_run: u32,
 }
 
-impl Lanes {
+impl Queues {
     const fn new(member: mpsc::Receiver<NormalJob>, host: mpsc::Receiver<NormalJob>) -> Self {
         Self {
             member,
@@ -620,24 +620,24 @@ impl Lanes {
         !self.member.is_empty() || !self.host.is_empty()
     }
 
-    fn take(&mut self, lane: Lane, job: NormalJob) -> NormalJob {
-        match lane {
-            Lane::Host => self.host_run = self.host_run.saturating_add(1),
-            Lane::Member => self.host_run = 0,
+    fn take(&mut self, queue: Queue, job: NormalJob) -> NormalJob {
+        match queue {
+            Queue::Host => self.host_run = self.host_run.saturating_add(1),
+            Queue::Member => self.host_run = 0,
         }
         job
     }
 
-    fn try_lane(&mut self, lane: Lane) -> Option<NormalJob> {
-        let (rx, open) = match lane {
-            Lane::Member => (&mut self.member, &mut self.member_open),
-            Lane::Host => (&mut self.host, &mut self.host_open),
+    fn try_queue(&mut self, queue: Queue) -> Option<NormalJob> {
+        let (rx, open) = match queue {
+            Queue::Member => (&mut self.member, &mut self.member_open),
+            Queue::Host => (&mut self.host, &mut self.host_open),
         };
         if !*open {
             return None;
         }
         match rx.try_recv() {
-            Ok(job) => Some(self.take(lane, job)),
+            Ok(job) => Some(self.take(queue, job)),
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 *open = false;
                 None
@@ -649,11 +649,11 @@ impl Lanes {
     /// The next queued job, without waiting.
     fn try_next(&mut self) -> Option<NormalJob> {
         let order = if self.host_run < HOST_BURST {
-            [Lane::Host, Lane::Member]
+            [Queue::Host, Queue::Member]
         } else {
-            [Lane::Member, Lane::Host]
+            [Queue::Member, Queue::Host]
         };
-        order.into_iter().find_map(|lane| self.try_lane(lane))
+        order.into_iter().find_map(|queue| self.try_queue(queue))
     }
 
     /// The next job, waiting for one; `None` once both queues are closed
@@ -666,21 +666,21 @@ impl Lanes {
             if !self.open() {
                 return None;
             }
-            let (lane, job) = tokio::select! {
+            let (queue, job) = tokio::select! {
                 biased;
-                job = self.host.recv(), if self.host_open => (Lane::Host, job),
-                job = self.member.recv(), if self.member_open => (Lane::Member, job),
+                job = self.host.recv(), if self.host_open => (Queue::Host, job),
+                job = self.member.recv(), if self.member_open => (Queue::Member, job),
             };
             match job {
-                Some(job) => return Some(self.take(lane, job)),
-                None if lane == Lane::Host => self.host_open = false,
+                Some(job) => return Some(self.take(queue, job)),
+                None if queue == Queue::Host => self.host_open = false,
                 None => self.member_open = false,
             }
         }
     }
 }
 
-/// [`run_owner_lanes`] with no host commits, as tests drive an owner.
+/// [`run_owner_queues`] with no host commits, as tests drive an owner.
 #[cfg(test)]
 async fn run_owner(
     rx: mpsc::Receiver<NormalJob>,
@@ -688,15 +688,15 @@ async fn run_owner(
     state: Arc<Mutex<State>>,
 ) {
     let (_, host_rx) = mpsc::channel(1);
-    run_owner_lanes(Lanes::new(rx, host_rx), replay_rx, state).await;
+    run_owner_queues(Queues::new(rx, host_rx), replay_rx, state).await;
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
 )]
-async fn run_owner_lanes(
-    mut lanes: Lanes,
+async fn run_owner_queues(
+    mut queues: Queues,
     mut replay_rx: mpsc::Receiver<ReplayJob>,
     state: Arc<Mutex<State>>,
 ) {
@@ -767,22 +767,22 @@ async fn run_owner_lanes(
                 Err(mpsc::error::TryRecvError::Empty) => {}
             }
         }
-        if !lanes.open() && !replay_open && pending_replay.is_none() {
+        if !queues.open() && !replay_open && pending_replay.is_none() {
             break;
         }
-        let work = if prefer_normal && lanes.open() {
-            if let Some(job) = lanes.try_next() {
+        let work = if prefer_normal && queues.open() {
+            if let Some(job) = queues.try_next() {
                 Work::Normal(job)
             } else if let Some(job) = pending_replay.take() {
                 Work::Replay(job)
-            } else if !lanes.open() && !replay_open {
-                // Both lanes closed as they were looked at, and nothing else
+            } else if !queues.open() && !replay_open {
+                // Both queues closed as they were looked at, and nothing else
                 // can wake the owner for work: drain and end.
                 Work::Closed
             } else {
                 tokio::select! {
                     biased;
-                    job = lanes.next(), if lanes.open() => job.map_or(Work::Idle, Work::Normal),
+                    job = queues.next(), if queues.open() => job.map_or(Work::Idle, Work::Normal),
                     job = replay_rx.recv(), if replay_open => if let Some(job) = job { Work::QueueReplay(job) } else { replay_open = false; Work::Idle },
                     () = reclaim_wake.notified(), if !reclaiming => Work::Idle,
                     _ = idle.tick(), if reclaiming => Work::Idle,
@@ -790,11 +790,11 @@ async fn run_owner_lanes(
             }
         } else if let Some(job) = pending_replay.take() {
             Work::Replay(job)
-        } else if lanes.open() || replay_open {
+        } else if queues.open() || replay_open {
             tokio::select! {
                 biased;
                 job = replay_rx.recv(), if replay_open => if let Some(job) = job { Work::QueueReplay(job) } else { replay_open = false; Work::Idle },
-                job = lanes.next(), if lanes.open() => job.map_or(Work::Idle, Work::Normal),
+                job = queues.next(), if queues.open() => job.map_or(Work::Idle, Work::Normal),
                 () = reclaim_wake.notified(), if !reclaiming => Work::Idle,
                 _ = idle.tick(), if reclaiming => Work::Idle,
             }
@@ -817,7 +817,7 @@ async fn run_owner_lanes(
                         let mut state = state.lock_recover();
                         state.retaining_only = false;
                         state.group.joining =
-                            grouped.len().saturating_add(1) < MAX_GROUP && lanes.queued();
+                            grouped.len().saturating_add(1) < MAX_GROUP && queues.queued();
                     }
                     (job.job)(state.clone()).await;
                     let state = state.lock_recover();
@@ -839,7 +839,7 @@ async fn run_owner_lanes(
                         state.retention_scratch.is_some() || !state.retention_candidates.is_empty();
                     drop(state);
                     if !disposal && grouped.len() < MAX_GROUP {
-                        next = lanes.try_next();
+                        next = queues.try_next();
                     }
                 }
                 release_group(&state, &workers).await;
@@ -1216,16 +1216,16 @@ impl Persistence {
         C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
         CF: Future<Output = Result<T, StoreError>> + Send + 'static,
     {
-        self.submit_lane_wait(Lane::Member, bytes, preparation, operation, completion)
+        self.submit_queue_wait(Queue::Member, bytes, preparation, operation, completion)
             .await
     }
 
-    /// [`Self::submit_resumable_wait`] on `lane`: a host commit waits only
+    /// [`Self::submit_resumable_wait`] on `queue`: a host commit waits only
     /// for the host's budgets and queue, and its owner takes it ahead of
-    /// the members' ([`Lanes`]).
-    pub(crate) async fn submit_lane_wait<P, PF, T, F, C, CF>(
+    /// the members' ([`Queues`]).
+    pub(crate) async fn submit_queue_wait<P, PF, T, F, C, CF>(
         &self,
-        lane: Lane,
+        queue: Queue,
         bytes: usize,
         preparation: PF,
         operation: F,
@@ -1239,17 +1239,17 @@ impl Persistence {
         C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
         CF: Future<Output = Result<T, StoreError>> + Send + 'static,
     {
-        self.submit_lane(lane, false, bytes, preparation, operation, completion)
+        self.submit_queue(queue, false, bytes, preparation, operation, completion)
             .await
     }
 
-    /// [`Self::submit_lane_wait`] for a commit that joins its owner's group
+    /// [`Self::submit_queue_wait`] for a commit that joins its owner's group
     /// ([`Group`]): its completion runs once the barriers covering every
     /// record the operation appended to the group held, and fails if they
     /// did not.
     pub(crate) async fn submit_commit_wait<P, PF, T, F, C, CF>(
         &self,
-        lane: Lane,
+        queue: Queue,
         bytes: usize,
         preparation: PF,
         operation: F,
@@ -1263,7 +1263,7 @@ impl Persistence {
         C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
         CF: Future<Output = Result<T, StoreError>> + Send + 'static,
     {
-        self.submit_lane(lane, true, bytes, preparation, operation, completion)
+        self.submit_queue(queue, true, bytes, preparation, operation, completion)
             .await
     }
 
@@ -1271,9 +1271,9 @@ impl Persistence {
         clippy::significant_drop_tightening,
         reason = "the admission permits move into the job; the lint does not see the move"
     )]
-    async fn submit_lane<P, PF, T, F, C, CF>(
+    async fn submit_queue<P, PF, T, F, C, CF>(
         &self,
-        lane: Lane,
+        queue: Queue,
         grouped: bool,
         bytes: usize,
         preparation: PF,
@@ -1288,8 +1288,8 @@ impl Persistence {
         C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
         CF: Future<Output = Result<T, StoreError>> + Send + 'static,
     {
-        let byte_count = charged_lane_bytes(lane, bytes)?;
-        let (messages, byte_budget) = self.budgets.lane(lane);
+        let byte_count = charged_queue_bytes(queue, bytes)?;
+        let (messages, byte_budget) = self.budgets.queue(queue);
         let slot = messages
             .clone()
             .acquire_owned()
@@ -1304,20 +1304,20 @@ impl Persistence {
             slot,
             bytes,
             byte_count,
-            match lane {
-                Lane::Member => NORMAL_STEPS,
-                Lane::Host => HOST_STEPS,
+            match queue {
+                Queue::Member => NORMAL_STEPS,
+                Queue::Host => HOST_STEPS,
             },
             grouped,
             preparation,
             operation,
             completion,
         );
-        let queue = match lane {
-            Lane::Member => &self.tx,
-            Lane::Host => &self.host_tx,
+        let sender = match queue {
+            Queue::Member => &self.tx,
+            Queue::Host => &self.host_tx,
         };
-        let permit = queue
+        let permit = sender
             .reserve()
             .await
             .map_err(|_| error("state persistence unavailable"))?;
@@ -1923,7 +1923,7 @@ mod tests {
     }
 
     /// Host commits go ahead of the member jobs queued before them, at most
-    /// [`HOST_BURST`] in a row while a member job waits; each lane keeps
+    /// [`HOST_BURST`] in a row while a member job waits; each queue keeps
     /// its own order.
     #[tokio::test]
     async fn host_jobs_overtake_queued_member_jobs_a_burst_at_a_time() {
@@ -1958,8 +1958,8 @@ mod tests {
                 .unwrap();
         }
         drop((normal_tx, host_tx, replay_tx));
-        Box::pin(run_owner_lanes(
-            Lanes::new(normal_rx, host_rx),
+        Box::pin(run_owner_queues(
+            Queues::new(normal_rx, host_rx),
             replay_rx,
             state,
         ))
@@ -2076,8 +2076,8 @@ mod tests {
             admission_hook: None,
             replay_admission_hook: None,
         };
-        let running = tokio::spawn(run_owner_lanes(
-            Lanes::new(normal_rx, host_rx),
+        let running = tokio::spawn(run_owner_queues(
+            Queues::new(normal_rx, host_rx),
             replay_rx,
             state,
         ));
@@ -2094,8 +2094,8 @@ mod tests {
         );
         let host = tilo_test_env::within(
             "a host commit is admitted past the members' exhausted budget",
-            owner.submit_lane_wait(
-                Lane::Host,
+            owner.submit_queue_wait(
+                Queue::Host,
                 1,
                 async { Ok(()) },
                 |_, _| Ok(Step::Done(7)),

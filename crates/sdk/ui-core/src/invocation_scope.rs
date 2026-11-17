@@ -675,7 +675,7 @@ impl ResourceInvocationScope {
         }
         #[cfg(feature = "broker-transport")]
         {
-            crate::collaboration::write_attribution_lane::enqueue(
+            crate::collaboration::write_attribution_endpoint::enqueue(
                 &self.route().channel_id(),
                 self.invocation(),
                 paths,

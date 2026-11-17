@@ -914,7 +914,7 @@ impl LiveSession {
 
     /// Seal `body` and publish it as object `sequence` of `track`.
     ///
-    /// Audio is carried on the datagram lane: `body` is one `tilo-voice/1`
+    /// Audio is carried on datagrams: `body` is one `tilo-voice/1`
     /// object and only its payload is sealed, so the relay still forwards a
     /// well-formed voice object and never sees the audio itself. Everything
     /// else is one sealed object in a group of its own ([`Self::publish_burst`]).
@@ -924,7 +924,7 @@ impl LiveSession {
     /// [`LiveError::Refused`] when the scope's keys do not cover this
     /// device's `track`, [`LiveError::Ended`] when the session has ended,
     /// [`LiveError::Invalid`] when `body` is not a voice object of the size
-    /// the audio lane carries, and [`LiveError::Unavailable`] when the
+    /// the audio datagrams carry, and [`LiveError::Unavailable`] when the
     /// broadcast is gone.
     pub fn publish(&self, track: Track, sequence: u32, body: &[u8]) -> Result<(), LiveError> {
         if track != Track::Audio {
@@ -1722,8 +1722,8 @@ async fn read(
                         return false;
                     }
                     if track == Track::Audio {
-                        // Group lanes carry one voice object per frame: the
-                        // same object the datagram lane carries.
+                        // Group streams carry one voice object per frame: the
+                        // same object the datagrams carry.
                         let Ok(object) = VoiceObject::decode(&frame.payload) else {
                             continue;
                         };
@@ -1849,7 +1849,7 @@ pub(crate) enum Next {
     End,
 }
 
-/// The next object on `track`, from either lane. A lane that ends or breaks
+/// The next object on `track`, from datagrams or a stream. Either one that ends or breaks
 /// ends the read: the carrier reconnects.
 pub(crate) async fn next(track: &mut moq_net::track::Subscriber) -> Next {
     moq_net::kio::wait(|waiter| {

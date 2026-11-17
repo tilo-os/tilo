@@ -31,12 +31,12 @@ mod cloud_signin;
 mod import_review;
 mod row_view;
 mod thunderbird_import;
-mod vault_lane;
+mod vault_queue;
 pub(crate) use cloud_control::CloudMounts;
 pub use cloud_signin::{BrowserOpener, PortalOpener};
 use row_view::{AccountEntry, account_status, kind_icon, kind_shown, sync_detail, sync_entries};
 use runtime_fs::cloud::CloudRequest;
-use vault_lane::Step;
+use vault_queue::Step;
 
 crate::effects::effect_family!(AccountsEffect => answer);
 
@@ -493,7 +493,7 @@ fn commit_thunderbird_import(
     revision: u64,
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
-    if model.lane.is_idle() {
+    if model.queue.is_idle() {
         let root = model.account_root.clone();
         let result = model.import_review.commit(&root, revision)?;
         model.queue_reload();
@@ -503,7 +503,7 @@ fn commit_thunderbird_import(
     // Otherwise in turn with the account mutations under way, which
     // journal the stores this changes.
     let reply = cx.reply();
-    model.run_in_lane(move |pane| {
+    model.run_in_queue(move |pane| {
         let root = pane.account_root.clone();
         let result = pane.import_review.commit(&root, revision);
         if result.is_ok() {
@@ -909,7 +909,7 @@ pub struct AccountsPane {
     vault: Option<accounts::SecretVault>,
     vault_opening: Option<crate::device_read::Landing>,
     mail_grants: MailGrants,
-    lane: vault_lane::VaultLane,
+    queue: vault_queue::VaultQueue,
     reload_queued: bool,
     is_sample: bool,
     form_kind: Option<AccountKind>,
@@ -1003,7 +1003,7 @@ impl AccountsPane {
             vault: None,
             vault_opening: None,
             mail_grants: MailGrants::default(),
-            lane: vault_lane::VaultLane::default(),
+            queue: vault_queue::VaultQueue::default(),
             reload_queued: false,
             is_sample,
             form_kind: None,
@@ -1124,14 +1124,14 @@ impl AccountsPane {
         let deadline = ui::time::now() + bound;
         while self.form_open() && ui::time::now() < deadline {
             let _ = self.poll();
-            if !self.calendar_choices.is_empty() && !self.form_saving && self.lane.is_idle() {
+            if !self.calendar_choices.is_empty() && !self.form_saving && self.queue.is_idle() {
                 return self.form_error.is_none();
             }
             if self.form_probe.is_none()
                 && self.sign_in.is_none()
                 && !self.form_saving
                 && !self.sign_in_saving
-                && self.lane.is_idle()
+                && self.queue.is_idle()
             {
                 return !self.form_open();
             }
@@ -1268,7 +1268,7 @@ impl AccountsPane {
         } else {
             true
         };
-        self.settle_lane();
+        self.settle_queue();
         reported
     }
 
@@ -1336,7 +1336,7 @@ impl AccountsPane {
         };
         self.sign_in_saving = true;
         let round = self.sign_in_round;
-        self.run_in_lane(move |pane| {
+        self.run_in_queue(move |pane| {
             match Self::signed_in_accounts(&pane.account_root, &completed) {
                 Ok((stored, mail)) => {
                     let id = stored.id.clone();
@@ -2611,7 +2611,7 @@ impl AccountsPane {
         if std::mem::replace(&mut self.reload_queued, true) {
             return;
         }
-        self.run_in_lane(|pane| {
+        self.run_in_queue(|pane| {
             pane.reload_queued = false;
             pane.reload();
             Step::Done
@@ -2620,7 +2620,7 @@ impl AccountsPane {
 
     /// Reload the directory and the sync statuses here, and the vault on a
     /// worker. Loading the directory recovers an interrupted mutation, so
-    /// this runs only in the lane, never while a mutation is under way.
+    /// this runs only in the queue, never while a mutation is under way.
     fn reload(&mut self) {
         self.dir = AccountDirectory::load_in(&self.account_root);
         self.sync_statuses = self.account_root.statuses();
@@ -2957,7 +2957,7 @@ impl AccountsPane {
         let mut pane = Self::from_dir_in(account_root.clone(), AccountDirectory::default(), false);
         let outcome = Rc::new(std::cell::RefCell::new(None));
         let landed = Rc::clone(&outcome);
-        pane.run_in_lane(move |pane| {
+        pane.run_in_queue(move |pane| {
             pane.save_draft_then(
                 draft,
                 Box::new(move |_: &mut Self, result: Result<(), String>| {
@@ -2966,7 +2966,7 @@ impl AccountsPane {
                 }),
             )
         });
-        pane.settle_lane();
+        pane.settle_queue();
         outcome
             .take()
             .unwrap_or_else(|| Err("the save stopped unexpectedly".into()))
@@ -3093,7 +3093,7 @@ impl AccountsPane {
         let mut pane = Self::from_dir_in(account_root.clone(), AccountDirectory::default(), false);
         let outcome = Rc::new(std::cell::RefCell::new(None));
         let landed = Rc::clone(&outcome);
-        pane.run_in_lane(move |pane| {
+        pane.run_in_queue(move |pane| {
             pane.commit_then(
                 accounts,
                 Box::new(move |_: &mut Self, result: Result<(), String>| {
@@ -3102,7 +3102,7 @@ impl AccountsPane {
                 }),
             )
         });
-        pane.settle_lane();
+        pane.settle_queue();
         outcome
             .take()
             .unwrap_or_else(|| Err("the save stopped unexpectedly".into()))
@@ -3118,7 +3118,7 @@ impl AccountsPane {
             return;
         }
         let id = accounts::AccountId::from(id.to_owned());
-        self.run_in_lane(move |pane| {
+        self.run_in_queue(move |pane| {
             pane.removal(
                 id,
                 Box::new(move |pane: &mut Self, result: Result<(), String>| {
@@ -3357,7 +3357,7 @@ impl AccountsPane {
             let id = account.id.clone();
             let typed = draft.password.clone();
             let original_account = self.account_root.store().get(&id).cloned();
-            self.run_in_lane(move |_| {
+            self.run_in_queue(move |_| {
                 Step::vault(
                     move |vault| {
                         let vault = vault.open();
@@ -3429,7 +3429,7 @@ impl AccountsPane {
             } else {
                 self.form_saving = true;
                 let round = self.form_round;
-                self.run_in_lane(move |pane| {
+                self.run_in_queue(move |pane| {
                     pane.check_calendar_credential_then(Box::new(move |pane, checked| {
                         if pane.form_round == round {
                             pane.form_saving = false;
@@ -3450,7 +3450,7 @@ impl AccountsPane {
             };
             self.form_saving = true;
             let round = self.form_round;
-            self.run_in_lane(move |pane| {
+            self.run_in_queue(move |pane| {
                 pane.save_draft_then(
                     candidate,
                     Box::new(move |pane: &mut Self, saved: Result<(), String>| {
@@ -3520,7 +3520,7 @@ impl AccountsPane {
                 self.changed = true;
                 let round = self.reauth_round;
                 let stored_id = account_id.clone();
-                self.run_in_lane(move |_| {
+                self.run_in_queue(move |_| {
                     Step::vault(
                         move |vault| vault.open().get(&stored_id).unwrap_or_default(),
                         move |pane, mut secret: accounts::Secret| {
@@ -3569,7 +3569,7 @@ impl AccountsPane {
             };
             self.reauth_saving = true;
             let round = self.reauth_round;
-            self.run_in_lane(move |_| {
+            self.run_in_queue(move |_| {
                 Step::vault(
                     move |vault| {
                         let mut vault = vault.open();
@@ -3603,7 +3603,7 @@ impl AccountsPane {
         let outcome = Rc::new(std::cell::RefCell::new(None));
         let landed = Rc::clone(&outcome);
         self.remove_then(id, move |result| *landed.borrow_mut() = Some(result));
-        self.settle_lane();
+        self.settle_queue();
         outcome
             .take()
             .unwrap_or_else(|| Err("the removal stopped unexpectedly".into()))
@@ -3646,7 +3646,7 @@ impl AccountsPane {
             if self.seen_accounts.is_some() {
                 // After the vault work under way: a reload recovers a
                 // journalled mutation, which must not be one still running.
-                self.run_in_lane(|pane| {
+                self.run_in_queue(|pane| {
                     pane.reload();
                     if let Err(error) = pane.account_root.project() {
                         tracing::warn!(%error, "the device's account file could not follow the person's accounts");
@@ -3657,7 +3657,7 @@ impl AccountsPane {
             }
             self.seen_accounts = revision;
         }
-        self.advance_lane(false);
+        self.advance_queue(false);
         self.poll_vault_opening();
         self.poll_mail_grants();
         self.poll_form_probe();
@@ -3674,7 +3674,7 @@ impl AccountsPane {
     pub fn busy(&self) -> bool {
         self.form_probe.is_some()
             || self.reauth_probe.is_some()
-            || !self.lane.is_idle()
+            || !self.queue.is_idle()
             || self.vault_opening.is_some()
             || self.mail_grants.reading.is_some()
             || self

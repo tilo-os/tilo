@@ -60,7 +60,7 @@ impl ResponsiveControlBar {
     }
 
     /// Vertical centre of row `0` or `1`. A single-row bar always resolves to
-    /// its centre; wrapped rows keep equal 34px lanes inside 4px outer insets.
+    /// its centre; wrapped rows keep equal 34px areas inside 4px outer insets.
     pub fn row_center(self, bounds: Rect, row: usize) -> f64 {
         if !self.is_wrapped(bounds.width()) {
             return bounds.center().y;
@@ -74,14 +74,14 @@ impl ResponsiveControlBar {
     }
 }
 
-/// A centered, horizontally constrained lane that remains fluid on compact viewports.
+/// A centered, horizontally constrained area that remains fluid on compact viewports.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FocusedContentLane {
+pub struct FocusedContentArea {
     max_width: f64,
     gutter: f64,
 }
 
-impl Default for FocusedContentLane {
+impl Default for FocusedContentArea {
     fn default() -> Self {
         Self {
             max_width: FOCUSED_CONTENT_MAX_WIDTH,
@@ -90,7 +90,7 @@ impl Default for FocusedContentLane {
     }
 }
 
-impl FocusedContentLane {
+impl FocusedContentArea {
     pub fn new() -> Self {
         Self::default()
     }
@@ -121,22 +121,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn content_lanes_and_control_bars_reflow_and_collapse_safely() {
+    fn content_areas_and_control_bars_reflow_and_collapse_safely() {
         {
-            let lane = FocusedContentLane::new();
+            let area = FocusedContentArea::new();
             assert_eq!(
-                lane.layout(Rect::new(0.0, 0.0, 1280.0, 800.0)),
+                area.layout(Rect::new(0.0, 0.0, 1280.0, 800.0)),
                 Rect::new(160.0, 0.0, 1120.0, 800.0)
             );
             assert_eq!(
-                lane.layout(Rect::new(0.0, 0.0, 320.0, 640.0)),
+                area.layout(Rect::new(0.0, 0.0, 320.0, 640.0)),
                 Rect::new(12.0, 0.0, 308.0, 640.0)
             );
         }
 
         {
-            let lane = FocusedContentLane::new().max_width(-1.0).gutter(-1.0);
-            assert_eq!(lane.layout(Rect::new(0.0, 0.0, 400.0, 600.0)).width(), 0.0);
+            let area = FocusedContentArea::new().max_width(-1.0).gutter(-1.0);
+            assert_eq!(area.layout(Rect::new(0.0, 0.0, 400.0, 600.0)).width(), 0.0);
         }
 
         {

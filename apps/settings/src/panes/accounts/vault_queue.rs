@@ -37,13 +37,13 @@ impl Step {
 }
 
 #[derive(Default)]
-pub(super) struct VaultLane {
+pub(super) struct VaultQueue {
     running: Option<(Landing, Then)>,
     queued: VecDeque<Start>,
     advancing: bool,
 }
 
-impl VaultLane {
+impl VaultQueue {
     pub(super) fn is_idle(&self) -> bool {
         self.running.is_none() && self.queued.is_empty()
     }
@@ -52,20 +52,20 @@ impl VaultLane {
 impl AccountsPane {
     /// Queue `start` behind the work already queued; it starts at once when
     /// there is none.
-    pub(super) fn run_in_lane(&mut self, start: impl FnOnce(&mut Self) -> Step + 'static) {
-        self.lane.queued.push_back(Box::new(start));
-        self.advance_lane(false);
+    pub(super) fn run_in_queue(&mut self, start: impl FnOnce(&mut Self) -> Step + 'static) {
+        self.queue.queued.push_back(Box::new(start));
+        self.advance_queue(false);
     }
 
     /// Take in what the worker finished and start what comes next, until a
     /// worker runs or nothing is left. `wait` waits for the worker instead:
     /// only ever off the UI thread.
-    pub(super) fn advance_lane(&mut self, wait: bool) {
-        if std::mem::replace(&mut self.lane.advancing, true) {
+    pub(super) fn advance_queue(&mut self, wait: bool) {
+        if std::mem::replace(&mut self.queue.advancing, true) {
             return;
         }
         loop {
-            let step = if let Some((result, _)) = &self.lane.running {
+            let step = if let Some((result, _)) = &self.queue.running {
                 let landed = if wait {
                     result.wait_erased()
                 } else {
@@ -75,7 +75,7 @@ impl AccountsPane {
                         Landed::Lost => None,
                     }
                 };
-                let Some((_, then)) = self.lane.running.take() else {
+                let Some((_, then)) = self.queue.running.take() else {
                     break;
                 };
                 let Some(value) = landed else {
@@ -83,7 +83,7 @@ impl AccountsPane {
                     continue;
                 };
                 then(self, value)
-            } else if let Some(start) = self.lane.queued.pop_front() {
+            } else if let Some(start) = self.queue.queued.pop_front() {
                 start(self)
             } else {
                 break;
@@ -91,16 +91,16 @@ impl AccountsPane {
             if let Step::Vault { work, then } = step {
                 let vault = self.account_root.vault_opener();
                 let result = Landing::start_erased(Box::new(move || work(&vault)));
-                self.lane.running = Some((result, then));
+                self.queue.running = Some((result, then));
             }
         }
-        self.lane.advancing = false;
+        self.queue.advancing = false;
     }
 
-    pub(super) fn settle_lane(&mut self) {
+    pub(super) fn settle_queue(&mut self) {
         crate::device_read::off_ui_thread();
-        while !self.lane.is_idle() {
-            self.advance_lane(true);
+        while !self.queue.is_idle() {
+            self.advance_queue(true);
         }
     }
 

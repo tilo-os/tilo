@@ -243,12 +243,12 @@ impl GroupRow {
     pub(super) fn carry_float_drag(&mut self, id: u64, start: Point) {
         self.carry_float(id, self.last_cursor - start);
         if self.covers(self.last_cursor) {
-            let (target, lane) = self.group_insertion_for(self.last_cursor);
+            let (target, section) = self.group_insertion_for(self.last_cursor);
             self.group_reorder_target = Some(target);
-            self.group_reorder_lane = lane;
+            self.group_reorder_section = section;
         } else {
             self.group_reorder_target = None;
-            self.group_reorder_lane = None;
+            self.group_reorder_section = None;
         }
     }
 
@@ -258,7 +258,7 @@ impl GroupRow {
         let at = self.float_rect_at(self.last_cursor);
         self.pending_float = Some(FloatAsk::Float { group: id, at });
         self.group_reorder_target = None;
-        self.group_reorder_lane = None;
+        self.group_reorder_section = None;
     }
 
     /// The hand let the floating window `id` go: over the strip it snaps back into the gap

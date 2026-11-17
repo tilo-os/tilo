@@ -336,7 +336,7 @@ change before signing; with publishing turned off,
 (`publish.sh --sign-only`). Only
 `created` and `revision` timestamps are excluded from this hash; the image,
 RPM base, complete artifact metadata, URLs, hashes, licenses and requirements
-are included. One explicit image and one native lane are required.
+are included. One explicit image and one native job are required.
 
 The existing extension-manifest KMS role signs through temporary OIDC/STS
 credentials. The same image trust key verifies the resulting detached

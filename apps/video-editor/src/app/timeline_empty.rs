@@ -75,9 +75,9 @@ impl VideoEditorApp {
         if self.project.clips.is_empty() {
             return r.ruler.y1;
         }
-        self.lane_rects(r)
+        self.track_rects(r)
             .last()
-            .map_or(r.ruler.y1, |(_, _, lane)| lane.y1)
+            .map_or(r.ruler.y1, |(_, _, track)| track.y1)
             .clamp(r.ruler.y1, r.timeline.y1)
     }
 
@@ -86,9 +86,9 @@ impl VideoEditorApp {
             .add_track_buttons(r)
             .iter()
             .map(|(_, button)| button.y1 + S2)
-            .fold(r.lanes.y0, f64::max)
+            .fold(r.tracks.y0, f64::max)
             .min(r.timeline.y1);
-        Rect::new(r.lanes.x0, top, r.lanes.x1, r.timeline.y1)
+        Rect::new(r.tracks.x0, top, r.tracks.x1, r.timeline.y1)
     }
 
     /// One button per job, so while the Media pane is shown its own Import answers.

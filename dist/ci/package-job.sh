@@ -3,13 +3,13 @@
 # architecture (dist/ci/package-targets.txt), one after another, into dist/ci-output/<distro>-<arch>:
 # t's desktop-package-<arch> checks, on privileged nodes with a container engine.
 #
-#   dist/ci/package-lane.sh amd64|arm64
+#   dist/ci/package-job.sh amd64|arm64
 #
 # The userspaces build serially: each release link uses fat LTO and peaks at several GiB per
 # compiler process. A payload that can be published never compiles through a shared compiler
 # cache.
 set -euo pipefail
-arch=${1:?usage: package-lane.sh amd64|arm64}
+arch=${1:?usage: package-job.sh amd64|arm64}
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 # What would fail the Fedora build after hours of compiling fails here first: the app store's
@@ -40,7 +40,7 @@ if ! command -v docker >/dev/null && command -v podman >/dev/null; then
   PATH=$shim:$PATH
   engine=podman
 fi
-command -v docker >/dev/null || { printf 'package-lane.sh needs docker or podman on this node\n' >&2; exit 1; }
+command -v docker >/dev/null || { printf 'package-job.sh needs docker or podman on this node\n' >&2; exit 1; }
 printf 'container engine: %s\n' "$engine"
 
 # fetch-package-env-runtime.sh copies the env-runtime image with skopeo, which a node with only
@@ -59,14 +59,14 @@ fi
 
 rm -rf dist/ci-output
 # The cached Cosign installer reports its directory the way a workflow step would.
-export RUNNER_TEMP=${RUNNER_TEMP:-$(mktemp -d "${TMPDIR:-/tmp}/package-lane.XXXXXX")}
+export RUNNER_TEMP=${RUNNER_TEMP:-$(mktemp -d "${TMPDIR:-/tmp}/package-job.XXXXXX")}
 export GITHUB_PATH=${GITHUB_PATH:-$RUNNER_TEMP/path}
 bash dist/ci/fetch-package-env-runtime.sh
 export TILO_ENABLE_REMOTE_CACHE=0 TILO_CARGO_JOBS=${TILO_CARGO_JOBS:-6}
 # The target list arrives on its own descriptor and each job reads no stdin: a container
 # engine attached to the job reads whatever stdin holds, so the first target used to swallow
-# the rest of the list and the lane ended green after one userspace.
-# A broken userspace does not hide the others' results: every target builds, and the lane
+# the rest of the list and the job ended green after one userspace.
+# A broken userspace does not hide the others' results: every target builds, and the job
 # fails at the end naming each one that failed.
 failed=()
 while IFS='|' read -r -u 3 distro image revision; do
@@ -75,6 +75,6 @@ while IFS='|' read -r -u 3 distro image revision; do
   dist/ci/run-package-job.sh "$distro" "$image" "$arch" "$revision" </dev/null || failed+=("$distro")
 done 3< <(dist/ci/package-targets.sh "$arch")
 if ((${#failed[@]})); then
-  printf 'package lane %s: failed userspaces: %s\n' "$arch" "${failed[*]}" >&2
+  printf 'package job %s: failed userspaces: %s\n' "$arch" "${failed[*]}" >&2
   exit 1
 fi

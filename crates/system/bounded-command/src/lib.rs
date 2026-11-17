@@ -190,7 +190,7 @@ pub enum Error {
 }
 
 /// An informational copy of bytes the owned stderr capture already read. Capture
-/// stays authoritative; overflow disables only this lane.
+/// stays authoritative; overflow disables only this queue.
 #[derive(Debug)]
 pub enum StderrObservation {
     /// At most 4096 captured bytes, in stream order.
@@ -220,8 +220,8 @@ pub struct AsyncCommand {
 }
 
 impl AsyncCommand {
-    /// Poll the optional stderr lane without blocking. On overflow, pending copies
-    /// are dropped and the lane stays disabled.
+    /// Poll the optional stderr queue without blocking. On overflow, pending copies
+    /// are dropped and the queue stays disabled.
     pub fn try_stderr(&mut self) -> Option<StderrObservation> {
         let observations = self.stderr_observations.as_mut()?;
         if observations.disabled {
@@ -283,7 +283,7 @@ pub fn spawn_prepared(
 /// Spawn with a bounded nonblocking copy of the owned stderr capture.
 ///
 /// Up to sixteen 4096-byte chunks await observation; a slow observer disables this
-/// informational lane instead of blocking the child or the capture readers. Output
+/// informational queue instead of blocking the child or the capture readers. Output
 /// bytes, limits, cancellation and process-tree ownership are unchanged.
 pub fn spawn_prepared_observing_stderr(
     command: Command,
@@ -815,7 +815,7 @@ mod tests {
             ));
             assert!(
                 child.try_stderr().is_none(),
-                "overflow permanently disables only this lane"
+                "overflow permanently disables only this queue"
             );
             let mut overflowing = Command::new("sh");
             overflowing.args(["-c", "head -c 8192 /dev/zero >&2"]);

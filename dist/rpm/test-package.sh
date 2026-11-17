@@ -9,7 +9,7 @@ expect_devel=0
 for package in "$@"; do
     [[ $(basename "$package") != tilo-session-devel-* ]] || expect_devel=1
 done
-# Package lanes deliberately install build dependencies without weak deps, so
+# Package jobs deliberately install build dependencies without weak deps, so
 # install the recommended software Vulkan ICD explicitly before exercising the
 # display-free compositor. Fedora desktops normally already carry a GPU
 # ICD; the isolated package userspace must still prove the fallback path.

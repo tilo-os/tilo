@@ -141,7 +141,7 @@ impl Workspaces {
 
     /// Whether the workspace whose relay workspace is `workspace_id` was
     /// deleted here: whoever asks for it is told so
-    /// ([`Refusal::WorkspaceDeleted`]), the same on every lane.
+    /// ([`Refusal::WorkspaceDeleted`]), the same on every queue.
     #[must_use]
     pub fn deleted(&self, workspace_id: WorkspaceId) -> bool {
         self.inner.direct.deleted(workspace_id)

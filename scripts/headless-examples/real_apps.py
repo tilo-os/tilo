@@ -195,7 +195,7 @@ class ScriptedSession:
     `Session` starts the product session (`dist/dev/nested-session.sh`: the
     tree's apps installed as signed packages, launched through the desktop's
     own launcher). A harness whose subject is a build of its own — a release
-    session a performance lane compiled, an app's first frame, a control-socket
+    session a performance job compiled, an app's first frame, a control-socket
     demo — starts *that* binary instead, and finds it here: on a scratch profile
     under the caller's cache, with a private runtime directory from the one
     place that picks it, `TILO_TEST_CONTROL` pointing at its socket, and nothing

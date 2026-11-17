@@ -1872,7 +1872,7 @@ impl Widget for ContextMenu {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 // A held bar thumb follows the pointer; the bar's hover and
-                // the pointer's lane are the region's to track.
+                // the pointer's area are the region's to track.
                 self.scroll_event(event, ctx);
                 let at = ctx.logical(position);
                 // Rows are hit where they are drawn while the menu arrives.

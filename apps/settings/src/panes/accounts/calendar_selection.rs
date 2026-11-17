@@ -1,7 +1,7 @@
 //! Discovery is a review step, not an implicit subscription to every calendar.
 
 #[cfg(test)]
-mod lane_tests;
+mod queue_tests;
 #[cfg(test)]
 mod tests;
 use super::{
@@ -28,7 +28,7 @@ impl AccountsPane {
         self.form_saving = true;
         let round = self.form_round;
         let id = account.id.clone();
-        self.run_in_lane(move |_| {
+        self.run_in_queue(move |_| {
             Step::vault(
                 move |vault| Self::prepare_secret(&vault.open(), &id, ""),
                 move |pane, secret| {
@@ -240,7 +240,7 @@ impl AccountsPane {
         }
         self.form_saving = true;
         let round = self.form_round;
-        self.run_in_lane(move |pane| {
+        self.run_in_queue(move |pane| {
             pane.check_calendar_credential_then(Box::new(move |pane, checked| {
                 if pane.form_round != round {
                     return Step::Done;
@@ -386,7 +386,7 @@ impl AccountsPane {
         Ok(())
     }
 
-    /// Read the credential only in the serialized vault lane. The metadata,
+    /// Read the credential only in the serialized vault queue. The metadata,
     /// form round and draft are checked again when that read lands.
     pub(super) fn check_calendar_credential_then(&mut self, settle: super::Settle) -> Step {
         if let Err(error) = self.validate_calendar_review() {

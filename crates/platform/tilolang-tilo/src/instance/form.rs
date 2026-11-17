@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use serde_json::{Value as Json, json};
 use tilo_actions::surface::{FieldType, TypeSet};
-use tilo_render_protocol::patch::{self as ui, Lane};
+use tilo_render_protocol::patch::{self as ui, Level};
 
 use crate::host::Host;
 use crate::runtime::meta::{ActionMeta, Meta};
@@ -32,7 +32,7 @@ pub struct Pending {
     pub id: u64,
     /// Where the form stands: the view and control that ran the action, when one did. A form
     /// the palette ran stands on its own.
-    pub from: Option<(Lane, String)>,
+    pub from: Option<(Level, String)>,
     pub view: Rc<RefCell<ViewInstance>>,
     /// The action, with the arguments the control gave.
     pub aref: ActionRef,
@@ -57,11 +57,11 @@ pub struct Field {
 
 impl Pending {
     /// The form of `aref`, an action of `meta` waiting for its arguments, which the control
-    /// `from` of the view of `lane` ran.
+    /// `from` of the view of `level` ran.
     #[must_use]
     pub fn new(
         id: u64,
-        from: Option<(Lane, String)>,
+        from: Option<(Level, String)>,
         view: Rc<RefCell<ViewInstance>>,
         aref: ActionRef,
         meta: Meta,

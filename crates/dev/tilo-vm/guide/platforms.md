@@ -279,7 +279,7 @@ architecture and format), a VM disk path that is not taken, and free space
 for the download and the VM. Then it downloads the tag's manifest for your
 architecture, `tilo-vm-disk-<arch>.json`, from the forge's generic packages,
 picks the disk (qcow2, or VHDX for Hyper-V), resumes an interrupted download,
-checks its SHA-256 and caches it. Each architecture's CI lane publishes its
+checks its SHA-256 and caches it. Each architecture's CI job publishes its
 disk on its own, so a new tag can hold one architecture before the other:
 without `--tag`, `vm create` takes the newest tag that has yours, and says
 so when none of the newest does.

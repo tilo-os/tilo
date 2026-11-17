@@ -829,20 +829,20 @@ impl App {
         (any, action_surface_may_have_changed)
     }
 
-    /// The lanes `route`'s record has its content on in this process: the
+    /// The content links `route`'s record has its content on in this process: the
     /// record's own, and each window's showing it
-    /// ([`ContentLane::on_route`](crate::collaboration::document_content::ContentLane::on_route)).
-    fn lanes_on_route(
+    /// ([`ContentLink::on_route`](crate::collaboration::document_content::ContentLink::on_route)).
+    fn links_on_route(
         route: &crate::collaboration::RouteSpec,
-    ) -> Vec<std::sync::Arc<crate::collaboration::document_content::ContentLane>> {
-        crate::collaboration::document_content::ContentLane::on_route(route)
+    ) -> Vec<std::sync::Arc<crate::collaboration::document_content::ContentLink>> {
+        crate::collaboration::document_content::ContentLink::on_route(route)
     }
 
     /// Send what the window's record content store queued on the record's
     /// route: content it lacks, and content it stored for the record's
     /// other readers. See [`crate::collaboration::document_content`].
     fn pump_document_content(&mut self) {
-        use crate::collaboration::document_content::ContentLane;
+        use crate::collaboration::document_content::ContentLink;
         if !self.collaboration.manager.is_connected() {
             return;
         }
@@ -854,33 +854,33 @@ impl App {
         else {
             return;
         };
-        // The window's own lane, the one its record content travels on:
+        // The window's own content link, the one its record content travels on:
         // what another window of this app in this process asked for is not
         // this window's to send.
         let own = {
             let _entry = self.enter_wake_scope();
-            ContentLane::of_window()
+            ContentLink::of_window()
         };
-        let lanes = std::iter::once((None, own)).chain(
-            ContentLane::routed(&route.app_id)
+        let links = std::iter::once((None, own)).chain(
+            ContentLink::routed(&route.app_id)
                 .into_iter()
-                .map(|(route, lane)| (Some(route), lane)),
+                .map(|(route, link)| (Some(route), link)),
         );
-        for (route, lane) in lanes {
+        for (route, link) in links {
             {
                 let _entry = self.enter_wake_scope();
-                lane.attach(crate::WakeHandle::new());
+                link.attach(crate::WakeHandle::new());
             }
-            self.send_lane_requests(route.as_ref(), &lane);
+            self.send_link_requests(route.as_ref(), &link);
         }
     }
 
-    /// Send what `lane` queued: on the window's own route, or on `route`
+    /// Send what `link` queued: on the window's own route, or on `route`
     /// for a record that is not the window's.
-    fn send_lane_requests(
+    fn send_link_requests(
         &mut self,
         route: Option<&crate::collaboration::RouteSpec>,
-        lane: &crate::collaboration::document_content::ContentLane,
+        link: &crate::collaboration::document_content::ContentLink,
     ) {
         let mut send = |request: CollabRequest| match route {
             Some(route) => self
@@ -889,11 +889,11 @@ impl App {
                 .try_send_to_route(route.clone(), request),
             None => self.collaboration.manager.try_send(request),
         };
-        let requests = lane.take_requests();
+        let requests = link.take_requests();
         for hash in requests.wants {
             if let Err(error) = send(CollabRequest::WantContent { hash: hash.clone() }) {
                 tracing::debug!(%error, "collab: record content request deferred");
-                lane.retry_want(hash);
+                link.retry_want(hash);
             }
         }
         for (hash, bytes) in requests.offers {
@@ -902,7 +902,7 @@ impl App {
                 bytes: bytes.clone(),
             }) {
                 Ok(()) | Err(crate::collaboration::CollabSendError::TooLarge { .. }) => {}
-                Err(_) => lane.retry_offer(hash, bytes),
+                Err(_) => link.retry_offer(hash, bytes),
             }
         }
     }
@@ -946,16 +946,16 @@ impl App {
                 self.respond_document_snapshot(&route);
             }
             CollabEvent::DocumentContent { route, hash, bytes } => {
-                // The record's content reaches every lane carrying it, the
-                // windows' own included: a window's store reads the lane it
+                // The record's content reaches every content link carrying it, the
+                // windows' own included: a window's store reads the content link it
                 // keeps, never the record's.
-                for lane in Self::lanes_on_route(&route) {
-                    lane.arrive(hash.clone(), bytes.clone());
+                for link in Self::links_on_route(&route) {
+                    link.arrive(hash.clone(), bytes.clone());
                 }
             }
             CollabEvent::DocumentContentState { route, hash, state } => {
-                for lane in Self::lanes_on_route(&route) {
-                    lane.stands(hash.clone(), state);
+                for link in Self::links_on_route(&route) {
+                    link.stands(hash.clone(), state);
                 }
             }
             CollabEvent::RemoteCursorMoved { member, x, y } => {

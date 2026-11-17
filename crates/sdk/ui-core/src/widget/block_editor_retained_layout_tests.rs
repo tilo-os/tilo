@@ -1569,7 +1569,7 @@ tilo_test_env::scenario! {
 }
 /// Blocks are placed at the heights they take at the width they stand at, whatever measured
 /// them since: a region measures what it holds again in a copy of the window's tree (wider by
-/// a scroll bar's lane, at a min-content width, at widths on the way to its size) while the
+/// a scroll bar's gutter, at a min-content width, at widths on the way to its size) while the
 /// window's own solve keeps the size it cached for the editor. Placing them at the tallest
 /// height a line took at any width (a paragraph one word per line) stood an answer's list
 /// under its first paragraph, far below where its card is drawn.
@@ -1596,7 +1596,7 @@ fn blocks_measured_first_in_another_tree_are_placed_at_the_width_they_stand_at()
     assert!(fixture.editor.present_blocks(&shown));
     fixture.frame();
     // Measured again in a copy of the tree, as a region measures what it holds: at the wider
-    // box a view has without its scroll bar's lane, at no width as a min-content contribution,
+    // box a view has without its scroll bar's gutter, at no width as a min-content contribution,
     // and at widths on the way to its size. The window's own tree keeps the size it solved.
     let mut leaf: Box<dyn Widget> = Box::new(BlockStackLeaf {
         editor: std::ptr::from_mut(fixture.editor.as_mut()),

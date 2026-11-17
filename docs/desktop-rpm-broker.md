@@ -1,8 +1,8 @@
 # Desktop RPM isolated signing boundary
 
-Desktop package lanes build and install-test unsigned RPMs without a private key
+Desktop package jobs build and install-test unsigned RPMs without a private key
 or OIDC access. A separate protected `desktop-v*` push job requests signed copies
-only after both native package lanes succeed. Host-session tests consume those
+only after both native package jobs succeed. Host-session tests consume those
 signed copies on tags; ordinary main/manual host-session verification continues
 to consume the original unsigned candidate. Publication requires the same signed
 session result. No build, install test or current-head check is removed.

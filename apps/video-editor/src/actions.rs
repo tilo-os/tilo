@@ -231,7 +231,7 @@ pub struct VideoResourceCtx {
 }
 
 /// The project's verbs bound to the playhead and the measured mix: each is the
-/// verb itself with its time, or its lanes and level, filled in.
+/// verb itself with its time, or its tracks and level, filled in.
 pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> {
     let playhead = ctx.playhead;
     let mut decls = Vec::new();
@@ -302,7 +302,7 @@ pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> 
             ));
     }
     if ctx.mix.clipped() {
-        let lanes: Vec<ui::tilo_resource::Id> = ctx
+        let tracks: Vec<ui::tilo_resource::Id> = ctx
             .mix
             .measured_tracks()
             .iter()
@@ -310,14 +310,14 @@ pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> 
             .collect();
         let over = ctx.mix.worst_over_db();
         let places = ctx.mix.overs.len();
-        let lane_words = match ctx.mix.clipped_tracks().len() {
+        let track_words = match ctx.mix.clipped_tracks().len() {
             0 => String::new(),
-            1 => ", 1 lane over on its own".to_owned(),
-            n => format!(", {n} lanes over on their own"),
+            1 => ", 1 track over on its own".to_owned(),
+            n => format!(", {n} tracks over on their own"),
         };
-        add(Project::TRIM_LANES
-            .bind(video_project::TrimLanes::paths().tracks, lanes)
-            .and(video_project::TrimLanes::paths().db, over)
+        add(Project::TRIM_TRACKS
+            .bind(video_project::TrimTracks::paths().tracks, tracks)
+            .and(video_project::TrimTracks::paths().db, over)
             .declaration(
                 "trim-mix",
                 ui::tilo_resource::word!("video-editor-project-trim-mix"),
@@ -325,7 +325,7 @@ pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> 
             .map(|decl| {
                 decl.describe(format!(
                     "the mix was measured {over:+.1} dB over full scale in {places} place{}\
-                     {lane_words}; every lane comes down by the same amount, so the balance is \
+                     {track_words}; every track comes down by the same amount, so the balance is \
                      unchanged",
                     if places == 1 { "" } else { "s" },
                 ))

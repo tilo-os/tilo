@@ -30,7 +30,7 @@ type Backlog {
     draft: RichText
 }
 
-/// The team's items on a board, a lane per stage.
+/// The team's items on a board, a list per stage.
 type Release {
     title: Text
     items: Collection<Item>
@@ -103,7 +103,7 @@ view gallery(g: Gallery) {
             for x in g.releases {
                 ui.ListRow(
                     x.title,
-                    secondary: "A board, a lane per stage",
+                    secondary: "A board, a list per stage",
                     item: x,
                     icon: .layout_grid,
                 )
@@ -330,14 +330,14 @@ view item_row(x: Item) {
     }
 }
 
-/// The release's window: a lane per stage, each card an item.
+/// The release's window: a list per stage, each card an item.
 view release_board(r: Release) {
     std.page(r, canvas: true) {
         ui.Scroll(across: true) {
             ui.Board(name: "Release") {
                 for stage in ["To do", "Doing", "Done"] {
                     let cards = r.items.filter(x -> x.stage == stage)
-                    ui.BoardLane(title: stage, count: cards.len(), action: "New item") {
+                    ui.BoardList(title: stage, count: cards.len(), action: "New item") {
                         for x in cards {
                             ui.BoardCard(x) {
                                 board_item_row(x)
@@ -350,7 +350,7 @@ view release_board(r: Release) {
     }
 }
 
-/// An item on the release's board as its row: its title; the lane it stands in says its stage.
+/// An item on the release's board as its row: its title; the list it stands in says its stage.
 view board_item_row(x: Item) {
     row(x.title)
 }

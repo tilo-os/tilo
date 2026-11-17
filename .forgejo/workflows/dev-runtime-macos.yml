@@ -2,7 +2,7 @@ name: Dev / runtime-macos
 
 # The per-user runtime (`tilo-runtime`) is the Tilo host on machines without
 # the Tilo desktop, stock macOS first. Its library, standalone services and
-# `tilo-runtime` executable must keep building there, which no Linux lane
+# `tilo-runtime` executable must keep building there, which no Linux job
 # observes. It requests no OIDC token and runs on the persistent development
 # runner (`macos-aarch64`), never on the ephemeral release label
 # `imager-macos-aarch64`, so release-signing credentials are never minted for it.
@@ -10,7 +10,7 @@ name: Dev / runtime-macos
 # closure, written by tools/policy/check_workflow_package_paths.py --write and
 # checked by that script's step in the repository policy suite: the one Mac only
 # sees changes that can break it, and a dependency added to the runtime cannot
-# leave this lane behind by being forgotten here.
+# leave this job behind by being forgotten here.
 on:
   push:
     branches: ["main"]

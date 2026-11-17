@@ -26,7 +26,7 @@ impl BooksApp {
     /// device: one that is offline (`waiting`), or one connected device
     /// that says it does not have it.
     fn stage_open_elsewhere(&mut self, waiting: bool) {
-        use ui::collaboration::document_content::{ContentLane, DocumentContent};
+        use ui::collaboration::document_content::{ContentLink, DocumentContent};
 
         self.view = View::Library;
         let Some(entry) = self
@@ -38,8 +38,8 @@ impl BooksApp {
         else {
             return;
         };
-        let lane = Arc::new(ContentLane::default());
-        let store = DocumentContent::store(tilo_content::ContentStore::memory(), Arc::clone(&lane));
+        let link = Arc::new(ContentLink::default());
+        let store = DocumentContent::store(tilo_content::ContentStore::memory(), Arc::clone(&link));
         if let Some(hash) = entry.content_reference() {
             // Asked for, and the host says where it stands.
             let _ = store.read(&hash);
@@ -48,7 +48,7 @@ impl BooksApp {
             } else {
                 tilo_content::ContentState::Unavailable
             };
-            lane.stands(hash, state);
+            link.stands(hash, state);
         }
         self.content = Some(store);
         self.open_hit(&crate::resource::book_place_resource(&entry.id));

@@ -1133,7 +1133,7 @@ if [ "$ESP_STAGED" = 1 ]; then
   msg "verified ESP payload and removed its temporary staging mount"
 fi
 
-# Only the optional dev-disk lane requests this. Read the actual installed
+# Only the optional dev-disk job requests this. Read the actual installed
 # ESP while the loop device is still attached, so the bundle cannot drift
 # from the disk that will be published. The native CI runner mounts vfat;
 # do not silently export from the temporary WSL ESP staging copy.

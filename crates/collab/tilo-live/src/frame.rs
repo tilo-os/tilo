@@ -1,4 +1,4 @@
-//! A stream's frames: the lane and source they belong to, the track they are
+//! A stream's frames: the kind of stream and the source they belong to, the track they are
 //! sealed under, sealing them, and opening what arrives.
 
 use collab_types::scope::Scope;
@@ -138,15 +138,15 @@ impl LiveKeys {
     }
 }
 
-/// Which lane of a call a frame travels on.
+/// Which kind of stream of a call a frame travels on.
 ///
-/// Voice travels on the workspace's live session, not on a lane; the place its
+/// Voice travels on the workspace's live session, not on a stream of a call; the place its
 /// variant held is kept so a hello written before still reads.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
-pub enum Lane {
-    /// The lane voice was carried on, retired.
+pub enum StreamKind {
+    /// The stream voice was carried on, retired.
     RetiredAudio,
     /// Pictures, on unidirectional streams, one per source, layer and group
     /// of pictures.
@@ -205,7 +205,7 @@ impl Stream {
         }
     }
 
-    /// The track a call lane seals this stream's frames as. The live session
+    /// The track a call stream seals this stream's frames as. The live session
     /// names its tracks finer (one per window, camera layer and screen layer)
     /// and passes its own name to [`Sealer::new`].
     #[must_use]

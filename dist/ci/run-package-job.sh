@@ -451,7 +451,7 @@ arch)
     ;;
 nix)
     # Nix otherwise defaults each derivation to only two build cores, leaving
-    # most of an explicitly large package runner idle during its longest lane.
+    # most of an explicitly large package runner idle during its longest job.
     # Reuse the workflow's bounded per-run compiler parallelism; direct/local
     # invocations retain the conservative two-core default chosen above.
     nix_config=$'experimental-features = nix-command flakes\nsandbox = false\ncores = '"${CARGO_BUILD_JOBS:-2}"

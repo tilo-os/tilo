@@ -9,16 +9,16 @@ allocation limits are not a strict sandbox. Allocation aborts/traps may bypass a
 Rust Result: the parent handles worker errors, message errors and watchdog expiry.
 
 The trusted host installs **one** `createComputeDomains()` per page. Bind a
-canonical live owner once with `bindOwner({owner, lifetime, domain, lane, signal,
+canonical live owner once with `bindOwner({owner, lifetime, domain, priority, signal,
 authorize})`. A duplicate live owner/lifetime binding is refused, including a
-different domain/lane. IDs are bounded strings for correlation, not authority.
-The host chooses lane (`foreground` or `background`), current authorization and a
+different domain/priority. IDs are bounded strings for correlation, not authority.
+The host chooses priority (`foreground` or `background`), current authorization and a
 fresh source identity tied to exact admitted bytes/ticket, never a URL alone.
 `authorize()` must return true before dispatch and before delivery; closure wins
 reentry. It does not replace the Rust image ticket's final publication check.
 
 ```js
-const images = domains.bindOwner({owner, lifetime, domain: 'images', lane,
+const images = domains.bindOwner({owner, lifetime, domain: 'images', priority,
   signal: ownerSignal, authorize: () => hostStillAuthorizes(owner)});
 await images.decode({bytes, source: ticketId, maxDimension: 2048}, async result => {
   // Recheck the exact host ticket, owner and dimensions before publication.
@@ -102,7 +102,7 @@ This copies exact worker bytes, verifies their hashes, generates the native pixe
 oracle in staging and runs real Chrome there. It verifies every product file is
 unchanged and records canonical hashes in the qualification receipt. Never run
 `qualify.mjs` in-place on a product bundle: it writes fixture modules and replaces
-`index.html`. The existing app-sdk Chrome lane qualifies actual release output
+`index.html`. The existing app-sdk Chrome job qualifies actual release output
 and uploads its receipt. P6 must use canonical scheduler
 policy/owner ownership and Rust completion tickets and prove foreground plus 100
 actually mounted apps. Standalone page heartbeats do not prove those integration

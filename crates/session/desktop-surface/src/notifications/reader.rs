@@ -179,7 +179,7 @@ impl NotificationReader {
         let source = notification.sender_name();
         let hidden = (!notification.show_preview).then(|| t("notification-preview-hidden"));
         let body = hidden.as_deref().unwrap_or(&notification.body);
-        // The overflow lane changes wrap width. Measure again after resolving it so neither the
+        // The overflow area changes wrap width. Measure again after resolving it so neither the
         // last line nor the scrollbar clips the document.
         let mut title_h = 0.0;
         let mut source_h = 0.0;

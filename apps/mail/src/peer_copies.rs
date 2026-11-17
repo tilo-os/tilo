@@ -121,7 +121,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
 
     fn device(
         record: PersonResource<crate::copies::MailCopies>,
-        lane: &Arc<ui::collaboration::document_content::ContentLane>,
+        link: &Arc<ui::collaboration::document_content::ContentLink>,
     ) -> (
         MailApp,
         AutoCommit,
@@ -137,7 +137,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         });
         let content = ui::collaboration::document_content::DocumentContent::store(
             ContentStore::memory(),
-            Arc::clone(lane),
+            Arc::clone(link),
         );
         app.copies = Some(crate::copies::Copies::new(record, content));
         (app, doc, requests, incoming)
@@ -149,7 +149,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         reason = "two devices and the route between them, step by step"
     )]
     fn a_device_takes_mail_its_other_device_fetched_while_its_server_is_unreachable() {
-        use ui::collaboration::document_content::ContentLane;
+        use ui::collaboration::document_content::ContentLink;
 
         let person = "c7".repeat(32);
         let mut first_host =
@@ -158,12 +158,12 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             ui::framework::testing::TestApp::<crate::MailShell>::for_person(&person).unwrap();
         let first_resource = first_host.person::<crate::copies::MailCopies>().unwrap();
         let second_resource = second_host.person::<crate::copies::MailCopies>().unwrap();
-        let first_lane = Arc::new(ContentLane::default());
-        let second_lane = Arc::new(ContentLane::default());
+        let first_link = Arc::new(ContentLink::default());
+        let second_link = Arc::new(ContentLink::default());
         let (mut first, mut first_doc, first_requests, first_events) =
-            device(first_resource.clone(), &first_lane);
+            device(first_resource.clone(), &first_link);
         let (mut second, mut second_doc, second_requests, second_events) =
-            device(second_resource.clone(), &second_lane);
+            device(second_resource.clone(), &second_link);
         let config = first.shared.borrow().accounts.active_config();
         let account = config.email.clone();
         assert_eq!(
@@ -232,7 +232,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         let old_address = tilo_content::content_address(&old_reference).unwrap();
         let newer_address = tilo_content::content_address(&named(&newer).content).unwrap();
         let mut first_host_keeps: HashMap<String, Vec<u8>> =
-            first_lane.take_requests().offers.into_iter().collect();
+            first_link.take_requests().offers.into_iter().collect();
         for (raw, address) in [(&old_raw, &old_address), (&newer_raw, &newer_address)] {
             let held = first_host_keeps.get(address).expect("the host keeps it");
             assert!(
@@ -283,7 +283,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
 
         // It asks the resource's route, newest first, and the first device's
         // host answers with what it keeps.
-        let wanted = second_lane.take_requests().wants;
+        let wanted = second_link.take_requests().wants;
         assert_eq!(
             wanted,
             [newer_address, old_address],
@@ -291,7 +291,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         );
         for address in wanted {
             let bytes = first_host_keeps.remove(&address).unwrap();
-            second_lane.arrive(address, bytes);
+            second_link.arrive(address, bytes);
         }
         second.settle(
             &mut ui::widget::Edits::lend(&mut second_doc),

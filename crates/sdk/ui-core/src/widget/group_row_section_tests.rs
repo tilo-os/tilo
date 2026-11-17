@@ -1,4 +1,4 @@
-//! A strip across several displays: one lane per display, each laid out and panned on its
+//! A strip across several displays: one section per display, each laid out and panned on its
 //! own.
 
 use super::tests::{make_group, relayout_row_owned};
@@ -6,15 +6,15 @@ use super::*;
 
 /// A 1000-wide display with the wheel gutter beside an 800-wide one whose bottom edge is
 /// 200 rows higher.
-pub(super) fn two_lanes() -> Vec<StripLane> {
+pub(super) fn two_sections() -> Vec<StripSection> {
     vec![
-        StripLane {
+        StripSection {
             output: 0,
             area: Rect::new(0.0, 0.0, 1000.0, 600.0),
             usable: 1000.0,
             leading: true,
         },
-        StripLane {
+        StripSection {
             output: 1,
             area: Rect::new(1000.0, 0.0, 1800.0, 400.0),
             usable: 800.0,
@@ -32,7 +32,7 @@ pub(super) fn partitioned_row() -> GroupRow {
     let assignment: HashMap<u64, u32> = (1..=6_u64)
         .map(|i| (i.saturating_mul(100), u32::from(i > 3)))
         .collect();
-    row.set_lanes(&two_lanes(), &assignment);
+    row.set_sections(&two_sections(), &assignment);
     let (row, _, _) = relayout_row_owned(row, 1800.0);
     let (row, _, _) = relayout_row_owned(row, 1800.0);
     row
@@ -52,32 +52,32 @@ tilo_test_env::scenario! {
     phase a_partitioned_strip_lays_each_display_out_on_its_own;
     {
         let row = partitioned_row();
-        let lanes = two_lanes();
+        let sections = two_sections();
         for id in [100, 200, 300] {
             let r = rect_of(&row, id);
             assert!(
-                r.x0 >= lanes[0].area.x0,
+                r.x0 >= sections[0].area.x0,
                 "{id} starts left of its display: {r:?}"
             );
             assert!(
-                r.y1 <= lanes[0].area.y1 + 0.5,
+                r.y1 <= sections[0].area.y1 + 0.5,
                 "{id} is taller than its display"
             );
             assert_eq!(row.output_of_group(id), Some(0));
         }
         let first_on_second = rect_of(&row, 400);
         assert!(
-            (first_on_second.x0 - lanes[1].area.x0).abs() < 0.5,
+            (first_on_second.x0 - sections[1].area.x0).abs() < 0.5,
             "the second display's first window starts at its own left edge: {first_on_second:?}"
         );
         for id in [400, 500, 600] {
             let r = rect_of(&row, id);
             assert!(
-                r.x0 >= lanes[1].area.x0,
+                r.x0 >= sections[1].area.x0,
                 "{id} leaks onto the first display: {r:?}"
             );
             assert!(
-                r.y1 <= lanes[1].area.y1 + 0.5,
+                r.y1 <= sections[1].area.y1 + 0.5,
                 "{id} runs past the shorter display's bottom edge: {r:?}"
             );
             assert_eq!(row.output_of_group(id), Some(1));
@@ -96,7 +96,7 @@ tilo_test_env::scenario! {
         row.apply_layout(&taffy, root, Point::ORIGIN);
         assert!(
             !row.take_structure_dirty(),
-            "moving a lane needs no new layout"
+            "moving a section needs no new layout"
         );
         assert!(
             row.covers(Point::new(500.0, 300.0)),
@@ -125,8 +125,8 @@ tilo_test_env::scenario! {
             .map(|&id| rect_of(&row, id))
             .collect();
         assert_eq!(before, after, "the first display must not move");
-        assert!(row.output_pan(1).expect("lane").scroll_x() > 0.0);
-        assert_eq!(row.output_pan(0).expect("lane").scroll_x(), 0.0);
+        assert!(row.output_pan(1).expect("section").scroll_x() > 0.0);
+        assert_eq!(row.output_pan(0).expect("section").scroll_x(), 0.0);
         let last = rect_of(&row, 600);
         assert!(last.x1 <= 1800.5 && last.x0 >= 1000.0, "{last:?}");
     }

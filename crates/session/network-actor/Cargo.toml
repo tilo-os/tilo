@@ -1,6 +1,6 @@
 [package]
 name = "tilo-network-actor"
-description = "The desktop's peer-to-peer transport: the iroh actor that keeps workspace host sessions, sessions with the person's own devices, direct links and a person's private device lane."
+description = "The desktop's peer-to-peer transport: the iroh actor that keeps workspace host sessions, sessions with the person's own devices, direct links and a person's private device connection."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true

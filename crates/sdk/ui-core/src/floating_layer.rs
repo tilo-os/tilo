@@ -505,19 +505,19 @@ fn column(placement: &Placement, corner: Corner, docked: &[&Card]) -> Column {
     } else {
         work.x1 - EDGE_INSET - width
     };
-    let lane = Rect::new(x, work.y0, x + width, work.y1);
+    let area = Rect::new(x, work.y0, x + width, work.y1);
     let mut top = (work.y0 + EDGE_INSET).max(placement.bar.y1 + EDGE_INSET);
     let mut bottom = work.y1 - EDGE_INSET;
     // The notification column takes the top-right corner while a banner
     // shows: the cards stand below it, never under it.
     if let Some(banners) = placement.banners
-        && overlaps_lane(&lane, banners)
+        && overlaps_area(&area, banners)
     {
         top = top.max(banners.y1 + CARD_GAP);
     }
     let field = placement.caret.map(|caret| caret.inflate(0.0, FIELD_REACH));
     for band in [placement.readout, field].into_iter().flatten() {
-        if !overlaps_lane(&lane, band) {
+        if !overlaps_area(&area, band) {
             continue;
         }
         if band.center().y > work.center().y {
@@ -529,8 +529,8 @@ fn column(placement: &Placement, corner: Corner, docked: &[&Card]) -> Column {
     Column { x, top, bottom }
 }
 
-fn overlaps_lane(lane: &Rect, band: Rect) -> bool {
-    band.x0 < lane.x1 && band.x1 > lane.x0 && band.y0 < lane.y1 && band.y1 > lane.y0
+fn overlaps_area(area: &Rect, band: Rect) -> bool {
+    band.x0 < area.x1 && band.x1 > area.x0 && band.y0 < area.y1 && band.y1 > area.y0
 }
 
 /// A phone-width card, full width, dropped from under the bar.

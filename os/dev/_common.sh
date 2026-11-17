@@ -120,7 +120,7 @@ TILO_QEMU_START_SECS="${TILO_QEMU_START_SECS:-120}"
 # Architecture of the guest and its release medium. Native runners leave this
 # unset; cross-architecture diagnostic boots may select a guest explicitly and
 # will naturally fall back to TCG. Keep the normalized value in one place so a
-# lane cannot build an aarch64 medium and accidentally exercise x86 firmware.
+# job cannot build an aarch64 medium and accidentally exercise x86 firmware.
 TILO_VM_ARCH="${TILO_VM_ARCH:-$(uname -m)}"
 case "$TILO_VM_ARCH" in
   x86_64|amd64) TILO_VM_ARCH=x86_64 ;;

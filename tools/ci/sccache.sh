@@ -8,13 +8,13 @@ set -euo pipefail
 
 mode="${1:?usage: tools/ci/sccache.sh <prepare|prepare-shell|report>}"
 
-# Lanes that exist to prove the cache works (the builder canaries) set
+# Jobs that exist to prove the cache works (the builder canaries) set
 # TILO_SCCACHE_REQUIRED=1: an unusable cache then fails the step with a
 # diagnosis instead of degrading to an uncached build.
 sccache_unavailable() {
   local reason="$1"
   if [ "${TILO_SCCACHE_REQUIRED:-0}" = 1 ]; then
-    echo "::error::$reason; this lane requires the remote compiler cache"
+    echo "::error::$reason; this job requires the remote compiler cache"
     return 1
   fi
   echo "::warning::$reason; compiling normally"
@@ -81,7 +81,7 @@ case "$mode" in
       # instead of fetching one.
       export RUSTUP_AUTO_INSTALL=0
       # The runner provides the backend (SCCACHE_GHA_ENABLED on the job's
-      # Actions cache). A canary or lane can request its own namespace under a
+      # Actions cache). A canary or job can request its own namespace under a
       # Tilo-specific name; sccache's GHA backend keys entries by version.
       # Restarting matters: sccache reads its backend configuration when its
       # long-lived server starts, and `--zero-stats` below may start it.
