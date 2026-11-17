@@ -15,7 +15,34 @@ pub enum MemberId {
     Bot(String),
 }
 
+/// The prefix of a direct conversation's id: the members it is with follow
+/// it, sorted, as JSON.
+pub const DIRECT_CONVERSATION_PREFIX: &str = "direct:";
+
 impl MemberId {
+    /// The id of the one direct conversation with exactly `members`, as every
+    /// app that reads or writes conversations spells it: derived from the
+    /// set, so two devices that open the same conversation at once make one,
+    /// and neither has to create it first.
+    #[must_use]
+    pub fn direct_conversation(members: impl IntoIterator<Item = Self>) -> String {
+        let mut members: Vec<Self> = members.into_iter().collect();
+        members.sort();
+        members.dedup();
+        let members = serde_json::to_string(&members).unwrap_or_default();
+        format!("{DIRECT_CONVERSATION_PREFIX}{members}")
+    }
+
+    /// The members the direct conversation `id` is with, or none when `id`
+    /// names no direct conversation.
+    #[must_use]
+    pub fn direct_conversation_members(id: &str) -> Option<Vec<Self>> {
+        let members = id.strip_prefix(DIRECT_CONVERSATION_PREFIX)?;
+        serde_json::from_str::<Vec<Self>>(members)
+            .ok()
+            .filter(|members| !members.is_empty())
+    }
+
     #[track_caller]
     #[must_use]
     pub fn person(id: impl Into<PersonId>) -> Self {

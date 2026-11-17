@@ -18,7 +18,8 @@ const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 #[test]
 fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
     use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
-    let app = "so.tilo.chat";
+    // Sheets keeps its workbook at a version it migrates up to.
+    let app = "so.tilo.sheets";
     let mut page = crate::common::open(
         app,
         &MemberId::person("ada"),
@@ -31,7 +32,7 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
     };
     let mut kept = automerge::AutoCommit::load(&snapshot).unwrap();
     let current = stored_version(&kept);
-    assert!(current > 1, "Chat has changed its storage");
+    assert!(current > 1, "Sheets has changed its storage");
     automerge::transaction::Transactable::put(
         &mut kept,
         automerge::ROOT,

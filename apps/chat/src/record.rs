@@ -252,9 +252,7 @@ impl Conversation {
     }
 }
 
-/// The prefix of a direct conversation's id: the members it is with
-/// follow it, in order, as JSON.
-pub const DIRECT_CONVERSATION_PREFIX: &str = "direct:";
+pub use ui::tilo_resource::DIRECT_CONVERSATION_PREFIX;
 
 /// One message of a channel.
 #[derive(Model, Debug, Clone, PartialEq)]
@@ -929,21 +927,14 @@ impl Chat {
     /// make one, and neither has to create it first.
     #[must_use]
     pub fn direct_id(members: impl IntoIterator<Item = MemberId>) -> Id {
-        let mut members: Vec<MemberId> = members.into_iter().collect();
-        members.sort();
-        members.dedup();
-        let members = serde_json::to_string(&members).unwrap_or_default();
-        Id::from_raw(format!("{DIRECT_CONVERSATION_PREFIX}{members}"))
+        Id::from_raw(MemberId::direct_conversation(members))
     }
 
     /// The members the direct conversation `id` names, or none when
     /// `id` names no direct conversation.
     #[must_use]
     pub fn direct_members(id: &Id) -> Option<Vec<MemberId>> {
-        let members = id.as_str().strip_prefix(DIRECT_CONVERSATION_PREFIX)?;
-        serde_json::from_str::<Vec<MemberId>>(members)
-            .ok()
-            .filter(|members| !members.is_empty())
+        MemberId::direct_conversation_members(id.as_str())
     }
 
     /// Whether `id` names a direct conversation.

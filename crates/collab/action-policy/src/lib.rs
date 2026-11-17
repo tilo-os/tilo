@@ -74,7 +74,9 @@ pub fn session_answers<'g>(
 
 pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, Role};
 pub use kind::{ActionKind, KindSet};
-pub use member::{Acting, Actor, AgentSessionId, AutomationId, MemberId, ResourceId};
+pub use member::{
+    Acting, Actor, AgentSessionId, AutomationId, DIRECT_CONVERSATION_PREFIX, MemberId, ResourceId,
+};
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
 pub use person::{PersonId, PersonIdError};
 pub use roles::{Preset, PresetError, Rule};

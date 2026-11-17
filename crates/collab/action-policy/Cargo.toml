@@ -19,12 +19,13 @@ path = "src/lib.rs"
 [dependencies]
 hex = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
+# A direct conversation's id names its members as JSON.
+serde_json.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["use-std"] }
-serde_json.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]

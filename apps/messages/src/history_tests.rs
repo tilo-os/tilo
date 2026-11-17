@@ -821,7 +821,10 @@ tilo_test_env::scenario! {
         use ui::tilo_resource::{MemberId, PersonId};
         let (me, peer) = (PersonId::expect("aa"), PersonId::expect("bb"));
         // Chat's own spelling of the conversation and of its authors.
-        let channel = chat::Chat::direct_id([MemberId::Person(peer.clone()), MemberId::Person(me.clone())]);
+        let channel = MemberId::direct_conversation([
+            MemberId::Person(peer.clone()),
+            MemberId::Person(me.clone()),
+        ]);
         let channel = channel.as_str();
         let (me_author, peer_author) = (
             serde_json::to_value(MemberId::Person(me.clone())).unwrap(),
