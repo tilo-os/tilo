@@ -566,13 +566,26 @@ impl DesktopSearch {
 
     /// Whether rows are still expected to join the ones shown: a source has
     /// yet to answer, or an application's answer is still coming, or a
-    /// source that holds the frame's state still owes its share. What a
-    /// host looks again for, so a late row is drawn when it arrives, even
-    /// though the rows already shown are the search's answer
-    /// ([`Self::settled`]).
+    /// source that holds the frame's state still owes its share, or the card
+    /// still says it is searching. What a host looks again for, so a late row
+    /// is drawn when it arrives, even though the rows already shown are the
+    /// search's answer ([`Self::settled`]).
+    ///
+    /// The card is looked at, not only the sources: an application's answer
+    /// is waited for only so long ([`Self::waiting`]), and the pass that ends
+    /// that wait is the one that stops the card saying it is searching. A
+    /// host that stopped looking the moment the wait ended would leave the
+    /// card saying "Searching…" with nothing left to draw it again.
     #[must_use]
     pub fn expecting(&self) -> bool {
-        self.sources.is_some() && (self.waiting() || self.answering())
+        self.sources.is_some()
+            && (self.waiting() || self.answering() || self.palette.is_searching())
+    }
+
+    /// Whether the card says it is searching for what is typed: an empty list says so while an
+    /// answer it waits for is still coming, and the engine's code alone can hold text back.
+    fn searching_for(&self, rows_empty: bool) -> bool {
+        !ui::search::engine_ready() || (rows_empty && (self.answering() || self.waiting()))
     }
 
     /// Run the query again when the palette's text changed since the rows
@@ -656,6 +669,14 @@ impl DesktopSearch {
         // same search, the rows of the kinds left.
         if self.palette.picked_filters() != self.shown_kinds.as_slice() {
             self.render(&query, generation);
+            return true;
+        }
+        // The card says it is searching while an answer it waits for is still coming. When none
+        // is — the workspace host's answer is waited for only so long ([`Self::waiting`]) — it
+        // stops saying so here, because no answer will come to redraw it: without this the card
+        // read "Searching…" for as long as it stood, over a search that had ended.
+        if self.palette.is_searching() && !self.searching_for(self.rows.is_empty()) {
+            self.palette.set_searching(false);
             return true;
         }
         false
@@ -860,9 +881,8 @@ impl DesktopSearch {
         // in, and the slower sources answer in later frames: while either
         // is still coming, an empty list says it is searching rather than
         // that nothing matched.
-        self.palette.set_searching(
-            !ui::search::engine_ready() || (rows.is_empty() && (pending || self.waiting())),
-        );
+        self.palette
+            .set_searching(self.searching_for(rows.is_empty()));
         self.rows = rows;
         self.shown_query = Some(query.to_owned());
         self.shown_generation = generation;
