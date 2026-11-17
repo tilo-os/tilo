@@ -249,6 +249,12 @@ pub struct ActionRow {
 pub struct Row {
     pub path: String,
     pub name: String,
+    /// The resource's own id, which names it whatever else is titled the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The app's stable key for it, the name its actions answer it by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     pub label: String,
     /// The app's type of it, or `app`.
     pub kind: String,

@@ -475,14 +475,14 @@ class FakeApi:
                     "path": "notes",
                     "kind": "notes",
                     "rows": [
-                        {"path": TODO, "name": "Todo", "label": "Todo", "kind": "notes.Page", "has_children": True, "actions": []}
+                        {"path": TODO, "name": "Todo", "id": "notes.page:todo", "key": "notes.notebook/pages/todo", "label": "Todo", "kind": "notes.Page", "has_children": True, "actions": []}
                     ],
                     "actions": [],
                 },
             )
         rows = [
-            {"path": f"{TODO}/c01e", "name": "Buy milk", "label": "Buy milk", "kind": "notes.Block", "has_children": False, "actions": [{"id": "toggle-checkbox", "label": "Done", "kind": "undoable", "params": [{"name": "id", "ty": "text", "required": True}]}]},
-            {"path": f"{TODO}/c02f", "name": "Buy bread", "label": "Buy bread", "kind": "notes.Block", "has_children": False, "actions": []},
+            {"path": f"{TODO}/c01e", "name": "Buy milk", "id": "notes.block:c01e", "key": "notes.page/body/blocks/c01e", "label": "Buy milk", "kind": "notes.Block", "has_children": False, "actions": [{"id": "toggle-checkbox", "label": "Done", "kind": "undoable", "params": [{"name": "id", "ty": "text", "required": True}]}]},
+            {"path": f"{TODO}/c02f", "name": "Buy bread", "id": "notes.block:c02f", "key": "notes.page/body/blocks/c02f", "label": "Buy bread", "kind": "notes.Block", "has_children": False, "actions": []},
         ]
         limit = query.get("limit")
         cursor = query.get("cursor")

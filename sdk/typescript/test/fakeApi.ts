@@ -415,8 +415,8 @@ export class FakeApi {
       });
     }
     const rows = [
-      { path: `${TODO}/c01e`, name: "Buy milk", label: "Buy milk", kind: "notes.Block", has_children: false, actions: [] },
-      { path: `${TODO}/c02f`, name: "Buy bread", label: "Buy bread", kind: "notes.Block", has_children: false, actions: [] },
+      { path: `${TODO}/c01e`, name: "Buy milk", id: "notes.block:c01e", key: "notes.page/body/blocks/c01e", label: "Buy milk", kind: "notes.Block", has_children: false, actions: [] },
+      { path: `${TODO}/c02f`, name: "Buy bread", id: "notes.block:c02f", key: "notes.page/body/blocks/c02f", label: "Buy bread", kind: "notes.Block", has_children: false, actions: [] },
     ];
     const limit = call.query.limit === undefined ? null : Number(call.query.limit);
     const cursor = call.query.cursor;

@@ -1737,6 +1737,8 @@ mod export_tests {
         answers::Row {
             path: path.to_owned(),
             name: path.to_owned(),
+            id: None,
+            key: None,
             label: path.to_owned(),
             kind: "page".to_owned(),
             has_children,

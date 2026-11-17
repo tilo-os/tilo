@@ -3214,6 +3214,20 @@
           "name": {
             "type": "string"
           },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The resource's own id, which names it whatever else is titled the same."
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's stable key for it, the name its actions answer it by."
+          },
           "label": {
             "type": "string"
           },

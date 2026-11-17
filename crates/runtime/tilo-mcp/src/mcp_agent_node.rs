@@ -3,6 +3,37 @@
 
 use super::{ActionDescriptor, CatalogueRow, HashMap, bound_key, path_name};
 
+impl Node {
+    /// This resource as a row of a listing under `parent`: the name its line
+    /// prints, and the actions it offers by their ids.
+    pub(super) fn listing_row(&self, parent: &str, name: &str, kind: &str) -> super::Value {
+        super::json!({
+            "path": format!("{parent}/{name}"),
+            "name": name,
+            "id": self.id,
+            "key": self.key,
+            "label": self.label,
+            "kind": kind,
+            "has_children": self.container,
+            "actions": self
+                .actions
+                .iter()
+                .map(|action| action.address.action.clone())
+                .collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// The titles `rows` read more than once, lowercased: a line named by one of
+/// them is told apart by its id beside it.
+pub(super) fn shared_titles(rows: &[Node]) -> std::collections::HashSet<String> {
+    let mut seen = std::collections::HashSet::new();
+    rows.iter()
+        .filter(|row| !seen.insert(row.label.trim().to_lowercase()))
+        .map(|row| row.label.trim().to_lowercase())
+        .collect()
+}
+
 /// One resource of an app's directory, as an agent names it.
 #[derive(Clone, Debug)]
 pub(super) struct Node {

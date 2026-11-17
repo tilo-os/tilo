@@ -2919,3 +2919,33 @@ mod viewing;
 #[cfg(test)]
 #[path = "mcp_agent_address_tests.rs"]
 mod address_tests;
+
+/// A listing says each item by its title; where two titles read the same, the
+/// id of each says which is which.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_pages_of_one_title_are_told_apart_by_the_id_beside_it() {
+    let notes = Notes::new(true);
+    let pages = [notes.id(TODO), notes.id(SHOP)];
+    let rows: Vec<CatalogueRow> = notes
+        .rows("1")
+        .into_iter()
+        .map(|mut row| {
+            if pages.contains(&row.resource.id) {
+                row.resource.label = "Todo".into();
+                if let Some(action) = row.action.as_mut() {
+                    action.resource_label = "Todo".into();
+                }
+            }
+            row
+        })
+        .collect();
+    *notes.published_kinds.lock().unwrap() = Some(rows);
+    let (text, failed) = tool(&agent(&notes), "tilo_ls", json!({"path": "notes"})).await;
+    assert!(!failed, "{text}");
+    for page in &pages {
+        assert!(
+            text.lines().any(|line| line.contains(page.as_str())),
+            "{page} is not in\n{text}"
+        );
+    }
+}

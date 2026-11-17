@@ -330,7 +330,7 @@ mod mcp_agent_tools;
 )]
 mod mcp_agent_pick;
 
-use mcp_agent_node::{Level, Node, level_of};
+use mcp_agent_node::{Level, Node, level_of, shared_titles};
 use mcp_agent_paths::{CLOSE_MATCHES, close_matches, kind_address};
 use mcp_agent_pick::{
     action_rank, is_program_form, named_beyond_its_start, only_by_id, pick, pick_action,
@@ -1638,6 +1638,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if want_resources {
             let mut named: Vec<Node> = children.clone();
             named.extend(resolved.node.clone());
+            let shared = shared_titles(&children);
             entries.resize(first, (String::new(), None));
             for (index, child) in children.iter().enumerate() {
                 let index = first.saturating_add(index);
@@ -1660,22 +1661,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // row read off the listing walks back to this very resource. Never the
                 // published kind (`tl.<app>.<Type>`), which no program writes.
                 let _ = write!(line, "  {}", forms.kind(&child.kind).unwrap_or(&child.kind));
+                let name = child.name(&named);
+                // A title two rows share does not say which is which: the row's
+                // own id does, beside it.
+                if shared.contains(&child.label.trim().to_lowercase()) {
+                    let _ = write!(line, "  {}", child.id);
+                }
                 if !child.actions.is_empty() {
                     let _ = write!(line, "  {}", actions_note(&child.actions, &called));
                 }
-                let name = child.name(&named);
-                let row = json!({
-                    "path": format!("{}/{name}", resolved.path),
-                    "name": name,
-                    "label": child.label,
-                    "kind": forms.kind(&child.kind).unwrap_or(&child.kind),
-                    "has_children": child.container,
-                    "actions": child
-                        .actions
-                        .iter()
-                        .map(|action| action.address.action.clone())
-                        .collect::<Vec<_>>(),
-                });
+                let row = child.listing_row(
+                    &resolved.path,
+                    &name,
+                    forms.kind(&child.kind).unwrap_or(&child.kind),
+                );
                 entries.push((line, Some(row)));
             }
             let (mut lines, mut rows) = (Vec::new(), Vec::new());

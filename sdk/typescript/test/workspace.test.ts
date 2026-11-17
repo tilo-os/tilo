@@ -49,6 +49,24 @@ describe("reading a workspace", () => {
     expect(await rest?.more()).toBeNull();
   });
 
+  it("names a row's id and key beside its title", async () => {
+    const api = new FakeApi();
+    const page = await open(api).workspace("jane-doe").ls(TODO);
+
+    expect(page.rows[0]?.id).toBe("notes.block:c01e");
+    expect(page.rows[0]?.key).toBe("notes.page/body/blocks/c01e");
+    const apps = await open(api).workspace("jane-doe").ls();
+    expect(apps.rows[0]?.id).toBeNull();
+  });
+
+  it("reads on from a cursor it is given", async () => {
+    const api = new FakeApi();
+    const rest = await open(api).workspace("jane-doe").ls(TODO, { limit: 1, cursor: "1" });
+
+    expect(rest.rows.map((row) => row.name)).toEqual(["Buy bread"]);
+    expect(api.last()?.query).toEqual({ path: TODO, limit: "1", cursor: "1" });
+  });
+
   it("is iterated page by page", async () => {
     const api = new FakeApi();
     const names: string[] = [];
