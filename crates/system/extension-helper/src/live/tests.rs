@@ -295,6 +295,18 @@ struct Fake {
     logins: RefCell<Vec<Login>>,
     desktops: RefCell<Vec<String>>,
     merges: RefCell<u32>,
+    mounted: RefCell<BTreeSet<PathBuf>>,
+}
+
+impl Fake {
+    /// Stand in for a sandbox that still reads `layer` in its own mount namespace.
+    fn mount(&self, layer: &Path) {
+        self.mounted.borrow_mut().insert(layer.to_path_buf());
+    }
+
+    fn release(&self, layer: &Path) {
+        self.mounted.borrow_mut().remove(layer);
+    }
 }
 
 impl Host for Fake {
@@ -342,6 +354,10 @@ impl LiveHost for Fake {
 
     fn is_whiteout(&self, path: &Path) -> bool {
         fs::read_to_string(path).is_ok_and(|text| text == "whiteout")
+    }
+
+    fn layer_in_use(&self, layer: &Path) -> bool {
+        self.mounted.borrow().contains(layer)
     }
 
     fn daemon_reload(&self) -> Result<()> {
@@ -433,7 +449,7 @@ tilo_test_env::scenario! {
         let (_dir, layout, fake) = machine();
 
         assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-        let layer = fs::read_link(link(&layout)).unwrap();
+        let layer = fs::read_link(link(&layout).unwrap()).unwrap();
         assert!(layer.starts_with(layers(&layout)));
         assert_eq!(
             fs::read_to_string(layer.join("usr/bin/fs")).unwrap(),
@@ -453,9 +469,10 @@ tilo_test_env::scenario! {
             "a file the image dropped is hidden"
         );
         assert!(
-            fs::read_to_string(
-                layer.join("usr/lib/extension-release.d/extension-release.tilo-live-update")
-            )
+            fs::read_to_string(layer.join(format!(
+                "usr/lib/extension-release.d/extension-release.{}",
+                extension_name(&layer)
+            )))
             .unwrap()
             .contains(&"e".repeat(64))
         );
@@ -484,7 +501,7 @@ tilo_test_env::scenario! {
         assert!(fake.restarted.borrow().is_empty());
 
         assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
-        let layer = fs::read_link(link(&layout)).unwrap();
+        let layer = fs::read_link(link(&layout).unwrap()).unwrap();
         assert_eq!(
             fs::read_to_string(layer.join("usr/bin/shell")).unwrap(),
             "shell 2"
@@ -538,7 +555,7 @@ tilo_test_env::scenario! {
             fake.restarted.borrow().is_empty(),
             "fs and its recipient already run this build"
         );
-        let layer = fs::read_link(link(&layout)).unwrap();
+        let layer = fs::read_link(link(&layout).unwrap()).unwrap();
         assert_eq!(
             fs::read_to_string(layer.join("usr/bin/shell")).unwrap(),
             "shell 2",
@@ -570,7 +587,7 @@ tilo_test_env::scenario! {
         let (_dir, layout, fake) = machine();
         fake.failing.borrow_mut().push("fs.service".into());
         assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 1);
-        assert!(!link(&layout).exists(), "nothing was linked before");
+        assert!(link(&layout).is_none(), "nothing was linked before");
         assert!(
             !merged_marker(&layout).exists(),
             "the layer was merged away"
@@ -606,7 +623,7 @@ tilo_test_env::scenario! {
             .replace(r#""staged":"#, r#""ignored":"#);
         *fake.status.borrow_mut() = booted;
         assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
-        assert!(!link(&layout).exists());
+        assert!(link(&layout).is_none());
         assert!(!merged_marker(&layout).exists());
         let state = read_state(&layout).unwrap();
         assert_eq!(state.image, "");
@@ -618,7 +635,7 @@ tilo_test_env::scenario! {
         let (_dir, layout, fake) = machine();
         fake.roots.borrow_mut().remove(&"d".repeat(128));
         assert!(apply(&fake, &fake, &layout, Phase::System).is_err());
-        assert!(!link(&layout).exists(), "nothing was linked");
+        assert!(link(&layout).is_none(), "nothing was linked");
         let state = read_state(&layout).unwrap();
         assert_eq!(state.image, format!("sha256:{}", "e".repeat(64)));
         assert!(state.failed);
@@ -629,6 +646,204 @@ tilo_test_env::scenario! {
         assert!(state.detail.contains("mount failed"));
         assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
     }
+}
+
+/// Apply image A's system phase; the fixture's newer image then gets staged over it.
+fn applied_system() -> (tempfile::TempDir, Layout, Fake, PathBuf) {
+    let (dir, layout, fake) = machine();
+    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+    let layer = fs::read_link(link(&layout).unwrap()).unwrap();
+    (dir, layout, fake, layer)
+}
+
+/// Stage another image (digest f, files `files`) as the device's update service would.
+fn stage(dir: &Path, fake: &Fake, files: &[(&str, &str)]) {
+    let root = dir.join("staged-next");
+    tree(&root, files);
+    let verity = "f".repeat(128);
+    fake.roots.borrow_mut().insert(verity.clone(), root);
+    let status = fake
+        .status
+        .borrow()
+        .replace(&"d".repeat(128), &verity)
+        .replace(&"e".repeat(64), &"f".repeat(64));
+    *fake.status.borrow_mut() = status;
+}
+
+fn next_image() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("usr/bin/fs", "fs 3"),
+        ("usr/bin/shell", "shell 2"),
+        ("usr/libexec/tilo/tilo-greeter", "greeter 3"),
+        ("usr/lib/old-lib.so", "old"),
+        ("usr/lib/modules/6.18/vmlinuz", "kernel"),
+        ("usr/share/tilo/components.toml", MANIFEST),
+        ("usr/lib/newer", "newer"),
+    ]
+}
+
+tilo_test_env::scenario! {
+    fn a_layer_a_running_sandbox_still_mounts_is_kept_until_it_lets_go;
+
+    phase a_mounted_layer_survives_the_next_apply_unchanged;
+    {
+        let (dir, layout, fake, first) = applied_system();
+        // A sandbox started before the update keeps the merged /usr it started with, and that
+        // mount reads this layer.
+        fake.mount(&first);
+        stage(dir.path(), &fake, &next_image());
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+        let second = fs::read_link(link(&layout).unwrap()).unwrap();
+        assert_ne!(second, first, "an apply builds a layer of its own");
+        assert!(
+            first.is_dir(),
+            "a layer a sandbox still mounts is never removed"
+        );
+        assert_eq!(
+            fs::read_to_string(first.join("usr/bin/fs")).unwrap(),
+            "fs 2",
+            "nor rewritten under the running sandbox"
+        );
+        assert_eq!(
+            fs::read_dir(layers(&layout)).unwrap().count(),
+            2,
+            "the linked layer and the one still mounted"
+        );
+    }
+
+    phase a_released_layer_is_removed_by_the_next_apply;
+    {
+        let (dir, layout, fake, first) = applied_system();
+        fake.mount(&first);
+        stage(dir.path(), &fake, &next_image());
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+        assert!(first.is_dir());
+        fake.release(&first);
+        assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
+        assert!(!first.exists(), "nothing mounts it any more");
+    }
+
+    phase rebuilding_a_layer_name_never_touches_the_one_there;
+    {
+        let (dir, _machine, fake) = machine();
+        let layout = Layout::new(dir.path().join("build"));
+        let linked = dir.path().join("staged");
+        let plan = Plan::new(vec![written("/usr/bin/fs")], &components());
+        let requested = layers(&layout).join("same");
+        let first = build_layer(
+            &fake,
+            &fake,
+            &plan,
+            Phase::System,
+            &linked,
+            &requested,
+            "sha256:aaa",
+        )
+        .unwrap();
+        assert_eq!(first, requested);
+        let bytes = fs::read_to_string(first.join("usr/bin/fs")).unwrap();
+        let second = build_layer(
+            &fake,
+            &fake,
+            &plan,
+            Phase::System,
+            &linked,
+            &requested,
+            "sha256:aaa",
+        )
+        .unwrap();
+        assert_ne!(second, first, "a second build takes a fresh name");
+        assert_eq!(
+            fs::read_to_string(first.join("usr/bin/fs")).unwrap(),
+            bytes,
+            "the first layer is untouched"
+        );
+        assert_eq!(
+            fs::read_to_string(
+                first.join("usr/lib/extension-release.d/extension-release.tilo-live-update-same")
+            )
+            .unwrap()
+            .lines()
+            .next(),
+            Some("ID=_any"),
+            "the release file is named after the layer's link"
+        );
+    }
+
+    phase the_reaping_sweep_removes_only_what_nothing_links_or_mounts;
+    {
+        let (dir, layout, fake, linked) = applied_system();
+        let plan = Plan::new(vec![written("/usr/bin/fs")], &components());
+        let stray = build_layer(
+            &fake,
+            &fake,
+            &plan,
+            Phase::System,
+            &dir.path().join("staged"),
+            &layers(&layout).join("stray"),
+            "sha256:bbb",
+        )
+        .unwrap();
+        fake.mount(&stray);
+        assert_eq!(prune(&fake, &layout), 0);
+        assert!(stray.is_dir(), "a mounted layer is kept");
+        assert!(linked.is_dir(), "the linked layer is kept");
+        fake.release(&stray);
+        assert_eq!(prune(&fake, &layout), 0);
+        assert!(!stray.exists(), "nothing links or mounts it any more");
+        assert!(linked.is_dir(), "the linked layer stays");
+    }
+
+    phase a_failed_apply_puts_the_previous_layer_back;
+    {
+        let (dir, layout, fake, first) = applied_system();
+        fake.failing.borrow_mut().push("fs.service".into());
+        stage(dir.path(), &fake, &next_image());
+        assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 1);
+        assert_eq!(
+            fs::read_link(link(&layout).unwrap()).unwrap(),
+            first,
+            "rollback relinks the previous layer"
+        );
+        assert!(first.is_dir(), "and it is still there to relink");
+    }
+}
+
+#[test]
+fn only_a_mount_that_reads_the_layer_holds_it() {
+    let layer = Path::new("/var/lib/tilo/live-update/layers/aaaa-system");
+    let name = extension_name(layer);
+    assert_eq!(name, "tilo-live-update-aaaa-system");
+    assert!(!mountinfo_reads("", layer, &name));
+    // A sandbox's clone of the merged /usr, as systemd-sysext mounted it.
+    let line = "36 25 0:44 / /usr ro,relatime shared:20 - overlay sysext \
+                ro,lowerdir=/run/systemd/sysext/meta/usr:\
+                /run/systemd/sysext/extensions/tilo-live-update-aaaa-system/usr:/usr\n";
+    assert!(mountinfo_reads(line, layer, &name));
+    // The resolved layer path, for a sysext that hands over the extension directory directly.
+    let line = "36 25 0:44 / /usr ro - overlay sysext \
+                ro,lowerdir=/var/lib/tilo/live-update/layers/aaaa-system/usr:/usr\n";
+    assert!(mountinfo_reads(line, layer, &name));
+    // Another layer's mount, and something that is not an overlay.
+    let other = "36 25 0:44 / /usr ro - overlay sysext \
+                 ro,lowerdir=/run/systemd/sysext/extensions/tilo-live-update-bbbb-system/usr:/usr\n";
+    assert!(!mountinfo_reads(other, layer, &name));
+    assert!(!mountinfo_reads(
+        "36 25 0:44 / /usr ro - ext4 /dev/sda1 ro\n",
+        layer,
+        &name
+    ));
+
+    let proc = tempfile::tempdir().unwrap();
+    assert!(!layer_mounted(proc.path(), layer));
+    let pid = proc.path().join("42");
+    fs::create_dir(&pid).unwrap();
+    fs::write(pid.join("mountinfo"), line).unwrap();
+    assert!(layer_mounted(proc.path(), layer));
+    assert!(
+        layer_mounted(Path::new("/nonexistent-proc"), layer),
+        "an unreadable mount table means the layer may be in use"
+    );
 }
 
 #[test]

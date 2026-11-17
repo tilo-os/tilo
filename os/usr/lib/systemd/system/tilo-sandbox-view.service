@@ -14,6 +14,9 @@ Before=graphical.target display-manager.service greetd.service
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/tilo/tilo-launcher sandbox-view build --retire-with-systemd
+# A generation this build retired in place (nothing held it) may have been the last reader of a
+# live update layer; remove the ones nothing mounts any more.
+ExecStartPost=-/usr/libexec/tilo-extension live:prune
 # The view is mounted in the host's mount namespace, where every launch
 # finds it: no namespace-based sandboxing (ProtectSystem=, PrivateTmp=, ...),
 # which would build it in a private namespace nobody else sees.

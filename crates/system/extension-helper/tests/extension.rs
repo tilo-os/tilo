@@ -69,7 +69,7 @@ tilo_test_env::scenario! {
             parse_command(&args(&["activate"])).unwrap(),
             ("activate".into(), String::new())
         );
-        for phase in ["system", "session", "status"] {
+        for phase in ["system", "session", "prune", "status"] {
             assert_eq!(
                 parse_command(&args(&[&format!("live:{phase}")])).unwrap(),
                 ("live".into(), phase.into())

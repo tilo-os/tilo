@@ -112,8 +112,8 @@ pub fn parse_command(argv: &[String]) -> Result<(String, String)> {
         return Ok(("activate".to_owned(), String::new()));
     }
     if let Some(phase) = argument.strip_prefix("live:") {
-        if !matches!(phase, "system" | "session" | "status") {
-            return Err(Error::pack("live takes system, session or status"));
+        if !matches!(phase, "system" | "session" | "prune" | "status") {
+            return Err(Error::pack("live takes system, session, prune or status"));
         }
         return Ok(("live".to_owned(), phase.to_owned()));
     }
