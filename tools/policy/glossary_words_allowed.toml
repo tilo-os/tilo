@@ -5,6 +5,12 @@
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "The identity crate's own name for the material a device signs a join with, and the peer-state owner API's names for where a device's own copy of a workspace is reached."
+words = ["host"]
+identifiers = ["HostIdentity", "own_host_hint_here"]
+paths = ["crates/collab/tilo-peer-state/tests/adhoc_group.rs"]
+
+[[allow]]
 reason = "Generated from sources the check already reads."
 words = ["*"]
 paths = [
