@@ -647,6 +647,53 @@ fn a_sub_agent_changes_nothing_of_the_workspaces_agents_but_its_own_team() {
     ada.apply(unbound).unwrap();
 }
 
+/// Whoever started sub-agents reads its team: those it started and theirs, and nothing of
+/// whoever is above or beside it. One that was dismissed is no longer among them.
+#[test]
+fn an_agents_team_is_those_it_started_and_theirs_and_nobody_above_or_beside_it() {
+    let mut list = team();
+    let state = list.state().unwrap();
+    let team_of = |state: &WorkspaceAgents, above: &str| -> Vec<String> {
+        state
+            .team_of(state.get(&id(above)).unwrap())
+            .iter()
+            .map(|agent| agent.id.0.clone())
+            .collect()
+    };
+    assert_eq!(
+        team_of(&state, MAIN),
+        ["lead", "other", "worker"],
+        "a person's own agent reads both levels"
+    );
+    assert_eq!(team_of(&state, "lead"), ["worker"], "a lead reads its own");
+    for alone in ["other", "worker"] {
+        assert!(
+            team_of(&state, alone).is_empty(),
+            "{alone} started nobody, and reads nobody above or beside it"
+        );
+    }
+    // Another person's agent of the same id as a starter reads nothing of this team.
+    let foreign = Agent {
+        keeper: GRACE.to_owned(),
+        ..state.get(&id(MAIN)).unwrap().clone()
+    };
+    assert!(state.team_of(&foreign).is_empty());
+
+    let mut ada = list.fork().as_author(ADA);
+    ada.apply(
+        WorkspaceAgents::RETIRE_AGENT.with(workspace_agents::RetireAgent {
+            agent: id("worker"),
+        }),
+    )
+    .unwrap();
+    let state = ada.state().unwrap();
+    assert!(
+        team_of(&state, "lead").is_empty(),
+        "a dismissed one is gone"
+    );
+    assert_eq!(team_of(&state, MAIN), ["lead", "other"]);
+}
+
 /// What the policy answers an agent's turn that carries `rules`, for `kind` at `node`.
 fn decided(agent: &str, rules: &[Rule], node: &TreePath, kind: ActionKind) -> Answer {
     let grants = roles::agent_grants(WORKSPACE, agent, ADA, rules);

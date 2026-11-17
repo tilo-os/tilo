@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use serde_json::json;
+use serde_json::{Map, Value as Json, json};
 use tilo_actions::{Actor, MemberId};
 use tilo_render_protocol::patch::local;
 use tilo_ui_host::AppWindow;
@@ -19,7 +19,7 @@ use ui::written_view::{Shown, WrittenView};
 
 use crate::apps::{self, App};
 use crate::platform::ViewPlatform;
-use crate::state::State;
+use crate::state::{Asked, State};
 use crate::workspace::{Read, Workspace};
 use crate::wrapper::{self, SHOWN};
 
@@ -81,7 +81,7 @@ impl Surface {
         state: Rc<State>,
     ) -> Result<Self, String> {
         let wrapper = wrapper::get()?;
-        let apps = apps::named(&view.source);
+        let apps = apps::named(&view.source, &view.reads);
         tilo_ui_host::i18n::ensure();
         let wake = ui::wake::WakeHandle::new();
         state.woken_by(wake.clone());
@@ -258,9 +258,8 @@ impl Surface {
             match self.decide(&invocation) {
                 Decision::Allow => self.send(&invocation),
                 Decision::Ask => {
-                    if let Some((app, action)) = self.described(&invocation) {
-                        self.state
-                            .suggest(app, action, self.author.clone(), invocation);
+                    if let Some(asked) = self.described(&invocation) {
+                        self.state.suggest(asked, self.author.clone(), invocation);
                     }
                 }
                 Decision::Deny => {
@@ -308,43 +307,74 @@ impl Surface {
         )
     }
 
-    /// The app `invocation` would change and what it would do, in words.
-    fn described(&self, invocation: &Invocation) -> Option<(String, String)> {
-        let Invocation::Action { app, action, .. } = invocation else {
+    /// What `invocation` would do, as the person is asked about it: the app it would change, the
+    /// action in the app's own words, and everything the action is given, exactly as
+    /// [`Self::send`] sends it. The words are the action's, never those of the control that
+    /// asked.
+    fn described(&self, invocation: &Invocation) -> Option<Asked> {
+        let Invocation::Action {
+            app,
+            action,
+            destructive,
+            ..
+        } = invocation
+        else {
             return None;
         };
         let declared = self.app(app.as_str())?;
-        Some((declared.title.clone(), declared.label(action)))
+        let (_, arguments) = sent(&declared, invocation)?;
+        Some(Asked {
+            app: declared.title.clone(),
+            action: declared.label(action),
+            arguments: arguments
+                .iter()
+                .map(|(name, value)| (name.clone(), spoken(value)))
+                .collect(),
+            destructive: *destructive,
+        })
     }
 
     /// Send `invocation` to its app's own API, as the person at the window.
     fn send(&mut self, invocation: &Invocation) {
-        let Invocation::Action {
-            app,
-            action,
-            target,
-            ..
-        } = invocation
-        else {
+        let Invocation::Action { app, action, .. } = invocation else {
             return;
         };
         let Some(declared) = self.app(app.as_str()) else {
             return;
         };
-        let resource = target
-            .as_ref()
-            .map(ResourceRef::id_string)
-            .or_else(|| declared.root.as_ref().map(|root| root.published.clone()));
-        let Some(resource) = resource else {
+        let Some((resource, arguments)) = sent(&declared, invocation) else {
             return;
         };
-        let arguments = declared.arguments(action, invocation.api_arguments());
         self.workspace.invoke(
             &declared.meta.app,
             &resource,
             declared.verb(action),
             arguments,
         );
+    }
+}
+
+/// Where `invocation` goes in the app `declared` and what it is given there, by the names the
+/// app's own action takes: what is sent, and so what the person is asked about.
+fn sent(declared: &App, invocation: &Invocation) -> Option<(String, Map<String, Json>)> {
+    let Invocation::Action { action, target, .. } = invocation else {
+        return None;
+    };
+    let resource = target
+        .as_ref()
+        .map(ResourceRef::id_string)
+        .or_else(|| declared.root.as_ref().map(|root| root.published.clone()))?;
+    Some((
+        resource,
+        declared.arguments(action, invocation.api_arguments()),
+    ))
+}
+
+/// An argument's value as a person reads it: text as it is, anything else as it is sent.
+fn spoken(value: &Json) -> String {
+    match value {
+        Json::String(text) => text.clone(),
+        other => other.to_string(),
     }
 }
 

@@ -42,8 +42,14 @@ pub(super) fn refusal(error: &LinkError) -> Refusal {
         LinkError::Unavailable(_) | LinkError::Malformed(_) | LinkError::Sign(_) => {
             Refusal::Reachability
         }
-        // A host that turns a device away closes its handshake without a
-        // word, so its own reason never reaches the page.
+        // The server said so under its own signature, and nothing this
+        // device asks again changes it.
+        LinkError::DeviceRevoked => Refusal::Final(
+            "device-revoked",
+            "This device was removed from your devices.".to_owned(),
+        ),
+        // A server that refuses a device and does not say why closes its
+        // handshake with nothing said.
         LinkError::Refused(_) => Refusal::Unexplained,
         // Another peer protocol version: whichever side is behind updates
         // (docs/architecture/compatibility.md). This page is the host's

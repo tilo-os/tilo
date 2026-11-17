@@ -113,6 +113,9 @@ mod hosted_browser;
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_mail_turn.rs"]
+mod hosted_mail_turn;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_secret_use.rs"]
 mod hosted_secret_use;
 #[cfg(test)]

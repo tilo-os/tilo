@@ -9,6 +9,8 @@ use super::*;
 use crate::policy_schedule::RECHECK_INTERVAL;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
+#[cfg(target_os = "linux")]
+use tilo_identity_host::policy_change;
 
 const NS: u64 = 1_000_000_000;
 
@@ -31,7 +33,7 @@ impl Announcing {
     /// Change the tree and announce it, as the shell's write guard does.
     fn write(&self, change: impl FnOnce(&mut WorkspaceTree)) {
         change(&mut self.0.write());
-        tilo_identity_host::policy_change::announce();
+        policy_change::announce();
     }
 }
 
@@ -235,7 +237,7 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
         .expect("test broker")
     });
     assert!(
-        tilo_identity_host::policy_change::timers_reliable(),
+        policy_change::timers_reliable(),
         "Linux times expiries with a timerfd"
     );
     let registered =
@@ -250,12 +252,12 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
     // parks; on a loaded machine that rest of the turn can be preempted any
     // number of times. So the window opens once the thread has parked and
     // closes once it is parked again, and counts only what woke it between.
-    let epoch = tilo_identity_host::policy_change::epoch();
+    let epoch = policy_change::epoch();
     let settled = tilo_test_env::idle::asleep_switches(&tid);
     std::thread::sleep(RECHECK_INTERVAL.saturating_mul(2));
     let woke = tilo_test_env::idle::asleep_switches(&tid).saturating_sub(settled);
     // Each announcement costs a turn of about two switches.
-    let announced = tilo_identity_host::policy_change::epoch().wrapping_sub(epoch);
+    let announced = policy_change::epoch().wrapping_sub(epoch);
     assert!(
         woke <= announced.saturating_mul(2),
         "the idle broker thread woke {woke} times with {announced} announcements"
@@ -270,7 +272,7 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
             .checked_add(Duration::from_secs(expiry))
             .unwrap(),
     );
-    tilo_identity_host::policy_change::announce();
+    policy_change::announce();
     tilo_test_env::wait_until("the re-check at the expiry", || {
         owner.checks().len() > before_expiry
     });

@@ -270,6 +270,26 @@ test('a page that cannot open its workspace shows one failure screen: the cause,
   assert.ok(calls.includes('history') || calls.includes('assign'), 'it opens the other workspace');
 });
 
+test('a browser removed from its person’s devices reads that on arrival, on the one failure screen, with nothing to try again', async () => {
+  const {failure, screen} = await fixture({boot: async ({onStep}) => {
+    onStep('join');
+    // What the session's stop reaches the page as: its server refused its hello and said why
+    // (`whenReady` in peer.mjs keeps the code).
+    throw Object.assign(new Error('This device was removed from your devices.'), {code: 'device-revoked'});
+  }});
+  assert.equal(failure?.name, 'AdmissionError');
+  assert.equal(failure?.code, 'device-revoked');
+  const root = document.documentElement.dataset;
+  assert.equal(root.entry, 'refused');
+  assert.equal(root.refusal, 'device-revoked');
+  assert.equal(root.failure, 'refused');
+  assert.equal(root.reconnect, undefined, 'never the screen of a server that is away');
+  assert.equal(screen['arrival-failure-body'].textContent, 'This browser was removed from your devices, so it can’t open this workspace anymore.');
+  assert.doesNotMatch(screen['arrival-failure-heading'].textContent + screen['arrival-failure-body'].textContent, /reach|restarting|certificate/i);
+  assert.equal(screen['arrival-failure-retry'].hidden, true, 'trying again changes nothing');
+  assert.equal(document.body.children.length, 0, 'no card over the screen');
+});
+
 test('a page whose host never answers names that host, not this site', async () => {
   globalThis.fetch = async () => ({ok: true});
   const {screen} = await fixture({boot: async ({deps}) => {

@@ -1365,3 +1365,8 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
     stands_as(&workspaces, &workspace, "writer", Stands::NeedsPerson).await;
     page.peer.close();
 }
+
+/// A team from inside a turn: the person's own agent starts and steers its sub-agents from
+/// its own turn, and a lead reads the team under it.
+#[path = "hosted_sub_agent_teams.rs"]
+mod teams;

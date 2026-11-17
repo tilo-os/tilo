@@ -6,9 +6,9 @@
 //! answers in, and in the presence its work leaves. Its actor is `agent:<item id>`.
 //!
 //! The record is Chat's ([`OWNER`]): its actions are decided against Chat's
-//! committed surface by the workspace's grants. An editor names, bounds and retires
-//! agents; the person who keeps one alone chooses its model and tells it how to work for
-//! them ([`Agent::instruction`]).
+//! committed surface by the workspace's grants. An editor makes agents; the person who
+//! keeps one alone names, bounds and retires it, chooses its model and tells it how to work
+//! for them ([`Agent::instruction`]).
 //!
 //! An agent starts sub-agents for the person who keeps it. Each is an item here too, with what
 //! it was started for and how it stands ([`sub`]). One whose work a coding harness does in the
@@ -580,11 +580,18 @@ impl WorkspaceAgents {
         #[param("Its new name, as people read it")] name: NonBlank,
     ) -> Result<(), Refusal> {
         self.not_by_sub_agent(cx)?;
+        // Its keeper's alone, and theirs in person: a name is what a mention binds to and what
+        // its person reads over its words, so no other member and no agent, the agent itself
+        // included, gives it another.
+        let me = keeping(cx)?;
         let name = clean_name(&name)?;
         let found = self
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
+        if found.keeper != me {
+            return Err(Refusal::new("only the agent's keeper names it"));
+        }
         found.name = name;
         Ok(())
     }

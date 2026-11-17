@@ -1,6 +1,6 @@
-//! What this host offers an agent of a person's of that person's mail: the
+//! What this holder offers an agent of a person's of that person's mail: the
 //! actions of `tilo.accounts` it may call, as rows of the catalogue it
-//! reads. A page asks the host directly and is offered no row; an agent
+//! reads. A page asks the holder directly and is offered no row; an agent
 //! finds what it may do here, once its person named it for an account
 //! ([`person_accounts::ASSISTANT`]).
 //!
@@ -13,7 +13,7 @@ use tilo_actions::{ActionKind, ActionParam, ParamType};
 
 use super::{Publisher, Verb};
 
-/// A person's mail accounts, as their host publishes them.
+/// A person's mail accounts, as their holder publishes them.
 pub(super) const MAIL: Publisher = Publisher {
     provider: person_accounts::PROVIDER,
     kind: "tilo.accounts",
@@ -229,4 +229,14 @@ fn begun_params() -> Vec<ActionParam> {
         ParamType::Text,
         "The begun message's id.",
     )]
+}
+
+impl super::super::Workspaces {
+    /// The rows an agent its person named for an account is offered, for the
+    /// entry a turn this holder carries out reaches that person's mail
+    /// through: such a turn has no device behind it for the catalogue to
+    /// offer them by.
+    pub(in crate::workspaces) fn assistant_mail_rows() -> Vec<CatalogueRow> {
+        assistant_rows()
+    }
 }

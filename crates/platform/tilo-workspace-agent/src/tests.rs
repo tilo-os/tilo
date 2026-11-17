@@ -378,6 +378,46 @@ fn only_the_keeper_in_person_bounds_an_agent_and_retires_it() {
     assert_eq!(agents.state().unwrap().agents[0].state, AgentState::Retired);
 }
 
+/// An agent is named by its keeper in person: by no other member, and by no agent, the agent
+/// itself and its keeper's other agents included. Its name is what a mention binds to and
+/// what its person reads over its words.
+#[test]
+fn only_the_keeper_in_person_names_an_agent() {
+    let mut agents = as_person(ADA);
+    agents.apply(make("Claude")).unwrap();
+    let agent = agents.state().unwrap().agents[0].id.0.clone();
+    let kept = agents.state().unwrap();
+
+    // Another member does not, whatever they may edit here.
+    let mut grace = agents.fork().as_author(GRACE);
+    let refused = grace.apply(rename(&agent, "Assistant")).unwrap_err();
+    assert!(refused.to_string().contains("keeper"), "{refused}");
+    assert_eq!(
+        grace.state().unwrap(),
+        kept,
+        "another member changed nothing"
+    );
+    // Nor does an agent: the agent itself acting for its keeper, another agent of its
+    // keeper's, and an agent that acts for somebody else.
+    for (acting, person) in [(agent.as_str(), ADA), ("another", ADA), ("another", GRACE)] {
+        let mut by_agent = agents.fork().as_agent_for(acting, person);
+        let refused = by_agent.apply(rename(&agent, "Assistant")).unwrap_err();
+        assert!(
+            refused.to_string().contains("keeper"),
+            "{acting} for {person}: {refused}"
+        );
+        assert_eq!(
+            by_agent.state().unwrap(),
+            kept,
+            "{acting} for {person} changed nothing"
+        );
+    }
+
+    // Its keeper, themselves, does.
+    agents.apply(rename(&agent, "Claude Code")).unwrap();
+    assert_eq!(agents.state().unwrap().agents[0].name, "Claude Code");
+}
+
 #[test]
 fn an_agent_is_found_by_its_name_with_the_reference_that_opens_it() {
     let mut record = as_person(ADA);

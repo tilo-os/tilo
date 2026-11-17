@@ -266,6 +266,31 @@ test('a member whose device keys other tabs hold gets in as a new device, or is 
   assert.ok(!uninvited.asked.some(([, failed]) => failed === 'reconnect'), 'the runtime is not asked what follows');
 });
 
+test('a browser removed from its person’s devices is told so on every way in, and no other way is tried', async () => {
+  // What a session reaches the page as when its server refused its hello and said why.
+  const removed = () => Object.assign(new Error('This device was removed from your devices.'), {code: 'device-revoked'});
+  // With a member's account here: the session stops as the page waits for it.
+  const member = entries({readAccounts: async () => [{userPublicKey: 'ab'}],
+    connectMember: async () => ({whenReady: async () => { throw removed(); }})});
+  const asMember = rules(['accounts', 'member', 'entry']);
+  await assert.rejects(admit({scope: target, runtime: asMember.runtime, deps: member.deps}), {code: 'device-revoked'});
+  assert.ok(!asMember.asked.some(([name]) => name === 'wayInAfter'), 'the runtime is not asked what follows');
+  assert.deepEqual(member.calls, [], 'no entry is asked');
+  // Reconnecting: whether the session stops while connecting or as the page waits for it.
+  for (const reconnect of [async () => { throw removed(); }, async () => ({whenReady: async () => { throw removed(); }})]) {
+    const back = entries({workspaceAt: () => commons, reconnect});
+    const way = rules(['reconnect', 'entry']);
+    await assert.rejects(admit({scope: target, runtime: way.runtime, deps: back.deps}), {code: 'device-revoked'});
+    assert.ok(!way.asked.some(([name]) => name === 'wayInAfter'), 'the runtime is not asked what follows');
+    assert.deepEqual(back.calls, [], 'no entry is asked');
+  }
+  // Any other refusal of a member stays no access, whatever it says.
+  const refused = entries({readAccounts: async () => [{userPublicKey: 'ab'}],
+    connectMember: async () => ({whenReady: async () => { throw Object.assign(new Error('not admitted'), {code: 'unanswered'}); }})});
+  await assert.rejects(admit({scope: target, runtime: rules(['accounts', 'member', 'no-access']).runtime, deps: refused.deps}),
+    {name: 'AdmissionError', code: 'no-access'});
+});
+
 test('reconnecting says the page is connecting, so a host that does not answer is not blamed on this device', async () => {
   const progress = [];
   const back = entries({reconnect: async ({origin, workspace: wanted}) => ({origin, workspace: wanted})});

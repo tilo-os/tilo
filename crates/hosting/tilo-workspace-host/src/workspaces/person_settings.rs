@@ -19,6 +19,7 @@
 //! here, as the holder's own operations refuse one.
 
 mod sending;
+pub mod turn_mail;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

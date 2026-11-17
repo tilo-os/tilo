@@ -25,7 +25,7 @@ use ui::tilo_resource::{Id, Resource as _};
 
 const CHAT: &str = "so.tilo.chat";
 /// What the person types into the protected field. Nothing but the server's sign-in may hold it.
-const PASSWORD: &str = "only-the-mail-server-may-read-this";
+pub(super) const PASSWORD: &str = "only-the-mail-server-may-read-this";
 const IMAP: &str = "imap://imap.example.test:993";
 const SMTP: &str = "smtp://smtp.example.test:465";
 /// What the agent is told when its person is asked first.
@@ -33,7 +33,7 @@ const ASKED: &str = "Your person is asked in the conversation";
 
 /// Every log line the test's process writes, at every level.
 #[derive(Clone, Default)]
-struct Lines(Arc<Mutex<Vec<u8>>>);
+pub(super) struct Lines(pub(super) Arc<Mutex<Vec<u8>>>);
 
 impl std::io::Write for Lines {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -54,7 +54,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
     }
 }
 
-fn logged() -> Lines {
+pub(super) fn logged() -> Lines {
     let lines = Lines::default();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
@@ -67,7 +67,7 @@ fn logged() -> Lines {
 }
 
 /// Every file under `dir` whose bytes hold `needle`.
-fn files_holding(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
+pub(super) fn files_holding(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
     let mut holding = Vec::new();
     let mut waiting = vec![dir.to_path_buf()];
     while let Some(next) = waiting.pop() {
@@ -89,26 +89,26 @@ fn files_holding(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
 }
 
 /// A server with one person, their assistant on it, and their own model.
-struct Hosted {
+pub(super) struct Hosted {
     /// The server itself, kept running until the test ends.
     _server: Box<dyn std::any::Any>,
-    actions: tilo_agent_session::workspace_actions::WorkspaceActions,
-    workspaces: Workspaces,
-    workspace: String,
+    pub(super) actions: tilo_agent_session::workspace_actions::WorkspaceActions,
+    pub(super) workspaces: Workspaces,
+    pub(super) workspace: String,
     /// The person's own device: on only where the test says so.
-    page: Browser,
-    root: SigningKey,
+    pub(super) page: Browser,
+    pub(super) root: SigningKey,
     browser: crate::support::Device,
-    agents: HostAgents,
+    pub(super) agents: HostAgents,
     /// The person's model, scripted, and everything it was sent.
-    model: Arc<ScriptedProvider>,
+    pub(super) model: Arc<ScriptedProvider>,
     /// What the mail servers' stand-in was asked to sign in with.
     proved: Arc<Mutex<Vec<String>>>,
-    state: tempfile::TempDir,
+    pub(super) state: tempfile::TempDir,
 }
 
 impl Hosted {
-    async fn start() -> Self {
+    pub(super) async fn start() -> Self {
         let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let server_device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
         let browser = enrol(&root, "browser", DeviceCapabilities::member());
@@ -171,7 +171,7 @@ impl Hosted {
         }
     }
 
-    fn person(&self) -> String {
+    pub(super) fn person(&self) -> String {
         hex::encode(self.root.verifying_key().to_bytes())
     }
 
@@ -182,7 +182,7 @@ impl Hosted {
 
     /// The person writes `words` to their assistant, and the server answers the one turn that
     /// makes with the model's next `steps`: each tool call, then its closing words.
-    async fn turn(&self, words: &str, steps: Vec<Reply>) {
+    pub(super) async fn turn(&self, words: &str, steps: Vec<Reply>) {
         for step in steps {
             self.model.then(step);
         }
@@ -206,7 +206,7 @@ impl Hosted {
     }
 
     /// The questions of `kind` the conversation holds, oldest first.
-    async fn questions(&self, kind: &str) -> Vec<(Id, chat::chat::Message)> {
+    pub(super) async fn questions(&self, kind: &str) -> Vec<(Id, chat::chat::Message)> {
         let part = conversation_part(&self.workspaces, &self.workspace).await;
         let mut asked: Vec<_> = part
             .messages
@@ -226,7 +226,7 @@ impl Hosted {
     /// conversation's document as the person themselves at a device of theirs, the way their Chat
     /// window writes it. Nothing an agent may call answers a question, so this is no action of
     /// the server's service.
-    async fn answers(&self, message: &Id, answer: &str, detail: serde_json::Value) {
+    pub(super) async fn answers(&self, message: &Id, answer: &str, detail: serde_json::Value) {
         let saved = self
             .workspaces
             .resource_document(&self.workspace, CHAT, "")
@@ -267,7 +267,7 @@ impl Hosted {
     }
 
     /// One action of the person's own on the server, asked from their device over its link.
-    async fn on_device(
+    pub(super) async fn on_device(
         &mut self,
         (provider, resource, action): (&str, &str, &str),
         argument: serde_json::Value,
@@ -285,7 +285,7 @@ impl Hosted {
     }
 
     /// What the model was shown of its last tool call: the request that followed it.
-    fn last_tool_result(&self) -> String {
+    pub(super) fn last_tool_result(&self) -> String {
         let asked = self.model.asked();
         format!(
             "{:?}",
@@ -300,7 +300,7 @@ impl Hosted {
 }
 
 /// The model's step that calls `path` with `args` through the agent's tools.
-fn does(call: &str, path: &str, args: &serde_json::Value) -> Reply {
+pub(super) fn does(call: &str, path: &str, args: &serde_json::Value) -> Reply {
     Reply::tool_call(
         call,
         "tilo_do",
@@ -325,7 +325,9 @@ fn add_mail(call: &str, address: &str, reference: &str) -> Reply {
 
 /// The assistant asks for the password as a secret, and the person's device answers into their
 /// vault: the turn that follows is woken by their words and holds the reference. The reference.
-async fn the_password_goes_from_the_persons_device_to_their_vault(hosted: &mut Hosted) -> String {
+pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
+    hosted: &mut Hosted,
+) -> String {
     let conversation = hosted.conversation();
     hosted
         .turn(
@@ -391,7 +393,7 @@ async fn the_password_goes_from_the_persons_device_to_their_vault(hosted: &mut H
 
 /// The turn that holds the reference calls the use. Nobody watches, so the server asks the
 /// person and uses nothing. They answer "Always", and the server signs in and adds the account.
-async fn the_first_use_asks_and_always_signs_in(hosted: &Hosted, reference: &str) {
+pub(super) async fn the_first_use_asks_and_always_signs_in(hosted: &Hosted, reference: &str) {
     hosted
         .turn(
             "It is in my vault now.",

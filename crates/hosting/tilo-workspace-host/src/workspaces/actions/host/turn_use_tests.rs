@@ -38,7 +38,7 @@ const MAIL_USE: &str = "tilo.accounts/add-mail-with-item";
 
 /// The caller a turn's tools act as: `person`'s session in `workspace`,
 /// handed to `agent` on a turn.
-fn on_turn(person: &DeviceCert, workspace: &str, agent: &str) -> Caller {
+pub(super) fn on_turn(person: &DeviceCert, workspace: &str, agent: &str) -> Caller {
     Caller::authenticated(person.user_public_key, person.device_public_key)
         .in_workspace(workspace)
         .delegated_to(agent)
@@ -498,7 +498,7 @@ async fn an_answer_is_claimed_once_and_not_carried_out_again_after_the_server_st
 
 /// Callers that are not a turn of Ada's own agent for her: what each is,
 /// the caller, and whom the agent is said to be kept by.
-fn not_her_agents_turns(
+pub(super) fn not_her_agents_turns(
     ada: &DeviceCert,
     bo: &DeviceCert,
     workspace: &str,

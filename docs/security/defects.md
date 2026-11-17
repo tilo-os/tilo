@@ -883,6 +883,37 @@ write the governing device kept without having decided it yet (one waiting for a
 on) is above the cut, so everyone refuses it afterwards, and a device that merged it before the
 removal holds a change the others never take.
 
+## P2-3b — A removed device is told so at the handshake; every other refusal says nothing
+
+§3.4 of the design: a removed device is refused at the handshake, and told that it was removed.
+
+**As built.** Before this entry a server closed a refused hello with nothing said. The device read
+a server that was away and tried again, and a page that had not got in yet showed "Can't reach …"
+for as long as it stayed open. Now a server that refuses a hello for the removal alone answers it
+with that one reason, signed for that hello
+(`crates/hosting/tilo-server-protocol/src/auth.rs::HelloRefusal::said_of`, written by
+`say_refusal` in the server's own `handshake.rs`). The device checks it as it
+checks that server's acknowledgement and stops with `device-revoked`
+(`crates/hosting/tilo-server-session/src/client/handshake.rs::refusal`), and its page says "This
+browser was removed from your devices". A device built before reads the refusal as it did, and a
+server built before sends none, which reads as it did too. Held by
+`crates/session/client/tests/carriers.rs::a_removed_device_is_told_that_it_was_removed`
+(a real server, a page removed as Settings removes it, over each carrier),
+that handshake's own tests (`a_removed_device_is_told_so_before_its_hello_is_closed`,
+`a_hello_refused_for_anything_else_is_closed_with_nothing_said`,
+`a_removed_device_at_an_entry_is_told_only_once_it_proved_its_key`,
+`a_refusal_that_says_why_is_held_until_its_device_let_go_of_the_stream`), and
+`crates/hosting/tilo-server-protocol/src/auth.rs::tests::a_refusal_says_why_only_where_the_refusal_already_tells`.
+
+**Not built.** Every other refusal at the handshake is still closed with nothing said: a person
+the server no longer admits, and a certificate that expired or does not verify. Such a device
+reads a server that is away until it was refused three times in a row, and a page that has not got
+in yet says "Can't reach …" meanwhile.
+
+**Residual.** Outside a workspace's entry the reason is said to whoever shows the removed device's
+certificate where its person is admitted, before any proof of its key. The refusal alone already
+told them as much, since nothing else refuses that certificate there.
+
 ## P2-4 — Egress documentation describes a weaker mechanism than the code implements
 
 `docs/app-model/sandbox.md:162-172` describes DNS-layer filtering that direct-IP connections bypass.

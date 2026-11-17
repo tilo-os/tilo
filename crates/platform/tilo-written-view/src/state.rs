@@ -7,6 +7,17 @@ use tilo_actions::Actor;
 use tilolang_tilo::runtime::delegate::Invocation;
 use ui::written_view::{Suggestion, ViewState};
 
+/// What a view asked that waits for the person, as they are asked about it.
+pub(crate) struct Asked {
+    /// The app it would change, by the name people call it.
+    pub(crate) app: String,
+    /// What it would do, in the app's words.
+    pub(crate) action: String,
+    /// What the action is given, as it would be sent.
+    pub(crate) arguments: Vec<(String, String)>,
+    pub(crate) destructive: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct State {
     held: RefCell<Held>,
@@ -40,7 +51,7 @@ impl State {
     }
 
     /// The view asked for `invocation`, which the policy asks the person about first: it waits.
-    pub(crate) fn suggest(&self, app: String, action: String, by: Actor, invocation: Invocation) {
+    pub(crate) fn suggest(&self, asked: Asked, by: Actor, invocation: Invocation) {
         {
             let mut held = self.held.borrow_mut();
             held.last = held.last.wrapping_add(1);
@@ -48,8 +59,10 @@ impl State {
             held.waiting.push((
                 Suggestion {
                     id,
-                    app,
-                    action,
+                    app: asked.app,
+                    action: asked.action,
+                    arguments: asked.arguments,
+                    destructive: asked.destructive,
                     by,
                 },
                 invocation,
