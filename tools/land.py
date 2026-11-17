@@ -173,12 +173,18 @@ def lander_running(place: Place) -> bool:
 
 
 def start_lander(place: Place) -> None:
-    """Start a detached lander from a copy of this script, so a worktree removed later cannot pull it away."""
+    """Start a detached lander from a copy of the branch's own land.py, else of this script.
+
+    The branch's copy, in the lander's worktree, is the same for every submitter: worktrees
+    branched off at different times would otherwise each start their own version. A copy, so
+    a worktree removed later cannot pull it away.
+    """
     if lander_running(place):
         return
     program = place.dir / "lander.py"
     partial = place.dir / f"lander.{os.getpid()}.partial"
-    shutil.copyfile(__file__, partial)
+    branch_copy = place.worktree() / "tools" / "land.py"
+    shutil.copyfile(branch_copy if branch_copy.is_file() else __file__, partial)
     partial.replace(program)
     with place.log.open("a") as log:
         subprocess.Popen(
