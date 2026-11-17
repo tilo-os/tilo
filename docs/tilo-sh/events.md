@@ -10,7 +10,7 @@ happened in a workspace, from a cursor. An API server also posts the same events
 
 | Kind | What it says |
 | :--- | :--- |
-| `change` | A step in a record's history: its path, what it did (`sentence`), who (`by`), the group, and whether it has been undone |
+| `change` | A step in a record's history: `resources` names the app and the id it gives the changed item, `path` what was watched, `sentence` what it did, `by` who, the group, and whether it has been undone |
 | `invocation` | An invocation starting or finishing: `started`, `succeeded`, `failed` or `cancelled`, with its id, path, title and group |
 | `presence` | Who is in the workspace, and their agents, whenever that changes |
 

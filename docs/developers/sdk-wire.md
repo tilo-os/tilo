@@ -225,6 +225,7 @@ to one resource and what is under it.
 ```json
 {"events": [
   {"kind": "change", "path": "notes/Todo", "change": "c1a2…",
+   "resources": [{"path": "notes/Todo", "app": "so.tilo.notes"}],
    "sentence": "added \"Buy milk\"", "by": "Jane", "title": "Fill Jane's application",
    "group": "mcp:…", "time_ms": 1730000000000, "undone": false},
   {"kind": "invocation", "phase": "started", "invocation_id": "3f0c…",
@@ -238,9 +239,11 @@ to one resource and what is under it.
  "cursor": "…"}
 ```
 
-- **change** — a step in the watched resource's history: who made it (`by`, or the group's
-  title), what it did (`sentence`), and whether it has been taken back. A change under a
-  watched path is named by its own path.
+- **change** — a step in a resource's history. `resources` names what changed: its `app`, the
+  `item` inside it when the change names one, and the id the app gives it when the watch is of
+  the whole workspace (which names the app's short name in `path`, `notes` for
+  `so.tilo.notes`; a watch of one path names that path). `by` names who made it, or `actor`
+  when the change keeps one; `sentence` says what it did, and `undone` says it was taken back.
 - **invocation** — one of this session's invocations starting or finishing (`started`,
   `succeeded`, `failed`, `cancelled`). `title` is the group's title and `group` its id: the
   same group a set of calls is attributed to.
@@ -249,10 +252,10 @@ to one resource and what is under it.
   no presence rather than an empty workspace.
 
 An answer with no events still carries the cursor to ask again from. A caller that got its
-cursor from an earlier answer only ever sees each event once. A held watch reads the watched
-resource's history about twice a second and the host's invocations and roster on every look, so a
-change reaches a watching caller within a second of it landing. The stream is a long poll, not a
-push: one `tools/call` at a time, straight through the same POST path every other call takes.
+cursor from an earlier answer only ever sees each event once. A held watch listens for every
+source it reports on, so a change to a resource, an invocation of the session or a person joining
+answers it as that happens, without a re-read on a timer. The stream is a long poll, not a push:
+one `tools/call` at a time, straight through the same POST path every other call takes.
 
 ## Invocations
 

@@ -209,8 +209,11 @@ tilo_test_env::scenario! {
                 .find(|event| event["kind"] == "change")
                 .unwrap_or_else(|| panic!("the change is told: {watched}"));
             assert_eq!(change["change"], "c1a2");
-            assert_eq!(change["resources"][0]["app"], "so.tilo.notes");
-            assert_eq!(change["resources"][0]["record"], "notes.page:1");
+            assert_eq!(
+                change["resources"],
+                json!([{"path": "notes", "app": "so.tilo.notes", "record": "notes.page:1"}]),
+                "the change names what it changed: {change}"
+            );
         });
     }
 

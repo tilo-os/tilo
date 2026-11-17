@@ -71,7 +71,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_watch",
-            "What changed since cursor: a resource's changes (`path`), runs starting and ending, who is in the workspace. Held until something happens, at most wait_ms (default 25000); pass back the cursor it answers.",
+            "What changed since cursor: a resource's changes (`path`), invocations starting and ending, who is in the workspace. Held until something happens, at most wait_ms (default 25000); pass back the cursor it answers.",
             json!({"cursor":string,"path":string,"wait_ms":integer}),
             json!([]),
             json!({"readOnlyHint":true,"openWorldHint":false}),
