@@ -223,6 +223,21 @@ impl Session {
                 return title.to_owned();
             }
         }
+        // An action whose label asks for what completes it ("Show as…") is about the value it
+        // was given ("Show as…: so.tilo.shell:strips"), never the record it changed, whose title
+        // still reads what it was before.
+        if action.label.trim_end().ends_with('…')
+            && action.arguments.len() == 1
+            && let Some(given) = action
+                .arguments
+                .values()
+                .next()
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|given| !given.is_empty())
+        {
+            return given.to_owned();
+        }
         let catalogue = self.task_catalogue();
         // The resource it shows or acts on first, then any other the arguments name: a `place`
         // names the conversation it stands beside too, which is not what it acted on.
@@ -283,7 +298,13 @@ impl Session {
                 offer.descriptor.did.as_deref(),
                 &title,
             ),
-            None => crate::i18n::did(action, None, &title),
+            // A field the program assigned (`d.body = …`, which the API names `body =`).
+            None => match action.trim().strip_suffix('=').map(str::trim) {
+                Some(field) if !field.is_empty() => {
+                    crate::i18n::did(&crate::i18n::edited(field), None, &title)
+                }
+                _ => crate::i18n::did(action, None, &title),
+            },
         }
     }
 
@@ -311,12 +332,17 @@ impl Session {
                             .strip_prefix(&format!("tl:{app}:"))
                     })
                     .is_some_and(|record| !record.contains('/'));
-                let made = step
-                    .refs
-                    .iter()
-                    .find(|at| root && at.reference.id != row.resource.reference.id)
-                    .map(|at| at.reference.label.clone())
-                    .or_else(|| root.then(|| titled_in(&step.program)).flatten());
+                // The title the program gave it says what it made, whatever the record's label read
+                // when the answer was taken ("Note" for a note titled in the same call).
+                let made = root
+                    .then(|| titled_in(&step.program))
+                    .flatten()
+                    .or_else(|| {
+                        step.refs
+                            .iter()
+                            .find(|at| root && at.reference.id != row.resource.reference.id)
+                            .map(|at| at.reference.label.clone())
+                    });
                 let label = made.unwrap_or_else(|| row.resource.reference.label.clone());
                 self.change_line(&row.action, &row.resource.reference.id, &label)
             })

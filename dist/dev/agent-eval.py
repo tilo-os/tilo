@@ -118,7 +118,7 @@ def by_reference(answer: str) -> dict[str, str]:
 
 MUM = (
     'for t in find(tasks.Task).filter(t -> t.title.lower().contains("mum")) '
-    "{ print(t.title, t.due, t.at) }"
+    "{ print(t.title, t.due, t.at, t.remind) }"
 )
 
 
@@ -224,7 +224,12 @@ def asks(today: dt.date) -> list[Ask]:
     ]
 
 
-BARS = {"greeting": (1, 3.0), "simple": (3, 15.0), "any": (6, None)}
+# The most calls and seconds each kind of ask may take: one call for every ask, the person's bar
+# (a second only when a step of the first failed, `FAILED_STEP`), a greeting within 3 s.
+BARS = {"greeting": (1, 3.0), "simple": (1, 15.0), "any": (1, None)}
+
+# A step that did not do what it was sent to: the one reason a second call is in the bar.
+FAILED_STEP = re.compile(r"\[(refused|failed)\]$")
 
 ESCAPES = re.compile(r"(\x1b|\\x1b)\[[0-9;]*[A-Za-z]")
 
@@ -301,9 +306,9 @@ class Session:
             cmd = [
                 str(REPO / "dist/dev/shell-run.sh"),
                 "--size",
-                "2880x1800",
+                args.size,
                 "--scale",
-                "2",
+                args.scale,
                 "--model-record",
                 str(Path(args.model_record).resolve()),
                 "--profile",
@@ -658,6 +663,8 @@ def judge(ask: Ask, got: dict, data: str | None, path: str) -> list[str]:
     if ask.effect is not None and not (data and ask.effect(data)):
         fails.append("effect missing in data")
     most_calls, most_seconds = BARS[ask.kind]
+    if ask.kind != "greeting" and any(FAILED_STEP.search(step) for step in got["steps"]):
+        most_calls += 1
     if got["calls"] > most_calls:
         fails.append(f"{got['calls']} calls > {most_calls}")
     if most_seconds is not None and got["seconds"] > most_seconds:
@@ -704,6 +711,8 @@ def main() -> int:
     p.add_argument("--compare", default=None, help="another run's results dir, shown beside")
     p.add_argument("--canvas-check", action="store_true")
     p.add_argument("--keep", action="store_true")
+    p.add_argument("--size", default="2880x1800", help="the headless output's size")
+    p.add_argument("--scale", default="2", help="the headless output's scale")
     p.add_argument("--timeout", type=float, default=300)
     p.add_argument(
         "--rejudge",
@@ -795,6 +804,16 @@ def rejudge(args) -> int:
     return 0
 
 
+def beats(row: dict, other: dict) -> bool:
+    """Whether this run's answer to an ask beats the other path's: it passes, in no more calls,
+    and sooner, or the other failed it."""
+    if row["fails"]:
+        return False
+    if other["fails"]:
+        return True
+    return row["calls"] <= other["calls"] and row["seconds"] < other["seconds"]
+
+
 def write_summary(args, results: Path, rows: list[dict], canvas: dict | None) -> None:
     other = {}
     if args.compare:
@@ -804,8 +823,8 @@ def write_summary(args, results: Path, rows: list[dict], canvas: dict | None) ->
     head = "| ask | calls | s | pass | why |"
     rule = "|---|---|---|---|---|"
     if other:
-        head += " other calls | other s | other pass |"
-        rule += "---|---|---|"
+        head += " other calls | other s | other pass | beats other |"
+        rule += "---|---|---|---|"
     lines = [f"path: {args.path}" + (f"; other: {args.compare}" if other else ""), "", head, rule]
     for row in rows:
         line = (
@@ -816,8 +835,9 @@ def write_summary(args, results: Path, rows: list[dict], canvas: dict | None) ->
             o = other.get(row["name"])
             line += (
                 f" {o['calls']} | {o['seconds']} | {'yes' if not o['fails'] else 'no'} |"
+                f" {'yes' if beats(row, o) else 'no'} |"
                 if o
-                else " | | |"
+                else " | | | |"
             )
         lines.append(line)
     passed = sum(1 for row in rows if not row["fails"])

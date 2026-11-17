@@ -96,7 +96,11 @@ pub fn definition() -> ToolDefinition {
                         (`print(\"- {t.title}, due {t.due}\")` per item) and \
                         `\"reply\": \"{answer}\"`. Leave it out only when you must see the \
                         answer before you can act or reply."
-                }
+                },
+                // What a step says of the request beside it, on whichever tool the step is.
+                crate::tools::PARTS: crate::tools::parts_schema(),
+                crate::tools::PROGRESS: crate::tools::progress_schema(),
+                crate::tools::UNABLE: crate::tools::unable_schema()
             },
             "required": ["program"],
             "additionalProperties": false

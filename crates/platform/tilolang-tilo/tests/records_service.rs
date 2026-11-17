@@ -583,3 +583,23 @@ fn reopened_service(doc: &tilo_resource::Doc, store: &tilo_content::ContentStore
     service.settle();
     service
 }
+
+/// An action that sets what its record holds already changes nothing and is done, as any caller
+/// reads it: a program that moved a task to Friday and then set its reminder to the moment the
+/// move gave it failed on the second ("the document holds no writes of this actor to commit").
+#[test]
+fn an_action_that_writes_what_is_there_is_done() {
+    let (mut service, _) = tasks();
+    let made = task(&mut service, "Call mum");
+    for _ in 0..2 {
+        let started = service
+            .invoke(
+                made.as_str(),
+                "remind_at",
+                &args(json!({ "when": "2026-11-20T17:00:00Z" })),
+            )
+            .expect("setting the reminder it has is done, not refused");
+        assert!(matches!(started, Started::Done(_)), "{started:?}");
+        service.settle();
+    }
+}

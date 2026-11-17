@@ -195,15 +195,21 @@ impl TiloStore {
             inner.write_alone(chunk, part.edits.len(), author);
             let doc = inner.chunks.open_held(chunk);
             let before = doc.committed_heads();
-            tilo_actions::commit_written(
-                doc,
-                part,
-                encoded,
-                &author.actor_bytes(),
-                context,
-                Some(described),
-            )
-            .map(|_| then(doc, before))
+            if automerge::transaction::Transactable::pending_ops(doc) == 0 {
+                // Its writes set what the record held already (a reminder set to the moment it
+                // has): the action is done and changed nothing, so there is no change to record.
+                Ok(then(doc, before))
+            } else {
+                tilo_actions::commit_written(
+                    doc,
+                    part,
+                    encoded,
+                    &author.actor_bytes(),
+                    context,
+                    Some(described),
+                )
+                .map(|_| then(doc, before))
+            }
         };
         (out, self.catch_up(chunk))
     }

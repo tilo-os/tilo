@@ -45,7 +45,11 @@ d-v7cub7aw = Notes
 d-tmqqtkeb = Notes
 
 d-qymo5lg2 = New note
-    .doc = Starts a note at the top of the tree.
+    .doc = Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the caller knows them already.
+
+d-qymo5lg2-title = Title
+
+d-qymo5lg2-body = Body
 
 d-37dxigeq = New sub-note
     .doc = Starts a note inside `n`'s own, after the notes it already holds.
@@ -97,6 +101,12 @@ d-zvgl2tzt = Rename
     .doc = Renames a note.
 
 d-zvgl2tzt-title = Title
+
+d-6fwsh5ui = Add text
+    .doc = Writes `text` (Markdown) at the end of a note, under what it says already: a line, a list or a paragraph added to it.
+    .did = added to a note
+
+d-6fwsh5ui-text = Text
 
 d-gc34cbhl = File a note
     .doc = Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it.
