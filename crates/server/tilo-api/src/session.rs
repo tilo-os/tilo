@@ -622,13 +622,43 @@ impl Session {
         }
     }
 
-    /// The workspace tools, each with `workspace`; before a workspace served
-    /// them, the ones the account answers.
+    /// The workspace tools, each with the `workspace` it acts in: the ones a
+    /// workspace served, or, before one did, the same set the API and every
+    /// session serve, so an account key and a one-workspace key see one
+    /// vocabulary.
     fn account_tools(&self) -> Vec<Value> {
-        self.known_tools()
-            .map_or_else(account_tool_definitions, |known| {
-                known.iter().map(with_workspace_argument).collect()
-            })
+        self.known_tools().map_or_else(shared_tools, |known| {
+            known.iter().map(with_workspace_argument).collect()
+        })
+    }
+
+    /// The id of the workspace `named`: an id as it is, or the account's
+    /// workspace of that name, so an agent may say `sdkfix` as the CLI and
+    /// SDKs do.
+    async fn workspace_id(&self, named: &str) -> Option<String> {
+        if uuid::Uuid::parse_str(named).is_ok() {
+            return Some(named.to_owned());
+        }
+        let listed = self
+            .account(
+                &json!("resolve"),
+                "tilo_ls",
+                &json!({"path": "account/workspaces"}),
+                true,
+            )
+            .await;
+        let rows = listed
+            .messages
+            .first()?
+            .pointer("/result/structuredContent/rows")?
+            .as_array()?;
+        let wanted = named.trim().to_lowercase().replace(' ', "-");
+        rows.iter().find_map(|row| {
+            let label = row.get("label").and_then(Value::as_str)?;
+            (label.trim().to_lowercase().replace(' ', "-") == wanted)
+                .then(|| row.get("name").and_then(Value::as_str).map(str::to_owned))
+                .flatten()
+        })
     }
 
     fn known_tools(&self) -> Option<Vec<Value>> {
@@ -669,11 +699,15 @@ impl Session {
             .pointer("/params/arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
-        let Some(workspace) = arguments
+        let named = arguments
             .get(WORKSPACE_ARGUMENT)
             .and_then(Value::as_str)
-            .map(str::to_owned)
-        else {
+            .map(str::to_owned);
+        let resolved = match named {
+            Some(named) => Some(self.workspace_id(&named).await.unwrap_or(named)),
+            None => None,
+        };
+        let Some(workspace) = resolved else {
             if crate::account::addresses(&name, &arguments) {
                 let structured = request
                     .pointer("/params/_meta/so.tilo.mcp/structured")
@@ -684,8 +718,8 @@ impl Session {
             return Reply::one(error(
                 id,
                 -32602,
-                "name the workspace this acts in: `workspace`, an id as account/workspaces#list \
-                 answers it; only paths under `account` need none",
+                "name the workspace this acts in: `workspace`, its id or its name as \
+                 account/workspaces#list answers them; only paths under `account` need none",
             ));
         };
         if let Some(arguments) = request
@@ -948,35 +982,16 @@ fn with_hosted_instructions(mut answer: Value) -> Value {
     answer
 }
 
-/// The tools an account session offers before a workspace served the
-/// workspace tools: the ones the account itself answers.
-#[must_use]
-pub fn account_tool_definitions() -> Vec<Value> {
-    let path = json!({"type":"string","description":"A path under `account`, like account/workspaces#create."});
-    vec![
-        json!({
-            "name": "tilo_ls",
-            "description": "List what is under a path: `account` lists the account's actions.",
-            "inputSchema": {"type":"object","properties":{"path":path},"additionalProperties":false},
-            "annotations": {"readOnlyHint": true},
-        }),
-        json!({
-            "name": "tilo_read",
-            "description": "Read `account/workspaces`, `account/keys` or `account/usage` (VM time and storage per workspace).",
-            "inputSchema": {"type":"object","properties":{"path":path},"required":["path"],"additionalProperties":false},
-            "annotations": {"readOnlyHint": true},
-        }),
-        json!({
-            "name": "tilo_do",
-            "description": "Run an account action: `{path: \"account/workspaces#create\", args: {name: \"Applicant: Jane Doe\"}}`. Answers `ok` with the result, `failed: why`, or `pending <id>` for tilo_status.",
-            "inputSchema": {"type":"object","properties":{"path":path,"args":{"type":"object"}},"required":["path"],"additionalProperties":false},
-        }),
-        json!({
-            "name": "tilo_status",
-            "description": "How a pending invocation went.",
-            "inputSchema": {"type":"object","properties":{"invocation_id":{"type":"string"}},"required":["invocation_id"],"additionalProperties":false},
-        }),
-    ]
+/// The tools every session serves, each with the `workspace` an account
+/// session's call names: what the API and every workspace session answer,
+/// so a key to all the person's workspaces is offered the same vocabulary as
+/// a key for one.
+fn shared_tools() -> Vec<Value> {
+    tilo_mcp::tools_json()
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(|tools| tools.iter().map(with_workspace_argument).collect())
+        .unwrap_or_default()
 }
 
 /// `tool` with the `workspace` argument an account session adds: required
@@ -992,7 +1007,7 @@ fn with_workspace_argument(tool: &Value) -> Value {
     if let Some(properties) = properties.as_object_mut() {
         properties.insert(
             WORKSPACE_ARGUMENT.into(),
-            json!({"type":"string","description":"The workspace this acts in: its id, as account/workspaces#list answers it. Omit it for paths under `account`."}),
+            json!({"type":"string","description":"The workspace this acts in: its id, as account/workspaces#list answers it, or its name. Omit it for paths under `account`."}),
         );
     }
     tool

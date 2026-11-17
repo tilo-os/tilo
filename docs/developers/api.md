@@ -25,7 +25,9 @@ Three things serve it:
   this way.
 
 MCP is the same calls for agents (`/mcp` on the API server, `tilo mcp` on a computer): its tools
-answer the bodies below as `structuredContent` (see [MCP's typed answers](sdk-wire.md)).
+answer the bodies below as `structuredContent` (see [MCP's typed answers](sdk-wire.md)). One tool
+set serves every key: a key for all the person's workspaces names the workspace each call acts in
+(`workspace`, an id or its name), and a path under `account` needs none.
 
 The OpenAPI 3.1 description is generated from the same catalogue and types the calls use:
 [`docs/api/openapi.json`](../api/openapi.json) (`tilo-api openapi --check` fails when it drifts).
