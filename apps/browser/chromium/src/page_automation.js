@@ -1509,6 +1509,182 @@ globalThis.__tiloPage ||= (() => {
       outline: hits.map(hit => `${hit.line}: ${hit.text}`).join('\n'), data: {matches: hits, total, frames: shownFrames()}};
   }
 
+  // A table as its rows: what a reader of a price list came for, and what the
+  // outline prints a cell to a line. A row is read as the cells a person sees
+  // across it: a cell merged over several columns or rows stands in every
+  // place it covers, so each row is as long as the header and a column means
+  // the same in all of them. A header of several rows names a column by all
+  // of them. A long table is read a part at a time, on from the row a read
+  // that stopped short names. What a cell says is the page's own words.
+  const MAX_TABLE_ROWS = 200, MAX_TABLE_CHARS = 50000, MAX_TABLE_COLUMNS = 60, MAX_TABLE_CELL = 400;
+  const MAX_TABLES = 30, MAX_TABLE_SCAN = 20000, MAX_TABLE_SPAN = 1000, MAX_HEADER_ROWS = 4, MAX_TABLES_SAID = 8;
+  const TABLE_ROLES = new Set(['table', 'grid', 'treegrid']);
+  const CELL_ROLES = new Set(['cell', 'gridcell', 'columnheader', 'rowheader']);
+  const TABLES = 'table,[role="table"],[role="grid"],[role="treegrid"]';
+  const saidRole = element => (element.getAttribute('role') || '').trim().split(/\s+/)[0].toLowerCase();
+  // A table by its element or by the role it says. One that says it only
+  // lays the page out is none.
+  const isTable = element => saidRole(element) ? TABLE_ROLES.has(saidRole(element)) : element.localName === 'table';
+  function tableOf(element) {
+    for (let at = element; at && at.nodeType === 1; at = at.parentElement) if (isTable(at)) return at;
+    return null;
+  }
+  function tableRows(table) {
+    if (table.localName === 'table' && table.rows) return [...table.rows];
+    return [...table.querySelectorAll('[role="row"]')].filter(row => tableOf(row.parentElement) === table);
+  }
+  function rowCells(row) {
+    if (row.localName === 'tr' && row.cells) return [...row.cells];
+    return [...row.children].filter(cell => CELL_ROLES.has(saidRole(cell)));
+  }
+  const headsColumn = cell => cell.localName === 'th' || saidRole(cell) === 'columnheader';
+  const covers = (said, aria, cell) =>
+    Math.max(1, Math.min(MAX_TABLE_SPAN, Math.floor(Number(said) || Number(cell.getAttribute(aria)) || 1)));
+  // A cell that says it goes to the end of its part of the table covers the
+  // rows left in that part.
+  function rowsCovered(cell, row) {
+    const part = row.parentElement;
+    if (cell.rowSpan === 0 && part && part.rows)
+      return Math.max(1, Math.min(MAX_TABLE_SPAN, part.rows.length - row.sectionRowIndex));
+    return covers(cell.rowSpan, 'aria-rowspan', cell);
+  }
+  // What a cell shows: its words, or, where it shows a mark instead of words,
+  // what the mark is named. What a field in it holds is not a cell's words.
+  function cellText(cell) {
+    const text = clean(shownText(cell, true, MAX_TABLE_CELL * 2), MAX_TABLE_CELL);
+    if (text) return text;
+    return clean([...cell.querySelectorAll('img[alt],[aria-label],svg title')].slice(0, 8)
+      .map(part => part.getAttribute('alt') || part.getAttribute('aria-label') || part.textContent).join(' '), MAX_TABLE_CELL) ||
+      clean(cell.getAttribute('aria-label'), MAX_TABLE_CELL);
+  }
+  // One table from row `from`, as far as `budget` and a read's rows carry.
+  function readTable(table, from, budget) {
+    let rows = tableRows(table).filter(row => laidOut(row));
+    const beyond = rows.length > MAX_TABLE_SCAN;
+    if (beyond) rows = rows.slice(0, MAX_TABLE_SCAN);
+    const texts = new Map(), carried = [];
+    const textOf = cell => {
+      let text = texts.get(cell);
+      if (text === undefined) texts.set(cell, text = cellText(cell));
+      return text;
+    };
+    let width = 0, merged = 0;
+    // One row as the places across it. A row before the part that is read
+    // only moves on the cells that run down through it.
+    const place = (row, wanted) => {
+      const out = [];
+      let column = 0;
+      const down = () => {
+        for (; column < MAX_TABLE_COLUMNS && carried[column] && carried[column].left > 0; column++) {
+          if (wanted) out[column] = textOf(carried[column].cell);
+          carried[column].left--;
+        }
+      };
+      for (const cell of rowCells(row)) {
+        down();
+        const across = covers(cell.colSpan, 'aria-colspan', cell), deep = rowsCovered(cell, row);
+        if (across > 1 || deep > 1) merged++;
+        for (let i = 0; i < across && column < MAX_TABLE_COLUMNS; i++, column++) {
+          if (wanted) out[column] = textOf(cell);
+          carried[column] = deep > 1 ? {cell, left: deep - 1} : null;
+        }
+      }
+      width = Math.max(width, column);
+      for (; column < carried.length; column++) {
+        const held = carried[column];
+        if (!held || held.left <= 0) continue;
+        if (wanted) out[column] = textOf(held.cell);
+        held.left--;
+        width = Math.max(width, column + 1);
+      }
+      return out;
+    };
+    // The rows that name the columns: a table's head, or the rows at its top
+    // whose every cell is a header.
+    let head = 0;
+    while (head < rows.length && head < MAX_HEADER_ROWS) {
+      const cells = rowCells(rows[head]), part = rows[head].parentElement;
+      if (!cells.length || !((part && part.localName === 'thead') || cells.every(headsColumn))) break;
+      head++;
+    }
+    const header = [];
+    for (let i = 0; i < head; i++) header.push(place(rows[i], true));
+    const total = rows.length - head, first = Math.max(1, Math.floor(from) || 1);
+    if (first > 1 && first > total)
+      throw failure('invalid_request', `The table has ${total} rows; there is no row ${first} to read from`);
+    let at = head, chars = 0;
+    for (; at < head + first - 1; at++) place(rows[at], false);
+    const read = [];
+    for (; at < rows.length && read.length < MAX_TABLE_ROWS && chars < budget.chars; at++) {
+      const row = place(rows[at], true);
+      for (let column = 0; column < row.length; column++) chars += (row[column] || '').length + 3;
+      read.push(row);
+    }
+    budget.chars = Math.max(0, budget.chars - chars);
+    const columns = [];
+    for (let column = 0; head && column < width; column++) {
+      const said = [];
+      for (const row of header) if (row[column] && said[said.length - 1] !== row[column]) said.push(row[column]);
+      columns.push(said.join(' / '));
+    }
+    // The rows come last, so a reader that sees only the start of a long
+    // answer still has the columns and where the read stands.
+    const out = {element: refOf(table)};
+    const label = name(table, 'table');
+    if (label) out.name = label;
+    out.columns = columns;
+    out.from = first;
+    out.total_rows = total;
+    if (at < rows.length) out.next = at - head + 1;
+    if (beyond) out.more_rows = true;
+    if (merged) out.merged = merged;
+    out.rows = read.map(row => Array.from({length: width}, (_, column) => row[column] || ''));
+    return out;
+  }
+  function tableSaid(read) {
+    const label = read.name ? ` ${quote(read.name)}` : '';
+    const part = !read.total_rows ? 'no rows'
+      : !read.rows.length ? `${read.total_rows} rows, none of them in this read`
+      : read.rows.length === read.total_rows ? `${read.total_rows} ${read.total_rows === 1 ? 'row' : 'rows'}`
+      : `rows ${read.from} to ${read.from + read.rows.length - 1} of ${read.more_rows ? 'more than ' : ''}${read.total_rows}`;
+    return `${read.element}${label}: ${part}${read.next ? `, read on from row ${read.next}` : ''}`;
+  }
+  // The table an element is or sits in, or every table the document shows.
+  function tables(ref, from) {
+    const where = frameId() ? ` in frame ${frameId()}` : '';
+    const budget = {chars: MAX_TABLE_CHARS};
+    if (ref) {
+      const element = resolve(ref), table = tableOf(element);
+      if (!table)
+        throw failure('invalid_request', `${ref} (${summary(element)}) is not a table and sits in none; ` +
+          'read the tables without an element to see each with its ref');
+      const read = readTable(table, from, budget);
+      return {ok: true, message: `Read table ${tableSaid(read)}${read.next ? ' with element and from' : ''}${where}`,
+        data: {tables: [read]}};
+    }
+    if (typeof from === 'number')
+      throw failure('invalid_request', 'Reading on from a row needs the table the row is in: name it with element');
+    const found = [];
+    let holders = 0, more = false;
+    for (const table of document.querySelectorAll(TABLES)) {
+      if (!isTable(table) || !laidOut(table)) continue;
+      // A table that holds tables lays them out: its cells are theirs.
+      if ([...table.querySelectorAll(TABLES)].some(isTable)) { holders++; continue; }
+      if (found.length >= MAX_TABLES) { more = true; break; }
+      found.push(readTable(table, 1, budget));
+    }
+    const left = holders ? `; ${holders} that only hold other tables are left out, and each is read by naming it with element` : '';
+    if (!found.length)
+      return {ok: true, message: `The page${where} shows no table${left}` + (framesNote() ? '.' + framesNote() : ''),
+        data: {tables: [], frames: shownFrames()}};
+    const said = found.slice(0, MAX_TABLES_SAID).map(tableSaid).join('; ') +
+      (found.length > MAX_TABLES_SAID ? `; and ${found.length - MAX_TABLES_SAID} more in the answer` : '');
+    return {ok: true, message: `Read ${found.length} ${found.length === 1 ? 'table' : 'tables'}${where}: ${said}` +
+      (found.some(read => read.next) ? '; a table is read on by naming it with element and the row with from' : '') +
+      (more ? `; the page shows more tables than the ${MAX_TABLES} a read lists` : '') + left,
+      data: {tables: found, frames: shownFrames()}};
+  }
+
   // What the page shows that an agent can act on, as the outline prints it:
   // the same role words, the same names, the same order, so a caller who read
   // a line names the element back by what it says. The walk keeps the places
@@ -1579,11 +1755,11 @@ globalThis.__tiloPage ||= (() => {
   // The words an element shows, gathered along the flat tree: what its own
   // children say nothing of when the words are its shadow tree's or a slot's.
   const MAX_SHOWN_TEXT_NODES = 2000;
-  function shownText(element, fieldless) {
+  function shownText(element, fieldless, most = MAX_NAME * 2) {
     let text = '', visited = 0;
     const gather = (parent, visible, folded) => {
       for (const child of flatChildren(parent)) {
-        if (text.length > MAX_NAME * 2 || ++visited > MAX_SHOWN_TEXT_NODES) return;
+        if (text.length > most || ++visited > MAX_SHOWN_TEXT_NODES) return;
         if (child.nodeType === 3) { if (visible && !folded) text += child.data; continue; }
         if (child.nodeType !== 1 || SKIP.has(child.localName) || child.getAttribute('aria-hidden') === 'true' ||
             (fieldless && FIELD_TAGS.has(child.localName)) || !laidOut(child, folded)) continue;
@@ -3662,6 +3838,7 @@ globalThis.__tiloPage ||= (() => {
           case 'changes': return changes();
           case 'fields': return fields();
           case 'forms': return forms();
+          case 'table': return tables(command.element, command.from);
           case 'search': return search(command.text);
           case 'fill_form': arm('script'); return fillForm(command.form, command.answers, command.submit, command.cross_origin);
           // A turn of the wheel: where it turns, and what is left of the

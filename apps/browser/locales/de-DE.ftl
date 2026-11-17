@@ -639,6 +639,7 @@ browser-effect-show-personal-bookmark-folder = Lesezeichenordner öffnen
 browser-effect-read-page-record = Wer was auf der Seite getan hat
 browser-effect-read-page-fields = Felder der Seite und wer sie ausgefüllt hat
 browser-effect-read-page-forms = Formulare der Seite und was sie fragen
+browser-effect-read-page-table = Tabellen der Seite als Zeilen
 browser-effect-find-page-text = Wörter auf der Seite finden
 browser-effect-fill-page-form = Formular der Seite ausfüllen
 browser-effect-answer-form = Ein Formular der Seite ausfüllen

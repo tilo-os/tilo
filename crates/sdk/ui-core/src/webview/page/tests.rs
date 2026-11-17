@@ -1206,6 +1206,60 @@ tilo_test_env::scenario! {
             assert_eq!(encode_request(8, None, &framed)["frame"], "1");
             assert_eq!(framed.main_frame(), forms);
         }
+        // phase: a_table_is_read_as_rows_and_read_on_from_a_row
+        {
+            let tables = PageRequest::Table {
+                element: None,
+                from: None,
+                frame: None,
+            };
+            assert!(tables.valid() && tables.only_observes());
+            assert_eq!(tables.action(), "table");
+            assert_eq!(tables.element(), None);
+            assert_eq!(tables.described(), "Read the page's tables");
+            assert_eq!(
+                encode_request(9, None, &tables),
+                serde_json::json!({"op":"page","request_id":9,"action":"table"})
+            );
+            let on = PageRequest::Table {
+                element: Some("d1e7".into()),
+                from: Some(201),
+                frame: FrameId::parse("2"),
+            };
+            assert!(on.valid() && on.only_observes());
+            assert_eq!(on.element(), Some("d1e7"));
+            assert_eq!(on.described(), "Read table d1e7");
+            assert_eq!(
+                encode_request(10, PageActor::listed("agent:ada").as_ref(), &on),
+                serde_json::json!({"op":"page","request_id":10,"action":"table",
+                    "element":"d1e7","from":201,"frame":"2","actor":"agent:ada"})
+            );
+            assert_eq!(
+                on.main_frame(),
+                PageRequest::Table {
+                    element: Some("d1e7".into()),
+                    from: Some(201),
+                    frame: None,
+                }
+            );
+            // A row is named from 1 within the bound a line is, and a table
+            // by a ref a read printed.
+            for (element, from) in [
+                (None, Some(0)),
+                (None, Some(MAX_OUTLINE_FROM + 1)),
+                (Some("the first table"), None),
+            ] {
+                assert!(
+                    !PageRequest::Table {
+                        element: element.map(str::to_owned),
+                        from,
+                        frame: None,
+                    }
+                    .valid(),
+                    "{element:?} {from:?}"
+                );
+            }
+        }
         // phase: a_form_is_answered_by_name_and_sent_one_way
         {
             let given = serde_json::json!({

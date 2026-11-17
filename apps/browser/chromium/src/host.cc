@@ -2938,11 +2938,11 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
        action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" &&
        action!="reader" && action!="pointer" && action!="hover" && action!="drag" && action!="path" &&
        action!="scroll" && action!="pointer_rest" && action!="capture" && action!="find" &&
-       action!="log" && action!="fields" && action!="forms" && action!="fill_form" && action!="search")return false;
+       action!="log" && action!="fields" && action!="forms" && action!="fill_form" && action!="search" && action!="table")return false;
     const bool elementless=action=="find" || action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
       action=="console" || action=="network" || action=="reader" || action=="pointer" || action=="hover" ||
       action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest" || action=="capture" ||
-      action=="log" || action=="fields" || action=="forms" || action=="fill_form" || action=="search";
+      action=="log" || action=="fields" || action=="forms" || action=="fill_form" || action=="search" || action=="table";
     if(action=="pointer") {
       if(!type("steps",VTYPE_LIST) || !type("button",VTYPE_STRING))return false;
       const auto button=d->GetString("button").ToString();
@@ -3002,8 +3002,9 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
        (!type("max_width",VTYPE_INT) || d->GetInt("max_width")<1 || d->GetInt("max_width")>CAPTURE_MAX_WIDTH))return false;
     if(action=="fill" && (!type("text",VTYPE_STRING) || d->GetString("text").length()>65536))return false;
     // A read of the outline may read on from a line an earlier read or a
-    // search named; a search says the words it looks for.
-    if(d->HasKey("from") && (action!="outline" || !type("from",VTYPE_INT) || d->GetInt("from")<1 || d->GetInt("from")>1000000))return false;
+    // search named, and a read of a table from a row an earlier read named; a
+    // search says the words it looks for.
+    if(d->HasKey("from") && ((action!="outline" && action!="table") || !type("from",VTYPE_INT) || d->GetInt("from")<1 || d->GetInt("from")>1000000))return false;
     if(action=="search" && (!type("text",VTYPE_STRING) || d->GetString("text").empty() || d->GetString("text").length()>200))return false;
     // A find or a search may be asked to look in the frames the page shows.
     if(d->HasKey("frames") && (!type("frames",VTYPE_BOOL) || (action!="find" && action!="search")))return false;

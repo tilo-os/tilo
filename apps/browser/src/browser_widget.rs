@@ -5358,6 +5358,14 @@ impl BrowserWidget {
             (E::ReadPageFields { frame: None }, &["frame"][..]),
             (E::ReadPageForms { frame: None }, &["frame"][..]),
             (
+                E::ReadPageTable {
+                    element: None,
+                    from: None,
+                    frame: None,
+                },
+                &["element", "from", "frame"][..],
+            ),
+            (
                 E::CapturePage {
                     element: None,
                     max_width: None,

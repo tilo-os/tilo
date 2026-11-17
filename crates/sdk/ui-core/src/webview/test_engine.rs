@@ -420,6 +420,8 @@ impl TestEngine {
                 // A test page holds no words to find and asks nothing.
                 PageRequest::Search { .. } => Some(serde_json::json!({"matches": [], "total": 0})),
                 PageRequest::Forms { .. } => Some(serde_json::json!({"forms": []})),
+                // And it shows no table.
+                PageRequest::Table { .. } => Some(serde_json::json!({"tables": []})),
                 PageRequest::FillForm { form, .. } => Some(serde_json::json!({
                     "form": form, "signature": "", "results": [], "set": [],
                     "submitted": false, "now_asks": [], "unanswered": [],

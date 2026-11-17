@@ -639,6 +639,7 @@ browser-effect-show-personal-bookmark-folder = Open bookmark folder
 browser-effect-read-page-record = Who did what on the page
 browser-effect-read-page-fields = Page fields and who set them
 browser-effect-read-page-forms = Page forms and what they ask
+browser-effect-read-page-table = Page tables as rows
 browser-effect-find-page-text = Find words on the page
 browser-effect-fill-page-form = Answer page form
 browser-effect-answer-form = Answer a form of the page
