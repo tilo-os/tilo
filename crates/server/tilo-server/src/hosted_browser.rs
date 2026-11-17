@@ -800,6 +800,16 @@ impl HostedBrowsers {
                 Err(error) => return answered_with(message, error),
             }
         }
+        // A page action handed to the window without this host's answer is one
+        // the window holds for the person: what the server says here is why it
+        // could not answer for them, which a key that may operate web pages is
+        // answered for.
+        if operated.is_none()
+            && request.confirmation.is_none()
+            && OPERATING_ACTIONS.contains(&request.target.address.action.as_str())
+        {
+            note_unanswered_handover(workspace_id, request, certificate);
+        }
         let request = operated.as_ref().unwrap_or(request);
         match self.meter.admit(&self.account) {
             Ok(()) => {
@@ -1010,6 +1020,12 @@ impl HostedBrowsers {
             until_ns: tilo_clock::unix_now_ns().saturating_add(answer_wait_ns(self.answer_wait)),
         };
         let question = asked.question(caller);
+        tracing::info!(
+            workspace = %workspace_id,
+            action = %request.target.address.action,
+            person = %hex::encode(person),
+            "asking the person about a page action"
+        );
         let invocation = request.invocation;
         let mut run = request.clone();
         let handed = Arc::clone(&self.handed);
@@ -1735,6 +1751,31 @@ pub fn held_of(argument: &tilo_actions::remote::InvokeArgument) -> Option<u32> {
     }
 }
 
+/// What the server says of a page action handed to the window with nobody's
+/// answer: whether the caller's certificate came with it, and whether that
+/// certificate is an agent's that may operate web pages, which is what would
+/// have had this host answer for the person instead of asking them.
+fn note_unanswered_handover(
+    workspace_id: WorkspaceId,
+    request: &InvokeRequest,
+    certificate: Option<&DeviceCert>,
+) {
+    let (agent, browser_pages) = certificate.map_or((false, false), |certificate| {
+        (
+            certificate.capabilities.agent.is_some(),
+            certificate.capabilities.browser_pages,
+        )
+    });
+    tracing::info!(
+        workspace = %workspace_id,
+        action = %request.target.address.action,
+        certificate = certificate.is_some(),
+        agent,
+        browser_pages,
+        "a page action is handed to the window with nobody's answer, so its person is asked"
+    );
+}
+
 /// Whether `certificate` is a key its person let operate web pages in
 /// Browser, asking `request`, which is one of the actions that lets it take
 /// without asking them ([`OPERATING_ACTIONS`]). The key reaches only the
@@ -1816,9 +1857,17 @@ impl Asked {
                     })
             }
             Ok(ConfirmationAnswer::Deny) => Err(ActionCallError::NotPermitted),
-            Err(_) => Err(ActionCallError::Unavailable {
-                reason: UNANSWERED.to_owned(),
-            }),
+            Err(error) => {
+                tracing::warn!(
+                    person = %hex::encode(self.person),
+                    action = %self.request.target.address.action,
+                    %error,
+                    "the person was asked about a page action and no answer came"
+                );
+                Err(ActionCallError::Unavailable {
+                    reason: UNANSWERED.to_owned(),
+                })
+            }
         }
     }
 }
