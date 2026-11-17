@@ -15,9 +15,9 @@ fields = [
   { path = "channels.*.topic", type = "text", readonly = true },
   { path = "channels.*.kind", type = { named = "ChannelKind" }, readonly = true },
   { path = "channels.*.archived", type = "bool", readonly = true },
-  { path = "channels.*.members", type = { list = "text" }, readonly = true },
+  { path = "channels.*.members", type = { list = "actor" }, readonly = true },
   { path = "people", type = { collection = { named = "Person" } }, stored = "keyed" },
-  { path = "people.*.id", type = "text", readonly = true },
+  { path = "people.*.id", type = "actor", readonly = true },
   { path = "people.*.name", type = "text", label = true },
   { path = "people.*.initials", type = "text" },
   { path = "people.*.color", type = "int" },
@@ -51,10 +51,10 @@ fields = [
   { path = "feedback.*.submission.feedback.recording.to_ms", type = "int" },
   { path = "feedback.*.submission.feedback.recording.steps", type = "int" },
   { path = "feedback.*.submission.feedback.recording.bytes", type = "int" },
-  { path = "feedback.*.author", type = "text", readonly = true },
+  { path = "feedback.*.author", type = "actor", readonly = true },
   { path = "feedback.*.ts", type = "int", readonly = true },
   { path = "feedback.*.triage", type = { collection = { named = "Triage" } }, readonly = true, stored = "collection" },
-  { path = "feedback.*.triage.*.author", type = "text", readonly = true },
+  { path = "feedback.*.triage.*.author", type = "actor", readonly = true },
   { path = "feedback.*.triage.*.ts", type = "int", readonly = true },
   { path = "feedback.*.triage.*.update", type = { option = { named = "TriageUpdate" } }, readonly = true },
   { path = "feedback.*.reactions", type = "reactions", readonly = true },
@@ -62,7 +62,7 @@ fields = [
   { path = "moderation.reports", type = { collection = { named = "Report" } }, stored = "keyed" },
   { path = "moderation.reports.*.id", type = "text", readonly = true },
   { path = "moderation.reports.*.reporter", type = "actor" },
-  { path = "moderation.reports.*.person", type = "text" },
+  { path = "moderation.reports.*.person", type = "actor" },
   { path = "moderation.reports.*.app", type = { option = "text" } },
   { path = "moderation.reports.*.record", type = { option = "text" } },
   { path = "moderation.reports.*.item", type = { option = "text" } },
@@ -71,7 +71,7 @@ fields = [
   { path = "moderation.reports.*.decision", type = { option = "text" } },
   { path = "moderation.decisions", type = { collection = { named = "Decision" } }, stored = "keyed" },
   { path = "moderation.decisions.*.id", type = "text", readonly = true },
-  { path = "moderation.decisions.*.person", type = "text" },
+  { path = "moderation.decisions.*.person", type = "actor" },
   { path = "moderation.decisions.*.reports", type = { list = "text" } },
   { path = "moderation.decisions.*.outcome", type = { named = "Outcome2" } },
   { path = "moderation.decisions.*.until_ms", type = { option = "int" } },
@@ -251,7 +251,7 @@ field = "moderation"
 kind = "undoable"
 params = [
   { name = "id", type = "text", required = true, schema = { type = "string" } },
-  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "person", required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } },
   { name = "reports", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
   { name = "ruling", type = { named = "Ruling" }, required = true, schema = { type = "object", additionalProperties = false, properties = { model = { type = "string" }, outcome = { type = "string", enum = ["no-action", "restrict", "ban"] }, reasoning = { type = "string" }, reverted = { type = "array", items = { type = "object", additionalProperties = false, properties = { app = { type = "string" }, changes = { type = "integer", maximum = 4294967295, minimum = 0 }, record = { type = "string" }, run = { type = "string" } }, required = ["app", "record", "run", "changes"] } }, until_ms = { type = ["integer", "null"] } }, required = ["outcome", "reasoning"] } },
 ]
@@ -346,7 +346,7 @@ fields = [
   { name = "topic", type = "text" },
   { name = "kind", type = { named = "ChannelKind" } },
   { name = "archived", type = "bool" },
-  { name = "members", type = { list = "text" } },
+  { name = "members", type = { list = "actor" } },
 ]
 
 [[resources.types]]
@@ -362,7 +362,7 @@ fields = [
 name = "Decision"
 fields = [
   { name = "id", type = "text" },
-  { name = "person", type = "text" },
+  { name = "person", type = "actor" },
   { name = "reports", type = { list = "text" } },
   { name = "outcome", type = { named = "Outcome2" } },
   { name = "until_ms", type = { option = "int" } },
@@ -388,7 +388,7 @@ fields = [
 name = "FeedbackReport"
 fields = [
   { name = "submission", type = { option = { named = "Submission" } } },
-  { name = "author", type = "text" },
+  { name = "author", type = "actor" },
   { name = "ts", type = "int" },
   { name = "triage", type = { collection = { named = "Triage" } } },
   { name = "reactions", type = "reactions" },
@@ -457,7 +457,7 @@ fields = [
 [[resources.types]]
 name = "Person"
 fields = [
-  { name = "id", type = "text" },
+  { name = "id", type = "actor" },
   { name = "name", type = "text" },
   { name = "initials", type = "text" },
   { name = "color", type = "int" },
@@ -498,7 +498,7 @@ name = "Report"
 fields = [
   { name = "id", type = "text" },
   { name = "reporter", type = "actor" },
-  { name = "person", type = "text" },
+  { name = "person", type = "actor" },
   { name = "app", type = { option = "text" } },
   { name = "record", type = { option = "text" } },
   { name = "item", type = { option = "text" } },
@@ -611,7 +611,7 @@ cases = [
 [[resources.types]]
 name = "Triage"
 fields = [
-  { name = "author", type = "text" },
+  { name = "author", type = "actor" },
   { name = "ts", type = "int" },
   { name = "update", type = { option = { named = "TriageUpdate" } } },
 ]
@@ -640,7 +640,7 @@ version = 1
 fields = [
   { path = "messages", type = { collection = { named = "Message" } }, readonly = true, stored = "collection" },
   { path = "messages.*.channel", type = "text", readonly = true },
-  { path = "messages.*.author", type = "text", readonly = true },
+  { path = "messages.*.author", type = "actor", readonly = true },
   { path = "messages.*.ts", type = "int", readonly = true },
   { path = "messages.*.text", type = "text", label = true, readonly = true },
   { path = "messages.*.body", type = { list = { named = "ClipBlock" } }, readonly = true },
@@ -694,6 +694,23 @@ fields = [
   { path = "messages.*.share.access", type = { named = "ShareAccess" } },
   { path = "messages.*.share.open", type = "bool" },
   { path = "messages.*.share.ended", type = "bool" },
+  { path = "messages.*.question", type = { option = { named = "Question" } }, readonly = true, stored = "record" },
+  { path = "messages.*.question.kind", type = "text" },
+  { path = "messages.*.question.person", type = "actor" },
+  { path = "messages.*.question.answers", type = { list = { named = "Choice" } } },
+  { path = "messages.*.question.detail", type = "text" },
+  { path = "messages.*.question.answered", type = { option = { named = "Answered" } }, stored = "record" },
+  { path = "messages.*.question.answered.answer", type = "text" },
+  { path = "messages.*.question.answered.device", type = "text" },
+  { path = "messages.*.question.answered.at", type = "int" },
+  { path = "messages.*.question.answered.detail", type = "text" },
+  { path = "messages.*.question.outcome", type = { option = { named = "Outcome" } }, stored = "record" },
+  { path = "messages.*.question.outcome.outcome", type = "text" },
+  { path = "messages.*.question.outcome.at", type = "int" },
+  { path = "messages.*.question.outcome.detail", type = "text" },
+  { path = "messages.*.question.withdrawn", type = { option = { named = "Withdrawn" } }, stored = "record" },
+  { path = "messages.*.question.withdrawn.at", type = "int" },
+  { path = "messages.*.question.withdrawn.why", type = "text" },
   { path = "messages.*.attempts", type = "int", readonly = true },
   { path = "earlier", type = { map = { map = "int" } }, readonly = true },
 ]
@@ -837,6 +854,46 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "ask"
+incoming_message = true
+kind = "undoable"
+params = [
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "answers", type = { option = { list = { named = "Choice" } } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" } }, required = ["id"] } } },
+  { name = "kind", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "detail", type = { option = "any" }, required = false, schema = {} },
+  { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "answer-question"
+kind = "undoable"
+params = [
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "answer", type = "text", required = true, schema = { type = "string" } },
+  { name = "device", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "detail", type = { option = "any" }, required = false, schema = {} },
+]
+
+[[resources.verbs]]
+id = "withdraw-question"
+kind = "undoable"
+params = [
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "why", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "settle-question"
+kind = "undoable"
+params = [
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "outcome", type = "text", required = true, schema = { type = "string" } },
+  { name = "detail", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "carry-counts"
 kind = "undoable"
 params = [
@@ -892,6 +949,15 @@ cases = [
 ]
 
 [[resources.types]]
+name = "Answered"
+fields = [
+  { name = "answer", type = "text" },
+  { name = "device", type = "text" },
+  { name = "at", type = "int" },
+  { name = "detail", type = "text" },
+]
+
+[[resources.types]]
 name = "Attached"
 cases = [
   { name = "resource", fields = [{ name = "at", type = { named = "ResourceAt" } }, { name = "anchor", type = { option = { named = "Anchor" } } }, { name = "label", type = "text" }] },
@@ -899,6 +965,13 @@ cases = [
   { name = "image", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }] },
   { name = "video", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }, { name = "size", type = "int" }] },
   { name = "file", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "size", type = "int" }] },
+]
+
+[[resources.types]]
+name = "Choice"
+fields = [
+  { name = "id", type = "text" },
+  { name = "label", type = "text" },
 ]
 
 [[resources.types]]
@@ -941,7 +1014,7 @@ cases = [
 [[resources.types]]
 name = "Mention"
 fields = [
-  { name = "user", type = "text" },
+  { name = "user", type = "actor" },
   { name = "start", type = "int" },
   { name = "len", type = "int" },
   { name = "is_agent", type = "bool" },
@@ -951,7 +1024,7 @@ fields = [
 name = "Message"
 fields = [
   { name = "channel", type = "text" },
-  { name = "author", type = "text" },
+  { name = "author", type = "actor" },
   { name = "ts", type = "int" },
   { name = "text", type = "text" },
   { name = "body", type = { list = { named = "ClipBlock" } } },
@@ -969,6 +1042,7 @@ fields = [
   { name = "author_name", type = { option = "text" } },
   { name = "origin", type = { option = { named = "Origin" } } },
   { name = "share", type = { option = { named = "WindowShare" } } },
+  { name = "question", type = { option = { named = "Question" } } },
   { name = "attempts", type = "int" },
 ]
 
@@ -985,6 +1059,14 @@ fields = [
 ]
 
 [[resources.types]]
+name = "Outcome"
+fields = [
+  { name = "outcome", type = "text" },
+  { name = "at", type = "int" },
+  { name = "detail", type = "text" },
+]
+
+[[resources.types]]
 name = "ProviderStream"
 fields = [
   { name = "run", type = "text" },
@@ -993,6 +1075,18 @@ fields = [
   { name = "progress", type = "text" },
   { name = "finish", type = { option = { named = "AgentFinish" } } },
   { name = "detail", type = "text" },
+]
+
+[[resources.types]]
+name = "Question"
+fields = [
+  { name = "kind", type = "text" },
+  { name = "person", type = "actor" },
+  { name = "answers", type = { list = { named = "Choice" } } },
+  { name = "detail", type = "text" },
+  { name = "answered", type = { option = { named = "Answered" } } },
+  { name = "outcome", type = { option = { named = "Outcome" } } },
+  { name = "withdrawn", type = { option = { named = "Withdrawn" } } },
 ]
 
 [[resources.types]]
@@ -1102,6 +1196,13 @@ fields = [
 ]
 
 [[resources.types]]
+name = "Withdrawn"
+fields = [
+  { name = "at", type = "int" },
+  { name = "why", type = "text" },
+]
+
+[[resources.types]]
 name = "Work"
 fields = [
   { name = "stream", type = { option = { named = "ProviderStream" } } },
@@ -1171,7 +1272,7 @@ params = [
 name = "Emoji"
 fields = [
   { name = "image", type = "any" },
-  { name = "added_by", type = "text" },
+  { name = "added_by", type = "actor" },
   { name = "added_at", type = "int" },
 ]
 
@@ -1185,6 +1286,7 @@ fields = [
   { path = "agents.*.name", type = "text", label = true },
   { path = "agents.*.colour", type = { option = "int" } },
   { path = "agents.*.keeper", type = "text" },
+  { path = "agents.*.on_host", type = "bool" },
   { path = "agents.*.model", type = { option = "text" } },
   { path = "agents.*.mcp_client", type = { option = "text" } },
   { path = "agents.*.bound", type = { list = { named = "Bound" } } },
@@ -1223,6 +1325,14 @@ params = [
   { name = "agent", type = "text", required = true, schema = { type = "string" } },
   { name = "day", type = "text", required = true, schema = { type = "string" } },
   { name = "cost_micros", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "set-agent-on-host"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "on_host", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
@@ -1271,6 +1381,7 @@ fields = [
   { name = "name", type = "text" },
   { name = "colour", type = { option = "int" } },
   { name = "keeper", type = "text" },
+  { name = "on_host", type = "bool" },
   { name = "model", type = { option = "text" } },
   { name = "mcp_client", type = { option = "text" } },
   { name = "bound", type = { list = { named = "Bound" } } },
