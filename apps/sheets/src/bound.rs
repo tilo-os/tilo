@@ -132,7 +132,7 @@ impl Input {
         }
         let mut sheets: Vec<&Id> = Vec::new();
         let mut entries: Vec<String> = Vec::new();
-        drop(rewrite_refs(&typed.text, |sheet, reference| {
+        drop(rewrite_refs(&typed.text, &mut |sheet, reference| {
             let entry = entry_for(sheet, reference, layout, lines, &mut sheets);
             entries.push(entry.unwrap_or_else(|| UNBOUND.to_owned()));
             Moved::Kept
@@ -209,7 +209,7 @@ impl Input {
         let (sheets, entries) = parts(binding);
         let mut kept: Vec<String> = entries.iter().map(|entry| (*entry).to_owned()).collect();
         let (mut index, mut changed) = (0usize, false);
-        drop(rewrite_refs(&self.text, |_, reference| {
+        drop(rewrite_refs(&self.text, &mut |_, reference| {
             let here = index;
             index += 1;
             let Some((on, ids)) = entries.get(here).and_then(|entry| entry_parts(entry)) else {
@@ -291,7 +291,7 @@ impl Input {
         };
         let (sheets, entries) = parts(binding);
         let (mut index, mut reads) = (0usize, false);
-        drop(rewrite_refs(&self.text, |_, reference| {
+        drop(rewrite_refs(&self.text, &mut |_, reference| {
             let entry = entries.get(index).and_then(|entry| entry_parts(entry));
             index += 1;
             let Some((on, ids)) = entry else {
@@ -495,7 +495,7 @@ fn spelled(reference: &Ref, ids: &[&str], there: &Layout) -> Option<(String, boo
 fn respelled(text: &str, binding: &str, layout: &Layout, lines: &Lines<'_>) -> Option<String> {
     let (sheets, entries) = parts(binding);
     let (mut index, mut sound, mut moved) = (0usize, true, false);
-    let spelling = rewrite_refs(text, |written, reference| {
+    let spelling = rewrite_refs(text, &mut |written, reference| {
         let Some(entry) = entries.get(index) else {
             sound = false;
             return Moved::Kept;

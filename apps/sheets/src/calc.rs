@@ -381,7 +381,7 @@ fn write(
         } else if parse_error(raw).is_some() {
             set_error(model, sheet, row, column)
         } else {
-            let formula = rename_sheets(raw, |written| {
+            let formula = rename_sheets(raw, &mut |written| {
                 names
                     .get(&fold_sheet(written))
                     .filter(|name| name.as_str() != written)

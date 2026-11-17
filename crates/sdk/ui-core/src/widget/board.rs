@@ -124,7 +124,7 @@ impl Board {
         cards: Vec<(String, Element)>,
         foot: Option<Element>,
     ) -> Self {
-        self.push_list(key, header, cards, foot);
+        self.push_list(key.into(), header, cards, foot);
         self
     }
 
@@ -134,10 +134,10 @@ impl Board {
     #[must_use]
     pub fn long_list(
         mut self,
-        key: impl Into<String>,
+        key: String,
         header: Option<Element>,
         cards: Vec<String>,
-        build: impl Fn(&str) -> Element + 'static,
+        build: Box<dyn Fn(&str) -> Element>,
         foot: Option<Element>,
     ) -> Self {
         // Keys name cards once; a key given twice keeps its first place.
@@ -170,7 +170,7 @@ impl Board {
 
     pub(crate) fn push_list(
         &mut self,
-        key: impl Into<String>,
+        key: String,
         header: Option<Element>,
         cards: Vec<(String, Element)>,
         foot: Option<Element>,
@@ -189,7 +189,7 @@ impl Board {
 
     fn push_list_body(
         &mut self,
-        key: impl Into<String>,
+        key: String,
         header: Option<Element>,
         body: Element,
         keys: Vec<String>,
@@ -220,7 +220,7 @@ impl Board {
             .with_child(Box::new(stack));
         self.row = std::mem::take(&mut self.row).push(Box::new(list));
         self.lists.push(ListKeys {
-            key: key.into(),
+            key,
             cards: keys,
             heading,
             listed,
@@ -936,13 +936,13 @@ mod tests {
             let keys: Vec<String> = (0..cards).map(|index| format!("{list}-{index}")).collect();
             let counted = Rc::clone(built);
             board = board.long_list(
-                list,
+                list.to_owned(),
                 Some(Box::new(Text::new(list)) as Element),
                 keys,
-                move |_| {
+                Box::new(move |_| {
                     counted.set(counted.get() + 1);
                     card()
-                },
+                }),
                 None,
             );
         }

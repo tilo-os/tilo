@@ -88,10 +88,10 @@ fn lists(
         ))
         .with_role(TextRole::Subheading);
         board = board.long_list(
-            status.label_key(),
+            status.label_key().to_owned(),
             Some(Box::new(header) as Element),
             cards,
-            build,
+            Box::new(build),
             Some(crate::new_issue(
                 &|| cx.local(String::new()),
                 window,

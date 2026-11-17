@@ -159,7 +159,7 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
         return raw.to_string();
     }
     let shift = |token: &RefToken| token.render(token.offset(dcol, drow));
-    rewrite_refs(raw, |_, reference| {
+    rewrite_refs(raw, &mut |_, reference| {
         Moved::To(match reference {
             Ref::Cell(first) => shift(first),
             Ref::Range(first, sep, second) => format!("{}{sep}{}", shift(first), shift(second)),
@@ -190,7 +190,7 @@ pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
 /// engine reads no error after a sheet's name. A reference the change does not move keeps its
 /// spelling.
 pub fn remap_sheet_refs(raw: &str, edit: GridEdit, own: bool, named: Option<&str>) -> String {
-    rewrite_refs(raw, |sheet, reference| {
+    rewrite_refs(raw, &mut |sheet, reference| {
         let on_changed_sheet = match sheet {
             None => own,
             Some(written) => named.is_some_and(|named| fold_sheet(written) == named),
@@ -243,7 +243,7 @@ pub fn remap_sheet_refs(raw: &str, edit: GridEdit, own: bool, named: Option<&str
 /// Each reference of a formula: the sheet it names as written (`None` for the formula's own)
 /// and the corners of what it reads. Whole rows and columns reach the last column and row.
 pub fn each_reference(raw: &str, mut visit: impl FnMut(Option<&str>, Addr, Addr)) {
-    drop(rewrite_refs(raw, |sheet, reference| {
+    drop(rewrite_refs(raw, &mut |sheet, reference| {
         let (start, end) = reference.corners();
         visit(sheet, start, end);
         Moved::Kept
@@ -252,7 +252,7 @@ pub fn each_reference(raw: &str, mut visit: impl FnMut(Option<&str>, Addr, Addr)
 
 /// A formula with each reference to another sheet renamed by `rename`, which gets the name as
 /// written and answers the one to write instead.
-pub fn rename_sheets(raw: &str, mut rename: impl FnMut(&str) -> Option<String>) -> String {
+pub fn rename_sheets(raw: &str, rename: &mut dyn FnMut(&str) -> Option<String>) -> String {
     let Some(body) = raw.strip_prefix('=').filter(|body| body.contains('!')) else {
         return raw.to_string();
     };
@@ -354,7 +354,7 @@ pub(crate) enum Moved {
 /// exponents are copied verbatim.
 pub(crate) fn rewrite_refs(
     raw: &str,
-    mut rewrite: impl FnMut(Option<&str>, &Ref) -> Moved,
+    rewrite: &mut dyn FnMut(Option<&str>, &Ref) -> Moved,
 ) -> String {
     let Some(body) = raw.strip_prefix('=') else {
         return raw.to_string();
@@ -827,7 +827,7 @@ mod tests {
             );
             assert_eq!(references("Rates!A2+B1").len(), 1);
             let renamed = |raw: &str| {
-                rename_sheets(raw, |written| {
+                rename_sheets(raw, &mut |written| {
                     (fold_sheet(written) == "rates").then(|| "Q3 rates".to_owned())
                 })
             };
