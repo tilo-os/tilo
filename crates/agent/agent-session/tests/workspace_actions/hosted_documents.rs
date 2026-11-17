@@ -326,9 +326,9 @@ async fn indexed(
     }
 }
 
-/// Undo `run` in the record `route` names, through the history `undo` the
+/// Undo `invocation` in the record `route` names, through the history `undo` the
 /// record publishes, as the activity's undo asks it.
-async fn undo_invocation(page: &mut Browser, route: &DocumentRoute, run: &str) {
+async fn undo_invocation(page: &mut Browser, route: &DocumentRoute, invocation: &str) {
     let provider = tilo_agent_session::record_provider(route);
     let rows = page
         .catalogue(CatalogueQuery {
@@ -344,15 +344,16 @@ async fn undo_invocation(page: &mut Browser, route: &DocumentRoute, run: &str) {
         .into_iter()
         .filter_map(|row| row.action)
         .find(|action| {
-            action.address.action == "undo" && action.params.iter().any(|param| param.name == "run")
+            action.address.action == "undo"
+                && action.params.iter().any(|param| param.name == "invocation")
         })
         .unwrap_or_else(|| panic!("{} publishes no history undo", route.app_id))
         .address;
     let mut argument = serde_json::Map::new();
-    argument.insert("run".into(), run.into());
+    argument.insert("invocation".into(), invocation.into());
     page.invoke_on(&provider, address, InvokeArgument::Json(argument))
         .await
-        .unwrap_or_else(|error| panic!("the run is undone in {}: {error}", route.app_id));
+        .unwrap_or_else(|error| panic!("the invocation is undone in {}: {error}", route.app_id));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
