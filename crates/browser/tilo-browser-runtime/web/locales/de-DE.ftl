@@ -73,11 +73,11 @@ arrival-failed-files = Dieses Fenster behält keine Dateien, deshalb können App
 arrival-failed-renderer = Der Desktop zeichnet nicht mehr. Versuch es noch einmal, um ihn neu zu starten, oder lade die Seite neu.
 arrival-refusal-heading = { $workspace } ist im Moment nur mit Einladung offen
 arrival-refusal-heading-unnamed = Dieser Arbeitsbereich ist im Moment nur mit Einladung offen
-arrival-refusal-body = Bitte jemanden darin um einen Einladungslink und füge ihn hier ein.
-arrival-invite-link = Einladungslink
-arrival-invite-placeholder = Einladungslink einfügen
+arrival-refusal-body = Bitte jemanden darin um einen Einladungslink und füge ihn hier ein. Bist du auf einem anderen Gerät schon darin, füge den Link ein, den „Pair a new device“ dort erzeugt.
+arrival-invite-link = Einladungs- oder Kopplungslink
+arrival-invite-placeholder = Einladungs- oder Kopplungslink einfügen
 arrival-invite-open = Öffnen
-arrival-invite-not-a-link = Das ist kein Einladungslink. Füge den ganzen Link ein, den du bekommen hast.
+arrival-invite-not-a-link = Das ist kein Einladungs- oder Kopplungslink. Füge den ganzen Link ein.
 arrival-refusal-wait-heading = Tilo ist im Moment leider nur mit Einladung offen
 arrival-refusal-wait-body = Es ist eine frühe Alpha. Hinterlass deine E-Mail-Adresse, und wir schicken dir eine Einladung, sobald Platz ist.
 arrival-wait-email = E-Mail-Adresse
@@ -111,7 +111,7 @@ arrival-sign-in-not-member = Du bist angemeldet, aber diese Identität ist noch 
 arrival-sign-in-not-member-unnamed = Du bist angemeldet, aber diese Identität ist noch nicht in diesem Arbeitsbereich. Bitte jemanden darin um eine Einladung.
 arrival-sign-in-unknown = Dieser Passkey öffnet keine Tilo-Identität, die diese Seite kennt. Nimm einen, den du bei Tilo angelegt hast, oder öffne Tilo dort, wo du es schon nutzt.
 arrival-sign-in-failed = Die Anmeldung hat in diesem Browser nicht geklappt. Versuch es noch einmal oder öffne Tilo dort, wo du es schon nutzt.
-arrival-invite-toggle = Du hast einen Einladungslink?
+arrival-invite-toggle = Du hast einen Einladungs- oder Kopplungslink?
 arrival-own = Oder probier Tilo für dich allein aus
 
 ## The reconnect screen: the page was not let in yet and tries again

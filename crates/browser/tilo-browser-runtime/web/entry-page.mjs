@@ -19,7 +19,7 @@
 import {AdmissionError} from './admission.mjs';
 import {answerAgentQuestions} from './agent-questions.mjs';
 import {notifyThisBrowser} from './web-push.mjs';
-import {refusalCopy, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside} from './arrival.mjs';
+import {refusalCopy, entryLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
@@ -1742,7 +1742,7 @@ const ENTRY_SIGNED_IN = 'tilo-entry-signed-in';
  * `named` and asks for the invite link someone sends. Under either: signing
  * in with an identity the person already has (a passkey, then the page
  * loads again and joins as them, and a member gets in), and the field to
- * paste an invite link into, opened in this tab. Where the person has a
+ * paste an invite or pairing link into, opened in this tab. Where the person has a
  * desktop of their own without an invitation (`ownDesktopAllowed`), it waits
  * at the foot of the page (`offerOwnDesktop`); while the home takes people
  * by invitation only, nothing does.
@@ -1778,11 +1778,12 @@ function offerRefusal({messages, named, error, workspace, runtime, link}) {
   }
   if (waitList) offerWaitList({workspace, contact: error.entry.contact, mail: error.entry.mail === true, messages});
   offerSignIn({workspace, named, messages, runtime, link});
-  // The invite link: behind a small toggle beside the wait list; shown
-  // where it is the only way in.
-  toggle.textContent = say('arrival-invite-toggle', 'Have an invite link?');
-  field.placeholder = say('arrival-invite-placeholder', 'Paste an invite link');
-  field.setAttribute('aria-label', say('arrival-invite-link', 'Invite link'));
+  // The link that lets someone in, an invitation or a pairing from a device
+  // of theirs: behind a small toggle beside the wait list; shown where it is
+  // the only way in.
+  toggle.textContent = say('arrival-invite-toggle', 'Have an invite or pairing link?');
+  field.placeholder = say('arrival-invite-placeholder', 'Paste an invite or pairing link');
+  field.setAttribute('aria-label', say('arrival-invite-link', 'Invite or pairing link'));
   form.querySelector('button').textContent = say('arrival-invite-open', 'Open');
   form.hidden = waitList;
   toggle.addEventListener('click', () => {
@@ -1792,15 +1793,15 @@ function offerRefusal({messages, named, error, workspace, runtime, link}) {
   });
   form.addEventListener('submit', event => {
     event.preventDefault();
-    const target = inviteLinkTarget(field.value);
-    problem.textContent = target ? '' : say('arrival-invite-not-a-link', 'That isn’t an invite link. Paste the whole link you were sent.');
+    const target = entryLinkTarget(field.value);
+    problem.textContent = target ? '' : say('arrival-invite-not-a-link', 'That isn’t an invite or pairing link. Paste the whole link.');
     if (target) loadPage(target);
   });
-  // An invite link opened in this tab while it shows the entry (followed
-  // from a mail, or typed into the address bar) changes only the fragment:
-  // the page loads again to follow it.
+  // Such a link opened in this tab while it shows the entry (followed from a
+  // mail, or typed into the address bar) changes only the fragment: the page
+  // loads again to follow it.
   window.addEventListener('hashchange', () => {
-    if (inviteLinkTarget(location.href)) location.reload();
+    if (entryLinkTarget(location.href)) location.reload();
   });
   document.documentElement.dataset.refusal = waitList ? 'wait-list' : 'invite';
 }

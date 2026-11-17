@@ -16,6 +16,10 @@ const HANDLE = /^[A-Za-z0-9_-]{16}$/;
 /** The key that opens a sealed invitation, as the fragment spells it. */
 const KEY = /^[A-Za-z0-9_-]{43}$/;
 
+/** Whether `text` is a key that opens a sealed invitation, as the fragment
+ * of its link spells it. */
+export const sealedKey = text => typeof text === 'string' && KEY.test(text);
+
 /** The handle `pathname` names, below a site's `/i/`; `null` elsewhere. */
 export function sealedHandle(pathname) {
   if (typeof pathname !== 'string' || !pathname.startsWith(ROUTE)) return null;
@@ -30,6 +34,6 @@ export function sealedHandle(pathname) {
 export function sealedLink({location, secrets = {}}) {
   const handle = sealedHandle(location?.pathname);
   const key = secrets.invite;
-  if (!handle || typeof key !== 'string' || !KEY.test(key)) return null;
+  if (!handle || !sealedKey(key)) return null;
   return {site: new URL('/', location.href).origin, handle, key};
 }

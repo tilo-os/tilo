@@ -21,8 +21,19 @@ class Element {
   addEventListener(type, listener) { this.listeners.set(type, listener); }
   focus() {}
   select() {}
+  // The one part a form or a section is asked for by a selector: its button, its foot.
+  querySelector(selector) {
+    this.parts ??= new Map();
+    if (!this.parts.has(selector)) this.parts.set(selector, new Element(selector));
+    return this.parts.get(selector);
+  }
   remove() { document.body.children = document.body.children.filter(node => node !== this); }
 }
+
+/** The parts of the entry a page turned away fills in (index.html,
+ * `#arrival-refusal`): its words, and the field a link is pasted into. */
+const DOOR = ['arrival-refusal', 'arrival-refusal-heading', 'arrival-refusal-body', 'arrival-invite', 'arrival-invite-toggle',
+  'arrival-invite-link', 'arrival-invite-error'];
 
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root custody with fixtures. `pair`
@@ -31,9 +42,10 @@ class Element {
 // the person this tab has open, and `kept` the one this browser keeps
 // whether or not a tab opened them (`keptIdentity`). `join` stands for
 // joining through a host's entry (`joinViaHost`) where a test says what the
-// host answers; without one the page's own join runs.
+// host answers; without one the page's own join runs. `door` gives the page
+// the entry's own parts (`DOOR`), as index.html has them.
 async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null, scope = null,
-  pair = async () => { throw new Error('this fixture pairs no device'); }, identity = {userPublicKey: USER}, kept = null, join = null} = {}) {
+  pair = async () => { throw new Error('this fixture pairs no device'); }, identity = {userPublicKey: USER}, kept = null, join = null, door = false} = {}) {
   const values = new Map(Object.entries(local));
   let assigned = null;
   const stored = new Map(Object.entries(session));
@@ -48,11 +60,11 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   globalThis.location = {href: 'https://web.example/#/workspace', search, pathname: '/', reload: () => calls.push('reload'),
     assign: url => { calls.push('assign'); assigned = url; }};
   globalThis.history = {pushState: (_state, _title, url) => { calls.push('history'); assigned = url ?? assigned; }};
-  globalThis.document = {body: new Element('body'), documentElement: {dataset: {}, toggleAttribute() {}}, createElement: tag => new Element(tag),
+  globalThis.document = {body: new Element('body'), documentElement: {dataset: {}, toggleAttribute() {}, removeAttribute() {}}, createElement: tag => new Element(tag),
     // A card is found by its kind, as the page looks for the one a new card replaces.
     querySelector: selector => document.body.children.find(card => selector === `[data-card="${card.dataset.card}"]`) ?? null,
     getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas')
-      : id.startsWith('arrival-failure') ? (screen[id] ??= new Element(id)) : null};
+      : id.startsWith('arrival-failure') || (door && DOOR.includes(id)) ? (screen[id] ??= new Element(id)) : null};
   // The failure screen's parts (index.html, `#arrival-failure`), by id.
   const screen = {};
   const status = {textContent: 'Loading…'};
@@ -135,7 +147,10 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
   const {startEntryPage} = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
   // A page that cannot get in throws its cause on, to the console.
-  const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error);
+  // The entry listens on the window for a link followed while it shows.
+  if (door) globalThis.window = globalThis;
+  const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error)
+    .finally(() => { if (door) delete globalThis.window; });
   await tick();
   return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, listeners, session: stored, failure, at: () => assigned, screen};
 }
@@ -756,4 +771,39 @@ test('a browser an earlier page paired to its own person opens as that person ag
     assert.equal(device.failure, null);
     assert.deepEqual(JSON.parse(localStorage.getItem('tilo-host-memberships')), marked, JSON.stringify(kept));
   }
+});
+
+test('the entry’s link field takes a pairing link and an invitation’s short link, and says so of anything else', async () => {
+  // A person with no identity on a new device stands at the entry with the
+  // link “Pair a new device” made on a device of theirs. The field read only
+  // `invite`, so it answered “That isn’t an invite link”, as it did to the
+  // short link the invite sheet hands over.
+  const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
+  const turnedAway = () => fixture({door: true, boot: async ({deps}) => {
+    deps.onScope({scope: {kind: 'workspace', host: ORIGIN, workspace: 'current'}, entry: {base: 'https://web.example/', home}});
+    throw Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'invitation-only'});
+  }});
+  const paste = (screen, text) => {
+    screen['arrival-invite-link'].value = text;
+    screen['arrival-invite'].listeners.get('submit')({preventDefault() {}});
+    return screen['arrival-invite-error'].textContent;
+  };
+  const pairing = `https://web.example/#/@node.example/w/current?pair=${ELSEWHERE}${'0f'.repeat(16)}`;
+  // A sealed invitation's short link: its handle, and the key that opens it.
+  const short = `https://web.example/i/AbCdEfGhIjKlMnOp#${'k'.repeat(43)}`;
+  for (const link of [pairing, short, 'https://web.example/#/@node.example/w/current?invite=abc']) {
+    const {screen, at, failure} = await turnedAway();
+    assert.equal(failure, null);
+    assert.equal(document.documentElement.dataset.refusal, 'invite');
+    assert.equal(paste(screen, `  ${link}\n`), '', `taken: ${link}`);
+    assert.equal(at(), link, 'and opened');
+  }
+  const {screen, at} = await turnedAway();
+  for (const text of ['https://web.example/', 'hello', '']) {
+    assert.equal(paste(screen, text), 'That isn’t an invite or pairing link. Paste the whole link.', text);
+  }
+  assert.equal(at(), null, 'nothing else is opened');
+  assert.equal(screen['arrival-invite-toggle'].textContent, 'Have an invite or pairing link?');
+  assert.equal(screen['arrival-invite-link'].placeholder, 'Paste an invite or pairing link');
+  assert.match(screen['arrival-refusal-body'].textContent, /“Pair a new device”/, 'the entry says a pairing link is a way in');
 });
