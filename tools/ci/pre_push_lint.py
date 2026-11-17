@@ -752,6 +752,9 @@ def main(argv: list[str]) -> int:
                              "of their own, so all three start together (the land queue does)")
     parser.add_argument("--keep-logs", metavar="DIR", type=Path,
                         help="keep each run's whole output, and how long it took, in DIR")
+    parser.add_argument("--only", metavar="PACKAGES",
+                        help="lint only these of the packages the range reaches, comma-separated "
+                             "(the land queue relints what main changed under a batch it linted)")
     parser.add_argument("--stdin", type=argparse.FileType("r"), default=sys.stdin,
                         help="the ref lines Git writes for a pre-push hook")
     options = parser.parse_args(argv)
@@ -794,6 +797,13 @@ def main(argv: list[str]) -> int:
     if selection is None:
         say("pre-push: refusing the push until the changed packages can be named")
         return 1
+    if options.only is not None:
+        only = set(filter(None, options.only.split(",")))
+        selection = Selection(sorted(set(selection.native) & only), sorted(set(selection.web) & only),
+                              sorted(set(selection.dependents) & only), selection.metadata)
+        if not selection.native:
+            say("pre-push: none of the packages asked for is one this range reaches; nothing to lint")
+            return 0
     if not selection.native:
         say("pre-push: the changed Rust files belong to no workspace package; CI builds them outside it")
         return 0

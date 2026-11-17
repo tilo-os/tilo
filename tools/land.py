@@ -30,8 +30,9 @@ would.
 
 The pre-push hook refuses a push to main from anywhere but the lander's
 worktree, so nothing races its lint. Main still moves under it when the forge
-merges a pull request: the lander's push is refused then like anyone's, and it
-puts its changes on the new head and lints again.
+merges a pull request: the lander's push is refused then like anyone's. It puts
+its changes on the new head and lints again only the packages that both its lint
+and the merged commits reach, and none when they share none.
 
 The queue and the lander's log live in the clone's Git directory
 (`land/<branch>/`), the lander's own worktree beside the main checkout's other
@@ -56,7 +57,8 @@ import time
 # reaches the whole workspace and takes many minutes on a loaded builder while main
 # gets a change a minute, so a round takes everything that queued meanwhile: one
 # lint for all of it. A lint that fails is retried on the first half, so a bad
-# change costs a few rounds, not everyone's.
+# change costs a few rounds, not everyone's; each round that passes doubles the
+# limit again.
 BATCH = 24
 # How long the lander stays up with nothing queued before it stops.
 IDLE_SECONDS = 120
@@ -466,29 +468,90 @@ class Lander:
             if not inherited:
                 self.failed(batch, upstream, output)
                 return True
-        self.doing(f"pushing {len(batch)} change(s) onto {upstream[:12]}")
+        self.limit = min(BATCH, self.limit * 2)
         # The hook lints again and refuses on the branch's own failures, which the lander has just
         # shown the batch adds nothing to; Git's own switch is the only way past it.
-        verify = ["--no-verify"] if inherited else []
-        push = git(self.tree, "push", "--quiet", *verify, self.place.remote,
-                   f"HEAD:refs/heads/{self.place.branch}")
-        self.place.event(kind="push", ok=push.returncode == 0, batch=len(batch),
-                         detail=push.stderr.strip()[-400:])
-        if push.returncode != 0:
-            print(push.stderr, flush=True)
-            if self.moved(upstream):
-                # Someone pushed past the queue: the next round puts the same changes on their head.
-                self.doing("the branch moved during the lint; again on its new head")
-                return True
-            self.failed(batch, upstream, push.stderr.strip())
-            return True
-        self.limit = BATCH
-        for entry, commit in batch:
-            self.finish(entry, {"status": "landed", "commit": commit, "onto": upstream,
-                                "batch": len(batch), "lint_seconds": seconds})
+        self.push(batch, upstream, seconds, verify=not inherited)
         return True
 
-    def lint(self, upstream: str) -> subprocess.CompletedProcess:
+    def push(self, batch: list[tuple[dict, str]], upstream: str, seconds: float, verify: bool) -> None:
+        """Push a batch whose lint passed on `upstream`, following main while it moves.
+
+        Main moves under the lint when the forge merges a pull request. The batch is put on the
+        new head then; when that applies, only the packages both the batch's lint and main's new
+        commits reach are linted again, and none when they share none.
+        """
+        covered = None
+        while True:
+            self.doing(f"pushing {len(batch)} change(s) onto {upstream[:12]}")
+            push = git(self.tree, "push", "--quiet", *([] if verify else ["--no-verify"]),
+                       self.place.remote, f"HEAD:refs/heads/{self.place.branch}")
+            self.place.event(kind="push", ok=push.returncode == 0, batch=len(batch),
+                             detail=push.stderr.strip()[-400:])
+            if push.returncode == 0:
+                for entry, commit in batch:
+                    self.finish(entry, {"status": "landed", "commit": commit, "onto": upstream,
+                                        "batch": len(batch), "lint_seconds": seconds})
+                return
+            print(push.stderr, flush=True)
+            head = self.head()
+            if head is None or head == upstream:
+                self.failed(batch, upstream, push.stderr.strip())
+                return
+            if covered is None:
+                covered = self.plan(upstream)
+            out(self.tree, "checkout", "--quiet", "--detach", "--force", head)
+            gained = self.plan(upstream) if covered is not None else None
+            moved = []
+            for entry, _commit in batch:
+                if self.apply(entry) is not None:
+                    self.doing("the branch moved during the lint and the batch no longer applies "
+                               "on its new head; again on it")
+                    return
+                moved.append((entry, out(self.tree, "rev-parse", "HEAD")))
+            batch, upstream = moved, head
+            if covered is None or gained is None:
+                self.doing("the branch moved during the lint; again on its new head")
+                return
+            both = sorted(covered & gained)
+            self.place.event(kind="moved", onto=head, batch=len(batch), relint=len(both))
+            if both:
+                self.doing(f"the branch moved during the lint; linting the {len(both)} package(s) "
+                           f"its new commits share with the batch on {head[:12]}")
+                started = now()
+                lint = self.lint(head, only=both)
+                seconds += now() - started
+                print((lint.stdout + lint.stderr).strip(), flush=True)
+                self.place.event(kind="lint", ok=lint.returncode == 0, seconds=now() - started,
+                                 batch=len(batch), onto=head, status=lint.returncode)
+                if lint.returncode != 0:
+                    # The next round lints the batch on this head in full and finds who broke it.
+                    return
+            # The hook would lint every package the batch reaches again; what main's new commits
+            # can change in that lint has just been linted.
+            verify = False
+
+    def head(self) -> str | None:
+        try:
+            return self.place.fetch(self.place.repo)
+        except RuntimeError:
+            return None
+
+    def plan(self, base: str) -> set[str] | None:
+        """The packages the push lint lints for what the worktree adds to `base`; None when it cannot name them."""
+        result = subprocess.run(
+            [sys.executable, "-I", "tools/ci/pre_push_lint.py", "--plan", "--range", f"{base}..HEAD"],
+            cwd=self.tree, capture_output=True, text=True)
+        if result.returncode != 0:
+            return None
+        found: set[str] = set()
+        for line in result.stdout.splitlines():
+            label, _, names = line.partition(":")
+            if label in ("native", "wasm32"):
+                found |= set(names.split())
+        return found
+
+    def lint(self, upstream: str, only: list[str] | None = None) -> subprocess.CompletedProcess:
         """The push lint of what the worktree adds to `upstream`, in a process group of its own.
 
         A lander stopped mid-lint (by a newer one taking its place) stops the lint's compiles
@@ -496,7 +559,8 @@ class Lander:
         """
         process = subprocess.Popen(
             [sys.executable, "-I", "tools/ci/pre_push_lint.py", "--range", f"{upstream}..HEAD",
-             "--keep-logs", str(self.logs()), "--own-build-dirs"],
+             "--keep-logs", str(self.logs()), "--own-build-dirs",
+             *(["--only", ",".join(only)] if only is not None else [])],
             cwd=self.tree, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             start_new_session=True,
         )
@@ -606,12 +670,6 @@ class Lander:
                       *tail, sep="\n  ", flush=True)
         return found
 
-    def moved(self, upstream: str) -> bool:
-        try:
-            return self.place.fetch(self.place.repo) != upstream
-        except RuntimeError:
-            return False
-
     def keep_suspects(self, suspects: set[str]) -> None:
         if suspects != self.suspects:
             self.suspects = suspects
@@ -637,6 +695,8 @@ class Lander:
         lines = output.splitlines()
         shown = lines[-SHOWN_LINES:] if len(lines) > SHOWN_LINES else lines
         self.finish(batch[0][0], {"status": "lint", "onto": upstream, "output": shown})
+        # The change that broke it is answered; the ones behind it need not each lint alone.
+        self.limit = min(BATCH, self.limit * 2)
 
     def blamed(self, batch: list[tuple[dict, str]], upstream: str, output: str) -> set[str]:
         """The changes that touch a file the failed lint points at, or a package it could not build."""

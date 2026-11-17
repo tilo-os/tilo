@@ -12,14 +12,30 @@ from hang import HANG_BOUND
 ROOT = Path(__file__).resolve().parents[2]
 # The push lint the lander runs: it fails a range whose tree holds a file that says BAD, and
 # counts its runs, so a test can tell how many lints landed how many changes.
+# A Rust file in a directory belongs to the package named after the directory. A file in the
+# lander's worktrees directory names a commit the first lint pushes to main, as a forge merge would.
 FAKE_LINT = """import pathlib, subprocess, sys
 root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
                                    text=True).stdout.strip())
+arguments = sys.argv[1:]
+if "--plan" in arguments:
+    base, head = arguments[arguments.index("--range") + 1].split("..")
+    files = subprocess.run(["git", "diff", "--name-only", base, head], capture_output=True,
+                           text=True).stdout.split()
+    names = sorted({path.split("/")[0] for path in files if path.endswith(".rs") and "/" in path})
+    if names:
+        print("native: " + " ".join(names))
+    sys.exit(0)
 import time
 if not (root.parent / "lint-runs").exists():
     time.sleep(3)  # the first lint takes long enough for what is queued after it to share the next
 with open(root.parent / "lint-runs", "a") as runs:
-    runs.write(sys.argv[-1] + "\\n")
+    runs.write(" ".join(arguments) + "\\n")
+merge = root.parent / "merge-during-lint"
+if merge.exists():
+    commit = merge.read_text().strip()
+    merge.unlink()
+    subprocess.run(["git", "push", "-q", "origin", commit + ":refs/heads/main"], cwd=root, check=True)
 flaky = root.parent / "builder-away-once"
 if flaky.exists():
     flaky.unlink()
@@ -98,6 +114,7 @@ class LandTest(unittest.TestCase):
         tree = self.scratch / name
         git(self.clone, "worktree", "add", "-q", "--detach", str(tree), "origin/main")
         for path, text in files.items():
+            (tree / path).parent.mkdir(parents=True, exist_ok=True)
             (tree / path).write_text(text)
         git(tree, "add", "-A")
         git(tree, "commit", "-qm", name)
@@ -292,6 +309,55 @@ class LandTest(unittest.TestCase):
         git(self.clone, "fetch", "-q", "origin")
         order = git(self.clone, "log", "--format=%s", "--reverse", "origin/main").splitlines()
         self.assertLess(order.index("words"), order.index("compiles"), order)
+
+    def merge_during_the_first_lint(self, files):
+        merged = self.worktree("merged", files)
+        lander_worktrees = self.clone / ".claude" / "worktrees"
+        lander_worktrees.mkdir(parents=True, exist_ok=True)
+        (lander_worktrees / "merge-during-lint").write_text(git(merged, "rev-parse", "HEAD"))
+        return git(merged, "rev-parse", "HEAD")
+
+    def test_main_moved_by_a_merge_the_lint_does_not_reach_lands_without_linting_again(self):
+        merged = self.merge_during_the_first_lint({"beta/two.rs": "fn two() {}\n"})
+        [(code, result)] = self.answers([self.land(self.worktree("mine", {"alpha/one.rs": "fn one() {}\n"}))])
+        self.assertEqual((code, result["status"]), (0, "landed"), result)
+        self.assertEqual(result["onto"], merged)
+        self.assertEqual(git(self.clone, "rev-parse", result["commit"] + "^"), merged)
+        self.assertEqual(len(self.lint_runs()), 1, self.lint_runs())
+
+    def test_main_moved_by_a_merge_relints_only_the_packages_both_reach(self):
+        merged = self.merge_during_the_first_lint({"alpha/two.rs": "fn two() {}\n"})
+        mine = self.worktree("mine", {"alpha/one.rs": "fn one() {}\n", "beta/b.rs": "fn b() {}\n"})
+        [(code, result)] = self.answers([self.land(mine)])
+        self.assertEqual((code, result["status"]), (0, "landed"), result)
+        self.assertEqual(git(self.clone, "rev-parse", result["commit"] + "^"), merged)
+        runs = self.lint_runs()
+        self.assertEqual(len(runs), 2, runs)
+        self.assertIn(f"--range {merged}..", runs[1])
+        self.assertTrue(runs[1].endswith("--only alpha"), runs[1])
+
+    def test_the_batch_grows_again_after_a_failed_lint_is_narrowed_down(self):
+        first = self.worktree("first", {"first.txt": "fine\n"})
+        names = ["good0", "bad", "good1", "good2", "good3"]
+        trees = [self.worktree(name, {"alpha/src/lib.rs": "// BAD\n"} if name == "bad"
+                               else {f"{name}.rs": "fn fine() {}\n"}) for name in names]
+        waiting = [self.land(first)]
+        state = self.clone / ".git" / "land" / "main" / "state.json"
+        deadline = time.monotonic() + HANG_BOUND
+        while "linting" not in (state.read_text() if state.exists() else ""):
+            self.assertLess(time.monotonic(), deadline, "the lander never started its first lint")
+            time.sleep(0.1)
+        for tree in trees:
+            queued = subprocess.run(["python3", str(tree / "tools" / "land.py"), "--no-wait"],
+                                    cwd=tree, env=ENV, capture_output=True, timeout=HANG_BOUND)
+            self.assertEqual(queued.returncode, 75, queued.stderr)
+        found = self.answers(waiting + [self.land(tree) for tree in trees])
+        self.assertEqual([result["status"] for _code, result in found],
+                         ["landed", "landed", "lint", "landed", "landed", "landed"], found)
+        # All five fail, then good0 and bad, then good0 lands alone, bad and good1 fail, bad is
+        # answered alone; then good1 and good2 share a lint instead of one each.
+        self.assertEqual([result["batch"] for _code, result in found[3:]], [2, 2, 1], found)
+        self.assertEqual(len(self.lint_runs()), 8, self.lint_runs())
 
     def test_a_merge_commit_is_refused(self):
         tree = self.worktree("merger", {"a.txt": "a\n"})
