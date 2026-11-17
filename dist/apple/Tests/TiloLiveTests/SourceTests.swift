@@ -569,7 +569,7 @@ final class TiloSourceTests: XCTestCase {
         try await start()
         try await enter(device: true)
         try await until("the host was asked on the way in") {
-            (try? await self.page("return String(window.hostAsked.length)")) == "8"
+            (try? await self.page("return String(window.hostAsked.length)")) == "10"
         }
         // Ten changes of Chat's records: the conversation follows, and the host is asked nothing.
         for n in 0..<10 {
@@ -578,9 +578,10 @@ final class TiloSourceTests: XCTestCase {
         try await until("the conversation followed") { self.held.count == 10 }
         try await Task.sleep(for: .milliseconds(300))
         let asked = try await page("return JSON.stringify(window.hostAsked)")
-        // The last three are what she was told: its log whole, what came while she was away, then the ask
-        // her server holds until the log moves.
-        XCTAssertEqual(asked, #"["tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.telling list","tilo.telling since-you-left","tilo.telling list"]"#)
+        // The last five are what she was told: its log whole, what came while she was away, then the ask
+        // her server is to hold until the log moves. This one answers it at once with nothing, three
+        // times in a row, and is asked no more.
+        XCTAssertEqual(asked, #"["tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.telling list","tilo.telling since-you-left","tilo.telling list","tilo.telling list","tilo.telling list"]"#)
     }
 
     func testWhatItLearnedAndWhatIsImportantAreThePersonsOwnOnTheirHost() async throws {
@@ -694,6 +695,23 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(held[0].content, .brief(Brief(title: "Northwind call in 15 minutes", text: "Northwind led your seed.")))
         XCTAssertNil(held[0].task, "a brief carries its own line")
         XCTAssertEqual(words(held[1]), "Maya asks for the October numbers.")
+    }
+
+    func testALogThatMovesOnceWithNothingForThisDeviceDoesNotEndTheFollowing() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter(device: true, "window.byKind = true; window.holds = 60000")
+        // Her server's log moves for something this device is not told: the ask it held comes back at once, with nothing.
+        try await until("the ask is held") { (try? await self.page("return String(typeof window.logMoved)")) == "function" }
+        _ = try await page("window.logMoved(); window.logMoved = undefined")
+        try await until("it is asked again, and held") { (try? await self.page("return String(typeof window.logMoved)")) == "function" }
+        // What she is told after that still reaches the app.
+        _ = try await page("""
+            direct({id: 'm_ask_6', author: {agent: 'e-6'}, text: 'Remind me to stretch. (for the assistant)',
+              cause: {kind: 'reminder', label: 'Stretch', key: 'k-6', person: {person: ADA}}});
+            direct({id: 'm_reply_6', author: {agent: 'assistant'}, text: 'Time to stretch.', parent: 'm_ask_6'})
+            """)
+        _ = try await page(Self.told(1, "reminder", about: "m_ask_6", title: "Stretch"))
+        try await until("the answer is her reminder") { self.held.last?.content == .reminder("Time to stretch.") }
     }
 
     func testAServerThatTellsNothingThisWayIsAskedOnceAndTheConversationStandsAsItIs() async throws {
