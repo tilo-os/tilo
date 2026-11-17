@@ -1232,6 +1232,7 @@ attention-defer = Put aside for now
 attention-deferred = { $count } put aside
 attention-pill = { $count } waiting
 action-document-replaced = This action did not run because its document was reopened or replaced. Try again in the current document.
+action-own-route-not-open = This action was not carried out because this window has not finished connecting to its workspace. Try again in a moment.
 
 # One-shot action proposals: one model call's answer, before it is written.
 proposal-model-on-device = { $model }, running on this device

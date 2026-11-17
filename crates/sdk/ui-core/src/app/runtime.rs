@@ -456,8 +456,7 @@ pub(super) struct ActionRuntime {
     /// waiting for the route to carry the surface that offers them. The host
     /// resolves an invocation against the surface it last received from this
     /// connection, so one sent ahead of that surface is refused as unknown.
-    pub(super) held_own_invocations:
-        std::collections::VecDeque<tilo_actions::remote::InvokeRequest>,
+    pub(super) held_own_invocations: std::collections::VecDeque<HeldOwnInvocation>,
     /// Why the session action host last refused an invocation outright, so
     /// a fixture fails on the refusal instead of waiting out what it asked.
     #[cfg(any(test, feature = "test-support"))]
@@ -474,6 +473,13 @@ pub(super) enum BrokerReply {
     Receipt(tilo_actions::InvocationId),
     /// The state of an invocation being observed.
     Update(tilo_actions::InvocationId),
+}
+
+/// An invocation of this app's own action waiting for the route to carry the
+/// surface that offers it, and since when it waits.
+pub(super) struct HeldOwnInvocation {
+    pub(super) request: tilo_actions::remote::InvokeRequest,
+    pub(super) since: crate::time::Instant,
 }
 
 impl ActionRuntime {

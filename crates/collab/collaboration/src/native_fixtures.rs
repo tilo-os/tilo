@@ -117,6 +117,7 @@ pub(super) fn native_initial_invocation_fixture(
     workspace: Uuid,
     history: Vec<u8>,
     refused_channels: Vec<String>,
+    hold: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> (
     CollaborationManager,
     Box<dyn Fn() -> Vec<(tilo_actions::ActionAddress, bool)>>,
@@ -125,6 +126,7 @@ pub(super) fn native_initial_invocation_fixture(
         captures: Arc::new(std::sync::Mutex::new(Captures {
             committed_history_fixture: Some(history),
             committed_open_refused_channels: refused_channels,
+            committed_recheck_hold: hold,
             ..Captures::default()
         })),
         ..FakeBroker::default()
