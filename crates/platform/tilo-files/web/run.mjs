@@ -27,11 +27,13 @@ execFileSync('wasm-bindgen', [
   join(target, 'wasm32-unknown-unknown/debug/examples/web_probe.wasm'),
   '--target', 'web', '--out-dir', out, '--out-name', 'probe',
 ], {stdio: 'inherit'});
+// The browser driver waits on the page's changes: marking the document tells it the probe is in.
 writeFileSync(join(out, 'index.html'), `<!doctype html><meta charset="utf-8"><script type="module">
 import init, * as probe from './probe.js';
 await init();
 globalThis.probe = probe;
 globalThis.probeReady = true;
+document.documentElement.dataset.probe = 'ready';
 </script>`);
 
 const server = await serve(out);
