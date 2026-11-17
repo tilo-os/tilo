@@ -1503,9 +1503,16 @@ impl Session {
             Err(error) => {
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
+                let asked_before = state.asked_for_words;
                 if let Some(end) = state.finished_despite_failed_plan(conversation, error.detail())
                 {
                     return Ok(Some(end));
+                }
+                // It has just asked the model for its words: the next turn gives them. Ending the
+                // run here, in the turn that asked, told the person the agent did nothing after it
+                // had done every step.
+                if state.asked_for_words && !asked_before {
+                    return Ok(None);
                 }
                 if let Some(end) = state.failed_after_asking_for_words(error.detail()) {
                     // The closing turn failed even after the model was asked
@@ -1650,8 +1657,12 @@ impl Session {
                 conversation.continued();
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
+                let asked_before = state.asked_for_words;
                 if let Some(end) = state.finished_despite_failed_plan(conversation, &error) {
                     return Ok(Some(end));
+                }
+                if state.asked_for_words && !asked_before {
+                    return Ok(None);
                 }
                 if let Some(end) = state.failed_after_asking_for_words(&error) {
                     // The closing turn failed even after the model was asked

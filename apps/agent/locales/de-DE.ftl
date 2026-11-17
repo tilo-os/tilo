@@ -92,3 +92,4 @@ agent-failure-transport = Das Modell war nicht erreichbar. Versuche es noch einm
 agent-failure-no-answer = Der Agent hat nichts getan und nicht gesagt, was er getan hat.
 agent-failure-empty-answer = Der Agent hat ohne Antwort aufgehört. Frag noch einmal.
 agent-failure-stalled = Der Agent hat aufgehört: Er hat weiter gesucht, ohne voranzukommen, und nichts mehr geändert.
+agent-failure-steps-unsaid = Der Agent hat die Schritte unten ausgeführt, aber nicht gesagt, was dabei herauskam.

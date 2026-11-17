@@ -69,8 +69,10 @@ impl LoopState {
         if self.completed == 0 || self.parts.is_empty() || !self.undone_parts().is_empty() {
             return None;
         }
+        // Every part was done: the person reads that the steps ran and no words came, never
+        // that nothing was done.
         Some(LoopEnd::Failed(Failure::spoken(
-            &crate::i18n::t("agent-failure-no-answer"),
+            &crate::i18n::t("agent-failure-steps-unsaid"),
             error,
         )))
     }
