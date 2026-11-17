@@ -136,6 +136,10 @@ pub struct Message {
     /// What it asks one person, as its card reads to the page's reader.
     #[serde(default)]
     pub question: Option<crate::question_card::QuestionShown>,
+    /// What started the turn it asks for, as its byline says it where an author's name would
+    /// stand: a reminder or an event by its name. `None` on a message somebody wrote.
+    #[serde(default)]
+    pub cause: Option<String>,
     /// Retrying this reply asks the agent again: it failed, it is the reply the agent would
     /// write now (no newer reply has replaced it), and nobody has asked again yet.
     #[serde(default)]
@@ -226,6 +230,7 @@ impl Message {
             pinned: false,
             work: None,
             question: None,
+            cause: None,
             retry: false,
             retry_summons: None,
             attempts: 0,
@@ -455,6 +460,7 @@ impl Channel {
                 question: row.question.as_ref().and_then(|asked| {
                     question::shown_to(asked, me, rows.get(index + 1..).unwrap_or_default())
                 }),
+                cause: row.cause.as_ref().and_then(crate::cause::line),
                 // Retry is offered on the reply a person may ask again — the current attempt's,
                 // which failed — and it names the message that reply answered.
                 retry: retryable(rows, row),
@@ -854,6 +860,9 @@ fn grouped_messages<'a>(
         let continues = label.is_none()
             && previous.is_some_and(|before| {
                 before.author == message.author
+                    // What started a turn stands alone, under its own name.
+                    && before.cause.is_none()
+                    && message.cause.is_none()
                     && message.ts.saturating_sub(before.ts) <= RUN_WINDOW_SECS
             });
         out.push((label, message, continues));
@@ -897,7 +906,7 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
         .who(actor(author, &message.author))
         .square(false)
         .into();
-    let leading: Node = if continues {
+    let leading: Node = if continues || (message.cause.is_some() && message.author.is_person()) {
         // An empty avatar placeholder: the toolkit's own (a person's face drawn with nothing in
         // it), so a message that continues a run lines up under the first one's avatar.
         ui::AvatarBuilder::new(&cx.key(format!("lead-{}", message.id)))
@@ -913,7 +922,11 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
         let mut head = vec![
             ui::TextBuilder::new(
                 &cx.key(format!("author-{}", message.id)),
-                author_label(author, &message.author),
+                // What started a turn is named for itself, never as the person it is for.
+                message
+                    .cause
+                    .clone()
+                    .unwrap_or_else(|| author_label(author, &message.author)),
             )
             .role(ui::TextRole::Label)
             // A long name ends in an ellipsis in a narrow window; the time beside it stays whole.
@@ -1509,6 +1522,7 @@ mod tests {
             author_name: None,
             share: None,
             question: None,
+            cause: None,
             attempts: 0,
             sending: false,
         }
@@ -2475,6 +2489,7 @@ mod tests {
                 author_name: None,
                 share: None,
                 question: None,
+                cause: None,
                 attempts: 0,
                 sending: false,
             });

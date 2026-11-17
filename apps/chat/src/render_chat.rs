@@ -402,7 +402,11 @@ impl ChatApp {
         parts: &crate::app::PaintedMessage,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        if m.author.is_bot() || !m.author.is_person() || crate::host_model::is_provider_output(m) {
+        if m.author.is_bot()
+            || !m.author.is_person()
+            || crate::host_model::is_provider_output(m)
+            || m.cause.as_ref().is_some_and(|cause| !cause.by_person())
+        {
             return;
         }
         let name = parts.author.as_ref().map(|(rect, _)| *rect);
@@ -430,6 +434,15 @@ impl ChatApp {
         shown: Option<&'a vello::peniko::ImageData>,
     ) -> Author<'a> {
         let color = self.identity_colour(&m.author);
+        if m.cause.as_ref().is_some_and(|cause| !cause.by_person()) {
+            // What started a turn is named for itself, never drawn as the
+            // person it is for.
+            return Author::Agent {
+                name,
+                for_person: None,
+                color,
+            };
+        }
         if m.author.is_bot() {
             // The member a persona is linked to, by the name the workspace knows
             // them by: a linked account speaks as that member.
@@ -913,6 +926,7 @@ mod tests {
             author_name: None,
             share: None,
             question: None,
+            cause: None,
             attempts: 0,
             sending: false,
         };

@@ -62,6 +62,7 @@ __all__ = [
     "Anchor",
     "Answered",
     "Attached",
+    "Cause",
     "Choice",
     "ClipAttr",
     "ClipBlock",
@@ -80,8 +81,10 @@ __all__ = [
     "ShareAccess",
     "ShownAs",
     "ShownPersona",
+    "Starting",
     "Step",
     "StepUpdate",
+    "Stopped",
     "Transition",
     "WindowShare",
     "Withdrawn",
@@ -140,6 +143,8 @@ __all__ = [
     "AnswerQuestionArgs",
     "WithdrawQuestionArgs",
     "SettleQuestionArgs",
+    "AskAgentArgs",
+    "StopAgentArgs",
     "CarryCountsArgs",
     "StreamOutputArgs",
     "StartDraftArgs",
@@ -376,6 +381,12 @@ class Answered(TypedDict):
 Attached = dict[str, Any]
 """One of resource, text, image, video, file: an object whose case the app tags it with."""
 
+class Cause(TypedDict):
+    kind: str
+    label: str
+    key: str
+    person: str
+
 class Choice(TypedDict):
     id: str
     label: str
@@ -428,6 +439,8 @@ class Message(TypedDict):
     origin: Origin | None
     share: WindowShare | None
     question: Question | None
+    cause: Cause | None
+    stopped: Stopped | None
     attempts: int
 
 class NewMessage(TypedDict):
@@ -498,6 +511,11 @@ class ShownPersona(TypedDict):
     account: str
     linked: str | None
 
+class Starting(TypedDict):
+    kind: str
+    label: str
+    key: str
+
 class Step(TypedDict):
     id: str
     sequence: int
@@ -512,6 +530,10 @@ class StepUpdate(TypedDict):
     label: str
     outcome: str
     why: str | None
+
+class Stopped(TypedDict):
+    attempt: int
+    at: int
 
 class Transition(TypedDict):
     state: AgentWorkState
@@ -859,6 +881,19 @@ SettleQuestionArgs = TypedDict("SettleQuestionArgs", {
 })
 """The arguments of `settle-question`."""
 
+AskAgentArgs = TypedDict("AskAgentArgs", {
+    "text": "str",
+    "channel": "str",
+    "cause": "Starting",
+    "members": NotRequired["list[Any] | None"],
+})
+"""The arguments of `ask-agent`."""
+
+StopAgentArgs = TypedDict("StopAgentArgs", {
+    "message": "str",
+})
+"""The arguments of `stop-agent`."""
+
 CarryCountsArgs = TypedDict("CarryCountsArgs", {
     "earlier": "dict[str, dict[str, int]]",
 })
@@ -977,7 +1012,7 @@ RetireAgentArgs = TypedDict("RetireAgentArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@bcb2ea29e23d9546"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1331,7 +1366,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@bcb2ea29e23d9546"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1661,6 +1696,34 @@ class Messages(Resource):
         """Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("settle-question", items)
 
+    def ask_agent(self,
+        *,
+        text: str,
+        channel: str,
+        cause: Starting,
+        members: list[Any] | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["text"] = text
+        args["channel"] = channel
+        args["cause"] = cause
+        if members is not None:
+            args["members"] = members
+        return self.action("ask-agent", **args)
+
+    def ask_agent_many(self, items: list[AskAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `ask-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("ask-agent", items)
+
+    def stop_agent(self, *, message: str) -> None:
+        """Runs the app's action."""
+        return self.action("stop-agent", message=message)
+
+    def stop_agent_many(self, items: list[StopAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `stop-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("stop-agent", items)
+
     def carry_counts(self, *, earlier: dict[str, dict[str, int]]) -> None:
         """Runs the app's action."""
         return self.action("carry-counts", earlier=earlier)
@@ -1691,12 +1754,12 @@ class Messages(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"post", "post_many", "post_file", "post_file_many", "share_resource", "share_resource_many", "share_window", "share_window_many", "stop_sharing", "stop_sharing_many", "set_share_access", "set_share_access_many", "share_open", "share_open_many", "deliver_message", "deliver_message_many", "edit_message", "edit_message_many", "delete_message", "delete_message_many", "remove_message", "remove_message_many", "pin", "pin_many", "retry", "retry_many", "record_work", "record_work_many", "ask", "ask_many", "answer_question", "answer_question_many", "withdraw_question", "withdraw_question_many", "settle_question", "settle_question_many", "carry_counts", "carry_counts_many", "stream_output", "stream_output_many"})
+    __actions__ = frozenset({"post", "post_many", "post_file", "post_file_many", "share_resource", "share_resource_many", "share_window", "share_window_many", "stop_sharing", "stop_sharing_many", "set_share_access", "set_share_access_many", "share_open", "share_open_many", "deliver_message", "deliver_message_many", "edit_message", "edit_message_many", "delete_message", "delete_message_many", "remove_message", "remove_message_many", "pin", "pin_many", "retry", "retry_many", "record_work", "record_work_many", "ask", "ask_many", "answer_question", "answer_question_many", "withdraw_question", "withdraw_question_many", "settle_question", "settle_question_many", "ask_agent", "ask_agent_many", "stop_agent", "stop_agent_many", "carry_counts", "carry_counts_many", "stream_output", "stream_output_many"})
 
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@bcb2ea29e23d9546"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> None:
@@ -1714,7 +1777,7 @@ class Drafts(Resource):
 
 class Learned(Resource):
     """What your agents learned — `chat.learned`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@bcb2ea29e23d9546"
     @property
     def facts(self) -> list[Entry[Fact]]:
         """Read only."""
@@ -1765,7 +1828,7 @@ class Learned(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@bcb2ea29e23d9546"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1803,7 +1866,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@8f97350030092d32"
+    __surface__ = "so.tilo.chat@bcb2ea29e23d9546"
     agents: list[Entry[Agent]]
 
     def create_agent(self,

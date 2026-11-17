@@ -145,6 +145,11 @@ impl ChatApp {
     }
 
     pub(crate) fn message_author_name(&self, message: &crate::model::Message) -> String {
+        // What started a turn is named for itself, where an author's name
+        // would stand.
+        if let Some(line) = message.cause.as_ref().and_then(crate::cause::line) {
+            return line;
+        }
         if is_provider_output(message) {
             message
                 .appearance
