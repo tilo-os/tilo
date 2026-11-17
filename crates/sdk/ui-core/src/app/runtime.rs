@@ -391,6 +391,11 @@ pub(super) struct ActionRuntime {
     /// its cursors.
     pub(super) action_directory_retired:
         Option<super::action_directory_snapshot::ModelDirectoryCandidate>,
+    /// The snapshot a reader pages at a revision the app has moved past: held
+    /// beside what it publishes now, so the read keeps the directory it
+    /// started on whatever the app publishes meanwhile.
+    pub(super) action_directory_borrowed:
+        Option<super::action_directory_snapshot::ModelDirectoryCandidate>,
     pub(super) local_document_directory_pins:
         Vec<std::rc::Weak<super::action_directory_snapshot::LocalDocumentDirectoryPin>>,
     pub(super) bound_invocations: std::collections::HashMap<
@@ -507,6 +512,7 @@ impl ActionRuntime {
             action_directory_stamp: None,
             action_directory_snapshot: None,
             action_directory_retired: None,
+            action_directory_borrowed: None,
             local_document_directory_pins: Vec::new(),
             bound_invocations: std::collections::HashMap::new(),
             local_resource_cache: RefCell::new(None),

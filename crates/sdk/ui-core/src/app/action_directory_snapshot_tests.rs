@@ -1410,3 +1410,50 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_paged_read_continues_the_snapshot_its_revision_named;
+
+    phase a_page_read_on_answers_though_the_directory_moved_meanwhile;
+    // A read that pages a directory reads one snapshot: the revision it
+    // started on keeps answering while this app holds it, whatever changed
+    // since. A revision it never held is stale, and asked for again.
+    {
+        let (mut app, _) = declared_directory(3);
+        publish_declared_directory(&mut app);
+        let first = app.action_directory_page(directory_query("", "", 1, 8192, 8));
+        assert_eq!(first.rows.len(), 1);
+        assert!(!first.next_cursor.is_empty(), "the listing goes on");
+        let revision = first.revision.clone();
+        let first_resource = first.rows[0].resource.clone();
+        let mut second = directory_query(&revision, "", 1, 8192, 8);
+        second.cursor = first.next_cursor.clone();
+        // The app's document moves on and publishes what it now lists: a new
+        // revision, whose rows are not those the reader started on.
+        app.state_mut_for_test()
+            .doc
+            .put(ROOT, "wide", true)
+            .unwrap();
+        publish_declared_directory(&mut app);
+        let page = app.action_directory_page(second);
+        assert!(!page.stale_cursor, "the read keeps the snapshot it started on");
+        assert_eq!(page.revision, revision);
+        assert_eq!(page.rows.len(), 1);
+        assert_ne!(page.rows[0].resource, first_resource, "the second row follows the first");
+        // What the app publishes meanwhile is no part of the read either.
+        app.state_mut_for_test()
+            .doc
+            .put(ROOT, "effect", true)
+            .unwrap();
+        publish_declared_directory(&mut app);
+        let mut third = directory_query(&revision, "", 1, 8192, 8);
+        third.cursor = page.next_cursor.clone();
+        let page = app.action_directory_page(third);
+        assert!(!page.stale_cursor, "the third page reads on in the same snapshot");
+        assert_eq!(page.revision, revision);
+        assert_eq!(page.rows.len(), 1);
+        // A revision this app never held is still stale.
+        let unknown = directory_query("v5:unknown", "", 1, 8192, 8);
+        assert!(app.action_directory_page(unknown).stale_cursor);
+    }
+}
