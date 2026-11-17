@@ -868,6 +868,10 @@ mod tests {
     /// The body of [`a_holder_that_ended_holds_no_lock`]'s child, and a no-op in every other run:
     /// it takes the holder's lock and ends without unlocking it, as an ended process does.
     #[test]
+    #[allow(
+        clippy::exit,
+        reason = "the child ends still holding its lock: a return would run the destructor that unlocks it"
+    )]
     fn a_child_takes_the_holders_lock() {
         let Some(path) = std::env::var_os(CHILD_LOCK) else {
             return;
