@@ -1723,7 +1723,7 @@ impl Session {
         // looking for what to do: a turn of only that is not a lookup.
         if calls.iter().all(|call| {
             call.name != tools::INVOKE
-                && call.name != tools::canvas::SHOW
+                && call.name != tools::canvas::PLACE_TOOL
                 && call.name != tools::PLAN
                 && call.name != crate::programs::TILO
                 && call.name != tools::web::SEARCH_WEB
@@ -2011,16 +2011,16 @@ impl Session {
         self.report_task(run, TurnUpdate::Progress { message: line })
     }
 
-    /// A [`tools::canvas::SHOW`] call as the invoke of the canvas' place it is; `None` for any
+    /// A [`tools::canvas::PLACE_TOOL`] call as the invoke of the canvas' place it is; `None` for any
     /// other call. Showing is that place, its own tool so the call names only what it shows.
     fn shown_as_invoke(&mut self, call: &StreamedCall) -> Option<StreamedCall> {
-        (call.name == tools::canvas::SHOW).then(|| {
+        (call.name == tools::canvas::PLACE_TOOL).then(|| {
             let place = tools::canvas::place_id(&self.task_catalogue());
             StreamedCall {
                 index: call.index,
                 id: call.id.clone(),
                 name: tools::INVOKE.to_owned(),
-                input: tools::canvas::show_as_invoke(&call.input, place.as_deref()),
+                input: tools::canvas::place_as_invoke(&call.input, place.as_deref()),
             }
         })
     }

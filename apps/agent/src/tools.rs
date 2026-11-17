@@ -942,7 +942,7 @@ pub fn typed_loop_definitions() -> Vec<ToolDefinition> {
         list_operations_definition(),
         describe_operation_definition(),
         invoke_definition(),
-        canvas::show_definition(),
+        canvas::place_definition(),
         crate::pages::read_result_definition(),
         web::search_definition(),
         web::read_page_definition(),

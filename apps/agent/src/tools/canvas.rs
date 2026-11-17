@@ -32,25 +32,27 @@ const PLACE_PREFIX: &str = "shell:place:";
 /// The prefix of a tilolang app's resources and kinds.
 const TILOLANG_PREFIX: &str = "tl:";
 
-/// The tool that shows a resource on the canvas: the canvas' place as a step of its own, so a
+/// The tool that places a resource on the canvas: the canvas' place as a step of its own, so a
 /// call to show something names what it shows and nothing else. Most of what a person asks on
 /// the canvas is answered by showing, and `invoke` for it was the call models got wrong most,
-/// writing the place's parameters as the call (`{"resource": …}`) with no operation.
-pub const SHOW: &str = "show";
+/// writing the place's parameters as the call (`{"resource": …}`) with no operation. It is named
+/// for the place it is: named `show`, models took it for the style switch ("Show as…") too.
+pub const PLACE_TOOL: &str = PLACE;
 
-/// The [`SHOW`] tool's definition. Byte-stable across turns and tasks, like every loop tool.
+/// The [`PLACE_TOOL`] tool's definition. Byte-stable across turns and tasks, like every loop tool.
 #[must_use]
-pub fn show_definition() -> agent_provider_config::protocol::ToolDefinition {
+pub fn place_definition() -> agent_provider_config::protocol::ToolDefinition {
     agent_provider_config::protocol::ToolDefinition {
-        name: SHOW.into(),
-        description: ("Show a resource on the canvas, as a person places it there: beside \
+        name: PLACE_TOOL.into(),
+        description: ("Place a resource on the canvas, as a person places it there: beside \
              this conversation, or, with `beside`, next to the place already showing another \
              resource. The place already showing it comes forward instead. `resource` is an id \
              the canvas lists under \"What there is to show\", or one a program answered: \
              {\"resource\": \"tl:so.tilo.lang.mail:root-su4h67i5\"} shows the inbox; \
              {\"resource\": \"tl:so.tilo.lang.notes:root-v7cub7aw\", \"beside\": \
              \"tl:so.tilo.lang.mail:root-su4h67i5\"} puts the notes next to it. Put your reply \
-             on it to finish in the same response.")
+             on it to finish in the same response. How the canvas is shown (strips, frames) \
+             is its style step, never this.")
             .into(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -90,12 +92,12 @@ pub fn place_id(catalogue: &Catalogue) -> Option<String> {
         .map(Offer::id)
 }
 
-/// A [`SHOW`] call's input as the `invoke` of the canvas' place it is: the place by `place`, its
+/// A [`PLACE_TOOL`] call's input as the `invoke` of the canvas' place it is: the place by `place`, its
 /// id ([`place_id`]; by its address when the session publishes no canvas, which the invoke then
 /// names as no listed operation), with the call's resource, view and beside as its parameters and
 /// its reply as the invoke's.
 #[must_use]
-pub fn show_as_invoke(input: &serde_json::Value, place: Option<&str>) -> serde_json::Value {
+pub fn place_as_invoke(input: &serde_json::Value, place: Option<&str>) -> serde_json::Value {
     let mut parameters = serde_json::Map::new();
     for key in ["resource", "view", "beside"] {
         if let Some(value) = input.get(key).filter(|value| !value.is_null()) {
@@ -221,7 +223,7 @@ pub fn canvas_section(
     revealed.reveal(place.id());
     let _ = writeln!(
         s,
-        "Show a resource: `{SHOW}` with `\"resource\": …` (an id below, or one a program \
+        "Show a resource: `{PLACE_TOOL}` with `\"resource\": …` (an id below, or one a program \
          answered; add `\"view\"` when it has several). It stands beside this conversation, or \
          the place already showing it comes forward; `\"beside\": <id>` stands it next to the \
          place showing that resource instead (\"put my notes next to the inbox\")."

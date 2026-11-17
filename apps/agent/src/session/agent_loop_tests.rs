@@ -2313,7 +2313,7 @@ tilo_test_env::scenario! {
                     "list_operations",
                     "describe_operation",
                     "invoke",
-                    "show",
+                    "place",
                     "read_result",
                     "search_web",
                     "read_page",
