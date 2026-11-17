@@ -415,6 +415,30 @@ fn apply_now_reports_the_checked_changes() {
     assert!(frame.contains("changes"), "{frame}");
 }
 
+/// What the kernel dropped is read from the journal off the UI thread, so the read answers
+/// later. Asked through the app's own api, as the Blocked page asks for it, it is admitted
+/// as the job it declares and ends with what the journal said, or with why it said nothing.
+#[test]
+fn reading_what_was_blocked_is_a_job_that_ends() {
+    let mut app = hosted();
+    app.start_effect(&FirewallEffect::ReadBlocked)
+        .expect("the read is admitted as the job it declares");
+    tilo_test_env::wait_until("the journal to have answered", || {
+        app.settle();
+        app.effect_progress()
+            .iter()
+            .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+    });
+    let ended = app.effect_progress();
+    assert!(
+        matches!(
+            ended.last(),
+            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+        ),
+        "{ended:?}"
+    );
+}
+
 /// The rules are one list, allows first; pressing a header sorts by that column and
 /// pressing it again flips the order.
 #[test]

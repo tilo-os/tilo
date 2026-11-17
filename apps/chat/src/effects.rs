@@ -169,8 +169,10 @@ pub enum ChatEffect {
     #[effect(idempotent, returns, audience = "agents")]
     LiveContextStatus,
     /// Open Slack channel in browser
+    #[effect(job)]
     OpenSlackChannel { workspace: String, channel: String },
     /// Open Discord channel in browser
+    #[effect(job)]
     OpenDiscordChannel { server: String, channel: String },
     /// Join call
     ///

@@ -266,7 +266,12 @@ fn an_action_on_a_row_of_an_area_not_yet_read_reaches_it() {
         .expect("an address an agent kept reaches the display before its area is published");
     window.settle();
     let staged = window
-        .call("inspect-display-configuration", serde_json::json!({}))
+        .call_on_finished(
+            <crate::resource::Settings as ui::tilo_resource::Resource>::KIND,
+            "inspect-display-configuration",
+            serde_json::json!({}),
+        )
+        .map(|answered| answered.value)
         .expect("display observation is declared")
         .expect("observation returned");
     assert_eq!(

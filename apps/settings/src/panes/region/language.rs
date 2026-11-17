@@ -35,7 +35,7 @@ pub fn area(app: &SettingsApp) -> Option<&LanguageArea> {
 pub enum LanguageEffect {
     /// Show the desktop in a language, installing its language pack first
     /// when the repositories offer one; "device" follows the device's.
-    #[effect(idempotent)]
+    #[effect(job, idempotent)]
     ChooseLanguage {
         #[param("The language by a tag of it (de, de-DE) or as Region & formats names it")]
         language: String,
@@ -281,5 +281,53 @@ mod tests {
             unavailable: None,
         };
         assert_eq!(choices(&["en-US", "de-DE"], &offered), ["en", "de", "fr"]);
+    }
+
+    /// A language the device has no pack of is installed first, off the UI
+    /// thread, so choosing it answers later: through the app's dispatch it
+    /// runs as the job it declares. No installer serves a test, so it ends
+    /// saying so.
+    #[test]
+    fn choosing_a_language_that_is_installed_first_is_a_job() {
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
+
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<SettingsShell>::new().expect("Settings opens");
+        app.settle();
+        tilo_test_env::wait_until("the host to say what it offers", || {
+            app.settle();
+            app.with_widget::<crate::window::Inspected, _>(|settings| {
+                let area = area(settings).expect("the language area");
+                area.read();
+                area.offered.get().is_some()
+            })
+            .unwrap_or(false)
+        });
+        // The repositories offer a language no pack here has.
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
+            area(settings)
+                .expect("the language area")
+                .offered
+                .update(|offered| {
+                    offered.languages.push(OfferedLanguage {
+                        locale: "zz".into(),
+                        installed: false,
+                    });
+                });
+        });
+        let ended = app.effect(&crate::effects::SettingsEffect::from(
+            LanguageEffect::ChooseLanguage {
+                language: "zz".into(),
+            },
+        ));
+        assert!(
+            matches!(
+                &ended,
+                Err(ui::tilo_actions::ApiError::Failed(why))
+                    if *why == t("settings-region-language-no-installer")
+            ),
+            "{ended:?}"
+        );
     }
 }

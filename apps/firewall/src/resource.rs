@@ -171,7 +171,7 @@ pub enum FirewallEffect {
     /// Retry firewalld connection.
     #[effect(job)]
     Retry,
-    #[effect(kind = "read")]
+    #[effect(job, kind = "read")]
     ReadBlocked,
 }
 

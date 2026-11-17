@@ -180,6 +180,28 @@ mod tests {
             .sum()
     }
 
+    /// A location in a file the tree has not read yet is found on disk first. Where the
+    /// window may not wait for the disk, as in a page, that read answers later, so the
+    /// reveal runs as the job it declares and ends once the file is shown.
+    #[test]
+    fn revealing_a_file_the_tree_has_not_read_answers_once_it_is_read() {
+        let mut sample = sample();
+        let path = sample.root.join("src").join("later.rs");
+        std::fs::write(&path, "fn later() {}\n").unwrap();
+        let path = crate::disk::canonical(&path);
+        let _no_waits = ui::storage::waiting::forbid_on_this_thread();
+        sample
+            .app
+            .effect(&CodeEditorEffect::Reveal {
+                file: None,
+                path: Some(ui::tilo_resource::AbsolutePath::new(path).unwrap()),
+                line: 0,
+                column: 0,
+                results: false,
+            })
+            .expect("the location is shown once its folders are read");
+    }
+
     #[test]
     fn launching_a_folder_opens_it_as_a_project_of_its_own() {
         let mut sample = sample();
