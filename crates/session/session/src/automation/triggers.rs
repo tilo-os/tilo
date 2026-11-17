@@ -25,7 +25,7 @@ use tilo_automation::EVENT_INPUT;
 use tilo_automation::dispatch::{AppEvent, RecordEvent, app_event_object};
 use tilo_automation::{
     CatchUp, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, InvocationId, Schedule,
-    ScheduleClaim, Shortcut, TriggerSpec, Weekday,
+    ScheduleClaim, Shortcut, TriggerSpec,
 };
 
 /// A fire time this far in the past counts as missed rather than on time.
@@ -1279,6 +1279,7 @@ impl std::fmt::Debug for TriggerHost {
 mod tests {
     use chrono::{FixedOffset, Utc};
     use serde_json::json;
+    use tilo_automation::Weekday;
 
     use super::*;
 
