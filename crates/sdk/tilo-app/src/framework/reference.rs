@@ -249,6 +249,20 @@ impl Opener {
             .read_resource(parent, read)
     }
 
+    /// Keep `read`, a record of the window's workspace, current through the
+    /// host's record API ([`RemoteActions::follow_resource`]), as the app's
+    /// own request.
+    pub(crate) fn follow_resource(
+        &self,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> ui_core::FollowedRead {
+        self.0
+            .borrow_mut()
+            .api
+            .get_or_insert_with(RemoteActions::current)
+            .follow_resource(None, read)
+    }
+
     /// Follow the result of the action at `target` on this view's API,
     /// telling `then` each update ([`RemoteActions::follow_with`]).
     pub(crate) fn follow(

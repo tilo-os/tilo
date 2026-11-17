@@ -74,6 +74,8 @@ impl AppActions for PageActions {
             resource: target.address.resource.clone(),
             action: target.address.action,
             arguments,
+            // The person chose the row: nothing waits for what it answers.
+            answer: None,
         });
         Ok(())
     }

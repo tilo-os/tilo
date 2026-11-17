@@ -11,7 +11,7 @@ use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
     InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget, ResourceReadRequest, UpdateMark, serve,
+    RemoteActionTarget, ResourceReadRequest, UpdateMark, WatchScope, serve,
 };
 
 use crate::arriving::{Arrival, ArrivalWriter, Arriving, Source};
@@ -49,6 +49,16 @@ const OBSERVE_WAIT_MS: u32 = 10_000;
 const OBSERVE_INTERVAL: Duration = Duration::from_millis(200);
 /// A remote publisher cannot keep an application walking an unbounded or cyclic catalogue.
 const MAX_CATALOGUE_PAGES: usize = 64;
+/// How long a followed read asks its host to hold the answer for the next write. A host a connection
+/// reaches caps it at what it holds any waiting answer for; a desktop that hosts its windows in
+/// process holds it this long, so a record nobody writes costs its reader nothing in between.
+const FOLLOW_WAIT_MS: u32 = 60_000;
+/// How long a followed record is left before it is read again by a host that answers a waiting read
+/// at once, and after the first read its host could not answer.
+const FOLLOW_INTERVAL: Duration = Duration::from_secs(2);
+/// The longest a followed record is left between reads its host cannot answer: each one in a row
+/// doubles the wait up to this.
+const FOLLOW_RETRY_MAX: Duration = Duration::from_secs(64);
 /// How long one catalogue page may go unanswered. A connection that carries the request nowhere (no
 /// host in reach to answer it) must not leave the app waiting forever: past this, the read is refused
 /// as unavailable.
@@ -67,6 +77,9 @@ pub type CancellationCall = Arriving<(), ActionHostError>;
 /// A record read: the readings as every reader is answered them (`{"revision", "records": [{"record",
 /// "value" | "absent" | "arriving"}]}`).
 pub type ResourceReadCall = Arriving<serde_json::Value, ActionHostError>;
+/// A wait for a change of the workspace: `Ready(())` once what the watch follows may have changed,
+/// or why the host cannot tell when it does.
+pub type ChangedCall = Arriving<(), ActionHostError>;
 
 impl Arrival<InvocationUpdate, ActionHostError> {
     /// Whether the invocation can no longer change: refused, or finished.
@@ -117,6 +130,37 @@ impl std::fmt::Debug for Followed {
     }
 }
 
+/// A record [`RemoteActions::follow_resource`] keeps current: its readings as the host answers
+/// them now and after every write to it, for as long as the handle lives.
+pub struct FollowedRead {
+    remote: RemoteActions,
+    follow: u64,
+    answer: ResourceReadCall,
+}
+
+impl FollowedRead {
+    /// The record's latest readings: read again whenever a write to it lands, and failed with the
+    /// host's reason while it has never been read or once this reader may no longer read it.
+    #[must_use]
+    pub const fn call(&self) -> &ResourceReadCall {
+        &self.answer
+    }
+}
+
+impl Drop for FollowedRead {
+    fn drop(&mut self) {
+        self.remote.lock().following.remove(&self.follow);
+    }
+}
+
+impl std::fmt::Debug for FollowedRead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FollowedRead")
+            .field("follow", &self.follow)
+            .finish_non_exhaustive()
+    }
+}
+
 enum Transport {
     Session,
     /// Through an in-process host, as `caller`.
@@ -159,16 +203,53 @@ impl Running {
     }
 }
 
+/// One record read in flight.
+enum Reading {
+    /// Asked once: its answer is the call's.
+    Once(ArrivalWriter<serde_json::Value, ActionHostError>),
+    /// The next reading of a record that is followed.
+    Followed(u64),
+}
+
+/// A record [`RemoteActions::follow_resource`] keeps current.
+struct Following {
+    on_behalf_of: Option<InvocationId>,
+    /// The record as it was asked for; each read after the first names the revision shown and
+    /// waits for a write past it.
+    read: ResourceReadRequest,
+    answer: ArrivalWriter<serde_json::Value, ActionHostError>,
+    /// The revision of the readings shown; `None` until the first arrived.
+    revision: Option<String>,
+    /// Whether the call says why the record, never read yet, could not be read.
+    unread: bool,
+    /// When the read in flight was sent to wait for a write past `revision`.
+    waiting: Option<Instant>,
+    /// When the record is read again: after a read its host could not answer, and on the interval
+    /// for a host that holds no read.
+    read_at: Option<Instant>,
+    /// How long it is left after the next read its host cannot answer.
+    retry: Duration,
+}
+
 struct Inner {
     transport: Transport,
+    /// Made by [`RemoteActions::current`] with no host entered: served by the host entered on its
+    /// thread when it first sends under one.
+    unbound: bool,
     outbox: Vec<RemoteActionMessage>,
     next_correlation: u64,
     catalogue: HashMap<u64, CatalogueWalk>,
     invocations: HashMap<InvocationId, Running>,
-    reads: HashMap<u64, ArrivalWriter<serde_json::Value, ActionHostError>>,
+    reads: HashMap<u64, Reading>,
+    following: HashMap<u64, Following>,
+    next_follow: u64,
+    changes: HashMap<u64, ArrivalWriter<(), ActionHostError>>,
     /// Whether the host holds a waiting observe until something changes; cleared the first time it
     /// answers one at once with nothing new.
     host_waits: bool,
+    /// Whether the host holds a waiting read until a write lands; cleared the first time it answers
+    /// one at once with the revision it was told.
+    host_holds_reads: bool,
     wake: WakeHandle,
 }
 
@@ -205,13 +286,21 @@ impl RemoteActions {
 
     /// The client this thread's app should use: one served by the host a [`RemoteActions::enter`] guard
     /// installed, else [`session`](Self::session).
+    ///
+    /// A window a desktop builds before it serves its windows (the one it opens with) makes its
+    /// client with no host entered. Such a client is the entered host's from the first request it
+    /// sends under one, with whatever it asked before: a window never talks past the desktop that
+    /// hosts it.
     #[must_use]
     pub fn current() -> Self {
-        SERVED
-            .with(|served| served.borrow().clone())
-            .map_or_else(Self::session, |(host, caller)| {
-                Self::with_host(host, caller)
-            })
+        SERVED.with(|served| served.borrow().clone()).map_or_else(
+            || {
+                let client = Self::session();
+                client.lock().unbound = true;
+                client
+            },
+            |(host, caller)| Self::with_host(host, caller),
+        )
     }
 
     /// Serve every client [`current`](Self::current) makes on this thread from `host`, as `caller`,
@@ -229,12 +318,17 @@ impl RemoteActions {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 transport,
+                unbound: false,
                 outbox: Vec::new(),
                 next_correlation: 1,
                 catalogue: HashMap::new(),
                 invocations: HashMap::new(),
                 reads: HashMap::new(),
+                following: HashMap::new(),
+                next_follow: 1,
+                changes: HashMap::new(),
                 host_waits: true,
+                host_holds_reads: true,
                 wake: WakeHandle::new(),
             })),
         }
@@ -434,7 +528,9 @@ impl RemoteActions {
             let mut inner = self.lock();
             let correlation = inner.next_correlation;
             inner.next_correlation = inner.next_correlation.wrapping_add(1);
-            inner.reads.insert(correlation, answer.writer());
+            inner
+                .reads
+                .insert(correlation, Reading::Once(answer.writer()));
             correlation
         };
         self.send(RemoteActionMessage::ResourceRead {
@@ -445,11 +541,87 @@ impl RemoteActions {
         answer
     }
 
-    /// Whether any request is still waiting for its answer.
+    /// Keep a record of the window's workspace current: `read` as the host answers it now, and
+    /// again after every write to it, for as long as the returned handle lives. Each read is the
+    /// host's to decide, as [`Self::read_resource`]'s is: a reader that may no longer read the
+    /// record is told so and shown nothing more.
+    ///
+    /// Nothing runs between writes. Each read after the first names the revision shown and asks the
+    /// host to hold its answer until the record differs (`after`, `wait_ms`), so a record nobody
+    /// writes costs its reader no frame and no timer; a host that holds no read is asked again on
+    /// an interval. `read`'s own `after` and `wait_ms` are not used.
+    #[must_use]
+    pub fn follow_resource(
+        &self,
+        on_behalf_of: Option<InvocationId>,
+        mut read: ResourceReadRequest,
+    ) -> FollowedRead {
+        read.after = None;
+        read.wait_ms = None;
+        let answer = Arriving::pending(self.source());
+        let now = crate::background::Background::current().now();
+        let (follow, first) = {
+            let mut inner = self.lock();
+            let follow = inner.next_follow;
+            inner.next_follow = inner.next_follow.wrapping_add(1);
+            inner.following.insert(
+                follow,
+                Following {
+                    on_behalf_of,
+                    read,
+                    answer: answer.writer(),
+                    revision: None,
+                    unread: false,
+                    waiting: None,
+                    read_at: None,
+                    retry: FOLLOW_INTERVAL,
+                },
+            );
+            (follow, next_read(&mut inner, follow, false, now))
+        };
+        if let Some(first) = first {
+            self.send(first);
+        }
+        FollowedRead {
+            remote: self.clone(),
+            follow,
+            answer,
+        }
+    }
+
+    /// Ask the host to answer when what a watch of the workspace follows under `scope` may have
+    /// changed: a write landed in its records, or who is in it moved. A host that cannot tell
+    /// says so at once.
+    #[must_use]
+    pub fn changed(&self, scope: WatchScope) -> ChangedCall {
+        let answer = Arriving::pending(self.source());
+        let correlation = {
+            let mut inner = self.lock();
+            let correlation = inner.next_correlation;
+            inner.next_correlation = inner.next_correlation.wrapping_add(1);
+            inner.changes.insert(correlation, answer.writer());
+            correlation
+        };
+        self.send(RemoteActionMessage::ChangedRequest { correlation, scope });
+        answer
+    }
+
+    /// Whether any request is still waiting for its answer. A followed record waits for its first
+    /// readings only: the read held for its next write is not something this client is busy with.
     #[must_use]
     pub fn is_busy(&self) -> bool {
         let inner = self.lock();
-        !inner.catalogue.is_empty() || !inner.invocations.is_empty() || !inner.reads.is_empty()
+        !inner.catalogue.is_empty()
+            || !inner.invocations.is_empty()
+            || !inner.changes.is_empty()
+            || inner
+                .reads
+                .values()
+                .any(|reading| matches!(reading, Reading::Once(_)))
+            || inner
+                .following
+                .values()
+                .any(|following| following.revision.is_none() && !following.unread)
     }
 
     /// Ask the host to cancel an invocation this client is still observing.
@@ -474,8 +646,14 @@ impl RemoteActions {
     }
 
     fn send(&self, message: RemoteActionMessage) {
-        let served = {
+        let (served, asked_before) = {
             let mut inner = self.lock();
+            if inner.unbound
+                && let Some((host, caller)) = SERVED.with(|served| served.borrow().clone())
+            {
+                inner.transport = Transport::Host { host, caller };
+                inner.unbound = false;
+            }
             let served = match &inner.transport {
                 Transport::Session => None,
                 Transport::Host { host, caller } => Some((Arc::clone(host), caller.clone())),
@@ -485,29 +663,32 @@ impl RemoteActions {
                 inner.wake.wake();
                 return;
             }
-            served
+            // What it asked before its host was entered is that host's to answer too.
+            (served, std::mem::take(&mut inner.outbox))
         };
         let Some((host, caller)) = served else {
             return;
         };
-        let Some(answer) = serve(&host, &caller, message) else {
-            return;
-        };
-        let inner = Arc::clone(&self.inner);
-        answer.then(move |answer| {
-            if let Some(answer) = answer {
-                let follow_up = apply(&mut inner.lock_recover(), answer);
-                if let Some(next) = follow_up {
-                    Self { inner }.send(next);
+        for message in asked_before.into_iter().chain([message]) {
+            let Some(answer) = serve(&host, &caller, message) else {
+                continue;
+            };
+            let inner = Arc::clone(&self.inner);
+            answer.then(move |answer| {
+                if let Some(answer) = answer {
+                    let follow_up = apply(&mut inner.lock_recover(), answer);
+                    if let Some(next) = follow_up {
+                        Self { inner }.send(next);
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     /// Ask after invocations a host that does not wait is still running, once each is due.
     pub fn poll(&self) {
         let now = crate::background::Background::current().now();
-        let due: Vec<InvocationId> = {
+        let (due, reads): (Vec<InvocationId>, Vec<RemoteActionMessage>) = {
             let mut inner = self.lock();
             inner.catalogue.retain(|_, walk| {
                 if walk.due > now {
@@ -518,7 +699,7 @@ impl RemoteActions {
                 });
                 false
             });
-            inner
+            let due = inner
                 .invocations
                 .iter_mut()
                 .filter(|(_, running)| running.observe_at.is_some_and(|at| at <= now))
@@ -526,10 +707,25 @@ impl RemoteActions {
                     running.observe_at = None;
                     *id
                 })
-                .collect()
+                .collect();
+            let follows: Vec<u64> = inner
+                .following
+                .iter()
+                .filter(|(_, following)| following.read_at.is_some_and(|at| at <= now))
+                .map(|(follow, _)| *follow)
+                .collect();
+            let hold = inner.host_holds_reads;
+            let reads = follows
+                .into_iter()
+                .filter_map(|follow| next_read(&mut inner, follow, hold, now))
+                .collect();
+            (due, reads)
         };
         for invocation in due {
             self.send(RemoteActionMessage::observe(invocation));
+        }
+        for read in reads {
+            self.send(read);
         }
     }
 
@@ -667,15 +863,25 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             correlation,
             result,
         } => {
-            let answer = inner.reads.remove(&correlation)?;
-            match result.and_then(|text| {
+            let reading = inner.reads.remove(&correlation)?;
+            let result = result.and_then(|text| {
                 serde_json::from_str(&text).map_err(|error| ActionHostError::Unavailable {
                     reason: format!("the record read answered no readings: {error}"),
                 })
-            }) {
-                Ok(readings) => answer.ready(readings),
-                Err(error) => answer.fail(error),
+            });
+            match reading {
+                Reading::Once(answer) => {
+                    answer.finish(result);
+                    None
+                }
+                Reading::Followed(follow) => followed(inner, follow, result),
             }
+        }
+        RemoteActionMessage::ChangedResponse {
+            correlation,
+            result,
+        } => {
+            inner.changes.remove(&correlation)?.finish(result);
             None
         }
         RemoteActionMessage::CatalogueRequest { .. }
@@ -704,10 +910,101 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::ChangesRequest { .. }
         | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::ChangedRequest { .. }
-        | RemoteActionMessage::ChangedResponse { .. }
         | RemoteActionMessage::SurfaceRequest { .. }
         | RemoteActionMessage::SurfaceResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => None,
+    }
+}
+
+/// The next read of the followed record `follow`: held for a write past the revision shown when
+/// `hold` and one is shown, else answered with the record as it is now.
+fn next_read(
+    inner: &mut Inner,
+    follow: u64,
+    hold: bool,
+    now: Instant,
+) -> Option<RemoteActionMessage> {
+    let following = inner.following.get_mut(&follow)?;
+    let hold = hold && following.revision.is_some();
+    following.read_at = None;
+    following.waiting = hold.then_some(now);
+    let mut read = following.read.clone();
+    read.after = following.revision.clone().filter(|_| hold);
+    read.wait_ms = hold.then_some(FOLLOW_WAIT_MS);
+    let on_behalf_of = following.on_behalf_of;
+    let correlation = inner.next_correlation;
+    inner.next_correlation = inner.next_correlation.wrapping_add(1);
+    inner.reads.insert(correlation, Reading::Followed(follow));
+    Some(RemoteActionMessage::ResourceRead {
+        correlation,
+        on_behalf_of,
+        read,
+    })
+}
+
+/// Show what a read of the followed record `follow` answered, and read it again: held for the next
+/// write where its host holds reads, after a wait where it does not or could not answer. A refusal
+/// ends the following: what was shown is no longer this reader's to see.
+fn followed(
+    inner: &mut Inner,
+    follow: u64,
+    result: Result<serde_json::Value, ActionHostError>,
+) -> Option<RemoteActionMessage> {
+    let background = crate::background::Background::current();
+    let now = background.now();
+    let again = |inner: &mut Inner, after: Duration| {
+        if let Some(following) = inner.following.get_mut(&follow) {
+            following.read_at = Some(now + after);
+        }
+        background.wake_after(after, inner.wake.clone());
+        None
+    };
+    let following = inner.following.get_mut(&follow)?;
+    let sent = following.waiting.take();
+    match result {
+        Ok(readings) => {
+            let revision = readings
+                .get("revision")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            following.retry = FOLLOW_INTERVAL;
+            if revision.is_none() || revision != following.revision {
+                following.revision.clone_from(&revision);
+                following.unread = false;
+                following.answer.ready(readings);
+            } else if sent.is_some_and(|sent| {
+                now.saturating_duration_since(sent)
+                    < Duration::from_millis(u64::from(OBSERVE_WAIT_MS / 2))
+            }) {
+                // A host that holds a read answers early only with something new.
+                inner.host_holds_reads = false;
+            }
+            if inner.host_holds_reads && revision.is_some() {
+                next_read(inner, follow, true, now)
+            } else {
+                again(inner, FOLLOW_INTERVAL)
+            }
+        }
+        Err(
+            error @ (ActionHostError::Unavailable { .. }
+            | ActionHostError::Busy { .. }
+            | ActionHostError::NotReady
+            | ActionHostError::Unanswered),
+        ) => {
+            // A record that was read keeps what it shows while its host cannot answer; one never
+            // read says why, once.
+            if following.revision.is_none() && !following.unread {
+                following.unread = true;
+                following.answer.fail(error);
+            }
+            let wait = following.retry;
+            following.retry = wait.saturating_mul(2).min(FOLLOW_RETRY_MAX);
+            again(inner, wait)
+        }
+        Err(error) => {
+            inner.following.remove(&follow)?.answer.fail(error);
+            None
+        }
     }
 }
 
