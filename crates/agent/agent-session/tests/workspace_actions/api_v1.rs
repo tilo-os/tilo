@@ -202,8 +202,8 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
     let secret = hook["secret"].as_str().unwrap().to_owned();
 
     let run_headers = [
-        ("tilo-run", "fill-jane"),
-        ("tilo-run-title", "Fill Jane's application"),
+        ("tilo-invocation", "fill-jane"),
+        ("tilo-invocation-title", "Fill Jane's application"),
     ];
     let (status, opened) = backend
         .post(
@@ -545,8 +545,8 @@ async fn a_hosted_workspace_streams_changes_finds_and_undoes_runs() {
         .into_body();
 
     let run_headers = [
-        ("tilo-run", "letter"),
-        ("tilo-run-title", "Write the letter"),
+        ("tilo-invocation", "letter"),
+        ("tilo-invocation-title", "Write the letter"),
     ];
     let (status, opened) = backend
         .post(

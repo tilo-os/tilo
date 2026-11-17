@@ -658,13 +658,13 @@ impl Client {
     }
 }
 
-/// The headers a call of a run of its own carries: its id, which is the
+/// The headers a call of an invocation of its own carries: its id, which is the
 /// idempotency key too, and the words History names it by.
 fn titled(title: &str) -> [(&'static str, String); 3] {
     let id = fresh_key();
     [
-        ("tilo-run", id.clone()),
-        ("tilo-run-title", title.to_owned()),
+        (crate::v1::INVOCATION_HEADER, id.clone()),
+        (crate::v1::INVOCATION_TITLE_HEADER, title.to_owned()),
         ("idempotency-key", id),
     ]
 }
