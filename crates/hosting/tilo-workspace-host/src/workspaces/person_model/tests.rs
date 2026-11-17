@@ -638,3 +638,138 @@ async fn nothing_printed_carries_the_key() {
     }
     assert!(printed[0].contains("keyed: true"), "{}", printed[0]);
 }
+
+fn scout(day: &str, limit_micros: Option<u64>) -> Spender {
+    Spender {
+        workspace: "a-workspace".into(),
+        agent: "scout".into(),
+        name: "Scout".into(),
+        day: day.into(),
+        limit_micros,
+    }
+}
+
+/// An agent's day counts every answer, and the call that starts once its
+/// keeper's limit is reached is refused before the provider is asked: the
+/// limit stops a run. A new day starts the count again, another agent has
+/// its own day, and a host that restarts still knows the day.
+#[tokio::test]
+async fn the_days_limit_stops_a_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let scripted = ScriptedProvider::answering(std::iter::repeat_n(
+        Reply::text("a step").costing(1_200_000),
+        4,
+    ));
+    workspaces.answer_models_with(scripted.clone());
+    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+    let today = scout("2026-11-17", Some(2_000_000));
+    let model = workspaces
+        .person_model(ADA, Interaction::Task)
+        .spending_as(today.clone());
+
+    let first = model.answer(&asking("Go on"), soon(), &mut |_| {}).await;
+    assert_eq!(first.unwrap().spent_today_micros, Some(1_200_000));
+    let second = model.answer(&asking("Go on"), soon(), &mut |_| {}).await;
+    assert_eq!(second.unwrap().spent_today_micros, Some(2_400_000));
+    let refused = model
+        .answer(&asking("Go on"), soon(), &mut |_| {})
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        ModelRefusal::DayLimitReached {
+            agent: "Scout".into(),
+            limit_micros: 2_000_000,
+            spent_micros: 2_400_000,
+        }
+    );
+    assert_eq!(refused.code(), "day-limit");
+    assert_eq!(
+        refused.words(None),
+        "Scout has used today's $2. Raise its limit to let it go on."
+    );
+    assert_eq!(scripted.asked().len(), 2, "the provider is not asked again");
+
+    // Another agent of the same person has its own day.
+    let other = Spender {
+        agent: "second".into(),
+        name: "Second".into(),
+        ..today.clone()
+    };
+    let theirs = workspaces
+        .person_model(ADA, Interaction::Task)
+        .spending_as(other)
+        .answer(&asking("Go on"), soon(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(theirs.spent_today_micros, Some(1_200_000));
+
+    // The host restarts: the day is still spent.
+    let relay = {
+        relay.shutdown().await;
+        test_host(dir.path(), &key, &owner).await
+    };
+    let workspaces = relay.workspaces();
+    let scripted = ScriptedProvider::answering([Reply::text("a new day").costing(10_000)]);
+    workspaces.answer_models_with(scripted.clone());
+    let model = workspaces.person_model(ADA, Interaction::Task);
+    let still = model
+        .clone()
+        .spending_as(today)
+        .answer(&asking("Go on"), soon(), &mut |_| {})
+        .await;
+    assert_eq!(still.unwrap_err().code(), "day-limit");
+    assert!(scripted.asked().is_empty());
+
+    // The next day starts at nothing.
+    let tomorrow = model
+        .spending_as(scout("2026-11-18", Some(2_000_000)))
+        .answer(&asking("Go on"), soon(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(tomorrow.spent_today_micros, Some(10_000));
+    assert_eq!(money(420_000), "$0.42");
+}
+
+/// Dozens of calls at once for one agent are each counted: no answer's cost
+/// is lost, whichever order they end in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn calls_at_once_are_each_counted_on_the_day() {
+    const CALLS: u64 = 36;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    workspaces.answer_models_with(ScriptedProvider::answering(
+        (0..=CALLS).map(|_| Reply::text("a part").costing(1_000)),
+    ));
+    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+    let model = workspaces
+        .person_model(ADA, Interaction::Subtask)
+        .spending_as(scout("2026-11-17", None));
+
+    let mut running = tokio::task::JoinSet::new();
+    for _ in 0..CALLS {
+        let model = model.clone();
+        running.spawn(async move {
+            model
+                .answer(&asking("A part"), soon(), &mut |_| {})
+                .await
+                .unwrap()
+                .spent_today_micros
+                .unwrap()
+        });
+    }
+    let mut totals = running.join_all().await;
+    totals.sort_unstable();
+    assert_eq!(
+        totals,
+        (1..=CALLS).map(|call| call * 1_000).collect::<Vec<_>>(),
+        "each answer saw the day one answer further"
+    );
+    let after = model.answer(&asking("One more"), soon(), &mut |_| {}).await;
+    assert_eq!(after.unwrap().spent_today_micros, Some((CALLS + 1) * 1_000));
+}

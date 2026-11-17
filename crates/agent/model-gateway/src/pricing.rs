@@ -86,8 +86,56 @@ struct Row {
 /// id contains decides. Prices are list prices in millionths of the currency
 /// per million tokens: input, cache read, cache write, output.
 const PRICES: &[Row] = &[
-    // Anthropic: cache reads cost a tenth of the input, cache writes a
-    // quarter more.
+    // Anthropic, the current models first: cache writes cost a quarter more
+    // than the input, cache reads a tenth of it or what the row says.
+    Row {
+        pattern: "claude-fable-5-1",
+        price: Price::new(10_000_000, 250_000, 12_500_000, 50_000_000),
+    },
+    Row {
+        pattern: "claude-mythos-5-1",
+        price: Price::new(10_000_000, 250_000, 12_500_000, 50_000_000),
+    },
+    Row {
+        pattern: "claude-fable-5",
+        price: Price::new(10_000_000, 1_000_000, 12_500_000, 50_000_000),
+    },
+    Row {
+        pattern: "claude-mythos-5",
+        price: Price::new(10_000_000, 1_000_000, 12_500_000, 50_000_000),
+    },
+    Row {
+        pattern: "claude-opus-5-5",
+        price: Price::new(4_000_000, 200_000, 5_000_000, 20_000_000),
+    },
+    Row {
+        pattern: "claude-opus-5",
+        price: Price::new(5_000_000, 500_000, 6_250_000, 25_000_000),
+    },
+    Row {
+        pattern: "claude-opus-4-8",
+        price: Price::new(5_000_000, 500_000, 6_250_000, 25_000_000),
+    },
+    Row {
+        pattern: "claude-opus-4-7",
+        price: Price::new(5_000_000, 500_000, 6_250_000, 25_000_000),
+    },
+    Row {
+        pattern: "claude-opus-4-6",
+        price: Price::new(5_000_000, 500_000, 6_250_000, 25_000_000),
+    },
+    Row {
+        pattern: "claude-sonnet-5",
+        price: Price::new(2_000_000, 200_000, 2_500_000, 10_000_000),
+    },
+    // Its price for a prompt of up to a hundred thousand tokens; a longer
+    // one costs five times as much, which a price per token cannot say.
+    Row {
+        pattern: "claude-haiku-5",
+        price: Price::new(100_000, 10_000, 125_000, 500_000),
+    },
+    // Anthropic's earlier models: cache reads cost a tenth of the input,
+    // cache writes a quarter more.
     Row {
         pattern: "claude-opus",
         price: Price::new(15_000_000, 1_500_000, 18_750_000, 75_000_000),
@@ -214,6 +262,34 @@ mod tests {
             let price = price_of("claude-sonnet-4-5").expect("a priced model");
             assert_eq!(price.of(&usage(1_000_000, 0, 0, 0)), 3_000_000);
             assert_eq!(price.of(&usage(0, 0, 0, 1_000_000)), 15_000_000);
+        }
+
+        phase the_current_claude_models_cost_what_their_provider_lists;
+        {
+            let million = usage(1_000_000, 0, 0, 0);
+            for (model, input, output) in [
+                ("claude-fable-5-1", 10_000_000, 50_000_000),
+                ("claude-opus-5-5", 4_000_000, 20_000_000),
+                ("claude-opus-5", 5_000_000, 25_000_000),
+                ("claude-opus-4-8", 5_000_000, 25_000_000),
+                ("claude-sonnet-5-5", 2_000_000, 10_000_000),
+                ("claude-sonnet-5", 2_000_000, 10_000_000),
+                ("claude-sonnet-4-6", 3_000_000, 15_000_000),
+                ("claude-haiku-5-5", 100_000, 500_000),
+                ("claude-haiku-4-5", 1_000_000, 5_000_000),
+            ] {
+                assert_eq!(cost_micros(model, &million), input, "{model}");
+                assert_eq!(
+                    cost_micros(model, &usage(0, 0, 0, 1_000_000)),
+                    output,
+                    "{model}"
+                );
+            }
+            // A prompt read from the cache costs what each model's row says.
+            let cached = usage(1_000_000, 1_000_000, 0, 0);
+            assert_eq!(cost_micros("claude-fable-5-1", &cached), 250_000);
+            assert_eq!(cost_micros("claude-opus-5-5", &cached), 200_000);
+            assert_eq!(cost_micros("claude-sonnet-5-5", &cached), 200_000);
         }
 
         phase the_most_specific_row_names_the_price;

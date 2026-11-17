@@ -12,3 +12,4 @@ model-address-refused = { $provider } hat eine Adresse, die von hier aus nicht e
 model-settings-unreadable = Deine Modelleinstellungen konnten nicht gelesen werden. Versuche es gleich noch einmal.
 model-cannot-take-picture = { $model } liest keine Bilder. Wähle in den Einstellungen ein Modell, das es kann.
 model-workspace-refuses = Dieser Arbeitsbereich lässt seine Inhalte nicht an { $provider } gehen.
+model-day-limit = { $agent } hat das heutige Limit von { $limit } aufgebraucht. Erhöhe das Limit, damit es weitergeht.

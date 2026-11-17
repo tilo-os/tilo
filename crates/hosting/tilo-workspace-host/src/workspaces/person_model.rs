@@ -44,6 +44,8 @@ use super::person_settings::{credentials, key_id, provider_config};
 mod live;
 #[cfg(any(test, feature = "test-support"))]
 pub mod scripted;
+mod spend;
+pub use spend::Spender;
 #[cfg(test)]
 mod tests;
 #[cfg(all(test, feature = "agents"))]
@@ -110,6 +112,16 @@ pub enum ModelRefusal {
         /// The provider, as the person named it.
         provider: String,
     },
+    /// The agent the call is for has used what its keeper lets it spend in a
+    /// day.
+    DayLimitReached {
+        /// The agent, as its keeper named it.
+        agent: String,
+        /// The most it may spend in a day, in millionths of the currency.
+        limit_micros: u64,
+        /// What it has spent today.
+        spent_micros: u64,
+    },
     /// The person's settings or their vault could not be read.
     SettingsUnreadable,
     /// The provider was asked and gave no answer: its own failure, the
@@ -128,6 +140,7 @@ impl ModelRefusal {
             Self::AddressRefused { .. } => "address-refused",
             Self::CannotTake { .. } => "cannot-take",
             Self::WorkspaceRefuses { .. } => "workspace-refuses",
+            Self::DayLimitReached { .. } => "day-limit",
             Self::SettingsUnreadable => "settings-unreadable",
             Self::Provider(_) => "provider",
         }
@@ -171,6 +184,15 @@ impl ModelRefusal {
                 args.set("provider", provider.as_str());
                 "model-workspace-refuses"
             }
+            Self::DayLimitReached {
+                agent,
+                limit_micros,
+                ..
+            } => {
+                args.set("agent", agent.as_str());
+                args.set("limit", money(*limit_micros));
+                "model-day-limit"
+            }
             Self::SettingsUnreadable => "model-settings-unreadable",
             // A provider's failure is already a sentence safe to show: it
             // never carries a credential or the provider's own text.
@@ -186,9 +208,9 @@ impl ModelRefusal {
         let kind = match self {
             Self::NoModelLinked { .. } | Self::ChoiceUnusable { .. } => ErrorKind::NoProvider,
             Self::NoKey { .. } => ErrorKind::Authentication,
-            Self::AddressRefused { .. } | Self::WorkspaceRefuses { .. } => {
-                ErrorKind::PermissionDenied
-            }
+            Self::AddressRefused { .. }
+            | Self::WorkspaceRefuses { .. }
+            | Self::DayLimitReached { .. } => ErrorKind::PermissionDenied,
             Self::CannotTake { .. } => ErrorKind::InvalidRequest,
             Self::SettingsUnreadable => ErrorKind::Unavailable,
             Self::Provider(error) => return error.clone(),
@@ -197,6 +219,18 @@ impl ModelRefusal {
             kind,
             message: self.words(None),
         }
+    }
+}
+
+/// `micros` millionths of the currency, as a person reads an amount: `$5`,
+/// `$0.42`.
+fn money(micros: u64) -> String {
+    let cents = micros / 10_000;
+    let (units, hundredths) = (cents / 100, cents % 100);
+    if hundredths == 0 {
+        format!("${units}")
+    } else {
+        format!("${units}.{hundredths:02}")
     }
 }
 
@@ -241,6 +275,10 @@ pub struct Answer {
     pub response: ModelResponse,
     /// What answered.
     pub linked: Linked,
+    /// What the agent the call was for has spent today, this answer
+    /// included, in millionths of the currency; none for a call that
+    /// spends no agent's day ([`PersonModel::spending_as`]).
+    pub spent_today_micros: Option<u64>,
 }
 
 impl Answer {
@@ -326,6 +364,8 @@ impl ModelProvider for NoProvider {
 pub(super) struct Models {
     provider: std::sync::RwLock<Arc<dyn ModelProvider>>,
     private_addresses: AtomicBool,
+    /// What each person's agents spent today.
+    spend: spend::Ledger,
     /// The runtime a caller that cannot wait asynchronously is answered on
     /// ([`PersonModel::answer_blocking`]).
     runtime: Option<tokio::runtime::Handle>,
@@ -343,6 +383,7 @@ impl Models {
         Self {
             provider: std::sync::RwLock::new(host_provider()),
             private_addresses: AtomicBool::new(false),
+            spend: spend::Ledger::default(),
             runtime: tokio::runtime::Handle::try_current().ok(),
         }
     }
@@ -375,6 +416,7 @@ impl Workspaces {
             root: self.person_settings_root(&person),
             kind,
             workspace: None,
+            spender: None,
         }
     }
 
@@ -406,6 +448,8 @@ pub struct PersonModel {
     kind: Interaction,
     /// The workspace the work is in, when its caller said.
     workspace: Option<WorkspaceId>,
+    /// The agent whose day the calls spend, when they are an agent's.
+    spender: Option<Spender>,
 }
 
 impl std::fmt::Debug for PersonModel {
@@ -433,6 +477,16 @@ impl PersonModel {
         self
     }
 
+    /// This model, asked for `spender`: an agent whose keeper bounds what
+    /// it may spend in a day. Every answer's cost is counted on that day,
+    /// also when many calls run at once, and a call that starts once the
+    /// limit is reached is refused before the provider is asked.
+    #[must_use]
+    pub fn spending_as(mut self, spender: Spender) -> Self {
+        self.spender = Some(spender);
+        self
+    }
+
     /// What would answer now, or why nothing can. It reads the person's
     /// settings and vault from disk, so an asynchronous caller asks it off
     /// the runtime's workers.
@@ -449,6 +503,7 @@ impl PersonModel {
         deadline: Instant,
         events: Events<'_>,
     ) -> Result<Answer, ModelRefusal> {
+        self.within_day()?;
         // The settings and the vault are files: read off the runtime's
         // workers, which serve every other member meanwhile.
         let reading = self.clone();
@@ -476,10 +531,35 @@ impl PersonModel {
         .await
         .map_err(|_| ModelRefusal::Provider(ModelError::new(ErrorKind::TimedOut)))?
         .map_err(ModelRefusal::Provider)?;
+        let spent_today_micros = self.spender.as_ref().map(|spender| {
+            self.models
+                .spend
+                .charge(&self.root, spender, response.cost_micros)
+        });
         Ok(Answer {
             response,
             linked: resolved.linked(),
+            spent_today_micros,
         })
+    }
+
+    /// Refuses a call for an agent that has used its day.
+    fn within_day(&self) -> Result<(), ModelRefusal> {
+        let Some(spender) = &self.spender else {
+            return Ok(());
+        };
+        let Some(limit_micros) = spender.limit_micros else {
+            return Ok(());
+        };
+        let spent_micros = self.models.spend.spent(&self.root, spender);
+        if spent_micros >= limit_micros {
+            return Err(ModelRefusal::DayLimitReached {
+                agent: spender.name.clone(),
+                limit_micros,
+                spent_micros,
+            });
+        }
+        Ok(())
     }
 
     /// [`Self::answer`] for a caller on a thread of its own, which waits
