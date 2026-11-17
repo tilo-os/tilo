@@ -52,8 +52,8 @@ pub struct PlaceProps {
     /// there filters them as every context menu does (`canvas.md` §1, "Right-click keeps its
     /// menu"). A right-click on content with a menu of its own (a field, a row) is that
     /// content's.
-    pub subject: Option<crate::component::ResourceId>,
-    /// The place's menu: the commands the host filled from its subject.
+    pub target: Option<crate::component::ResourceId>,
+    /// The place's menu: the commands the host filled from its target.
     #[component(part)]
     pub items: Vec<MenuItemProps>,
 }
@@ -87,7 +87,7 @@ impl Described for CanvasPlace {
             carries,
             controls,
             body,
-            subject: _,
+            target: _,
             items,
         } = props;
         let items = Rc::new(RefCell::new(items));

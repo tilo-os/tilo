@@ -94,7 +94,7 @@ pub struct TriggerInfo {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TriggerArg {
-    Subject,
+    Target,
     /// A root record of the package, by its type's id.
     Root(String),
 }
@@ -1455,7 +1455,7 @@ impl Resolver<'_> {
                 continue;
             }
             if i == 0 {
-                self.err("E053", place.span, format!("`{}` is a place a view supplies: it follows the action's subject directly, as `{}: Option<T> (above)`", p.name.name, p.name.name));
+                self.err("E053", place.span, format!("`{}` is a place a view supplies: it follows the action's target directly, as `{}: Option<T> (above)`", p.name.name, p.name.name));
                 continue;
             }
             if place.name != "above" {
@@ -1463,7 +1463,7 @@ impl Resolver<'_> {
                 continue;
             }
             if !in_run {
-                self.err("E053", place.span, format!("`{}` is a place a view supplies: it follows the action's subject directly, as `{}: Option<T> (above)`", p.name.name, p.name.name));
+                self.err("E053", place.span, format!("`{}` is a place a view supplies: it follows the action's target directly, as `{}: Option<T> (above)`", p.name.name, p.name.name));
                 continue;
             }
             if !matches!(params.get(i).map(|p| &p.ty), Some(Ty::Option(_))) {
@@ -1618,12 +1618,12 @@ impl Resolver<'_> {
                     let mut p = self.presentation(a, &params);
                     if a.presents_state() {
                         match params.first() {
-                            Some(subject) => {
+                            Some(target) => {
                                 let key = crate::ids::present_key(&name.name);
                                 p.view = Some(id_of(lock, &key));
-                                presents.push((key, subject.clone()));
+                                presents.push((key, target.clone()));
                             }
-                            None => self.err("E090", name.span, format!("`{}` presents a state of its subject, its first parameter, and has none; take the resource first, or write `label:` and `icon:` as plain values", name.name)),
+                            None => self.err("E090", name.span, format!("`{}` presents a state of its target, its first parameter, and has none; take the resource first, or write `label:` and `icon:` as plain values", name.name)),
                         }
                     }
                     p
@@ -1651,7 +1651,7 @@ impl Resolver<'_> {
                 self.states(v, lock);
             }
         }
-        for (key, subject) in presents {
+        for (key, target) in presents {
             self.env.callables.push(Callable {
                 kind: CKind::View,
                 id: id_of(lock, &key),
@@ -1659,7 +1659,7 @@ impl Resolver<'_> {
                 app: self.env.app.clone(),
                 own: true,
                 func: Some(func),
-                params: vec![subject],
+                params: vec![target],
                 result: Ty::View,
                 class: None,
                 uses: BTreeSet::new(),
@@ -1769,14 +1769,14 @@ impl Resolver<'_> {
     }
 
     /// An action's label, icon and role, from its modifiers and its `(icon: ..., label: ...)`. A
-    /// `label:` or `icon:` written as an `if` follows the subject; the static one is its `else`
+    /// `label:` or `icon:` written as an `if` follows the target; the static one is its `else`
     /// branch's value, which a menu shows without evaluating anything.
     fn presentation(&mut self, a: &ast::ActionDecl, params: &[ParamInfo]) -> Presentation {
-        let subject = params.first().and_then(|p| match &p.ty {
+        let target = params.first().and_then(|p| match &p.ty {
             Ty::Record(key) => self.env.type_info(key).cloned(),
             _ => None,
         });
-        let at_rest = |cond: &Expr| at_rest(cond, a, subject.as_ref(), 0);
+        let at_rest = |cond: &Expr| at_rest(cond, a, target.as_ref(), 0);
         let mut out = Presentation {
             label: action_label(&a.name.name, &a.doc.join("\n")),
             icon: None,
@@ -1810,7 +1810,7 @@ impl Resolver<'_> {
                 ("icon", _) => self.err(
                     "E090",
                     opt.value.span,
-                    "`icon:` takes an icon written with a dot, such as `icon: .plus`, or an `if` over the subject: `icon: if n.pinned { .pin_off } else { .pin }`",
+                    "`icon:` takes an icon written with a dot, such as `icon: .plus`, or an `if` over the target: `icon: if n.pinned { .pin_off } else { .pin }`",
                 ),
                 ("label", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
                     out.label = plain_text(&opt.value).unwrap_or_default();
@@ -1827,7 +1827,7 @@ impl Resolver<'_> {
                 ("label", _) => self.err(
                     "E090",
                     opt.value.span,
-                    "`label:` takes text in quotes, without `{ }`, such as `label: \"New note\"`, or an `if` over the subject: `label: if n.pinned { \"Unpin\" } else { \"Pin\" }`",
+                    "`label:` takes text in quotes, without `{ }`, such as `label: \"New note\"`, or an `if` over the target: `label: if n.pinned { \"Unpin\" } else { \"Pin\" }`",
                 ),
                 ("on", _) => out.on = Some(opt.value.clone()),
                 // `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the
@@ -1899,7 +1899,7 @@ impl Resolver<'_> {
         None
     }
 
-    /// At most one `primary` action per subject type (its first parameter's record type).
+    /// At most one `primary` action per target type (its first parameter's record type).
     fn one_primary(&mut self, module: &ast::Module) {
         let mut seen: Vec<(TypeKey, String)> = Vec::new();
         for item in &module.items {
@@ -1907,7 +1907,7 @@ impl Resolver<'_> {
             let Some((ast::ActionRole::Primary, span)) = a.role else {
                 continue;
             };
-            let subject = self
+            let target = self
                 .env
                 .own_callable(&a.name.name)
                 .and_then(|c| c.params.first())
@@ -1915,19 +1915,19 @@ impl Resolver<'_> {
                     Ty::Record(key) => Some(key.clone()),
                     _ => None,
                 });
-            let Some(subject) = subject else {
+            let Some(target) = target else {
                 self.err("E090", span, format!("a primary action is the main thing to do with a resource, so its first parameter is a record; `{}` has none. Remove `primary`, or take the resource first", a.name.name));
                 continue;
             };
-            if let Some((_, first)) = seen.iter().find(|(k, _)| *k == subject) {
-                self.err("E090", span, format!("`{}` already has a primary action, `{first}`; a resource has one. Remove `primary` from `{}` or from `{first}`", subject.name, a.name.name));
+            if let Some((_, first)) = seen.iter().find(|(k, _)| *k == target) {
+                self.err("E090", span, format!("`{}` already has a primary action, `{first}`; a resource has one. Remove `primary` from `{}` or from `{first}`", target.name, a.name.name));
                 continue;
             }
-            seen.push((subject, a.name.name.clone()));
+            seen.push((target, a.name.name.clone()));
         }
     }
 
-    /// Two actions of one subject that declare the same shortcut: one would silently take the other's
+    /// Two actions of one target that declare the same shortcut: one would silently take the other's
     /// key wherever both are offered.
     fn one_shortcut_each(&mut self, module: &ast::Module) {
         let mut seen: Vec<(Option<TypeKey>, String, String)> = Vec::new();
@@ -2222,7 +2222,7 @@ fn block_expr(b: &ast::Block) -> Option<&Expr> {
 }
 
 /// What an `if` of `label:` or `icon:` shows where it is not evaluated (a menu of every item,
-/// History): the branch a subject at rest takes when [`at_rest`] can tell, else the `else` branch.
+/// History): the branch a target at rest takes when [`at_rest`] can tell, else the `else` branch.
 fn fallback<T>(
     e: &Expr,
     leaf: &impl Fn(&Expr) -> Option<T>,
@@ -2258,19 +2258,14 @@ fn fallback_icon(e: &Expr, at_rest: &impl Fn(&Expr) -> Option<bool>) -> Option<a
     )
 }
 
-/// The value of an action option's condition for a subject at rest (each Bool field at its default)
+/// The value of an action option's condition for a target at rest (each Bool field at its default)
 /// invoked with every parameter's default: `n.pinned` is `false`, and `done` with `done: Bool = not
 /// item.done` is `true`. `None` for a condition that reads anything else.
-fn at_rest(
-    cond: &Expr,
-    a: &ast::ActionDecl,
-    subject: Option<&TypeInfo>,
-    depth: u8,
-) -> Option<bool> {
+fn at_rest(cond: &Expr, a: &ast::ActionDecl, target: Option<&TypeInfo>, depth: u8) -> Option<bool> {
     if depth > 8 {
         return None;
     }
-    let deeper = |e: &Expr| at_rest(e, a, subject, depth.saturating_add(1));
+    let deeper = |e: &Expr| at_rest(e, a, target, depth.saturating_add(1));
     match &cond.kind {
         ExprKind::Bool(b) => Some(*b),
         ExprKind::Unary {
@@ -2292,7 +2287,7 @@ fn at_rest(
             if a.params.first().is_none_or(|p| &p.name.name != base) {
                 return None;
             }
-            let field = subject?.field(&name.name)?;
+            let field = target?.field(&name.name)?;
             match (&field.ty, &field.default) {
                 (Ty::Bool, None) => Some(false),
                 (Ty::Bool, Some(value)) => value.as_bool(),

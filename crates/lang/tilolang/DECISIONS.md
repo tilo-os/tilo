@@ -276,7 +276,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 
 - **Text and numbers are one method surface, on the value.** They are methods, not
   `text.`/`math.` namespaces, because everything else a value is asked (`items.len()`,
-  `items.map(...)`, `p.name()`) already reads that way and a call reads best where its subject
+  `items.map(...)`, `p.name()`) already reads that way and a call reads best where its target
   is. `checker/text_math.rs` lowers all of them, and `checker/methods.rs` holds the one list of
   names per type that both the lowering and the E027 message (and a container field's read)
   consult, so a name offered in a message is one the type takes. `Text.len`, `to_int`, `find`,
@@ -513,8 +513,8 @@ convergence.md, "Actions".
   not when the view renders. A call from an action computes it at the call, on the state the
   call sees. An explicit argument always wins.
 - **Presentation.** A `label:`, `icon:` or `on:` may read a defaulted parameter whose default
-  follows from the subject: the presentation view binds it from the subject first. The static
-  label (and icon) of an `if` is the branch a subject at rest takes, every Bool field at its
+  follows from the target: the presentation view binds it from the target first. The static
+  label (and icon) of an `if` is the branch a target at rest takes, every Bool field at its
   default and every parameter at its default (`if done` with `done: Bool = not item.done` is
   the `then` branch); when that cannot be told, the `else` branch, as before.
 - **A `.none` default is left out wherever it stands.** `= .none` needs no parameter before
@@ -748,8 +748,8 @@ search.md, "What a type declares" and "Types, references and paths".
   resource is a `type` with fields, so what holds a collection holds it as a field
   (`type Notebook { notes: Collection<Note> }`). A root is named (`root notebook: Notebook`)
   and reached as `notebook`, or `alias.notebook` from another package.
-- **A label that interpolates is read where it can be.** Over the subject alone it follows the
-  subject in the action's presentation view, as an `if` label does. Over other arguments
+- **A label that interpolates is read where it can be.** Over the target alone it follows the
+  target in the action's presentation view, as an `if` label does. Over other arguments
   (`"Move to {col.title}"`) it is read where the action is applied with them,
   `button(move_to(b, card, col))`; elsewhere the action's name stands in.
 - **Views are components in slots.** A slot that holds one toolkit component takes a view of

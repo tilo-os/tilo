@@ -401,7 +401,7 @@ pub(crate) fn toggles(
             .map(|action| action.toggles.clone())
     })??;
     match aref.args.first() {
-        Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), field)),
+        Some(Value::Ref(target)) => Some((ResourceRef::clone(&target.target), field)),
         _ => None,
     }
 }
@@ -422,7 +422,7 @@ pub(crate) fn invokes(
         .iter()
         .position(|arg| *arg == Value::Missing)
         .unwrap_or(aref.args.len());
-    // As the app publishes it: by its name, on the records of its subject's type when its subject
+    // As the app publishes it: by its name, on the records of its target's type when its target
     // is one the app declares, and on the app's own resource when it takes a record of another
     // (`publish_package`): the one address the window, the API and an agent name it by.
     let (asks, published, on) = host.find_in_packages(|package| {
@@ -433,12 +433,12 @@ pub(crate) fn invokes(
             .find(|action| action.id == aref.action)
             .map(|action| {
                 // An action runs on a record it is given first; one that takes a record its app
-                // declares no subject of (Today's cleanup over Tasks' list) is published on the
+                // declares no target of (Today's cleanup over Tasks' list) is published on the
                 // app's own resource. An action given no record is the view's, run in the window.
                 let on = match aref.args.first() {
-                    Some(Value::Ref(subject)) => {
-                        Some(if package.meta.subject_of(&action.params).is_some() {
-                            subject.target.id_string()
+                    Some(Value::Ref(target)) => {
+                        Some(if package.meta.target_of(&action.params).is_some() {
+                            target.target.id_string()
                         } else {
                             crate::publish::package_resource_id(&package.meta.app)
                         })

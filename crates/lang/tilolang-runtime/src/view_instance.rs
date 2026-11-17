@@ -261,7 +261,7 @@ impl ViewInstance {
         self.live.stats()
     }
 
-    /// The resources the window shows now, by [`ResourceRef::id_string`]: the view's subject
+    /// The resources the window shows now, by [`ResourceRef::id_string`]: the view's target
     /// and the items of the rows rendered (the visible rows and the overscan). What a surface
     /// publishes to a window is bounded by this, not by what the workspace holds.
     pub fn shown_refs(&self) -> Vec<String> {

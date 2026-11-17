@@ -63,7 +63,7 @@ pub(super) fn note_versions<C: idx::reflect::ChangeHead>(
             made
         };
         for made in made {
-            let subject = made
+            let target = made
                 .from
                 .as_ref()
                 .map(tilolang_runtime::value::ResourceRef::id_string);
@@ -72,13 +72,13 @@ pub(super) fn note_versions<C: idx::reflect::ChangeHead>(
             note(index, &at, made, stamp.as_ref(), &placed, counts);
             // What was made from a resource is a change to it too: a comment under a task
             // changed that task, for whoever made or read it, though not one of its fields.
-            if let Some(subject) = subject {
+            if let Some(target) = target {
                 let mut under = stood;
                 under.kind = VersionKind::Changed;
                 under.fields = Vec::new();
                 under.placed = Vec::new();
                 under.left = None;
-                note(index, &subject, under, stamp.as_ref(), &placed, counts);
+                note(index, &target, under, stamp.as_ref(), &placed, counts);
             }
         }
         for (item, left) in placed {

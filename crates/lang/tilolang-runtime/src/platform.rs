@@ -4,7 +4,7 @@
 //! Each answer is a value of the language: a host value type (`host.Action`, `host.Lens`,
 //! `host.Meta`, [`tilolang::host::VALUE_TYPES`]) held as a tuple of its fields in their order.
 //! What an answer depends on is read through the view's reads, so the view runs again when it
-//! moves: an action's label that follows its subject, a title, who is at a resource.
+//! moves: an action's label that follows its target, a title, who is at a resource.
 
 use std::rc::Rc;
 
@@ -118,7 +118,7 @@ pub(crate) fn all_asked(meta: &Meta, params: &[ParamMeta]) -> bool {
 }
 
 /// How many parameters of `action` the view offering it supplies: the places that follow its
-/// subject (`above: Option<Task> (above)`).
+/// target (`above: Option<Task> (above)`).
 fn places_of(action: &ActionMeta) -> usize {
     action
         .params
@@ -128,13 +128,13 @@ fn places_of(action: &ActionMeta) -> usize {
         .count()
 }
 
-/// What an offer of `action` on `subject` gives before the parameters it asks for: the subject,
+/// What an offer of `action` on `target` gives before the parameters it asks for: the target,
 /// then each place the view supplies, from `above` or as nothing when the offer stands in no
 /// view of the item.
-fn offered_args(action: &ActionMeta, subject: &RefValue, above: &Value) -> Vec<Value> {
+fn offered_args(action: &ActionMeta, target: &RefValue, above: &Value) -> Vec<Value> {
     let places = places_of(action);
     let mut args = Vec::with_capacity(places.saturating_add(1));
-    args.push(Value::Ref(subject.clone()));
+    args.push(Value::Ref(target.clone()));
     for _ in 0..places {
         args.push(above.clone());
     }
@@ -230,14 +230,14 @@ enum Decides {
     Applies,
 }
 
-/// One action offered on a subject, before it is presented.
+/// One action offered on a target, before it is presented.
 pub(crate) struct Offered<'m> {
     pub(crate) action: &'m ActionMeta,
-    /// What it is applied to: the subject, or the resource holding the subject and the subject.
+    /// What it is applied to: the target, or the resource holding the target and the target.
     pub(crate) args: Vec<Value>,
     /// Its parameters after those.
     pub(crate) rest: &'m [ParamMeta],
-    /// Whether it is presented for the subject: its own actions are, its holder's not.
+    /// Whether it is presented for the target: its own actions are, its holder's not.
     pub(crate) present: bool,
     /// The resource the invocation is made from, when it is made from one.
     pub(crate) from: Option<ResourceRef>,
@@ -248,7 +248,7 @@ pub(crate) struct Offered<'m> {
 }
 
 /// What a make offer is made from: the title the made resource starts with, and the type the
-/// subject is, which a parameter of the action may take.
+/// target is, which a parameter of the action may take.
 struct Source {
     title: String,
     app: String,
@@ -347,8 +347,8 @@ impl Core {
             Imp::FirstUnseen => self.first_unseen_import(a),
             Imp::SeenBy => self.seen_by_import(a),
             Imp::MetaOf => {
-                let subject = self.val(a.h(0)?)?;
-                let meta = match subject {
+                let target = self.val(a.h(0)?)?;
+                let meta = match target {
                     Value::Text(ty) => self.type_meta(&ty, None)?,
                     Value::Ref(r) => self.type_meta(&r.target.ty, Some(&r))?,
                     other => {
@@ -2056,13 +2056,13 @@ impl Core {
         Ok(sentence(&ty.name))
     }
 
-    /// The actions offered on `subject`: its type's own that need nothing else (what else it
+    /// The actions offered on `target`: its type's own that need nothing else (what else it
     /// takes has a default, which the invocation gets, or a form asks), and the actions of the
     /// resource holding it that take it as their second argument — in the order their packages
     /// declare them, the primary one first, each a `host.Action`. An app declares its actions in
     /// the order a person reads them, so a menu of one item lists them as it wrote them.
-    pub(crate) fn actions_on(&self, subject: &RefValue, above: &Value) -> HResult<Vec<Value>> {
-        let target = &subject.target;
+    pub(crate) fn actions_on(&self, target: &RefValue, above: &Value) -> HResult<Vec<Value>> {
+        let held = &target.target;
         let packages = self.registry.borrow().packages();
         let rank = |pkg: &Rc<Package>| {
             packages
@@ -2071,9 +2071,9 @@ impl Core {
                 .unwrap_or(usize::MAX)
         };
         let mut found: Vec<(bool, usize, usize, Offered)> = Vec::new();
-        // The subject's own. Another app's resource names its type as `app#Type`, which
+        // The target's own. Another app's resource names its type as `app#Type`, which
         // resolves to the id its package declares before the package is looked up.
-        let own = self.registry.borrow().type_id(&target.ty).and_then(|id| {
+        let own = self.registry.borrow().type_id(&held.ty).and_then(|id| {
             let registry = self.registry.borrow();
             registry.type_info(&id)
         });
@@ -2090,7 +2090,7 @@ impl Core {
                 }
                 let shown = Offered {
                     action,
-                    args: offered_args(action, subject, above),
+                    args: offered_args(action, target, above),
                     rest: action
                         .params
                         .get(places_of(action).saturating_add(1)..)
@@ -2104,7 +2104,7 @@ impl Core {
             }
         }
         // The holder's, on it.
-        if let Some(holder) = self.holder_of(target) {
+        if let Some(holder) = self.holder_of(held) {
             let holder_ty = holder.ty.clone();
             for pkg in &packages {
                 let Some(holder_info) = pkg.type_by_id(&holder_ty) else {
@@ -2119,8 +2119,8 @@ impl Core {
                         continue;
                     }
                     let on_holder = names_type(&pkg.meta, &first.ty, holder_info.id.as_str());
-                    let takes_subject = names_type(&pkg.meta, &second.ty, &target.ty);
-                    if !(on_holder && takes_subject) {
+                    let takes_target = names_type(&pkg.meta, &second.ty, &held.ty);
+                    if !(on_holder && takes_target) {
                         continue;
                     }
                     let shown = Offered {
@@ -2128,9 +2128,9 @@ impl Core {
                         args: vec![
                             Value::Ref(RefValue {
                                 target: Rc::new(holder.clone()),
-                                author: subject.author.clone(),
+                                author: target.author.clone(),
                             }),
-                            Value::Ref(subject.clone()),
+                            Value::Ref(target.clone()),
                         ],
                         rest,
                         present: false,
@@ -2144,18 +2144,18 @@ impl Core {
         }
         found.sort_by_key(|(primary, pkg, index, _)| (!primary, *pkg, *index));
         // What it already offers as itself is not offered again as something to make: an
-        // action written for the subject is where a person finds it.
+        // action written for the target is where a person finds it.
         let direct: Vec<&str> = found
             .iter()
             .map(|(_, _, _, shown)| shown.action.id.as_str())
             .collect();
         let mut out = Vec::new();
         for (_, _, _, shown) in found {
-            out.extend(self.action_value(&shown, Some(subject))?);
+            out.extend(self.action_value(&shown, Some(target))?);
         }
         // Last, under the menu's one group, what can be made from it: a submenu of its own at
         // the end, so what the app offers the item stays what a person reads first.
-        for shown in self.make_offers(subject, own.as_ref(), &packages)? {
+        for shown in self.make_offers(target, own.as_ref(), &packages)? {
             if direct.contains(&shown.action.id.as_str()) {
                 continue;
             }
@@ -2164,16 +2164,16 @@ impl Core {
         Ok(out)
     }
 
-    /// The actions that can make something of `subject`: for every type of the packages this
+    /// The actions that can make something of `target`: for every type of the packages this
     /// runtime runs, the create action that makes it — one whose result is that type, whose
     /// first parameter is the package's root it puts it in, and whose other parameters are a
     /// title (the title its type is called by) and what it may default. The made resource is
-    /// made from `subject` and starts with its title. One per type: the action that takes a
-    /// source of `subject`'s type when the package declares one, since that action was written
-    /// for what the subject is.
+    /// made from `target` and starts with its title. One per type: the action that takes a
+    /// source of `target`'s type when the package declares one, since that action was written
+    /// for what the target is.
     fn make_offers<'m>(
         &self,
-        subject: &RefValue,
+        target: &RefValue,
         own: Option<&(Rc<Package>, Rc<crate::registry::TypeInfo>)>,
         packages: &'m [Rc<Package>],
     ) -> HResult<Vec<Offered<'m>>> {
@@ -2183,7 +2183,7 @@ impl Core {
                     return Ok(Vec::new());
                 };
                 Some(Source {
-                    title: self.title_of(&subject.target, &pkg.meta, ty)?,
+                    title: self.title_of(&target.target, &pkg.meta, ty)?,
                     app: pkg.meta.app.clone(),
                     name: info.name.clone(),
                 })
@@ -2195,7 +2195,7 @@ impl Core {
         for (rank, pkg) in packages.iter().enumerate() {
             for action in pkg.meta.offered_actions() {
                 let Some((at, source_arg, shown)) =
-                    self.make_offer(pkg, action, source.as_ref(), subject, &group)
+                    self.make_offer(pkg, action, source.as_ref(), target, &group)
                 else {
                     continue;
                 };
@@ -2216,7 +2216,7 @@ impl Core {
         Ok(found.into_iter().map(|(_, _, _, shown)| shown).collect())
     }
 
-    /// The offer of making what `action` makes from a subject of the `source`'s type: `action`
+    /// The offer of making what `action` makes from a target of the `source`'s type: `action`
     /// makes a type its package declares, puts it in the package's root its first parameter
     /// names, and takes the source, when a parameter's type is the source's type, and the title
     /// its type is called by; what it leaves to default means a menu runs it as it is, and an
@@ -2227,7 +2227,7 @@ impl Core {
         pkg: &'m Rc<Package>,
         action: &'m crate::meta::ActionMeta,
         source: Option<&Source>,
-        subject: &RefValue,
+        target: &RefValue,
         group: &str,
     ) -> Option<(usize, bool, Offered<'m>)> {
         let meta = &pkg.meta;
@@ -2263,7 +2263,7 @@ impl Core {
         let mut fits = true;
         for param in action.params.iter().skip(1) {
             if !source_arg && source.names_param(&param.ty, &meta.app) {
-                args.push(Value::Ref(subject.clone()));
+                args.push(Value::Ref(target.clone()));
                 source_arg = true;
             } else if !title_arg && param.name == title.name && param.ty == "Text" {
                 args.push(Value::Text(source.title.clone()));
@@ -2301,7 +2301,7 @@ impl Core {
                 args,
                 rest: &[],
                 present: false,
-                from: Some(ResourceRef::clone(&subject.target)),
+                from: Some(ResourceRef::clone(&target.target)),
                 group: Some(group.to_owned()),
                 label: Some(sentence(&ty.name)),
             },
@@ -2340,14 +2340,14 @@ impl Core {
         Some(holder)
     }
 
-    /// An offered action as a `host.Action`: presented for the subject (its label, icon and
+    /// An offered action as a `host.Action`: presented for the target (its label, icon and
     /// toggled state as its presentation view gives them now), the view taking what that read,
-    /// and whether it can run on the subject now (`available`, with the `reason` it cannot).
-    /// Without a subject it is offered as it stands, its presentation unread.
+    /// and whether it can run on the target now (`available`, with the `reason` it cannot).
+    /// Without a target it is offered as it stands, its presentation unread.
     pub(crate) fn action_value(
         &self,
         shown: &Offered<'_>,
-        subject: Option<&RefValue>,
+        target: Option<&RefValue>,
     ) -> HResult<Option<Value>> {
         let action = shown.action;
         let mut label = match &shown.label {
@@ -2360,10 +2360,10 @@ impl Core {
         };
         let mut icon = action.icon.clone();
         let mut on: Option<bool> = None;
-        if let Some(subject) = subject
+        if let Some(target) = target
             && shown.present
             && let Some(view) = &action.present
-            && let Some(node) = self.present(view, subject)?
+            && let Some(node) = self.present(view, target)?
         {
             let presented = presentation_of(&node);
             if let Some(text) = presented.label {
@@ -2375,7 +2375,7 @@ impl Core {
             on = presented.on;
         }
         // Whether it applies to the item where the view offers it at all, and whether it can
-        // run on it now, as the conditions its subject and place decide say: a menu leaves out
+        // run on it now, as the conditions its target and place decide say: a menu leaves out
         // what cannot apply, and a control for what cannot run stands disabled with the reason.
         // An action the person's standing denies them (a viewer's change) stands disabled too.
         let viewer = self.viewer_here()?;
@@ -2403,7 +2403,7 @@ impl Core {
         }
         // An action that still asks for something opens its form: its label says so, as a menu
         // item that opens a dialog does. What it asks is what this offer left unbound — the
-        // parameters after the ones it gave, the subject and its places among them — so a
+        // parameters after the ones it gave, the target and its places among them — so a
         // command the view or the host answers every question of runs, and reads, as it is.
         let bound = shown
             .args
@@ -2460,17 +2460,17 @@ impl Core {
         ])))
     }
 
-    /// Why the action `action` cannot run on `subject` now, as the requirements its subject
+    /// Why the action `action` cannot run on `target` now, as the requirements its target
     /// alone decides say: the first that does not hold, in `viewer`'s words. `None` when they
-    /// all hold, or when the app keeps none the subject could decide. A place the view would
+    /// all hold, or when the app keeps none the target could decide. A place the view would
     /// supply is given as nothing: the item stands in no view here.
     pub(crate) fn refusal(
         &self,
         action: &str,
-        subject: &RefValue,
+        target: &RefValue,
         viewer: &Actor,
     ) -> HResult<Option<String>> {
-        self.refusal_reading(action, subject, viewer)
+        self.refusal_reading(action, target, viewer)
             .map(|(reason, _)| reason)
     }
 
@@ -2480,41 +2480,41 @@ impl Core {
     pub(crate) fn refusal_reading(
         &self,
         action: &str,
-        subject: &RefValue,
+        target: &RefValue,
         viewer: &Actor,
     ) -> HResult<(Option<String>, Reading)> {
         self.decided(
             action,
-            &self.subject_args(action, subject),
+            &self.target_args(action, target),
             viewer,
             Decides::Requirement,
         )
     }
 
-    /// Why the action `action` cannot apply to `subject` where a view offers it, as its
+    /// Why the action `action` cannot apply to `target` where a view offers it, as its
     /// `applies` conditions say: the first that does not hold, in `viewer`'s words, or `None`
     /// when it can.
     pub(crate) fn applies_reading(
         &self,
         action: &str,
-        subject: &RefValue,
+        target: &RefValue,
         viewer: &Actor,
     ) -> HResult<(Option<String>, Reading)> {
         self.decided(
             action,
-            &self.subject_args(action, subject),
+            &self.target_args(action, target),
             viewer,
             Decides::Applies,
         )
     }
 
-    /// What the action `action` shows offered on `subject` now: the label, icon and toggled
+    /// What the action `action` shows offered on `target` now: the label, icon and toggled
     /// state its presentation gives it, with what reading them read. `None` for an action whose
     /// app presents nothing of it there.
     pub(crate) fn presentation_reading(
         &self,
         action: &str,
-        subject: &RefValue,
+        target: &RefValue,
         viewer: &Actor,
     ) -> HResult<(Option<Presentation>, Reading)> {
         let (pkg, presents) = {
@@ -2537,7 +2537,7 @@ impl Core {
         );
         // The presentation runs in a frame of its own, as a requirement does, so a failure
         // leaves nothing behind and what it read is taken with the rest.
-        let node = self.present(&view, subject);
+        let node = self.present(&view, target);
         let frame = self.frames.borrow_mut().pop();
         let Some(FrameKind::View(reads)) = frame.map(|f| f.kind) else {
             return trap("the presentation frame vanished");
@@ -2552,9 +2552,9 @@ impl Core {
         Ok((shown, Reading { reads: at, beyond }))
     }
 
-    /// What a condition of `action` is decided on: its subject, and the places after it left to
+    /// What a condition of `action` is decided on: its target, and the places after it left to
     /// their own.
-    fn subject_args(&self, action: &str, subject: &RefValue) -> Vec<Value> {
+    fn target_args(&self, action: &str, target: &RefValue) -> Vec<Value> {
         let places = {
             let registry = self.registry.borrow();
             registry
@@ -2562,13 +2562,13 @@ impl Core {
                 .and_then(|pkg| pkg.action(action).map(places_of))
                 .unwrap_or(0)
         };
-        let mut args = vec![Value::Ref(subject.clone())];
+        let mut args = vec![Value::Ref(target.clone())];
         args.extend((0..places).map(|_| Value::none()));
         args
     }
 
     /// Why the action `action` cannot do what `which` asks — run on the item now, or apply to
-    /// the item where the view offers it — as the conditions its subject and the place it is
+    /// the item where the view offers it — as the conditions its target and the place it is
     /// offered in decide say: the first that does not hold, in `viewer`'s words, or `None` when
     /// they all hold. `args` is what the offer gives before the parameters it asks for.
     fn decided(
@@ -2660,9 +2660,9 @@ impl Core {
         }
     }
 
-    /// The `present` node the presentation view `view` builds for `subject`, rendered as part
+    /// The `present` node the presentation view `view` builds for `target`, rendered as part
     /// of the running view: what it read is the running view's too.
-    fn present(&self, view: &str, subject: &RefValue) -> HResult<Option<crate::view::UiNode>> {
+    fn present(&self, view: &str, target: &RefValue) -> HResult<Option<crate::view::UiNode>> {
         let (space, window, viewer, depth) = {
             let frames = self.frames.borrow();
             match frames.deciding().map(|f| &f.kind) {
@@ -2670,7 +2670,7 @@ impl Core {
                 _ => return trap("`present` draws only in a view"),
             }
         };
-        let target = self.view_target(view).map_err(|e| e.to_string())?;
+        let view_target = self.view_target(view).map_err(|e| e.to_string())?;
         let offer = Offer {
             space,
             viewer: &viewer,
@@ -2678,7 +2678,7 @@ impl Core {
             depth,
         };
         let rendered = self
-            .render_at(&target, &[Value::Ref(subject.clone())], offer, None)
+            .render_at(&view_target, &[Value::Ref(target.clone())], offer, None)
             .map_err(|e| e.to_string())?;
         self.note_reads(rendered.reads.iter().cloned());
         self.note_time(rendered.changes_at);

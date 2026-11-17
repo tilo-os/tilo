@@ -361,7 +361,7 @@ tilo_test_env::scenario! {
     }
 
     phase an_actions_label_its_reasons_and_what_it_says_are_messages;
-    // Every word a person reads is a message: an action's label that follows its subject, why it cannot run,
+    // Every word a person reads is a message: an action's label that follows its target, why it cannot run,
     // and the words its body writes with `say` into a record.
     {
         let c = compile(

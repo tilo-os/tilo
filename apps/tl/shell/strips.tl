@@ -394,7 +394,7 @@ view window_controls(
             icon: .more_horizontal,
             icon_only: true,
             role: .plain,
-            subject: if let p = shown { menu_resource(p, listed) },
+            target: if let p = shown { menu_resource(p, listed) },
         ) {
             ui.MenuItem("Narrow", checked: width_of(s.width) == .narrow) {
                 on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.narrow))
@@ -510,7 +510,7 @@ view place_controls(a: Layout, p: LayoutPlace, listed: Bool) {
             icon: .more_horizontal,
             icon_only: true,
             role: .plain,
-            subject: menu_resource(p, listed),
+            target: menu_resource(p, listed),
         ) {
             if a.rows.len() > 1 {
                 for r in a.rows {

@@ -96,7 +96,7 @@ impl TiloAuthority {
         }
         for action in &meta.actions {
             let kind = meta
-                .subject_of(&action.params)
+                .target_of(&action.params)
                 .map_or_else(|| meta.package_kind(), |ty| meta.kind_of(&ty.name));
             state.kinds.insert(action.id.clone(), kind);
         }
@@ -191,9 +191,9 @@ impl TiloAuthority {
     }
 }
 
-/// The subject `actor` is in the workspace's policy: a member as grants name them, anyone else
+/// The grantee `actor` is in the workspace's policy: a member as grants name them, anyone else
 /// as software by its id.
-fn subject(actor: &Actor) -> Grantee {
+fn grantee(actor: &Actor) -> Grantee {
     actor
         .grantee()
         .unwrap_or_else(|| Grantee::agent(actor.id()))
@@ -287,7 +287,7 @@ impl Authority for TiloAuthority {
             _ if alone => Party::default().owning(TreePath::root()),
             (Some(standing), Some(person), _) => standing.policy.party(person),
             // An agent nobody delegated: only what the workspace grants it.
-            (Some(standing), None, _) => standing.policy.party_of(subject(invoker)),
+            (Some(standing), None, _) => standing.policy.party_of(grantee(invoker)),
             // No standing here: the API decides the person's own part.
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
@@ -301,14 +301,14 @@ impl Authority for TiloAuthority {
         // its writer's code. A package's code is the person running it, as trusted as the package
         // is: it asks before reaching outside unless the workspace grants the person that, and
         // code nobody installed asks before everything but its own records.
-        let runner = person.map_or_else(|| subject(invoker), Grantee::person);
+        let runner = person.map_or_else(|| grantee(invoker), Grantee::person);
         let mut authors: Vec<(Author, Vec<Grant>)> = Vec::new();
         for module in chain {
             let trusted = state.trusted.contains(module);
             let (author, own) = if let Some(writer) = module.writer() {
-                let subject = subject(&writer);
-                let own = authorship::code_grants(workspace, &subject, trusted);
-                (Author::Block(subject), own)
+                let writer_grantee = grantee(&writer);
+                let own = authorship::code_grants(workspace, &writer_grantee, trusted);
+                (Author::Block(writer_grantee), own)
             } else {
                 let app = state
                     .apps
@@ -333,13 +333,13 @@ impl Authority for TiloAuthority {
         let mut policy = Policy::person(person_party);
         if let Some(delegation) = &delegation {
             policy = policy.bounded_by(
-                Party::new(vec![subject(invoker)], workspace_grants).with_grants(delegation),
+                Party::new(vec![grantee(invoker)], workspace_grants).with_grants(delegation),
             );
         }
         for (author, own) in &authors {
             policy = policy.bounded_by(match author {
                 // A block's author holds only what its code may.
-                Author::Block(subject) => authorship::code_party(subject, own, &[]),
+                Author::Block(grantee) => authorship::code_party(grantee, own, &[]),
                 // The workspace's grants to the person running a package bound its code too.
                 Author::Package(_) => authorship::code_party(&runner, own, workspace_grants),
             });

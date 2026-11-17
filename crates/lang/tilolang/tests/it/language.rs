@@ -490,7 +490,7 @@ tilo_test_env::scenario! {
             .expect("rename");
         assert!(
             rename.present.is_some(),
-            "a label over the subject follows it"
+            "a label over the target follows it"
         );
         let move_to = compiled
             .meta

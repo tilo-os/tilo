@@ -1,7 +1,7 @@
 //! What the platform reads of a package's metadata (`tilolang.meta`).
 //!
 //! The metadata types are the runtime's ([`tilolang_runtime::Meta`]); this module adds what the
-//! platform derives from them: the record schemas, the resource kinds and the subject of an
+//! platform derives from them: the record schemas, the resource kinds and the target of an
 //! action.
 
 use tilolang_runtime::meta::{

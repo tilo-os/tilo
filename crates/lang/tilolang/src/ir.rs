@@ -93,10 +93,10 @@ pub enum FuncKind {
     Action,
     View,
     Block,
-    /// An action's requirements its subject alone decides: the first reason it cannot run on the
-    /// subject now, or empty while it can ([`guard_export`]).
+    /// An action's requirements its target alone decides: the first reason it cannot run on the
+    /// target now, or empty while it can ([`guard_export`]).
     Guard,
-    /// An action's `applies` conditions its subject and place decide: the first reason it cannot
+    /// An action's `applies` conditions its target and place decide: the first reason it cannot
     /// apply where it is offered, or empty while it can ([`applies_export`]).
     Applies,
 }

@@ -1,7 +1,7 @@
 //! Publishing tilolang resources on the action api.
 //!
 //! Every resource in the workspace record is published as a `tilo_actions::ResourceSpec` of kind
-//! `tl.<app>.<Type>`, with one typed action per tilolang action whose subject is its type. The
+//! `tl.<app>.<Type>`, with one typed action per tilolang action whose target is its type. The
 //! desktop agent, the runtime api, shortcuts and grants therefore reach tilolang actions with
 //! no agent-side code. The build closure of each action runs the wasm **planner** and encodes
 //! the resulting [`DynAction`].
@@ -82,9 +82,9 @@ pub struct PlanRequest<'a> {
     /// The kind the action was invoked on.
     pub kind: &'a str,
     pub action_id: &'a str,
-    /// The subject resource's id, when the action has one.
+    /// The target resource's id, when the action has one.
     pub resource: Option<&'a str>,
-    /// The arguments beyond the subject, by parameter name.
+    /// The arguments beyond the target, by parameter name.
     pub args: &'a serde_json::Map<String, Json>,
     /// Who invokes, when it is not the person at the window.
     pub caller: Option<&'a Caller>,
@@ -192,7 +192,7 @@ pub fn package_resource_id(app: &str) -> String {
 pub const HOST_RESOURCE: &str = "tl:host";
 
 /// The type of the typed action `action` on resources of kind `kind`, whose build runs
-/// `planner` on the subject its spec is bound to: the resource id it is published on, a
+/// `planner` on the target its spec is bound to: the resource id it is published on, a
 /// [`String`] [`Target`], or none for an action that takes no resource. What it is called and
 /// what it says read through `words` in the reader's language.
 #[must_use]
@@ -222,7 +222,7 @@ fn published_params(meta: &Meta, action: &ActionMeta, words: &dyn Words) -> Vec<
         .collect()
 }
 
-/// The build of the action's type: it runs `planner` on the subject its spec is bound to, as the
+/// The build of the action's type: it runs `planner` on the target its spec is bound to, as the
 /// caller named the invocation with the arguments, and encodes what it planned.
 fn build_of(
     meta: &Meta,
@@ -232,7 +232,7 @@ fn build_of(
 ) -> impl Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync + 'static {
     let (app, kind, id) = (meta.app.clone(), kind.to_owned(), action.id.clone());
     let planner = Arc::clone(planner);
-    move |subject: &Target, args: &ActionArgs| {
+    move |target: &Target, args: &ActionArgs| {
         let json = args.to_json();
         let caller = planner.caller();
         // What the invocation is made from, as the caller named it with the arguments.
@@ -243,7 +243,7 @@ fn build_of(
             app: &app,
             kind: &kind,
             action_id: &id,
-            resource: subject.get::<String>().map(String::as_str),
+            resource: target.get::<String>().map(String::as_str),
             args: &json,
             caller: caller.as_ref(),
             from: from.as_ref(),
@@ -274,7 +274,7 @@ fn naming_of(action: &ActionMeta, given: usize, words: &dyn Words) -> (String, S
     };
     // A command the person choosing it still has to answer for opens its form: its label says
     // so with "…", as the runtime's own surfaces say it. What the spec is given is what it does
-    // not ask for — the subject, the resource it runs against — and the parameters after it are
+    // not ask for — the target, the resource it runs against — and the parameters after it are
     // the form's. The form's own placeholder names the command without the dots, which ask.
     if action
         .unbound(action.params.len().saturating_sub(given))
@@ -309,7 +309,7 @@ fn spec_of(
             label,
             ExecutionLocus::ClientLocal,
             crate::action::ACTION_TYPE,
-            move |subject| build(subject, &ActionArgs::none()),
+            move |target| build(target, &ActionArgs::none()),
         )
     } else {
         ActionSpec::typed_on(
@@ -394,7 +394,7 @@ struct TypeActions {
     /// The two direct edits ([`edit_types`]), which every record of the type offers, root and
     /// item alike.
     edits: [Arc<ActionType>; 2],
-    /// The actions whose subject is the type.
+    /// The actions whose target is the type.
     actions: Vec<Arc<ActionType>>,
     /// The views that show a resource of the type, each with the action that opens it through
     /// that view, when that is not the resource's own `open` ([`views_of`]).
@@ -432,8 +432,8 @@ impl ActionTypes {
             let actions = meta
                 .offered_actions()
                 .filter(|action| {
-                    meta.subject_of(&action.params)
-                        .is_some_and(|subject| subject.name == declared.name)
+                    meta.target_of(&action.params)
+                        .is_some_and(|target| target.name == declared.name)
                 })
                 .map(|action| action_type(meta, &kind, action, planner, words))
                 .collect();
@@ -516,9 +516,9 @@ impl ActionTypes {
             }
             resource = resource.with_view(view.clone());
         }
-        let subject = Target::new(id.to_owned());
+        let target = Target::new(id.to_owned());
         for ty in of_type.edits.iter().chain(&of_type.actions) {
-            resource = resource.with_action(ty.bind(subject.clone()));
+            resource = resource.with_action(ty.bind(target.clone()));
         }
         resource
     }
@@ -667,7 +667,7 @@ fn root_open_spec(anchor: &str) -> ActionSpec {
 }
 
 /// The resource of a root record with the items of its collections as child resources, each
-/// carrying the actions whose subject is its type (a draft's `send`, a note's `pin`).
+/// carrying the actions whose target is its type (a draft's `send`, a note's `pin`).
 ///
 /// An item's resource id is the root's with the item's id (`doc/item`), the same form an
 /// action takes an item as an argument in, so an agent that surveys the tree calls an
@@ -2583,7 +2583,7 @@ pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Word
         app_name(words, meta),
     );
     for action in meta.offered_actions() {
-        if meta.subject_of(&action.params).is_none() {
+        if meta.target_of(&action.params).is_none() {
             resource = resource
                 .with_action(action_type(meta, &kind, action, planner, words).bind(Target::none()));
         }

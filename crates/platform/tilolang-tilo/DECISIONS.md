@@ -82,13 +82,13 @@ Each entry is the closest working design to `docs/designs/app-language`.
   decides: the person's standing in the workspace (the window's, from its host), bounded by an agent's
   delegation and the answers the person gave that agent in the workspace, and by each author of the
   code that led to the action (`tilo_action_policy::authorship`: a package's code is its app,
-  `Subject::App`; a block's is its writer). Installed and built-in packages are trusted, an
+  `Target::App`; a block's is its writer). Installed and built-in packages are trusted, an
   admitted agent's code as far as its standing goes. Without a standing the person's own part is
   the API's to decide, as for a native window's detached dispatcher; the bounds still apply.
   What asks is a suggestion: a recorded `Invocation` (a block, a verb) or a run that stopped at
   a call, decided by a person, through the Ask bar or the API's `resolve`, never by an agent.
 - **Item verbs are published.** Items of collections are child resources
-  (`doc/field:item`) carrying the verbs whose subject is their type, and every resource offers
+  (`doc/field:item`) carrying the verbs whose target is their type, and every resource offers
   `open`, a view action search hits invoke.
 - **Search.** All `Text` fields are searchable until a package says otherwise; the window keeps a
   catalogue as the record moves and publishes short fields (never prose) to the persistent index.

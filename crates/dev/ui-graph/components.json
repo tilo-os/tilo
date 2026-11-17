@@ -618,7 +618,7 @@
           "data": true
         },
         {
-          "name": "subject",
+          "name": "target",
           "doc": "The resource the place shows, whose published actions its menu lists, which the host fills as it fills a `ui.MenuButton`'s: a right-click on the place opens them, and typing there filters them as every context menu does (`canvas.md` §1, \"Right-click keeps its menu\"). A right-click on content with a menu of its own (a field, a row) is that content's.",
           "type": {
             "option": "resource"
@@ -639,7 +639,7 @@
         },
         {
           "name": "items",
-          "doc": "The place's menu: the commands the host filled from its subject.",
+          "doc": "The place's menu: the commands the host filled from its target.",
           "accepts": {
             "component": "MenuItem"
           },
@@ -1510,7 +1510,7 @@
           }
         },
         {
-          "name": "subject",
+          "name": "target",
           "doc": "The resource whose published actions this menu lists, which the host fills: a bar that lists the window in front's commands names the window and leaves the commands to it.",
           "type": {
             "option": "resource"

@@ -238,7 +238,7 @@ pub fn index_entry_at(host: &Host, meta: &Meta, path: &str) -> Option<IndexEntry
 }
 
 /// The index's entry of the resource `resource` with `texts`: short metadata first (a sender, a
-/// subject), then long prose (a body), so the index keeps a bounded number of fields
+/// target), then long prose (a body), so the index keeps a bounded number of fields
 /// ([`IndexEntry::bounded`]) with the metadata that ranks highest. A hit opens through the `open`
 /// of the record that holds the resource, which every window showing anything of the record
 /// publishes: the caller names the resource as the item to show, which no window may show yet.

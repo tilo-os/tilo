@@ -155,7 +155,7 @@ struct FnState {
     expanding: Vec<(Option<String>, String)>,
     /// The resource the view shows, when its first parameter is one: what the system's parts of its
     /// controls are about (a rich input's `@` drawer).
-    subject: Option<(LocalId, Ty)>,
+    target: Option<(LocalId, Ty)>,
     /// The locals holding a scalar an event carries (`at` of `on drop(moved: T, at: Int)`), boxed
     /// until the event puts the value there.
     event_scalars: std::collections::HashSet<LocalId>,
@@ -383,7 +383,7 @@ fn lower(
             "internal: the declared functions and their indexes disagree",
         );
     }
-    // The guard and the `applies` conditions of each action that keeps one its subject and the place
+    // The guard and the `applies` conditions of each action that keeps one its target and the place
     // it is offered in alone decide.
     for item in &module.items {
         let Item::Action(a) = item else { continue };
@@ -753,7 +753,7 @@ impl Checker<'_> {
     fn run_view(&mut self, c: &Callable, v: &ast::ViewDecl) -> ir::Func {
         self.outer_at = self.at.or(self.outer_at);
         self.begin(Ctx::View, &c.params, Ty::View, &c.id);
-        self.st.subject = c
+        self.st.target = c
             .params
             .first()
             .and_then(|p| self.lookup(&p.name))
@@ -776,7 +776,7 @@ impl Checker<'_> {
         if let Some((key, _)) = row_of {
             self.row_view_body(&c.name, &key.name, rest, v.body_span);
             self.st.ui.list_row_ok = true;
-        } else if self.st.subject.is_some() && self.body_is_row(rest) {
+        } else if self.st.target.is_some() && self.body_is_row(rest) {
             // A view of one item whose body is its row is that item's row wherever it is drawn: the
             // parameters after the item state the place around it.
             self.st.ui.list_row_ok = true;
@@ -1463,12 +1463,12 @@ impl Checker<'_> {
                     if !both_write {
                         continue;
                     }
-                    let (Some(subject), Some(theirs_subject)) =
+                    let (Some(target), Some(theirs_target)) =
                         (self.takes(name, ty), self.takes(other, ty))
                     else {
                         continue;
                     };
-                    if !subject.same(theirs_subject) {
+                    if !target.same(theirs_target) {
                         continue;
                     }
                     let shown = ty.display(&self.env.app);

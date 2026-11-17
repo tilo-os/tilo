@@ -32,7 +32,7 @@ tilo_test_env::scenario! {
             .find(|a| a.name == "check")
             .expect("the action");
         assert_eq!(check.params.len(), 2);
-        assert!(check.params[0].default.is_none(), "the subject has none");
+        assert!(check.params[0].default.is_none(), "the target has none");
         let done = check.params[1]
             .default
             .as_ref()
@@ -52,7 +52,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_static_label_is_what_a_subject_at_rest_is_offered;
+    phase the_static_label_is_what_a_target_at_rest_is_offered;
     {
         let c = compile(&body(CHECK));
         let check = c

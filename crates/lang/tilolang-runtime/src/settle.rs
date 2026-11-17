@@ -61,7 +61,7 @@ pub struct InvocationRecord {
     pub run: String,
     /// The resource a suggestion waits on: the one its action names first. `None` for an
     /// action that names no resource, and for one that waits on nobody.
-    pub subject: Option<ResourceRef>,
+    pub target: Option<ResourceRef>,
     /// Whether this is a proposal a person decides, rather than one the authority asked about
     /// as the action was applied: accepting one runs it as the accepting person, attributed to
     /// whoever proposed it.
@@ -358,7 +358,7 @@ impl Core {
             run: run.to_owned(),
             // A suggestion waits on the resource its action names first, where a person finds
             // it and decides it, whether someone proposed it or the authority asked about it.
-            subject: aref.filter(|_| state == "suggested").and_then(|a| {
+            target: aref.filter(|_| state == "suggested").and_then(|a| {
                 a.args.iter().find_map(|v| match v {
                     Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
                     _ => None,
@@ -392,8 +392,8 @@ impl Core {
                 text("result", &record.result),
                 text("run", &record.run),
                 (
-                    field_id("subject"),
-                    Value::Opt(record.subject.as_ref().map(Value::resource).map(Box::new)),
+                    field_id("target"),
+                    Value::Opt(record.target.as_ref().map(Value::resource).map(Box::new)),
                 ),
                 (field_id("proposed"), Value::Bool(record.proposed)),
             ],
@@ -468,7 +468,7 @@ impl Core {
         let Value::Actor(author) = get("author")? else {
             return Err(RuntimeError::NotFound("the invocation's author".into()));
         };
-        let subject = match get("subject")? {
+        let target = match get("target")? {
             Value::Opt(Some(held)) => match *held {
                 Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
                 _ => None,
@@ -484,7 +484,7 @@ impl Core {
             state: text("state")?,
             result: text("result")?,
             run: text("run")?,
-            subject,
+            target,
             proposed: matches!(get("proposed")?, Value::Bool(true)),
         })
     }

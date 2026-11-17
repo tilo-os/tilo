@@ -637,7 +637,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_place_a_view_supplies_is_an_option_after_the_subject_and_named_above;
+    phase a_place_a_view_supplies_is_an_option_after_the_target_and_named_above;
     {
         let task = "type Task {\n    title: Text\n}\n";
         let places = |param: &str| {
@@ -653,7 +653,7 @@ tilo_test_env::scenario! {
                 "{task}action move_under(t: Task, x: Text, above: Option<Task> (above)) {{\n    x = \"x\"\n}}\n"
             )),
             ["E053"],
-            "a place follows the subject it is offered on"
+            "a place follows the target it is offered on"
         );
         assert_eq!(
             crate::common::codes(&format!(

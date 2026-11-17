@@ -257,8 +257,8 @@ tilo_test_env::scenario! {
     fn an_actions_state_and_an_items_views_are_what_the_platform_reads;
 
     phase an_action_presents_its_state_through_a_hidden_view;
-    // An action's label and icon may follow its subject, and `on:` says it is pressed: the parts
-    // that depend on the subject become a hidden view of it, one `present` node; the static label
+    // An action's label and icon may follow its target, and `on:` says it is pressed: the parts
+    // that depend on the target become a hidden view of it, one `present` node; the static label
     // and icon are the `else` branch, what a menu shows without evaluating anything.
     {
         let c = compile_body(PIN);
@@ -274,7 +274,7 @@ tilo_test_env::scenario! {
             .find(|v| v.id == id)
             .expect("the view is in the metadata, for the host to run");
         assert_eq!(view.presents.as_deref(), Some(pin.id.as_str()));
-        assert_eq!(view.params.len(), 1, "it takes the subject");
+        assert_eq!(view.params.len(), 1, "it takes the target");
         assert_eq!(view.params[0].name, "n");
         assert!(
             c.meta.offered_views().all(|v| v.id != id),
@@ -307,7 +307,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_presented_state_is_typed_and_reads_only_the_subject;
+    phase a_presented_state_is_typed_and_reads_only_the_target;
     {
         let head = "type Note {\n    title: Text\n    pinned: Bool = false\n    n: Int\n}\n";
         let act = |opts: &str| format!("{head}action a(x: Note, y: Note) ({opts}) {{\n    x.n = 1\n}}");
@@ -1059,8 +1059,8 @@ tilo_test_env::scenario! {
     /// An action's toggle state and its shortcut.
     fn an_action_says_the_state_it_toggles_and_the_shortcut_it_declares;
 
-    phase an_action_whose_on_is_its_subjects_field_says_which_state_it_toggles;
-    // One control per action. An action whose `on:` is its subject's
+    phase an_action_whose_on_is_its_targets_field_says_which_state_it_toggles;
+    // One control per action. An action whose `on:` is its target's
     // field says which state it toggles, so a window that binds a control to that field shows the
     // control alone.
     {
@@ -1117,9 +1117,9 @@ action a(t: Thread) ({wrong}) {{}}"
         }
     }
 
-    phase two_actions_of_one_subject_share_no_shortcut;
-    // Two actions of one subject cannot answer the same keys: one would silently take the other's.
-    // The same key on another subject is another place, and an action on the app's root answers
+    phase two_actions_of_one_target_share_no_shortcut;
+    // Two actions of one target cannot answer the same keys: one would silently take the other's.
+    // The same key on another target is another place, and an action on the app's root answers
     // window-wide against the other root actions, not against an item's.
     {
         let thread = r"type Thread {

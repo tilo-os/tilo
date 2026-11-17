@@ -195,7 +195,7 @@ view canvas() {
                     app,
                     action,
                     args,
-                    subject,
+                    target,
                     ..
                 },
             ] = sent.as_slice()
@@ -203,8 +203,8 @@ view canvas() {
                 panic!("one invocation of the channel's verb: {sent:?}");
             };
             assert_eq!((app.as_str(), action.as_str()), (APP, "post"));
-            assert_eq!(subject.as_ref(), Some(&channel()));
-            // The arguments after the subject, by the names the app publishes, in the order it
+            assert_eq!(target.as_ref(), Some(&channel()));
+            // The arguments after the target, by the names the app publishes, in the order it
             // declares them: the channel it names and the text the view wrote.
             assert_eq!(
                 args,
@@ -212,7 +212,7 @@ view canvas() {
                     ("channel".to_owned(), Value::text(channel().id_string())),
                     ("text".to_owned(), Value::text("hi")),
                 ],
-                "the verb's arguments by name, after its subject"
+                "the verb's arguments by name, after its target"
             );
         }
 

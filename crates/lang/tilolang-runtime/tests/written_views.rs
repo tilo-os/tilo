@@ -137,16 +137,16 @@ mod cases {
             }
         }
 
-        /// What the view `v` of theirs shows over `subject`, drawn as the system draws it: as
+        /// What the view `v` of theirs shows over `target`, drawn as the system draws it: as
         /// them, its author the one the host recorded.
-        fn shown(&self, v: &ResourceRef, subject: &ResourceRef) -> Vec<String> {
+        fn shown(&self, v: &ResourceRef, target: &ResourceRef) -> Vec<String> {
             let view = self
                 .rt
                 .open_written_view(
                     &self.who,
                     &self.text(v, "definition"),
                     &self.author(v),
-                    vec![Value::resource(subject)],
+                    vec![Value::resource(target)],
                 )
                 .unwrap_or_else(|e| panic!("{e}"));
             let mut view = view;

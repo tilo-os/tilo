@@ -110,7 +110,7 @@ impl PartInvoker {
         &self,
         action: &str,
         args: &[(String, Value)],
-        subject: bool,
+        names_target: bool,
     ) -> Result<BTreeMap<String, Json>, String> {
         let declared = self
             .meta
@@ -119,7 +119,7 @@ impl PartInvoker {
             .find(|declared| declared.id == action)
             .ok_or_else(|| format!("{} declares no action `{action}`", self.meta.app))?;
         let mut arguments = BTreeMap::new();
-        for (name, value) in args.iter().skip(usize::from(subject)) {
+        for (name, value) in args.iter().skip(usize::from(names_target)) {
             let param = declared
                 .params
                 .iter()
@@ -145,7 +145,7 @@ impl Invoker for PartInvoker {
             action,
             name,
             args,
-            subject,
+            target,
             ..
         } = invocation
         else {
@@ -154,12 +154,12 @@ impl Invoker for PartInvoker {
                     .to_owned(),
             );
         };
-        if app.as_str() != self.meta.app || subject.as_ref() != Some(&self.target) {
+        if app.as_str() != self.meta.app || target.as_ref() != Some(&self.target) {
             return Invoked::Failed(format!(
                 "a part's view invokes `{name}` on the state it reads, and nothing else"
             ));
         }
-        let arguments = match self.arguments(action, args, subject.is_some()) {
+        let arguments = match self.arguments(action, args, target.is_some()) {
             Ok(arguments) => arguments,
             Err(why) => return Invoked::Failed(why),
         };

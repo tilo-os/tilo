@@ -129,7 +129,7 @@ fn changes_in_two_apps_are_invocations_of_each() {
             .as_str()
             .unwrap()
             .starts_with("tl:so.tilo.lang.notes:"),
-        "the action is invoked on its subject: {invoked:#?}"
+        "the action is invoked on its target: {invoked:#?}"
     );
     assert_eq!(
         task.said("notes.notebook.notes.filter(n -> n.pinned).len()"),

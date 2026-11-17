@@ -262,7 +262,7 @@ view canvas_place(a: Layout, p: LayoutPlace, lists: Bool) {
         ui.Place(
             name: content_title(p),
             carries: p.record,
-            subject: placed_resource(p.record),
+            target: placed_resource(p.record),
             fill,
         ) {
             controls: {

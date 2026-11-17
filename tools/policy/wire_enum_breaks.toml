@@ -371,3 +371,8 @@ reason = "renames the Principal variant to Actor: the component catalogue is gen
 file = "crates/dev/tilo-vm-protocol/src/lib.rs"
 enum = "Request"
 reason = "the account-slot variants are renamed at the same indexes; the request names are JSON-RPC between the tilo-vm CLI and its daemon, built and shipped together, so no older reader meets them"
+
+[[break]]
+file = "crates/lang/tilolang/src/meta.rs"
+enum = "TriggerArgMeta"
+reason = "it is part of a compiled package's metadata, which the compiler writes from the package's sources on every build; no stored record or other version keeps it"

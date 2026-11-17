@@ -24,7 +24,7 @@ action pin(m: Message) (label: "Pin", icon: .pin) {
 
 view message(m: Message) {
     ui.Reactions(reactions: m.reactions)
-    ui.MenuButton("More", subject: m)
+    ui.MenuButton("More", target: m)
 }
 "#;
 

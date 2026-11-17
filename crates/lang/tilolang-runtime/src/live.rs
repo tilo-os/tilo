@@ -685,7 +685,7 @@ impl Live {
     }
 
     /// The resources the window shows now, by [`ResourceRef::id_string`]: the views' own
-    /// subjects, the items of the rows rendered, and the items the virtual lists built (the
+    /// targets, the items of the rows rendered, and the items the virtual lists built (the
     /// visible rows and the overscan). What an app publishes for the window to act on: a
     /// surface bounded by what a person can reach, whatever the workspace holds.
     pub fn shown_refs(&self, core: &Core) -> Vec<String> {

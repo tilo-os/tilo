@@ -672,7 +672,7 @@ fn published_call(
         app,
         action,
         args,
-        subject,
+        target,
         from,
         ..
     } = invocation
@@ -683,8 +683,8 @@ fn published_call(
         ));
     };
     // A platform package's action is its published verb, by the same id (`show-surface`).
-    let resource = match subject {
-        Some(subject) => subject.id_string(),
+    let resource = match target {
+        Some(target) => target.id_string(),
         None => addresses
             .get(action)
             .cloned()
@@ -747,7 +747,7 @@ fn arguments_of(
     meta: &Meta,
     action: &str,
     args: &[(String, Value)],
-    subject: bool,
+    target: bool,
 ) -> Result<Json, String> {
     let declared = meta
         .actions
@@ -755,7 +755,7 @@ fn arguments_of(
         .find(|declared| declared.id == action)
         .ok_or_else(|| format!("{} declares no action {action}", meta.app))?;
     let mut arguments = serde_json::Map::new();
-    for (name, value) in args.iter().skip(usize::from(subject)) {
+    for (name, value) in args.iter().skip(usize::from(target)) {
         let param = declared
             .params
             .iter()
@@ -788,7 +788,7 @@ fn native_call(
         Invocation::Action {
             action,
             args,
-            subject,
+            target,
             from,
             ..
         } => {
@@ -799,10 +799,10 @@ fn native_call(
             };
             // The resource the app's own api takes: the one the program named the action on,
             // else the record the app publishes.
-            let resource = subject
+            let resource = target
                 .as_ref()
                 .map_or_else(|| record.to_owned(), ResourceRef::id_string);
-            let mut arguments = arguments_of(apps, meta, action, args, subject.is_some())?;
+            let mut arguments = arguments_of(apps, meta, action, args, target.is_some())?;
             if let Json::Object(arguments) = &mut arguments {
                 made_from(from.as_ref(), arguments, ResourceRef::id_string);
             }
@@ -858,7 +858,7 @@ fn native_call(
     }
 }
 
-/// The API's call for `invocation` of the package `meta`: a declared action on its subject
+/// The API's call for `invocation` of the package `meta`: a declared action on its target
 /// (its first parameter, when it is one of the package's types) or on the package, its other
 /// arguments by name; a field edit on its resource.
 fn call_of(
@@ -879,13 +879,13 @@ fn call_of(
                 .iter()
                 .find(|declared| declared.id == *action)
                 .ok_or_else(|| format!("{app} declares no action {action}"))?;
-            let subject = meta.subject_of(&declared.params);
-            let subject = subject.and_then(|_| args.first());
-            let resource = match subject {
+            let target = meta.target_of(&declared.params);
+            let target = target.and_then(|_| args.first());
+            let resource = match target {
                 Some((_, Value::Ref(r))) => resource_id(app, &r.target.id_string()),
                 _ => package_resource_id(app),
             };
-            let mut arguments = arguments_of(apps, meta, action, args, subject.is_some())?;
+            let mut arguments = arguments_of(apps, meta, action, args, target.is_some())?;
             if let Json::Object(arguments) = &mut arguments {
                 made_from(from.as_ref(), arguments, ResourceRef::id_string);
             }
@@ -1526,7 +1526,7 @@ mod tests {
             class: tilolang_runtime::meta::EffectClass::Undoable,
             destructive: false,
             author: None,
-            subject: Some(record),
+            target: Some(record),
             from: None,
         };
         let answer = invoker.invoke(&invocation);

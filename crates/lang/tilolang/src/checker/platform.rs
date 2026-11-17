@@ -67,7 +67,7 @@ impl Checker<'_> {
         let Some(r) = self.resource_arg("actions", args.get(..1).unwrap_or_default(), span) else {
             return Ex::error();
         };
-        let subject = r.ty.clone();
+        let target = r.ty.clone();
         let above = match args.get(1) {
             Some(a) => {
                 if a.name.is_some() {
@@ -77,10 +77,10 @@ impl Checker<'_> {
                         "`actions` takes the place it offers the item in by position: `actions(r, above)`",
                     );
                 }
-                let want = Ty::Option(Box::new(subject));
+                let want = Ty::Option(Box::new(target));
                 self.expr_as(&a.value, &want)
             }
-            None => Ex::host(Imp::NoneV, Vec::new(), Ty::Option(Box::new(subject))),
+            None => Ex::host(Imp::NoneV, Vec::new(), Ty::Option(Box::new(target))),
         };
         if let Some(extra) = args.get(2) {
             self.err(
@@ -529,10 +529,10 @@ impl Checker<'_> {
     }
 
     /// Who a rich input's `@` drawer offers after the conversation's own: the members who can read
-    /// what a mention names (`subject`), or the workspace's members.
-    pub(super) fn drawer_people(subject: Option<Ex>) -> Ex {
+    /// what a mention names (`target`), or the workspace's members.
+    pub(super) fn drawer_people(target: Option<Ex>) -> Ex {
         let people = Ty::List(Box::new(Ty::Actor));
-        match subject {
+        match target {
             Some(r) => Ex::host(Imp::Members, vec![r], people),
             None => Ex::host(Imp::WorkspaceMembers, Vec::new(), people),
         }

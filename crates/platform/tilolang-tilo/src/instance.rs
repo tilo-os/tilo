@@ -328,11 +328,11 @@ struct Pending {
 }
 
 /// An action the window ran: what it was, what it returned, and the title of what it was run on,
-/// read before it ran, as a destructive one takes its subject away.
+/// read before it ran, as a destructive one takes its target away.
 struct Ran {
     aref: ActionRef,
     result: Value,
-    subject: Option<String>,
+    target: Option<String>,
 }
 
 /// See the module docs.
@@ -1723,17 +1723,17 @@ impl Instance {
         }
         let action = view.borrow().event_action(key, name);
         // What the action is run on is read before it runs: a destructive one takes it away.
-        let subject = self
+        let target = self
             .host()
             .zip(action.as_ref())
-            .and_then(|(host, action)| subject_title(&host, action));
+            .and_then(|(host, action)| target_title(&host, action));
         let fired = view.borrow().fire_with(key, name, value.as_ref());
         match fired {
             Ok(InvokeOutcome::Done(result)) => {
                 *ran = action.map(|aref| Ran {
                     aref,
                     result,
-                    subject,
+                    target,
                 });
                 Ok(())
             }
@@ -1836,22 +1836,22 @@ impl Instance {
             return false;
         };
         // What the address names the action of, when the action's first parameter is its
-        // subject: the resource the descriptor was published on.
+        // target: the resource the descriptor was published on.
         let mut args = Vec::new();
-        if let Some(subject) = meta.subject_of(&action.params) {
+        if let Some(target) = meta.target_of(&action.params) {
             // The address names the resource as the API publishes it (`tl:<app>:<id>`); the
             // runtime holds it by its id.
             let id = address
                 .resource
                 .strip_prefix(&crate::publish::resource_id(&meta.app, ""))
                 .unwrap_or(&address.resource);
-            let Some(target) = ResourceRef::parse_id(id, subject.id.clone()) else {
+            let Some(target) = ResourceRef::parse_id(id, target.id.clone()) else {
                 return false;
             };
             args.push(Value::resource(&target));
         }
         // What is still to ask is what the action has no default for, as the label's "…" and
-        // every form read it: when the address's subject leaves nothing, the action runs as it
+        // every form read it: when the address's target leaves nothing, the action runs as it
         // is, as a control that runs it runs it.
         if action.unbound(args.len()).next().is_none() {
             return false;
@@ -1902,7 +1902,7 @@ impl Instance {
                 return Ok(());
             }
         };
-        let subject = subject_title(&host, &aref);
+        let target = target_title(&host, &aref);
         let outcome = pending.view.borrow().invoke(&aref);
         match outcome {
             Ok(InvokeOutcome::Done(result)) => {
@@ -1912,7 +1912,7 @@ impl Instance {
                 *ran = Some(Ran {
                     aref,
                     result,
-                    subject,
+                    target,
                 });
                 Ok(())
             }
@@ -2186,7 +2186,7 @@ impl Instance {
         let Ran {
             aref,
             result,
-            subject,
+            target,
         } = ran;
         let Some(host) = self.host() else {
             return;
@@ -2204,7 +2204,7 @@ impl Instance {
         match action.role.as_deref() {
             Some("destructive") => {
                 let label = crate::runtime::platform::label_of(&action);
-                let words = match subject {
+                let words = match target {
                     Some(title) => Words::Phrase {
                         id: "tilolang-did".to_owned(),
                         args: vec![("action".to_owned(), label), ("title".to_owned(), title)],
@@ -2880,13 +2880,13 @@ pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
 }
 
 /// The title of what `aref` is run on — the item of a list (`remove(s, b)`), or the resource —
-/// when it has one. Read before the action runs: a destructive one takes its subject away.
-fn subject_title(host: &Host, aref: &ActionRef) -> Option<String> {
-    let subject = aref.args.iter().rev().find_map(|arg| match arg {
-        Value::Ref(subject) => Some(ResourceRef::clone(&subject.target)),
+/// when it has one. Read before the action runs: a destructive one takes its target away.
+fn target_title(host: &Host, aref: &ActionRef) -> Option<String> {
+    let target = aref.args.iter().rev().find_map(|arg| match arg {
+        Value::Ref(target) => Some(ResourceRef::clone(&target.target)),
         _ => None,
     })?;
-    let title = title_of(host, &subject);
+    let title = title_of(host, &target);
     (!title.is_empty()).then_some(title)
 }
 

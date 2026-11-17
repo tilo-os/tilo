@@ -4,7 +4,7 @@
 //! The action is one a view built but for its `Text` parameter: a call of a create action
 //! (`new_task(tasks, p: project)`). Its parameters are the action's, and their types say what
 //! the words before the text typed take: a `Date` or `Time` from a phrase, an `Actor` from
-//! `@name` among the workspace's members, a record from `#title` among the records the subject's
+//! `@name` among the workspace's members, a record from `#title` among the records the target's
 //! collection of its type holds. The reader is [`tilolang::entry`], which knows nothing of
 //! storage or people; this module answers it from the workspace and builds the values.
 //!
@@ -181,13 +181,13 @@ impl Core {
                 takes: takes(&p.ty, p.entry, &app),
             })
             .collect();
-        let subject = given.iter().flatten().find_map(|arg| match arg {
+        let target = given.iter().flatten().find_map(|arg| match arg {
             Value::Ref(r) => Some(r.target.as_ref().clone()),
             _ => None,
         });
         let look = Workspace {
             core: self,
-            subject: subject.as_ref(),
+            target: target.as_ref(),
         };
         let now = tilolang::calendar::instant(&self.clock_now()).unwrap_or(0);
         let offset = self.zone.borrow().as_ref().map_or(0, |zone| zone());
@@ -255,10 +255,10 @@ fn takes(ty: &str, entry: bool, app: &str) -> Takes {
 }
 
 /// What the text of an entry can name, answered from the workspace the action runs in: the
-/// members, and the records the subject's collections hold.
+/// members, and the records the target's collections hold.
 struct Workspace<'a> {
     core: &'a Core,
-    subject: Option<&'a ResourceRef>,
+    target: Option<&'a ResourceRef>,
 }
 
 impl Look for Workspace<'_> {
@@ -278,13 +278,13 @@ impl Look for Workspace<'_> {
     }
 
     fn records(&self, app: &str, ty: &str) -> Vec<(String, String)> {
-        let Some(subject) = self.subject else {
+        let Some(target) = self.target else {
             return Vec::new();
         };
-        let Ok((_, subject_ty)) = self.core.type_of_ref(&subject.ty) else {
+        let Ok((_, target_ty)) = self.core.type_of_ref(&target.ty) else {
             return Vec::new();
         };
-        // The subject's collections of the type, as the type declares them
+        // The target's collections of the type, as the type declares them
         // (`projects: Collection<Project>`).
         let key = TypeKey {
             app: app.to_owned(),
@@ -300,7 +300,7 @@ impl Look for Workspace<'_> {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for field in &subject_ty.fields {
+        for field in &target_ty.fields {
             if field.kind != FieldKind::Collection || element_record(&field.ty) != Some(&key) {
                 continue;
             }
@@ -308,12 +308,12 @@ impl Look for Workspace<'_> {
                 id: field.id.clone(),
                 kind: field.kind,
             };
-            let Ok(FieldValue::Items(items)) = self.core.store.borrow().read(subject, &spec) else {
+            let Ok(FieldValue::Items(items)) = self.core.store.borrow().read(target, &spec) else {
                 continue;
             };
             for item in items {
                 let item_ref = ResourceRef {
-                    doc: subject.doc.clone(),
+                    doc: target.doc.clone(),
                     item: Some(item),
                     ty: element.clone(),
                 };

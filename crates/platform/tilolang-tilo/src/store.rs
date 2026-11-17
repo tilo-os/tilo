@@ -74,7 +74,7 @@ use tilolang_runtime::value::ResourceRef;
 
 use crate::action::{
     Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, edit_seed, outbox_entries,
-    read_resource, read_subject, subject_of,
+    read_resource, read_target, target_of,
 };
 use crate::background::Waker;
 use crate::chunk::{self, ChunkNo, Chunks, Stamps};
@@ -205,8 +205,8 @@ struct LocalWrite {
     index: usize,
     /// For the first write of an action into its chunk that names a resource, that resource as
     /// the chunk held it before the write, read for the action's app: what the action's history
-    /// entry is titled by ([`crate::action::read_subject`]).
-    subject: Option<(AppId, Option<crate::action::Subject>)>,
+    /// entry is titled by ([`crate::action::read_target`]).
+    target: Option<(AppId, Option<crate::action::Target>)>,
     touched: Vec<FieldKey>,
     /// The collection items it added, removed or moved, by each collection they joined or
     /// left.
@@ -1240,7 +1240,7 @@ impl TiloStore {
 
     /// Record that the migration `migration` (its action id) ran on the resource `doc`, as a
     /// change of its own: the platform keeps no other mark of it, and runs a migration on each
-    /// resource of its subject type once, whether an earlier version wrote the resource or
+    /// resource of its target type once, whether an earlier version wrote the resource or
     /// this one. A migration reads what an older version left, so one that finds nothing of it
     /// changes nothing, and a record made by this version starts with every migration of its
     /// type run.
@@ -2043,7 +2043,7 @@ impl Inner {
             write.chunk == chunk && write.action == action && write.derived == derived
         });
         let index = held.clone().count();
-        let named = held.any(|write| subject_of(write.edit.bare()));
+        let named = held.any(|write| target_of(write.edit.bare()));
         let doc = self.chunks.open(chunk);
         // An action's first write into a chunk that holds no other open writes writes as its
         // author, who commits it as the action's change. Writes open before it (another
@@ -2057,8 +2057,8 @@ impl Inner {
         {
             doc.set_actor(automerge::ActorId::from(author.actor_bytes()));
         }
-        let subject = (!derived && !named && subject_of(edit.bare()))
-            .then(|| (AppId::from(app), read_subject(app, edit.bare(), doc)));
+        let target = (!derived && !named && target_of(edit.bare()))
+            .then(|| (AppId::from(app), read_target(app, edit.bare(), doc)));
         let author = (!derived).then(|| self.author.clone()).flatten();
         let applied = write_edit(doc, app, &edit, index, author.as_ref());
         if manifest {
@@ -2074,7 +2074,7 @@ impl Inner {
             seed: seed.to_vec(),
             action,
             index,
-            subject,
+            target,
             touched: touched.to_vec(),
             items,
             placed,

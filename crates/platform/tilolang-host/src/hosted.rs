@@ -222,7 +222,7 @@ impl Surface {
     /// with their actions, and each package's actions that take no record (the instance's own
     /// app's with what every app publishes).
     ///
-    /// `shown` bounds what a record publishes to what the window reaches: its lane's subject and
+    /// `shown` bounds what a record publishes to what the window reaches: its lane's target and
     /// the rows on screen. `None` is the whole workspace, what a caller that asks the directory
     /// reads.
     ///
@@ -590,7 +590,7 @@ struct Answered {
     /// Where the publications stood when the answer was read ([`Publications::moved`]).
     at: u64,
     /// What the app says of the action on the resource: what it is called there, the icon beside
-    /// it and whether it can run; `None` for an action whose app says nothing its subject
+    /// it and whether it can run; `None` for an action whose app says nothing its target
     /// decides, which is offered as it is published.
     said: Option<tilolang_tilo::host::Offered>,
     /// The fields reading the answer read; `None` for an answer that read beyond the workspace
@@ -2363,7 +2363,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for Apis {
 }
 
 /// `invocation` as its app's api takes it: the app, the resource, the action and its
-/// arguments. An action is invoked on its subject, which its arguments leave out; an edit of a
+/// arguments. An action is invoked on its target, which its arguments leave out; an edit of a
 /// field is the resource's own field edit. `None` for an action that names no resource.
 fn api_ask(
     invocation: &tilolang_tilo::runtime::delegate::Invocation,
@@ -2374,7 +2374,7 @@ fn api_ask(
         Invocation::Action {
             app,
             name,
-            subject: Some(subject),
+            target: Some(target),
             from,
             ..
         } => {
@@ -2392,7 +2392,7 @@ fn api_ask(
             // The app's api takes it by the name it publishes it under.
             Some((
                 app.to_string(),
-                subject.id_string(),
+                target.id_string(),
                 name.clone(),
                 tilo_actions::remote::InvokeArgument::Json(arguments),
             ))

@@ -72,13 +72,13 @@ tilo_test_env::scenario! {
         let task = meta.types.iter().find(|t| t.name == "Task").unwrap();
         assert_eq!(often.action, ring.id, "the action it runs");
         assert_eq!(often.ty, task.id, "the records it runs for");
-        assert_eq!(often.args, vec![TriggerArgMeta::Subject]);
+        assert_eq!(often.args, vec![TriggerArgMeta::Target]);
         assert_eq!(often.when, TriggerWhenMeta::Every(30 * 60));
 
         let due = meta.triggers.iter().find(|t| t.name == "due").unwrap();
         let at = task.fields.iter().find(|f| f.name == "at").unwrap();
         assert_eq!(due.when, TriggerWhenMeta::At(at.id.clone()));
-        assert_eq!(due.args, vec![TriggerArgMeta::Subject]);
+        assert_eq!(due.args, vec![TriggerArgMeta::Target]);
     }
 
     phase a_trigger_runs_one_of_the_packages_actions_and_a_record_of_it;

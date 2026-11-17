@@ -48,7 +48,7 @@ pub enum RustBinding {
 #[derive(Clone, Debug, PartialEq)]
 pub enum RustEvent {
     /// The action `action` of `resource`, with these arguments (the resource itself is the
-    /// subject, not an argument): the resource the view shows, or another it offered it on.
+    /// target, not an argument): the resource the view shows, or another it offered it on.
     Invoke {
         resource: String,
         action: String,
@@ -196,7 +196,7 @@ impl RustNode {
     pub(crate) fn into_ui(
         self,
         events: &BTreeMap<(String, String), RustEvent>,
-        subject: &ResourceRef,
+        target: &ResourceRef,
         author: &ModuleHash,
         window: &str,
         viewer: &crate::ids::Actor,
@@ -208,7 +208,7 @@ impl RustNode {
             if node_key != &key {
                 continue;
             }
-            let aref = action(effect, subject, window, viewer, author)?;
+            let aref = action(effect, target, window, viewer, author)?;
             kept.insert(name.clone(), retain(Value::Action(aref)));
         }
         let binding = match &self.binding {
@@ -236,7 +236,7 @@ impl RustNode {
         };
         let mut children = Vec::with_capacity(self.children.len());
         for child in self.children {
-            children.push(child.into_ui(events, subject, author, window, viewer, retain)?);
+            children.push(child.into_ui(events, target, author, window, viewer, retain)?);
         }
         Ok(UiNode {
             kind: self.kind,
@@ -251,10 +251,10 @@ impl RustNode {
 }
 
 /// The action reference a Rust view's event names, as the runtime's. An action on the view's own
-/// resource is the empty resource in [`RustEvent::Invoke`], read here as `subject`.
+/// resource is the empty resource in [`RustEvent::Invoke`], read here as `target`.
 fn action(
     effect: &RustEvent,
-    subject: &ResourceRef,
+    target: &ResourceRef,
     window: &str,
     viewer: &crate::ids::Actor,
     author: &ModuleHash,
@@ -267,7 +267,7 @@ fn action(
             args,
         } => {
             let at = if resource.is_empty() {
-                subject.clone()
+                target.clone()
             } else {
                 ResourceRef::parse_id(resource, String::new())
                     .ok_or_else(|| format!("no resource `{resource}` to invoke on"))?

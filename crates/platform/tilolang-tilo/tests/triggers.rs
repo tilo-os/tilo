@@ -231,11 +231,11 @@ fn run(replica: &mut Replica, name: &str, args: Vec<Value>) {
 
 /// Set the reminder `doc`'s time to `at`, as a person at the window.
 fn remind_at(replica: &mut Replica, doc: &str, at: &str) {
-    let subject = ResourceRef::root(doc.to_owned(), type_id(replica, "Reminder"));
+    let target = ResourceRef::root(doc.to_owned(), type_id(replica, "Reminder"));
     run(
         replica,
         "remind",
-        vec![Value::resource(&subject), Value::text(at)],
+        vec![Value::resource(&target), Value::text(at)],
     );
 }
 
@@ -474,9 +474,9 @@ fn an_action_reads_the_end_and_count_of_a_large_collection_not_its_items() {
     let work = |n: usize| {
         let (mut ada, _, _) = workspace();
         let rack = rack(&mut ada, n, 0, now);
-        let subject = ResourceRef::root(rack, type_id(&ada, "Rack"));
+        let target = ResourceRef::root(rack, type_id(&ada, "Rack"));
         let before = ada.host.store().read_stats();
-        run(&mut ada, "ring_newest", vec![Value::resource(&subject)]);
+        run(&mut ada, "ring_newest", vec![Value::resource(&target)]);
         let after = ada.host.store().read_stats();
         (
             chimes(&ada, n - 1),

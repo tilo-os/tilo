@@ -821,11 +821,11 @@ measures it in, read as one with `Duration(n)`.
 **Native vocabulary.** Some smaller pieces of syntax:
 
 - An enum case takes an icon: `all (icon: .file_text)`.
-- An action's `label:` and `icon:` may be an `if` over its subject, and `on:` is a Bool over
-  the subject. The `else` branch is the static fallback:
+- An action's `label:` and `icon:` may be an `if` over its target, and `on:` is a Bool over
+  the target. The `else` branch is the static fallback:
   `action pin(n: Note) (label: if n.pinned { "Unpin" } else { "Pin" }, on: n.pinned)`. A label
-  may interpolate its arguments, `label: "Move to {col.title}"`: over the subject it follows
-  the subject as an `if` does; over another argument it is read where the action is applied
+  may interpolate its arguments, `label: "Move to {col.title}"`: over the target it follows
+  the target as an `if` does; over another argument it is read where the action is applied
   with it, `button(move_to(b, card, col))`. `button(pin(n))` reads its `label:`, `icon:` and
   `on:` with the arguments it applies, as the view draws: Pin turns into Unpin, toggled.
 - A parameter whose name in words would read as something else beside its value says what it
@@ -841,13 +841,13 @@ measures it in, read as one with `Duration(n)`.
   `Ctrl+Enter` is Command+Enter on a Mac. Where the action is offered its key runs it: an
   action on an item while that item has the keyboard, an action on the app's root window-wide.
   The host's bar and menus show it, and so does the palette. The key is checked when the app
-  compiles, and two actions of one subject cannot answer the same keys.
+  compiles, and two actions of one target cannot answer the same keys.
 - A slot that holds a component (`ui.BoardLane` holds `ui.BoardCard`s) takes a view of the
   package whose body is that component: views are components.
 - `require <condition> "<reason>"` lines head an action's body: when the action is available
-  on its subject. Where it would be offered on the subject (`actions(r)`: the host's bar and a
+  on its target. Where it would be offered on the target (`actions(r)`: the host's bar and a
   window's menus, agents' choices) it is not offered while one does not hold; invoked anyway, it is
-  refused with the reason before anything changes. A condition reads only the subject and is
+  refused with the reason before anything changes. A condition reads only the target and is
   pure, as the presentation is (it is checked in the action's presentation view):
   `primary action send(d: Draft) { require not d.sent "It went already" ... }`.
 - A scenario names people with `let mia = person("Mia")`, and runs an action as one of them

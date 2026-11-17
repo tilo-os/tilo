@@ -374,7 +374,7 @@ pub struct ChangeNote {
     /// Kept with the change, so history says what the change was made of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<crate::run::JournalEntry>,
-    /// How many items the change was made over: one for an action applied to its subject, and
+    /// How many items the change was made over: one for an action applied to its target, and
     /// for one action applied to many items at once (`many`), as many as the items.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub count: u32,
