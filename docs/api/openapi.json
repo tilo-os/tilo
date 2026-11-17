@@ -3619,6 +3619,13 @@
               "null"
             ],
             "description": "Runs a program that would change much or destroy something; without\nit such a program answers `preview`."
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The program session it continues, as an earlier answer named it: the\n`let`s its programs bound, the references its answers showed (`n3`),\nand the steps `undo` and `history task` take back and list. Without\nit the program starts a new session."
           }
         },
         "required": [
@@ -3653,6 +3660,16 @@
             "items": true,
             "description": "Every step of the run that changed something, oldest first.",
             "default": []
+          },
+          "text": {
+            "type": "string",
+            "description": "What a person reads: the answer's lines, each resource by its\nreference (`n3`), and what a preview would apply.",
+            "default": ""
+          },
+          "session": {
+            "type": "string",
+            "description": "The program session it ran in: send it with the next program to\ncontinue it.",
+            "default": ""
           }
         },
         "required": [

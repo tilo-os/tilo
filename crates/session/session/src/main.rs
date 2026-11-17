@@ -1,6 +1,6 @@
 //! The native session: `tilo-session [--backend drm|headless|nested] [--size WxH]
 //! [--connector NAME] [--output [NAME=]WxH[@X,Y]]... [--scale S|--panel-mm WxH]
-//! [--shell screen] [--host-desktop] [--admit-repl PATH]... [--agent-key FILE]
+//! [--shell screen] [--host-desktop] [--agent-key FILE]
 //! [--test-control PATH] [--admin-control PATH] [--seed-apps] [-- command args...]`.
 //! It listens on a fresh `wayland-N` socket, serves X11 clients one display per
 //! workspace (unless `--no-x11`), prints the socket and the MCP server it serves,
@@ -199,10 +199,6 @@ struct CommandLine {
     reach: Reach,
     /// Whether the tilolang shell runs, when the command line asked for it.
     shell: bool,
-    /// The programs the person admits to act as them at the MCP server
-    /// (`--admit-repl PATH`, as often as they name one): their decision,
-    /// made as they start the session.
-    admit_repl: Vec<std::path::PathBuf>,
     /// The agent key the person starts the session with (`--agent-key FILE`).
     agent_key: Option<std::path::PathBuf>,
     /// Where the development test-control socket opens, when the command line named one and this
@@ -480,17 +476,6 @@ fn reach(ours: &[String], backend: Backend) -> Reach {
     )
 }
 
-/// The programs the person admits to act as them at the MCP server (`--admit-repl PATH`, as often
-/// as they name one).
-#[cfg(target_os = "linux")]
-fn admit_repl(ours: &[String]) -> Vec<std::path::PathBuf> {
-    ours.iter()
-        .zip(ours.iter().skip(1))
-        .filter(|(flag, _)| *flag == "--admit-repl")
-        .map(|(_, program)| std::path::PathBuf::from(program))
-        .collect()
-}
-
 /// Where the development test-control socket opens, when the command line named one and this build
 /// opens it.
 #[cfg(target_os = "linux")]
@@ -575,7 +560,6 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
         outputs: output.outputs,
         shell: output.shell,
         reach: reach(ours, output.backend),
-        admit_repl: admit_repl(ours),
         agent_key: value(ours, "--agent-key").map(std::path::PathBuf::from),
         test_control: test_control(ours),
         admin_control: admin_control(ours, output.backend),
@@ -608,7 +592,6 @@ fn start(
         outputs,
         reach,
         shell,
-        admit_repl,
         agent_key,
         test_control,
         admin_control,
@@ -711,7 +694,6 @@ fn start(
         power,
         machine,
         shell,
-        admit_repl,
         agent_key,
         test_control,
         admin_control,
@@ -719,9 +701,9 @@ fn start(
         ..device_options(machine, config)
     };
     // A session in another desktop's window serves no MCP server of its own, unless the person
-    // started it naming a program they admit to act as them there (`--admit-repl`): that program
-    // reaches it only through a socket, and the window's private runtime directory holds it.
-    if options.mcp_server.is_none() && !options.admit_repl.is_empty() {
+    // started it with an agent key (`--agent-key`): the agent holding it reaches the session only
+    // through a socket, and the window's private runtime directory holds it.
+    if options.mcp_server.is_none() && options.agent_key.is_some() {
         options.mcp_server = tilo_session::mcp_server::path();
     }
     // The person's files: the login's files daemon serves them as the Files app's windowless
@@ -974,8 +956,8 @@ fn run(
     if host_desktop && let Err(error) = session.serve_folder_import(std::ffi::OsStr::new(&socket)) {
         tracing::warn!(%error, display = %socket, "Add folders cannot ask whether setup is done");
     }
-    // Where a program of this login asks to work here as an agent: what `tilolang repl --api`
-    // connects to. The session bound it as it started.
+    // Where a program of this login asks to work here as an agent. The session bound it as it
+    // started.
     if let Some(agent) = sockets.agent.filter(|agent| agent.exists()) {
         println!("TILO_MCP_SERVER={}", agent.display());
     }

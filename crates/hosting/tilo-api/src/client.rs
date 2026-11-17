@@ -1,15 +1,18 @@
-//! Tilo's API, `/v1`, as `tilo`'s hosted commands reach it: one client, two
-//! transports, and nothing that knows which kind of host answers.
+//! Tilo's API, `/v1`, as a program of the person's reaches it (`tilo`'s
+//! hosted commands, `tilolang repl`): one client, two transports, and nothing
+//! that knows which kind of host answers.
 //!
 //! `docs/developers/api.md` is the callers' reference. A call goes to an API
 //! server over HTTP with a key (`TILO_API_KEY`, and the server named by
 //! `--api` or `TILO_API_URL`), or to a Tilo host in process
-//! ([`tilo_api::direct::Direct`]) as a key this computer holds: the key file
+//! ([`crate::direct::Direct`]) as a key this computer holds: the key file
 //! `--key-file` names, or, without an API key, the one `tilo login` kept here.
 //! Every route answers the same either way, so no command here can tell.
 //!
 //! A mutating call carries an `Idempotency-Key` of its own, and every retry of
 //! it sends that same key: the host never runs one invocation twice.
+
+pub mod device;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use http_body_util::BodyExt as _;
@@ -99,7 +102,7 @@ pub fn entered_workspace(reach: Reach<'_>) -> Result<Option<(String, String)>> {
     if !reach.as_device() {
         return Ok(None);
     }
-    crate::login::entered_workspace()
+    device::entered_workspace()
 }
 
 /// One answer of the API: its status and its body.
@@ -142,7 +145,7 @@ impl Answer {
         }
         // The server names its own routes and an agent's tools; a person at
         // this command types neither.
-        let said = tilo_api::v1::names::said(&said, tilo_api::v1::names::Surface::Cli);
+        let said = crate::v1::names::said(&said, crate::v1::names::Surface::Cli);
         anyhow!("{said}")
     }
 
@@ -185,7 +188,7 @@ enum Transport {
         http: tilo_net::Client,
     },
     /// A Tilo host, reached in process as this computer's own key.
-    Direct(tilo_api::direct::Direct),
+    Direct(crate::direct::Direct),
 }
 
 impl Client {
@@ -193,7 +196,7 @@ impl Client {
     /// server, else this computer's own key as `tilo login` kept it.
     pub fn open(reach: Reach<'_>) -> Result<Self> {
         if let Some(path) = reach.key_file {
-            let file = tilo_api::direct::KeyFile::read(path).map_err(anyhow::Error::msg)?;
+            let file = crate::direct::KeyFile::read(path).map_err(anyhow::Error::msg)?;
             return Self::direct(&file);
         }
         if let Some(key) = api_key() {
@@ -214,8 +217,8 @@ impl Client {
         )
     }
 
-    fn direct(file: &tilo_api::direct::KeyFile) -> Result<Self> {
-        let direct = tilo_api::direct::Direct::new(file)
+    fn direct(file: &crate::direct::KeyFile) -> Result<Self> {
+        let direct = crate::direct::Direct::new(file)
             .map_err(|why| anyhow!("the key for {}: {why}", file.host))?;
         Ok(Self {
             transport: Transport::Direct(direct),
@@ -269,6 +272,32 @@ impl Client {
             return Err(answer.refused());
         }
         Ok(answer.json())
+    }
+
+    /// The workspace `named`: an id as it is, or the account's workspace of
+    /// that name.
+    pub async fn workspace_id(&self, named: &str) -> Result<String> {
+        if is_uuid(named) {
+            return Ok(named.to_owned());
+        }
+        let listed = self.get("/v1/workspaces").await?;
+        let wanted = slug(named);
+        listed
+            .get("workspaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|workspace| {
+                workspace
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| slug(name) == wanted)
+            })
+            .and_then(|workspace| workspace.get("id").and_then(Value::as_str))
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                anyhow!("no workspace called {named:?}: `tilo account workspaces ls` names them")
+            })
     }
 
     /// Run `action` on `resource` in `workspace`, titled `title` in History:
@@ -364,7 +393,7 @@ impl Client {
         }
         // The id is this side's, so an upload this command opened can be
         // asked about—and finished—after a connection it lost.
-        let id = format!("up_{}", hex::encode(rand::random::<[u8; 16]>()));
+        let id = format!("up_{}", fresh_key());
         let upload = format!("/v1/workspaces/{workspace}/uploads/{id}");
         let opened = self
             .post(&upload, &serde_json::json!({"size": size}))
@@ -609,7 +638,12 @@ impl Client {
                     .iter()
                     .map(|(name, value)| ((*name).to_owned(), value.clone()))
                     .collect();
-                let reply = direct.request(method.as_str(), path, &pairs, body).await;
+                // Boxed as a trait object: the whole server answers in this future, deeper than
+                // a caller's own future may nest or the compiler follows it to prove it `Send`.
+                let request: std::pin::Pin<
+                    Box<dyn std::future::Future<Output = crate::Reply> + Send + '_>,
+                > = Box::pin(direct.request(method.as_str(), path, &pairs, body));
+                let reply = request.await;
                 let status = reply.status().as_u16();
                 let body = reply
                     .into_body()
@@ -635,6 +669,27 @@ fn titled(title: &str) -> [(&'static str, String); 3] {
     ]
 }
 
+/// Whether `text` is written as a workspace's id is.
+#[must_use]
+pub fn is_uuid(text: &str) -> bool {
+    let groups: Vec<&str> = text.split('-').collect();
+    groups.len() == 5
+        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, length)| {
+            group.len() == length && group.chars().all(|c| c.is_ascii_hexdigit())
+        })
+}
+
+/// A name as `-w` matches it: letters and digits, lower case, words joined
+/// by `-` (`Applicant: Jane Doe` and `applicant-jane-doe` match).
+#[must_use]
+pub fn slug(name: &str) -> String {
+    name.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 /// Whether `until` is still ahead: a call with no deadline never runs out.
 fn ahead(until: Option<Instant>) -> bool {
     until.is_none_or(|until| Instant::now() < until)
@@ -642,7 +697,7 @@ fn ahead(until: Option<Instant>) -> bool {
 
 /// A key one invocation is named by, and retried under.
 fn fresh_key() -> String {
-    hex::encode(rand::random::<[u8; 16]>())
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 /// The key `TILO_API_KEY` holds.
@@ -666,27 +721,27 @@ pub fn api_url(api: Option<&str>) -> String {
         .to_owned()
 }
 
-/// This computer's own key as a key file ([`tilo_api::direct::KeyFile`]),
+/// This computer's own key as a key file ([`crate::direct::KeyFile`]),
 /// named `name` or as the person's devices name this computer: the key
 /// `tilo login` kept, its certificate in the canonical bytes the in-process
 /// API reads, and the host it reaches.
 ///
 /// `None` when this computer did not log in.
-pub fn login_key(name: Option<&str>) -> Result<Option<tilo_api::direct::KeyFile>> {
-    let dir = crate::login::device_dir()?;
-    let Some((key, device)) = crate::login::load(&dir)? else {
+pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
+    let dir = device::device_dir()?;
+    let Some((key, device)) = device::load(&dir)? else {
         return Ok(None);
     };
     // The login keeps the certificate as postcard bytes; the key file holds
     // the canonical encoding of the same certificate, which is what `Direct`
     // reads back.
     let cert: tilo_user_identity::DeviceCert = postcard::from_bytes(
-        &hex::decode(&device.cert).map_err(|_| anyhow!(crate::login::LOGIN_DAMAGED))?,
+        &hex::decode(&device.cert).map_err(|_| anyhow!(device::LOGIN_DAMAGED))?,
     )
-    .map_err(|_| anyhow!(crate::login::LOGIN_DAMAGED))?;
+    .map_err(|_| anyhow!(device::LOGIN_DAMAGED))?;
     let canonical = tilo_user_identity::canonical::canonical_bytes(&cert)
-        .map_err(|_| anyhow!(crate::login::LOGIN_DAMAGED))?;
-    Ok(Some(tilo_api::direct::KeyFile {
+        .map_err(|_| anyhow!(device::LOGIN_DAMAGED))?;
+    Ok(Some(crate::direct::KeyFile {
         host: device.host_origin.clone(),
         // The site the device logged in with: links this key asks the host
         // for are built on it, as the site's own page builds them.
@@ -778,115 +833,5 @@ mod tests {
             };
             assert_eq!(refused.busy_for(), None);
         }
-    }
-
-    /// This computer's own key, as `tilo login` kept it, is a key file the API
-    /// in process reads: its certificate in the canonical bytes `Direct`
-    /// decodes, which is not the postcard the login itself keeps it as.
-    /// `tilo keys export` writes the same file, for this account only.
-    #[test]
-    fn the_login_key_is_a_key_file_the_in_process_api_reads() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let now = tilo_clock::unix_now_ns();
-        let month = 30 * 24 * 3600 * 1_000_000_000_u64;
-        let mut cert = tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Ada's laptop".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            // A minute of slack, as the login's own certificates have: the
-            // clock that verifies it is not the clock that issued it.
-            issued_at_ns: now.saturating_sub(60_000_000_000),
-            expires_at_ns: Some(now.saturating_add(month)),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        let device = crate::login::Device {
-            site: "https://tilo.sh/".into(),
-            host_origin: "https://eu1.tilo.test".into(),
-            workspace: "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".into(),
-            workspace_name: Some("Studio".into()),
-            user: hex::encode(root.verifying_key().to_bytes()),
-            agent: "Claude Code".into(),
-            label: "Claude Code on build-box".into(),
-            cert: hex::encode(postcard::to_allocvec(&cert).unwrap()),
-            host_cert: "00".into(),
-        };
-        crate::login::store(dir.path(), &key, &device).unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_DEVICE_DIR", dir.path());
-
-        let file = login_key(None)
-            .unwrap()
-            .expect("a logged-in computer has a key");
-        assert_eq!(file.host, "https://eu1.tilo.test");
-        assert_eq!(
-            file.site.as_deref(),
-            Some("https://tilo.sh"),
-            "the device keeps the site it logged in with: links are built there"
-        );
-        assert_eq!(file.name, "Claude Code on build-box");
-        assert_eq!(file.key, hex::encode(key.to_bytes()));
-        assert_eq!(
-            hex::decode(&file.cert).unwrap(),
-            tilo_user_identity::canonical::canonical_bytes(&cert).unwrap(),
-            "the certificate is the canonical encoding the in-process API reads"
-        );
-        // It is a key the API in process takes, as it stands.
-        tilo_api::direct::Direct::new(&file).unwrap();
-
-        // The workspace the device entered is the one a command acts in when
-        // `-w` names none: its id, and the name the device keeps for it.
-        assert_eq!(
-            entered_workspace(Reach {
-                api: None,
-                key_file: None,
-                json: false,
-            })
-            .unwrap(),
-            Some((
-                "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".to_owned(),
-                "Studio".to_owned()
-            ))
-        );
-        // A key file is someone else's key: it names no workspace of its own.
-        assert_eq!(
-            entered_workspace(Reach {
-                api: None,
-                key_file: Some(Path::new("visa.json")),
-                json: false,
-            })
-            .unwrap(),
-            None
-        );
-
-        // And `tilo keys export` writes it, named, readable by this account.
-        let out = dir.path().join("visa.json");
-        crate::hosted::keys(
-            Reach {
-                api: None,
-                key_file: None,
-                json: false,
-            },
-            None,
-            crate::hosted::KeysCmd::Export {
-                out: out.clone(),
-                name: Some("Visa backend".into()),
-            },
-        );
-        assert_eq!(
-            std::fs::metadata(&out).unwrap().permissions().mode() & 0o777,
-            0o600,
-            "only this account may read a key"
-        );
-        let written = tilo_api::direct::KeyFile::read(&out).unwrap();
-        assert_eq!(written.name, "Visa backend");
-        assert_eq!(written.cert, file.cert);
-        assert_eq!(written.site, file.site, "an exported key keeps its site");
-        tilo_api::direct::Direct::new(&written).unwrap();
     }
 }

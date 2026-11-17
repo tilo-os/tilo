@@ -19,7 +19,7 @@ A session binds its Wayland socket, its service sockets and its files under `$XD
 |---|---|---|
 | `wayland-display` | the compositor, when it binds its socket (`Compositor::listen`) | everything that starts a program beside the session: `tilo-app dev`, `scripts/agent-loop/session.py`, `real_apps.ScriptedSession` |
 | `workspace-id` | the session, on every workspace switch | `tilo-app dev`, which names it to the session's file chooser with the app; `scripts/agent-loop/session.py`, which waits for it |
-| `agent.sock` | the session's MCP server, for a session that owns the machine | `tilo-runtime-mcp --connect`, `tilolang repl --api` |
+| `agent.sock` | the session's MCP server, for a session that owns the machine or was started with `--agent-key` | `tilo-runtime-mcp --connect` |
 | `test-control.sock` | a development build, or `--test-control PATH` | `tilo-control`, every harness here |
 | `admin-control.sock` | a session that owns the machine, for the device's owner | `tilo-control --socket …` (semantic ops only) |
 | `headless-owner-control.sock` | a headless session started with `--headless-owner-control` | the same, for an owner's scripts |
@@ -64,7 +64,7 @@ mkdir -p "$XDG_RUNTIME_DIR"
 target/debug/tilo-session --backend headless &
 ```
 
-The session's own flags, as `tilo-session --help`'s header documents them: `--backend drm|headless|nested`, `--size WxH`, `--output [NAME=]WxH[@X][,][+X,Y]` (repeatable, for a multi-output layout), `--scale S` or `--panel-mm WxH`, `--connector NAME`, `--shell screen`, `--session-bus ADDRESS`, `--system-bus ADDRESS`, `--no-x11`, `--test-control PATH`, `--admin-control PATH`, `--headless-owner-control`, `--admit-repl PATH`, `--seed-apps`, and `-- COMMAND…` to run a program under it (the session then lives as long as that command).
+The session's own flags, as `tilo-session --help`'s header documents them: `--backend drm|headless|nested`, `--size WxH`, `--output [NAME=]WxH[@X][,][+X,Y]` (repeatable, for a multi-output layout), `--scale S` or `--panel-mm WxH`, `--connector NAME`, `--shell screen`, `--session-bus ADDRESS`, `--system-bus ADDRESS`, `--no-x11`, `--test-control PATH`, `--admin-control PATH`, `--headless-owner-control`, `--agent-key FILE`, `--seed-apps`, and `-- COMMAND…` to run a program under it (the session then lives as long as that command).
 
 `--test-control` and `--seed-apps` are honoured by development builds only; a release build serves the control socket only when built with `--features dev-overrides`, which the dev image's session carries. Every harness here is a development build, and says so when it is not.
 

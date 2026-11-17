@@ -758,7 +758,7 @@ the app's (`ui.ListItem(group:, tail:)` in the row the app builds, each answered
 where the place decides so itself), and its order is the app's (`sort_by`).
 
 **Agent and REPL sessions** (agents.md, "Querying" and "Reading and describing"). A session's
-code — the action API's `tilo` tool, `tilolang repl` — has the agent library's words in scope for
+code — the action API's `tilo` tool, `POST …/programs`, `tilolang repl` — has the agent library's words in scope for
 reading what the workspace holds, across apps. The library is `tilo.agent` (`agent.rs`), one
 like any other: a package that wants the words writes `use tilo.agent as agent` and calls
 `agent.grep(...)`, the code a session's `grep` is.

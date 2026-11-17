@@ -640,6 +640,10 @@ export interface ProgramAnswer {
   output: string[];
   changed: number;
   steps: unknown[];
+  /** What a person reads, each resource by its reference (`n3`). */
+  text: string;
+  /** The program session it ran in: pass it to the next program to continue it. */
+  session: string;
   raw: Record<string, unknown>;
 }
 
@@ -649,6 +653,8 @@ export function programAnswerOf(raw: Record<string, unknown>): ProgramAnswer {
     output: Array.isArray(raw.output) ? raw.output.map(String) : [],
     changed: intOf(raw.changed) ?? 0,
     steps: Array.isArray(raw.steps) ? raw.steps : [],
+    text: String(raw.text ?? ""),
+    session: String(raw.session ?? ""),
     raw,
   };
 }

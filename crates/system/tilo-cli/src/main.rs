@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 mod agent;
 mod aliases;
-mod api;
+use tilo_api::client as api;
 mod cleanup;
 mod desktop;
 mod docs;

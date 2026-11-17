@@ -2,8 +2,7 @@
 # Run the tilolang shell as the whole screen of a headless tilo-session, the way a
 # person uses it, and see it: rendered by Mesa's software Vulkan driver (lavapipe),
 # never this machine's GPU; with the tilolang apps installed as packages and their
-# scenario data in their records (`--seed-apps`); with the MCP server admitting
-# `tilolang repl` to act as the person (`--admit-repl`); and with the development
+# scenario data in their records (`--seed-apps`); and with the development
 # test-control socket `tilo-control snapshot PATH` writes a PNG of the screen over
 # (`--test-control`).
 #
@@ -57,7 +56,6 @@
 #                     canvas. Development builds only.
 #
 # Drive it from another terminal with the commands it prints:
-#   target/debug/tilolang repl --api "$TILO_MCP_SERVER"
 #   TILO_TEST_CONTROL=... target/debug/tilo-control snapshot /tmp/shot.png
 #
 # The tilolang runtime the apps run on: this tree's thin-app build
@@ -542,7 +540,7 @@ else
 fi
 agent_key_args=()
 [[ -n $agent_key ]] && agent_key_args=(--agent-key "$agent_key")
-start_session --shell screen --admit-repl "$bin/tilolang" "${agent_key_args[@]}" "${apps[@]}"
+start_session --shell screen "${agent_key_args[@]}" "${apps[@]}"
 # The MCP server is announced once the session's own sockets are up, which can be after its control
 # socket: wait for it as for the socket, while the session lives.
 # A debug build serves it where `TILO_MCP_SERVER` names; an optimised one at the seat's own
@@ -571,7 +569,6 @@ TILO_MCP_SERVER=$socket
 TILO_TEST_CONTROL=$control
 XDG_RUNTIME_DIR=$runtime
 The session runs (pid $session_pid). From another terminal:
-  the REPL:      $bin/tilolang repl --api $socket
   a screenshot:  TILO_TEST_CONTROL=$control $bin/tilo-control snapshot /tmp/shot.png
 Stop it with Ctrl+C (or SIGTERM to pid $$); everything it started goes with it.
 EOF

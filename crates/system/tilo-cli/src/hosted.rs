@@ -295,50 +295,6 @@ fn show(json: bool, typed: &Value, said: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn is_uuid(text: &str) -> bool {
-    let groups: Vec<&str> = text.split('-').collect();
-    groups.len() == 5
-        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, length)| {
-            group.len() == length && group.chars().all(|c| c.is_ascii_hexdigit())
-        })
-}
-
-/// A name as `-w` matches it: letters and digits, lower case, words joined
-/// by `-` (`Applicant: Jane Doe` and `applicant-jane-doe` match).
-pub(crate) fn slug(name: &str) -> String {
-    name.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-/// The workspace `named`: an id as it is, or the account's workspace of
-/// that name.
-pub(crate) async fn workspace_id(client: &Client, named: &str) -> Result<String> {
-    if is_uuid(named) {
-        return Ok(named.to_owned());
-    }
-    let listed = client.get("/v1/workspaces").await?;
-    let wanted = slug(named);
-    listed
-        .get("workspaces")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|workspace| {
-            workspace
-                .get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|name| slug(name) == wanted)
-        })
-        .and_then(|workspace| workspace.get("id").and_then(Value::as_str))
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            anyhow!("no workspace called {named:?}: `tilo account workspaces ls` names them")
-        })
-}
-
 /// A label as `--label` takes it: `NAME=VALUE`.
 fn label_of(label: &str) -> Result<(String, String), String> {
     label
@@ -384,7 +340,7 @@ pub fn act(reach: Reach<'_>, workspace: &str, path: &str, args: &[String]) -> Ex
         let Some((resource, action)) = path.rsplit_once('#') else {
             bail!("{path:?} names no action: write it as app/resource#action, like notes#open");
         };
-        let workspace = workspace_id(&client, workspace).await?;
+        let workspace = client.workspace_id(workspace).await?;
         let arguments = arguments(args)?;
         let answer = client
             .act(&workspace, resource, action, &arguments, path)
@@ -451,7 +407,7 @@ fn action_text(answer: &Value) -> String {
 pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
-        let workspace = workspace_id(&client, workspace).await?;
+        let workspace = client.workspace_id(workspace).await?;
         let mut route = format!("/v1/workspaces/{workspace}/resources");
         if let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) {
             let _ = write!(route, "?path={}", api::encode_query(path));
@@ -465,7 +421,7 @@ pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>) -> ExitCode {
 pub fn read(reach: Reach<'_>, workspace: &str, path: &str, cursor: Option<&str>) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
-        let workspace = workspace_id(&client, workspace).await?;
+        let workspace = client.workspace_id(workspace).await?;
         let mut route = format!(
             "/v1/workspaces/{workspace}/resources/{}",
             api::encode_path(path.trim())
@@ -490,7 +446,7 @@ pub fn invocations(
 ) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
-        let workspace = workspace_id(&client, workspace).await?;
+        let workspace = client.workspace_id(workspace).await?;
         let mut query = Vec::new();
         if let Some(limit) = limit {
             query.push(format!("limit={limit}"));
@@ -531,7 +487,7 @@ pub fn view(
 ) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
-        let workspace = workspace_id(&client, workspace).await?;
+        let workspace = client.workspace_id(workspace).await?;
         let mut route = format!(
             "/v1/workspaces/{workspace}/views?path={}",
             api::encode_query(path.trim())
@@ -625,7 +581,7 @@ pub fn program(reach: Reach<'_>, workspace: &str, file: &Path) -> ExitCode {
         let client = Client::open(reach)?;
         let source =
             std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
-        let workspace = workspace_id(&client, workspace).await?;
+        let workspace = client.workspace_id(workspace).await?;
         let title = format!("tilo run {}", file.display());
         let answer = client.run_program(&workspace, &source, &title).await?;
         Ok(show(reach.json, &answer, &program_text(&answer)))
@@ -671,7 +627,7 @@ pub fn surfaces(reach: Reach<'_>, workspace: &str) -> Result<Vec<crate::sdk::App
 }
 
 async fn read_surfaces(client: &Client, workspace: &str) -> Result<Vec<crate::sdk::App>> {
-    let workspace = workspace_id(client, workspace).await?;
+    let workspace = client.workspace_id(workspace).await?;
     let mut apps = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
@@ -793,7 +749,7 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                 name,
                 labels,
             } => {
-                let id = workspace_id(&client, &source).await?;
+                let id = client.workspace_id(&source).await?;
                 let labels: serde_json::Map<String, Value> = labels
                     .into_iter()
                     .map(|(name, value)| (name, Value::String(value)))
@@ -811,7 +767,7 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                 off,
             } => unattended(&client, reach.json, &named, off).await,
             WorkspacesCmd::Rm { workspace: named } => {
-                let id = workspace_id(&client, &named).await?;
+                let id = client.workspace_id(&named).await?;
                 let deleted = client.delete(&format!("/v1/workspaces/{id}")).await?;
                 let mut said = format!("deleted {}", text(&deleted, "deleted"));
                 let revoked: Vec<&str> = deleted
@@ -833,7 +789,7 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
 /// `tilo account workspaces unattended <workspace> [--off]`: held while the
 /// person decides on their approving device, and said as it stands then.
 async fn unattended(client: &Client, json: bool, named: &str, off: bool) -> Result<ExitCode> {
-    let id = workspace_id(client, named).await?;
+    let id = client.workspace_id(named).await?;
     let answer = client
         .put_asking(
             &format!("/v1/workspaces/{id}/unattended"),
@@ -860,7 +816,7 @@ async fn unattended(client: &Client, json: bool, named: &str, off: bool) -> Resu
 pub fn files(reach: Reach<'_>, workspace: &str, cmd: FilesCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
-        let workspace = workspace_id(&client, workspace).await?;
+        let workspace = client.workspace_id(workspace).await?;
         match cmd {
             FilesCmd::Put { paths, to, store } => {
                 put_files(
@@ -1192,7 +1148,7 @@ async fn get_content(
 pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
-        let workspace = workspace_id(&client, workspace).await?;
+        let workspace = client.workspace_id(workspace).await?;
         match cmd {
             MembersCmd::Ls => {
                 let listed = client
@@ -1396,7 +1352,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                     bail!("name the workspace: -w <name or id>");
                 };
                 let client = Client::open(reach)?;
-                let id = workspace_id(&client, named).await?;
+                let id = client.workspace_id(named).await?;
                 let mut body = serde_json::json!({"workspace": id});
                 if let (Some(fields), Some(name)) = (body.as_object_mut(), name) {
                     fields.insert("name".into(), Value::String(name));
@@ -1579,6 +1535,116 @@ mod tests {
 
     const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
     const BRANCH: &str = "0b5e7c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d";
+
+    /// This computer's own key, as `tilo login` kept it, is a key file the API
+    /// in process reads: its certificate in the canonical bytes `Direct`
+    /// decodes, which is not the postcard the login itself keeps it as.
+    /// `tilo keys export` writes the same file, for this account only.
+    #[test]
+    fn the_login_key_is_a_key_file_the_in_process_api_reads() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let now = tilo_clock::unix_now_ns();
+        let month = 30 * 24 * 3600 * 1_000_000_000_u64;
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Ada's laptop".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            // A minute of slack, as the login's own certificates have: the
+            // clock that verifies it is not the clock that issued it.
+            issued_at_ns: now.saturating_sub(60_000_000_000),
+            expires_at_ns: Some(now.saturating_add(month)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        let device = crate::login::Device {
+            site: "https://tilo.sh/".into(),
+            host_origin: "https://eu1.tilo.test".into(),
+            workspace: "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".into(),
+            workspace_name: Some("Studio".into()),
+            user: hex::encode(root.verifying_key().to_bytes()),
+            agent: "Claude Code".into(),
+            label: "Claude Code on build-box".into(),
+            cert: hex::encode(postcard::to_allocvec(&cert).unwrap()),
+            host_cert: "00".into(),
+        };
+        crate::login::store(dir.path(), &key, &device).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_DEVICE_DIR", dir.path());
+
+        let file = api::login_key(None)
+            .unwrap()
+            .expect("a logged-in computer has a key");
+        assert_eq!(file.host, "https://eu1.tilo.test");
+        assert_eq!(
+            file.site.as_deref(),
+            Some("https://tilo.sh"),
+            "the device keeps the site it logged in with: links are built there"
+        );
+        assert_eq!(file.name, "Claude Code on build-box");
+        assert_eq!(file.key, hex::encode(key.to_bytes()));
+        assert_eq!(
+            hex::decode(&file.cert).unwrap(),
+            tilo_user_identity::canonical::canonical_bytes(&cert).unwrap(),
+            "the certificate is the canonical encoding the in-process API reads"
+        );
+        // It is a key the API in process takes, as it stands.
+        tilo_api::direct::Direct::new(&file).unwrap();
+
+        // The workspace the device entered is the one a command acts in when
+        // `-w` names none: its id, and the name the device keeps for it.
+        assert_eq!(
+            api::entered_workspace(Reach {
+                api: None,
+                key_file: None,
+                json: false,
+            })
+            .unwrap(),
+            Some((
+                "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".to_owned(),
+                "Studio".to_owned()
+            ))
+        );
+        // A key file is someone else's key: it names no workspace of its own.
+        assert_eq!(
+            api::entered_workspace(Reach {
+                api: None,
+                key_file: Some(Path::new("visa.json")),
+                json: false,
+            })
+            .unwrap(),
+            None
+        );
+
+        // And `tilo keys export` writes it, named, readable by this account.
+        let out = dir.path().join("visa.json");
+        crate::hosted::keys(
+            Reach {
+                api: None,
+                key_file: None,
+                json: false,
+            },
+            None,
+            crate::hosted::KeysCmd::Export {
+                out: out.clone(),
+                name: Some("Visa backend".into()),
+            },
+        );
+        assert_eq!(
+            std::fs::metadata(&out).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "only this account may read a key"
+        );
+        let written = tilo_api::direct::KeyFile::read(&out).unwrap();
+        assert_eq!(written.name, "Visa backend");
+        assert_eq!(written.cert, file.cert);
+        assert_eq!(written.site, file.site, "an exported key keeps its site");
+        tilo_api::direct::Direct::new(&written).unwrap();
+    }
 
     /// A folder goes up whole, each file named by its path from the folder's
     /// own place, in one order however the tree is walked; a file is itself.
@@ -2027,10 +2093,10 @@ mod tests {
 
         phase a_workspace_is_named_by_its_words;
         {
-            assert_eq!(slug("Applicant: Jane Doe"), "applicant-jane-doe");
-            assert_eq!(slug("applicant-jane-doe"), "applicant-jane-doe");
-            assert!(is_uuid("3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b"));
-            assert!(!is_uuid("jane-doe"));
+            assert_eq!(api::slug("Applicant: Jane Doe"), "applicant-jane-doe");
+            assert_eq!(api::slug("applicant-jane-doe"), "applicant-jane-doe");
+            assert!(api::is_uuid("3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b"));
+            assert!(!api::is_uuid("jane-doe"));
         }
 
         phase a_workspace_line_names_its_id_and_where_it_lives;

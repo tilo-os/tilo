@@ -30,6 +30,7 @@
 //! its tokens and sessions end at once and its key is forgotten.
 
 pub mod account;
+pub mod client;
 pub mod content;
 pub mod direct;
 pub mod grant_key;

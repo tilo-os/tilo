@@ -17497,6 +17497,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-video-render",
  "tilo-workspace-directory",
+ "tilolang-cli",
  "tokio",
  "tokio-rustls",
  "totp",
@@ -17543,6 +17544,7 @@ dependencies = [
 name = "tilo-api"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "collab-types",
  "ed25519-dalek 3.0.0",
@@ -17556,6 +17558,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "percent-encoding",
+ "postcard",
  "schemars",
  "serde",
  "serde_json",
@@ -17567,11 +17570,13 @@ dependencies = [
  "tilo-files",
  "tilo-mcp",
  "tilo-net",
+ "tilo-paths",
  "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
  "tilo-session-client",
+ "tilo-test-env",
  "tilo-user-identity",
  "tilo-workspace-directory",
  "tokio",
@@ -23534,6 +23539,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-api",
  "tilo-app-module",
  "tilo-app-package",
  "tilo-files",
@@ -23544,6 +23550,7 @@ dependencies = [
  "tilo-ui-host",
  "tilolang",
  "tilolang-tilo",
+ "tokio",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]

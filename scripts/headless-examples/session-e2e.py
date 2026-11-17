@@ -4,8 +4,8 @@
 One session (dist/dev/nested-session.sh, headless, lavapipe only) runs what a person's session
 runs: the shell with its broker and workspace host, the launcher and its sandboxes, the
 host, native Tasks, Chat and the agent runtime, and four tilolang apps built from apps/tl (Notes,
-Tasks, Mail, Chat) and installed as signed packages. Every check below drives it the way a person,
-the REPL or an agent does, and each one is there because a bug in that path was invisible to the
+Tasks, Mail, Chat) and installed as signed packages. Every check below drives it the way a person
+or an agent does, and each one is there because a bug in that path was invisible to the
 unit tests and found only by starting a session by hand:
 
   audio    the session's sound is its own: one null output, no device of the machine's in its
@@ -26,21 +26,6 @@ unit tests and found only by starting a session by hand:
            outside the frame the person sees). Where the windows land depends on the order the
            four concurrent opens arrive in: on integration 70ba3301da0 this check failed in 3 of 6
            runs (windows at y = -484 and y = 788 on a 752 px high frame).
-  repl     through the session's MCP server (`tilolang repl`), on a session whose person named the
-           program as they started it (`--admit-repl`, as naming it on the sheet would): the REPL
-           reaches the four apps, reads the record the notes app's window shows, writes a note
-           there by the names the app declares (`notes.new_note(notes.notebook)`), and changes
-           the shell, whose published state says so.
-           Catches the MCP server handing a task an installed tilolang app's surface instead of its
-           package: its actions were named by their stored ids and its root by nothing.
-           Catches the MCP server not forwarding record changes (fixed in 71382cec3d7): before the
-           fix every change answered "this desktop applies no task's changes at a record's
-           origin". No build has the deadlock fix without this one, so on 08636f201d9 the run
-           stops at `open` first. Also catches a tilolang app's first change (its schema
-           stamp) being committed without the Genesis claim, which the sealed channel refuses
-           ("a document change carries no claim") and after which the workspace's readers miss the
-           record: the check fails on any refused change, so it fails on integration
-           70ba3301da0 until `open_stored` commits the Genesis (fix not landed yet).
   ask      handing an agent work from search sends the person's request to the agent they keep —
            a new one when they keep none — through the session's one send
            (`session:send-to#send`, the action a window's box, text typed on the canvas and an
@@ -69,7 +54,7 @@ unit tests and found only by starting a session by hand:
 
 Speed: one session serves every check; the restart and `dev` start it again. No check sleeps a
 fixed time: each waits for the condition it needs (a listing answered with `--wait`, a frame
-presented, a line from the REPL), bounded by HANG_BOUND seconds, and fails with what it saw.
+presented), bounded by HANG_BOUND seconds, and fails with what it saw.
 
 Where it runs: a container on this machine, never on the remote builders. Tilo's sandboxes mount
 a fresh /proc, which the builders' containers refuse (aae4effbff4), so no app can start there. The
@@ -91,7 +76,6 @@ import argparse
 import json
 import os
 import re
-import select
 import shlex
 import shutil
 import signal
@@ -271,10 +255,6 @@ class Session:
         argv = self.script(["--ready", ready])
         for tapp in self.tapps if install else []:
             argv += ["--install-tapp", tapp]
-        # The person named the REPL's program as they started the session, as they would to use it
-        # where no sheet is answered: what `tilolang repl` on this session asks for, their decision
-        # made ahead of time (`--` ends the script's own options; the rest are the session's).
-        argv += ["--", "--admit-repl", str(self.bin("tilolang"))]
         env = {**os.environ, "TILO_NESTED_SESSION_BUILD": str(self.build),
                "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo::launch_latency=info")}
         log = open(self.out / f"session-{tag}.log", "w")
@@ -409,77 +389,6 @@ def said(session: Session, wait_ms: int = 0) -> list[dict]:
     return messages
 
 
-class Repl:
-    """`tilolang repl` on the session's MCP server, one entry at a time. Off a terminal the REPL
-    echoes each line it reads after its prompt (`tl> entry`), so an entry's answer is what it
-    prints between that echo and the echo of the empty line sent after it. Its banner comes after
-    the line saying what the server waits on (`asking to act as you: ...`)."""
-
-    PROMPT = "tl> "
-
-    def __init__(self, session: Session, out: Path):
-        ready = out / "repl-ready.json"
-        ready.write_text(json.dumps(session.ready))
-        self.proc = subprocess.Popen(
-            [str(session.bin("tilolang")), "repl", "--session", str(ready), "--color", "never"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            env={**os.environ, "XDG_STATE_HOME": str(out / "repl-state")})
-        self.transcript = ""
-        self.pending = ""
-        # The banner: the server it is on and the apps it reaches.
-        self.banner = self._read_until(lambda text: text if "apps: " in text else None)
-
-    def _read_until(self, done: Callable[[str], Any]) -> Any:
-        """Read the REPL's output until `done(text read so far)` answers; what it answered."""
-        assert self.proc.stdout is not None
-        fd = self.proc.stdout.fileno()
-        end = time.monotonic() + HANG_BOUND
-        while not (found := done(self.pending)):
-            left = end - time.monotonic()
-            if left <= 0:
-                raise Failed(f"the REPL answered nothing within {HANG_BOUND:.0f} s: {self.pending[-2000:]!r}")
-            ready, _, _ = select.select([fd], [], [], left)
-            if ready:
-                chunk = os.read(fd, 65536)
-                if not chunk:
-                    raise Failed(f"the REPL ended: {(self.transcript + self.pending)[-3000:]}")
-                self.pending += chunk.decode(errors="replace")
-        return found
-
-    def __call__(self, entry: str) -> str:
-        assert self.proc.stdin is not None
-        self.proc.stdin.write(f"{entry}\n\n".encode())
-        self.proc.stdin.flush()
-        echo, blank = f"{self.PROMPT}{entry}\n", f"{self.PROMPT}\n"
-
-        def answered(text: str) -> str | None:
-            at = text.find(echo)
-            if at < 0:
-                return None
-            stop = text.find(blank, at + len(echo))
-            return None if stop < 0 else text[at + len(echo):stop]
-
-        answer = self._read_until(answered)
-        cut = self.pending.find(blank, self.pending.find(echo) + len(echo)) + len(blank)
-        self.transcript += self.pending[:cut]
-        self.pending = self.pending[cut:]
-        if answer.startswith("error:"):
-            raise Failed(f"the REPL refused `{entry}`: {answer}")
-        return answer
-
-    def close(self) -> None:
-        self.transcript += self.pending
-        if self.proc.poll() is None:
-            assert self.proc.stdin is not None
-            self.proc.stdin.close()
-            try:
-                self.proc.wait(10)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-
-
-# --- the checks ----------------------------------------------------------------------------
-
 def check_audio(session: Session) -> dict:
     """The session's sound is its own: one null output, none of the machine's devices."""
     env = session.env()
@@ -590,69 +499,6 @@ def check_canvas(session: Session) -> dict:
                      f"{off}; places {places}")
     return {"frame": [0, 0, width, height], "placed": len(on_canvas),
             "front": [w.get("app_id") for w in front]}
-
-
-def check_repl(session: Session, out: Path) -> dict:
-    """The MCP server's REPL reaches the four apps, reads one's record, and changes the shell the
-    session publishes, which the shell draws.
-
-    The record it reads is the notes app's notebook, and the actions it lists are the app's
-    own. It writes a note there by the names the app declares (`notes.new_note(notes.notebook)`,
-    as the app's own source says it), and reads it back. It changes the shell as it may:
-    `session.overview` flips a surface of the shell, read back from the state dump the shell
-    publishes."""
-    repl = Repl(session, out)
-    try:
-        # The REPL says what the server waits on before it is in: its admission is the person's,
-        # made on the sheet or ahead of time with `--admit-repl`, never answered by the REPL.
-        if "asking to act as you" not in repl.banner:
-            raise Failed(f"the REPL gave itself access without asking: {repl.banner.strip()!r}")
-        apps = re.search(r"apps: ([^(]*)", repl.banner)
-        if not apps or not all(n in apps.group(1) for n in TL_APPS):
-            raise Failed(f"the REPL does not reach the four apps: {repl.banner.strip()}")
-        notebook = repl("ls notes")
-        if "notes.Notebook" not in notebook or "#read" not in notebook:
-            raise Failed(f"the notes app's record is not reachable: {notebook!r}")
-        # A note, written as the person by the names the notes app declares, and counted back
-        # in the notebook it went into.
-        def notes_held() -> int:
-            counted = repl("notes.notebook.notes.len()")
-            found = re.search(r"^\s*(\d+)\s*$", counted, re.M)
-            if not found:
-                raise Failed(f"the notebook's notes are not counted: {counted!r}")
-            return int(found.group(1))
-
-        before = notes_held()
-        written = repl("notes.new_note(notes.notebook)")
-        after = notes_held()
-        if after != before + 1:
-            raise Failed(f"notes.new_note(notes.notebook) wrote no note ({before} then {after}): "
-                         f"{written!r}")
-        shell = repl("ls session")
-        if "session" not in shell:
-            raise Failed(f"the session's own actions are not listed: {shell[:600]!r}")
-        # A change of the shell, as the person typing it: the overview's surface goes down and
-        # up again, and the shell's own published state says so each time.
-        def overview() -> bool:
-            return bool(session.state_dump()["chrome"]["overlays"]["overview"])
-
-        for wanted in (False, True):
-            answer = repl(f"session.overview(open: .some({str(wanted).lower()}))")
-            if "ok" not in answer:
-                raise Failed(f"session.overview(open: .some({str(wanted).lower()})) failed: {answer!r}")
-            wait_for(f"the overview {'up' if wanted else 'down'} in the shell's state",
-                     lambda: overview() == wanted)
-        # The workspace admitted every change the apps and the REPL made: a change the sealed
-        # channel refuses (the first, unnamed change of a tilolang app's record) is dropped
-        # with only this line to say so, and its record is missing wherever it is read.
-        refused = [line[:400] for line in session.log_lines() if "change carries no claim" in line]
-        if refused:
-            raise Failed(f"the workspace refused {len(refused)} change(s) as carrying no claim: {refused[0]}")
-        return {"asked": True, "notebook": notebook.strip().splitlines()[0],
-                "notes": [before, after], "overview": "down and up again"}
-    finally:
-        repl.close()
-        (out / "repl-transcript.txt").write_text(repl.transcript)
 
 
 def refusals(session: Session) -> list[str]:
@@ -830,7 +676,7 @@ def check_dev(session: Session) -> dict:
 
 # --- the run -------------------------------------------------------------------------------
 
-CHECKS = ["audio", "open", "canvas", "repl", "ask", "restart", "dev"]
+CHECKS = ["audio", "open", "canvas", "ask", "restart", "dev"]
 
 
 def build_session(out: Path, remote: str | None = None) -> Path:
@@ -892,7 +738,7 @@ def main() -> int:
         return 2
     only = args.only.split(",") if args.only else CHECKS
     # Every check but dev looks at the four apps' windows and instances, which open starts.
-    if any(name in only for name in ("canvas", "repl", "ask", "restart")) and "open" not in only:
+    if any(name in only for name in ("canvas", "ask", "restart")) and "open" not in only:
         only = ["open", *only]
     summary: dict[str, Any] = {"build": str(build), "checks": {}, "failed": []}
     model = TestOnlyFixedReplyModel()
@@ -908,7 +754,6 @@ def main() -> int:
             "audio": lambda: check_audio(session),
             "open": lambda: check_open(session),
             "canvas": lambda: check_canvas(session),
-            "repl": lambda: check_repl(session, out),
             "ask": lambda: check_ask(session, model),
             "restart": lambda: check_restart(session),
             "dev": lambda: check_dev(session),

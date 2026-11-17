@@ -2,7 +2,7 @@
 """Live eval of the agent: ask it what a person asks, with the person's real model, and judge
 what it did, beside the same model driving the same apps through the `tilo` MCP tools.
 
-There is one agent; the canvas, Chat and the REPL are only places that ask it. So the eval asks
+There is one agent; the canvas and Chat are only places that ask it. So the eval asks
 it directly, headless: each ask is a message the person sends to the agent they keep
 (`session:send-to#send`, the one send a send-to box, the canvas and a script run), and it lands
 in their direct conversation with the agent, which answers it as a turn. For each ask it records
@@ -11,7 +11,8 @@ in their direct conversation with the agent, which answers it as a turn. For eac
   log, one `timing plan` line per call) and the wall seconds from the send to the turn's end
   (the agent's "the turn ended" line in the session log),
 * the turn's final words and its step lines (the agent's "turn step" lines),
-* the data the ask should have changed, read through `tilolang repl --api`,
+* the data the ask should have changed, read by a tilolang program the eval's own agent key
+  runs (the session's `tilo` tool),
 
 and judges each against its bar (`ASKS`, `BARS`): the right effect in the data, an honest final
 message, step lines naming the right subjects, the time kept, no app window opened, and the
@@ -106,7 +107,7 @@ def lines_with(answer: str, word: str) -> str:
 
 
 def by_reference(answer: str) -> dict[str, str]:
-    """A REPL answer's lines by the reference that starts them (`n7   body ¶1  …`), lower-cased:
+    """A program's answer's lines by the reference that starts them (`n7   body ¶1  …`), lower-cased:
     what it shows of each record."""
     out: dict[str, str] = {}
     for line in answer.splitlines():
@@ -342,6 +343,8 @@ class Session:
         self.last_turn = -1
         # Whether the last ask's turn never ended within the bound.
         self.unended = False
+        # The eval's own connection to the session's MCP server, which reads and sets up the data.
+        self.checker: "Mcp | None" = None
         # An attached session whose agent answered already keeps the agent the eval made.
         self.agent_made = self.log.exists() and "answering the conversation" in self.log.read_text(
             errors="replace"
@@ -372,20 +375,12 @@ class Session:
     def snapshot(self, path: Path) -> None:
         self.control_cmd("snapshot", str(path))
 
-    def repl(self, program: str) -> str:
-        done = subprocess.run(
-            [str(self.bin / "tilolang"), "repl", "--api", self.api, "--color", "never"],
-            input=program + "\n",
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=self.env,
-        )
-        out = (done.stdout + done.stderr).strip().splitlines()
-        # The banner and the echoed prompt are the REPL's, not the answer.
-        return "\n".join(
-            line for line in out if not line.startswith(("asking to act", "tilolang ", "tl> "))
-        )
+    def program(self, program: str) -> str:
+        """Run `program` with the session's `tilo` tool as the eval's own agent (the agent key the
+        session was started with): its answer's text."""
+        if self.checker is None:
+            self.checker = Mcp(self.api, self.agent_key.read_text().strip(), "Eval checker")
+        return self.checker.tool("tilo", {"program": program, "confirm": True})
 
     def send(self, text: str) -> str:
         """Send `text` to the agent the person keeps, as a send-to box does."""
@@ -497,9 +492,10 @@ class Mcp:
     newline-delimited MCP JSON-RPC on its socket, admitted as the person's agent by the agent key
     the session was started with (`shell-run.sh --agent-key`)."""
 
-    def __init__(self, path: str, key: str):
+    def __init__(self, path: str, key: str, name: str = "Eval agent"):
         self.path = path
         self.key = key
+        self.name = name
         self.connect()
 
     def connect(self) -> None:
@@ -514,7 +510,7 @@ class Mcp:
             "initialize",
             {
                 "protocolVersion": "2025-06-18",
-                "clientInfo": {"name": "Eval agent", "version": "1"},
+                "clientInfo": {"name": self.name, "version": "1"},
                 "capabilities": {"experimental": {"so.tilo": {"key": key}}},
             },
             timeout=120,
@@ -689,7 +685,7 @@ def judge(ask: Ask, got: dict, data: str | None, path: str) -> list[str]:
 
 def canvas_check(s: Session, results: Path, timeout: float) -> dict:
     """One ask typed on the canvas, as a person asks there: the same agent answers it."""
-    s.repl('shell.show_style(shell.viewing, style: "so.tilo.shell:frames")')
+    s.program('shell.show_style(shell.viewing, style: "so.tilo.shell:frames")')
     time.sleep(3)
     log_at, gw_at = s.size(s.log), s.size(s.gateway_log)
     s.control_cmd("click-at", "360", "700")
@@ -754,20 +750,20 @@ def main() -> int:
         # The apps and the agent come up with the session.
         if s.proc is not None:
             time.sleep(15)
-        s.repl(FRAMES)
+        s.program(FRAMES)
         external = None
         if args.path == "mcp":
             external = McpAgent(s, json.loads(Path(args.model_record).read_text()))
         for ask in chosen:
             print(f"asking {ask.name!r} ({args.path})", flush=True)
             if ask.before:
-                s.repl(ask.before)
+                s.program(ask.before)
                 time.sleep(1)
             if external is not None:
                 got = external.ask(ask.text)
             else:
                 got = ask_agent(s, ask, results, args.timeout)
-            data = s.repl(ask.program) if ask.program else None
+            data = s.program(ask.program) if ask.program else None
             if data is not None:
                 (results / f"{ask.name}.data.txt").write_text(data)
             fails = judge(ask, got, data, args.path)
@@ -779,7 +775,7 @@ def main() -> int:
                 flush=True,
             )
             if ask.after:
-                s.repl(ask.after)
+                s.program(ask.after)
         if args.canvas_check and args.path == "agent":
             canvas = canvas_check(s, results, args.timeout)
             print(f"canvas check: {canvas}", flush=True)

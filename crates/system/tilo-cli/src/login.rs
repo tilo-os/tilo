@@ -12,8 +12,7 @@
 //! `tilo mcp` ([`crate::mcp`]) is the agent's MCP server over stdio, under the name `tilo`, acting
 //! as that device.
 
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
 
@@ -32,6 +31,7 @@ use tilo_relay_protocol::web::API_PREFIX;
 use tilo_session_client::device::Device as Entered;
 
 use crate::agent::{self, Agent, Tool};
+pub use tilo_api::client::device::{Device, LOGIN_DAMAGED, device_dir, load, store};
 
 /// The site `tilo login` resolves codes at, unless `--site` or
 /// [`SITE_ENV`] names another.
@@ -50,10 +50,6 @@ const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where the
 
 /// What a login no host accepts any more says.
 pub(crate) const LOGIN_ENDED: &str = "This computer's Tilo login has ended: ask the person for a new code from their Tilo tab \
-     (Set up with your agent).";
-
-/// What a login this computer cannot read says.
-pub(crate) const LOGIN_DAMAGED: &str = "This computer's Tilo login is damaged: ask the person for a new code from their Tilo tab \
      (Set up with your agent).";
 
 /// What a tilo that speaks another version than the host says.
@@ -110,118 +106,6 @@ pub(crate) fn trust_test_certificates() -> Result<()> {
         .set(client)
         .map_err(|_| anyhow!("HTTPS was set up before {TEST_CA_ENV} was read"))?;
     Ok(())
-}
-
-/// Where this account keeps the device: `$XDG_STATE_HOME/tilo/device`.
-pub(crate) fn device_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("TILO_DEVICE_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-    Ok(tilo_paths::state_dir()
-        .context("this account has no state directory (no HOME)")?
-        .join("tilo/device"))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Device {
-    pub site: String,
-    pub host_origin: String,
-    pub workspace: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_name: Option<String>,
-    pub user: String,
-    pub agent: String,
-    pub label: String,
-    pub cert: String,
-    pub host_cert: String,
-}
-
-impl Device {
-    fn of(signed: &SignIn) -> Result<Self> {
-        Ok(Self {
-            site: signed.link.site.clone(),
-            host_origin: signed.link.host_origin.clone(),
-            workspace: signed.link.workspace_id(),
-            workspace_name: None,
-            user: hex::encode(signed.link.user_public_key),
-            agent: signed.agent.clone(),
-            label: signed.label.clone(),
-            cert: hex::encode(postcard::to_allocvec(&signed.cert)?),
-            host_cert: hex::encode(postcard::to_allocvec(&signed.host_cert)?),
-        })
-    }
-
-    pub(crate) fn certs(
-        &self,
-    ) -> Result<(
-        tilo_user_identity::DeviceCert,
-        tilo_user_identity::DeviceCert,
-    )> {
-        let read = |hexed: &str| -> Result<tilo_user_identity::DeviceCert> {
-            hex::decode(hexed)
-                .ok()
-                .and_then(|bytes| postcard::from_bytes(&bytes).ok())
-                .ok_or_else(|| anyhow!(LOGIN_DAMAGED))
-        };
-        Ok((read(&self.cert)?, read(&self.host_cert)?))
-    }
-}
-
-/// Keep `key` and `device` in `dir`: the key readable by this account only,
-/// both replaced in one rename each.
-pub fn store(dir: &std::path::Path, key: &SigningKey, device: &Device) -> Result<()> {
-    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-    std::fs::create_dir_all(dir)?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    let write = |name: &str, bytes: &[u8]| -> Result<()> {
-        let staged = dir.join(format!(".{name}.new"));
-        let _ = std::fs::remove_file(&staged);
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&staged)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&staged, dir.join(name))?;
-        Ok(())
-    };
-    write("key", &key.to_bytes())?;
-    write("device.json", &serde_json::to_vec_pretty(device)?)?;
-    Ok(())
-}
-
-pub fn load(dir: &std::path::Path) -> Result<Option<(SigningKey, Device)>> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let key_path = dir.join("key");
-    if !key_path.exists() {
-        return Ok(None);
-    }
-    // The key is this account's alone: one others can read is closed to
-    // them here, rather than asking the person to log in over a mode bit.
-    if std::fs::metadata(&key_path)?.permissions().mode() & 0o077 != 0
-        && std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).is_err()
-    {
-        return Err(anyhow!(LOGIN_DAMAGED));
-    }
-    let bytes: [u8; 32] = std::fs::read(&key_path)
-        .map_err(|error| {
-            debug_why("reading this computer's Tilo key", &error);
-            anyhow!(LOGIN_DAMAGED)
-        })?
-        .try_into()
-        .map_err(|_| anyhow!(LOGIN_DAMAGED))?;
-    let device: Device =
-        serde_json::from_slice(&std::fs::read(dir.join("device.json")).map_err(|error| {
-            debug_why("reading this computer's Tilo login", &error);
-            anyhow!(LOGIN_DAMAGED)
-        })?)
-        .map_err(|error| {
-            debug_why("reading this computer's Tilo login", &error);
-            anyhow!(LOGIN_DAMAGED)
-        })?;
-    Ok(Some((SigningKey::from_bytes(&bytes), device)))
 }
 
 /// What a login leaves behind for a later `tilo agent check`: the tab that
@@ -466,21 +350,6 @@ async fn connect_retrying(key: &SigningKey, device: &Device) -> Result<Entered> 
         }
     }
     Err(last.unwrap_or_else(|| anyhow!(UNREACHED)))
-}
-
-/// The workspace this computer's login entered: its id, and the name the
-/// device keeps for it, which is how a command that acts in it says which
-/// workspace it used. `None` when this computer is not logged in — an agent's
-/// key, say, which names no workspace.
-pub(crate) fn entered_workspace() -> Result<Option<(String, String)>> {
-    let Some((_, device)) = load(&device_dir()?)? else {
-        return Ok(None);
-    };
-    let name = device
-        .workspace_name
-        .clone()
-        .unwrap_or_else(|| device.workspace.clone());
-    Ok(Some((device.workspace, name)))
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime> {
@@ -927,6 +796,21 @@ pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<Exit
     })
 }
 
+/// The device a sign-in made of this computer, as the login keeps it.
+fn device_of(signed: &SignIn) -> Result<Device> {
+    Ok(Device {
+        site: signed.link.site.clone(),
+        host_origin: signed.link.host_origin.clone(),
+        workspace: signed.link.workspace_id(),
+        workspace_name: None,
+        user: hex::encode(signed.link.user_public_key),
+        agent: signed.agent.clone(),
+        label: signed.label.clone(),
+        cert: hex::encode(postcard::to_allocvec(&signed.cert)?),
+        host_cert: hex::encode(postcard::to_allocvec(&signed.host_cert)?),
+    })
+}
+
 fn upper_first(text: &str) -> String {
     let mut chars = text.chars();
     chars.next().map_or_else(String::new, |first| {
@@ -946,7 +830,7 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     // The host names this computer: the name asked for, or the next numbered
     // one another device of the person reads by.
     let label = signed.label.clone();
-    let mut device = Device::of(&signed)?;
+    let mut device = device_of(&signed)?;
     device.workspace_name = workspace_name(&host_web, &device.workspace).await;
     store(&dir, &key, &device)?;
     // The tab follows this login; what the agent confirms afterwards is told

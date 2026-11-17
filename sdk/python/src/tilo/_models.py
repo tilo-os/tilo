@@ -656,6 +656,10 @@ class ProgramAnswer:
     output: Sequence[str] = ()
     changed: int = 0
     steps: Sequence[Mapping[str, Any]] = ()
+    # What a person reads, each resource by its reference (`n3`).
+    text: str = ""
+    # The program session it ran in: pass it to the next program to continue it.
+    session: str = ""
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -665,6 +669,8 @@ class ProgramAnswer:
             output=tuple(str(line) for line in raw.get("output") or ()),
             changed=_int(raw.get("changed")) or 0,
             steps=tuple(raw.get("steps") or ()),
+            text=str(raw.get("text") or ""),
+            session=str(raw.get("session") or ""),
             raw=raw,
         )
 

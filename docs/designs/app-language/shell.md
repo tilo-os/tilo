@@ -374,8 +374,9 @@ no run and no transcript; it places the channel like any resource.
   conversation (§3), and dragging it onto the canvas places it where it was let go. What opens
   unasked follows §5's "What opens" setting: by default what the turn created, and a view it
   answered with (`plan.view`), placed beside the conversation with `place_near`.
-- **The REPL.** `tilolang repl` reaches the person's action API and calls the same actions by the
-  same names the agent's `invoke` does, so the person types what the agent would. Its
+- **The REPL.** `tilolang repl` reaches the person's workspace through Tilo's API, as them, and
+  calls the same actions by the same names the agent's `invoke` does, so the person types what the
+  agent would. Its
   results are references that place the same way.
 - **Looks.** Only shared components and theme roles, so every theme reaches the chat.
 

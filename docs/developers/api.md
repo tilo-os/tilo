@@ -216,7 +216,15 @@ connection that failed.
 |---|---|
 | `GET /v1/workspaces/{workspace}/members` | the people in it, their roles, and the invitations still open |
 | `POST /v1/workspaces/{workspace}/members/invitations` `{role, email?}` | `201` `{"link"}` that signs them in and lands them there |
-| `POST /v1/workspaces/{workspace}/programs` `{program, confirm?}` | runs a tilolang program as one step: `{"status": "ok"|"preview"|"failed", "output", "changed", "steps"}` |
+| `POST /v1/workspaces/{workspace}/programs` `{program, confirm?, session?}` | runs a tilolang program as one step: `{"status": "ok"|"preview"|"failed", "output", "changed", "steps", "text", "session"}` |
+
+A program runs in a program session: the `let`s its programs bound, the references its answers
+showed (`n3`, in `text`), and the steps `undo` and `history task` take back and list. An answer
+names its `session`; send it with the next program to continue there. A program without one starts
+a new session. A key keeps its 16 most recently used sessions; a program naming one that ended
+answers `404 not_found`. A program that would change much or destroy something answers `preview`
+and changes nothing until it is sent again with `confirm: true`. `tilolang repl` is a program
+session typed by hand.
 
 ## Types and versions
 
