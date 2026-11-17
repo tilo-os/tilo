@@ -74,7 +74,7 @@ AGENT_NAME = "Helper"
 class Ask:
     name: str
     text: str
-    # greeting: 1 call, 3 s. simple: 3 calls, 15 s. any: 6 calls.
+    # greeting: 1 call, 3 s. simple: 1 call, 15 s. any: 1 call. summary: 2 calls (`BARS`).
     kind: str = "simple"
     # A tilolang program whose answer shows the effect, and the judge of that answer.
     program: str | None = None
@@ -193,7 +193,7 @@ def asks(today: dt.date) -> list[Ask]:
             step_has=["haircut"],
         ),
         Ask("beside", "put my notes next to the inbox", kind="simple"),
-        Ask("summary", "summarise what changed in my notes this week", kind="any",
+        Ask("summary", "summarise what changed in my notes this week", kind="summary",
             reply_has=[["grocer", "note"]]),
         Ask(
             "strips",
@@ -226,8 +226,9 @@ def asks(today: dt.date) -> list[Ask]:
 
 
 # The most calls and seconds each kind of ask may take: one call for every ask, the person's bar
-# (a second only when a step of the first failed, `FAILED_STEP`), a greeting within 3 s.
-BARS = {"greeting": (1, 3.0), "simple": (1, 15.0), "any": (1, None)}
+# (a second only when a step of the first failed, `FAILED_STEP`), a greeting within 3 s. A
+# summary is two: the model cannot summarise what it has not read, so it reads, then writes.
+BARS = {"greeting": (1, 3.0), "simple": (1, 15.0), "any": (1, None), "summary": (2, None)}
 
 # A step that did not do what it was sent to: the one reason a second call is in the bar.
 FAILED_STEP = re.compile(r"\[(refused|failed)\]$")
