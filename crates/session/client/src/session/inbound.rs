@@ -1,6 +1,6 @@
 //! What a received frame becomes: the session's inbound.
 //!
-//! Every frame the host sends arrives here ([`Task::inbound`]) and is turned
+//! Every frame the server sends arrives here ([`Task::inbound`]) and is turned
 //! into what the page sees: a workspace's `Ready`, its bootstrap, one message
 //! the host relayed, or a live frame of its live session. A message the workspace's
 //! governance or a record's write is taken into the session's replica, which
@@ -100,7 +100,7 @@ impl Task {
         }
     }
 
-    /// The host no longer lets this device into `workspace_id`, for
+    /// The server no longer lets this device into `workspace_id`, for
     /// `refusal`: its owner deleted it, or this device may not.
     fn not_authorised(
         &mut self,
@@ -114,7 +114,7 @@ impl Task {
         }
     }
 
-    /// The host says `workspace_id`'s owner deleted it: it is gone for good.
+    /// The server says `workspace_id`'s owner deleted it: it is gone for good.
     /// The session stops following it, and says so (`workspace-deleted`) for
     /// the page or layout to forget it; a session holding nothing else ends
     /// there, as a refusal ends one.
@@ -138,7 +138,7 @@ impl Task {
         });
     }
 
-    /// The host admitted this session to `workspace_id` and sent its replay;
+    /// The server admitted this session to `workspace_id` and sent its replay;
     /// it sends records `when_opened` in a public workspace.
     fn ready(&mut self, workspace_id: WorkspaceId, when_opened: bool) {
         self.emptied = false;
@@ -325,7 +325,7 @@ impl Task {
     }
 
     /// Follow what `workspace_id`'s governance says now: who its members are,
-    /// and the channel commits that waited for a member it now admits.
+    /// and the key group's commits that waited for a member it now admits.
     pub(super) fn follow_governance(&mut self, workspace_id: WorkspaceId) {
         self.live_sessions_due.insert(workspace_id);
         self.land_admitted(workspace_id);
@@ -357,7 +357,7 @@ impl Task {
         }
         self.pump_channels(true);
         // A record opened before the governance admitted it waits with its
-        // channel unopened: opening it here asks the members for the keys
+        // key group unopened: opening it here asks the members for the keys
         // the writes it holds wait on.
         let unopened: Vec<DocumentRoute> =
             self.engine.held_writes().lock().keys().cloned().collect();
@@ -368,7 +368,7 @@ impl Task {
 
     /// One retained or live message the host relayed to `workspace_id`:
     /// the workspace's governance (a member's certificate, the workspace document)
-    /// is admitted through the workspace's replica; channel governance and
+    /// is admitted through the workspace's replica; the key group's governance and
     /// documents go on.
     pub(super) fn inbound_body(
         &mut self,
@@ -601,8 +601,14 @@ impl Task {
             route,
             entry,
             surface,
+            message,
             ..
         } = document;
+        let compaction = matches!(
+            &message,
+            neighbour_wire::NeighbourMsg::AppDocument { envelope, .. }
+                if envelope.kind == collab_types::OpKind::Compaction
+        );
         let report = match report {
             Ok(report) => report,
             // This computer could not decide the write: nothing says it was
@@ -615,12 +621,21 @@ impl Task {
                 return;
             }
             Err(error) => {
-                self.refused = (self.refused.0.saturating_add(1), error.to_string());
+                let why = error.to_string();
+                // A compaction refused leaves this device behind in its document: nothing
+                // written to it afterwards reads until one is taken.
+                if compaction {
+                    self.fell_behind(&route, &why, tilo_clock::unix_now_ms());
+                }
+                self.refused = (self.refused.0.saturating_add(1), why);
                 return;
             }
         };
         let mut landed = BTreeMap::new();
         if tilo_peer_state::owner::took_in(&report, true) {
+            if compaction {
+                self.caught_up(&route);
+            }
             if self.received.len() < MAX_DELIVERED_ENTRIES {
                 self.received.insert(entry);
             }
@@ -688,6 +703,92 @@ impl Task {
         for (route, author) in landed {
             self.held_inbound.remove(&route);
             self.landed(&route, Some(author));
+        }
+    }
+
+    /// The replica refused a compaction of `route`, saying `why`: this device holds only part
+    /// of what the compaction covers and could not take it with its keys either. It says so
+    /// where it says what it holds undecided, and asks its workspace for the document again
+    /// ([`Self::ask_behind_again`]).
+    pub(super) fn fell_behind(&mut self, route: &DocumentRoute, why: &str, now_ms: u64) {
+        if !self.behind.contains_key(route) {
+            tracing::warn!(
+                app = %route.app_id,
+                document = %route.document,
+                %why,
+                "this device holds less of a document than its workspace compacted and could not take the compaction; it asks for the document again"
+            );
+        }
+        let behind = self.behind.entry(route.clone()).or_insert_with(|| Behind {
+            why: String::new(),
+            asked: 0,
+            next_ms: now_ms.saturating_add(BEHIND_ASKED_AFTER_MS),
+            refused_since: true,
+        });
+        why.clone_into(&mut behind.why);
+        behind.refused_since = true;
+        self.held_inbound.insert(
+            route.clone(),
+            format!("behind a compaction it could not take: {why}"),
+        );
+    }
+
+    /// A compaction of `route` was taken: this device is behind in it no more.
+    pub(super) fn caught_up(&mut self, route: &DocumentRoute) {
+        if self.behind.remove(route).is_some() {
+            self.held_inbound.remove(route);
+            tracing::info!(
+                app = %route.app_id,
+                document = %route.document,
+                "the compaction this device was behind was taken"
+            );
+        }
+    }
+
+    /// Ask the workspaces again, at `now_ms`, for each document this device is behind in whose
+    /// time has come ([`Self::replay_surfaced`] sends the asking): after
+    /// [`BEHIND_ASKED_AFTER_MS`] the first time, then twice as long each time and never longer
+    /// than [`BEHIND_ASKED_AT_MOST_EVERY_MS`], and said in the log each time.
+    pub(super) fn ask_behind_again(&mut self, now_ms: u64) {
+        for (route, behind) in &mut self.behind {
+            if now_ms < behind.next_ms {
+                continue;
+            }
+            behind.asked = behind.asked.saturating_add(1);
+            behind.refused_since = false;
+            let wait = BEHIND_ASKED_AFTER_MS
+                .saturating_mul(2_u64.saturating_pow(behind.asked.min(32)))
+                .min(BEHIND_ASKED_AT_MOST_EVERY_MS);
+            behind.next_ms = now_ms.saturating_add(wait);
+            tracing::warn!(
+                app = %route.app_id,
+                document = %route.document,
+                asked = behind.asked,
+                why = %behind.why,
+                "a document this device is behind in is asked of its workspace again"
+            );
+            self.replays.insert(route.clone());
+        }
+    }
+
+    /// The workspace answered that it sent all it holds of the document `digest` names in
+    /// `workspace_id`: one this device was behind in and asked for again, none of whose
+    /// compactions was refused this time, is behind no more.
+    pub(super) fn answered_behind(&mut self, workspace_id: WorkspaceId, digest: [u8; 32]) {
+        let settled: Vec<DocumentRoute> = self
+            .behind
+            .iter()
+            .filter(|(route, behind)| {
+                behind.asked > 0
+                    && !behind.refused_since
+                    && route.workspace_id().ok() == Some(workspace_id)
+                    && neighbour_wire::app_document_channel(&route.app_id, &route.document)
+                        == digest
+            })
+            .map(|(route, _)| route.clone())
+            .collect();
+        for route in settled {
+            self.caught_up(&route);
         }
     }
 

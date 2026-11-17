@@ -118,6 +118,7 @@ impl Task {
     ) {
         // Its frames are in the replica before anyone hears the record opened.
         self.keep_arrived();
+        self.answered_behind(workspace_id, channel);
         if let Some(route) = self.opened_records.get(&(workspace_id, channel)) {
             self.reports.emit(&crate::Event::DocumentOpened {
                 ws: workspace_id,

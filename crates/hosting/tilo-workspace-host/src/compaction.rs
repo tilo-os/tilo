@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ChangeHash};
-use collab_types::{DocumentMutation, DocumentMutationKind};
+use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_server_protocol::compaction::{CoverageStatement, entry_id, snapshot_heads, verify};
 
@@ -1256,10 +1256,12 @@ fn reassemble(
     if collab_types::document_transfer::transfer_digest(kind, &data) != digest {
         return None;
     }
-    Some(match kind {
-        DocumentMutationKind::Snapshot => DocumentMutation::Snapshot(data),
-        DocumentMutationKind::Incremental => DocumentMutation::Incremental(data),
-    })
+    // Joined, the segments are the body their writer cut up, which holds changes deflated:
+    // collab-types reads it, as it reads the body of a whole frame.
+    tilo_failure::ignored!(
+        "a transfer that does not read as its kind is kept as it is, never folded or removed",
+        DocumentMutation::of_transfer(kind, &data).ok()
+    )
 }
 
 /// The hashes of the Automerge change chunks `bytes` concatenates, or `None`

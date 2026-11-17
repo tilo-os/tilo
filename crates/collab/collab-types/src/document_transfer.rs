@@ -287,6 +287,31 @@ impl DocumentMutation {
         }
     }
 
+    /// The mutation a complete transfer of `kind` carries. `body` is the data of its segments
+    /// joined in order: the bytes [`transfer_digest`] is over, which hold changes deflated
+    /// ([`Self::encode_frames`]), so joined changes are not Automerge's bytes until they are
+    /// read here. A reader that joins segments itself reads them with this, as the payload of
+    /// [`DocumentReassembler`] reads through [`Self::decode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DocumentMutationError::Inflate`] for changes that do not inflate, and
+    /// [`DocumentMutationError::TooLarge`] above [`MAX_DOCUMENT_TRANSFER_BYTES`].
+    pub fn of_transfer(
+        kind: DocumentMutationKind,
+        body: &[u8],
+    ) -> Result<Self, DocumentMutationError> {
+        let mutation = Self::of_wire_body(kind.tag(), body)?;
+        let actual = mutation.data().len();
+        if actual > MAX_DOCUMENT_TRANSFER_BYTES {
+            return Err(DocumentMutationError::TooLarge {
+                actual,
+                max: MAX_DOCUMENT_TRANSFER_BYTES,
+            });
+        }
+        Ok(mutation)
+    }
+
     /// Encode this mutation as the signed payloads that carry it: one frame
     /// when it fits in [`DOCUMENT_SEGMENT_BYTES`], otherwise one frame per
     /// segment. Each returned payload must be signed as its own envelope and
@@ -930,6 +955,48 @@ mod tests {
                 Err(ReassemblyError::Inconsistent)
             );
             assert_eq!(reassembler.pending_transfers(), 0);
+        }
+
+        phase segments_joined_by_their_reader_read_as_the_reassembler_reads_them;
+        {
+            for mutation in [
+                DocumentMutation::Incremental(bytes(2 * MIB + 5, 11)),
+                DocumentMutation::Snapshot(bytes(2 * MIB + 5, 12)),
+            ] {
+                let frames = mutation.encode_frames().unwrap();
+                let parts = segments(&frames);
+                assert!(parts.len() > 1, "the mutation travels in segments");
+                let (kind, digest) = (parts[0].kind, parts[0].digest);
+                let joined: Vec<u8> = parts.into_iter().flat_map(|part| part.data).collect();
+                assert_eq!(transfer_digest(kind, &joined), digest);
+                assert!(
+                    DocumentMutation::of_transfer(kind, &joined).as_ref() == Ok(&mutation),
+                    "the joined segments read as the mutation that was sent"
+                );
+                let reassembled = reassemble(
+                    &mut DocumentReassembler::default(),
+                    ArtifactId::new(),
+                    &frames,
+                );
+                assert!(
+                    reassembled.as_ref() == Some(&mutation),
+                    "and so does what the reassembler hands on"
+                );
+            }
+        }
+
+        phase joined_changes_that_do_not_inflate_are_refused;
+        {
+            // A deflate block of the reserved type opens as no changes; a snapshot's bytes
+            // travel as they are.
+            assert_eq!(
+                DocumentMutation::of_transfer(DocumentMutationKind::Incremental, &[0xff; 64]),
+                Err(DocumentMutationError::Inflate)
+            );
+            assert_eq!(
+                DocumentMutation::of_transfer(DocumentMutationKind::Snapshot, &[0xff; 64]),
+                Ok(DocumentMutation::Snapshot(vec![0xff; 64]))
+            );
         }
     }
 

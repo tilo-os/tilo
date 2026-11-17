@@ -91,6 +91,12 @@ pub(crate) const WORKSPACE_DELETED: (&str, &str) = (
 /// How long a connected session waits for the host to admit its workspaces before
 /// it reports `admission-timeout`. Checked on the keep-alive tick.
 const ADMISSION_TIMEOUT_MS: u64 = 30_000;
+/// How long after this device's replica refused a compaction it is behind its workspace is asked
+/// for the document again, the first time; each time after, it waits twice as long, at most
+/// [`BEHIND_ASKED_AT_MOST_EVERY_MS`]. Checked on the keep-alive tick.
+const BEHIND_ASKED_AFTER_MS: u64 = 15_000;
+/// The longest a document this device is behind in waits before it is asked for again.
+const BEHIND_ASKED_AT_MOST_EVERY_MS: u64 = 300_000;
 
 /// Where to reach the user's host: the iroh endpoint it serves its peers'
 /// sessions on ([`tilo_server_client::Host`]).
@@ -326,6 +332,7 @@ fn session_task(
         arrived: Vec::new(),
         let_go: BTreeSet::new(),
         held_inbound: BTreeMap::new(),
+        behind: BTreeMap::new(),
         key_state,
         route_keys: BTreeMap::new(),
         new_keys: Vec::new(),
@@ -485,6 +492,13 @@ struct Task {
     answered: Vec<Answered>,
     /// The records whose last write the replica did not take in, and why.
     held_inbound: BTreeMap<DocumentRoute, String>,
+    /// The documents a compaction of which this device's replica refused: it holds only part of
+    /// what the compaction covers, and could not take it with its keys either (they are not here
+    /// yet, or the compaction lacks something this device holds). Nothing written to such a
+    /// document after the compaction reads here, so each is asked of its workspace again
+    /// ([`Self::ask_behind_again`]) until a compaction of it is taken: it waits for nothing in
+    /// silence.
+    behind: BTreeMap<DocumentRoute, Behind>,
     /// The host's last position per workspace, presented when resubscribing so
     /// the host replays only what came after it. Kept for the session task's
     /// lifetime only: it describes what this page has received.
@@ -573,6 +587,18 @@ struct Task {
     /// The workspaces whose governance, as this device's replica holds it,
     /// admitted this device on this session.
     admitted_here: BTreeSet<WorkspaceId>,
+}
+
+/// A document this device is behind in: its replica refused a compaction of it.
+struct Behind {
+    /// Why, as the replica said it.
+    why: String,
+    /// How often its workspace was asked for the document again.
+    asked: u32,
+    /// When it is asked next (ms since the epoch).
+    next_ms: u64,
+    /// Whether a compaction of it was refused since it was last asked for.
+    refused_since: bool,
 }
 
 /// One action frame held until the host admits this session to its workspace.
@@ -1270,6 +1296,7 @@ impl Task {
                         return Exit::Lost("host session saturated".into());
                     }
                     self.check_admission();
+                    self.ask_behind_again(tilo_clock::unix_now_ms());
                 }
                 _ = channel_tick.tick() => {
                     self.pump_channels(false);
@@ -2175,6 +2202,10 @@ impl Task {
                 self.release_live(&route);
                 // What the replica holds sealed for these keys opens now.
                 self.landed(&route, None);
+                // A compaction it could not take without them is asked for again at once.
+                if self.behind.contains_key(&route) {
+                    self.replays.insert(route.clone());
+                }
                 self.outbound_due |= self.engine.held_writes().lock().contains_key(&route);
             }
             self.commit_held().await;
@@ -2479,6 +2510,8 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod behind_tests;
 #[cfg(test)]
 mod iroh_connect_tests;
 #[cfg(test)]

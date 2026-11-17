@@ -10,6 +10,7 @@
 //! workspace's file, and one file per workspace ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the server co-edit session with that host.
+mod behind;
 mod certified;
 mod create;
 mod document_read;
@@ -871,7 +872,7 @@ impl NativeWorkspaceOwner {
                 .and_then(|publication| self.receive_hosted(&candidate, publication, &message, now))
             {
                 Some(report) => report.map_err(crate::AdmissionError::from),
-                None => Self::admit_input(&candidate, origin, message, now),
+                None => self.admit_with_keys(&candidate, origin, message, now),
             };
             if report.is_ok()
                 && let Some(changes) = received
@@ -929,6 +930,26 @@ impl NativeWorkspaceOwner {
         match message {
             NeighbourMsg::SyncResp { changes, .. } => Some(changes),
             _ => None,
+        }
+    }
+    /// [`Self::admit_input`], with a compaction the replica refuses decided once more with the
+    /// keys this device holds ([`Self::receive_behind`]).
+    fn admit_with_keys(
+        &self,
+        candidate: &NativeCommittedView,
+        origin: TransportOrigin,
+        message: NeighbourMsg,
+        now: SystemTime,
+    ) -> Result<AdmissionReport, crate::AdmissionError> {
+        let compaction = behind::carries_compaction(&message).then(|| message.clone());
+        match (
+            Self::admit_input(candidate, origin, message, now),
+            compaction,
+        ) {
+            (Err(refusal), Some(compaction)) if !refusal.is_device_failure() => self
+                .receive_behind(candidate, &compaction, &refusal, now)
+                .unwrap_or(Err(refusal)),
+            (report, _) => report,
         }
     }
     /// Decide one input into the workspace's live replica: refused, it changes nothing.

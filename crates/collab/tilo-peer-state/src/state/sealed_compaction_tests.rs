@@ -9,8 +9,8 @@ use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const APP: &str = "test.app";
-const RECORD: &str = "tab:1";
+pub(super) const APP: &str = "test.app";
+pub(super) const RECORD: &str = "tab:1";
 const SECRET: &str = "a sentence only key holders may read";
 
 pub(super) struct Fixture {
@@ -28,7 +28,7 @@ pub(super) struct Fixture {
     pub(super) now: SystemTime,
 }
 
-fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
+pub(super) fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[root; 32]);
     let key = SigningKey::from_bytes(&[seed; 32]);
     let mut cert = DeviceCert {
@@ -136,7 +136,7 @@ impl Fixture {
         self.keys()
     }
 
-    fn restore(&self, bytes: &[u8]) -> Result<StatePeer, String> {
+    pub(super) fn restore(&self, bytes: &[u8]) -> Result<StatePeer, String> {
         StatePeer::restore(
             bytes,
             WORKSPACE,
@@ -156,7 +156,7 @@ fn artifact() -> collab_types::ArtifactId {
     collab_types::document_artifact_id(APP, WORKSPACE, RECORD)
 }
 
-fn origin(key: &SigningKey) -> TransportOrigin {
+pub(super) fn origin(key: &SigningKey) -> TransportOrigin {
     TransportOrigin::ServerDelta(key.verifying_key().to_bytes())
 }
 
@@ -171,7 +171,7 @@ pub(super) fn held(peer: &StatePeer) -> Vec<SignedOp> {
     peer.core.documents[&route()].sealed.to_vec()
 }
 
-fn envelope_of(message: &NeighbourMsg) -> SignedOp {
+pub(super) fn envelope_of(message: &NeighbourMsg) -> SignedOp {
     let NeighbourMsg::AppDocument { envelope, .. } = message else {
         panic!("a document write")
     };
@@ -315,7 +315,7 @@ pub(super) fn admit(
 }
 
 /// A key holder's opener: any epoch it holds, compactions included.
-fn open(keys: &ContentKeys, op: &SignedOp) -> Result<Vec<u8>, String> {
+pub(super) fn open(keys: &ContentKeys, op: &SignedOp) -> Result<Vec<u8>, String> {
     let metadata = op.encryption.ok_or("not sealed")?;
     let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
     keys.open_content(op.artifact, &metadata, &ciphertext)
@@ -406,7 +406,7 @@ fn refused(peer: &mut StatePeer, key: &SigningKey, message: NeighbourMsg, now: S
     refused_with(peer, key, message, now, "");
 }
 
-fn refused_with(
+pub(super) fn refused_with(
     peer: &mut StatePeer,
     key: &SigningKey,
     message: NeighbourMsg,
@@ -2745,7 +2745,7 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
 }
 
 /// What `peer`'s record reads as for its authority, opened with `keys`.
-fn captured(
+pub(super) fn captured(
     f: &Fixture,
     peer: &StatePeer,
     keys: &ContentKeys,
@@ -2760,7 +2760,7 @@ fn captured(
     .map(|capture| AutoCommit::load(&capture.into_bytes()).unwrap())
 }
 
-fn text(doc: &AutoCommit, key: &str) -> Option<String> {
+pub(super) fn text(doc: &AutoCommit, key: &str) -> Option<String> {
     doc.get(ROOT, key)
         .unwrap()
         .and_then(|(value, _)| value.into_string().ok())

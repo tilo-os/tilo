@@ -131,7 +131,7 @@ impl Transfers {
     /// # Errors
     ///
     /// The payload does not decode, a segment contradicts its transfer, or
-    /// the complete transfer fails its digest.
+    /// the complete transfer fails its digest or does not read as its kind.
     pub fn take(
         &mut self,
         author: [u8; 32],
@@ -179,10 +179,11 @@ impl Transfers {
         {
             return Err("reassembled document does not match its transfer digest".into());
         }
-        Ok(Some(match transfer.kind {
-            DocumentMutationKind::Snapshot => DocumentMutation::Snapshot(data),
-            DocumentMutationKind::Incremental => DocumentMutation::Incremental(data),
-        }))
+        // Joined, the segments are the body their writer cut up, which holds changes
+        // deflated: collab-types reads it, as it reads the body of a whole frame.
+        DocumentMutation::of_transfer(transfer.kind, &data)
+            .map(Some)
+            .map_err(|error| error.to_string())
     }
 
     /// Whether a transfer of changes still waits for segments: a record read
@@ -659,6 +660,76 @@ mod tests {
                 }
             }
             assert!(outcome.is_err());
+            assert!(transfers.is_empty());
+        }
+
+        phase segmented_changes_reassemble_as_the_changes_written;
+        {
+            // A file put into a document: changes that do not compress, larger than one segment.
+            // Their segments carry them deflated, and a reader takes them as they were written.
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "title", "before the file").unwrap();
+            let base = doc.save();
+            doc.put(automerge::ROOT, "file", noise(3 * 1024 * 1024 / 2))
+                .unwrap();
+            let mutation = DocumentMutation::Incremental(doc.save_incremental());
+            let frames = mutation.encode_frames().unwrap();
+            assert!(frames.len() > 1, "the changes travel as segments");
+            let mut transfers = Transfers::default();
+            let completed: Vec<_> = frames
+                .iter()
+                .filter_map(|frame| transfers.take([7; 32], frame).unwrap())
+                .collect();
+            assert!(
+                completed.len() == 1 && completed.first() == Some(&mutation),
+                "the transfer completes once, as the changes that were written"
+            );
+            assert!(transfers.is_empty());
+            // A document that holds such a write opens with it.
+            let read = with_own_writes(Some(&base), [7; 32], &frames).unwrap();
+            let mut read_back = AutoCommit::load(&read.bytes).unwrap();
+            assert_eq!(read_back.get_heads(), doc.get_heads());
+            assert!(read_back.get(automerge::ROOT, "file").unwrap().is_some());
+        }
+
+        phase segmented_changes_that_do_not_inflate_are_refused_in_their_decoders_words;
+        {
+            // Segments a writer signed over bytes that are no deflated changes: the digest is
+            // of those bytes, so the transfer completes, and what it carries does not read.
+            let frames = DocumentMutation::Incremental(noise(2 * 1024 * 1024 + 5))
+                .encode_frames()
+                .unwrap();
+            let segments: Vec<collab_types::DocumentSegment> = frames
+                .iter()
+                .map(|frame| match DocumentFrame::decode(frame).unwrap() {
+                    DocumentFrame::Segment(segment) => segment,
+                    DocumentFrame::Whole(_) => panic!("the changes travel as segments"),
+                })
+                .collect();
+            let kind = segments[0].kind;
+            let unreadable =
+                vec![0xff_u8; segments.iter().map(|segment| segment.data.len()).sum()];
+            let digest = collab_types::document_transfer::transfer_digest(kind, &unreadable);
+            let mut transfers = Transfers::default();
+            let mut outcome = Ok(None);
+            for (frame, segment) in frames.iter().zip(&segments) {
+                let mut frame = frame.clone();
+                let header = frame.len() - segment.data.len();
+                let at = frame[..header]
+                    .windows(32)
+                    .position(|window| window == segment.digest.as_slice())
+                    .expect("a segment names its transfer's digest");
+                frame[at..at + 32].copy_from_slice(&digest);
+                frame[header..].fill(0xff);
+                outcome = transfers.take([5; 32], &frame);
+            }
+            assert!(
+                matches!(
+                    &outcome,
+                    Err(why) if *why == collab_types::DocumentMutationError::Inflate.to_string()
+                ),
+                "a transfer that does not inflate is refused as a frame that does not is"
+            );
             assert!(transfers.is_empty());
         }
     }

@@ -21,9 +21,9 @@ pub(crate) const MAX_ENTRIES: usize = 64;
 #[cfg(test)]
 pub(crate) const MAX_ENTRIES: usize = 8;
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
-/// Bytes of writes one run of ownership's backlog gathers before the store keeps it.
+/// Bytes of writes one batch of ownership's backlog gathers before the store keeps it.
 const RUN_BYTES: usize = 1024 * 1024;
-/// Most bytes a run the store keeps can hold: its writes, then one more that did not fit.
+/// Most bytes a batch the store keeps can hold: its writes, then one more that did not fit.
 pub(crate) const MAX_RUN_BYTES: usize = RUN_BYTES + MAX_BYTES + 64 * 1024;
 pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES + 1;
 /// Passes (writes, and asks of the workspace's holder) before a compaction that
