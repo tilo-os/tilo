@@ -672,6 +672,16 @@ fn merging_from_the_review_lands_at_once_and_undo_takes_it_back() {
     assert_eq!(held(&app).contacts.len(), 2, "Undo brings the copy back");
 }
 
+/// The book's own record answers a read with no window open: what it holds
+/// itself, which is nothing, since the contacts are read from their parts.
+#[test]
+fn the_books_own_record_answers_a_read() {
+    const { assert!(<crate::resource::Contacts as ui::tilo_resource::Resource>::READABLE) };
+    let mut app = TestApp::<ContactsShell>::new().unwrap();
+    let read = app.call("read", serde_json::json!({})).unwrap().unwrap();
+    assert!(read.is_object(), "the book reads as what it holds: {read}");
+}
+
 #[test]
 fn export_vcard_content_keeps_every_card_or_one_by_name_as_content() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
