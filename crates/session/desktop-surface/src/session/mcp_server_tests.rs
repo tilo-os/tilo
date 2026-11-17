@@ -184,36 +184,50 @@ impl crate::TileSource for Notices {
 }
 
 /// A window asking the shell to show how an agent or a computer connects
-/// (Settings' "Connect an agent or computer") chooses the host action the
-/// person's own card does, which the page carries out: one setup, wherever
-/// it is opened. An agent acting for the person can't ask for it.
+/// (Settings' "Connect an agent or computer"), or the link another of the
+/// person's devices joins with (its "Add a device"), chooses the host action
+/// the person's own card or search does, which the page carries out: one
+/// setup and one pairing sheet, wherever they are opened. An agent acting
+/// for the person can't ask for either.
 #[test]
-fn a_window_asks_the_shell_for_the_persons_connect_setup() {
+fn a_window_asks_the_shell_for_the_persons_connect_setup_or_pairing_link() {
     use tilo_actions::remote::session_actions;
-    let mut minter = tilo_desktop_model::IdMinter::new(7);
-    let tree = crate::seed_tree(&mut minter, "Office", Vec::new());
-    let handle = crate::DesktopSurface::new(tree, 7, Box::new(Notices)).1;
-    let (session, openings) = super::serve("workspace", Arc::default());
-    let person = Caller::local_person("ada").in_workspace("workspace");
-    let connect = || InvokeRequest {
-        target: session_actions::target(session_actions::SHOW_CONNECT),
-        argument: InvokeArgument::Json(serde_json::Map::new()),
-        ..ask(mcp_server::SERVER)
-    };
+    for (shown, chosen) in [
+        (
+            session_actions::SHOW_CONNECT,
+            session_actions::CONNECT_AGENT,
+        ),
+        (
+            session_actions::SHOW_PAIR_DEVICE,
+            session_actions::PAIR_DEVICE,
+        ),
+    ] {
+        let mut minter = tilo_desktop_model::IdMinter::new(7);
+        let tree = crate::seed_tree(&mut minter, "Office", Vec::new());
+        let handle = crate::DesktopSurface::new(tree, 7, Box::new(Notices)).1;
+        let (session, openings) = super::serve("workspace", Arc::default());
+        let person = Caller::local_person("ada").in_workspace("workspace");
+        let show = || InvokeRequest {
+            target: session_actions::target(shown),
+            argument: InvokeArgument::Json(serde_json::Map::new()),
+            ..ask(mcp_server::SERVER)
+        };
 
-    let agent = person.clone().delegated_to("claude-code");
-    assert_eq!(
-        answer(session.invoke(&agent, connect())).unwrap_err(),
-        ActionHostError::UnknownAction
-    );
-    assert!(answer(session.invoke(&person, connect())).is_ok());
-    assert!(
-        openings.open(&handle, |_, _| Ok(()), |_, _| None),
-        "the desktop takes the ask on its next frame"
-    );
-    assert_eq!(
-        handle.take_host_choices(),
-        [session_actions::CONNECT_AGENT.to_owned()],
-        "the choice the person's card makes"
-    );
+        let agent = person.clone().delegated_to("claude-code");
+        assert_eq!(
+            answer(session.invoke(&agent, show())).unwrap_err(),
+            ActionHostError::UnknownAction,
+            "{shown}"
+        );
+        assert!(answer(session.invoke(&person, show())).is_ok(), "{shown}");
+        assert!(
+            openings.open(&handle, |_, _| Ok(()), |_, _| None),
+            "the desktop takes the ask on its next frame"
+        );
+        assert_eq!(
+            handle.take_host_choices(),
+            [chosen.to_owned()],
+            "{shown}: the choice the person's own card or search makes"
+        );
+    }
 }
