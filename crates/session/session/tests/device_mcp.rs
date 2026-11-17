@@ -483,8 +483,8 @@ fn an_agent_the_person_lets_in_works_here_as_their_agent_via_its_device_until_th
     let done = b.answer(&agent).expect("an answer");
     assert_eq!(done["result"]["isError"], false, "{done}");
 
-    // The session's Stop is the person's: an agent asking for it is refused at once, with no
-    // question put to the person, and works on.
+    // The session's Stop is the person's: an agent asking for it is told it is for people only,
+    // with no question put to the person, and works on.
     agent.send(tool(
         5,
         "tilo_do",
@@ -492,6 +492,7 @@ fn an_agent_the_person_lets_in_works_here_as_their_agent_via_its_device_until_th
     ));
     let refused = b.answer(&agent).expect("an answer");
     assert_eq!(refused["result"]["isError"], true, "{refused}");
+    assert!(text(&refused).contains("for people only"), "{refused}");
     assert!(b.questions.pending().is_empty(), "nobody is asked");
     assert_eq!(
         b.shown(),
