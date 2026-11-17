@@ -15,6 +15,7 @@ pub fn fresh_id() -> Id {
 
 /// HTTP verb, in the order the method dropdown presents them.
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HttpMethod {
     #[default]
     Get,
@@ -228,6 +229,7 @@ impl Auth {
 }
 
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BodyMode {
     #[default]
     None,

@@ -30,7 +30,7 @@ __all__ = [
     "RemoveQueryArgs",
 ]
 
-Engine = Literal["Sqlite", "Postgres", "MySql"]
+Engine = Literal["sqlite", "postgres", "mysql"]
 
 class SavedConnection(TypedDict):
     name: str
@@ -72,7 +72,7 @@ RemoveQueryArgs = TypedDict("RemoveQueryArgs", {
 
 class Workspace(Resource):
     """Database — `db-client.workspace`."""
-    __surface__ = "so.tilo.db-client@4a053ca472a25fb4"
+    __surface__ = "so.tilo.db-client@ff2837e66ce4dd02"
     connections: list[Entry[SavedConnection]]
     saved_queries: list[Entry[SavedQuery]]
     sql: str

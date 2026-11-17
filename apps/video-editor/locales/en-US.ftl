@@ -143,7 +143,7 @@ video-editor-remove-clip = { $ripple ->
 video-editor-add-marker = Added a marker
 video-editor-remove-marker = Removed a marker
 video-editor-add-track = Added a { $kind ->
-    [Audio] sound
+    [audio] sound
    *[other] picture
 } track
 video-editor-reset-mix = Reset a track's level and pan

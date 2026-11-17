@@ -28897,8 +28897,8 @@
         "properties": {
           "kind": {
             "enum": [
-              "Video",
-              "Audio"
+              "video",
+              "audio"
             ],
             "type": "string"
           }

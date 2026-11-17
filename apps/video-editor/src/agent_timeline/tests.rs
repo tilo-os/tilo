@@ -286,7 +286,7 @@ fn footage_named_on_no_track_goes_on_v1_under_the_titles_above_it() {
     let mut app = editor(&Project::new("cut"));
     import(&mut app, &png(640, 360), "logo.png").unwrap();
     call(&mut app, "add-clip", json!({ "media": "logo.png" })).unwrap();
-    call(&mut app, "add-track", json!({ "kind": "Video" })).unwrap();
+    call(&mut app, "add-track", json!({ "kind": "video" })).unwrap();
     let placed = call(
         &mut app,
         "add-clip",
@@ -403,7 +403,7 @@ fn a_new_project_takes_its_first_clips_on_the_tracks_they_name() {
     let read = read_timeline(&state, None).unwrap();
     assert_eq!(read["project"]["duration"], 7.0, "{read}");
 
-    call(&mut app, "add-track", json!({ "kind": "Video" })).unwrap();
+    call(&mut app, "add-track", json!({ "kind": "video" })).unwrap();
     assert_eq!(
         app.state().display_tracks().first().map(|t| t.name.clone()),
         Some("V3".to_owned()),

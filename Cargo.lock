@@ -16012,6 +16012,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "runtime-dylib",
+ "serde",
  "serde_json",
  "taffy",
  "tilo-app",

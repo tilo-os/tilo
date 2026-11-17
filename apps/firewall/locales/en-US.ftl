@@ -2,10 +2,10 @@
 
 firewall-firewall-default-zone = Made { $new } the active zone
 firewall-stored-zone-target = { $new ->
-    [Accept] Set a zone to accept unmatched traffic
-    [Reject] Set a zone to reject unmatched traffic
-    [Drop] Set a zone to drop unmatched traffic
-   *[Default] Set a zone to firewalld’s default policy
+    [accept] Set a zone to accept unmatched traffic
+    [reject] Set a zone to reject unmatched traffic
+    [drop] Set a zone to drop unmatched traffic
+   *[default] Set a zone to firewalld’s default policy
 }
 firewall-stored-zone-interfaces = Changed the interfaces of a zone
 firewall-stored-zone-services = { $op ->
@@ -28,8 +28,8 @@ firewall-stored-rule-enabled = { $new ->
 firewall-stored-rule-source = Changed where a rule applies from
 firewall-stored-rule-matcher = Changed what a rule matches
 firewall-stored-rule-action = { $new ->
-    [Deny] Made a rule deny its traffic
-   *[Allow] Made a rule allow its traffic
+    [deny] Made a rule deny its traffic
+   *[allow] Made a rule allow its traffic
 }
 firewall-start = Started the firewall
 firewall-stop = Stopped the firewall

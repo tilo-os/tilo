@@ -817,6 +817,7 @@ impl MediaKind {
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model, ui::tilo_resource::JsonSchema,
 )]
+#[serde(rename_all = "snake_case")]
 pub enum TrackKind {
     Video,
     Audio,

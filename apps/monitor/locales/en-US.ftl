@@ -1,12 +1,12 @@
 ## History of the shared process table
 
 monitor-monitor-sort = Sorted the processes by { $new ->
-    [Pid] PID
-    [Name] name
-    [User] user
-    [Mem] memory
-    [Threads] threads
-   *[Cpu] CPU
+    [pid] PID
+    [name] name
+    [user] user
+    [mem] memory
+    [threads] threads
+   *[cpu] CPU
 }
 monitor-monitor-ascending = { $new ->
     [true] Sorted the processes ascending

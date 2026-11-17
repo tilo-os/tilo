@@ -32,7 +32,7 @@ __all__ = [
     "RemoveTagArgs",
 ]
 
-Language = Literal["PlainText", "Shell", "Rust", "Sql", "Git", "Python", "JavaScript", "Json", "Yaml", "Markdown", "Html", "Css", "Toml", "Dockerfile"]
+Language = Literal["text", "shell", "rust", "sql", "git", "python", "javascript", "json", "yaml", "markdown", "html", "css", "toml", "dockerfile"]
 
 class Snippet(TypedDict):
     title: str
@@ -85,7 +85,7 @@ RemoveTagArgs = TypedDict("RemoveTagArgs", {
 
 class Library(Resource):
     """Snippet library — `snippets.library`."""
-    __surface__ = "so.tilo.snippets@ab6662b1374b4cde"
+    __surface__ = "so.tilo.snippets@530e3c69f46d7e0c"
     snippets: list[Entry[Snippet]]
 
     def new_snippet(self,

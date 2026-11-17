@@ -1,12 +1,12 @@
 ## Verlauf der geteilten Prozesstabelle
 
 monitor-monitor-sort = Die Prozesse nach { $new ->
-    [Pid] PID
-    [Name] Namen
-    [User] Benutzer
-    [Mem] Speicher
-    [Threads] Threads
-   *[Cpu] CPU
+    [pid] PID
+    [name] Namen
+    [user] Benutzer
+    [mem] Speicher
+    [threads] Threads
+   *[cpu] CPU
 } sortiert
 monitor-monitor-ascending = { $new ->
     [true] Die Prozesse aufsteigend sortiert

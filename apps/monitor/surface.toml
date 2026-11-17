@@ -47,11 +47,11 @@ params = [
 [[resources.types]]
 name = "SortKey"
 cases = [
-  { name = "Pid" },
-  { name = "Name" },
-  { name = "User" },
-  { name = "Cpu" },
-  { name = "Mem" },
-  { name = "Threads" },
+  { name = "pid" },
+  { name = "name" },
+  { name = "user" },
+  { name = "cpu" },
+  { name = "mem" },
+  { name = "threads" },
 ]
 

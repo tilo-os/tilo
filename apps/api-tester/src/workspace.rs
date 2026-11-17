@@ -4,6 +4,7 @@
 //! document holds references into this device's secret store, keyed by the resource they
 //! belong to.
 
+use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Atom, Collection, Id, Model, Refusal};
 
 use crate::model::{self, Auth, BodyMode, HttpMethod, KeyValue};
@@ -46,7 +47,8 @@ impl Row {
     }
 }
 
-#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AuthScheme {
     #[default]
     None,

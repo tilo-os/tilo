@@ -16,32 +16,32 @@ api-tester-workspace-request = Replaced the request in the builder
 api-tester-request-resource-name = Renamed a request
 api-tester-request-resource-auth = Changed the authentication of a request
 api-tester-request-resource-method = Set the method to { $new ->
-    [Get] GET
-    [Post] POST
-    [Put] PUT
-    [Patch] PATCH
-    [Delete] DELETE
-    [Head] HEAD
-    [Options] OPTIONS
+    [get] GET
+    [post] POST
+    [put] PUT
+    [patch] PATCH
+    [delete] DELETE
+    [head] HEAD
+    [options] OPTIONS
    *[other] { $new }
 }
 api-tester-request-resource-url = Edited the URL of a request
 api-tester-request-resource-params = Changed the query parameters of a request
 api-tester-request-resource-headers = Changed the headers of a request
 api-tester-request-resource-body-mode = Set the body to { $new ->
-    [None] none
-    [Json] JSON
-    [Form] a form
-    [Raw] raw text
+    [none] none
+    [json] JSON
+    [form] a form
+    [raw] raw text
    *[other] { $new }
 }
 api-tester-request-resource-body = Edited the body of a request
 api-tester-request-resource-form = Changed the form fields of a request
 api-tester-credentials-scheme = Set the authentication to { $new ->
-    [None] none
-    [Bearer] a bearer token
-    [Basic] basic
-    [ApiKey] an API key
+    [none] none
+    [bearer] a bearer token
+    [basic] basic
+    [api_key] an API key
    *[other] { $new }
 }
 api-tester-credentials-username = Changed the user name of a request

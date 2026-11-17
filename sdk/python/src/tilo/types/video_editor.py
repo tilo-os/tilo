@@ -192,7 +192,7 @@ class Track(TypedDict):
     gain_db: float
     pan: float
 
-TrackKind = Literal["Video", "Audio"]
+TrackKind = Literal["video", "audio"]
 
 class Transform(TypedDict):
     scale_x: float
@@ -401,7 +401,7 @@ LinkWithArgs = TypedDict("LinkWithArgs", {
 
 class Project(Resource):
     """Project — `video-editor.project`."""
-    __surface__ = "so.tilo.video-editor@b13adfe68cf2bbc6"
+    __surface__ = "so.tilo.video-editor@1e9101e2655f4676"
     name: str
     fps: float
     width: int

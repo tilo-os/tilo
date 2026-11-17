@@ -16,32 +16,32 @@ api-tester-workspace-request = Die Anfrage im Editor ersetzt
 api-tester-request-resource-name = Eine Anfrage umbenannt
 api-tester-request-resource-auth = Die Anmeldung einer Anfrage geändert
 api-tester-request-resource-method = Die Methode auf { $new ->
-    [Get] GET
-    [Post] POST
-    [Put] PUT
-    [Patch] PATCH
-    [Delete] DELETE
-    [Head] HEAD
-    [Options] OPTIONS
+    [get] GET
+    [post] POST
+    [put] PUT
+    [patch] PATCH
+    [delete] DELETE
+    [head] HEAD
+    [options] OPTIONS
    *[other] { $new }
 } gesetzt
 api-tester-request-resource-url = Die URL einer Anfrage bearbeitet
 api-tester-request-resource-params = Die Abfrageparameter einer Anfrage geändert
 api-tester-request-resource-headers = Die Kopfzeilen einer Anfrage geändert
 api-tester-request-resource-body-mode = Den Inhalt geändert, jetzt { $new ->
-    [None] ohne
-    [Json] JSON
-    [Form] ein Formular
-    [Raw] Rohtext
+    [none] ohne
+    [json] JSON
+    [form] ein Formular
+    [raw] Rohtext
    *[other] { $new }
 }
 api-tester-request-resource-body = Den Inhalt einer Anfrage bearbeitet
 api-tester-request-resource-form = Die Formularfelder einer Anfrage geändert
 api-tester-credentials-scheme = Die Anmeldung geändert: { $new ->
-    [None] keine
-    [Bearer] ein Bearer-Token
-    [Basic] Basic
-    [ApiKey] ein API-Schlüssel
+    [none] keine
+    [bearer] ein Bearer-Token
+    [basic] Basic
+    [api_key] ein API-Schlüssel
    *[other] { $new }
 }
 api-tester-credentials-username = Den Benutzernamen einer Anfrage geändert

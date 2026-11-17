@@ -22,10 +22,10 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.monitor@02b17dcd35328b9c";
+export const SURFACE = "so.tilo.monitor@ede2747c2e3967d9";
 
-/** One of "Pid", "Name", "User", "Cpu", "Mem", "Threads". */
-export type SortKey = "Pid" | "Name" | "User" | "Cpu" | "Mem" | "Threads";
+/** One of "pid", "name", "user", "cpu", "mem", "threads". */
+export type SortKey = "pid" | "name" | "user" | "cpu" | "mem" | "threads";
 
 /** Processes — `monitor.processes`. */
 export interface Processes extends tilo.Resource {

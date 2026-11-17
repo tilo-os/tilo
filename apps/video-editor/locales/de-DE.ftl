@@ -143,7 +143,7 @@ video-editor-remove-clip = { $ripple ->
 video-editor-add-marker = Eine Marke hinzugefügt
 video-editor-remove-marker = Eine Marke entfernt
 video-editor-add-track = Eine { $kind ->
-    [Audio] Ton-
+    [audio] Ton-
    *[other] Bild-
 }spur hinzugefügt
 video-editor-reset-mix = Pegel und Panorama einer Spur zurückgesetzt

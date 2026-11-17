@@ -21,8 +21,8 @@ params = [
 [[resources.types]]
 name = "Route"
 cases = [
-  { name = "Wine" },
-  { name = "Proton" },
-  { name = "Vm" },
+  { name = "wine" },
+  { name = "proton" },
+  { name = "vm" },
 ]
 

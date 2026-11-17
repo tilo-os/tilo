@@ -106,6 +106,7 @@ impl ZoneKind {
 
 /// A zone's default target — what happens to traffic no rule matched.
 #[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Target {
     #[default]
     Default,
@@ -185,6 +186,7 @@ impl Proto {
 
 /// What a rule does with matching traffic.
 #[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Action {
     #[default]
     Allow,

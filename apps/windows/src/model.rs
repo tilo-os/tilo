@@ -4,6 +4,7 @@ use ui::tilo_resource::{self, Model};
 
 /// How an application is run.
 #[derive(Model, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Route {
     Wine,
     Proton,

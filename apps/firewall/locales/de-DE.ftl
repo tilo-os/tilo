@@ -2,10 +2,10 @@
 
 firewall-firewall-default-zone = { $new } zur aktiven Zone gemacht
 firewall-stored-zone-target = { $new ->
-    [Accept] Eine Zone auf das Annehmen nicht zugeordneten Datenverkehrs gesetzt
-    [Reject] Eine Zone auf das Ablehnen nicht zugeordneten Datenverkehrs gesetzt
-    [Drop] Eine Zone auf das Verwerfen nicht zugeordneten Datenverkehrs gesetzt
-   *[Default] Eine Zone auf die Standardrichtlinie von firewalld gesetzt
+    [accept] Eine Zone auf das Annehmen nicht zugeordneten Datenverkehrs gesetzt
+    [reject] Eine Zone auf das Ablehnen nicht zugeordneten Datenverkehrs gesetzt
+    [drop] Eine Zone auf das Verwerfen nicht zugeordneten Datenverkehrs gesetzt
+   *[default] Eine Zone auf die Standardrichtlinie von firewalld gesetzt
 }
 firewall-stored-zone-interfaces = Die Schnittstellen einer Zone geändert
 firewall-stored-zone-services = { $op ->
@@ -28,8 +28,8 @@ firewall-stored-rule-enabled = { $new ->
 firewall-stored-rule-source = Geändert, woher eine Regel gilt
 firewall-stored-rule-matcher = Geändert, was eine Regel trifft
 firewall-stored-rule-action = { $new ->
-    [Deny] Eine Regel verweigert ihren Datenverkehr
-   *[Allow] Eine Regel erlaubt ihren Datenverkehr
+    [deny] Eine Regel verweigert ihren Datenverkehr
+   *[allow] Eine Regel erlaubt ihren Datenverkehr
 }
 firewall-start = Die Firewall gestartet
 firewall-stop = Die Firewall gestoppt

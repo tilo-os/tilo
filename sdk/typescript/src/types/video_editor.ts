@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-editor@b13adfe68cf2bbc6";
+export const SURFACE = "so.tilo.video-editor@1e9101e2655f4676";
 
 export interface ChromaKey {
   enabled: boolean;
@@ -155,8 +155,8 @@ export interface Track {
   pan: number;
 }
 
-/** One of "Video", "Audio". */
-export type TrackKind = "Video" | "Audio";
+/** One of "video", "audio". */
+export type TrackKind = "video" | "audio";
 
 export interface Transform {
   scale_x: number;

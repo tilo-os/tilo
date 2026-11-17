@@ -22,10 +22,10 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.logs@4d97454d27277b41";
+export const SURFACE = "so.tilo.logs@2428af2372c28388";
 
-/** One of "Emerg", "Alert", "Crit", "Err", "Warning", "Notice", "Info", "Debug". */
-export type Priority = "Emerg" | "Alert" | "Crit" | "Err" | "Warning" | "Notice" | "Info" | "Debug";
+/** One of "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug". */
+export type Priority = "emerg" | "alert" | "crit" | "err" | "warning" | "notice" | "info" | "debug";
 
 /** The arguments of `clear-filters`. */
 export interface ClearFiltersArgs {

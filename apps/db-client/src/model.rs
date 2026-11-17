@@ -5,11 +5,13 @@ use uuid::Uuid;
 /// Which engine a connection targets. `SQLite` is local and always available; Postgres and
 /// `MySQL` are network engines.
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Engine {
     Sqlite,
     #[default]
     Postgres,
     #[model(rename = "mysql")]
+    #[serde(rename = "mysql")]
     MySql,
 }
 

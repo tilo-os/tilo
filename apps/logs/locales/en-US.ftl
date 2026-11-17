@@ -1,14 +1,14 @@
 ## History
 
 logs-logs-severity = { $new ->
-    [Debug] Showed entries of every priority
-    [Info] Showed info and more severe entries
-    [Notice] Showed notices and more severe entries
-    [Warning] Showed warnings and more severe entries
-    [Err] Showed errors and more severe entries
-    [Crit] Showed critical and more severe entries
-    [Alert] Showed alerts and emergencies
-   *[Emerg] Showed emergencies only
+    [debug] Showed entries of every priority
+    [info] Showed info and more severe entries
+    [notice] Showed notices and more severe entries
+    [warning] Showed warnings and more severe entries
+    [err] Showed errors and more severe entries
+    [crit] Showed critical and more severe entries
+    [alert] Showed alerts and emergencies
+   *[emerg] Showed emergencies only
 }
 logs-logs-unit = Showed the entries of unit { $new }
 logs-logs-boot = Showed the entries of one boot

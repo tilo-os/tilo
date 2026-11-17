@@ -261,7 +261,7 @@ params = [
 id = "add-track"
 kind = "undoable"
 params = [
-  { name = "kind", type = { named = "TrackKind" }, required = true, schema = { type = "string", enum = ["Video", "Audio"] } },
+  { name = "kind", type = { named = "TrackKind" }, required = true, schema = { type = "string", enum = ["video", "audio"] } },
 ]
 
 [[resources.verbs]]
@@ -677,8 +677,8 @@ fields = [
 [[resources.types]]
 name = "TrackKind"
 cases = [
-  { name = "Video" },
-  { name = "Audio" },
+  { name = "video" },
+  { name = "audio" },
 ]
 
 [[resources.types]]

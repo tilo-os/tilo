@@ -8,6 +8,7 @@ use ui::widget::Tone;
 /// (`Debug`, level 7). Level numbers match RFC 5424 and the integer in the journal's
 /// `PRIORITY` field.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, PartialOrd, Ord, serde::Serialize, Model)]
+#[serde(rename_all = "snake_case")]
 pub enum Priority {
     Emerg,
     Alert,

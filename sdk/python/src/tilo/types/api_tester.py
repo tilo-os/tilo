@@ -48,9 +48,9 @@ __all__ = [
     "RecordSentArgs",
 ]
 
-AuthScheme = Literal["None", "Bearer", "Basic", "ApiKey"]
+AuthScheme = Literal["none", "bearer", "basic", "api_key"]
 
-BodyMode = Literal["None", "Json", "Form", "Raw"]
+BodyMode = Literal["none", "json", "form", "raw"]
 
 class Credentials(TypedDict):
     scheme: AuthScheme
@@ -62,7 +62,7 @@ class Environment(TypedDict):
     name: str
     variables: list[Entry[Variable]]
 
-HttpMethod = Literal["Get", "Post", "Put", "Patch", "Delete", "Head", "Options"]
+HttpMethod = Literal["get", "post", "put", "patch", "delete", "head", "options"]
 
 class RequestResource(TypedDict):
     name: str
@@ -187,7 +187,7 @@ RecordSentArgs = TypedDict("RecordSentArgs", {
 
 class Workspace(Resource):
     """API workspace — `api-tester.workspace`."""
-    __surface__ = "so.tilo.api-tester@086b9b29f5cecbbb"
+    __surface__ = "so.tilo.api-tester@3269c62757803c40"
     collections: list[Entry[SavedCollection]]
     environments: list[Entry[Environment]]
     active_environment: str | None

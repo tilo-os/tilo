@@ -195,19 +195,19 @@ params = [
 [[resources.types]]
 name = "AuthScheme"
 cases = [
-  { name = "None" },
-  { name = "Bearer" },
-  { name = "Basic" },
-  { name = "ApiKey" },
+  { name = "none" },
+  { name = "bearer" },
+  { name = "basic" },
+  { name = "api_key" },
 ]
 
 [[resources.types]]
 name = "BodyMode"
 cases = [
-  { name = "None" },
-  { name = "Json" },
-  { name = "Form" },
-  { name = "Raw" },
+  { name = "none" },
+  { name = "json" },
+  { name = "form" },
+  { name = "raw" },
 ]
 
 [[resources.types]]
@@ -229,13 +229,13 @@ fields = [
 [[resources.types]]
 name = "HttpMethod"
 cases = [
-  { name = "Get" },
-  { name = "Post" },
-  { name = "Put" },
-  { name = "Patch" },
-  { name = "Delete" },
-  { name = "Head" },
-  { name = "Options" },
+  { name = "get" },
+  { name = "post" },
+  { name = "put" },
+  { name = "patch" },
+  { name = "delete" },
+  { name = "head" },
+  { name = "options" },
 ]
 
 [[resources.types]]
