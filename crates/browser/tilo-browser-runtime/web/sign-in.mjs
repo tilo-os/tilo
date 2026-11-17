@@ -34,7 +34,7 @@
  * answering one.
  */
 
-import {openDeviceKey, idbStorage} from './device-key.mjs';
+import {openDeviceKey as openStoredDeviceKey, idbStorage} from './device-key.mjs';
 import {enteredWorkspaces} from './entered-workspaces.mjs';
 import {browserIdentity, currentIdentity, fetchEnvelope, keptIdentity, signInWithPasskey} from './identity.mjs';
 import {identityProfile} from './identity-profile.mjs';
@@ -347,7 +347,7 @@ export async function startSignInPage({
   local = globalThis.localStorage,
   identity,
   loadRuntime = async () => (await import('./host.mjs')).loadRuntime(),
-  openDeviceKey = openDeviceKey,
+  openDeviceKey = openStoredDeviceKey,
   signIn = signInWithPasskey,
   hosts = () => identityHosts({window, local}),
 } = {}) {
