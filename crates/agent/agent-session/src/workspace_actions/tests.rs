@@ -603,3 +603,57 @@ fn a_replica_kept_for_a_slow_save_comes_back_to_the_caller_never_reopened() {
         .expect("still there for the caller it was set aside for");
     assert!(Arc::ptr_eq(&replica, &again));
 }
+
+/// A typed call made through generated types asks the app service for the
+/// surface the types were written for. A service that mounts the workspace's
+/// apps itself answers from the signed build it carries, before the app's
+/// first window: the workspace's PDF Viewer has no window and no member
+/// holding its bytes, and the types are still checked against what it
+/// publishes.
+#[test]
+fn a_surface_request_is_answered_from_the_app_the_service_mounts() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tilo_actions::remote::{Caller, RemoteActionMessage};
+
+    let catalogue: super::CatalogueFactory = Arc::new(super::AppCatalogue::native);
+    let service = super::WorkspaceActions::new(catalogue);
+    let caller = Caller::local_person("ada");
+    let asked = |app: &str| {
+        let answer = service
+            .serve(
+                super::WorkspaceId::from_u128(1),
+                &caller,
+                RemoteActionMessage::SurfaceRequest {
+                    correlation: 7,
+                    app: app.to_owned(),
+                },
+            )
+            .expect("the service answers a surface request");
+        answer
+            .wait_timeout(Duration::from_secs(1))
+            .ok()
+            .flatten()
+            .expect("the answer is ready")
+    };
+    let surface = match asked("so.tilo.pdf-viewer") {
+        RemoteActionMessage::SurfaceResponse {
+            correlation: 7,
+            result: Ok(Some(surface)),
+        } => surface,
+        other => panic!("the app's surface is answered: {other:?}"),
+    };
+    assert_eq!(
+        surface,
+        include_str!("../../../../../apps/pdf-viewer/surface.toml"),
+        "the surface is the one the app's signed build names"
+    );
+    // An app the service mounts none of has no surface to decide a change
+    // against: it answers none rather than another app's.
+    match asked("so.tilo.no-such-app") {
+        RemoteActionMessage::SurfaceResponse {
+            result: Ok(None), ..
+        } => {}
+        other => panic!("an app the service mounts none of has no surface: {other:?}"),
+    }
+}

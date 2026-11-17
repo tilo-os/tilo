@@ -562,12 +562,20 @@ impl WorkspaceActions {
             RemoteActionMessage::Invoke(request) => {
                 self.invoke_request(workspace_id, caller, request)
             }
-            // The workspace's app surfaces are the workspace host's to
-            // answer; this server keeps none.
-            RemoteActionMessage::SurfaceRequest { correlation, .. } => {
+            // What an app this service mounts in its own process publishes:
+            // its signed build names its surface, readable before the app's
+            // first window, so a call through generated types is checked
+            // against it as it is once a window is open.
+            RemoteActionMessage::SurfaceRequest { correlation, app } => {
+                // Mounting the catalogue names every app's committed surface;
+                // asked before any app opened, the service mounts it now.
+                let surface = ui::app_surface::bytes_of(&app).or_else(|| {
+                    (self.catalogue)();
+                    ui::app_surface::bytes_of(&app)
+                });
                 Pending::ready(RemoteActionMessage::SurfaceResponse {
                     correlation,
-                    result: Err(unavailable()),
+                    result: Ok(surface.map(|bytes| String::from_utf8_lossy(bytes).into_owned())),
                 })
             }
             RemoteActionMessage::Observe { invocation, .. } => {

@@ -328,6 +328,37 @@ async fn a_key_works_through_the_api_on_the_relay_and_ends_when_revoked() {
         filled.to_string().contains("Okafor"),
         "the form is filled: {filled}"
     );
+    // The generated types an SDK ships name the app's committed surface: a
+    // call made through them is answered, not refused as a surface the
+    // workspace does not publish.
+    let surface = tilo_api::v1::surface_version(
+        "so.tilo.pdf-viewer",
+        include_str!("../../../../../apps/pdf-viewer/surface.toml"),
+    );
+    let bearer = format!("Bearer {minted_key}");
+    let typed = api
+        .dispatch(
+            &hyper::Method::POST,
+            &format!(
+                "/v1/workspaces/{workspace}/resources/pdf-viewer/application.pdf/actions/read-form-fields"
+            ),
+            "",
+            &headers(&[
+                ("authorization", bearer.as_str()),
+                ("tilo-surface", surface.as_str()),
+                ("content-type", "application/json"),
+            ]),
+            b"{}",
+        )
+        .await;
+    let (status, read) = json_of(typed).await;
+    assert_eq!(status, 200, "the typed read is accepted: {read}");
+    assert!(
+        read["result"]["fields"]
+            .as_array()
+            .is_some_and(|fields| fields.iter().any(|field| field["name"] == "surname")),
+        "the form's fields are read through the app's own types: {read}"
+    );
     work.did("word-processor#open", json!({})).await;
     work.did(
         "word-processor#append-paragraph",
