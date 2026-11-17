@@ -551,41 +551,45 @@ pub fn view(
 /// A listing as a person reads it: the lines `tilo_ls` prints, or the same
 /// built from its rows when the host sent no text.
 fn listing_text(listed: &Value, workspace: &str, path: Option<&str>) -> String {
-    if let Some(text) = listed
+    let mut said = match listed
         .get("text")
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
     {
-        let mut said = text.to_owned();
-        if let Some(cursor) = listed.get("next_cursor").and_then(Value::as_str) {
-            let what = path
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .map(|path| format!("{path} "))
-                .unwrap_or_default();
-            let _ = write!(
-                said,
-                "\nmore: tilo ls {what}--cursor {cursor} -w {workspace}"
-            );
+        Some(text) => text.to_owned(),
+        None => {
+            let mut said = text(listed, "path").to_owned();
+            if let Some(kind) = listed.get("kind").and_then(Value::as_str) {
+                let _ = write!(said, "  ({kind})");
+            }
+            for row in listed
+                .get("rows")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let _ = write!(
+                    said,
+                    "\n{}  {}  {}",
+                    text(row, "path"),
+                    text(row, "label"),
+                    text(row, "kind")
+                );
+            }
+            said
         }
-        return said;
-    }
-    let mut said = text(listed, "path").to_owned();
-    if let Some(kind) = listed.get("kind").and_then(Value::as_str) {
-        let _ = write!(said, "  ({kind})");
-    }
-    for row in listed
-        .get("rows")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
+    };
+    // A listing that goes on says which command reads the rest, whether its
+    // lines came with the answer or were built here.
+    if let Some(cursor) = listed.get("next_cursor").and_then(Value::as_str) {
+        let what = path
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(|path| format!("{path} "))
+            .unwrap_or_default();
         let _ = write!(
             said,
-            "\n{}  {}  {}",
-            text(row, "path"),
-            text(row, "label"),
-            text(row, "kind")
+            "\nmore: tilo ls {what}--cursor {cursor} -w {workspace}"
         );
     }
     said
@@ -2263,12 +2267,22 @@ mod tests {
                 listing_text(&rows_only, "jane-doe", None),
                 "notes  (notes.notebook)\nnotes/Notebook  Notebook  notes.notebook"
             );
-            // A listing that goes on says which command reads it on.
+            // A listing that goes on says which command reads it on, whether
+            // its lines came with the answer or the command built them.
             let paged = serde_json::json!({"path": "notes", "text": "notes  (notes.notebook)",
                 "next_cursor": "1.0.61.30"});
             assert_eq!(
                 listing_text(&paged, "jane-doe", Some("notes")),
                 "notes  (notes.notebook)\nmore: tilo ls notes --cursor 1.0.61.30 -w jane-doe"
+            );
+            let built = serde_json::json!({"path": "notes",
+                "rows": [{"path": "notes/Notebook", "label": "Notebook",
+                    "kind": "notes.notebook"}],
+                "next_cursor": "40.7"});
+            assert_eq!(
+                listing_text(&built, "jane-doe", Some("notes/Notebook")),
+                "notes\nnotes/Notebook  Notebook  notes.notebook\nmore: tilo ls \
+                 notes/Notebook --cursor 40.7 -w jane-doe"
             );
             let read = serde_json::json!({"path": "notes/Notebook/Todo",
                 "kind": "notes.page", "fields": {"title": "Todo"},
