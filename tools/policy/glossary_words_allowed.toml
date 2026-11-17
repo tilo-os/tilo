@@ -384,6 +384,15 @@ paths = [
 ]
 
 [[allow]]
+reason = "The applications provider's launch id for a machine application, `host:<desktop-id>`: an id the desktop reads back, not a Tilo concept."
+words = ["host"]
+paths = [
+    "scripts/vm-acceptance/acceptance/checks/apps.py",
+    "scripts/vm-acceptance/acceptance/checks/daily_apps.py",
+    "scripts/vm-acceptance/acceptance/checks/kept_apps.py",
+]
+
+[[allow]]
 reason = "The module an action's edited-field constant is declared in."
 words = ["run"]
 identifiers = ["run"]

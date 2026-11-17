@@ -68,11 +68,16 @@ def _lines(text: str) -> list[str]:
     return [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("receipt:")]
 
 
+def _action_id(app: DailyApp) -> str:
+    """The id `applications` lists this machine application by: `host:<desktop-id>`."""
+    return f"host:{app.desktop_id}"
+
+
 def _require_installed(ctx, res, app: DailyApp) -> None:
-    """The app's entry is in the host-applications catalogue, or the check cannot run."""
+    """The app's entry is in the applications catalogue, or the check cannot run."""
     def listed():
         ids = {a["id"] for q in app.queries for a in ctx.vm.actions(q) if a["provider"] == "applications"}
-        return app.desktop_id in ids or None
+        return _action_id(app) in ids or None
 
     if wait_until(listed, 30, 2.0):
         return
@@ -85,7 +90,7 @@ def _require_installed(ctx, res, app: DailyApp) -> None:
     if not any(l.endswith(".desktop") for l in found):
         raise Unobservable(f"{app.desktop_id}.desktop is missing although {app.program} is installed: "
                            "the dev image ships it from os/dev-image/")
-    raise CheckFailed(f"{app.desktop_id}.desktop is installed but host-applications never listed it "
+    raise CheckFailed(f"{app.desktop_id}.desktop is installed but applications never listed it "
                       f"(queried {list(app.queries)})")
 
 
@@ -177,7 +182,7 @@ def _open(ctx, res, app: DailyApp):
     before = _procs(ctx)
     ctx.facts[f"groups_before:{app.label}"] = {g["id"] for g in core.all_groups(st0)}
     try:
-        group, t_group = ctx.open_app(app.desktop_id, "applications")
+        group, t_group = ctx.open_app(_action_id(app), "applications")
     except CheckFailed:
         # Whether it started at all, and what it and the compositor said.
         ctx.shot(f"{app.label}-no-window")
@@ -258,6 +263,19 @@ def group_of_surface(st, sid):
             tile = tab.get("tile")
             if isinstance(tile, dict) and (tile.get("Foreign") or {}).get("surface_id") == sid:
                 return g
+
+
+def place_of_surface(st, sid):
+    """Where foreign surface `sid` stands: its workspace and strip, group and tab."""
+    for workspace in st["workspace_tree"]["workspaces"]:
+        for strip in workspace["strips"]:
+            for group in strip["window_groups"]:
+                for tab in group["tabs"]:
+                    tile = tab.get("tile")
+                    if isinstance(tile, dict) and (tile.get("Foreign") or {}).get("surface_id") == sid:
+                        return {"workspace": workspace["id"], "strip": strip["id"],
+                                "group": group["id"], "tab": tab["id"]}
+    return None
     return None
 
 

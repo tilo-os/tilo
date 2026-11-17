@@ -3,10 +3,11 @@
 A desktop update restarts the compositor without logging the person out (the session wrapper's
 SIGUSR1, as tilo-vmd and a live update ask for it). Every host app runs behind an app keeper
 (crates/session/app-keeper), which keeps its Wayland state while no desktop is there. This check
-opens a GPU-rendered app (alacritty, OpenGL) and a shared-memory one (foot), gives each work that
-is saved nowhere (a running loop, typed scrollback), restarts the desktop in place, and then
-requires the same processes, their windows back, the loop's output still drawn and typed keys
-reaching them; finally a logout ends every one of them and leaves no keeper behind.
+opens a GPU-rendered app (alacritty, OpenGL), a shared-memory one (foot) and an X11 one (xterm),
+gives each work that is saved nowhere (a running loop, typed scrollback), restarts the desktop in
+place, and then requires the same processes, their windows back in their own tabs and workspaces
+(the X11 one on the same X server), the loop's output still drawn and typed keys reaching them;
+finally a logout ends every one of them and leaves no keeper behind.
 """
 
 from __future__ import annotations
@@ -16,11 +17,15 @@ import time
 from ..core import CheckFailed, check, expect
 from ..vm import wait_until
 from .apps import AREA, _app_procs, _procs
-from .daily_apps import (ALACRITTY, FIRST_FRAME_S, DailyApp, _frame, _home_file, _open,
-                         _require_installed, _token)
+from .daily_apps import (ALACRITTY, FIRST_FRAME_S, DailyApp, _action_id, _frame, _home_file, _open,
+                         _require_installed, _token, place_of_surface)
 
 FOOT = DailyApp("A18-foot", "foot", "foot", "foot", "foot", ("foot",), x11=False, fractional=True)
-KEPT_APPS = (ALACRITTY, FOOT)
+# An X11 program of a machine application: it draws through the display its keeper serves,
+# which is a process of its own and outlives the desktop as the app does.
+XTERM = DailyApp("A18-xterm", "xterm", "xterm", "xterm", "xterm", ("xterm",), x11=True,
+                 fractional=False)
+KEPT_APPS = (ALACRITTY, FOOT, XTERM)
 # A restart takes the old compositor down and the new one up: seconds, not minutes.
 RESTART_S = 90
 # After the new desktop answers, how long the kept windows may take to show again.
@@ -83,6 +88,18 @@ def _window_of(ctx, app_id: str):
     return next((f for f in ctx.vm.windows() if f.get("app_id") == app_id and f.get("rect")), None)
 
 
+def _x11(ctx, pid: int) -> dict:
+    """The X display `pid` was handed, and the X servers serving it."""
+    try:
+        env = ctx.vm.exec(f"tr '\\0' '\\n' < /proc/{pid}/environ 2>/dev/null; true")
+    except Exception:  # noqa: BLE001 - an unreadable environment says nothing about a display
+        env = ""
+    display = next((line.split("=", 1)[1] for line in env.splitlines()
+                    if line.startswith("DISPLAY=")), None)
+    servers = sorted(p for p, c in _procs(ctx).items() if "xwayland-satellite" in c.cmd)
+    return {"pid": pid, "display": display, "servers": servers}
+
+
 def _type_runs(ctx, app_id: str, name: str) -> bool:
     """Focus the app's window, type a command on the real keyboard, and see it run."""
     frame = _window_of(ctx, app_id)
@@ -100,7 +117,7 @@ def _open_beside(ctx, app: DailyApp):
     """Open `app` without closing what is open; its group, window and processes."""
     surfaces0 = {f["window"] for f in ctx.vm.windows()}
     before = _procs(ctx)
-    group, _ = ctx.open_app(app.desktop_id, "applications")
+    group, _ = ctx.open_app(_action_id(app), "applications")
 
     def presented():
         return next((f for f in ctx.vm.windows() if f["window"] not in surfaces0
@@ -116,9 +133,9 @@ def _open_beside(ctx, app: DailyApp):
     return group["id"], frame["window"], procs
 
 
-@check("A18", AREA, "Host apps (alacritty on the GPU, foot on shared memory) stay open through an "
-                    "in-place desktop restart: same processes, windows back, input reaches them, "
-                    "and a logout ends them")
+@check("A18", AREA, "Machine apps (alacritty on the GPU, foot on shared memory, xterm on its keeper's "
+                    "X display) stay open through an in-place desktop restart: same processes, "
+                    "windows back in their own tabs, input reaches them, and a logout ends them")
 def kept_through_restart(ctx, res):
     for app in KEPT_APPS:
         _require_installed(ctx, res, app)
@@ -129,7 +146,11 @@ def kept_through_restart(ctx, res):
         # The first opens on a desktop of its own; the next ones beside it.
         gid, sid, procs = _open(ctx, res, app) if n == 0 else _open_beside(ctx, app)
         frame = _frame(ctx, sid)
-        opened[app.label] = {"app_id": frame.get("app_id"), "pids": sorted(procs)}
+        place = place_of_surface(ctx.state(), sid)
+        expect(place, f"{app.name}'s window stands in a tab of a workspace")
+        app_proc = next((p for p, c in procs.items() if app.program in c.cmd), None)
+        opened[app.label] = {"app_id": frame.get("app_id"), "pids": sorted(procs), "place": place,
+                             "x11": _x11(ctx, app_proc) if app.x11 and app_proc else None}
         # Work that is saved nowhere: a loop that keeps writing (and drawing) through the restart.
         ctx.vm.input("type", f"while :; do date +%s >> ~/{ticks}-{app.program}; echo tick; sleep 0.3; done")
         ctx.vm.key("Return")
@@ -143,6 +164,9 @@ def kept_through_restart(ctx, res):
     ctx.shot("A18-before-restart")
 
     for round_ in range(3):
+        # Opening through the control socket is no user activity, and the session locks itself
+        # on idle a few minutes into a check that waits this long: press a key between rounds.
+        core.keep_awake(ctx)
         frames = {o["app_id"]: (_window_of(ctx, o["app_id"]) or {}).get("frames", 0) for o in opened.values()}
         _restart_in_place(ctx, res)
         back = wait_until(lambda: all(_window_of(ctx, o["app_id"]) for o in opened.values()) or None,
@@ -156,6 +180,22 @@ def kept_through_restart(ctx, res):
         expect(not gone, f"restart {round_ + 1}: the apps and keepers are the same processes "
                          f"(gone or replaced: {gone})")
 
+        # Each window is back in its own tab of the workspace it stood in, and an X11 program on
+        # the display its keeper serves still reaches the same server.
+        for label, o in opened.items():
+            now = _window_of(ctx, o["app_id"])
+            place = place_of_surface(ctx.state(), now["window"]) if now else None
+            stood = o["place"]
+            expect(place and (place["workspace"], place["tab"]) == (stood["workspace"], stood["tab"]),
+                   f"restart {round_ + 1}: {label} is back in its own tab of its workspace "
+                   f"(was {stood}, is {place})")
+            if o["x11"] is not None:
+                was = o["x11"]
+                x11 = _x11(ctx, was["pid"])
+                expect(x11["display"] == was["display"] and set(was["servers"]) <= set(x11["servers"]),
+                       f"restart {round_ + 1}: {label} keeps its X display {was['display']} on the "
+                       f"same server (was {was}, is {x11})")
+
         # The loops kept drawing: each window presents new frames on the new desktop.
         def drawing():
             now = {o["app_id"]: (_window_of(ctx, o["app_id"]) or {}).get("frames", 0) for o in opened.values()}
@@ -166,7 +206,9 @@ def kept_through_restart(ctx, res):
         expect(drawn, f"restart {round_ + 1}: every kept window draws again on the new desktop")
 
     # Keys reach each app: stop its loop and run a command typed on the real keyboard.
+    core.keep_awake(ctx)
     for app, o in zip(KEPT_APPS, opened.values()):
+        core.keep_awake(ctx)
         frame = _window_of(ctx, o["app_id"])
         x, y, w, h = frame["rect"]
         ctx.vm.input("click", "left", "--at", str(x + w // 2), str(y + h // 2))
