@@ -13,8 +13,6 @@ x86_64 = 262144
 x86_64 = 262144
 [apps."so.tilo.containers"]
 x86_64 = 196608
-[apps."so.tilo.db-client"]
-x86_64 = 196608
 [apps."so.tilo.diffmerge"]
 x86_64 = 196608
 [apps."so.tilo.discord"]
@@ -23,14 +21,10 @@ x86_64 = 524288
 x86_64 = 262144
 [apps."so.tilo.disks"]
 x86_64 = 196608
-[apps."so.tilo.feeds"]
-x86_64 = 196608
 [apps."so.tilo.firewall"]
 x86_64 = 327680
 [apps."so.tilo.git-client"]
 x86_64 = 196608
-[apps."so.tilo.hex-editor"]
-x86_64 = 131072
 [apps."so.tilo.imager"]
 x86_64 = 196608
 [apps."so.tilo.logs"]
@@ -75,8 +69,6 @@ x86_64 = 262144
 x86_64 = 65536
 [apps."so.tilo.video-player"]
 x86_64 = 262144
-[apps."so.tilo.weather"]
-x86_64 = 65536
 [apps."so.tilo.windows"]
 x86_64 = 131072
 [apps."so.tilo.word-processor"]

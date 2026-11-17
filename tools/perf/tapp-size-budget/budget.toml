@@ -91,7 +91,7 @@ x86_64 = 2818048
 aarch64 = 2031616
 
 [apps."so.tilo.camera"]
-x86_64 = 1835008
+x86_64 = 1703936
 aarch64 = 1769472
 
 [apps."so.tilo.canvas"]
@@ -119,7 +119,7 @@ x86_64 = 1638400
 aarch64 = 1638400
 
 [apps."so.tilo.console"]
-x86_64 = 1376256
+x86_64 = 1310720
 aarch64 = 6000000
 
 [apps."so.tilo.containers"]
@@ -127,7 +127,7 @@ x86_64 = 1245184
 aarch64 = 1245184
 
 [apps."so.tilo.db-client"]
-x86_64 = 4194304
+x86_64 = 4456448
 aarch64 = 3997696
 
 [apps."so.tilo.diffmerge"]
@@ -147,11 +147,11 @@ x86_64 = 1507328
 aarch64 = 1376256
 
 [apps."so.tilo.ebook"]
-x86_64 = 2555904
+x86_64 = 2490368
 aarch64 = 2097152
 
 [apps."so.tilo.feeds"]
-x86_64 = 1507328
+x86_64 = 1835008
 aarch64 = 1441792
 
 [apps."so.tilo.file-explorer"]
@@ -167,7 +167,7 @@ x86_64 = 3866624
 aarch64 = 3604480
 
 [apps."so.tilo.hex-editor"]
-x86_64 = 786432
+x86_64 = 851968
 aarch64 = 720896
 
 [apps."so.tilo.imager"]
@@ -175,7 +175,7 @@ x86_64 = 2555904
 aarch64 = 2490368
 
 [apps."so.tilo.launcher"]
-x86_64 = 720896
+x86_64 = 655360
 aarch64 = 6000000
 
 [apps."so.tilo.logs"]
@@ -311,7 +311,7 @@ x86_64 = 917504
 aarch64 = 917504
 
 [apps."so.tilo.weather"]
-x86_64 = 983040
+x86_64 = 1048576
 aarch64 = 917504
 
 [apps."so.tilo.windows"]

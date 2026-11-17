@@ -28,13 +28,6 @@ x86_64 = 65536
 [apps."so.tilo.contacts"]
 x86_64 = 65536
 
-# Db Client: the bundled SQLite that rusqlite 0.37 to 0.41 brought, 30 KB of
-# sqlite3_* code in its largest new symbols, its records answering a read, and
-# its surface growing 816 bytes. Named code +63,666 (own +1,778, tilo_resource
-# +1,352, serde_json -25, core and alloc +4,471); 31,232 over its old budget.
-[apps."so.tilo.db-client"]
-x86_64 = 131072
-
 # Discord: the bridge reads a chat's newest part, a bot's program reads records
 # through the record API, a moved message shows as its author's at its time
 # there, and its surface grew 15,382 bytes. Its own crate fell 1,867 bytes;
@@ -42,13 +35,6 @@ x86_64 = 131072
 # +28,047); 108,032 over its old budget.
 [apps."so.tilo.discord"]
 x86_64 = 131072
-
-# Feeds: every context menu ends in Send to…, it draws through the toolkit's
-# keyed children, its actions are labelled from its catalogue, and its surface
-# grew 2,803 bytes. Named code +8,492 (own +417, tilo_resource +720, serde_json
-# -52, core and alloc +5,772); 8,704 over its old budget.
-[apps."so.tilo.feeds"]
-x86_64 = 65536
 
 # Maps: it draws through the toolkit's keyed children, every context menu ends
 # in Send to…, its actions are labelled from its catalogue, and its surface
@@ -119,10 +105,3 @@ x86_64 = 65536
 # serde_json +5, core and alloc +10,777); 84,480 over its old budget.
 [apps."so.tilo.video-editor"]
 x86_64 = 131072
-
-# Weather: its records answer a read, it draws through the toolkit's keyed
-# children, and its surface grew 1,144 bytes. Its own crate fell 383 bytes;
-# named code +1,773 (tilo_resource +696, serde_json -50, core and alloc
-# +3,127); 1,024 over its old budget.
-[apps."so.tilo.weather"]
-x86_64 = 65536

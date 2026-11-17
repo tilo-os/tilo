@@ -6,16 +6,6 @@
 reason = "Feeds and Contacts keep their items in chains of parts, Chat gained questions that wait, secret questions and work in a shared window, and the agent's turns carry its instruction and the conversation's summary; each amount is the app's overage at run r3ac9a7d790 plus the ratchet's 1 % headroom, rounded up to 64 KiB, after the cuts landed with this raise. The aarch64 run prints its own numbers."
 run = "r3ac9a7d790"
 
-# Feeds keeps its articles in a chain of parts beside the library
-# (1bf94e970da): the articles are a second resource type, ArticlePart, with
-# its own actions, serde, schema and declarations, and the chain's and the
-# dispatcher's code compiled for it. 1,720,832 bytes before (4e025301e7a, run
-# r62e3522bf1), 2,185,216 after (65c0b8883ef, run r4766d85d43), 1,913,856
-# with the chain's code outside the part type (9a31d789df2) and this
-# change's cuts. Symbols naming ArticlePart add up to 80 KB of named code.
-[apps."so.tilo.feeds"]
-x86_64 = 196608
-
 # Contacts keeps its contacts in a chain of parts beside the book
 # (953e0439baa), the same second resource type, ContactPart. 1,929,728 bytes
 # before, 2,270,720 after (runs r62e3522bf1, r4766d85d43), 2,007,552 now.

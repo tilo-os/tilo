@@ -107,6 +107,13 @@ so a fix often saves several times what `nm` shows for it. What has paid most so
   runtime holds it once: `vendor/serde_json` (31d03ee94e) took 966,311 bytes out of the same
   apps. Together the two changes made the tapps 1,932,800 bytes smaller on x86_64 (median
   27 KB each) and 1,739,776 on aarch64.
+- A generic type whose bulk does not read its parameter keeps the bulk in a part that is not
+  generic: a chain reads its parts' resource through one table of functions per part type
+  (`tilo-app`'s `chain/part.rs`), an effect vocabulary's specs are built by one function handed
+  the vocabulary's argument check, and a popover's panel and option menu are one struct beside
+  its content. The effect specs and the popover took 1,622,528 bytes out of the 66 x86_64 tapps
+  (median 20,992; Tasks 113,152, Feeds 77,312, Camera 80,384), the chain 41 to 49 KB out of each
+  of the six apps that keep one (267,776 in all).
 
 Not every erasure pays. Routing `Widget`'s default methods through a trait object made the apps
 larger: the per-type copies of a leaf widget's defaults were identical, so the linker already
