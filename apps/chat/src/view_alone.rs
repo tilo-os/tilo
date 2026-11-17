@@ -12,7 +12,12 @@
 //! The view's author is whoever the workspace attributes the message to ([`code_author`]): the
 //! software that wrote it where software did, else its author, both as Chat pinned them from
 //! whoever invoked the verb that posted the view. Nothing the view's text says, and nothing
-//! whoever asks for the view to be shown says, changes that. The view is shown as the person
+//! whoever asks for the view to be shown says, changes that. What Chat pinned is a field of the
+//! message all the same, and nothing yet binds it to the device that signed the change which
+//! wrote the message: a member's device can write another member's name there. A view is
+//! trusted to act with no question where its author is its reader, so a view whose message
+//! names its reader as the author is not handed over as theirs ([`Stands::Unbound`]): until the
+//! author is read from the signer, no view is trusted on the field. The view is shown as the person
 //! at this window: it reads what they may read, of the apps the message lists and no other,
 //! and what it asks to do in someone else's name waits here until this person allows that one
 //! thing.
@@ -67,6 +72,10 @@ enum Stands {
     Arriving,
     /// This program cannot show a view, or nobody is at this window to show it to.
     Unavailable,
+    /// The message names its reader as the view's author. A view is trusted where its author
+    /// is its reader, and nothing yet binds a message's author to the device that signed the
+    /// message: such a view is not shown as its reader's own.
+    Unbound,
     Shown,
 }
 
@@ -134,6 +143,7 @@ impl Said {
             Stands::Gone => column = column.push(caption(&t("chat-view-gone"))),
             Stands::Arriving => column = column.push(caption(&t("chat-view-arriving"))),
             Stands::Unavailable => column = column.push(caption(&t("chat-view-unavailable"))),
+            Stands::Unbound => column = column.push(caption(&t("chat-view-unbound"))),
             Stands::Shown => {}
         }
         if !self.refused.is_empty() {
@@ -253,12 +263,18 @@ impl ChatApp {
                     alone.placed = Some(wanted);
                     alone.view = None;
                     alone.state = None;
+                    let author = code_author(&message.author, message.acting.as_ref());
                     alone.stands = match self.me.id.as_person() {
                         None => Stands::Unavailable,
+                        Some(viewer)
+                            if author.member_id().and_then(MemberId::as_person) == Some(viewer) =>
+                        {
+                            Stands::Unbound
+                        }
                         Some(viewer) => {
                             let written = WrittenView {
                                 source: view.source.clone(),
-                                author: code_author(&message.author, message.acting.as_ref()),
+                                author,
                                 viewer: viewer.clone(),
                                 reads: view.reads.clone(),
                             };
@@ -569,13 +585,38 @@ mod tests {
     }
 
     #[test]
+    fn a_message_written_in_its_readers_name_is_not_shown_as_the_readers_own_view() {
+        views_are_shown();
+        let mut workspace = crate::testing::demo_doc();
+        // Below Chat's verbs a member's device writes what it likes into a change it signs:
+        // here the change a post makes, naming the reader as whoever invoked it. The message
+        // keeps nothing else of who wrote it, so this is all the reader's device is shown.
+        let message = posted(&mut workspace);
+
+        // A view is trusted where its author is its reader, and the name is only a field: the
+        // reader's window does not hand the view over as the reader's own.
+        let mut app = window(&workspace, LocalIdentity::demo());
+        app.answer_effect(ChatEffect::ShowView { message })
+            .expect("the window is told the message");
+        Widget::update(&mut app, &workspace.chat, &ROOT);
+        assert!(placed().is_empty(), "nothing is placed: {:?}", placed());
+        assert_eq!(
+            app.alone.as_ref().map(|alone| alone.stands),
+            Some(super::Stands::Unbound)
+        );
+        // Looked at again, it still is not.
+        Widget::update(&mut app, &workspace.chat, &ROOT);
+        assert!(placed().is_empty(), "nothing is placed: {:?}", placed());
+    }
+
+    #[test]
     fn a_messages_view_is_shown_alone_as_its_reader_and_as_its_authors_code() {
         views_are_shown();
         let mut workspace = crate::testing::demo_doc();
         let message = posted(&mut workspace);
 
-        // Its author reads it: the view is their own code, shown to them.
-        let mut app = window(&workspace, LocalIdentity::demo());
+        // Another member reads it: the code is its author's, the eyes are the reader's.
+        let mut app = window(&workspace, aria());
         app.answer_effect(ChatEffect::ShowView {
             message: message.clone(),
         })
@@ -586,7 +627,7 @@ mod tests {
         assert_eq!(shown[0].source, AREAS);
         assert_eq!(shown[0].reads, ["tasks"]);
         assert_eq!(shown[0].author, Actor::Member(MemberId::person(ME)));
-        assert_eq!(Some(&shown[0].viewer), MemberId::person(ME).as_person());
+        assert_eq!(Some(&shown[0].viewer), MemberId::person(ARIA).as_person());
         // Nothing moved: it is not placed a second time.
         Widget::update(&mut app, &workspace.chat, &ROOT);
         assert_eq!(placed().len(), 1);

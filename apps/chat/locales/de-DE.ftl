@@ -486,6 +486,7 @@ chat-view-waiting = Dieser Beitrag ist noch nicht auf diesem Gerät
 chat-view-gone = Dieser Beitrag hat keine Ansicht
 chat-view-arriving = Ansicht wird geladen
 chat-view-unavailable = Eine Ansicht kann hier nicht gezeigt werden
+chat-view-unbound = Diese Ansicht gibt dich als Verfasser an. Tilo kann noch nicht sicher sagen, wer einen Beitrag geschrieben hat, deshalb wird sie hier nicht gezeigt
 chat-view-refused = Du darfst { $apps } hier nicht lesen, die Ansicht zeigt nichts davon
 chat-view-unread = { $apps } konnte hier nicht gelesen werden
 chat-view-asks = { $who } hat diese Ansicht geschrieben. Sie möchte das in { $app } tun
