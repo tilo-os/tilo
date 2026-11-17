@@ -167,19 +167,25 @@ action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task uses time (
 /// Sets the day a task is due by, from the presets or a day the person picks.
 action due_today(t: Task) uses time (label: "Today", icon: .star, key: "Ctrl+T", group: "Due") {
     require not t.done "It is done already"
-    schedule(t, today)
+    t.at = moved(t.at, t.due, today)
+    t.remind = moved(t.remind, t.due, today)
+    t.due = today
 }
 
 /// Makes a task due tomorrow.
 action due_tomorrow(t: Task) uses time (label: "Tomorrow", icon: .calendar, group: "Due") {
     require not t.done "It is done already"
-    schedule(t, today + 1d)
+    t.at = moved(t.at, t.due, today + 1d)
+    t.remind = moved(t.remind, t.due, today + 1d)
+    t.due = today + 1d
 }
 
 /// Makes a task due at the start of next week.
 action due_next_week(t: Task) uses time (label: "Next week", icon: .calendar, group: "Due") {
     require not t.done "It is done already"
-    schedule(t, today.start_of_week() + 1w)
+    t.at = moved(t.at, t.due, today.start_of_week() + 1w)
+    t.remind = moved(t.remind, t.due, today.start_of_week() + 1w)
+    t.due = today.start_of_week() + 1w
 }
 
 /// Makes a task due on a day the person picks. Its moment and its reminder move with it, at the
@@ -191,17 +197,18 @@ action schedule(t: Task, due: Option<Date>) (
     key: "Ctrl+D",
     group: "Due",
 ) {
-    if let from = t.due {
-        if let to = due {
-            if let a = t.at {
-                t.at = a + (to - from)
-            }
-            if let r = t.remind {
-                t.remind = r + (to - from)
-            }
-        }
-    }
+    t.at = moved(t.at, t.due, due)
+    t.remind = moved(t.remind, t.due, due)
     t.due = due
+}
+
+/// `moment` moved with its task from the day `from` to the day `to`, at the same time of day; as
+/// it was when either day is missing. Each action that moves a task's day writes it itself, so a
+/// command over many chosen tasks stays one change.
+fn moved(moment: Option<Time>, from: Option<Date>, to: Option<Date>) -> Option<Time> {
+    if let m = moment {
+        if let f = from { if let d = to { m + (d - f) } else { m } } else { m }
+    }
 }
 
 /// Clears the day a task is due by: it waits in the inbox, undated.
@@ -218,7 +225,10 @@ trigger ring(t: Task) at t.remind: remind(t)
 /// gone is no reminder, so "move the reminder to Friday" moves both.
 action remind_at(t: Task, when: Time) uses time (label: "Remind me", icon: .bell, group: "Remind") {
     if let d = t.due {
-        if when.day() > d { schedule(t, when.day()) }
+        if when.day() > d {
+            t.at = moved(t.at, t.due, when.day())
+            t.due = when.day()
+        }
     }
     t.remind = when
 }
