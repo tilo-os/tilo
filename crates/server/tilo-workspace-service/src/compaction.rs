@@ -1256,8 +1256,8 @@ fn reassemble(
     if collab_types::document_transfer::transfer_digest(kind, &data) != digest {
         return None;
     }
-    // Joined, the segments are the body their writer cut up, which holds changes deflated:
-    // collab-types reads it, as it reads the body of a whole frame.
+    // Joined, the segments are the body their writer cut up: collab-types reads it, as it
+    // reads the body of a whole frame.
     tilo_failure::ignored!(
         "a transfer that does not read as its kind is kept as it is, never folded or removed",
         DocumentMutation::of_transfer(kind, &data).ok()

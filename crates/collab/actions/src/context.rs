@@ -22,13 +22,13 @@ pub const CHANGE_MESSAGE_PREFIX: &str = "tilo.entry/3 ";
 
 /// Prefix of a change message that continues its writer's last whole entry
 /// (the next keystroke of a word, or the first of the next word):
-/// `tilo.cont/2 <gesture> <claim> <kept> <tail> <middle>`. It is that entry
+/// `tilo.cont/3 <gesture> <claim> <kept> <tail> <middle>`. It is that entry
 /// again but for its gesture and the action's payload, so it carries only
-/// the gesture (simple hex), what the change claims to be
+/// the gesture (its [`crate::compact`] form), what the change claims to be
 /// ([`ContinuedAction`]) and how its payload differs from that entry's: that
 /// payload's first `kept` and last `tail` bytes around `middle`. Readers
 /// fold it into that entry ([`ActionContext::continued`]).
-pub const CONTINUATION_PREFIX: &str = "tilo.cont/2 ";
+pub const CONTINUATION_PREFIX: &str = "tilo.cont/3 ";
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
@@ -515,15 +515,15 @@ impl ActionContext {
         let middle = now_rest.get(..now_rest.len().checked_sub(tail)?)?;
         Some(format!(
             "{CONTINUATION_PREFIX}{} {claim} {kept} {tail} {middle}",
-            gesture.0.simple()
+            gesture_token(gesture)
         ))
     }
 
+    /// The gesture a continuation `message` continues.
     #[must_use]
     pub fn continued_gesture(message: &str) -> Option<crate::ActionId> {
         let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
-        let gesture = rest.split(' ').next()?;
-        uuid::Uuid::try_parse(gesture).ok().map(crate::ActionId)
+        gesture_of(rest.split(' ').next()?)
     }
 
     /// The entry a continuation `message` stands for, from its writer's last
@@ -532,7 +532,7 @@ impl ActionContext {
     pub fn continued(message: &str, first: &Self) -> Option<Self> {
         let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
         let mut parts = rest.splitn(3, ' ');
-        let gesture = uuid::Uuid::try_parse(parts.next()?).ok()?;
+        let gesture = gesture_of(parts.next()?)?;
         let _claim = parts.next()?;
         let mut diff = parts.next()?.splitn(3, ' ');
         let kept = diff.next()?.parse::<usize>().ok()?;
@@ -550,18 +550,19 @@ impl ActionContext {
                 type_id: earlier.type_id.clone(),
                 payload: payload.into_bytes(),
             }),
-            gesture: Some(crate::ActionId(gesture)),
+            gesture: Some(gesture),
             ..first.clone()
         })
     }
 }
 
 /// What a continuation says its change is, in the terms a change's claim is
-/// written in, as the entry it continues says it: an edit of a resource
-/// kind at a path (the whole record for an empty one), or one of its verbs
-/// on an item. A continuation writes it as JSON.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// written in, as the entry it continues says it: an edit of a resource kind
+/// at a path (the whole resource for an empty one), or one of its verbs on an
+/// item. A continuation writes it as one token: `e:<kind>:<step>/…` or
+/// `v:<app>/<kind>/<action>[:<item>]`, a step being `f<field>`, `i<id>`,
+/// `k<key>` or `c<row>:<column>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContinuedAction {
     Edit {
         kind: String,
@@ -574,8 +575,8 @@ pub enum ContinuedAction {
 }
 
 impl ContinuedAction {
-    /// The claim a continuation of `entry` writes; `None` for one whose
-    /// JSON holds a blank, which ends the token.
+    /// The claim a continuation of `entry` writes; `None` for one whose names
+    /// hold a byte the token reserves, which writes the entry whole instead.
     fn token(entry: &ActionContext) -> Option<String> {
         let edit = |path: &[PathStep]| Self::Edit {
             kind: entry
@@ -593,10 +594,127 @@ impl ContinuedAction {
             None => edit(&[]),
             Some(_) => return None,
         };
-        serde_json::to_string(&action)
-            .ok()
-            .filter(|token| !token.contains(' '))
+        action.write()
     }
+
+    /// The claim a continuation `message` writes.
+    #[must_use]
+    pub fn of_message(message: &str) -> Option<Self> {
+        let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
+        Self::parse(rest.split(' ').nth(1)?)
+    }
+
+    /// The token this claim writes, read back by [`Self::parse`].
+    fn write(&self) -> Option<String> {
+        /// A name as the token carries it; the separators end it.
+        fn name(text: &str) -> Option<&str> {
+            (!text.contains([' ', ':', '/'])).then_some(text)
+        }
+        fn write_step(token: &mut String, at: usize, step: &PathStep) -> Option<()> {
+            if at > 0 {
+                token.push('/');
+            }
+            let (tag, text) = match step {
+                PathStep::Field(field) => ('f', name(field)?),
+                PathStep::Item(id) => ('i', name(id)?),
+                PathStep::Key(key) => ('k', name(key)?),
+                PathStep::Cell(row, column) => {
+                    token.push('c');
+                    token.push_str(name(row)?);
+                    token.push(':');
+                    token.push_str(name(column)?);
+                    return Some(());
+                }
+            };
+            token.push(tag);
+            token.push_str(text);
+            Some(())
+        }
+        let mut token = String::new();
+        match self {
+            Self::Edit { kind, path } => {
+                token.push_str("e:");
+                token.push_str(name(kind)?);
+                token.push(':');
+                for (at, step) in path.iter().enumerate() {
+                    write_step(&mut token, at, step)?;
+                }
+            }
+            Self::Verb { action, item } => {
+                token.push_str("v:");
+                for part in [&action.app, &action.kind, &action.action] {
+                    token.push_str(name(part)?);
+                    token.push('/');
+                }
+                token.pop();
+                if let Some(item) = item {
+                    token.push(':');
+                    token.push_str(name(item)?);
+                }
+            }
+        }
+        Some(token)
+    }
+
+    /// The claim a continuation's token writes.
+    fn parse(token: &str) -> Option<Self> {
+        fn read_step(step: &str) -> Option<PathStep> {
+            let (tag, rest) = step.split_at_checked(1)?;
+            Some(match tag {
+                "f" => PathStep::Field(rest.to_owned()),
+                "i" => PathStep::Item(rest.to_owned()),
+                "k" => PathStep::Key(rest.to_owned()),
+                "c" => {
+                    let (row, column) = rest.split_once(':')?;
+                    PathStep::Cell(row.to_owned(), column.to_owned())
+                }
+                _ => return None,
+            })
+        }
+        let (tag, rest) = token.split_once(':')?;
+        Some(match tag {
+            "e" => {
+                let (kind, path) = rest.split_once(':')?;
+                let path = if path.is_empty() {
+                    Vec::new()
+                } else {
+                    path.split('/').map(read_step).collect::<Option<Vec<_>>>()?
+                };
+                Self::Edit {
+                    kind: kind.to_owned(),
+                    path,
+                }
+            }
+            "v" => {
+                let (app, rest) = rest.split_once('/')?;
+                let (kind, rest) = rest.split_once('/')?;
+                let (action, item) = match rest.split_once(':') {
+                    Some((action, item)) => (action, Some(item.to_owned())),
+                    None => (rest, None),
+                };
+                Self::Verb {
+                    action: crate::ActionKey::new(app, kind, action),
+                    item,
+                }
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// The gesture `gesture` as a continuation writes it: its [`crate::compact`]
+/// form.
+fn gesture_token(gesture: crate::ActionId) -> String {
+    crate::compact::encode(&serde_json::Value::String(
+        gesture.0.hyphenated().to_string(),
+    ))
+}
+
+/// The gesture a continuation's token writes.
+fn gesture_of(token: &str) -> Option<crate::ActionId> {
+    let text = crate::compact::decode(token)?;
+    let text = serde_json::from_str::<String>(&text).ok()?;
+    uuid::Uuid::try_parse(&text).ok().map(crate::ActionId)
 }
 
 /// A change message's entry as a JSON value. Entries are read through a value,
@@ -2049,7 +2167,18 @@ mod tests {
         let message = next.continuation_of(&first).unwrap();
         assert_eq!(
             message,
-            r#"tilo.cont/2 00000000000000000000000000000008 {"edit":{"kind":"","path":[{"field":"snippets"},{"item":"s1"},{"field":"favorite"}]}} 30 28 é \"q\""#
+            r#"tilo.cont/3 U8000000000000000000000 e::fsnippets/is1/ffavorite 30 28 é \"q\""#
+        );
+        assert_eq!(
+            ContinuedAction::of_message(&message),
+            Some(ContinuedAction::Edit {
+                kind: String::new(),
+                path: vec![
+                    PathStep::Field("snippets".into()),
+                    PathStep::Item("s1".into()),
+                    PathStep::Field("favorite".into()),
+                ],
+            })
         );
         assert_eq!(
             ActionContext::continued(&message, &first),

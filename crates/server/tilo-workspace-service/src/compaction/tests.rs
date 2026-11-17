@@ -617,7 +617,7 @@ fn a_large_snapshot_is_framed_in_segments_the_fold_reads_back() {
     assert_eq!(late_join(&store).get_heads(), doc.get_heads());
 }
 
-/// Changes too large for one frame travel in segments, which carry them deflated. The fold reads
+/// Changes too large for one frame travel in segments. The fold reads
 /// the joined segments as the changes their writer made: a late joiner reads the whole
 /// document, and the fold holds them with what was written before and after them, each segment
 /// among the writes it replaces.

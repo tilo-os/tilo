@@ -558,7 +558,8 @@ back-reference, UUIDs and gestures as 22 digits, numbers six bits a byte. It
 stays UTF-8, decodes to exactly the entry that was written, and writing that
 again gives the same bytes, so a device replaying the action writes the same
 change. A keystroke that continues its gesture writes only what differs
-(`tilo.cont/1 <gesture> <path> <payload>`); readers fold it into the
+(`tilo.cont/3 <gesture> <claim> <kept> <tail> <middle>`): the gesture, what
+the change claims and the bytes its payload changed; readers fold it into the
 gesture's first entry.
 
 ### 5.2 Sentences are rendered by the reader
