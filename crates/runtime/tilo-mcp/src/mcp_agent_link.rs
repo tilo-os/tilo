@@ -1,9 +1,9 @@
 //! Links an agent hands a person: `tilo_link` answers the link to what a path
 //! names, and a call that changed something answers the link that opens what
-//! it made or changed (the resources its answer names after `->`), else its
-//! record's. Each is the resource's own `share-link`, minted where the record
-//! is served, under the web entry its host announces: the link a person copies
-//! in the app. It carries no secret, so it opens only for the workspace's
+//! it made or changed, which the server that invoked it minted with its
+//! answer. Each is the resource's own `share-link`, minted where the document
+//! is served, under the web entry its server announces: the link a person
+//! copies in the app. It carries no secret, so it opens only for the workspace's
 //! members; anyone else meets the workspace's admission.
 
 use super::*;
@@ -88,18 +88,15 @@ pub(super) fn put(typed: &mut Value, shown: Shown) {
     }
 }
 
-/// The resources an invocation's answer says it made or changed, in the
-/// order it names them: the `-> <resource>` lines under its result.
-fn named(value: &Value) -> Vec<&str> {
-    value
-        .pointer("/update/output/resources")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .filter(|resource| !resource.is_empty())
-        .collect()
+/// The link an invocation's answer names, which its server minted where it
+/// was invoked: what opens what it made or changed.
+fn link_of(value: &Value) -> Option<String> {
+    value.get("link").and_then(Value::as_str).map(str::to_owned)
 }
+
+/// Documents a session keeps as shown at most: a session changing ever new
+/// documents does not grow them without end.
+const SHOWED_DOCUMENTS: usize = 256;
 
 /// The links of the steps of a batch, each once, in the order first made.
 pub(super) fn step_links(steps: &[Value]) -> Vec<Value> {
@@ -207,8 +204,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         else {
             return Shown::default();
         };
+        let link = match self.document_link(provider, serde_json::Map::new()).await {
+            Ok(url) => Some(url),
+            Err(error) => {
+                tracing::debug!(%error, provider, "mcp: an opened document answered no link");
+                None
+            }
+        };
         Shown {
-            link: self.link_naming(provider, &[]).await,
+            link,
             not_shown: None,
         }
     }
@@ -228,85 +232,45 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Shown::default();
         }
         if succeeded(value) {
-            return self.changed_link_naming(provider, &named(value)).await;
+            return self.changed_shown(provider, value).await;
         }
         self.note_changing(asked, value, provider);
         Shown::default()
     }
 
-    /// The link a change answers: the own `share-link` of the first of
-    /// `named` (the resources its answer says it made or changed, as
-    /// `-> <resource>` lines name them) that offers one, which opens that
-    /// resource; else the record's own link. The record's window is shown on
-    /// the person's layout either way ([`Self::show`]).
-    pub(super) async fn changed_link_naming(&self, provider: &str, named: &[&str]) -> Shown {
+    /// What a change of the document `provider` answers: the link its server
+    /// minted with it ([`link_of`]), and its document's window shown on the
+    /// person's layout ([`Self::show`]) the first time this session changes
+    /// it. Once asked for, where the window stays (or that it was closed) is
+    /// the person's: a session making many changes in one document opens it
+    /// once.
+    pub(super) async fn changed_shown(&self, provider: &str, value: &Value) -> Shown {
         if tilo_actions::remote::resource_parts(provider).is_none() {
             return Shown::default();
         }
-        let not_shown = self.show(provider, "").await.err();
-        let link = self.link_naming(provider, named).await;
-        Shown { link, not_shown }
-    }
-
-    /// The own `share-link` of the first of `named` that offers one, else its document's own link.
-    async fn link_naming(&self, provider: &str, named: &[&str]) -> Option<String> {
-        for resource in named {
-            if let Some(url) = self.own_link(provider, resource).await {
-                return Some(url);
+        let first = {
+            let mut showed = self.showed.lock_recover();
+            if showed.len() >= SHOWED_DOCUMENTS {
+                showed.clear();
             }
-        }
-        match self.document_link(provider, serde_json::Map::new()).await {
-            Ok(url) => Some(url),
-            Err(error) => {
-                tracing::debug!(%error, provider, "mcp: a changed record answered no link");
-                None
-            }
-        }
-    }
-
-    /// The link `resource` offers of its own on `provider`: its
-    /// `share-link`, present when it declares a view (an item the app opens
-    /// does, which the answer's `->` names), asked of the app by its address:
-    /// a note just made is found without listing the notebook it is in.
-    /// `None` when it offers none, so the caller answers the record's link
-    /// instead.
-    async fn own_link(&self, provider: &str, resource: &str) -> Option<String> {
-        if resource.is_empty() {
-            return None;
-        }
-        let page = self
-            .ask(CatalogueQuery {
-                provider: Some(provider.to_owned()),
-                target: Some(tilo_actions::ActionAddress::new(
-                    resource.to_owned(),
-                    SHARE_LINK_ACTION,
-                )),
-                max_results: 1,
-                ..CatalogueQuery::default()
-            })
-            .await
-            .ok()?;
-        let own = page
-            .rows
-            .into_iter()
-            .filter_map(|row| row.action)
-            .find(|action| {
-                action.address.resource == resource && action.address.action == SHARE_LINK_ACTION
-            })?
-            .address
-            .resource;
-        match self.mint_link(provider, own, serde_json::Map::new()).await {
-            Ok(url) => Some(url),
-            Err(error) => {
-                tracing::debug!(%error, %resource, "mcp: a changed resource answered no link");
-                None
-            }
+            showed.insert(provider.to_owned())
+        };
+        // Asked once: a window refused now (no layout yet) is said so on this
+        // change, and not asked for again on every change after it.
+        let not_shown = if first {
+            self.show(provider, "").await.err()
+        } else {
+            None
+        };
+        Shown {
+            link: link_of(value),
+            not_shown,
         }
     }
 
     /// Show the record `provider` names as a window on the person's layout, as a member's
     /// open does: its app's `open` on it, a call of this call's step, so one run lists the write
-    /// and the window it showed. The host leaves a record a window already shows where the people
+    /// and the window it showed. The server leaves a document a window already shows where the people
     /// put it. A provider that is no record (a window of a device) names the app `app_id`'s own
     /// record; an empty `app_id` then names nothing.
     ///
@@ -372,12 +336,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         &self,
         descriptor: &ActionDescriptor,
         value: &Value,
-        resolved: &super::Resolved,
+        (provider, app_id): (&str, &str),
     ) -> Result<(), Failure> {
         let action = descriptor.address.action.as_str();
         let failed = value.pointer("/update/state").and_then(Value::as_str) == Some("failed");
         if action == tilo_actions::remote::APPLICATION_ACTIVATE_ACTION && !failed {
-            self.show(&resolved.provider, &resolved.app_id).await?;
+            self.show(provider, app_id).await?;
         }
         Ok(())
     }
@@ -425,7 +389,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if state != "succeeded" {
             return Shown::default();
         }
-        self.changed_link_naming(&provider, &named(value)).await
+        self.changed_shown(&provider, value).await
     }
 
     async fn mint_link(

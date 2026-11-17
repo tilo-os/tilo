@@ -864,11 +864,10 @@ fn remote(message: tilo_actions::remote::RemoteActionMessage) -> CollabEvent {
 fn step_update(update: tilo_actions::InvocationUpdate) -> CollabEvent {
     remote(tilo_actions::remote::RemoteActionMessage::Update {
         invocation: update.invocation(),
-        state: Some(tilo_actions::remote::InvocationState {
+        state: Some(tilo_actions::remote::InvocationState::new(
+            update.invocation(),
             update,
-            untrusted: false,
-            left_at: None,
-        }),
+        )),
     })
 }
 

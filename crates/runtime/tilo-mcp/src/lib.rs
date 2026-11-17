@@ -135,6 +135,14 @@ pub struct McpServer<H> {
     /// The record each of this session's changes still running is changing,
     /// by invocation id: `tilo_status` answers its link once it finished.
     changing: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// The action each path this session invoked named, by the path as written:
+    /// the next call of it goes straight there. A path whose action has gone
+    /// or moved is refused by the server, and resolved again then.
+    resolved_paths:
+        std::sync::Mutex<std::collections::HashMap<String, agent::resolved::ResolvedAction>>,
+    /// The documents whose window this session's changes showed the person
+    /// ([`McpServer::changed_shown`]).
+    showed: std::sync::Mutex<std::collections::HashSet<String>>,
     /// The invocations of this session a watch follows, oldest first, each
     /// with where its latest phase falls in the watch's sequence
     /// ([`crate::watch`]).
@@ -676,6 +684,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             task: tokio::sync::Mutex::new(None),
             acted: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
+            resolved_paths: std::sync::Mutex::default(),
+            showed: std::sync::Mutex::default(),
             invocations: std::sync::Mutex::default(),
             invocation_waiters: std::sync::Mutex::default(),
         }
@@ -3154,6 +3164,9 @@ fn state_json(
     state: &tilo_actions::remote::InvocationState,
 ) -> Value {
     let mut value = json!({"invocation_id":id.0.to_string(),"update":state.update});
+    if let (Some(link), Some(fields)) = (&state.link, value.as_object_mut()) {
+        fields.insert("link".into(), json!(link));
+    }
     if state.untrusted {
         mark_untrusted(&mut value);
     }
