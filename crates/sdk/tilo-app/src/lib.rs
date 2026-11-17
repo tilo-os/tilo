@@ -283,6 +283,8 @@ pub use tilo_feedback as feedback;
 mod copy_catalogue;
 pub mod feedback_composer;
 pub mod feedback_read_out;
+/// A view written in the app language, shown where an app places it.
+pub mod written_view;
 /// Files on every target: capability-scoped directories on Linux and macOS,
 /// the origin-private file system in the browser. Use it where `std::fs`
 /// would fail on the web.

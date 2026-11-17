@@ -59,7 +59,7 @@ doc = false
 "api-tester" = { path = "../../../apps/api-tester", default-features = false, features = [] }
 "app-catalogue" = { path = "../../../crates/packaging/app-catalogue", default-features = false, features = [] }
 "app-cli" = { path = "../../../crates/packaging/app-cli", default-features = false, features = [] }
-"app-fleet" = { path = "../../../crates/packaging/app-fleet", default-features = false, features = [] }
+"app-fleet" = { path = "../../../crates/packaging/app-fleet", default-features = false, features = ["surfaces"] }
 "app-host" = { path = "../../../crates/packaging/app-host", default-features = false, features = ["default", "service", "test-support"] }
 "app-registry" = { path = "../../../crates/packaging/app-registry", default-features = false, features = [] }
 "appendlist-1_4_0" = { package = "appendlist", version = "^1.4.0", default-features = false, features = [] }
@@ -1376,6 +1376,7 @@ doc = false
 "tilo-workspace-host" = { path = "../../../crates/hosting/tilo-workspace-host", default-features = false, features = ["agents", "test-support", "web"] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
+"tilo-written-view" = { path = "../../../crates/platform/tilo-written-view", default-features = false, features = [] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
 "tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
 "tilolang-app" = { path = "../../../apps/tilolang", default-features = false, features = [] }
@@ -1527,7 +1528,7 @@ doc = false
 "wasmtime-internal-winch-50_0_1" = { package = "wasmtime-internal-winch", version = "^50.0.1", default-features = false, features = [] }
 "wast-252_0_0" = { package = "wast", version = "^252.0.0", default-features = false, features = ["component-model", "wasm-module"] }
 "wat-1_252_0" = { package = "wat", version = "^1.252.0", default-features = false, features = ["component-model", "default"] }
-"wayland-backend-0_3_15" = { package = "wayland-backend", path = "../../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
+"wayland-backend-0_3_15" = { package = "wayland-backend", path = "../../../vendor/wayland-backend", default-features = false, features = ["client_system", "default", "dlopen", "log"] }
 "wayland-client-0_31_14" = { package = "wayland-client", version = "^0.31.14", default-features = false, features = ["system"] }
 "wayland-csd-frame-0_3_0" = { package = "wayland-csd-frame", version = "^0.3.0", default-features = false, features = [] }
 "wayland-cursor-0_31_12" = { package = "wayland-cursor", version = "^0.31.12", default-features = false, features = [] }
@@ -1637,7 +1638,7 @@ doc = false
 "anstyle-parse-1_0_0" = { package = "anstyle-parse", version = "^1.0.0", default-features = false, features = ["default", "utf8"] }
 "anstyle-query-1_1_5" = { package = "anstyle-query", version = "^1.1.5", default-features = false, features = [] }
 "anyhow-1_0_103" = { package = "anyhow", version = "^1.0.103", default-features = false, features = ["default", "std"] }
-"app-fleet" = { path = "../../../crates/packaging/app-fleet", default-features = false, features = [] }
+"app-fleet" = { path = "../../../crates/packaging/app-fleet", default-features = false, features = ["surfaces"] }
 "app-registry" = { path = "../../../crates/packaging/app-registry", default-features = false, features = [] }
 "ar_archive_writer-0_5_3" = { package = "ar_archive_writer", version = "^0.5.3", default-features = false, features = [] }
 "arc-swap-1_9_2" = { package = "arc-swap", version = "^1.9.2", default-features = false, features = [] }

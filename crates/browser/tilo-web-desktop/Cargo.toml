@@ -41,6 +41,10 @@ tilo-spellcheck = { path = "../../text/spellcheck", features = ["lazy-dictionari
 tilo-ui = { path = "../../sdk/ui-core", default-features = false, features = ["lazy-hyphenation", "lazy-image-decode", "lazy-surface-shader", "lazy-emoji", "lazy-history", "lazy-palettes"] }
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
+# The code that runs a view written in the app language (the language's compiler and
+# interpreter, and the UI host's half of a window) loads the first time an app places one
+# (src/lazy.rs).
+tilo-written-view = { path = "../../platform/tilo-written-view" }
 # generated apps: begin (tools/web/generate_web_desktop.py)
 activity = { path = "../../../apps/activity" }
 api-tester = { path = "../../../apps/api-tester" }
