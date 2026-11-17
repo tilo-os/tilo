@@ -908,7 +908,28 @@ async fn its_person_asks_for_a_sub_agent_and_the_server_starts_it() {
     assert_eq!(sub_agents(&roster(&workspaces, &workspace).await), 1);
 
     // An agent's ask under that kind starts nothing: the sub-agent asks in its starter's thread.
-    let beside = ada.clone().delegated_to(id.clone()).named("Find the deck");
+    // Outside a turn nothing is taken in a sub-agent's name but what its own rules let it, and
+    // asking an agent is none of that.
+    let outside = ada.clone().delegated_to(id.clone()).named("Find the deck");
+    let refused = asks_for_one(
+        &actions,
+        &workspace,
+        &outside,
+        &thread,
+        ("Another", "Do more.", "more-0"),
+    )
+    .await
+    .expect_err("outside a turn a sub-agent's name asks nobody");
+    assert!(refused.contains("may not invoke"), "{refused}");
+    // What the server writes for a sub-agent it writes on the turn it worked, with the bound its
+    // keeper set: an ask made that way is taken, and starts nothing either.
+    let beside = outside.on_turn(
+        tilo_action_policy::turn::Turn::new(
+            chat::summons::conversation_address(&own),
+            jobs[0].0.to_string(),
+        ),
+        Vec::new(),
+    );
     asks_for_one(
         &actions,
         &workspace,
@@ -973,6 +994,22 @@ fn refused_in_words(answer: &str) -> bool {
 async fn a_sub_agent_writes_only_into_its_own_conversation() {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let ada = themselves(&root, &browser, &workspace);
+    // The person is called Ada here, as their page says when it joins: the workspace's member
+    // list is whom a name in a message is bound to.
+    let named = page
+        .peer
+        .ask_workspaces(tilo_server_protocol::workspaces::WorkspacesRequest::Name {
+            workspace: workspace.clone(),
+            name: "Ada".to_owned(),
+        })
+        .unwrap();
+    assert!(matches!(
+        tilo_test_env::within("the workspace names its person", named)
+            .await
+            .unwrap()
+            .unwrap(),
+        tilo_server_protocol::workspaces::WorkspacesReply::Named
+    ));
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let own = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("writer")]);
 
