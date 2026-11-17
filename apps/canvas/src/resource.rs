@@ -131,7 +131,7 @@ impl Artwork {
     pub const REDO: ActionRef<Self, ()> = ActionRef::new("redo", &[], ARTWORK_KIND);
     /// `undo` of an agent run, whole.
     pub const UNDO_AGENT_SESSION: ActionRef<Self, String> =
-        ActionRef::new("undo", &["run"], ARTWORK_KIND);
+        ActionRef::new("undo", &["invocation"], ARTWORK_KIND);
     /// `restore` a past version as a new change.
     pub const RESTORE: ActionRef<Self, String> =
         ActionRef::new("restore", &["version"], ARTWORK_KIND);

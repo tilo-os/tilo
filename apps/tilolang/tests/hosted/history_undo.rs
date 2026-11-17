@@ -1,6 +1,6 @@
 //! One undo, as the document's platform history verb (`collaboration::history_source::verbs`):
-//! `undo(v)` on a step and `undo(run)` on an agent's run, which the tilolang host running the
-//! instance applies to the document.
+//! `undo(v)` on a step and `undo(invocation)` on an agent's invocation, which the tilolang host
+//! running the instance applies to the document.
 
 use tilolang_tilo::DynValue;
 use ui::tilo_actions::{ActionContext, ActionInvoker};
@@ -110,10 +110,10 @@ fn action(session: &Session, resource: &str, name: &str) -> String {
         )
 }
 
-/// The person adds a task and takes back exactly that step with `undo(v)`; an agent's run adds
-/// three and `undo(run)` takes back all three, leaving the person's own.
+/// The person adds a task and takes back exactly that step with `undo(v)`; an agent's invocation
+/// adds three and `undo(invocation)` takes back all three, leaving the person's own.
 #[test]
-fn undo_named_from_a_view_takes_back_a_step_and_a_run() {
+fn undo_named_from_a_view_takes_back_a_step_and_an_invocation() {
     let mut window = Session::tasks();
     let root = root(&mut window);
     let add = action(&window, &root, "new_task");
@@ -155,7 +155,8 @@ fn undo_named_from_a_view_takes_back_a_step_and_a_run() {
     }
     assert_eq!(window.read(titles).len(), 4);
 
-    // `undo(run)`: every step of the run comes back together, and the person's own step stays.
+    // `undo(invocation)`: every step of the invocation comes back together, and the person's own
+    // step stays.
     let mut undo_invocation = serde_json::Map::new();
     undo_invocation.insert("invocation".to_owned(), RUN.into());
     window

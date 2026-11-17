@@ -239,7 +239,7 @@ fn a_person_and_an_agent_undo_only_their_own_steps() {
     assert!(fill(&app, "sun").is_some(), "the agent's stays");
     app.call("redo", json!({})).unwrap();
 
-    app.call("undo", json!({"run": RUN})).unwrap();
+    app.call("undo", json!({"invocation": RUN})).unwrap();
     assert!(fill(&app, "sun").is_none());
     assert!(fill(&app, "hill").is_some());
     let refused = app

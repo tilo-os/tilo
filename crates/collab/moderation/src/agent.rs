@@ -282,7 +282,7 @@ impl<J: Judge> ModerationAgent<J> {
                 &reverted.app,
                 &reverted.record,
                 "undo",
-                serde_json::json!({ "run": reverted.run }),
+                serde_json::json!({ "invocation": reverted.run }),
                 &format!("{}:restore", reverted.run),
             ) {
                 failures.push(format!("{}/{}: {why}", reverted.app, reverted.record));
