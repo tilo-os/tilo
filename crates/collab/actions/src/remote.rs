@@ -1277,6 +1277,7 @@ impl RemoteActionMessage {
                 | Self::SearchRequest { .. }
                 | Self::ChangesRequest { .. }
                 | Self::ChangedRequest { .. }
+                | Self::SurfaceRequest { .. }
         )
     }
 }
@@ -1614,26 +1615,8 @@ pub fn refuse(
                 result: Err(error),
             }
         }
-        RemoteActionMessage::CatalogueResponse { .. }
-        | RemoteActionMessage::Receipt(_)
-        | RemoteActionMessage::Update { .. }
-        | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RetiredResourceRequest
-        | RemoteActionMessage::RetiredResourceResponse
-        | RemoteActionMessage::ResourceReading { .. }
-        | RemoteActionMessage::FeedbackResponse { .. }
-        | RemoteActionMessage::ConfirmationResponse { .. }
-        | RemoteActionMessage::RetiredResourceWatch { .. }
-        | RemoteActionMessage::RetiredResourceReading { .. }
-        | RemoteActionMessage::ContentPutResponse { .. }
-        | RemoteActionMessage::ContentGetResponse { .. }
-        | RemoteActionMessage::ContentLinkResponse { .. }
-        | RemoteActionMessage::ConfirmResponse { .. }
-        | RemoteActionMessage::SearchResponse { .. }
-        | RemoteActionMessage::ChangesResponse { .. }
-        | RemoteActionMessage::ChangedResponse { .. }
-        | RemoteActionMessage::SurfaceResponse { .. }
-        | RemoteActionMessage::CatalogueChanged { .. } => return None,
+        // Every other message answers a request: there is nothing to refuse.
+        _ => return None,
     })
 }
 
