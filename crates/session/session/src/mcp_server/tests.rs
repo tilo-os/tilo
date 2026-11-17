@@ -294,3 +294,68 @@ fn what_the_session_does_not_publish_is_no_reading_of_its() {
         "the device publishes the styles, not Settings"
     );
 }
+
+/// A program's reading of a resource the session publishes is decided for its caller, as every
+/// read is: the person reads their own device, and an agent reads it only where the broker lets
+/// it read the resource. With no broker to decide it, an agent reads none of it.
+#[test]
+fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
+    use tilo_actions::remote::Readings as _;
+    let session = Arc::new(SessionServices::new(Arc::new(|| {}), "person"));
+    let readings = SessionReadings {
+        session: Arc::clone(&session),
+        state: None,
+    };
+    let offered = serde_json::json!({"offered": []});
+    // The loop's pass, answering the reading asked of it with the styles, published under the
+    // kind `kind` (`None`: under none).
+    let answer_once = |session: &SessionServices, kind: Option<&str>| {
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            let asked = std::mem::take(&mut *session.asks.lock_recover());
+            if let Some(ApiAsk::Reading { done, .. }) = asked.into_iter().next() {
+                done.complete(Some(Published {
+                    kind: kind.map(str::to_owned),
+                    reading: offered.clone(),
+                }));
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "no reading was asked");
+            std::thread::yield_now();
+        }
+    };
+    let app = tilolang_tilo::platform_apps::DEVICE_APP;
+    let resource = crate::device_lists::STYLES_RESOURCE;
+    let read_as = |caller: &Caller, kind: Option<&str>| {
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| readings.reading(caller, app, resource));
+            answer_once(&session, kind);
+            reader.join().expect("the reader")
+        })
+    };
+    // A reading published under no kind has no node to decide it at: nobody reads it, the
+    // person included, rather than anyone reading it unchecked.
+    for caller in [
+        Caller::local_person("person"),
+        Caller::local_agent("helper").in_workspace("studio"),
+    ] {
+        assert_eq!(read_as(&caller, None), Ok(None), "no kind, no reading");
+    }
+    for (caller, theirs) in [
+        (Caller::local_person("person"), true),
+        (Caller::local_agent("helper").in_workspace("studio"), false),
+    ] {
+        let read = read_as(&caller, Some("session.styles"));
+        if theirs {
+            assert_eq!(read, Ok(Some(offered.clone())), "the person's own device");
+        } else {
+            assert!(
+                matches!(
+                    read,
+                    Err(ActionHostError::NotPermitted | ActionHostError::Refused { .. })
+                ),
+                "an agent no broker lets read it reads none of it: {read:?}"
+            );
+        }
+    }
+}

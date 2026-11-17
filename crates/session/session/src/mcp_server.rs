@@ -1421,7 +1421,7 @@ enum ApiAsk {
     Reading {
         app: String,
         resource: String,
-        done: tilo_actions::remote::Completer<Option<serde_json::Value>>,
+        done: tilo_actions::remote::Completer<Option<Published>>,
     },
     /// Run the change `change` of a record a service keeps for a package the session runs itself,
     /// as `actor` , on the pass: its answer as the services give it, or `None` when no service keeps
@@ -1656,7 +1656,7 @@ impl SessionServices {
         &self,
         app: &str,
         resource: &str,
-    ) -> Result<Option<serde_json::Value>, ActionHostError> {
+    ) -> Result<Option<Published>, ActionHostError> {
         let (done, answered) = tilo_actions::remote::pending();
         self.ask(ApiAsk::Reading {
             app: app.to_owned(),
@@ -1787,7 +1787,15 @@ impl SessionServices {
                     app,
                     resource,
                     done,
-                } => done.complete(published_reading(&services.borrow(), &app, &resource)),
+                } => {
+                    let services = services.borrow();
+                    done.complete(
+                        published_reading(&services, &app, &resource).map(|reading| Published {
+                            kind: published_kind(&services, &resource),
+                            reading,
+                        }),
+                    );
+                }
                 ApiAsk::Change {
                     actor,
                     change,
@@ -2429,6 +2437,7 @@ impl ActionHost for Host {
     fn readings(&self) -> Option<Arc<dyn tilo_actions::remote::Readings>> {
         Some(Arc::new(SessionReadings {
             session: Arc::clone(&self.session),
+            state: self.state.clone(),
         }))
     }
 }
@@ -2449,20 +2458,75 @@ impl Host {
 /// The readings of a session's own resources, for the programs its API runs ([`Readings`]).
 struct SessionReadings {
     session: Arc<SessionServices>,
+    /// The session's broker, which decides each caller's read of a resource as it decides every
+    /// other: `None` on a desktop that runs none, where only the person reads their own.
+    state: Option<Arc<AppBrokerState>>,
 }
 
 impl tilo_actions::remote::Readings for SessionReadings {
     fn reading(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         app: &str,
         resource: &str,
     ) -> Result<Option<serde_json::Value>, ActionHostError> {
         if !published_root(app, resource) {
             return Ok(None);
         }
-        self.session.reading(app, resource)
+        let Some(published) = self.session.reading(app, resource)? else {
+            return Ok(None);
+        };
+        // A read is decided at the resource's node, which its published kind names: a resource no
+        // service publishes a kind for has no node to decide it at, so it is read by nobody.
+        let Some(kind) = &published.kind else {
+            return Ok(None);
+        };
+        may_read_published(self.state.as_deref(), caller, (SESSION_APP, kind, resource))?;
+        Ok(Some(published.reading))
     }
+}
+
+/// A reading of a resource the session publishes, and the kind it is published as (`None` for a
+/// resource no service of this device serves, which no program reads: with no kind there is no
+/// node to decide its read at).
+pub(crate) struct Published {
+    kind: Option<String>,
+    reading: serde_json::Value,
+}
+
+/// The app the session publishes its own resources as, at whose nodes a read of them is decided.
+const SESSION_APP: &str = tilolang_tilo::platform_apps::SESSION_APP;
+
+/// Whether `caller` may read the resource `target` (app, kind, resource) the session publishes:
+/// decided by the broker at the resource's node, in the workspace the caller acts in, with its
+/// actor, as every read of a record is: an agent rides its person's authority. The person acting
+/// as themselves reads their own device, as their own catalogue is theirs; with no broker, nobody
+/// else reads it.
+///
+/// # Errors
+///
+/// [`ActionHostError::Refused`] or [`ActionHostError::NotPermitted`]: the read is not the caller's.
+fn may_read_published(
+    state: Option<&AppBrokerState>,
+    caller: &Caller,
+    target: (&str, &str, &str),
+) -> Result<(), ActionHostError> {
+    if caller.acting().is_person() {
+        return Ok(());
+    }
+    match (state, caller.workspace()) {
+        (Some(state), Some(workspace)) => state.may_read_resource(caller, workspace, target),
+        _ => Err(ActionHostError::NotPermitted),
+    }
+}
+
+/// The kind the session's services publish the resource `resource` as, when one serves it.
+fn published_kind(services: &tilo_service::Services, resource: &str) -> Option<String> {
+    services
+        .resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str() == resource)
+        .map(|spec| spec.kind)
 }
 
 /// The packages the session runs itself (the shell), each its compiled module: what a task's

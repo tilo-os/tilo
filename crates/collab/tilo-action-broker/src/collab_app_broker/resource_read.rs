@@ -69,6 +69,37 @@ impl AppBrokerState {
     }
 }
 
+impl AppBrokerState {
+    /// Whether `caller` may read the resource `resource` (of kind `kind`) the app `app` publishes
+    /// in `workspace` now, a resource a host publishes itself rather than a record (the device's
+    /// styles, the session's windows): decided at the resource's node with the caller's actor, an
+    /// agent's bounded by its person's authority, as a record's read is
+    /// ([`Self::may_read_document`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ActionHostError::Refused`] when the workspace does not let the caller read it, and
+    /// [`ActionHostError::NotPermitted`] when the caller may not act in the workspace at all.
+    pub fn may_read_resource(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        (app, kind, resource): (&str, &str, &str),
+    ) -> Result<(), ActionHostError> {
+        super::action_host::check_execution(caller)?;
+        match self.decide_for(caller, workspace, |workspace, actor, now| {
+            let node = tilo_actions::resource_node(&workspace.node(), app, kind, resource);
+            actor.answer_in(workspace, &node, ActionKind::Read, now) == Answer::Allow
+        }) {
+            Some(true) => Ok(()),
+            Some(false) => Err(ActionHostError::Refused {
+                reason: RESOURCE_READ_REFUSED.into(),
+            }),
+            None => Err(ActionHostError::NotPermitted),
+        }
+    }
+}
+
 /// What a caller is told about a change the workspace does not allow it.
 pub const DOCUMENT_CHANGE_REFUSED: &str = "not allowed to make this change";
 
