@@ -429,6 +429,13 @@ fn signed_in(options: &ReplOptions) -> Result<bool, String> {
     {
         return Ok(true);
     }
+    // This login's own desktop serves its person at its socket: a program of
+    // this login answers as the person there, with no key, because the
+    // socket's own permissions and the kernel's account of the peer admit it
+    // (`tilo_api::client::desktop_socket`).
+    if tilo_api::client::desktop_socket().is_some() {
+        return Ok(true);
+    }
     let dir = tilo_api::client::device::device_dir().map_err(|error| error.to_string())?;
     Ok(tilo_api::client::device::load(&dir)
         .map_err(|error| error.to_string())?

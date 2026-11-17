@@ -570,6 +570,7 @@ TILO_TEST_CONTROL=$control
 XDG_RUNTIME_DIR=$runtime
 The session runs (pid $session_pid). From another terminal:
   a screenshot:  TILO_TEST_CONTROL=$control $bin/tilo-control snapshot /tmp/shot.png
+  the REPL:      XDG_RUNTIME_DIR=$runtime $bin/tilolang repl
 Stop it with Ctrl+C (or SIGTERM to pid $$); everything it started goes with it.
 EOF
 

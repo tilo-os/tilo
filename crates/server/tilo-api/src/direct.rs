@@ -81,6 +81,26 @@ impl KeyFile {
     }
 }
 
+/// Whether `pid` lives in this process's user and mount namespaces: what tells
+/// a program of this login from one a sandbox put in a namespace of its own.
+///
+/// A session's other sockets admit a connection by exactly this
+/// (`tilo_session::mcp_server`), so a program admitted there is admitted here
+/// and a sandboxed one is not.
+fn shares_security_namespaces(pid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let same = |kind: &str| {
+        let ours = std::fs::metadata(format!("/proc/self/ns/{kind}"));
+        let theirs = std::fs::metadata(format!("/proc/{pid}/ns/{kind}"));
+        match (ours, theirs) {
+            (Ok(ours), Ok(theirs)) => ours.dev() == theirs.dev() && ours.ino() == theirs.ino(),
+            // A process that cannot be read is not one this desktop knows.
+            _ => false,
+        }
+    };
+    same("user") && same("mnt")
+}
+
 /// Tilo's API in process, as one key.
 pub struct Direct {
     server: Arc<Server>,
@@ -157,6 +177,13 @@ impl Direct {
 
     /// Serve the API on `listener` until it closes, every request as this
     /// key: to programs of the account that owns the socket, and nobody else.
+    ///
+    /// The kernel's account of the connection's peer is the whole of the
+    /// admission: its account must be this session's, and it must live in this
+    /// login's own user and mount namespaces, as this session's other sockets
+    /// require ([`crate::direct::shares_security_namespaces`]). A program a
+    /// sandbox put in a namespace of its own is the same account and is
+    /// refused all the same.
     pub async fn serve(self, listener: tokio::net::UnixListener) {
         use std::os::unix::fs::MetadataExt as _;
         let Ok(authorization) = hyper::header::HeaderValue::from_str(&self.authorization) else {
@@ -170,9 +197,15 @@ impl Direct {
             let Ok((stream, _)) = listener.accept().await else {
                 return;
             };
-            let peer = stream.peer_cred().ok().map(|credentials| credentials.uid());
-            if owner.is_none() || peer != owner {
-                tracing::warn!(?peer, "API: a connection from another account is refused");
+            let admitted = stream
+                .peer_cred()
+                .ok()
+                .filter(|credentials| Some(credentials.uid()) == owner)
+                .and_then(|credentials| credentials.pid())
+                .and_then(|pid| u32::try_from(pid).ok())
+                .is_some_and(shares_security_namespaces);
+            if !admitted {
+                tracing::warn!("API: a connection from another account or a sandbox is refused");
                 continue;
             }
             tokio::spawn(crate::serve_connection(
@@ -492,6 +525,57 @@ mod tests {
         assert!(
             refused.contains("answers its own workspaces only"),
             "{refused}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A request with no `Authorization` at all is answered as the desktop's own key: a program of
+    /// this login sends no secret, because the kernel's account of its peer admits the connection
+    /// and the desktop acts as the one key it holds.
+    #[tokio::test]
+    async fn a_request_with_no_bearer_is_answered_as_the_persons_key() {
+        use http_body_util::BodyExt as _;
+        use hyper_util::rt::TokioIo;
+        let (person, _) = UserIdentity::generate("Ada", 1);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+        let now = tilo_clock::unix_now_ns();
+        let mut cert = DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Ada's laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: now.saturating_sub(60_000_000_000),
+            expires_at_ns: Some(now.saturating_add(3600 * 1_000_000_000)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
+        let direct = Direct::here(std::sync::Arc::new(Desktop), key, cert, "Ada's laptop").unwrap();
+        let dir = std::env::temp_dir().join(format!("tilo-api-here-bare-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("api.sock");
+        let _ = std::fs::remove_file(&socket);
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        tokio::spawn(direct.serve(listener));
+
+        // No `Authorization` header, as `Client::session` sends none.
+        let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .unwrap();
+        tokio::spawn(connection);
+        let request = hyper::Request::builder()
+            .method("GET")
+            .uri("/v1/workspaces")
+            .body(http_body_util::Full::new(hyper::body::Bytes::new()))
+            .unwrap();
+        let answer = sender.send_request(request).await.unwrap();
+        assert_eq!(answer.status(), 200, "a request with no key is answered");
+        let body = answer.into_body().collect().await.unwrap().to_bytes();
+        let listed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            listed["workspaces"][0]["id"], WORKSPACE,
+            "the desktop answers as its own key: {listed}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

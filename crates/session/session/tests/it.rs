@@ -169,6 +169,8 @@ mod origin_connector;
 mod overlays;
 #[path = "overlays_styles.rs"]
 mod overlays_styles;
+#[path = "own_api.rs"]
+mod own_api;
 #[path = "owner_control.rs"]
 mod owner_control;
 #[path = "palette_captures.rs"]
