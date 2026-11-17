@@ -19,6 +19,7 @@ final class TiloSourceTests: XCTestCase {
     private var sessions: [Session] = []
     private var changes: [ConversationChange] = []
     private var setups: [Setup] = []
+    private var sinces: [SinceLeft?] = []
     private var listening: [Task<Void, Never>] = []
 
     private func start(_ mainChat: TiloSource.MainChat = .conversation(id: "c_chat", name: "chat"), livesInOwn: Bool = false) async throws {
@@ -139,6 +140,9 @@ final class TiloSourceTests: XCTestCase {
               if (seen) window.tell({...seen, seq: Math.max(...window.told.map(one => one.seq)) + 1, acknowledged: {atMs: 1794900300000, device: argument.device ?? '', by: argument.by}});
               return done(null);
             }
+            // What she was told while she was away, where she was (`window.since`).
+            case 'tilo.telling since-you-left':
+              return done(window.since ?? {cameIn: [], didAlone: [], waits: []});
             case 'tilo.models add-preset': {
               const made = {id: argument.preset, name: argument.preset === 'anthropic' ? 'Anthropic' : argument.preset, protocol: argument.preset,
                 endpoint: 'https://api.' + argument.preset + '.example', configured: false, models: []};
@@ -547,7 +551,7 @@ final class TiloSourceTests: XCTestCase {
         try await start()
         try await enter(device: true)
         try await until("the host was asked on the way in") {
-            (try? await self.page("return String(window.hostAsked.length)")) == "7"
+            (try? await self.page("return String(window.hostAsked.length)")) == "8"
         }
         // Ten changes of Chat's records: the conversation follows, and the host is asked nothing.
         for n in 0..<10 {
@@ -556,8 +560,9 @@ final class TiloSourceTests: XCTestCase {
         try await until("the conversation followed") { self.held.count == 10 }
         try await Task.sleep(for: .milliseconds(300))
         let asked = try await page("return JSON.stringify(window.hostAsked)")
-        // The last two are what she was told: its log whole, then the ask her server holds until the log moves.
-        XCTAssertEqual(asked, #"["tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.telling list","tilo.telling list"]"#)
+        // The last three are what she was told: its log whole, what came while she was away, then the ask
+        // her server holds until the log moves.
+        XCTAssertEqual(asked, #"["tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.telling list","tilo.telling since-you-left","tilo.telling list"]"#)
     }
 
     func testWhatItLearnedAndWhatIsImportantAreThePersonsOwnOnTheirHost() async throws {
@@ -682,6 +687,133 @@ final class TiloSourceTests: XCTestCase {
         try await until("the next one stands") { self.held.count == 2 }
         let asked = try await page("return String(window.asks.filter(what => what === 'tilo.telling list').length)")
         XCTAssertEqual(asked, "1")
+    }
+
+    /// A question of the assistant's in her conversation with it, as Chat keeps one that waits.
+    private static func asks(_ id: String, _ text: String, _ answers: [String]) -> String {
+        """
+        direct({id: '\(id)', author: {agent: 'assistant'}, text: '\(text)',
+          question: {kind: 'choice', person: ADA, answers: [\(answers.map { "{id: '\($0)', label: ''}" }.joined(separator: ", "))], detail: '',
+                     answered: null, outcome: null, withdrawn: null}})
+        """
+    }
+
+    func testWhatHerServerKeptFromNotifyingSaysWhyAndWhatInsistsIsRaisedAgainUntilSheSawIt() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter(device: true, "window.byKind = true; window.holds = 60000")
+        _ = try await page("""
+            direct({id: 'm_ask_3', author: {agent: 'e-3'}, text: 'Sort the mail. (for the assistant)',
+              cause: {kind: 'event', label: 'Sort the mail', key: 'k-3', person: {person: ADA}}});
+            direct({id: 'm_reply_3', author: {agent: 'assistant'}, text: 'Nine mails sorted.', parent: 'm_ask_3'});
+            direct({id: 'm_ask_4', author: {agent: 'e-4'}, text: 'Remind me to call. (for the assistant)',
+              cause: {kind: 'reminder', label: 'Call', key: 'k-4', person: {person: ADA}}});
+            direct({id: 'm_reply_4', author: {agent: 'assistant'}, text: 'Call now.', parent: 'm_ask_4'})
+            """)
+        try await until("both answers stand") { self.held.count == 2 }
+        XCTAssertNil(held[0].keptQuiet)
+        // Her server tells the first as news that does not reach her, and gives its reason.
+        _ = try await page("""
+            tell({seq: 1, id: 'turn:ws-1:m_ask_3:0', atMs: 1794900000000, kind: 'news', title: 'Sort the mail', words: 'Nine mails sorted.',
+              about: {workspace: 'ws-1', app: 'so.tilo.chat', resource: 'chat.messages/messages/m_ask_3'},
+              mark: {important: false, why: {code: 'nothing-holds', fact: 'travelling', value: 'no'}}, reaches: false, actions: []})
+            """)
+        try await until("the piece says why it did not notify") { self.held.first?.keptQuiet != nil }
+        XCTAssertEqual(held[0].keptQuiet, "Sort the mail did not notify you: not important while travelling is no.")
+        XCTAssertEqual(NoticePlan.notice(for: held[0], in: .main)?.kind, .quiet)
+        XCTAssertEqual(words(held[0]), "Nine mails sorted.", "its words in the conversation stay as they were")
+
+        // The reminder insists: each time her server raises it again, the piece counts it.
+        func raised(_ place: Int, _ count: Int) -> String {
+            """
+            tell({seq: \(place), id: 'turn:ws-1:m_ask_4:0', atMs: 1794900000000, kind: 'reminder', title: 'Call', words: 'Call now.',
+              about: {workspace: 'ws-1', app: 'so.tilo.chat', resource: 'chat.messages/messages/m_ask_4'},
+              mark: {important: false, why: {code: 'reminder'}}, reaches: true, actions: [],
+              insists: {everySecs: 60, times: 3, raised: \(count), nextAtMs: 1794900060000}})
+            """
+        }
+        _ = try await page(raised(2, 0))
+        try await until("the answer is her reminder") { self.held.last?.content == .reminder("Call now.") }
+        XCTAssertEqual(held[1].raised, 0)
+        XCTAssertNil(held[1].keptQuiet)
+        _ = try await page(raised(3, 1))
+        try await until("it was raised again") { self.held.last?.raised == 1 }
+        XCTAssertTrue(changes.contains { if case .changed(let item) = $0 { item.raised == 1 } else { false } })
+        // She saw it on this device: her server hears so, and nothing counts as raised any more.
+        await source.seen(held[1].id, in: .main)
+        try await until("it is settled") { self.held.last?.raised == 0 }
+        let heard = try await page("return JSON.stringify(window.acknowledged.map(one => [one.told, one.by]))")
+        XCTAssertEqual(heard, #"[["turn:ws-1:m_ask_4:0","opened"]]"#)
+    }
+
+    func testAQuestionHerServerTellsOffersItsAnswersUnderItsNoticeAndAPressGivesThatAnswer() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter(device: true, "window.byKind = true; window.holds = 60000")
+        _ = try await page(Self.asks("q1", "May I use the key of the reports server?", ["allow", "always", "deny"]))
+        try await until("the question stands") { self.held.count == 1 }
+        XCTAssertEqual(held[0].offers, [])
+        func action(_ answer: String, main: Bool = false) -> String {
+            "{id: '\(answer)', label: '', main: \(main), target: {app: 'so.tilo.chat', resource: 'chain:messages', action: 'answer-question'}, arguments: {message: 'q1', answer: '\(answer)'}}"
+        }
+        _ = try await page("""
+            tell({seq: 1, id: 'question:ws-1:q1', atMs: 1794900000000, kind: 'question', title: '', words: 'May I use the key of the reports server?',
+              about: {workspace: 'ws-1', app: 'so.tilo.chat', resource: 'chat.messages/messages/q1'},
+              mark: {important: false, why: {code: 'question'}}, reaches: true,
+              actions: [\(action("allow", main: true)), \(action("always")), \(action("deny")),
+                {id: 'elsewhere', label: 'Open the sheet', main: false, target: {app: 'so.tilo.sheets', resource: 'sheets', action: 'open'}, arguments: {}}]})
+            """)
+        try await until("its answers are offered") { self.held.first?.offers.isEmpty == false }
+        // A permission that is to stay is not offered under a notice, nor what another app would have to do.
+        XCTAssertEqual(held[0].offers, [Offer(id: "allow", title: "Allow", isMain: true), Offer(id: "deny", title: "Deny")])
+        XCTAssertEqual(NoticePlan.notice(for: held[0], in: .main)?.offers.map(\.title), ["Allow", "Deny"])
+        // What is not offered cannot be pressed.
+        for refused in ["always", "elsewhere", "nothing"] {
+            do {
+                try await source.take(.init(refused), of: held[0].id, in: .main)
+                XCTFail("\(refused) was taken")
+            } catch let problem as SourceProblem {
+                XCTAssertEqual(problem, .refused("This is no longer offered"))
+            }
+        }
+        let before = try await page("return String(window.heard.filter(call => call.action === 'answer-question').length)")
+        XCTAssertEqual(before, "0")
+        // The press gives that answer the way the app's own button does, and her server hears which it was.
+        try await source.take("allow", of: held[0].id, in: .main)
+        let answered = try await page("return JSON.stringify(window.heard.filter(call => call.action === 'answer-question').map(call => [call.resource, call.args]))")
+        XCTAssertEqual(JSON(text: answered), [["chain:messages", ["answer": "allow", "message": "q1"]]])
+        let heard = try await page("return JSON.stringify(window.acknowledged.map(one => [one.told, one.by]))")
+        XCTAssertEqual(heard, #"[["question:ws-1:q1","allow"]]"#)
+        try await until("an answered question offers nothing more") { self.held.first?.offers == [] }
+    }
+
+    func testWhatCameWhileSheWasAwayIsAskedOnceAndLeadsToThePiecesSheHolds() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        listening.append(Task { for await since in self.source.sinceLeft() { self.sinces.append(since) } })
+        try await enter(device: true, """
+            window.byKind = true; window.holds = 60000;
+            const thing = (seq, message, kind, words, more = {}) => ({seq, id: 'turn:ws-1:' + message + ':0', atMs: 1794900000000, kind,
+              title: '', words, about: {workspace: 'ws-1', app: 'so.tilo.chat', resource: 'chat.messages/messages/' + message},
+              mark: {important: false, why: {code: 'no-rule'}}, reaches: kind !== 'news', ...more});
+            window.told = [thing(1, 'm_ask_5', 'news', 'Nine mails sorted.'),
+              thing(2, 'q5', 'question', 'Send the reply?', {mark: {important: true, why: {code: 'question'}}})];
+            window.since = {leftAtMs: 1794899000000, backAtMs: 1794900500000, waits: [window.told[1]], didAlone: [window.told[0]],
+              cameIn: [thing(3, 'gone', 'news', '**An old** note')]};
+            direct({id: 'm_ask_5', author: {agent: 'e-5'}, text: 'Sort the mail. (for the assistant)',
+              cause: {kind: 'event', label: 'Sort the mail', key: 'k-5', person: {person: ADA}}});
+            direct({id: 'm_reply_5', author: {agent: 'assistant'}, text: 'Nine mails sorted.', parent: 'm_ask_5'});
+            \(Self.asks("q5", "Send the reply?", ["send", "no"]))
+            """)
+        try await until("what came meanwhile is said, with the pieces she holds") {
+            (self.sinces.last ?? nil)?.didAlone.first?.item != nil && (self.sinces.last ?? nil)?.waits.first?.item != nil
+        }
+        let said = try XCTUnwrap(sinces.last ?? nil)
+        XCTAssertEqual(said.left, Date(timeIntervalSince1970: 1_794_899_000))
+        XCTAssertEqual(said.waits, [SinceLeft.Line(id: "turn:ws-1:q5:0", words: "Send the reply?", item: "chat.messages/messages/q5", isImportant: true)])
+        XCTAssertEqual(said.didAlone, [SinceLeft.Line(id: "turn:ws-1:m_ask_5:0", words: "Nine mails sorted.", item: "chat.messages/messages/m_reply_5")])
+        // What she no longer holds a piece of is said without one, in plain words.
+        XCTAssertEqual(said.cameIn, [SinceLeft.Line(id: "turn:ws-1:gone:0", words: "An old note")])
+        XCTAssertEqual(held.first?.keptQuiet, "This did not notify you: you have not said what is important to you.")
+        let asked = try await page("return String(window.asks.filter(what => what === 'tilo.telling since-you-left').length)")
+        XCTAssertEqual(asked, "1", "her server counts that stretch once, at her first look after it")
     }
 
     // MARK: The first run

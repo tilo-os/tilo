@@ -23,6 +23,10 @@ public struct ConversationView: View {
         let conversation = model.conversation(chat)
         let rows = conversation.rows(in: chat, wording)
         let ready = chat == .main ? model.tasks(.readyForReview).count : 0
+        // What came while the person was away stands at the top of the stretch that came since.
+        let since = chat == .main ? model.sinceLeft : nil
+        let sinceFirst = since.flatMap { conversation.first(since: $0.left) }
+        let sinceRow = sinceFirst.flatMap { first in rows.first { $0.item == first }?.id }
         GeometryReader { space in
             ScrollViewReader { reader in
                 ScrollView {
@@ -34,8 +38,10 @@ public struct ConversationView: View {
                         if conversation.isLoaded, rows.isEmpty, !setsUp { empty }
                         if let agent = liveAgent, let thing = agent.live { LiveThingPlace(thing: thing) }
                         ForEach(rows) { row in
+                            if let since, row.id == sinceRow { SinceLeftCard(since: since) }
                             RowView(row: row, chat: chat, picturedSecret: picturedSecret).id(row.id)
                         }
+                        if let since, sinceRow == nil, conversation.isLoaded { SinceLeftCard(since: since) }
                         // What stands between the person and a first answer is said where that answer would stand.
                         if chat == .main { SetupStep() }
                         if conversation.isAnswering {

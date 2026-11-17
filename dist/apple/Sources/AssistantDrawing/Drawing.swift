@@ -92,6 +92,42 @@ public enum Drawing {
     /// The reminder when its time has come, as the phone's lock screen shows it.
     public static let reminder = Item(id: "remind-jonas", at: at(10, 14), .reminder("Call Jonas."))
 
+    // MARK: What the person was told
+
+    /// What came while the person was away, had they left at 8:05 and come back now. The
+    /// drawing shows no such message; its lines are the drawing's own pieces and tasks.
+    public static var sinceLeft: SinceLeft {
+        SinceLeft(left: at(8, 5),
+                  waits: [SinceLeft.Line(id: "maya", words: "Maya at Northwind asks for the October numbers. A reply is drafted.",
+                                         item: "maya", isImportant: true)],
+                  didAlone: [SinceLeft.Line(id: "dima", words: "Dima at Mento reached out. I responded in the usual way.", item: "dima")],
+                  cameIn: [SinceLeft.Line(id: "deck", words: "The board deck for Friday has a first draft.")])
+    }
+
+    /// Pieces as the app marks them from what a person's server told: a question with what
+    /// the server offers under its notice, news an agent of theirs offers a button with, and
+    /// the reminder, raised once more because it insists.
+    public static var toldPieces: [Item] {
+        [
+            Item(id: "maya", at: at(9, 12), .question(mayaQuestion), isImportant: true,
+                 notice: "Maya at Northwind asks for the October numbers. A reply is drafted.",
+                 offers: [Offer(id: "send", title: "Send it", isMain: true), Offer(id: "later", title: "Not now")]),
+            Item(id: "deck", at: at(9, 13), .message(Message(.assistant, "The board deck for Friday has a first draft.")),
+                 isImportant: true, offers: [Offer(id: "show-deck", title: "Show the draft", isMain: true, by: "Researcher")]),
+            Item(id: "remind-jonas", at: at(10, 14), .reminder("Call Jonas."), raised: 1),
+        ]
+    }
+
+    /// Why three things did not notify, each said from the reason a person's server gives:
+    /// a line of their rule that waits on something, no rule at all, and their own model's line.
+    public static var toldQuiet: [String] {
+        [
+            Quiet.line(about: "Dima's mail", code: "nothing-holds", fact: "raising", value: "no"),
+            Quiet.line(about: "Nine mails sorted", code: "no-rule"),
+            Quiet.line(about: "", code: "judged", words: "A newsletter, and you said nothing about newsletters"),
+        ]
+    }
+
     // MARK: Sub-agents
 
     public static var subAgents: [SubAgent] {

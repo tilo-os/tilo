@@ -53,6 +53,20 @@ public struct Conversation: Equatable, Sendable {
             case .piece(let item, _): "piece-\(item.id)"
             }
         }
+
+        /// The piece it stands before, or is.
+        public var item: Item.ID {
+            switch self {
+            case .mark(_, let item), .task(_, _, let item), .caption(_, let item): item
+            case .piece(let item, _): item.id
+            }
+        }
+    }
+
+    /// The piece that what happened since the person left stands before: the first that came
+    /// after they left. Nil when every piece held is older: then it stands at the foot.
+    public func first(since left: Date) -> Item.ID? {
+        items.first { $0.at > left }?.id
     }
 
     /// What the conversation draws, top to bottom: marks where time passed, a task's line over

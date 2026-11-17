@@ -138,6 +138,14 @@ public protocol AssistantSource: Sendable {
     /// it says so there, so that they are told of it nowhere else.
     func seen(_ item: Item.ID, in chat: Chat) async
 
+    /// What the person was told while no device of theirs was looking, once their Tilo has
+    /// counted that stretch. Nil while they were not away, or while nothing is known of it.
+    func sinceLeft() -> AsyncStream<SinceLeft?>
+
+    /// The person pressed one of the things offered with a piece (`Item.offers`) where they
+    /// were told of it. The source does what the offer names, as the person on this device.
+    func take(_ offer: Offer.ID, of item: Item.ID, in chat: Chat) async throws
+
     // MARK: Being told while the app does not run
 
     /// An address Apple's service gave this device. The person's host sends to it when the app
@@ -152,6 +160,10 @@ extension AssistantSource {
     public func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item] { [] }
     public func stopAnswering(in chat: Chat) async throws {}
     public func seen(_ item: Item.ID, in chat: Chat) async {}
+    public func sinceLeft() -> AsyncStream<SinceLeft?> { AsyncStream { $0.yield(nil) } }
+    public func take(_ offer: Offer.ID, of item: Item.ID, in chat: Chat) async throws {
+        throw SourceProblem.refused("Nothing is offered with this here")
+    }
 
     // A source with no first run of its own asks nothing before it pairs, has nothing in the
     // way of an answer and links no provider.

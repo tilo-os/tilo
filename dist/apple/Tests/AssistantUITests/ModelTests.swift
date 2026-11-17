@@ -105,6 +105,90 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(told, ["stretch", "stretch"])
     }
 
+    func testWhatDidNotNotifyIsListedOnceWhatInsistsIsToldAgainAndNewOffersAreBroughtWithoutTelling() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        var told: [Item.ID] = []
+        var settled: [Item.ID] = []
+        var offered: [Item.ID] = []
+        model.told = { item, _ in told.append(item.id) }
+        model.settled = { item, _ in settled.append(item.id) }
+        model.offered = { item, _ in offered.append(item.id) }
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        // A report arrives as plain words; a moment later the person's Tilo says why it did not notify.
+        var report = Item(id: "sorted", at: Date(), .report("Nine mails sorted."))
+        source.post(report)
+        try await until { told == ["sorted"] }
+        XCTAssertNil(NoticePlan.notice(for: report, in: .main))
+        report.keptQuiet = Quiet.line(about: "", code: "no-rule")
+        source.change(report)
+        try await until { told == ["sorted", "sorted"] }
+        XCTAssertEqual(NoticePlan.notice(for: report, in: .main)?.interrupts, false)
+        // The person makes it insist, so it is to reach them after all: now it is told to them.
+        report.keptQuiet = nil
+        report.isImportant = true
+        source.change(report)
+        try await until { told == ["sorted", "sorted", "sorted"] }
+
+        // A reminder that insists is told again each time it is raised, and for nothing else.
+        var reminder = Drawing.reminder
+        source.post(reminder)
+        try await until { told.count == 4 }
+        reminder.raised = 1
+        source.change(reminder)
+        try await until { told.count == 5 }
+        reminder.isImportant = true
+        source.change(reminder)
+        try await until { settled == ["remind-jonas"] }
+        // Once the person saw it, the count is gone, and nothing is told for that.
+        reminder.raised = 0
+        source.change(reminder)
+        try await until { settled == ["remind-jonas", "remind-jonas"] }
+        XCTAssertEqual(told.count, 5)
+
+        // What is offered with a question that was told already is brought to its notice, and not told again.
+        var asked = try XCTUnwrap(model.conversation(.main).items.first { $0.id == "maya" })
+        asked.offers = [Offer(id: "send", title: "Send it", isMain: true)]
+        source.change(asked)
+        try await until { offered == ["maya"] }
+        XCTAssertEqual(told.count, 5)
+        // The press goes to the source as the person's own, and what is not offered is refused there.
+        model.press("send", of: "maya", in: .main)
+        try await until { source.pressed == [MemorySource.Press(offer: "send", item: "maya", chat: .main)] }
+        XCTAssertNil(model.problem)
+        model.press("gone", of: "maya", in: .main)
+        try await until { model.problem == "This is no longer offered." }
+        // Answered, it offers nothing more: that settles it, and nothing is brought.
+        asked.offers = []
+        if case .question(var question) = asked.content {
+            question.answer = "send"
+            asked.content = .question(question)
+        }
+        source.change(asked)
+        try await until { settled.last == "maya" }
+        XCTAssertEqual(offered, ["maya"])
+    }
+
+    func testWhatCameWhileThePersonWasAwayIsHeldAndFollowsItsSource() async throws {
+        var content = Drawing.content()
+        content.sinceLeft = Drawing.sinceLeft
+        let source = MemorySource(content, now: { Drawing.now })
+        let primed = AssistantModel(source: source)
+        await primed.prime()
+        XCTAssertEqual(primed.sinceLeft, Drawing.sinceLeft)
+        let model = AssistantModel(source: source)
+        XCTAssertNil(model.sinceLeft)
+        model.start()
+        try await until { model.sinceLeft == Drawing.sinceLeft }
+        source.setSinceLeft(nil)
+        try await until { model.sinceLeft == nil }
+        // A source that keeps no such count says nothing of it.
+        let plain = AssistantModel(source: Drawing.source())
+        await plain.prime()
+        XCTAssertNil(plain.sinceLeft)
+    }
+
     func testASecretIsHandedOnAndHeldNowhere() async throws {
         var content = Drawing.content()
         content.main = Drawing.secretPiece

@@ -32,6 +32,7 @@ import WebKit
 ///   {"do": "event", "name": "…", "when": "…", "instruction": "…"}   something that comes at a time
 ///   {"do": "stop"}                                    stop the answer that is being written
 ///   {"do": "saw", "item": "…"}                        as opening a piece from its notification does
+///   {"do": "press", "item": "…", "offer": "…"}        as a press on a button under a piece's notice
 ///   {"do": "models"}   {"do": "state"}   {"do": "quit"}
 /// It prints no link, no code and no secret, and ends when its standard input ends. With
 /// --forget it removes the store, and with it the device's key, and what it kept beside it.
@@ -117,7 +118,15 @@ final class AssistantDrive {
             guard let notice = NoticePlan.notice(for: item, in: chat) else { return }
             AssistantDrive.say(["told": ["item": .string(item.id.value), "kind": .string(notice.kind.rawValue),
                                          "title": .string(notice.title), "mark": notice.subtitle.map(JSON.string) ?? .null,
-                                         "body": .string(notice.body), "interrupts": .bool(notice.interrupts)]])
+                                         "body": .string(notice.words), "interrupts": .bool(notice.interrupts),
+                                         "offers": .array(notice.offers.map { ["id": .string($0.id.value), "title": .string($0.title)] }),
+                                         "raised": .number(Double(item.raised))]])
+        }
+        // What the Teller would bring to a notice the system still shows, without telling again.
+        model.offered = { item, chat in
+            guard let notice = NoticePlan.notice(for: item, in: chat) else { return }
+            AssistantDrive.say(["offered": ["item": .string(item.id.value),
+                                            "offers": .array(notice.offers.map { ["id": .string($0.id.value), "title": .string($0.title)] })]])
         }
         model.start()
         let engine = source.engine
@@ -347,6 +356,20 @@ final class AssistantDrive {
             guard let item = step["item"]?.string else { AssistantDrive.say(["error": "saw takes item"]); return }
             model.saw(.init(item), in: .main)
             AssistantDrive.say(["asked": "saw"])
+        case "press":
+            // As a press on a button under a piece's notice.
+            guard let item = step["item"]?.string, let offer = step["offer"]?.string else {
+                AssistantDrive.say(["error": "press takes item and offer"])
+                return
+            }
+            do {
+                try await source.take(.init(offer), of: .init(item), in: .main)
+                AssistantDrive.say(["pressed": true])
+            } catch SourceProblem.refused(let why) {
+                AssistantDrive.say(["pressed": false, "why": .string(why)])
+            } catch {
+                AssistantDrive.say(["pressed": false, "why": "unreachable"])
+            }
         case "state":
             report(everything: true)
         case "quit":

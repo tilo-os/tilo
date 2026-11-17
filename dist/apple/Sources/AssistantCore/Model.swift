@@ -119,9 +119,15 @@ public struct Item: Identifiable, Equatable, Sendable {
     /// What a notification says of this piece, in the assistant's words, where that is shorter
     /// than the piece. Nil: the piece's own words.
     public var notice: String?
+    /// What the person can do about this piece with one press where they are told of it, as
+    /// their Tilo offers it there. Empty: the piece's own first answer, where it asks something.
+    public var offers: [Offer]
+    /// How often the person's Tilo told them of this again because it insists. A piece whose
+    /// count went up is told once more.
+    public var raised: Int
 
     public init(id: ID, at: Date, _ content: Content, task: TaskLine? = nil, isImportant: Bool = false,
-                keptQuiet: String? = nil, notice: String? = nil) {
+                keptQuiet: String? = nil, notice: String? = nil, offers: [Offer] = [], raised: Int = 0) {
         self.id = id
         self.at = at
         self.content = content
@@ -129,6 +135,8 @@ public struct Item: Identifiable, Equatable, Sendable {
         self.isImportant = isImportant
         self.keptQuiet = keptQuiet
         self.notice = notice
+        self.offers = offers
+        self.raised = raised
     }
 
     public enum Content: Equatable, Sendable {
@@ -256,6 +264,66 @@ public struct Choice: Identifiable, Equatable, Sendable {
         self.id = id
         self.title = title
         self.isMain = isMain
+    }
+}
+
+/// Something the person can do about a piece with one press where they are told of it: a
+/// button under its notification. Their Tilo says what it does; the frame shows it and hands
+/// the press back.
+public struct Offer: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<Offer>
+    public var id: ID
+    /// What happens, in the words of whoever offers it: "Send it".
+    public var title: String
+    /// The one expected first.
+    public var isMain: Bool
+    /// The agent that offered it, by name. Nil for what Tilo offers itself.
+    public var by: String?
+
+    public init(id: ID, title: String, isMain: Bool = false, by: String? = nil) {
+        self.id = id
+        self.title = title
+        self.isMain = isMain
+        self.by = by
+    }
+}
+
+/// What the person was told while no device of theirs was looking, as their Tilo counts it at
+/// their first look after: one message at the top of the new stretch of the main chat.
+public struct SinceLeft: Equatable, Sendable {
+    /// When the person left.
+    public var left: Date
+    /// What still waits for them: a question not answered, a thing that insists and was not seen.
+    public var waits: [Line]
+    /// What the assistant did without asking, because something of theirs came.
+    public var didAlone: [Line]
+    /// Everything else they were told meanwhile.
+    public var cameIn: [Line]
+
+    public init(left: Date, waits: [Line] = [], didAlone: [Line] = [], cameIn: [Line] = []) {
+        self.left = left
+        self.waits = waits
+        self.didAlone = didAlone
+        self.cameIn = cameIn
+    }
+
+    /// Nothing happened meanwhile: the conversation says nothing of the absence.
+    public var isEmpty: Bool { waits.isEmpty && didAlone.isEmpty && cameIn.isEmpty }
+
+    public struct Line: Identifiable, Equatable, Sendable {
+        public var id: String
+        /// Plain words, as the person was told them.
+        public var words: String
+        /// The piece of the main chat it is about, where that piece is held.
+        public var item: Item.ID?
+        public var isImportant: Bool
+
+        public init(id: String, words: String, item: Item.ID? = nil, isImportant: Bool = false) {
+            self.id = id
+            self.words = words
+            self.item = item
+            self.isImportant = isImportant
+        }
     }
 }
 
