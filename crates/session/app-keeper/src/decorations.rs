@@ -26,7 +26,7 @@ use wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decor
 use wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDefaultMode;
 
 use crate::state::State;
-use crate::surfaces::{Role, UpRole, UpXdgKind};
+use crate::surfaces::{Role, up_toplevel};
 use crate::upstream::SurfaceRef;
 
 /// The app's xdg decoration on one surface, kept while no desktop is attached.
@@ -232,19 +232,7 @@ impl State {
     }
 }
 
-/// The desktop's toplevel object of a surface, if its role is a toplevel.
-fn up_toplevel(
-    role: &UpRole,
-) -> Option<wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel> {
-    match role {
-        UpRole::Xdg(xdg) => match &xdg.kind {
-            UpXdgKind::Toplevel(toplevel) => Some(toplevel.clone()),
-            UpXdgKind::Popup(_) => None,
-        },
-        UpRole::Plain | UpRole::Sub(_) => None,
-    }
-}
-
+/// The app's decoration objects and their requests on its xdg toplevels.
 impl XdgDecorationHandler for State {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         let id = toplevel.wl_surface().id();

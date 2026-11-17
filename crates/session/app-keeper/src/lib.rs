@@ -65,6 +65,7 @@ mod seat;
 mod state;
 mod surfaces;
 mod text_input;
+mod toplevel_icon;
 mod upstream;
 mod viewporter;
 pub mod wire;

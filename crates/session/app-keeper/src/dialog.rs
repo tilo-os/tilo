@@ -12,7 +12,7 @@ use wayland_protocols::xdg::dialog::v1::client::xdg_dialog_v1::XdgDialogV1;
 use wayland_protocols::xdg::dialog::v1::client::xdg_wm_dialog_v1::XdgWmDialogV1;
 
 use crate::state::State;
-use crate::surfaces::{Role, UpRole, UpXdgKind};
+use crate::surfaces::{Role, up_toplevel};
 
 impl State {
     /// Offer the app the dialog manager once a desktop offers it.
@@ -57,19 +57,6 @@ impl State {
             }
             us.modal_sent = Some(modal);
         }
-    }
-}
-
-/// The desktop's toplevel object of a surface, if its role is a toplevel.
-fn up_toplevel(
-    role: &UpRole,
-) -> Option<wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel> {
-    match role {
-        UpRole::Xdg(xdg) => match &xdg.kind {
-            UpXdgKind::Toplevel(toplevel) => Some(toplevel.clone()),
-            UpXdgKind::Popup(_) => None,
-        },
-        UpRole::Plain | UpRole::Sub(_) => None,
     }
 }
 

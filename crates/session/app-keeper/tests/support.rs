@@ -70,6 +70,10 @@ use wayland_protocols::wp::pointer_gestures::zv1::client::{
     zwp_pointer_gesture_swipe_v1::{self as swipe_gesture, ZwpPointerGestureSwipeV1},
     zwp_pointer_gestures_v1::ZwpPointerGesturesV1,
 };
+use wayland_protocols::wp::presentation_time::client::{
+    wp_presentation::{self, WpPresentation},
+    wp_presentation_feedback::{self, WpPresentationFeedback},
+};
 use wayland_protocols::wp::primary_selection::zv1::client::{
     zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
     zwp_primary_selection_device_v1::{self, ZwpPrimarySelectionDeviceV1},
@@ -85,9 +89,6 @@ use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_v3::{
         self as text_input, ChangeCause, ContentHint, ContentPurpose, ZwpTextInputV3,
     },
-use wayland_protocols::wp::presentation_time::client::{
-    wp_presentation::{self, WpPresentation},
-    wp_presentation_feedback::{self, WpPresentationFeedback},
 };
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
@@ -107,6 +108,10 @@ use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_popup::XdgPopup, xdg_positioner::XdgPositioner, xdg_surface,
     xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
     xdg_wm_base::XdgWmBase,
+};
+use wayland_protocols::xdg::toplevel_icon::v1::client::{
+    xdg_toplevel_icon_manager_v1::{self as icon_manager, XdgToplevelIconManagerV1},
+    xdg_toplevel_icon_v1::XdgToplevelIconV1,
 };
 use wayland_protocols_misc::server_decoration::client::{
     org_kde_kwin_server_decoration::{self as kde, Mode as KdeMode, OrgKdeKwinServerDecoration},
@@ -371,6 +376,8 @@ pub struct Heard {
     pub shortcuts_inhibit: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
     pub shortcuts_inhibited: bool,
     pub dialog_manager: Option<XdgWmDialogV1>,
+    pub toplevel_icon: Option<XdgToplevelIconManagerV1>,
+    pub icon_sizes: Vec<i32>,
     pub dmabuf_done: usize,
     pub surface_feedback_done: usize,
     pub configures: Vec<(i32, i32, Vec<u32>)>,
@@ -793,6 +800,26 @@ impl App {
             .activate(token, surface);
     }
 
+    /// Give the window an icon of `rgba` pixels at `size` by `size`.
+    pub fn set_window_icon(
+        &self,
+        size: (i32, i32),
+        rgba: [u8; 4],
+    ) -> (XdgToplevelIconV1, WlBuffer) {
+        let qh = self.qh();
+        let manager = self
+            .heard
+            .toplevel_icon
+            .as_ref()
+            .expect("a toplevel icon manager");
+        let icon = manager.create_icon(&qh, ());
+        let buffer = self.buffer(size, rgba);
+        icon.add_buffer(&buffer, 1);
+        manager.set_icon(self.toplevel.as_ref().expect("a toplevel"), Some(&icon));
+        self.surface.as_ref().unwrap().commit();
+        (icon, buffer)
+    }
+
     /// Ask for the next frame callback on the window.
     pub fn request_frame(&self) -> WlCallback {
         let qh = self.qh();
@@ -850,6 +877,10 @@ impl App {
 }
 
 impl Dispatch<WlRegistry, ()> for Heard {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per global the harness binds, in the registry's own order"
+    )]
     fn event(
         heard: &mut Self,
         registry: &WlRegistry,
@@ -952,6 +983,9 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 }
                 "xdg_wm_dialog_v1" => {
                     heard.dialog_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "xdg_toplevel_icon_manager_v1" => {
+                    heard.toplevel_icon = Some(registry.bind(name, 1, qh, ()));
                 }
                 "zwp_linux_dmabuf_v1" if version >= 4 => {
                     let dmabuf: ZwpLinuxDmabufV1 = registry.bind(name, version.min(5), qh, ());
@@ -1395,6 +1429,22 @@ impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for Heard {
     }
 }
 
+impl Dispatch<XdgToplevelIconManagerV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &XdgToplevelIconManagerV1,
+        event: icon_manager::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let icon_manager::Event::IconSize { size } = event {
+            heard.icon_sizes.push(size);
+        }
+    }
+}
+
+delegate_noop!(Heard: ignore XdgToplevelIconV1);
 delegate_noop!(Heard: ignore XdgWmDialogV1);
 delegate_noop!(Heard: ignore XdgDialogV1);
 delegate_noop!(Heard: ignore ZwpIdleInhibitManagerV1);

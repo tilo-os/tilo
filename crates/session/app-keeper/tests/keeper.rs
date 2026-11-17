@@ -626,6 +626,54 @@ fn a_fault_is_attributed_to_the_window_that_caused_it_not_the_last_one_sent() {
 }
 
 #[test]
+fn a_window_icon_reaches_the_desktops_tab_and_survives_a_restart() {
+    use tilo_compositor::IconArtwork;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Icon", Some("icon"));
+    app.show(&mut rig, (100, 80), GREEN);
+    rig.pump(&mut [&mut app], |_, apps| {
+        !apps[0].heard.icon_sizes.is_empty()
+    });
+    let mut sizes = app.heard.icon_sizes.clone();
+    sizes.sort_unstable();
+    assert_eq!(
+        sizes,
+        vec![16, 32, 48],
+        "the desktop's preferred icon sizes"
+    );
+
+    let _icon = app.set_window_icon((16, 16), RED);
+    let icon_of = |rig: &mut Rig| {
+        rig.desktop()
+            .windows()
+            .into_iter()
+            .next()
+            .and_then(|(info, _)| info.icon)
+    };
+    rig.pump(&mut [&mut app], |rig, _| icon_of(rig).is_some());
+    let icon = icon_of(&mut rig).expect("an icon");
+    let IconArtwork::Pixels(images) = icon.artwork() else {
+        panic!("the icon is the pixels the app handed over");
+    };
+    let first = images.first().expect("one size");
+    assert_eq!((first.width, first.height), (16, 16));
+    assert_eq!(
+        first.pixels.get(0..4),
+        Some([255, 0, 0, 255].as_slice()),
+        "the desktop has the app's red pixel"
+    );
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    rig.pump(&mut [&mut app], |rig, _| icon_of(rig).is_some());
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
 fn a_modal_dialog_takes_the_focus_from_its_parent_and_the_hint_survives_a_restart() {
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);
