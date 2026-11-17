@@ -47,6 +47,10 @@ use tilo_user_identity::DeviceCert;
 use super::Workspaces;
 use super::person_models::kept_location;
 
+/// A person's calendars, kept beside their mail accounts.
+#[cfg(feature = "agents")]
+pub(in crate::workspaces) mod calendars;
+
 impl Workspaces {
     /// Where this host keeps `person`'s own accounts and model providers,
     /// with the vault their sign-ins and keys are sealed in: theirs alone,
@@ -183,7 +187,14 @@ impl Workspaces {
                     workspace: &workspace,
                     agent: &agent,
                 };
-                !accounts_of_assistant(&self.person_settings_root(&person), named).is_empty()
+                // Named for a mail account: one named for a calendar alone
+                // is offered nothing of mail.
+                let root = self.person_settings_root(&person);
+                let kept = accounts::AccountStore::load_in(&root);
+                accounts_of_assistant(&root, named).iter().any(|account| {
+                    kept.get(&accounts::AccountId::from(account.clone()))
+                        .is_some_and(|kept| kept.type_id.as_str() == accounts::email::TYPE_ID)
+                })
             }
             _ => false,
         }
@@ -311,6 +322,13 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
+        // The person's calendars are another resource of the same provider.
+        #[cfg(feature = "agents")]
+        if request.target.address.resource == calendars::RESOURCE {
+            return self
+                .person_calendars_invoke(workspace_id, caller, certificate, request)
+                .await;
+        }
         let person = match Self::asking_about_mail(caller, certificate, workspace_id)? {
             AskingAboutMail::Person(person) => person,
             AskingAboutMail::Assistant {
@@ -763,7 +781,12 @@ fn say_assistant(
     }
     let kept_here = accounts::AccountStore::load_in(root)
         .get(&accounts::AccountId::from(saying.account.clone()))
-        .is_some_and(|account| account.type_id.as_str() == accounts::email::TYPE_ID);
+        .is_some_and(|account| {
+            matches!(
+                account.type_id.as_str(),
+                accounts::email::TYPE_ID | "caldav"
+            )
+        });
     if !kept_here {
         return Err("That account is not kept here".into());
     }

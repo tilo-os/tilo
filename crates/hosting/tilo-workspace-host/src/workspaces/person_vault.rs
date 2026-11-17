@@ -250,7 +250,7 @@ fn uses(root: &Path, item: &ItemRef) -> Result<ItemUses, vault_items::ItemError>
 /// Hand the item `item` names to the code that signs in at every one of
 /// `places` with a `kind`, for `by`: the one way a reference becomes its
 /// secret, and only inside this host.
-fn released(
+pub(super) fn released(
     root: &Path,
     item: &ItemRef,
     kind: vault_items::ItemKind,
