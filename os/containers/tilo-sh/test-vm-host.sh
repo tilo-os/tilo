@@ -235,6 +235,12 @@ for line in proof-tool-ran second-tool-ran y not-a-real-key; do
 done
 say 'a machine was branched awake and asleep, the branches kept its tools and none of its sessions, and were deleted'
 
+say 'draining, as a rolling update does'
+hosted drain || vm_failure 'the machine did not drain'
+[ "$(phase_of ws-local)" = Suspended ] || die "the drained machine holds the VM $(phase_of ws-local), not Suspended"
+if out=$(in_vm ws-local 'true' 2>&1); then die 'a drained machine woke a VM'; fi
+grep -q 'is moving to another machine' <<<"$out" || die "a drained machine's wake said: $out"
+
 vm_host down
 [ ! -d "$state/vm" ] || die 'down left the state disk behind'
 say 'a workspace VM ran on the local stack'"'"'s VM host, and it went down clean'

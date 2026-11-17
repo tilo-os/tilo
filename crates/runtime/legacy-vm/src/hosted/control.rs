@@ -115,6 +115,23 @@ pub enum Request {
         workspace: String,
         environment: String,
     },
+    /// Move the workspace's VM to the machine listening at `to`: it is suspended, its disk and
+    /// snapshot streamed there, and this machine forgets it once that one has all of it.
+    MoveVm {
+        workspace: String,
+        environment: String,
+        to: PathBuf,
+    },
+    /// Copy the workspace's VM to the replica machine listening at `to`, incrementally: the blocks
+    /// that changed since its last copy.
+    ReplicateVm {
+        workspace: String,
+        environment: String,
+        to: PathBuf,
+    },
+    /// Drain this machine for a rolling update: take no more wakes and suspend every awake VM onto
+    /// the state directory, as the cloud's eviction notice does.
+    Drain,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -189,6 +206,11 @@ pub enum Reply {
     /// starts as any new one does, at its first Linux command.
     NoVm {
         workspace: String,
+    },
+    /// The VM moved, or was copied to the replica, as `bytes` of its state went.
+    Moved {
+        vm: String,
+        bytes: u64,
     },
 }
 
@@ -425,11 +447,37 @@ mod tests {
         ]
     }
 
+    /// Moving a VM away, and draining a machine for a rolling update: the requests a lease or an
+    /// operator sends.
+    fn moving(named: &[u8]) -> Vec<(Request, Vec<u8>)> {
+        vec![
+            (
+                Request::MoveVm {
+                    workspace: "ws".into(),
+                    environment: "default".into(),
+                    to: "/m".into(),
+                },
+                bytes(&[b"\x0c", named, b"\x02/m"]),
+            ),
+            (
+                Request::ReplicateVm {
+                    workspace: "ws".into(),
+                    environment: "default".into(),
+                    to: "/m".into(),
+                },
+                bytes(&[b"\x0d", named, b"\x02/m"]),
+            ),
+            (Request::Drain, b"\x0e".to_vec()),
+        ]
+    }
+
     /// A placer, a server and ush built before a request was added still speak to this host: every
     /// request they send means here what it meant to them, byte for byte.
     #[test]
     fn every_request_keeps_its_encoding() {
-        for (request, expected) in encoded() {
+        let named: &[u8] = b"\x02ws\x07default";
+        let all = encoded().into_iter().chain(moving(named));
+        for (request, expected) in all {
             assert_eq!(payload(&request), expected, "{request:?}");
             let frame = FRAMING.encode_value(&request).unwrap();
             let read: Request = FRAMING.read_value(&mut frame.as_slice()).unwrap().unwrap();
