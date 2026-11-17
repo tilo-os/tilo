@@ -47,7 +47,9 @@ use tilo_actions::remote::{
 };
 use tilo_mail_session::{Attachment, Leaving};
 use tilo_net::proxy::host::Destinations;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+// The question a person's devices are put, and what they answer: what asks
+// them here names it, and so do the tests of each thing that asks.
+pub(super) use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
@@ -328,7 +330,7 @@ impl Workspaces {
                     Staged::read(dir, beginning).and_then(|staged| Ok((staged.shown()?, staged)));
                 let sent = match read {
                     Ok((shown, staged)) => {
-                        self.ask_before_sending(person, agent.agent, caller, &shown)
+                        self.ask_their_person(person, shown.question(agent.agent, caller))
                             .await?;
                         send_staged(self.mail_session(), &root, staged).await
                     }
@@ -340,16 +342,15 @@ impl Workspaces {
         }
     }
 
-    /// Put a message an agent would send to its person and wait for their
+    /// Put `question`, about something an agent of `person`'s made ready (a
+    /// message, an entry for their calendar), to that person and wait for their
     /// answer: only their allowing it lets it leave. A host with nobody to
     /// ask through, and a question nobody answered, say that the person's
     /// confirmation is still wanted.
-    async fn ask_before_sending(
+    async fn ask_their_person(
         &self,
         person: [u8; 32],
-        agent: &str,
-        caller: &Caller,
-        shown: &sending::Shown,
+        question: PendingConfirmation,
     ) -> Result<(), ActionHostError> {
         let asker = self
             .inner
@@ -358,7 +359,7 @@ impl Workspaces {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .ok_or_else(ActionHostError::confirmation_required)?;
-        match asker.ask(person, shown.question(agent, caller)).await {
+        match asker.ask(person, question).await {
             Ok(ConfirmationAnswer::AllowOnce) => Ok(()),
             Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::Refused {
                 reason: "the person did not allow it".into(),

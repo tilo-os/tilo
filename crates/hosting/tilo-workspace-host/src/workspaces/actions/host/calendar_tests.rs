@@ -2,7 +2,10 @@
 //! starts: an account is added only once its server took the sign-in, its
 //! entries are kept and read with every device off, a category is the
 //! server's own field, an invitation is one entry, and only the person and
-//! the agent they named reach any of it.
+//! the agent they named reach any of it. What that agent may change is an
+//! invitation to its person and nothing the person entered themselves, an
+//! entry that names people otherwise waits for the person's answer, and the
+//! calendar server is told to write to nobody.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -18,10 +21,12 @@
 )]
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use collab_types::WorkspaceId;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
+use tilo_actions::remote::person_asking::{ActionName, Asked, Thing, Words};
 use tilo_actions::remote::{
     ActionHost as ActionService, ActionHostError as ActionError, Caller, CatalogueQuery,
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget, person_accounts,
@@ -33,17 +38,25 @@ use tilo_user_identity::DeviceCert;
 use super::super::HostWorkspaceActions as HolderActions;
 use super::super::tests::{caller, settled};
 use super::accounts_tests::key_of;
-use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost as TestHolder;
+use crate::workspaces::person_asking::Allowing;
 use crate::workspaces::person_settings::calendars::{self as held, fake_caldav};
+use crate::workspaces::person_settings::{ConfirmationAnswer, PendingConfirmation};
 use crate::workspaces::tests::{governor, test_host as test_holder};
+use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
 /// The sign-in no answer, file or request may show.
 const PASSWORD: &str = "marker-7f3a-calendar-password";
 
+/// The address her calendar server writes to her at, where her account
+/// signs in with it.
+const ADDRESS: &str = "ada@example.test";
+
 /// What Ada has: a calendar server that knows her, the holder that keeps her
 /// calendars, a device of hers and the workspace its page is in.
 struct Ada {
+    /// The name her calendar account signs in with.
+    user: &'static str,
     server: fake_caldav::Server,
     workspaces: Workspaces,
     actions: HolderActions,
@@ -55,6 +68,11 @@ struct Ada {
 
 impl Ada {
     async fn new() -> Self {
+        Self::signing_in_as("ada").await
+    }
+
+    /// Ada, whose calendar account signs in as `user`.
+    async fn signing_in_as(user: &'static str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let holder = test_holder(dir.path(), &key, &owner).await;
@@ -63,9 +81,10 @@ impl Ada {
         actions.attach(workspaces.clone());
         let device = key_of(&SigningKey::from_bytes(&rand::random()), "studio");
         let workspace_id = workspaces.create("Calendars").await.unwrap().workspace_id;
-        let server = fake_caldav::Server::start("ada", PASSWORD);
+        let server = fake_caldav::Server::start(user, PASSWORD);
         server.add_calendar("work", "Work");
         Self {
+            user,
             server,
             workspaces,
             actions,
@@ -113,10 +132,44 @@ impl Ada {
         self.ask(
             &self.herself(),
             held::ADD,
-            json!({"serverUrl": self.server.url(), "username": "ada", "password": PASSWORD, "name": "Mine"}),
+            json!({"serverUrl": self.server.url(), "username": self.user, "password": PASSWORD, "name": "Mine"}),
         )
         .await
         .expect("her own server takes her sign-in")
+    }
+
+    /// Ada adds her account and names the agent `assistant` for it: that
+    /// agent, on her device.
+    async fn with_her_assistant(&self) -> Caller {
+        let id = self.add().await["id"].as_str().expect("its id").to_owned();
+        let naming = RemoteActionTarget {
+            provider: person_accounts::PROVIDER.to_owned(),
+            address: ActionAddress::new(person_accounts::RESOURCE, person_accounts::ASSISTANT),
+        };
+        asked(
+            &self.page(),
+            &self.herself(),
+            naming,
+            json!({"account": id, "agent": "assistant", "may": true}),
+        )
+        .await
+        .expect("she names her assistant for the calendar account");
+        self.agent("assistant")
+    }
+
+    /// What `caller` is answered when it puts the invitation `ics` in.
+    async fn put(&self, caller: &Caller, ics: &str) -> Result<Value, ActionError> {
+        self.ask(caller, held::ADD_INVITATION, json!({"ics": ics}))
+            .await
+    }
+
+    /// Her calendar server wrote to nobody by itself.
+    fn nobody_was_mailed(&self, what: &str) {
+        assert_eq!(
+            self.server.mailed(),
+            Vec::<String>::new(),
+            "{what}: her calendar server wrote to people in her name"
+        );
     }
 
     /// The starts of what the calendars hold in the week of 16 November.
@@ -641,6 +694,608 @@ async fn only_the_person_and_the_agent_they_named_reach_their_calendars() {
         2,
         "and her calendar is read again"
     );
+}
+
+/// An entry in which `organizer` invites `invited`, as a calendar holds one.
+fn inviting(uid: &str, summary: &str, start: &str, organizer: &str, invited: &[&str]) -> String {
+    let people: String = std::iter::once(format!("ORGANIZER;CN=Organiser:mailto:{organizer}\r\n"))
+        .chain(invited.iter().map(|address| {
+            format!("ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{address}\r\n")
+        }))
+        .collect();
+    meeting(uid, summary, start, &people)
+}
+
+/// `entry` as a message carries it, under `method`.
+fn carried(method: &str, entry: &str) -> String {
+    entry.replace(
+        "VERSION:2.0\r\n",
+        &format!("VERSION:2.0\r\nMETHOD:{method}\r\n"),
+    )
+}
+
+/// The lines of the entry `text` that name somebody, each whole.
+fn naming_lines(text: &str) -> Vec<String> {
+    text.replace("\r\n ", "")
+        .lines()
+        .filter(|line| line.starts_with("ORGANIZER") || line.starts_with("ATTENDEE"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Ada answering every question about her calendar one way, or not at all,
+/// and what she was asked.
+struct Answering {
+    answer: Option<ConfirmationAnswer>,
+    questions: Mutex<Vec<([u8; 32], PendingConfirmation)>>,
+}
+
+impl Answering {
+    fn with(answer: Option<ConfirmationAnswer>) -> Arc<Self> {
+        Arc::new(Self {
+            answer,
+            questions: Mutex::default(),
+        })
+    }
+
+    /// How many questions she was put.
+    fn count(&self) -> usize {
+        self.questions.lock().unwrap().len()
+    }
+
+    /// What the rows labelled `label` of the last question say, in order.
+    fn rows(&self, label: &str) -> Vec<String> {
+        self.questions
+            .lock()
+            .unwrap()
+            .last()
+            .map(|(_, question)| {
+                question
+                    .arguments
+                    .iter()
+                    .filter(|(labelled, _)| labelled == label)
+                    .map(|(_, value)| value.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+impl AsksPeople for Answering {
+    fn ask(&self, person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
+        self.questions.lock().unwrap().push((person, question));
+        let answer = self.answer.ok_or_else(|| "nobody answered".to_owned());
+        Box::pin(async move { answer })
+    }
+}
+
+/// An agent named for a calendar account writes the text it hands over
+/// itself, and reads the identity of every entry the calendar holds. So what
+/// its person entered themselves is not its to change: a cancellation under
+/// that identity removes nothing, another time under it moves nothing,
+/// whatever sender the text names, and the same holds for an entry in which
+/// the person invites others. The person changes what is theirs by asking.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_she_entered_herself_is_not_her_assistants_to_change_or_remove() {
+    let ada = Ada::signing_in_as(ADDRESS).await;
+    // Friday's board meeting, which she entered herself, and a dinner she
+    // invites Bo to, as another client of hers left them on her server.
+    ada.server.put(
+        "work",
+        "board.ics",
+        &meeting(
+            "board-7@example.org",
+            "Board meeting",
+            "20261120T100000",
+            "",
+        ),
+    );
+    ada.server.put(
+        "work",
+        "dinner.ics",
+        &inviting(
+            "dinner-3@example.org",
+            "Dinner",
+            "20261119T190000",
+            ADDRESS,
+            &["bo@example.test"],
+        ),
+    );
+    let assistant = ada.with_her_assistant().await;
+    let answering = Answering::with(Some(ConfirmationAnswer::AllowOnce));
+    ada.workspaces.ask_people(answering.clone());
+    // It reads what her calendar holds, as it may.
+    assert_eq!(
+        ada.week(&assistant).await,
+        [
+            "Dinner 2026-11-19T19:00:00+01:00",
+            "Board meeting 2026-11-20T10:00:00+01:00",
+        ]
+    );
+    let before = ada.server.held("work");
+
+    let board = |start: &str| meeting("board-7@example.org", "Board meeting", start, "");
+    let dinner = |start: &str, invited: &[&str]| {
+        inviting("dinner-3@example.org", "Dinner", start, ADDRESS, invited)
+    };
+    let attempts = [
+        (
+            "a cancellation of the meeting she entered herself",
+            carried("CANCEL", &board("20261120T100000")),
+        ),
+        (
+            "the meeting she entered herself, at another time",
+            carried("REQUEST", &board("20261120T160000")),
+        ),
+        (
+            "a cancellation of her meeting that names a sender of its own",
+            carried(
+                "CANCEL",
+                &inviting(
+                    "board-7@example.org",
+                    "Board meeting",
+                    "20261120T100000",
+                    "mallory@elsewhere.test",
+                    &[ADDRESS],
+                ),
+            ),
+        ),
+        (
+            "a cancellation of the dinner she invites to",
+            carried("CANCEL", &dinner("20261119T190000", &["bo@example.test"])),
+        ),
+        (
+            "the dinner she invites to, moved and with a stranger",
+            carried(
+                "REQUEST",
+                &dinner(
+                    "20261119T210000",
+                    &["bo@example.test", "eve@elsewhere.test"],
+                ),
+            ),
+        ),
+    ];
+    for (what, text) in attempts {
+        let answered = ada.put(&assistant, &text).await;
+        assert_eq!(
+            ada.server.held("work"),
+            before,
+            "{what}: her assistant changed what she entered herself, and nobody asked her \
+             ({answered:?})"
+        );
+        let why = refused(what, answered);
+        assert!(why.contains("its person"), "{what}: {why}");
+        assert_eq!(
+            answering.count(),
+            0,
+            "{what}: what is hers is refused, and she is not asked to give it away"
+        );
+    }
+    ada.nobody_was_mailed("what her assistant tried");
+
+    // She changes what is hers by asking, and nobody is asked for her.
+    let moved = ada
+        .put(
+            &ada.herself(),
+            &carried("REQUEST", &board("20261120T160000")),
+        )
+        .await
+        .expect("her own entry, by her own word");
+    assert_eq!(moved["made"], "updated", "{moved}");
+    assert_eq!(answering.count(), 0);
+}
+
+/// An invitation to her is her assistant's to put in, to bring up to date
+/// and to take out again for the sender it came from, and for nobody else.
+/// What her calendar server is sent tells it to write to nobody: every line
+/// that names somebody says the server is not the one to, and the removal
+/// says to answer nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invitation_to_her_goes_in_and_out_unasked_and_no_server_writes_of_it() {
+    let ada = Ada::signing_in_as(ADDRESS).await;
+    let assistant = ada.with_her_assistant().await;
+    let answering = Answering::with(None);
+    ada.workspaces.ask_people(answering.clone());
+    let offsite = |method: &str, start: &str| {
+        carried(
+            method,
+            &inviting(
+                "offsite-9@example.org",
+                "Offsite",
+                start,
+                "bo@example.test",
+                &[ADDRESS, "cy@example.test"],
+            ),
+        )
+    };
+    // What the server was asked while her account was added does not count.
+    let _ = ada.server.requests();
+
+    let made = ada
+        .put(&assistant, &offsite("REQUEST", "20261119T140000"))
+        .await
+        .expect("an invitation to her goes in");
+    assert_eq!(made["made"], "created", "{made}");
+    let moved = ada
+        .put(&assistant, &offsite("REQUEST", "20261119T160000"))
+        .await
+        .expect("its sender's later version");
+    assert_eq!(moved["made"], "updated", "{moved}");
+
+    // A cancellation that names another sender takes nothing out.
+    let forged = carried(
+        "CANCEL",
+        &inviting(
+            "offsite-9@example.org",
+            "Offsite",
+            "20261119T160000",
+            "mallory@elsewhere.test",
+            &[ADDRESS],
+        ),
+    );
+    let answered = ada.put(&assistant, &forged).await;
+    assert_eq!(
+        ada.server.held("work").len(),
+        1,
+        "a cancellation from somebody else than its sender removed the entry ({answered:?})"
+    );
+    refused("a cancellation from somebody else", answered);
+
+    let gone = ada
+        .put(&assistant, &offsite("CANCEL", "20261119T160000"))
+        .await
+        .expect("its sender's cancellation");
+    assert_eq!(gone["made"], "cancelled", "{gone}");
+    assert!(ada.server.held("work").is_empty());
+    assert_eq!(
+        answering.count(),
+        0,
+        "an invitation to her asks her nothing"
+    );
+
+    let requests = ada.server.requests();
+    let stored: Vec<String> = requests
+        .iter()
+        .filter(|request| request.method == "PUT")
+        .map(test_http::Request::body_text)
+        .collect();
+    assert_eq!(stored.len(), 2, "the invitation and its later version");
+    for text in &stored {
+        let naming = naming_lines(text);
+        assert_eq!(naming.len(), 3, "{text}");
+        for line in naming {
+            assert!(
+                line.contains(";SCHEDULE-AGENT=CLIENT"),
+                "her calendar server is left to write to whoever this line names: {line}"
+            );
+        }
+    }
+    let removal = requests
+        .iter()
+        .find(|request| request.method == "DELETE")
+        .expect("the removal");
+    assert_eq!(
+        removal.header("Schedule-Reply"),
+        Some("F"),
+        "a removal tells her calendar server to answer nobody"
+    );
+    ada.nobody_was_mailed("an invitation put in, brought up to date and taken out");
+}
+
+/// Her calendar server schedules by itself, as the ones people rent do: an
+/// entry in which she invites others has it write to them, unless what it is
+/// sent tells it not to. So an entry is stored telling it, whoever asked for
+/// it and whatever the text says of that itself, and nobody is written to in
+/// her name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_her_calendar_server_is_sent_tells_it_to_write_to_nobody() {
+    let ada = Ada::signing_in_as(ADDRESS).await;
+    let her = ada.herself();
+    ada.add().await;
+    let dinner = |method: &str, invited: &[&str]| {
+        carried(
+            method,
+            &inviting(
+                "dinner-3@example.org",
+                "Dinner",
+                "20261119T190000",
+                ADDRESS,
+                invited,
+            ),
+        )
+    };
+    let _ = ada.server.requests();
+
+    let made = ada
+        .put(
+            &her,
+            &dinner("REQUEST", &["bo@example.test", "eve@elsewhere.test"]),
+        )
+        .await
+        .expect("her own entry, by her own word");
+    assert_eq!(made["made"], "created", "{made}");
+    ada.nobody_was_mailed("an entry in which she invites two people");
+    let on_server = ada.server.held("work");
+    assert_eq!(on_server.len(), 1);
+    let naming = naming_lines(&on_server[0].1);
+    assert_eq!(naming.len(), 3, "{naming:?}");
+    for line in naming {
+        assert!(
+            line.contains(";SCHEDULE-AGENT=CLIENT"),
+            "her calendar server is left to write to whoever this line names: {line}"
+        );
+    }
+
+    // Text that says of itself that the server is the one to write, and to
+    // do it now, is not stored saying so.
+    let insisting = dinner(
+        "REQUEST",
+        &["bo@example.test", "eve@elsewhere.test", "cy@example.test"],
+    )
+    .replace(
+        "ATTENDEE;PARTSTAT",
+        "ATTENDEE;SCHEDULE-AGENT=SERVER;SCHEDULE-FORCE-SEND=REQUEST;PARTSTAT",
+    );
+    let more = ada.put(&her, &insisting).await.expect("one more guest");
+    assert_eq!(more["made"], "updated", "{more}");
+    ada.nobody_was_mailed("text that tells the server to write");
+    let text = ada.server.held("work")[0].1.replace("\r\n ", "");
+    assert!(
+        !text.contains("SCHEDULE-AGENT=SERVER") && !text.contains("SCHEDULE-FORCE-SEND"),
+        "{text}"
+    );
+    assert_eq!(text.matches("SCHEDULE-AGENT=CLIENT").count(), 4, "{text}");
+
+    // She takes it out again, and nobody is told.
+    let gone = ada
+        .put(
+            &her,
+            &dinner("CANCEL", &["bo@example.test", "eve@elsewhere.test"]),
+        )
+        .await
+        .expect("she takes it out");
+    assert_eq!(gone["made"], "cancelled", "{gone}");
+    let removal = ada
+        .server
+        .requests()
+        .into_iter()
+        .find(|request| request.method == "DELETE")
+        .expect("the removal");
+    assert_eq!(removal.header("Schedule-Reply"), Some("F"));
+    ada.nobody_was_mailed("an entry taken out");
+}
+
+/// Text that names people and is no invitation to her (she is its organiser,
+/// or it invites others and not her) is put into her calendar only once she
+/// was shown every address it names and allowed it. With nobody to ask
+/// through, with no answer and on her no, nothing is put. What a question
+/// cannot show whole is refused before she is asked. Her own entry asks her
+/// nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_entry_that_names_people_waits_for_her_answer() {
+    let ada = Ada::signing_in_as(ADDRESS).await;
+    let assistant = ada.with_her_assistant().await;
+    let dinner = carried(
+        "REQUEST",
+        &inviting(
+            "dinner-3@example.org",
+            "Dinner",
+            "20261119T190000",
+            ADDRESS,
+            &["bo@example.test", "eve@elsewhere.test"],
+        ),
+    );
+
+    let unasked = ada.put(&assistant, &dinner).await;
+    assert!(
+        ada.server.held("work").is_empty(),
+        "her assistant put an entry in which she invites people into her calendar, and nobody \
+         asked her ({unasked:?})"
+    );
+    assert!(
+        matches!(unasked, Err(ActionError::ConfirmationRequired { .. })),
+        "with nobody to ask through: {unasked:?}"
+    );
+
+    let silent = Answering::with(None);
+    ada.workspaces.ask_people(silent.clone());
+    let unanswered = ada.put(&assistant, &dinner).await;
+    assert!(
+        matches!(unanswered, Err(ActionError::ConfirmationRequired { .. })),
+        "with no answer: {unanswered:?}"
+    );
+    assert!(ada.server.held("work").is_empty(), "nothing unallowed");
+    let (person, question) = silent.questions.lock().unwrap()[0].clone();
+    assert_eq!(
+        person, ada.device.user_public_key,
+        "her calendar, her answer"
+    );
+    assert_eq!(question.agent_id, "assistant");
+    assert_eq!(question.action_label, "put this entry into the calendar");
+    assert_eq!(question.resource_label, "Mine");
+    assert_eq!(silent.rows("Calendar"), ["Work"]);
+    assert_eq!(silent.rows("Title"), ["Dinner"]);
+    assert_eq!(silent.rows("Names"), ["3 addresses"]);
+    assert_eq!(silent.rows("Organised by"), [ADDRESS]);
+    assert_eq!(
+        silent.rows("Invites"),
+        ["bo@example.test", "eve@elsewhere.test"]
+    );
+
+    ada.workspaces
+        .ask_people(Answering::with(Some(ConfirmationAnswer::Deny)));
+    let denied = ada.put(&assistant, &dinner).await;
+    assert!(
+        matches!(denied, Err(ActionError::Refused { .. })),
+        "{denied:?}"
+    );
+    assert!(ada.server.held("work").is_empty(), "nothing she refused");
+
+    let allowing = Answering::with(Some(ConfirmationAnswer::AllowOnce));
+    ada.workspaces.ask_people(allowing.clone());
+    let made = ada
+        .put(&assistant, &dinner)
+        .await
+        .expect("she allowed what she was shown");
+    assert_eq!(made["made"], "created", "{made}");
+    assert_eq!(allowing.count(), 1, "one question for one entry");
+    assert_eq!(naming_lines(&ada.server.held("work")[0].1).len(), 3);
+
+    // People it names without inviting her: she is asked as well.
+    let party = carried(
+        "REQUEST",
+        &inviting(
+            "party-4@example.org",
+            "Party",
+            "20261121T190000",
+            "mallory@elsewhere.test",
+            &["eve@elsewhere.test"],
+        ),
+    );
+    ada.put(&assistant, &party)
+        .await
+        .expect("she allowed what she was shown");
+    assert_eq!(allowing.count(), 2);
+    assert_eq!(allowing.rows("Organised by"), ["mallory@elsewhere.test"]);
+    assert_eq!(allowing.rows("Invites"), ["eve@elsewhere.test"]);
+
+    // More addresses than a question shows, and an address she could
+    // misread: refused with nobody asked.
+    let guests: Vec<String> = (0..21)
+        .map(|guest| format!("guest{guest}@example.test"))
+        .collect();
+    let guests: Vec<&str> = guests.iter().map(String::as_str).collect();
+    let crowd = carried(
+        "REQUEST",
+        &inviting(
+            "crowd-5@example.org",
+            "Crowd",
+            "20261122T190000",
+            ADDRESS,
+            &guests,
+        ),
+    );
+    let why = refused(
+        "more addresses than a question shows",
+        ada.put(&assistant, &crowd).await,
+    );
+    assert!(why.contains("22 addresses"), "{why}");
+    let misread = carried(
+        "REQUEST",
+        &inviting(
+            "misread-6@example.org",
+            "Misread",
+            "20261122T200000",
+            ADDRESS,
+            &["b\u{f6}@example.test"],
+        ),
+    );
+    refused(
+        "an address she could misread",
+        ada.put(&assistant, &misread).await,
+    );
+    assert_eq!(
+        allowing.count(),
+        2,
+        "she is asked nothing about what cannot be shown whole"
+    );
+    assert_eq!(ada.server.held("work").len(), 2);
+
+    // Her own entry asks her nothing.
+    let lunch = carried(
+        "REQUEST",
+        &inviting(
+            "lunch-8@example.org",
+            "Lunch",
+            "20261123T120000",
+            ADDRESS,
+            &["bo@example.test"],
+        ),
+    );
+    ada.put(&ada.herself(), &lunch)
+        .await
+        .expect("her own entry, by her own word");
+    assert_eq!(allowing.count(), 2, "her own entry asks her nothing");
+    ada.nobody_was_mailed("entries that name people");
+}
+
+/// What she let her assistant always do goes ahead unasked and is counted,
+/// until she takes it back: then it asks again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_she_always_allows_is_put_unasked_until_she_takes_it_back() {
+    let ada = Ada::signing_in_as(ADDRESS).await;
+    let assistant = ada.with_her_assistant().await;
+    let person = ada.device.user_public_key;
+    let refusing = Answering::with(Some(ConfirmationAnswer::Deny));
+    ada.workspaces.ask_people(refusing.clone());
+    let dinner = |uid: &str| {
+        carried(
+            "REQUEST",
+            &inviting(
+                uid,
+                "Dinner",
+                "20261119T190000",
+                ADDRESS,
+                &["bo@example.test"],
+            ),
+        )
+    };
+
+    // The server lets a permission stay when it reads her own answer
+    // always to a question it put; the test stands in for that moment.
+    let permission = ada
+        .workspaces
+        .let_always(
+            &person,
+            Allowing {
+                scope: Asked {
+                    workspace: ada.workspace_id.to_string(),
+                    agent: "assistant".to_owned(),
+                    action: ActionName {
+                        provider: person_accounts::PROVIDER.to_owned(),
+                        kind: person_accounts::PROVIDER.to_owned(),
+                        action: held::ADD_INVITATION.to_owned(),
+                    },
+                    on: Some(Thing {
+                        document: String::new(),
+                        resource: held::RESOURCE.to_owned(),
+                    }),
+                },
+                name: "Assistant".to_owned(),
+                words: Words {
+                    action: "Add invitation to calendar".to_owned(),
+                    on: "Calendars".to_owned(),
+                    place: "Calendars".to_owned(),
+                },
+                asked_by: None,
+            },
+        )
+        .expect("it stays");
+
+    let made = ada
+        .put(&assistant, &dinner("dinner-3@example.org"))
+        .await
+        .expect("what she always allows asks her nothing");
+    assert_eq!(made["made"], "created", "{made}");
+    assert_eq!(refusing.count(), 0, "she is not asked");
+    assert_eq!(
+        ada.workspaces.permissions_of(&person).permissions[0].used_times,
+        1,
+        "and its use is counted for her to see"
+    );
+    ada.nobody_was_mailed("an entry she always allows");
+
+    assert_eq!(
+        ada.workspaces.take_back_permission(&person, &permission.id),
+        Ok(true)
+    );
+    let again = ada.put(&assistant, &dinner("dinner-4@example.org")).await;
+    assert!(
+        matches!(again, Err(ActionError::Refused { .. })),
+        "taken back, it asks again and she says no: {again:?}"
+    );
+    assert_eq!(refusing.count(), 1);
+    assert_eq!(ada.server.held("work").len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -14,8 +14,22 @@
 //! [`calendar::spans`]): a device and its holder agree about time zones,
 //! repeats and all-day entries because they are the same reader.
 //!
-//! Nothing here sends anything to anybody. An entry is written into the
-//! person's own calendar; whoever it invites is mailed nothing.
+//! Nothing here sends anything to anybody, and nothing here leaves it to a
+//! calendar server to: an entry is written into the person's own calendar
+//! with every line that names somebody saying that the server is not the
+//! one to write to them (`SCHEDULE-AGENT=CLIENT`, RFC 6638), and it is
+//! removed with `Schedule-Reply: F`. Whoever it invites is mailed nothing.
+//!
+//! The person changes their calendar by asking. An agent they named for the
+//! account hands over text of its own writing, so what it may do with it is
+//! narrower ([`judged`]). Unasked it puts in an invitation to its person:
+//! somebody else organises it, and an address of the person's is among those
+//! it invites. It changes or removes only such an entry, for that same
+//! organiser. Every other entry the calendar holds is its person's own.
+//! Text that names people otherwise (its person as the organiser, or people
+//! and not its person) is put in only once the person was shown every
+//! address it names and allowed it, or where they let that stay allowed
+//! ([`crate::workspaces::person_asking`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -26,12 +40,17 @@ use calendar::spans::{FreeAsked, SpanAsked};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_account_probe::{AccountTester as _, LiveAccountTester, local_http_allowed};
+use tilo_actions::remote::person_accounts;
+use tilo_actions::remote::person_asking::{ActionName, Asked, Thing};
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{ActionHostError as ActionError, Caller, InvokeRequest};
 use tilo_dav::{Credentials, DavClient, Depth, Limits, Precondition, Url, props};
 use tilo_user_identity::DeviceCert;
 
-use super::{AskingAboutMail, NamedAgent, accounts_of_assistant, answer, argument, credentials};
+use super::{
+    AskingAboutMail, NamedAgent, PendingConfirmation, accounts_of_assistant, answer, argument,
+    credentials, mail_accounts, sending,
+};
 use crate::workspaces::Workspaces;
 
 /// The calendar server tests ask.
@@ -77,6 +96,17 @@ const LIMITS: Limits = Limits {
     max_href_bytes: 4096,
 };
 const REPORTED: [tilo_dav::PropName; 2] = [props::GETETAG, props::CALENDAR_DATA];
+/// How long an entry waits for its person's answer before the question is a
+/// refusal.
+const ASK_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
+/// How much of an entry's title a question shows before it says that more
+/// follows.
+const TITLE_CHARS: usize = 200;
+/// What an agent is told of an entry that is its person's own.
+const THEIRS: &str = "The calendar holds an entry under this invitation's identity that did not \
+                      come from its sender. An entry its person entered themselves, or invites \
+                      others to, is theirs to change or remove: tell them what the invitation \
+                      says.";
 
 /// One calendar of an account, as [`LIST`] answers it.
 #[derive(Clone, Debug, Serialize)]
@@ -676,29 +706,144 @@ fn writable<'a>(
     Ok(found)
 }
 
-/// Put the event `invitation` describes into a calendar: created under the
-/// invitation's own identity, so the same invitation again finds it.
-fn add_invitation(
-    root: &Path,
-    accounts: &[Account],
-    invitation: &Invitation,
-) -> Result<Value, String> {
+/// The agent a person named for a calendar account, where it is the one
+/// that asks.
+struct Assistant {
+    person: [u8; 32],
+    workspace: String,
+    agent: String,
+}
+
+/// The entry a calendar holds under an invitation's identity.
+struct Found {
+    url: String,
+    etag: Option<String>,
+    /// Whom it names, as its server holds it.
+    named: calendar::ics::Named,
+}
+
+impl Found {
+    fn of(held: &Held) -> Self {
+        Self {
+            url: held.url.clone(),
+            etag: held.etag.clone(),
+            named: calendar::ics::named(&held.ics),
+        }
+    }
+}
+
+/// What an invitation does to the calendar it goes into.
+enum Change {
+    /// Nothing: the calendar holds it as it is, or holds nothing it takes
+    /// back.
+    Nothing,
+    /// A new entry, at this address.
+    Create(String),
+    /// The entry the calendar holds gets the invitation's text.
+    Update(Found),
+    /// The entry the calendar holds goes.
+    Remove(Found),
+}
+
+/// What putting an invitation into a calendar comes to, read from the
+/// calendar's server before anything is written there.
+struct Planned {
+    account: Account,
+    /// The calendar it goes into, by its name.
+    calendar: String,
+    /// The entry's id, as a read answers it.
+    entry: String,
+    title: String,
+    /// When it starts, as its text says.
+    start: String,
+    /// The text as the calendar would keep it.
+    text: String,
+    /// Whom that text names.
+    named: calendar::ics::Named,
+    change: Change,
+}
+
+/// What putting the event `invitation` describes into a calendar comes to:
+/// created under the invitation's own identity, so the same invitation
+/// again finds it. Nothing is written yet.
+fn planned(root: &Path, accounts: &[Account], invitation: &Invitation) -> Result<Planned, String> {
     let calendar::ics::Invitation { event, cancels } = calendar::ics::invitation(&invitation.ics)?;
     let (account, calendar) = writable(accounts, invitation.calendar.as_deref())?;
     let _ = sync(root, account);
-    let said = |made: &str| serde_json::json!({ "entry": event.id.to_string(), "made": made });
     let existing = held(root, std::slice::from_ref(account))
         .into_iter()
         .find(|held| held.event.id == event.id);
     let text = calendar::ics::kept_text(&invitation.ics);
-    let made = match (existing, cancels) {
-        (None, true) => "unchanged",
-        (Some(held), true) => {
-            let (client, server) = client(account, &password_of(root, &account.id)?)?;
-            let matching = held.etag.as_deref().unwrap_or("*");
+    let (change, text) = match (existing, cancels) {
+        (None, true) => (Change::Nothing, text),
+        (Some(held), true) => (Change::Remove(Found::of(&held)), text),
+        (Some(held), false) => {
+            let same = calendar::ics::parse(&text)
+                .0
+                .into_iter()
+                .next()
+                .is_some_and(|mut sent| {
+                    sent.calendar_id.clone_from(&held.event.calendar_id);
+                    sent == held.event
+                });
+            if same {
+                (Change::Nothing, text)
+            } else {
+                // What its person filed it under on the server stays.
+                let kept: Vec<String> = held.event.categories.iter().cloned().collect();
+                let text = if event.categories.is_empty() && !kept.is_empty() {
+                    calendar::ics::with_categories(&text, &kept).unwrap_or(text)
+                } else {
+                    text
+                };
+                (Change::Update(Found::of(&held)), text)
+            }
+        }
+        (None, false) => {
+            let url = format!("{}/{}.ics", calendar.id.trim_end_matches('/'), event.id);
+            (Change::Create(url), text)
+        }
+    };
+    Ok(Planned {
+        account: account.clone(),
+        calendar: calendar.name.clone(),
+        entry: event.id.to_string(),
+        start: format!(
+            "{} ({})",
+            event.start.format("%Y-%m-%d %H:%M"),
+            event.timezone
+        ),
+        title: event.title,
+        named: calendar::ics::named(&text),
+        text,
+        change,
+    })
+}
+
+/// Write what `planned` comes to on its calendar's server, and answer what
+/// was made of the invitation. An entry that is no longer what was read
+/// when it was planned is not written over.
+fn carry_out(root: &Path, planned: Planned) -> Result<Value, String> {
+    let Planned {
+        account,
+        entry,
+        text,
+        change,
+        ..
+    } = planned;
+    let made = match change {
+        Change::Nothing => "unchanged",
+        Change::Remove(found) => {
+            let (client, server) = client(&account, &password_of(root, &account.id)?)?;
+            let matching = found.etag.as_deref().unwrap_or("*");
+            // The server answers nobody for its person: where they were
+            // invited, declining is theirs to say.
             let response = client
-                .delete(
-                    on_server(&server, &held.url)?,
+                .send(
+                    "DELETE",
+                    on_server(&server, &found.url)?,
+                    &[("Schedule-Reply", "F")],
+                    tilo_dav::client::Body::Empty,
                     Precondition::IfMatch(matching),
                 )
                 .map_err(|error| format!("the calendar server did not answer: {error}"))?;
@@ -710,50 +855,214 @@ fn add_invitation(
             }
             "cancelled"
         }
-        (Some(held), false) => {
-            let same = calendar::ics::parse(&text)
-                .0
-                .into_iter()
-                .next()
-                .is_some_and(|mut sent| {
-                    sent.calendar_id.clone_from(&held.event.calendar_id);
-                    sent == held.event
-                });
-            if same {
-                "unchanged"
-            } else {
-                // What its person filed it under on the server stays.
-                let kept: Vec<String> = held.event.categories.iter().cloned().collect();
-                let text = if event.categories.is_empty() && !kept.is_empty() {
-                    calendar::ics::with_categories(&text, &kept).unwrap_or(text)
-                } else {
-                    text
-                };
-                let matching = held.etag.as_deref().unwrap_or("*");
-                if !write(
-                    root,
-                    account,
-                    &held.url,
-                    text,
-                    Precondition::IfMatch(matching),
-                )? {
-                    return Err("The entry changed on its server meanwhile: ask again".into());
-                }
-                "updated"
+        Change::Update(found) => {
+            let matching = found.etag.as_deref().unwrap_or("*");
+            if !write(
+                root,
+                &account,
+                &found.url,
+                text,
+                Precondition::IfMatch(matching),
+            )? {
+                return Err("The entry changed on its server meanwhile: ask again".into());
             }
+            "updated"
         }
-        (None, false) => {
-            let url = format!("{}/{}.ics", calendar.id.trim_end_matches('/'), event.id);
-            if !write(root, account, &url, text, Precondition::IfNoneMatchAny)? {
+        Change::Create(url) => {
+            if !write(root, &account, &url, text, Precondition::IfNoneMatchAny)? {
                 return Err("The entry changed on its server meanwhile: ask again".into());
             }
             "created"
         }
     };
     if made != "unchanged" {
-        let _ = sync(root, account);
+        let _ = sync(root, &account);
     }
-    Ok(said(made))
+    Ok(serde_json::json!({ "entry": entry, "made": made }))
+}
+
+/// Put the event `invitation` describes into a calendar, for the person
+/// whose calendar it is: their asking is their word.
+fn add_invitation(
+    root: &Path,
+    accounts: &[Account],
+    invitation: &Invitation,
+) -> Result<Value, String> {
+    carry_out(root, planned(root, accounts, invitation)?)
+}
+
+/// The addresses the person who keeps `account` is written to at, as far as
+/// this holder knows them, in lower case: the name the account signs in
+/// with, where that is an address, and the mail accounts they keep here.
+fn own_addresses(root: &Path, account: &Account) -> BTreeSet<String> {
+    let mut own: BTreeSet<String> = mail_accounts(root)
+        .map(|kept| {
+            kept.accounts
+                .into_iter()
+                .map(|mail| mail.address.trim().to_ascii_lowercase())
+                .collect()
+        })
+        .unwrap_or_default();
+    own.insert(account.username.trim().to_ascii_lowercase());
+    own.retain(|address| {
+        address
+            .split_once('@')
+            .is_some_and(|(user, domain)| !user.is_empty() && !domain.is_empty())
+    });
+    own
+}
+
+/// Whether an entry that names `named` is an invitation to the person
+/// written to at `own`: one organiser, who is somebody else, and an address
+/// of the person's among those it invites. Where this holder knows no
+/// address of the person's, nothing is.
+fn invites(named: &calendar::ics::Named, own: &BTreeSet<String>) -> bool {
+    match named.organizers.as_slice() {
+        [organizer] => {
+            !own.contains(organizer) && named.attendees.iter().any(|invited| own.contains(invited))
+        }
+        _ => false,
+    }
+}
+
+/// What an invitation an agent hands over comes to before anything is
+/// written.
+enum Judged {
+    /// It goes ahead.
+    Goes,
+    /// Its person is asked first, and shown these rows.
+    Asks(Vec<(String, String)>),
+}
+
+/// What the agent a person named for their calendar may do with `planned`,
+/// whose text is the agent's own writing, for the person written to at
+/// `own`.
+///
+/// An entry the calendar holds is changed or removed only where it is an
+/// invitation to that person ([`invites`]) and the text names the organiser
+/// it has: it came from the sender the agent acts on. Any other entry is its
+/// person's own, and that is the refusal. A new entry goes ahead where it
+/// names nobody or is an invitation to the person; one that names people
+/// otherwise is put to the person first ([`shown`]), or refused where a
+/// question could not show all of it.
+fn judged(planned: &Planned, own: &BTreeSet<String>) -> Result<Judged, String> {
+    let named = &planned.named;
+    let names_nobody = named.organizers.is_empty() && named.attendees.is_empty();
+    match &planned.change {
+        Change::Nothing => Ok(Judged::Goes),
+        Change::Update(found) | Change::Remove(found) => {
+            if invites(&found.named, own) && found.named.organizers == named.organizers {
+                Ok(Judged::Goes)
+            } else {
+                Err(THEIRS.to_owned())
+            }
+        }
+        Change::Create(_) if names_nobody || invites(named, own) => Ok(Judged::Goes),
+        Change::Create(_) => shown(planned).map(Judged::Asks),
+    }
+}
+
+/// What a person is shown of an entry that names people before it is put
+/// into their calendar: where it goes, what and when it is, how many
+/// addresses it names and each of them in a row of its own, as the text
+/// that is then written names them. Why it cannot be shown so, where it
+/// cannot: nobody is asked about such an entry.
+fn shown(planned: &Planned) -> Result<Vec<(String, String)>, String> {
+    let named = &planned.named;
+    let addresses = named.organizers.len().saturating_add(named.attendees.len());
+    if addresses > sending::MOST_ADDRESSES {
+        return Err(format!(
+            "This entry names {addresses} addresses, and its person is shown at most {} before \
+             an entry that names people is put into their calendar. Put it in with fewer, or \
+             leave it to them to enter.",
+            sending::MOST_ADDRESSES
+        ));
+    }
+    let mut rows = vec![("Calendar".to_owned(), planned.calendar.clone())];
+    sending::by_its_start(&mut rows, "Title", planned.title.trim(), TITLE_CHARS);
+    rows.push(("Starts".to_owned(), planned.start.clone()));
+    rows.push((
+        "Names".to_owned(),
+        sending::counted(addresses, "address", "addresses"),
+    ));
+    let lists = [
+        ("Organised by", &named.organizers),
+        ("Invites", &named.attendees),
+    ];
+    for (label, list) in lists {
+        for address in list {
+            if !sending::reads_plainly(address) {
+                let start: String = address.chars().take(sending::ADDRESS_CHARS).collect();
+                return Err(format!(
+                    "The address {start:?} cannot be shown to its person so that they read it \
+                     for what it is: it holds letters outside plain ASCII or a quoted part, or \
+                     is longer than {} characters. An entry that names it is theirs to enter.",
+                    sending::ADDRESS_CHARS
+                ));
+            }
+            rows.push((label.to_owned(), address.clone()));
+        }
+    }
+    let bytes: usize = rows
+        .iter()
+        .map(|(label, value)| label.len().saturating_add(value.len()))
+        .sum();
+    if bytes > sending::QUESTION_BYTES {
+        return Err(
+            "This entry names more than one question can show its person before it is put \
+             into their calendar."
+                .into(),
+        );
+    }
+    Ok(rows)
+}
+
+/// The question `rows` are, put to the person whose account `account` is by
+/// their agent `assistant`, asking as `caller`: a confirmation their devices
+/// answer.
+fn question(
+    assistant: &Assistant,
+    caller: &Caller,
+    account: &Account,
+    rows: Vec<(String, String)>,
+) -> PendingConfirmation {
+    let mut id = [0_u8; 32];
+    for half in id.chunks_mut(16) {
+        half.copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    }
+    PendingConfirmation {
+        id,
+        agent_id: assistant.agent.clone(),
+        agent_label: caller.agent_name().unwrap_or(&assistant.agent).to_owned(),
+        title: String::new(),
+        action_label: "put this entry into the calendar".into(),
+        resource_label: account.name.clone(),
+        arguments: rows,
+        risk: "sensitive".into(),
+        kind: "undoable".into(),
+        undoable: false,
+        workspace: String::new(),
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(ASK_WAIT_NS),
+        page: None,
+    }
+}
+
+/// What a permission that stays covers here: this agent, in this workspace,
+/// putting entries that name people into its person's calendars.
+fn invitation_scope(assistant: &Assistant) -> Asked {
+    Asked {
+        workspace: assistant.workspace.clone(),
+        agent: assistant.agent.clone(),
+        action: ActionName {
+            provider: person_accounts::PROVIDER.to_owned(),
+            kind: person_accounts::PROVIDER.to_owned(),
+            action: ADD_INVITATION.to_owned(),
+        },
+        on: Some(Thing {
+            document: String::new(),
+            resource: RESOURCE.to_owned(),
+        }),
+    }
 }
 
 /// File the entry `asked` names under its categories, in the text its
@@ -898,19 +1207,21 @@ impl Workspaces {
     /// Whose calendars `caller` asks about with `action`, and which of
     /// their accounts it may ask of: every one for the person, the ones it
     /// was named for for an agent of theirs, which reads and files and
-    /// removes nothing. Unknown and forbidden are the same answer.
+    /// removes no account, and is answered as that agent
+    /// ([`Self::assistant_adds`]). Unknown and forbidden are the same
+    /// answer.
     fn calendars_asked(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         action: &str,
-    ) -> Result<(PathBuf, Vec<Account>), ActionError> {
+    ) -> Result<(PathBuf, Vec<Account>, Option<Assistant>), ActionError> {
         match Self::asking_about_mail(caller, certificate, workspace_id)? {
             AskingAboutMail::Person(person) => {
                 let root = self.person_settings_root(&person);
                 let accounts = accounts_at(&root);
-                Ok((root, accounts))
+                Ok((root, accounts, None))
             }
             AskingAboutMail::Assistant {
                 person,
@@ -930,9 +1241,59 @@ impl Workspaces {
                 if accounts.is_empty() || !ASSISTANT_MAY.contains(&action) {
                     return Err(ActionError::UnknownAction);
                 }
-                Ok((root, accounts))
+                let assistant = Assistant {
+                    person,
+                    workspace,
+                    agent,
+                };
+                Ok((root, accounts, Some(assistant)))
             }
         }
+    }
+
+    /// Put an invitation in for the agent its person named for the account,
+    /// whose text is the agent's own writing ([`judged`]): what is its
+    /// person's own is refused, and what names people and is no invitation
+    /// to its person waits for the person's answer, unless they let it stay
+    /// allowed. Only then is anything written, and what is written is what
+    /// was read before they were asked.
+    async fn assistant_adds(
+        &self,
+        root: PathBuf,
+        accounts: Vec<Account>,
+        invitation: Invitation,
+        assistant: &Assistant,
+        caller: &Caller,
+    ) -> Result<Value, ActionError> {
+        let reading = root.clone();
+        let read = off_thread(move || {
+            let planned = planned(&reading, &accounts, &invitation)?;
+            let judged = judged(&planned, &own_addresses(&reading, &planned.account))?;
+            Ok((planned, judged))
+        })
+        .await;
+        let (planned, judged) = match read {
+            Ok(read) => read,
+            Err(reason) => return Err(ActionError::Refused { reason }),
+        };
+        // A permission of theirs that stays, where one lets it go unasked.
+        let stays = match judged {
+            Judged::Goes => None,
+            Judged::Asks(rows) => {
+                let stays = self.stands(&assistant.person, &invitation_scope(assistant));
+                if stays.is_none() {
+                    let question = question(assistant, caller, &planned.account, rows);
+                    self.ask_their_person(assistant.person, question).await?;
+                }
+                stays
+            }
+        };
+        let made = off_thread(move || carry_out(&root, planned)).await;
+        // What went ahead unasked is counted, for its person to see.
+        if let (Ok(_), Some(permission)) = (&made, &stays) {
+            self.permission_used(&assistant.person, permission);
+        }
+        answer(&made)
     }
 
     /// Answer a request about a person's calendars ([`RESOURCE`]): the
@@ -951,7 +1312,8 @@ impl Workspaces {
                 .calendar_by_reference(workspace_id, caller, certificate, request)
                 .await;
         }
-        let (root, accounts) = self.calendars_asked(workspace_id, caller, certificate, &action)?;
+        let (root, accounts, assistant) =
+            self.calendars_asked(workspace_id, caller, certificate, &action)?;
         let listed = |root: &Path, accounts: &[Account]| Listed {
             accounts: accounts.iter().map(|account| view(root, account)).collect(),
         };
@@ -1001,7 +1363,16 @@ impl Workspaces {
             }
             ADD_INVITATION => {
                 let asked: Invitation = argument(request, "an invitation to add")?;
-                answer(&off_thread(move || add_invitation(&root, &accounts, &asked)).await)
+                match assistant {
+                    // Their own asking is their word.
+                    None => {
+                        answer(&off_thread(move || add_invitation(&root, &accounts, &asked)).await)
+                    }
+                    Some(assistant) => {
+                        Box::pin(self.assistant_adds(root, accounts, asked, &assistant, caller))
+                            .await
+                    }
+                }
             }
             SET_CATEGORIES => {
                 let asked: Categories = argument(request, "an entry and its categories")?;

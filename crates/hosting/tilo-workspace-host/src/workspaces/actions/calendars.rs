@@ -145,7 +145,9 @@ fn invitation_params() -> Vec<ActionParam> {
             "ics",
             ParamType::Text,
             "The invitation: the iCalendar text (text/calendar) a message carried. The same \
-             invitation again changes nothing.",
+             invitation again changes nothing. An entry its person entered themselves is not \
+             changed or removed by it, and text that names people without inviting its person \
+             is put only once the person allowed it.",
         ),
         text(
             "calendar",
