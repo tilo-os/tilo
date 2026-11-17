@@ -310,7 +310,7 @@ fn ask_to_join(session: &mut Session, key: &str) {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the sheet lists the workspace to join: {listing:?}"
+            "the sheet lists the workspace to join: {state:?}"
         );
         session.step(Duration::from_millis(10)).unwrap();
     }

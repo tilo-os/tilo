@@ -2214,10 +2214,7 @@ mod tests {
         // dropped from the list: the field's conversion above would not
         // notice a name that went missing.
         assert_eq!(
-            decisions
-                .iter()
-                .map(|(service, _)| *service)
-                .collect::<Vec<_>>(),
+            decisions.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
             tilo_action_broker::services::HostServices::NAMES,
             "the broker's services, each decided in its order"
         );
