@@ -574,14 +574,24 @@ def page_clippy_config(root: Path) -> dict[str, str]:
     return {"CLIPPY_CONF_DIR": str(directory)}
 
 
-def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list[str]) -> list[Lint]:
+def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list[str],
+              own_build_dirs: bool = False) -> list[Lint]:
     """The runs the check makes: formatting, the host lint, and the page lint where it can run.
 
     `web` is what is actually linted for the page, so a toolchain without the
     target leaves it empty. Each command is also the line a failure prints to
     rerun it.
+
+    With `own_build_dirs`, the lints as the packages ship and for the page build in build
+    directories of their own. Cargo locks a build directory for the whole of a build, so the
+    three otherwise waited for one another instead of starting together; a build directory
+    of their own costs a first build each, which the land queue's worktree, linting every
+    round, pays once.
     """
     cargo = cargo_command()
+
+    def build_dir(name: str) -> list[str]:
+        return ["--config", f'build.build-dir="target/{name}"'] if own_build_dirs else []
     native = selection.native
     selected = [item for name in native for item in ("-p", name)]
     runs = []
@@ -595,14 +605,15 @@ def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list
     shipped = package_features.default_builds(native)
     if shipped:
         runs.append(Lint("clippy (native, as it ships)", [
-            *cargo, "clippy", "--locked",
+            *cargo, "clippy", "--locked", *build_dir("lint-as-shipped"),
             *(item for name in shipped for item in ("-p", name)),
             "--all-targets", "--keep-going", "--", "-D", "warnings",
         ], shipped, True))
     if web:
         page = [item for name in web for item in ("-p", name)]
         runs.append(Lint("clippy (wasm32)", [
-            *cargo, "clippy", "--locked", "--target", WASM_TARGET, *page, "--", "-D", "warnings",
+            *cargo, "clippy", "--locked", *build_dir("lint-page"), "--target", WASM_TARGET, *page,
+            "--", "-D", "warnings",
         ], web, True, page_clippy_config(root)))
     return runs
 
@@ -648,7 +659,7 @@ def run_together(root: Path, runs: list[Lint],
             keep.mkdir(parents=True, exist_ok=True)
             name = re.sub(r"[^a-z0-9]+", "-", run.label.lower()).strip("-")
             (keep / f"{index}-{name}.log").write_text(
-                f"$ {' '.join(run.command)}\n# exit {process.returncode} after {finished[index]:.0f}s\n"
+                f"$ {shlex.join(run.command)}\n# exit {process.returncode} after {finished[index]:.0f}s\n"
                 + output)
     return results, time.monotonic() - started
 
@@ -707,7 +718,7 @@ def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str) -
         say(f"pre-push: lint passed in {elapsed:.0f}s ({checked})")
         return 0
     for run, output in failed:
-        say(f"pre-push: {run.label} failed - rerun: {' '.join(run.command)}")
+        say(f"pre-push: {run.label} failed - rerun: {shlex.join(run.command)}")
         lines = [line for line in output.strip().splitlines()
                  if not any(remark in line for remark in CARGO_REMARKS) and not PROGRESS.match(line)]
         for line in lines[:SHOWN_DIAGNOSTIC_LINES]:
@@ -737,6 +748,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--plan", action="store_true", help="print what the push would lint, and lint nothing")
     parser.add_argument("--range", metavar="BASE..HEAD",
                         help="lint what that range changes, for a run outside a push (CI, t)")
+    parser.add_argument("--own-build-dirs", action="store_true",
+                        help="build the lints as packages ship and for the page in build directories "
+                             "of their own, so all three start together (the land queue does)")
     parser.add_argument("--keep-logs", metavar="DIR", type=Path,
                         help="keep each run's whole output, and how long it took, in DIR")
     parser.add_argument("--stdin", type=argparse.FileType("r"), default=sys.stdin,
@@ -808,7 +822,10 @@ def main(argv: list[str]) -> int:
     dependents = (f" and {packages(len(selection.dependents))} built on them"
                   if selection.dependents else "")
     say(f"pre-push: linting {packages(len(selection.native))}{dependents}{page}")
-    runs = lint_runs(root, selection, web, formatting)
+    # The land queue's worktree always builds so: its push's lint then makes the same runs as
+    # the lint the queue just made, and finds them passed.
+    runs = lint_runs(root, selection, web, formatting,
+                     options.own_build_dirs or landers_worktree(root))
     checked = f"{'clippy and rustfmt' if formatting else 'clippy'} for {packages(len(selection.native))}{page}"
     passes = Passes(root)
     pending = []

@@ -487,7 +487,7 @@ class Lander:
         """
         process = subprocess.Popen(
             [sys.executable, "-I", "tools/ci/pre_push_lint.py", "--range", f"{upstream}..HEAD",
-             "--keep-logs", str(self.logs())],
+             "--keep-logs", str(self.logs()), "--own-build-dirs"],
             cwd=self.tree, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             start_new_session=True,
         )

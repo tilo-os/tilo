@@ -274,6 +274,18 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("is not the commit checked out here", result.stderr)
         self.assertEqual(self.calls(), [])
 
+    def test_the_land_queue_lints_the_page_in_a_build_directory_of_its_own(self):
+        # Cargo locks a build directory for a whole build: the page's lint would wait for the
+        # native one instead of starting with it.
+        self.write("web/src/lib.rs", LIB.format(answer=63))
+        self.commit("feat: answer 63 in the page")
+        result = self.push(ref="refs/heads/main", cwd=self.lander())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        page = [call for call in self.calls() if "wasm32" in call]
+        self.assertTrue(page and 'build.build-dir="target/lint-page"' in page[0], self.calls())
+        native = [call for call in self.calls() if "wasm32" not in call and "clippy" in call]
+        self.assertTrue(native and "build-dir" not in native[0], self.calls())
+
     def test_a_direct_push_to_main_is_refused_for_the_land_queue(self):
         # Main moves faster than a lint takes; a push straight to it races the queue's lint and
         # makes it lint again. A push without Rust is refused too: it moves main all the same.
