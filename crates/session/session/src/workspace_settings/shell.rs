@@ -253,6 +253,10 @@ fn ask(
             intent(intents, ChromeIntent::RenameWorkspace { name });
         }
         sheet::WorkspaceSettingsEffect::Move { step } => move_workspace(handle, step),
+        // The servers keeping a workspace are chosen over the workspace's own
+        // server API, from a page; a desktop's sheet offers none.
+        sheet::WorkspaceSettingsEffect::AddServer { .. }
+        | sheet::WorkspaceSettingsEffect::RemoveServer { .. } => {}
         sheet::WorkspaceSettingsEffect::SetRole { member, role } => {
             let Some(role) = Role::parse(&role) else {
                 tracing::debug!(%role, "no such role: nothing changed");
@@ -810,6 +814,9 @@ fn general(
             description: t("workspace-settings-devices-local"),
         },
         device_rows: devices.iter().map(device_row).collect(),
+        // Which servers keep a workspace is chosen over the workspace's own
+        // server API; a desktop's sheet shows none.
+        servers: None,
         move_labels: [
             t("workspace-settings-move-earlier"),
             t("workspace-settings-move-later"),

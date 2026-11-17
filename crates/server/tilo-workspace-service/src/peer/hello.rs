@@ -31,7 +31,7 @@ pub(super) async fn handle_host_hello(
             }) {
                 Some((workspaces, workspace)) => {
                     workspaces
-                        .names_host(&workspace, peer.device_public_key)
+                        .names_server(&workspace, peer.device_public_key)
                         .await
                 }
                 None => false,

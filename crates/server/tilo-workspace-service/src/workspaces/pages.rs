@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::VerifiedRedemption;
 use tilo_server_protocol::workspaces::{
-    Inviter, JoinReply, PendingInvite, PreAdmission, Role, WaitListEntry, Workspace,
+    Inviter, JoinReply, PendingInvite, PreAdmission, Role, ServerEntry, WaitListEntry, Workspace,
     WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::DeviceCert;
@@ -244,6 +244,9 @@ impl Workspaces {
             WorkspacesRequest::Rename { workspace, name } => {
                 self.page_rename(device, &workspace, &name).await?
             }
+            request @ (WorkspacesRequest::Servers { .. }
+            | WorkspacesRequest::AddServer { .. }
+            | WorkspacesRequest::RemoveServer { .. }) => self.page_servers(device, request).await?,
             // Retired: a conversation is an ordinary record of the workspace,
             // so a host names no pair of people.
             WorkspacesRequest::RetiredPair {} => {
@@ -550,6 +553,61 @@ impl Workspaces {
             }
             _ => return Err(CollaborationError::new("not a membership request")),
         })
+    }
+
+    /// A page listing the servers keeping a workspace, having another keep it
+    /// as well by its site, and letting one go: each answers the servers as
+    /// they are then, the one the workspace was made on first.
+    async fn page_servers(
+        &self,
+        device: &DeviceCert,
+        request: WorkspacesRequest,
+    ) -> Result<WorkspacesReply, CollaborationError> {
+        let workspace = match &request {
+            WorkspacesRequest::Servers { workspace }
+            | WorkspacesRequest::AddServer { workspace, .. }
+            | WorkspacesRequest::RemoveServer { workspace, .. } => workspace.clone(),
+            _ => return Err(CollaborationError::new("not a servers request")),
+        };
+        // Which servers keep a workspace is its owners' choice, as the
+        // workspace's own `server.*` actions decide it.
+        let chooses = {
+            let governed = self.workspace(&workspace).await?;
+            let governed = governed.lock().await;
+            Self::chooses_servers(&governed, device)
+        };
+        if !chooses {
+            return Err(CollaborationError::new(
+                "only an owner of the workspace chooses the servers that keep it",
+            ));
+        }
+        match request {
+            WorkspacesRequest::AddServer { origin, .. } => {
+                self.add_server(&workspace, &origin)
+                    .await
+                    .map_err(CollaborationError::new)?;
+            }
+            WorkspacesRequest::RemoveServer { server, .. } => {
+                self.remove_server(&workspace, &server)
+                    .await
+                    .map_err(CollaborationError::new)?;
+            }
+            _ => {}
+        }
+        let servers = self
+            .server_list(&workspace)
+            .await
+            .map_err(CollaborationError::new)?;
+        Ok(WorkspacesReply::Servers(
+            servers
+                .into_iter()
+                .map(|server| ServerEntry {
+                    device: server.device,
+                    person: server.person,
+                    governs: server.governs,
+                })
+                .collect(),
+        ))
     }
 
     /// A page's pre-admission: an invitation anyone holding the token may

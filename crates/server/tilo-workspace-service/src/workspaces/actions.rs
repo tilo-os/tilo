@@ -130,7 +130,7 @@ pub(crate) const ADD_SERVER: &str = "server.add";
 /// Having a server keep the workspace no more.
 pub(crate) const REMOVE_SERVER: &str = "server.remove";
 /// What checks choosing the workspace's servers: its owners', which no grant
-/// of its governance gives ([`Workspaces::chooses_hosts`]).
+/// of its governance gives ([`Workspaces::chooses_servers`]).
 const CHOOSES_SERVERS: &str = "choose-servers";
 /// Listing the workspace as a public workspace, with its description and the
 /// role everyone who joins gets.
@@ -1231,7 +1231,7 @@ impl Workspaces {
                         return verb.id == NAME && speaks_for_themselves(caller);
                     }
                     if verb.check == CHOOSES_SERVERS {
-                        return Self::chooses_hosts(&workspace, &device);
+                        return Self::chooses_servers(&workspace, &device);
                     }
                     self.permits(
                         &device,
@@ -1486,7 +1486,7 @@ impl Workspaces {
             // themselves, in [`NAME`]'s case, and nobody else.
             let permitted = match check {
                 "" => true,
-                CHOOSES_SERVERS => Self::chooses_hosts(&workspace, &device),
+                CHOOSES_SERVERS => Self::chooses_servers(&workspace, &device),
                 check => self.permits(
                     &device,
                     Some(&workspace),
@@ -1925,20 +1925,20 @@ impl Workspaces {
         } = call;
         let confirmed = match action {
             ADD_SERVER => {
-                self.add_host(workspace, args.required_text("origin")?)
+                self.add_server(workspace, args.required_text("origin")?)
                     .await
                     .map_err(|error| refused(&error))?;
                 None
             }
             REMOVE_SERVER => Some(
-                self.remove_host(workspace, args.required_text("server")?)
+                self.remove_server(workspace, args.required_text("server")?)
                     .await
                     .map_err(|error| refused(&error))?,
             ),
             _ => None,
         };
         let hosts = self
-            .host_list(workspace)
+            .server_list(workspace)
             .await
             .map_err(|error| refused(&error))?;
         let mut answered = json!({ "workspace": workspace, "servers": hosts });
