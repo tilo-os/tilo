@@ -1783,28 +1783,29 @@ fn offered_bound_ids(
 
 /// The least a caller needs to take any of `declarations`.
 fn least_need_declared(declarations: &[Declaration]) -> ActionNeed {
-    let mut needs = Vec::with_capacity(declarations.len());
-    for decl in declarations {
-        needs.push((decl.kind, decl.field));
-    }
-    least_need_of(&needs)
+    least_need_of(declarations.iter().map(|decl| decl.kind))
 }
 
-/// The least a caller needs to take any of the actions `needs` (kind and
-/// field each): the one that asks least.
+/// The least a caller needs to take any of the actions of the kinds `needs`:
+/// the least kind, at no field.
+///
+/// A group and a typed edit are offered to whoever may take the resource's
+/// least demanding kind, and each invocation is what its own arguments say it
+/// is ([`ActionSpec::with_need_of`]). One declaration's field is not that
+/// offer's: it is that declaration's, and a chat whose `remove-message` writes
+/// its `moderation` field would offer every `group` and `apply` only to
+/// whoever may moderate, though the members of a group write their own
+/// fields.
 #[must_use]
-pub fn least_need_of(needs: &[(ActionKind, Option<&'static str>)]) -> ActionNeed {
-    needs
-        .iter()
-        .min_by_key(|(kind, field)| (*kind, field.is_none()))
-        .map_or_else(
-            || tilo_actions::ActionContract::default().need(),
-            |(kind, field)| ActionNeed {
-                kind: *kind,
-                field: field.map(str::to_owned),
-                privileged: false,
-            },
-        )
+pub fn least_need_of(needs: impl IntoIterator<Item = ActionKind>) -> ActionNeed {
+    needs.into_iter().min().map_or_else(
+        || tilo_actions::ActionContract::default().need(),
+        |kind| ActionNeed {
+            kind,
+            field: None,
+            privileged: false,
+        },
+    )
 }
 
 /// The published spec of one declared or bound mutation: what the palette,

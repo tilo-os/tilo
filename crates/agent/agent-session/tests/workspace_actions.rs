@@ -74,6 +74,9 @@ mod branch_workspace;
 mod computer_agent;
 
 #[cfg(test)]
+#[path = "workspace_actions/chat_group.rs"]
+mod chat_group;
+#[cfg(test)]
 #[path = "workspace_actions/chat_post.rs"]
 mod chat_post;
 #[cfg(test)]
