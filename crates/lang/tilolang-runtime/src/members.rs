@@ -101,9 +101,13 @@ impl Core {
     }
 
     /// A scenario named a person (`person("Mia")`): they are in the workspace it stages, so a
-    /// view that offers the members offers them too, under the name the scenario gave.
-    pub(crate) fn named_person(&self, name: &str) -> Actor {
-        self.named_member(MemberId::person(format!("scenario:{name}")))
+    /// view that offers the members offers them too. Their id is the name the scenario gave:
+    /// a person who is not a root key is a sample one, and reads as that name.
+    pub(crate) fn named_person(&self, name: &str) -> HResult<Actor> {
+        match tilo_actions::policy::PersonId::parse(name) {
+            Ok(id) if !name.is_empty() => Ok(self.named_member(MemberId::Person(id))),
+            _ => trap(format!("person: a name without `:`, got {name:?}")),
+        }
     }
 
     /// A scenario named software (`agent("Scout")`): it is a member of the workspace it stages,

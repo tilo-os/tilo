@@ -128,9 +128,7 @@ fn a_scenarios_named_person_is_a_member_of_the_workspace() {
         .unwrap();
     let members = replica.host.runtime().members();
     assert!(
-        members
-            .iter()
-            .any(|member| member.who().id() == "scenario:Mia"),
+        members.iter().any(|member| member.who().id() == "Mia"),
         "Mia is one of the workspace's: {members:?}"
     );
 }

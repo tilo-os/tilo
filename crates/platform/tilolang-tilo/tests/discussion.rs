@@ -466,7 +466,7 @@ tilo_test_env::scenario! {
             made.iter()
                 .map(|v| v.who.as_ref().map_or("", |who| who.id()))
                 .collect::<Vec<_>>(),
-            ["scenario:Ada", "scenario:Bo", "scenario:Ada"],
+            ["Ada", "Bo", "Ada"],
             "each comment is the person the scenario names"
         );
         assert_eq!(
@@ -512,7 +512,7 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(
             who,
-            ["scenario:Ada", "scenario:Bo", "scenario:Ada"],
+            ["Ada", "Bo", "Ada"],
             "the thread names who said each thing"
         );
         let when: Vec<String> = of_kind(page.tree(), "ui.Time")
@@ -554,7 +554,7 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(
             drawer(&view, "speakers"),
-            ["scenario:Ada", "scenario:Bo"],
+            ["Ada", "Bo"],
             "who spoke in the thread, newest first, each once; the members follow under them"
         );
 
@@ -586,7 +586,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             drawer(&view, "speakers"),
-            ["scenario:Ada", "scenario:Bo"],
+            ["Ada", "Bo"],
             "and the drawer still offers the thread's own people"
         );
     }

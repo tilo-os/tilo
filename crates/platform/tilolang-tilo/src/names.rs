@@ -18,7 +18,7 @@ use crate::runtime::ids::MemberId;
 use crate::runtime::{Actor, NameHost};
 
 /// The name of `who` when nobody named them, by what they are: a sample person a scenario named
-/// (`person("Mia")`) by that name, an app by its own name, an agent by its name. A person the
+/// (`person("Mia")`, whose id is that name rather than a root key) by that name, an app by its own name, an agent by its name. A person the
 /// reader has no name for is
 /// [`UNKNOWN_AUTHOR_NAME`](collaboration::history_source::authors::UNKNOWN_AUTHOR_NAME), never
 /// their key.
@@ -33,14 +33,13 @@ pub fn unnamed(who: &Actor) -> String {
 #[must_use]
 pub fn named(who: &Actor, names: &dyn MemberNames) -> String {
     match who {
-        Actor::Member(MemberId::Person(id)) => id.strip_prefix(SCENARIO).map_or_else(
-            || {
-                names
-                    .person(id)
-                    .unwrap_or_else(|| UNKNOWN_AUTHOR_NAME.to_owned())
-            },
-            str::to_owned,
-        ),
+        Actor::Member(MemberId::Person(id)) => names.person(id).unwrap_or_else(|| {
+            if id.is_empty() || id.root().is_some() {
+                UNKNOWN_AUTHOR_NAME.to_owned()
+            } else {
+                id.as_str().to_owned()
+            }
+        }),
         Actor::Member(MemberId::Agent(id)) => id
             .strip_prefix(SCENARIO)
             .map_or_else(|| names.agent(id), str::to_owned),
@@ -50,7 +49,7 @@ pub fn named(who: &Actor, names: &dyn MemberNames) -> String {
     }
 }
 
-/// What the id of a sample person or agent a scenario named starts with.
+/// What the id of a sample agent a scenario named starts with.
 const SCENARIO: &str = "scenario:";
 
 /// The name of `who` as the session's catalogue says it: an app by its installed name, an agent
@@ -171,12 +170,16 @@ mod tests {
         let rows: &[(Actor, &str, &str)] = &[
             (agent("planner"), "Planner (agent)", "an agent by its name"),
             (
-                person("0123456789abcdef0123456789abcdef"),
+                person("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
                 "Unknown member",
                 "a key nobody named is never shown, in full or cut short",
             ),
-            (person("tomas"), "Unknown member", "a person nobody named"),
-            (person("scenario:Mia"), "Mia", "a scenario's sample person"),
+            (person(""), "Unknown member", "nobody"),
+            (
+                person("Mia"),
+                "Mia",
+                "a scenario's sample person, by the name it gave",
+            ),
             (
                 agent("scenario:Scout"),
                 "Scout",

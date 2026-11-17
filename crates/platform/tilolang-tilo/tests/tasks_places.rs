@@ -420,7 +420,7 @@ fn the_assignee_offers_the_workspaces_people_and_agents() {
         node.props.get("people"),
         Some(&Value::List(vec![
             Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
-                "scenario:Mia"
+                "Mia"
             ))),
             Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
                 "scenario:Scout"

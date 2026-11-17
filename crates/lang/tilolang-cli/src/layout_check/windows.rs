@@ -1468,7 +1468,7 @@ fn its_people_are_called_by_their_names_never_their_ids(shell: &mut stage::Stage
     let ids: Vec<&String> = said
         .iter()
         .map(|(_, name)| name)
-        .filter(|name| name.contains("scenario:"))
+        .filter(|name| name.len() == 64 && name.chars().all(|c| c.is_ascii_hexdigit()))
         .collect();
     assert!(ids.is_empty(), "people read as ids: {ids:?}");
     assert!(

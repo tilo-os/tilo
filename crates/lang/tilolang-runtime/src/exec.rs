@@ -2695,7 +2695,7 @@ impl Core {
                 let who = if imp == Imp::AgentNamed {
                     self.named_agent(&name)
                 } else {
-                    self.named_person(&name)
+                    self.named_person(&name)?
                 };
                 self.ret_h(Value::Actor(who))
             }

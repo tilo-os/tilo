@@ -188,15 +188,15 @@ tilo_test_env::scenario! {
             [
                 // Each row names the action the call ran, as every change does, and the person and
                 // moment the scenario's `invoke` gave it.
-                "scenario:Mia 2026-06-29T07:02:00Z scenario:Mia 2026-06-29T07:02:00Z Write 1",
-                "scenario:Leo 2026-06-29T07:20:00Z scenario:Leo 2026-06-29T07:20:00Z Write 1",
+                "Mia 2026-06-29T07:02:00Z Mia 2026-06-29T07:02:00Z Write 1",
+                "Leo 2026-06-29T07:20:00Z Leo 2026-06-29T07:20:00Z Write 1",
             ]
         );
         // The window shows them as the log has them.
         let view = ada.view("so.tilo.lang.talk");
         let shown = format!("{:?}", view.tree());
         assert!(
-            shown.contains("Morning! (scenario:Mia at 2026-06-29T07:02:00Z)"),
+            shown.contains("Morning! (Mia at 2026-06-29T07:02:00Z)"),
             "{shown}"
         );
     }
