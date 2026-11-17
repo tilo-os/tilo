@@ -240,7 +240,9 @@ impl Layout {
             width,
             height,
             float: None,
-            hugs: false,
+            // A turn is drawn as tall as its words, up to its height (canvas.md §7): the layout
+            // takes the height it is drawn at, so the canvas under a short answer stays free.
+            hugs: true,
         };
         self.ask(asked, action, busy)?;
         self.opened_as
