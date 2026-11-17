@@ -52,6 +52,45 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase an_entry_naming_its_join_log_as_the_code_does_reads_with_the_log_whole;
+    // For a while builds wrote the join log under the name the code gives it,
+    // into entries of this same version. Such an entry reads with what its
+    // log holds, and is written under the stored name again.
+    {
+        let mut entry: serde_json::Value = serde_json::from_slice(&bytes(CURRENT)).unwrap();
+        let (id, digest) = ([7_u8; 32], [9_u8; 32]);
+        let request = serde_json::json!([{
+            "request_id": id,
+            "request_digest": digest,
+            "generation": 3,
+        }]);
+        let fields = entry.as_object_mut().unwrap();
+        let mut log = fields
+            .remove("join_ledger")
+            .expect("the entry stores its join log under this name");
+        log.as_object_mut()
+            .unwrap()
+            .insert("administration".into(), request);
+        fields.insert("join_log".into(), log.clone());
+        let between = serde_json::to_vec(&entry).unwrap();
+        assert_eq!(stored_version(&between).unwrap(), WORKSPACE_VERSION);
+
+        let read: StoredWorkspace = serde_json::from_slice(&between).unwrap();
+        assert_eq!(read.workspace, founders());
+        let held = &read.join_log.administration;
+        assert_eq!(held.len(), 1, "the log an entry held is read, not left empty");
+        let answered = held.first().unwrap();
+        assert_eq!(
+            (answered.request_id, answered.request_digest, answered.generation),
+            (id, digest, 3)
+        );
+
+        let written = crate::owner::file_store::part_bytes(&read).unwrap();
+        let written: serde_json::Value = serde_json::from_slice(&written).unwrap();
+        assert_eq!(written.get("join_ledger"), Some(&log));
+        assert_eq!(written.get("join_log"), None);
+    }
+
     phase a_newer_entry_is_refused;
     // An entry a newer build wrote is refused, and one from before this layout
     // does not read as this one.

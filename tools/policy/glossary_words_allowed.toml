@@ -264,3 +264,8 @@ paths = [
     "crates/session/desktop/src/topbar/shot_tests.rs",
     "examples/agent-trials/documents-and-forms/TASKS.md",
 ]
+
+[[allow]]
+reason = "The name a device's stored workspace entry of version 5 gives its join log: bytes devices hold, read and written by that name until the entry has a new version."
+words = ["ledger"]
+identifiers = ["join_ledger"]
