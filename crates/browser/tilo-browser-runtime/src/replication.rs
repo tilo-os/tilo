@@ -75,6 +75,7 @@ pub(crate) fn install() {
         attach,
         detach,
         publish,
+        permits_due,
         follow_answers,
         ask_content,
         device_of,
@@ -577,6 +578,18 @@ pub(crate) fn permit(id: u32, node: &str, may: bool) {
     }
 }
 
+/// When peer `id`'s page must ask the workspace again what its person may do
+/// there, in Unix milliseconds (`0` is now), or `None` for a peer no mount is
+/// attached to. The page's loop wakes for it: the question is asked as part of
+/// a frame's pass, and a page whose own people and windows change nothing
+/// draws none, so an idle page would otherwise wait for someone else's change
+/// to hear that its person was promoted.
+pub(crate) fn permits_due(id: u32) -> Option<u64> {
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    (!joined.mounts.is_empty()).then(|| joined.moderation_due_ms.load(Ordering::Relaxed))
+}
+
 /// Attach mount `mount` to peer `id`'s workspace.
 pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
     let Some(joined) = replica_of(id) else {
@@ -695,6 +708,12 @@ impl Joined {
     /// follow, and wake them.
     fn ask_role_when_due(&self) {
         if !self.ready || self.mounts.is_empty() {
+            // A workspace the page has not joined yet has nothing to answer:
+            // ask again shortly, rather than on every pass of the page's loop.
+            self.moderation_due_ms.store(
+                crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
+                Ordering::Relaxed,
+            );
             return;
         }
         let now = crate::shell::now_ms();

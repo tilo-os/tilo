@@ -58,6 +58,19 @@ fn agent_notices_wake(m: &mut Mount, now: ui::time::Instant) -> Option<ui::time:
     ))
 }
 
+/// How long until the page must ask the workspace again what its person may do
+/// there, in milliseconds: `None` for a page replicating no workspace. A
+/// question due now is asked here, and the answer is when the next one is due,
+/// so a promotion reaches an idle page without a frame of its own.
+fn permissions_wait(peer: u32) -> Option<u64> {
+    let mut due = crate::replicated::permits_due(peer)?;
+    if due <= crate::shell::now_ms() {
+        crate::replicated::publish(peer);
+        due = crate::replicated::permits_due(peer)?;
+    }
+    Some(due.saturating_sub(crate::shell::now_ms()).max(1))
+}
+
 /// Ask for mount `m`'s next frame when it is due, and answer when the loop
 /// must wake for one that is due later. A frame already owed reads the
 /// schedule when it draws, and the loop turns again after it: walking every
@@ -445,6 +458,17 @@ impl ApplicationHandler<u64> for Runner {
                     }
                 }
                 super::attention::tell(id, m);
+                // What the page's person may do in their workspace is asked
+                // again on time: a promotion reaches a page whose own people
+                // and windows change nothing, where waiting for a frame would
+                // wait for someone else's change to bring one.
+                if m.desktop.is_some()
+                    && let Some(peer) = m.peer
+                    && let Some(wait) = permissions_wait(peer)
+                    && let Some(at) = now.checked_add(ui::time::Duration::from_millis(wait))
+                {
+                    wake(at);
+                }
                 if m.hidden || m.error.is_some() || !m.presents() || m.viewport.suspended() {
                     return Ok(());
                 }

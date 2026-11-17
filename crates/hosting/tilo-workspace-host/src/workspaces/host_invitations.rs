@@ -622,4 +622,60 @@ mod tests {
         );
         server.shutdown().await;
     }
+
+    /// A person who walked in through a published entry is declared an owner
+    /// while their page is open: the page's own question whether they may
+    /// invite others is answered yes from then on, of the device they joined
+    /// with, not of a device they would have to join again with.
+    #[tokio::test]
+    async fn a_person_declared_an_owner_may_invite_from_the_device_they_walked_in_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let governing = governor();
+        let site = site(dir.path(), &governing).await;
+        let workspaces = site.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &governing.1,
+                Listing {
+                    description: "The Tilo community".into(),
+                    default_role: Role::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        let (_, newcomer) = guest_device();
+        let join = EntryJoin {
+            user_public_key: hex::encode(newcomer.user_public_key),
+            display_name: "Ada".into(),
+        };
+        let reply = walk_in_as(workspaces, &workspace, &join, &newcomer)
+            .await
+            .unwrap();
+        assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+        let may_invite = || WorkspacesRequest::Permits {
+            workspace: workspace.clone(),
+            node: tilo_action_policy::roles::governance_action(
+                &workspace,
+                tilo_action_policy::roles::governance::INVITE,
+            )
+            .to_string(),
+        };
+        assert_eq!(
+            workspaces.page_workspaces(&newcomer, may_invite()).await,
+            WorkspacesReply::Permits(false),
+            "an editor invites nobody"
+        );
+        workspaces
+            .declare_owner(&workspace, newcomer.user_public_key, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            workspaces.page_workspaces(&newcomer, may_invite()).await,
+            WorkspacesReply::Permits(true),
+            "the owner's own device may invite at once"
+        );
+        site.shutdown().await;
+    }
 }

@@ -73,6 +73,10 @@ pub(crate) struct Replicated {
     pub(crate) detach: fn(u32, u64),
     /// Publish what a mount wrote since the last pass.
     pub(crate) publish: fn(u32),
+    /// When peer `id`'s page must ask the workspace again what its person may
+    /// do there, in Unix milliseconds (`0` is now): the page's loop wakes for
+    /// it, since a page that changes nothing draws no frame of its own.
+    pub(crate) permits_due: fn(u32) -> Option<u64>,
     /// Follow the answers the workspace sent since the last pass.
     pub(crate) follow_answers: fn(u32),
     /// Ask the host for the content of the records this page wants.
@@ -136,6 +140,10 @@ pub(crate) fn detach(id: u32, mount: u64) {
 
 pub(crate) fn publish(id: u32) {
     installed((), |replicated| (replicated.publish)(id));
+}
+
+pub(crate) fn permits_due(id: u32) -> Option<u64> {
+    installed(None, |replicated| (replicated.permits_due)(id))
 }
 
 pub(crate) fn follow_answers(id: u32) {
