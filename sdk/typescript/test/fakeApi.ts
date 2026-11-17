@@ -512,7 +512,19 @@ export class FakeApi {
         status: "ok",
         invocation,
         path: whole,
-        result: { fields: Object.keys(this.fields[PDF]?.form_values ?? {}) },
+        result: {
+          file: "application.pdf",
+          fields: Object.keys(this.fields[PDF]?.form_values ?? {}).map((name) => ({
+            name,
+            kind: "text",
+            value: {},
+            path: null,
+            options: [],
+            export: null,
+            page: null,
+            read_only: false,
+          })),
+        },
       });
     }
     if (this.pendingRuns > 0) {
