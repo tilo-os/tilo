@@ -25035,6 +25035,7 @@
             "type": "string"
           },
           "parent": {
+            "minLength": 1,
             "type": [
               "string",
               "null"
@@ -25094,6 +25095,7 @@
             ]
           },
           "project": {
+            "minLength": 1,
             "type": [
               "string",
               "null"
@@ -25279,6 +25281,7 @@
             "type": "string"
           },
           "parent": {
+            "minLength": 1,
             "type": [
               "string",
               "null"
@@ -25315,6 +25318,7 @@
             "type": "string"
           },
           "project": {
+            "minLength": 1,
             "type": [
               "string",
               "null"
@@ -25479,6 +25483,7 @@
             ]
           },
           "before": {
+            "minLength": 1,
             "type": [
               "string",
               "null"
@@ -25740,6 +25745,217 @@
         },
         "required": [
           "issue"
+        ],
+        "description": ""
+      },
+      "tasks.issues.set-place.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issue",
+          "folder"
+        ],
+        "description": ""
+      },
+      "tasks.issues.wait.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "waits": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "event": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "oneOf": [
+                    {
+                      "const": "time",
+                      "type": "string"
+                    },
+                    {
+                      "const": "reply",
+                      "type": "string"
+                    },
+                    {
+                      "const": "change",
+                      "type": "string"
+                    },
+                    {
+                      "const": "answer",
+                      "type": "string"
+                    },
+                    {
+                      "const": "people",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "on": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "what": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "what"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "until_ms": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "issue",
+          "waits",
+          "until_ms"
+        ],
+        "description": ""
+      },
+      "tasks.issues.resume.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "cause": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "cause"
+        ],
+        "description": ""
+      },
+      "tasks.issues.set-budget.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "money_micros": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "time_ms": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issue"
+        ],
+        "description": ""
+      },
+      "tasks.issues.run-began.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue"
+        ],
+        "description": ""
+      },
+      "tasks.issues.run-ended.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "cost_micros": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worked_ms": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "issue",
+          "cost_micros",
+          "worked_ms"
+        ],
+        "description": ""
+      },
+      "tasks.issues.stop.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "why": {
+            "oneOf": [
+              {
+                "const": "failed",
+                "type": "string"
+              },
+              {
+                "const": "budget",
+                "type": "string"
+              },
+              {
+                "const": "time",
+                "type": "string"
+              },
+              {
+                "const": "lost-worker",
+                "type": "string"
+              },
+              {
+                "const": "person",
+                "type": "string"
+              }
+            ]
+          },
+          "words": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "why",
+          "words"
         ],
         "description": ""
       },
@@ -32859,6 +33075,48 @@
       "resource": "tasks.issues",
       "action": "plan",
       "arguments": "#/components/schemas/tasks.issues.plan.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "set-place",
+      "arguments": "#/components/schemas/tasks.issues.set-place.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "wait",
+      "arguments": "#/components/schemas/tasks.issues.wait.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "resume",
+      "arguments": "#/components/schemas/tasks.issues.resume.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "set-budget",
+      "arguments": "#/components/schemas/tasks.issues.set-budget.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "run-began",
+      "arguments": "#/components/schemas/tasks.issues.run-began.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "run-ended",
+      "arguments": "#/components/schemas/tasks.issues.run-ended.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "stop",
+      "arguments": "#/components/schemas/tasks.issues.stop.Arguments"
     },
     {
       "app": "so.tilo.terminal",

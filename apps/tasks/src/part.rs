@@ -34,8 +34,9 @@ use ui::tilo_resource::{
 };
 
 use crate::model::{
-    Area, Attachment, Issue, Link, MAX_ESTIMATE, MAX_MESSAGE_CHARS, Message, NewIssue, Priority,
-    Status, Tracker, checked_assignee,
+    Area, Attachment, BudgetBy, Issue, Link, MAX_ESTIMATE, MAX_MESSAGE_CHARS, Message, NewIssue,
+    Priority, Resumed, Status, Stopped, StoppedWhy, Tracker, WaitFor, checked_address,
+    checked_assignee, checked_folder, checked_line, checked_waits,
 };
 
 /// Issues a part holds before the next one starts.
@@ -172,6 +173,53 @@ fn by_agent(cx: &ActionCx) -> bool {
     cx.invoked_by().is_some_and(|by| by.is_agent())
 }
 
+/// Who gives an issue when the action of `cx` assigns it: the person
+/// themselves, or the one person the agent that assigns it acts for. An agent
+/// acting for nobody, or for several people, gives it as itself, which asks
+/// nobody's work of anyone.
+fn giver(cx: &ActionCx) -> Result<tilo_resource::MemberId, Refusal> {
+    let author = author(cx)?;
+    if author.is_person() {
+        return Ok(author);
+    }
+    let acted_for: Vec<tilo_resource::MemberId> = cx
+        .invoked_by()
+        .iter()
+        .flat_map(|acting| acting.acted_for.iter())
+        .filter_map(|who| who.by.member_id().cloned())
+        .filter(tilo_resource::MemberId::is_person)
+        .collect();
+    match acted_for.as_slice() {
+        [person] => Ok(person.clone()),
+        _ => Ok(author),
+    }
+}
+
+fn closed() -> Refusal {
+    Refusal::new("This issue is closed")
+}
+
+/// Refuse `by` unless it is the agent `issue` is assigned to: its runs are its
+/// own to count.
+fn its_agent(issue: &Issue, by: &tilo_resource::MemberId) -> Result<(), Refusal> {
+    if by.is_agent() && issue.assigned_member().as_ref() == Some(by) {
+        Ok(())
+    } else {
+        Err(Refusal::new(
+            "Only the agent an issue is assigned to counts its runs",
+        ))
+    }
+}
+
+/// `micros` millionths of the currency, as a refusal names an amount.
+fn money(micros: u64) -> String {
+    format!(
+        "${}.{:02}",
+        micros / 1_000_000,
+        (micros % 1_000_000) / 10_000
+    )
+}
+
 fn message_text(text: NonBlank) -> Result<String, Refusal> {
     if text.chars().count() > MAX_MESSAGE_CHARS {
         return Err(Refusal::new("This message is too long"));
@@ -296,7 +344,10 @@ impl IssuePart {
     /// workspace yet by their name, or to nobody.
     ///
     /// Giving it to an agent asks the agent to do it, for whoever gave it:
-    /// the agent works on it as their turn and answers in its thread.
+    /// the agent works on it as their turn and answers in its thread. An
+    /// agent that gives an issue to an agent gives it for the one person it
+    /// acts for. An issue an agent filed for an agent (`create`) is a
+    /// proposal nobody asked for yet: assigning it to that agent gives it.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn assign(
         &mut self,
@@ -308,10 +359,11 @@ impl IssuePart {
         assignee: Option<String>,
     ) -> Result<(), Refusal> {
         let assignee = checked_assignee(assignee)?;
-        let (by, at_ms) = given_to_agent(assignee.as_ref(), Some(&author(cx)?), cx.now_ms());
+        let (by, at_ms) = given_to_agent(assignee.as_ref(), Some(&giver(cx)?), cx.now_ms());
         let target = self.issue_mut(issue)?;
-        // Giving it to the agent it is with already asks nothing new.
-        if target.assignee != assignee || by.is_none() {
+        // Giving it to the agent it is with already asks nothing new, unless
+        // nobody gave it yet.
+        if target.assignee != assignee || by.is_none() || target.assigned_by.is_none() {
             target.assigned_by = by;
             target.assigned_ms = at_ms;
         }
@@ -554,6 +606,247 @@ impl IssuePart {
         if let Some(due_ms) = due_ms {
             target.due_ms = Some(due_ms);
         }
+        Ok(())
+    }
+
+    /// Set place
+    ///
+    /// Say where an issue's working material is kept: a folder in the
+    /// workspace's files, and the note its plan, its findings and what is
+    /// still open are written in. A later run of whoever works on it starts
+    /// from them.
+    ///
+    /// # Errors
+    /// Refuses a path that is no folder's.
+    #[action(item = issues, step = "edit", writes = issues)]
+    pub fn set_place(
+        &mut self,
+        issue: &Id,
+        #[param("The folder in the workspace's files, as a path: Tasks/12 Market analysis")]
+        folder: String,
+        #[param("The note in Notes, by its resource; as it was without")] note: Option<String>,
+    ) -> Result<(), Refusal> {
+        let folder = checked_folder(&folder)?;
+        let note = checked_address(note)?;
+        let work = self.issue_mut(issue)?.work.get_or_insert_default();
+        work.folder = folder;
+        if let Some(note) = note {
+            work.note = note;
+        }
+        Ok(())
+    }
+
+    /// Wait
+    ///
+    /// Let an issue wait: for a reply, a record to change, a person's answer,
+    /// several people, or only a moment. Any one of them ends the wait, and
+    /// the moment always does. Nothing works on it while it waits.
+    ///
+    /// # Errors
+    /// Refuses a closed issue, a wait that says nothing of what it is for,
+    /// and a moment that is not later than now.
+    #[action(item = issues, step = "edit", writes = issues)]
+    pub fn wait(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param(
+            "What it waits for, each with a kind (time, reply, change, answer or people), what in a few words, and optionally what is watched (on) and the event that can end it early; none to wait for the moment alone"
+        )]
+        waits: Vec<WaitFor>,
+        #[param("The latest moment the wait ends, in milliseconds since the epoch")] until_ms: i64,
+    ) -> Result<(), Refusal> {
+        let waits = checked_waits(waits)?;
+        let now = cx.now_ms();
+        if until_ms <= now {
+            return Err(Refusal::new("A wait ends later than now"));
+        }
+        let target = self.issue_mut(issue)?;
+        if target.status.closed() {
+            return Err(closed());
+        }
+        let work = target.work.get_or_insert_default();
+        work.waits = waits;
+        work.until_ms = Some(until_ms);
+        work.since_ms = Some(now);
+        work.stopped = None;
+        Ok(())
+    }
+
+    /// Resume
+    ///
+    /// Tell an issue's work to go on: what it waited for came, or its person
+    /// says so after it stopped. Whoever works on it is asked again, and
+    /// starts from its place.
+    ///
+    /// # Errors
+    /// Refuses a closed issue, and one whose budget is used up: that one
+    /// goes on once its budget is raised.
+    #[action(item = issues, step = "edit", writes = issues)]
+    pub fn resume(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("What lets it go on, in a few words: the supplier replied")] cause: NonBlank,
+    ) -> Result<(), Refusal> {
+        let cause = checked_line(cause.as_str(), "what lets it go on")?;
+        let now = cx.now_ms();
+        let target = self.issue_mut(issue)?;
+        if target.status.closed() {
+            return Err(closed());
+        }
+        let work = target.work.get_or_insert_default();
+        match work.used_up() {
+            Some(StoppedWhy::Time) => {
+                return Err(Refusal::new(
+                    "Its working time is used up: give it more time first",
+                ));
+            }
+            Some(_) => {
+                return Err(Refusal::new(format!(
+                    "Its budget of {} is spent: raise it first",
+                    money(work.budget_micros.unwrap_or_default())
+                )));
+            }
+            None => {}
+        }
+        work.end_wait();
+        work.stopped = None;
+        work.lost = 0;
+        work.resumed = Some(Resumed { cause, at_ms: now });
+        Ok(())
+    }
+
+    /// Set budget
+    ///
+    /// Say what an issue may cost over all its runs, in money, in working
+    /// time, or both; what is left out stays as it was. A person sets and
+    /// raises it. The agent working on it may propose one where none is set
+    /// and may lower one, and holds itself to it.
+    ///
+    /// # Errors
+    /// Refuses an agent raising a budget a person set.
+    #[action(item = issues, step = "edit", writes = issues)]
+    pub fn set_budget(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("What the whole issue may cost, in millionths of the currency")]
+        money_micros: Option<u64>,
+        #[param("How long it may be worked on over all its runs, in milliseconds")] time_ms: Option<
+            u64,
+        >,
+    ) -> Result<(), Refusal> {
+        if money_micros.is_none() && time_ms.is_none() {
+            return Err(Refusal::new("Give the money or the time it may take"));
+        }
+        let agent = by_agent(cx);
+        let work = self.issue_mut(issue)?.work.get_or_insert_default();
+        let kept = work.budget_micros.is_some() || work.budget_ms.is_some();
+        let raises = |new: Option<u64>, old: Option<u64>| matches!((new, old), (Some(new), Some(old)) if new > old);
+        if agent
+            && kept
+            && work.budget_by == BudgetBy::Person
+            && (raises(money_micros, work.budget_micros) || raises(time_ms, work.budget_ms))
+        {
+            return Err(Refusal::new("Only a person raises a budget a person set"));
+        }
+        if let Some(money) = money_micros {
+            work.budget_micros = Some(money);
+        }
+        if let Some(time) = time_ms {
+            work.budget_ms = Some(time);
+        }
+        if !agent {
+            work.budget_by = BudgetBy::Person;
+        } else if !kept {
+            work.budget_by = BudgetBy::Agent;
+        }
+        Ok(())
+    }
+
+    /// Run began
+    ///
+    /// The agent an issue is assigned to says a run of it on the issue began:
+    /// the issue no longer waits and is no longer stopped. A run that began
+    /// before and never ended is counted as lost.
+    ///
+    /// # Errors
+    /// Refuses anyone but the agent the issue is assigned to.
+    #[action(item = issues, step = "edit", audience = "agents", writes = issues)]
+    pub fn run_began(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
+        let now = cx.now_ms();
+        let by = author(cx)?;
+        let target = self.issue_mut(issue)?;
+        its_agent(target, &by)?;
+        let work = target.work.get_or_insert_default();
+        if work.running_since_ms.is_some() {
+            work.lost = work.lost.saturating_add(1);
+        }
+        work.runs = work.runs.saturating_add(1);
+        work.running_since_ms = Some(now);
+        work.end_wait();
+        work.stopped = None;
+        Ok(())
+    }
+
+    /// Run ended
+    ///
+    /// The agent an issue is assigned to says its run ended, what it cost and
+    /// how long it worked: both count against the issue's budget.
+    ///
+    /// # Errors
+    /// Refuses anyone but the agent the issue is assigned to.
+    #[action(item = issues, step = "edit", audience = "agents", writes = issues)]
+    pub fn run_ended(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("What the run cost, in millionths of the currency")] cost_micros: u64,
+        #[param("How long it worked, in milliseconds")] worked_ms: u64,
+    ) -> Result<(), Refusal> {
+        let by = author(cx)?;
+        let target = self.issue_mut(issue)?;
+        its_agent(target, &by)?;
+        let work = target.work.get_or_insert_default();
+        work.spent_micros = work.spent_micros.saturating_add(cost_micros);
+        work.worked_ms = work.worked_ms.saturating_add(worked_ms);
+        work.running_since_ms = None;
+        work.lost = 0;
+        Ok(())
+    }
+
+    /// Stop
+    ///
+    /// Say that an issue's work stopped before it was finished, and why, in a
+    /// plain line its person reads: its budget is spent, its worker was lost,
+    /// it failed, or a person stopped it. It reads as stopped, never as done,
+    /// until it is told to go on.
+    ///
+    /// # Errors
+    /// Refuses a closed issue.
+    #[action(item = issues, step = "edit", writes = issues)]
+    pub fn stop(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("Why: failed, budget, time, lost-worker or person")] why: StoppedWhy,
+        #[param("The plain line its person reads")] words: NonBlank,
+    ) -> Result<(), Refusal> {
+        let words = checked_line(words.as_str(), "why it stopped")?;
+        let now = cx.now_ms();
+        let target = self.issue_mut(issue)?;
+        if target.status.closed() {
+            return Err(closed());
+        }
+        let work = target.work.get_or_insert_default();
+        work.end_wait();
+        work.running_since_ms = None;
+        work.stopped = Some(Stopped {
+            why,
+            words,
+            at_ms: now,
+        });
         Ok(())
     }
 }
@@ -1030,7 +1323,14 @@ fn item_of_mut(action: &mut IssuePartAction) -> Option<&mut Id> {
         | IssuePartAction::Link(verb::Link { issue, .. })
         | IssuePartAction::LinkNote(verb::LinkNote { issue, .. })
         | IssuePartAction::Delete(verb::Delete { issue })
-        | IssuePartAction::Plan(verb::Plan { issue, .. }) => Some(issue),
+        | IssuePartAction::Plan(verb::Plan { issue, .. })
+        | IssuePartAction::SetPlace(verb::SetPlace { issue, .. })
+        | IssuePartAction::Wait(verb::Wait { issue, .. })
+        | IssuePartAction::Resume(verb::Resume { issue, .. })
+        | IssuePartAction::SetBudget(verb::SetBudget { issue, .. })
+        | IssuePartAction::RunBegan(verb::RunBegan { issue })
+        | IssuePartAction::RunEnded(verb::RunEnded { issue, .. })
+        | IssuePartAction::Stop(verb::Stop { issue, .. }) => Some(issue),
         _ => None,
     }
 }
@@ -1050,7 +1350,14 @@ pub fn item_of(action: &IssuePartAction) -> Option<&Id> {
         | IssuePartAction::Link(verb::Link { issue, .. })
         | IssuePartAction::LinkNote(verb::LinkNote { issue, .. })
         | IssuePartAction::Delete(verb::Delete { issue })
-        | IssuePartAction::Plan(verb::Plan { issue, .. }) => Some(issue),
+        | IssuePartAction::Plan(verb::Plan { issue, .. })
+        | IssuePartAction::SetPlace(verb::SetPlace { issue, .. })
+        | IssuePartAction::Wait(verb::Wait { issue, .. })
+        | IssuePartAction::Resume(verb::Resume { issue, .. })
+        | IssuePartAction::SetBudget(verb::SetBudget { issue, .. })
+        | IssuePartAction::RunBegan(verb::RunBegan { issue })
+        | IssuePartAction::RunEnded(verb::RunEnded { issue, .. })
+        | IssuePartAction::Stop(verb::Stop { issue, .. }) => Some(issue),
         // A field edit of one issue (its title, its description) names it
         // in its path.
         IssuePartAction::FieldEdit(edit) => match edit.path() {
