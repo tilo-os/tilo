@@ -149,6 +149,16 @@ struct Hosted {
 
 impl Steps for Hosted {
     fn instruct(&self, instruction: Instruction) -> Result<String, StepError> {
+        // An automation a task waits for tells that task to go on: nothing else is started.
+        if super::task_waits::told(
+            &self.workspaces,
+            &instruction.workspace,
+            &instruction.person,
+            &instruction.cause.installation,
+            &instruction.instruction,
+        ) {
+            return Ok(String::new());
+        }
         let Some((actions, starter)) = &self.turns else {
             return Err(StepError::Unavailable(
                 "this server starts no turn of a person's assistant".into(),

@@ -169,3 +169,35 @@ fn ask_on(id: &Id, issue: &Issue, now_ms: i64) -> Option<IssueAsk> {
         asked,
     })
 }
+
+/// The open issues of `issues` that wait for `person`'s automation `automation`: each is with an
+/// agent, was given to it by `person`, waits, and names the automation in one of the things it
+/// waits for ([`WaitFor::event`](super::WaitFor)). That automation going on tells them to go on
+/// (`resume`), and tells no other: an automation of one person never ends the wait of an issue
+/// given for another, whatever id that wait names.
+#[must_use]
+pub fn waiting_for<'a>(
+    issues: impl IntoIterator<Item = (&'a Id, &'a Issue)>,
+    person: &str,
+    automation: &str,
+) -> Vec<Id> {
+    if automation.is_empty() {
+        return Vec::new();
+    }
+    issues
+        .into_iter()
+        .filter(|(_, issue)| {
+            !issue.status.closed()
+                && issue.assigned_agent().is_some()
+                && issue.assigned_by.as_ref().and_then(MemberId::person_id) == Some(person)
+                && issue.work.as_ref().is_some_and(|work| {
+                    work.waiting()
+                        && work
+                            .waits
+                            .iter()
+                            .any(|wait| wait.event.as_deref() == Some(automation))
+                })
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
+}

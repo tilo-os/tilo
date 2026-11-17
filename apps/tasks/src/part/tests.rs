@@ -1294,3 +1294,45 @@ fn the_kept_issues_read_only_what_changed_and_read_as_the_parts_do() {
         "the new issue and its parent, and nothing else"
     );
 }
+
+/// An automation going on tells exactly the tasks that wait for it to go on: one given for its
+/// own person, still waiting, that names it. It tells no other, and never a task given for
+/// another person.
+#[test]
+fn an_automation_tells_only_the_task_that_waits_for_it_to_go_on() {
+    let mut task = Task::given();
+    let issue = task.issue.clone();
+    task.agent_does(
+        2_000,
+        IssuePart::WAIT.with(issue_part::Wait {
+            issue: issue.clone(),
+            waits: vec![reply_wait()],
+            until_ms: 2_000 + 2 * DAY_MS,
+        }),
+    )
+    .unwrap();
+    let waiting = |task: &Task, person: &str, automation: &str| {
+        crate::model::waiting_for(task.ada.state().unwrap().issues.iter(), person, automation)
+    };
+    assert_eq!(waiting(&task, "ada", "e-reply"), vec![issue.clone()]);
+    assert!(
+        waiting(&task, "grace", "e-reply").is_empty(),
+        "another person's automation ends no wait of a task given for Ada"
+    );
+    assert!(
+        waiting(&task, "ada", "e-other").is_empty(),
+        "an automation it does not name"
+    );
+    assert!(waiting(&task, "ada", "").is_empty(), "no automation at all");
+
+    // Told to go on, it waits no more: the automation coming again tells nothing.
+    task.ada_does(
+        3_000,
+        IssuePart::RESUME.with(issue_part::Resume {
+            issue,
+            cause: nb("the supplier replied"),
+        }),
+    )
+    .unwrap();
+    assert!(waiting(&task, "ada", "e-reply").is_empty());
+}

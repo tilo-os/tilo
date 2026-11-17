@@ -46,7 +46,11 @@ const HOW_TO_WORK: &str = "\n\nDo the work through the workspace's apps. Move th
     progress when you start. Before you end, write what a later session needs into the note. \
     If you have to wait (for a reply, a time, a resource to change, a person), call Tasks' `wait` \
     on this issue with what you wait for and the latest moment the wait ends, say in one line \
-    what you wait for, and end: you are started again when it comes or at that moment. When the \
+    what you wait for, and end: you are started again when it comes or at that moment. Where \
+    one of your person's automations can see what you wait for (a time, a resource of the \
+    workspace changing), set it up first and name its id in the wait as `event`: when it comes, \
+    the task goes on with what the automation says and nothing else is asked. Remove an \
+    automation you set up only for a wait once the wait is over. When the \
     work is finished, move the issue to In review, never to Done: that is its person's to say. \
     If you cannot finish, say plainly why.";
 

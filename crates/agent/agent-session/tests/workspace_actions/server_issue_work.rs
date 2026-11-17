@@ -7,10 +7,14 @@ use super::*;
 use crate::harness::hosted::serving_records_with_actions as serving_with_actions;
 use serde_json::{Value, json};
 use tasks::model::{StoppedWhy, TaskState};
+use tilo_actions::remote::{
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, person_events,
+};
 use tilo_server::{
     workspace_agents::{
         HostAgents as ServerAgents, Turn, WorkspaceActionProvider as ActionService, invoke_named,
     },
+    workspace_bots::events::PersonEvents,
     workspaces::Workspaces,
 };
 
@@ -472,6 +476,129 @@ async fn a_task_whose_sessions_were_lost_stops_and_says_so() {
             &agents,
             now_ms(),
             "stopped, nothing starts it until its person says so",
+        )
+        .await;
+}
+
+/// One action on the person's automations, taken by the person on a device of theirs: what it
+/// answered, or why it was not taken.
+fn on_automations(
+    automations: &PersonEvents,
+    given: &Given,
+    action: &str,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let request = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: person_events::target(action),
+        argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let answer = automations
+        .serve(
+            WorkspaceId::parse(&given.workspace).unwrap(),
+            &given.person(),
+            RemoteActionMessage::Invoke(request),
+        )
+        .and_then(|answer| answer.wait_timeout(Duration::from_secs(5)).ok().flatten());
+    match answer {
+        Some(RemoteActionMessage::Receipt(receipt)) => match receipt.status {
+            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+            other => Err(format!("{other:?}")),
+        },
+        _ => Err("an action is answered with its receipt".to_owned()),
+    }
+}
+
+/// A task waits for one of its person's automations. When that automation comes, the server
+/// tells the task to go on with what the automation says: no model is asked for the telling,
+/// the task's agent is asked again from the issue, and an automation the task does not wait for
+/// tells it nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_task_goes_on_when_the_automation_it_waits_for_comes() {
+    let given = given().await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
+    given.answered(&agents, now_ms()).await;
+    let kept = crate::support::scratch_dir();
+    let automations =
+        PersonEvents::start(given.workspaces.clone(), kept.path().to_path_buf(), None);
+    let set_up = |name: &str, at_ms: i64, instruction: &str| {
+        on_automations(
+            &automations,
+            &given,
+            person_events::SET_UP,
+            &json!({"name": name, "when": format!("once at {at_ms} ms"), "instruction": instruction}),
+        )
+        .expect("its person sets the automation up")["id"]
+            .as_str()
+            .expect("an automation has an id")
+            .to_owned()
+    };
+
+    // The task waits for the venue's answer, two days at the most.
+    let comes_ms = now_ms() + 2_500;
+    let venue = set_up(
+        "The venue's answer",
+        comes_ms,
+        "The venue confirmed the date.",
+    );
+    let until = now_ms() + 2 * DAY_MS;
+    given
+        .on_issue(
+            "wait",
+            json!({"waits": [{"kind": "change", "what": "the venue's answer", "event": venue}],
+                   "until_ms": until}),
+        )
+        .await
+        .expect("the task waits for the automation");
+    given
+        .nothing_owed(&agents, now_ms(), "it waits for the automation")
+        .await;
+    let calls = asked.lock().unwrap().len();
+
+    // Another automation of its person comes first: the task does not wait for that one.
+    set_up("Something else", now_ms() + 300, "The newsletter went out.");
+
+    // The venue's automation comes: the server itself tells the task to go on.
+    let deadline = tilo_test_env::hang_deadline();
+    let resumed = loop {
+        if let Some(resumed) = given.held().await.work.and_then(|work| work.resumed) {
+            break resumed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the automation never told the task to go on"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(resumed.cause, "The venue confirmed the date.");
+    assert!(
+        resumed.at_ms >= comes_ms,
+        "only the automation it waits for told it, at its own moment"
+    );
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        calls,
+        "telling it to go on asks no model"
+    );
+    assert_eq!(given.held().await.work.unwrap().until_ms, None);
+
+    // Its agent is asked again from the issue, with the automation's words.
+    let turn = given.answered(&agents, now_ms()).await;
+    assert!(turn.cause.starts_with("resumed-"), "{}", turn.cause);
+    let again = told(&asked);
+    assert!(again.contains("The venue confirmed the date."), "{again}");
+    given
+        .nothing_owed(
+            &agents,
+            until,
+            "the deadline it no longer waits for wakes nothing",
         )
         .await;
 }

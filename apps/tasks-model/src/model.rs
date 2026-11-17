@@ -28,7 +28,7 @@ pub mod search;
 mod tracker_area;
 mod work;
 
-pub use asks::{Asked, IssueAsk, agent_asks, agent_asks_at};
+pub use asks::{Asked, IssueAsk, agent_asks, agent_asks_at, waiting_for};
 pub use effect::{NOTE_KIND, NOTES, TasksEffect};
 pub use goal::Area;
 pub use issue::{

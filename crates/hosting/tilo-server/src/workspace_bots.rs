@@ -377,6 +377,7 @@ pub mod installed;
 pub mod kept;
 pub mod membership;
 pub mod requested;
+mod task_waits;
 
 #[cfg(test)]
 mod tests;
