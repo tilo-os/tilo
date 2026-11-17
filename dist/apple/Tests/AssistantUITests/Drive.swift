@@ -423,6 +423,14 @@ final class Recording: AssistantSource, @unchecked Sendable {
     func reach() -> AsyncStream<Reach> { inner.reach() }
     func pair(with link: PairingLink) async throws { note("pair(\(link.url))"); try await inner.pair(with: link) }
     func signOut() async { note("signOut()"); await inner.signOut() }
+    func answerPairing(goOn: Bool) async { note("answerPairing(\(goOn))"); await inner.answerPairing(goOn: goOn) }
+    func setup() -> AsyncStream<Setup> { inner.setup() }
+    func makeAssistant() async throws { note("makeAssistant()"); try await inner.makeAssistant() }
+    func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {
+        // Written down as anything that writes calls down would see it: the key says nothing of itself.
+        note("link(\(provider), \(String(reflecting: key)))")
+        return try await inner.link(provider, key: key)
+    }
     func conversation(_ chat: Chat) -> AsyncStream<ConversationChange> { inner.conversation(chat) }
     func earlier(in chat: Chat, before item: Item.ID) async throws -> [Item] {
         note("earlier(\(chat), \(item))"); return try await inner.earlier(in: chat, before: item)

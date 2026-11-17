@@ -302,12 +302,33 @@ it. Where the page says which workspace is the person's own, the app goes there,
 that is where the assistant lives. What Tilo cannot do from an app yet is refused with a
 sentence: tasks, files, pausing the assistant, a password manager, connections.
 
-**Which agent is the assistant.** The source reads Chat's list of the workspace's agents
-(`chat.agent`) and takes the one the person keeps. Tilo's page publishes that list to nothing
-outside its own windows yet. Until it does, the app is told the agent by its id
-(`TiloAssistantAgent` in the app's settings, or `-TiloAssistantAgent assistant` on the
-command line; `--assistant` for the program with no window), and the assistant is made in
-Tilo's own Assistant window.
+**Which agent is the assistant, and the first time.** When its device gets in, the app asks
+the workspace's server, as the person on this device, which agents the workspace keeps
+(`chat.agent`, through the device's entry: `TiloEngine.askAgents`). The assistant is the
+active agent the person keeps that no outside client connects as and that is nobody's
+sub-agent, the earliest made. Where the server answers that the person keeps none, the app
+makes one through that same resource, with Chat's own `create-agent` and then the action
+that has the server answer for it, as Tilo's own Assistant window does. Only the server's
+word makes one: a page that just got in may not hold the workspace's agents yet. On a page
+that hands an app no way to its server, the assistant is found in what the page's own window
+of Chat publishes, and nothing is made. No setting names an agent. What is in the way is
+said in the main chat (`AssistantSource.setup()`): that the assistant is being set up, or
+the server's own sentence where it refused, with Try again.
+
+**The provider step.** While no provider of the person's has a key, the main chat says so
+and offers the step: the person picks a provider and types a key of their own into the
+protected field, the one field of the app a secret is typed into (`ProtectedField`), and
+`link` carries it to their server, which keeps it in their vault. The models the server then
+lists are offered, and the one chosen answers and works in the main chat. The server offers
+no list of the providers it links by name yet, so the four names its `add-preset` knows are
+written in `TiloSource`.
+
+**What Tilo asks before it pairs.** Tilo's page asks "Add this device?" before it asks
+anyone to let the device in, and says whose devices it would join and which server adds it.
+The engine tells the app the page's own sentences and its own words for the two ways on
+(`TiloEngine.State.asking`), the way in shows them, and only the person's press goes on or
+stops, as a press of the page's own button (`answerPairing`). Nothing in the app answers for
+them; in the programs with no window, whoever drives them does.
 
 **The page's word of a change.** Tilo's page says `tiloChanges` at every frame it draws and
 at every word of its session, many times a second while nothing happens. The engine hands

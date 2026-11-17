@@ -35,12 +35,63 @@ public struct Person: Identifiable, Hashable, Sendable {
 public enum Session: Equatable, Sendable {
     /// Nobody is signed in on this device. The window shows the way in.
     case signedOut
+    /// A link was taken, and Tilo asks before anything else: whose devices this one would join
+    /// and which server adds it. The window shows what Tilo says and goes on only when the
+    /// person presses.
+    case asked(PairingAsk)
     /// A link was taken, and a device where the person is signed in has yet to say yes.
     case pairing
     /// A device where the person is signed in asks whether it shows this code. The window shows
     /// it, so the person compares the two before they approve there.
     case confirming(code: String)
     case signedIn(Person)
+}
+
+/// What Tilo asks a person before a device is paired with a link, in Tilo's own sentences and
+/// with its own words for the two ways on. A link is written by whoever made it, so the person
+/// reads whose devices this one would join, and on which server, before anyone is asked.
+public struct PairingAsk: Equatable, Sendable {
+    public var heading: String
+    /// Whose device this becomes, which server adds it, and what follows from that.
+    public var said: [String]
+    /// What going on is called, and what stopping is called.
+    public var go: String
+    public var stop: String
+
+    public init(heading: String, said: [String], go: String, stop: String) {
+        self.heading = heading
+        self.said = said
+        self.go = go
+        self.stop = stop
+    }
+}
+
+/// What stands between the person and their assistant's first answer, in the order it is
+/// settled: the assistant itself, then a provider of their own, then a model of it.
+public enum Setup: Equatable, Sendable {
+    /// Not known yet, or nothing to say of it: the main chat shows nothing.
+    case unknown
+    /// The person's assistant is being found, or made where they keep none.
+    case findingAssistant
+    /// It could not be found or made. The sentence says why, in Tilo's own words where it has any.
+    case noAssistant(String)
+    /// No provider is linked. These can be, each with a key of the person's own.
+    case needsProvider([ProviderChoice])
+    /// A provider is linked and no model answers in the main chat yet. These are offered.
+    case needsModel([ModelChoice])
+    case ready
+}
+
+/// A model provider the person can link with a key of their own.
+public struct ProviderChoice: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<ProviderChoice>
+    public var id: ID
+    public var name: String
+
+    public init(id: ID, name: String) {
+        self.id = id
+        self.name = name
+    }
 }
 
 /// Whether the person's Tilo answers right now.

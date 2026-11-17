@@ -31,11 +31,13 @@ public struct ConversationView: View {
                         if let head {
                             Text(head).font(.small12).foregroundStyle(Token.ink3).accessibilityLabel(head.spoken)
                         }
-                        if conversation.isLoaded, rows.isEmpty { empty }
+                        if conversation.isLoaded, rows.isEmpty, !setsUp { empty }
                         if let agent = liveAgent, let thing = agent.live { LiveThingPlace(thing: thing) }
                         ForEach(rows) { row in
                             RowView(row: row, chat: chat, picturedSecret: picturedSecret).id(row.id)
                         }
+                        // What stands between the person and a first answer is said where that answer would stand.
+                        if chat == .main { SetupStep() }
                         if conversation.isAnswering {
                             Fine(words: "\(AssistantWords.answering.said)…").padding(.leading, 14)
                         }
@@ -66,6 +68,15 @@ public struct ConversationView: View {
 
     private var liveAgent: SubAgent? {
         if case .subAgent(let id) = chat { model.subAgent(id) } else { nil }
+    }
+
+    /// Whether the main chat has something to say of its own first run. Then it is not empty.
+    private var setsUp: Bool {
+        guard chat == .main else { return false }
+        switch model.setup {
+        case .unknown, .ready: return false
+        case .findingAssistant, .noAssistant, .needsProvider, .needsModel: return true
+        }
     }
 
     /// The app starts empty: before anything was said, the conversation says so.

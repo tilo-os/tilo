@@ -126,6 +126,13 @@ enum Screens {
         var out = MemorySource.Content()
         out.session = .signedOut
         screens.append(Screen(name: "way-in", size: window, view: rooted(await model(out), scheme) { MacWindow() }))
+        // The first run: what Tilo asks before it pairs, and the provider step in the main chat.
+        var asked = MemorySource.Content()
+        asked.session = .asked(Drawing.pairingAsk)
+        screens.append(Screen(name: "way-in-asked", size: window, view: rooted(await model(asked), scheme) { MacWindow() }))
+        var first = empty
+        first.setup = .needsProvider(Drawing.providers)
+        screens.append(Screen(name: "first-run-provider", size: window, view: rooted(await model(first), scheme) { MacWindow() }))
         screens.append(Screen(name: "empty", size: window, view: rooted(await model(empty), scheme) { MacWindow() }))
         screens.append(Screen(name: "lock-screen", size: CGSize(width: 300, height: 470), view: rooted(await model(empty), scheme) { LockScreenBoard() }))
         screens.append(Screen(name: "live-activities", size: CGSize(width: 393, height: 560), view: rooted(await model(empty), scheme) { LiveBoard() }))

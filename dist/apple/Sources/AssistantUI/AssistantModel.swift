@@ -28,6 +28,10 @@ public final class AssistantModel {
     public private(set) var supervision = Supervision()
     public private(set) var conversations: [Chat: Conversation] = [:]
     public private(set) var models: [ModelChoice] = []
+    /// What stands between the person and their assistant's first answer.
+    public private(set) var setup = Setup.unknown
+    /// What Tilo said before it asked whether to pair this device, kept while its code is compared.
+    public private(set) var pairingSaid: [String] = []
 
     public var place = Place.chat(.main)
     public var showsSidebar = true
@@ -69,7 +73,8 @@ public final class AssistantModel {
     /// Begin following the source. Calling it again changes nothing.
     public func start() {
         guard listeners.isEmpty else { return }
-        follow(source.session()) { $0.session = $1 }
+        follow(source.session()) { $0.take($1) }
+        follow(source.setup()) { $0.setup = $1 }
         follow(source.reach()) { $0.reach = $1 }
         follow(source.subAgents()) { model, agents in
             model.subAgents = agents
@@ -88,7 +93,8 @@ public final class AssistantModel {
             for await value in stream { return value }
             return nil
         }
-        session = await first(source.session())
+        if let stands = await first(source.session()) { take(stands) }
+        setup = await first(source.setup()) ?? .unknown
         reach = await first(source.reach()) ?? .reachable
         subAgents = await first(source.subAgents()) ?? []
         tasks = await first(source.tasks()) ?? []
@@ -100,6 +106,17 @@ public final class AssistantModel {
             conversation.apply(change)
             conversations[chat] = conversation
         }
+    }
+
+    /// Where the device stands now. Whose devices it would join and on which server is kept
+    /// from the moment Tilo asked until the device is in, or out again.
+    private func take(_ stands: Session) {
+        switch stands {
+        case .asked(let ask): pairingSaid = Array(ask.said.prefix(2))
+        case .signedOut, .signedIn: pairingSaid = []
+        case .pairing, .confirming: break
+        }
+        session = stands
     }
 
     private func follow<Value: Sendable>(_ stream: AsyncStream<Value>, _ take: @escaping (AssistantModel, Value) -> Void) {
@@ -318,6 +335,26 @@ public final class AssistantModel {
             guard await self.call({ older = try await self.source.earlier(in: chat, before: first.id) }) else { return }
             self.conversations[chat]?.prepend(older)
         }
+    }
+
+    /// The person's answer to what Tilo asked before pairing: go on, or stop. A button's press
+    /// calls this and nothing else does.
+    public func answerPairing(goOn: Bool) {
+        Task { await self.source.answerPairing(goOn: goOn) }
+    }
+
+    /// Find the person's assistant once more, and make it where they keep none.
+    public func makeAssistant() {
+        Task { await self.call { try await self.source.makeAssistant() } }
+    }
+
+    /// Hand the key typed in the protected field to the person's vault, for this provider.
+    /// Says whether it was taken; the models that can be chosen are held from then on.
+    public func link(_ provider: ProviderChoice.ID, key: Secret) async -> Bool {
+        var offered: [ModelChoice] = []
+        guard await call({ offered = try await self.source.link(provider, key: key) }) else { return false }
+        models = offered
+        return true
     }
 
     /// Pair this device with the link in what was scanned or pasted.

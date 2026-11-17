@@ -44,6 +44,13 @@
 "nothing-yet-body" = "Write to your assistant below.";
 "live-thing" = "Live view";
 "attachment" = "Attachment";
+"finding-assistant" = "Setting up your assistant";
+"needs-provider" = "No model provider is linked yet, so your assistant cannot answer. Choose a provider and type your own key for it below.";
+"provider-key" = "Your key for {name}";
+"link-provider" = "Link {name}";
+"needs-model" = "A provider is linked. Choose the model your assistant answers on.";
+"choose-model" = "Choose a model";
+"answers-on" = "Your assistant answers on {model}";
 "started-by-main" = "started {time} by the main agent";
 "started-by-you" = "started {time} by you";
 "cannot-read-main" = "it cannot read the main chat";
@@ -112,7 +119,7 @@
 "model" = "Model";
 "model-note" = "From your Tilo providers · sub-agents may use a smaller one";
 "no-model" = "No model yet";
-"no-model-note" = "Link a provider in Tilo, then choose a model here";
+"no-model-note" = "Link a provider in the main chat, then choose a model here";
 "change" = "Change";
 "messages-today" = "Messages today";
 "tokens-today" = "Tokens today";

@@ -18,6 +18,7 @@ import WebKit
 // of Chat as it arrives (each read is started by the page's own word that something changed,
 // never by a clock), and takes steps on standard input, one JSON object a line:
 //   {"do": "send", "kind": "conversation", "id": "c_chat", "name": "chat", "text": "…"}
+//   {"do": "add-device"}  {"do": "stop-pairing"}   the answer to what the page asks before it pairs
 //   {"do": "window"}                      the web view goes into a window nobody can see
 //   {"do": "show", "id": "doc", "app": "so.tilo.word-processor", "record": "…"}   or "new": true
 //   {"do": "text", "id": "doc"}           what the live document reads as
@@ -88,6 +89,9 @@ final class Probe {
             var line: [String: JSON] = ["state": "arriving", "step": .string(step), "s": seconds]
             if step == "load", let why = engine.lastStop { line["stoppedBefore"] = .string(String(why.prefix(300))) }
             say(.object(line))
+        case .asking(let ask):
+            // The page asks before it pairs. Whoever drives the probe is its person: `add-device` goes on.
+            say(["state": "asking", "heading": .string(ask.heading), "said": .array(ask.said.map(JSON.string)), "s": seconds])
         case .pairing(let code):
             if let codeFile { keep(code, in: codeFile) }
             say(["state": "pairing", "s": seconds])
@@ -178,6 +182,8 @@ final class Probe {
             } catch {
                 say(["error": .string("reading the document: \(error)")])
             }
+        case "add-device", "stop-pairing":
+            say(["answered": .bool(await engine.answerPairing(goOn: what == "add-device"))])
         case "click":
             guard let x = step["x"]?.number, let y = step["y"]?.number else { say(["error": "click takes x and y"]); return }
             await click(at: NSPoint(x: x, y: y))

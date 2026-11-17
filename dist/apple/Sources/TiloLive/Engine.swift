@@ -38,6 +38,9 @@ public final class TiloEngine: NSObject {
         case away
         /// On its way in. The word is the page's own step: `load`, `join`, `open`, `draw`.
         case arriving(String)
+        /// The page asks before it pairs: whose device this becomes and which server adds it,
+        /// in the page's own sentences. It goes on only when the person says so (`answerPairing`).
+        case asking(PairingAsk)
         /// A device where the person is signed in is being asked. It shows this same code.
         case pairing(code: String)
         /// In. The route names the workspace and the app whose records the page holds.
@@ -46,6 +49,18 @@ public final class TiloEngine: NSObject {
         case refused(String)
         /// The page could not go on.
         case failed(String)
+    }
+
+    /// What Tilo's page asks before a device is paired with a link: its own sentences, and its
+    /// own words for the two ways on. A link is written by whoever made it, so the page says
+    /// whose devices this one would join and which server adds it before it asks anyone.
+    public struct PairingAsk: Equatable, Sendable {
+        public let heading: String
+        /// Whose device this becomes, which server adds it, and what follows from that.
+        public let said: [String]
+        /// What the page calls going on, and what it calls stopping.
+        public let go: String
+        public let stop: String
     }
 
     public enum Problem: Error, Equatable, Sendable {
@@ -163,6 +178,17 @@ public final class TiloEngine: NSObject {
     public func open(route: String) throws(Problem) {
         guard let address = EngineAddress.page(of: EngineAddress.chat, in: route, of: settings) else { throw .notOfThisSite }
         go(to: address, in: EngineAddress.workspace(of: route))
+    }
+
+    /// The person's answer to what the page asks before it pairs (`State.asking`): go on, or
+    /// stop. It presses the page's own button and nothing else, and says whether the page was
+    /// asking. Only the person's own press leads here: the engine never answers by itself.
+    @discardableResult
+    public func answerPairing(goOn: Bool) async -> Bool {
+        guard case .asking = state else { return false }
+        let pressed = try? await view.callAsyncJavaScript("return globalThis.__tiloLive?.pairing(given, goOn) === true",
+                                                          arguments: ["given": pass, "goOn": goOn], in: nil, contentWorld: .page)
+        return pressed as? Bool ?? false
     }
 
     /// Put the page away. The engine stands nowhere until it is asked to pair or to open
@@ -398,13 +424,15 @@ public final class TiloEngine: NSObject {
         case "state":
             stand(entry: said["entry"] as? String ?? "", arrival: said["arrival"] as? String ?? "",
                   code: said["code"] as? String ?? "", status: said["status"] as? String ?? "",
-                  route: said["route"] as? String ?? "", mounted: said["mounted"] as? Bool ?? false)
+                  route: said["route"] as? String ?? "", mounted: said["mounted"] as? Bool ?? false,
+                  ask: PairingAsk(said["ask"]))
         default:
             break
         }
     }
 
-    private func stand(entry: String, arrival: String, code: String, status: String, route: String, mounted: Bool) {
+    private func stand(entry: String, arrival: String, code: String, status: String, route: String, mounted: Bool,
+                       ask: PairingAsk?) {
         switch entry {
         case "open":
             guard mounted else { state = .arriving("draw"); return }
@@ -452,6 +480,11 @@ public final class TiloEngine: NSObject {
         case "failed":
             stopped(status)
         default:
+            // The page's question stands before anything else is asked of anyone.
+            if let ask {
+                state = .asking(ask)
+                return
+            }
             state = !code.isEmpty && arrival == "join" ? .pairing(code: code) : .arriving(arrival)
         }
     }
@@ -492,6 +525,16 @@ public final class TiloEngine: NSObject {
         let standard = origin.protocol == "https" ? 443 : 80
         let port = origin.port == 0 || origin.port == standard ? "" : ":\(origin.port)"
         return "\(origin.protocol)://\(origin.host)\(port)"
+    }
+}
+
+extension TiloEngine.PairingAsk {
+    /// As the engine's script says the page's card: its heading, its sentences, its two buttons.
+    fileprivate init?(_ card: Any?) {
+        guard let card = card as? [String: Any], let go = card["go"] as? String, let stop = card["stop"] as? String,
+              !go.isEmpty, !stop.isEmpty
+        else { return nil }
+        self.init(heading: card["heading"] as? String ?? "", said: card["said"] as? [String] ?? [], go: go, stop: stop)
     }
 }
 

@@ -274,4 +274,98 @@ final class SecretTests: XCTestCase {
         XCTAssertEqual(Drive.onScreen(), [])
     }
 }
+
+/// The first run, in a window that is on no screen: what Tilo asks before it pairs goes on only
+/// at the person's press, and the provider step's protected field hands its key to the link and
+/// to nothing else.
+@MainActor
+final class SetupTests: XCTestCase {
+    private let marker = "Zq7-made-up-key-4tT"
+
+    func testWhatTiloAsksBeforePairingStandsInTheWindowAndOnlyAPressAnswersIt() async throws {
+        var content = MemorySource.Content()
+        content.session = .asked(Drawing.pairingAsk)
+        content.pairsAs = Drawing.person
+        var run = try await Started.app(content)
+        // Tilo's own sentences, whole, and its own words on the two buttons.
+        for sentence in [Drawing.pairingAsk.heading] + Drawing.pairingAsk.said {
+            XCTAssertTrue(run.drive.shows(sentence), "the window does not say “\(sentence)”:\n\(run.drive.said())")
+        }
+        XCTAssertNotNil(run.drive.node(Drawing.pairingAsk.go, role: "AXButton"))
+        XCTAssertNotNil(run.drive.node(Drawing.pairingAsk.stop, role: "AXButton"))
+        XCTAssertFalse(run.drive.has(AssistantWords.pasteLink.said), "while Tilo asks, nothing else is offered")
+        // Nobody pressed, so nothing was answered.
+        await run.drive.settle(400)
+        XCTAssertEqual(run.source.calls("answerPairing"), [])
+        XCTAssertEqual(run.model.session, .asked(Drawing.pairingAsk))
+        run.drive.press(Drawing.pairingAsk.go, role: "AXButton")
+        await run.drive.until("the person's yes to reach the source") { run.source.calls("answerPairing") == ["answerPairing(true)"] }
+        await run.drive.until("the device to be in") { run.model.person == Drawing.person }
+        run.end()
+
+        // Stop leaves the device out, at the way in.
+        run = try await Started.app(content)
+        defer { run.end() }
+        run.drive.press(Drawing.pairingAsk.stop, role: "AXButton")
+        await run.drive.until("the person's no to reach the source") { run.source.calls("answerPairing") == ["answerPairing(false)"] }
+        await run.drive.until("the way in to stand again") { run.model.session == .signedOut && run.drive.has(AssistantWords.pasteLink.said) }
+    }
+
+    func testTheProviderStepStandsInTheMainChatAndItsKeyReachesOnlyTheLink() async throws {
+        var content = MemorySource.Content()
+        content.session = .signedIn(Drawing.person)
+        content.setup = .needsProvider(Drawing.providers)
+        content.offered = Drawing.models
+        let run = try await Started.app(content)
+        defer { run.end() }
+        let drive = run.drive
+        let board = NSPasteboard.general
+        let count = board.changeCount
+        // The main chat says that no provider is linked, where an answer would stand.
+        XCTAssertTrue(drive.shows(AssistantWords.needsProvider.said), drive.said())
+        XCTAssertFalse(drive.shows(AssistantWords.nothingYet.said), "a chat with something to say of its first run is not empty")
+        // The other provider is picked and the first again: the field is for the one picked.
+        drive.press("Google Gemini", role: "AXButton")
+        await drive.until("the other provider to be the one to link") {
+            drive.node(AssistantWords.linkProvider.said(["name": "Google Gemini"]), role: "AXButton") != nil
+        }
+        drive.press("Anthropic", role: "AXButton")
+        let link = AssistantWords.linkProvider.said(["name": "Anthropic"])
+        await drive.until("the first provider to be the one to link") { drive.node(link, role: "AXButton") != nil }
+        // One protected field, announced by what it is for, and no other field for a key.
+        XCTAssertEqual(drive.tree().filter { $0.subrole == "AXSecureTextField" }.map(\.label),
+                       [AssistantWords.providerKey.said(["name": "Anthropic"])])
+        XCTAssertFalse(drive.node(link, role: "AXButton")?.isEnabled ?? true, "nothing to link before something is typed")
+        func find(_ view: NSView) -> NSSecureTextField? {
+            if let found = view as? NSSecureTextField { return found }
+            for sub in view.subviews { if let found = find(sub) { return found } }
+            return nil
+        }
+        drive.click(try XCTUnwrap(run.window.contentView.flatMap(find)))
+        drive.type(marker)
+        await drive.until("the link to be offered") { drive.node(link, role: "AXButton")?.isEnabled ?? false }
+        XCTAssertFalse(drive.said().contains(marker), "the window reads the key out")
+        drive.press(link, role: "AXButton")
+        await drive.until("the vault to be handed the key") { run.source.inner.key(for: "anthropic") != nil }
+        XCTAssertEqual(run.source.inner.key(for: "anthropic")?.handOver(), marker, "the vault gets every letter that was typed")
+        // The one call that carried it, and it says nothing of the key.
+        XCTAssertEqual(run.source.calls("link"), ["link(anthropic, Secret)"])
+        for call in run.source.calls { XCTAssertFalse(call.contains(marker), "a call carried the key: \(call.prefix(40))") }
+        // The step goes on to the models that were offered. No field is left, and nothing of
+        // the window, the model or the pasteboard holds the key.
+        await drive.until("the models to be offered") { drive.shows(AssistantWords.needsModel.said) }
+        XCTAssertEqual(run.model.setup, .needsModel(Drawing.models))
+        XCTAssertNil(drive.tree().first { $0.subrole == "AXSecureTextField" }, "a key that is kept leaves no field behind")
+        XCTAssertFalse(drive.said().contains(marker))
+        var held = ""
+        dump([run.model.drafts as Any, run.model.conversations as Any, run.model.models as Any, run.model.problem as Any], to: &held)
+        XCTAssertFalse(held.contains(marker))
+        XCTAssertEqual(board.changeCount, count, "something was put on the pasteboard")
+        XCTAssertTrue(drive.tree().contains { $0.role == "AXMenuButton" && $0.name == AssistantWords.chooseModel.said },
+                      "the models are offered to choose from:\n\(drive.said())")
+        // The choice is the source's own choice of a model, and then nothing is in the way.
+        run.model.choose(Drawing.models[1].id)
+        await drive.until("the chosen model to answer") { run.model.setup == .ready && run.model.supervision.model == Drawing.models[1].name }
+    }
+}
 #endif

@@ -18,6 +18,7 @@ final class TiloSourceTests: XCTestCase {
     private var asked: [URL] = []
     private var sessions: [Session] = []
     private var changes: [ConversationChange] = []
+    private var setups: [Setup] = []
     private var listening: [Task<Void, Never>] = []
 
     private func start(_ mainChat: TiloSource.MainChat = .conversation(id: "c_chat", name: "chat"), livesInOwn: Bool = false) async throws {
@@ -30,6 +31,7 @@ final class TiloSourceTests: XCTestCase {
         listening = [
             Task { for await session in source.session() { self.sessions.append(session) } },
             Task { for await change in source.conversation(.main) { self.changes.append(change) } },
+            Task { for await setup in source.setup() { self.setups.append(setup) } },
         ]
         engine.view.loadHTMLString(Self.page, baseURL: URL(string: "\(Self.site)/app/"))
         try await until("the page is there") {
@@ -74,12 +76,41 @@ final class TiloSourceTests: XCTestCase {
         configured: true, models: [{id: 'm-1', label: 'Model one'}, {id: 'm-2', label: 'Model two'}], defaultModel: 'm-1'},
         {id: 'openai', name: 'OpenAI', protocol: 'openai', endpoint: 'https://api.openai.com', configured: false, models: [{id: 'o-1', label: 'Other'}]}],
         defaultProvider: 'anthropic', assignments: window.assignments});
+      // A person who linked no provider yet (`window.unlinked`): what they add stands here.
+      window.added = [];
+      window.keys = [];
+      const own = () => window.unlinked ? {providers: window.added, defaultProvider: null, assignments: window.assignments} : providers();
+      // An agent as the workspace keeps one. `window.agents` is what its server keeps and offers
+      // a person's device; a server that has none of it offers no such read.
+      window.kept = (id, more = {}) => ({id, name: id, keeper: {person: ADA}, model: null, mcp_client: null, sub: null,
+        state: {$variant: 'active'}, created_at: 1794900000000, ...more});
+      // Chat's own document of the workspace, as its server names what it offers of one, and
+      // what a person's device asked of the server: `chat read`, `tilo.models list`.
+      const CHAT = 'record:so.tilo.chat:@tilo:package-primary';
+      window.asks = [];
+      const noAgents = () => { throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'}); };
+      // As the page that asks before it pairs: its card, its sentences, its two buttons.
+      window.askWhose = (whose, server) => {
+        const card = document.createElement('div'); card.className = 'tilo-entry-card tilo-pair'; card.dataset.card = 'pair-whose';
+        const heading = document.createElement('h2'); heading.textContent = 'Add this device?';
+        const line = text => { const said = document.createElement('p'); said.textContent = text; return said; };
+        const go = document.createElement('button'); go.className = 'tilo-entry-primary'; go.textContent = 'Add this device';
+        const stop = document.createElement('button'); stop.textContent = 'Stop';
+        go.addEventListener('click', () => { card.remove(); window.agreed = true; });
+        stop.addEventListener('click', () => { card.remove(); window.agreed = false; });
+        card.append(heading, line(whose), line(server), go, stop);
+        document.body.append(card);
+      };
       const device = Object.freeze({
         person: ADA, workspace: 'ws-1',
         catalogue: async () => ({actions: []}), status: async invocation => ({invocation, state: 'succeeded'}),
-        ownWorkspace: async () => ({id: 'own-7', name: 'Mine', origin: 'https://host.example:8443'}),
+        ownWorkspace: async () => {
+          if (window.noOwn) throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'});
+          return {id: 'own-7', name: 'Mine', origin: 'https://host.example:8443'};
+        },
         invoke: async (target, argument) => {
           window.hostAsked.push(target.provider + ' ' + target.address.action);
+          window.asks.push(target.provider.replace(CHAT, 'chat') + ' ' + target.address.action);
           const done = value => ({invocation: 'i', state: 'succeeded', output: {value, resources: []}});
           switch (target.provider + ' ' + target.address.action) {
             case 'tilo.vault add':
@@ -87,13 +118,48 @@ final class TiloSourceTests: XCTestCase {
               return done({reference: 'vault.item:0a', kind: argument.kind, belongsTo: argument.belongsTo, addedAt: 1794900000});
             case 'tilo.vault list':
               return done({items: window.vault.map((item, at) => ({reference: 'vault.item:0' + at, kind: item.kind, belongsTo: item.belongsTo, addedAt: 1794900000}))});
-            case 'tilo.models list': return done(providers());
+            case 'tilo.models list': return done(own());
+            case 'tilo.models add-preset': {
+              const made = {id: argument.preset, name: argument.preset === 'anthropic' ? 'Anthropic' : argument.preset, protocol: argument.preset,
+                endpoint: 'https://api.' + argument.preset + '.example', configured: false, models: []};
+              window.added.push(made);
+              return done(made);
+            }
+            case 'tilo.models set-key': {
+              window.keys.push(argument.key);
+              const keyed = window.added.find(one => one.id === argument.provider);
+              keyed.configured = true;
+              return done(keyed);
+            }
+            case 'tilo.models refresh-models': {
+              const listed = window.added.find(one => one.id === argument.provider);
+              listed.models = [{id: 'm-1', label: 'Model one'}, {id: 'm-2', label: 'Model two'}];
+              return done({provider: listed});
+            }
+            case CHAT + ' read': {
+              if (!window.agents) noAgents();
+              const one = target.address.resource.split('/')[2];
+              // A server that lists the agents and lets nobody read one of them (`window.rowsOnly`).
+              if (one && window.rowsOnly) noAgents();
+              if (one) return done(window.agents.find(agent => agent.id === one) ?? null);
+              return done({kind: 'chat.agent', agents: window.agents.map(agent => ({item: 'chat.agent/agents/' + agent.id, name: agent.name}))});
+            }
+            case CHAT + ' create-agent':
+              if (!window.agents) noAgents();
+              if (window.mayNotMake) throw Object.assign(new Error('Your role in this workspace may not make an agent'), {code: 'not_permitted'});
+              window.madeWith = argument;
+              window.agents.push(window.kept(argument.name.toLowerCase(), {name: argument.name, created_at: 1794900009000 + window.agents.length}));
+              return done(null);
+            case CHAT + ' set-agent-on-host':
+              // What was asked is kept on the agent as it was said: which agent, and the flag.
+              Object.assign(window.agents.find(agent => agent.id === argument.agent), argument);
+              return done(null);
             case 'tilo.models set-assignments':
               for (const kind of argument.kinds) {
                 window.assignments = window.assignments.filter(row => row.kind !== kind);
                 if (argument.model) window.assignments.push({kind, provider: argument.provider, model: argument.model});
               }
-              return done(providers());
+              return done(own());
             case 'tilo.learned list':
               return done({workspace: 'ws-1', revision: 'r' + window.learned.length, facts: window.learned});
             case 'tilo.learned forget':
@@ -161,6 +227,11 @@ final class TiloSourceTests: XCTestCase {
               touch();
               return said(null);
             }
+            // What the page's own window of Chat publishes of the workspace's agents, where it does.
+            if (window.pageAgents && resource === 'chat.agent' && action === 'read')
+              return said({kind: 'chat.agent', agents: window.pageAgents.map(one => ({item: 'chat.agent/agents/' + one.id, name: one.name}))});
+            if (window.pageAgents && resource.startsWith('chat.agent/agents/') && action === 'read')
+              return said(window.pageAgents.find(one => one.id === resource.split('/')[2]) ?? null);
             return refuse(resource, action);
           },
         };
@@ -511,6 +582,204 @@ final class TiloSourceTests: XCTestCase {
         } catch let problem as SourceProblem {
             XCTAssertEqual(problem, .refused("This page hands a native app no way to its person's own providers"))
         }
+    }
+
+    // MARK: The first run
+
+    /// Chat's own name for an agent that the workspace's server answers for.
+    private static let answeredByServer = "on_host"
+
+    /// The workspace's agents by id, each with whether its server was told to answer for it.
+    private func agentsKept() async throws -> String {
+        try await page("return JSON.stringify(window.agents.map(one => [one.id, one[flag] ?? false]))", ["flag": Self.answeredByServer])
+    }
+
+    /// Whom Chat's own send was last asked to send to.
+    private func sentTo() async throws -> JSON? {
+        JSON(text: try await page("return JSON.stringify(window.heard.filter(h => h.action === 'send').map(h => h.args.to[0]))"))
+    }
+
+    func testWhereThePersonKeepsNoAssistantTheAppMakesItOnTheirServersWordAndWritesToIt() async throws {
+        try await start(.assistant)
+        // The workspace keeps agents, and none of them is hers to write to: another person's,
+        // one an outside client connects as, one that was retired, and a sub-agent of hers.
+        try await enter(device: true, """
+            window.byKind = true;
+            window.agents = [kept('scout', {keeper: {person: 'ff'.repeat(32)}}), kept('bridge', {mcp_client: 'client-1'}),
+              kept('old', {state: {$variant: 'retired'}}), kept('helper', {sub: {role: 'Researcher', stands: {$variant: 'working'}}})]
+            """)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertEqual(setups.first { $0 != .unknown }, .findingAssistant)
+        // Her server was read first, and only its word that she keeps none made one: Chat's own
+        // action with a name and nothing else, then the one that has the server answer for it.
+        let asked = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('chat ')).map(what => what.split(' ')[1]))")
+        let steps = JSON(text: asked)?.array?.compactMap(\.string) ?? []
+        XCTAssertEqual(steps.first, "read")
+        XCTAssertEqual(steps.filter { $0 != "read" }, ["create-agent", "set-agent-on-host"])
+        let with = try await page("return JSON.stringify(window.madeWith)")
+        XCTAssertEqual(with, #"{"name":"Assistant"}"#)
+        let kept = try await agentsKept()
+        XCTAssertEqual(kept, #"[["scout",false],["bridge",false],["old",false],["helper",false],["assistant",true]]"#)
+        // The main chat is her conversation with it.
+        try await source.send(Draft(text: "Good morning"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "assistant", "name": "Assistant"]])
+        try await until("what was sent stands in the main chat") { self.held.map(self.words) == ["Good morning"] }
+        // Nothing was made through the page's own window.
+        let throughPage = try await page("return String(window.heard.filter(h => h.action === 'create-agent').length)")
+        XCTAssertEqual(throughPage, "0")
+    }
+
+    func testAnAssistantThePersonKeepsIsFoundAndNoneIsMade() async throws {
+        try await start(.assistant)
+        // Two of hers: the earliest made is the assistant.
+        try await enter(device: true, """
+            window.byKind = true;
+            window.agents = [kept('later', {name: 'Later', created_at: 1794900005000}), kept('reed', {name: 'Reed', created_at: 1794900001000}),
+              kept('scout', {keeper: {person: 'ff'.repeat(32)}, created_at: 1794900000000})]
+            """)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        try await source.send(Draft(text: "Hello"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
+        let changed = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('chat ') && !what.endsWith(' read')))")
+        XCTAssertEqual(changed, "[]")
+    }
+
+    func testWhereTheServerRefusesToMakeOneTheMainChatSaysWhyAndAskingAgainMakesIt() async throws {
+        try await start(.assistant)
+        try await run("window.byKind = true; window.agents = []; window.mayNotMake = true; location.hash = '#/w/ws-1/so.tilo.chat'; enter(true)")
+        try await until("the server's refusal is said") {
+            self.setups.last == .noAssistant("Your role in this workspace may not make an agent")
+        }
+        do {
+            try await source.send(Draft(text: "Hello"), to: .main)
+            XCTFail("something was sent to nobody")
+        } catch let problem as SourceProblem {
+            XCTAssertEqual(problem, .refused("You have no assistant in this workspace yet"))
+        }
+        // Asked again once the server lets her, it is made.
+        try await run("window.mayNotMake = false")
+        try await source.makeAssistant()
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let made = try await agentsKept()
+        XCTAssertEqual(made, #"[["assistant",true]]"#)
+    }
+
+    func testAnAssistantIsMadeInThePersonsOwnWorkspaceAndNowhereElse() async throws {
+        try await start(.assistant, livesInOwn: true)
+        try await run("window.byKind = true; window.agents = []; location.hash = '#/w/ws-1/so.tilo.chat'; enter(true)")
+        try await until("the person's own workspace is asked for") { !self.asked.isEmpty }
+        // Nothing was made where the link led.
+        var made = try await page("return String(window.agents.length)")
+        XCTAssertEqual(made, "0")
+        try await run("location.hash = '#/@host.example:8443/w/own-7/so.tilo.chat'")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        made = try await agentsKept()
+        XCTAssertEqual(made, #"[["assistant",true]]"#)
+    }
+
+    func testWhereTheServerDoesNotSayWhichWorkspaceIsThePersonsOwnNoAssistantIsMade() async throws {
+        try await start(.assistant, livesInOwn: true)
+        try await run("window.byKind = true; window.agents = []; window.noOwn = true; location.hash = '#/w/ws-1/so.tilo.chat'; enter(true)")
+        try await until("the main chat says why") {
+            self.setups.last == .noAssistant("Your assistant lives in your own workspace, and this Tilo did not say which one that is")
+        }
+        let made = try await page("return String(window.agents.length)")
+        XCTAssertEqual(made, "0")
+    }
+
+    func testAServerThatDoesNotSayItsAgentsWholeIsNotTakenAtItsWordAndNoneIsMade() async throws {
+        try await start(.assistant)
+        // Her server lists an agent and lets her device read nothing of it: whether it is hers
+        // is not known, so nothing says that she keeps none.
+        try await run("window.byKind = true; window.agents = [kept('reed', {name: 'Reed'})]; window.rowsOnly = true; location.hash = '#/w/ws-1/so.tilo.chat'; enter(true)")
+        try await until("the main chat says so") {
+            self.setups.last == .noAssistant("This Tilo does not let an app find or make your assistant yet")
+        }
+        let asked = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('chat ') && !what.endsWith(' read')))")
+        XCTAssertEqual(asked, "[]")
+        let kept = try await agentsKept()
+        XCTAssertEqual(kept, #"[["reed",false]]"#)
+    }
+
+    func testAPageThatReachesNoServerFindsTheAssistantInWhatItHoldsAndMakesNone() async throws {
+        try await start(.assistant)
+        try await enter(device: false, "window.byKind = true; window.pageAgents = [kept('reed', {name: 'Reed'})]")
+        try await source.send(Draft(text: "Hello"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
+        let made = try await page("return String(window.heard.filter(h => h.action === 'create-agent').length)")
+        XCTAssertEqual(made, "0")
+    }
+
+    func testWhereNothingOffersTheWorkspacesAgentsTheMainChatSaysSoAndFindsThemWhenThePageHoldsThem() async throws {
+        try await start(.assistant)
+        try await run("window.byKind = true; location.hash = '#/w/ws-1/so.tilo.chat'; enter(false)")
+        try await until("the main chat says so") {
+            self.setups.last == .noAssistant("This Tilo does not let an app find or make your assistant yet")
+        }
+        // An agent the page holds a moment later is found at the page's next word. None is made.
+        try await run("window.pageAgents = [kept('reed', {name: 'Reed'})]; touch()")
+        try await until("the assistant is found") { if case .noAssistant = self.setups.last { false } else { true } }
+        try await source.send(Draft(text: "Hello"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
+        let made = try await page("return String(window.heard.filter(h => h.action === 'create-agent').length)")
+        XCTAssertEqual(made, "0")
+    }
+
+    func testWithNoProviderLinkedTheMainChatOffersTheStepAndTheKeyGoesToThePersonsServerOnly() async throws {
+        try await start(.assistant)
+        try await enter(device: true, "window.byKind = true; window.unlinked = true; window.agents = [kept('assistant', {name: 'Assistant'})]")
+        let linkable = [ProviderChoice(id: "anthropic", name: "Anthropic"), ProviderChoice(id: "gemini", name: "Google Gemini"),
+                        ProviderChoice(id: "openai", name: "OpenAI"), ProviderChoice(id: "openrouter", name: "OpenRouter")]
+        try await until("the step is offered") { self.setups.last == .needsProvider(linkable) }
+        do {
+            _ = try await source.link("anthropic", key: Secret(""))
+            XCTFail("nothing was taken for a key")
+        } catch let problem as SourceProblem {
+            XCTAssertEqual(problem, .refused("Nothing was typed"))
+        }
+        // A made-up key, typed as into the protected field.
+        let typed = "sk-made-up-and-typed-into-the-protected-field"
+        let offered = try await source.link("anthropic", key: Secret(typed))
+        let two = [ModelChoice(id: "anthropic/m-1", name: "Model one", provider: "Anthropic"),
+                   ModelChoice(id: "anthropic/m-2", name: "Model two", provider: "Anthropic")]
+        XCTAssertEqual(offered, two, "the models are the ones her server listed")
+        try await until("the models are offered in the main chat") { self.setups.last == .needsModel(two) }
+        // Her server got the key, in the one ask that keeps it.
+        let keys = try await page("return JSON.stringify(window.keys)")
+        XCTAssertEqual(keys, "[\"\(typed)\"]")
+        let asked = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('tilo.models ') && !what.endsWith(' list')))")
+        XCTAssertEqual(asked, #"["tilo.models add-preset","tilo.models set-key","tilo.models refresh-models"]"#)
+        // It stands nowhere else: in nothing Chat was asked, in no message, nowhere in the
+        // page's document, and in nothing the app says or keeps.
+        let leaked = try await page("return String(JSON.stringify([window.messages, window.heard, window.asks]).includes(typed)) + ' ' + String(document.documentElement.outerHTML.includes(typed))",
+                                    ["typed": typed])
+        XCTAssertEqual(leaked, "false false")
+        XCTAssertFalse(String(describing: setups).contains(typed))
+        XCTAssertFalse(String(describing: changes).contains(typed))
+        XCTAssertFalse(String(describing: defaults.dictionaryRepresentation()).contains(typed))
+        // The model that answers is one of those her server listed.
+        try await source.choose("anthropic/m-2", for: .request)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+    }
+
+    func testWhatThePageAsksBeforePairingIsWhereTheAppStandsAndOnlyThePersonsAnswerPressesIt() async throws {
+        try await start()
+        let whose = "You are adding this device to Ada Lovelace’s devices. If that is not you, stop."
+        let server = "The server that adds it is this site’s own, tilo.test."
+        _ = try await page("askWhose(whose, server); return ''", ["whose": whose, "server": server])
+        let ask = PairingAsk(heading: "Add this device?", said: [whose, server], go: "Add this device", stop: "Stop")
+        try await until("the app stands at the question") { self.sessions.last == .asked(ask) }
+        // Nothing answers for the person.
+        try await Task.sleep(for: .milliseconds(300))
+        let untouched = try await page("return String(window.agreed)")
+        XCTAssertEqual(untouched, "undefined")
+        await source.answerPairing(goOn: true)
+        let agreed = try await page("return String(window.agreed)")
+        XCTAssertEqual(agreed, "true")
     }
 
     func testSigningOutForgetsThePersonAndWhatWasHeld() async throws {
