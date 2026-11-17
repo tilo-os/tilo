@@ -16,9 +16,9 @@ use ui::resource::{DocumentId, ResourceType};
 const ADA: &str = "u-ada";
 const BEA: &str = "u-bea";
 
-/// The value a mention of `person` is stored as.
-fn mention_of(person: &str) -> String {
-    tilo_reference::Embed::Member(ui::MemberId::person(person)).mark_value()
+/// A member's id as the apps keep it: a mention's mark, or an item's author.
+fn member_value(person: &str) -> String {
+    serde_json::to_string(&ui::MemberId::person(person)).expect("a member id")
 }
 const CAI: &str = "u-cai";
 const NOTE: &str = "tab:00000000000000a1";
@@ -205,7 +205,7 @@ fn notebook_at(
     if let Some((start, end, person)) = mention {
         doc.mark(
             &block,
-            Mark::new(MARK.into(), mention_of(person), start, end),
+            Mark::new(MARK.into(), member_value(person), start, end),
             ExpandMark::None,
         )
         .unwrap();
@@ -338,7 +338,7 @@ tilo_test_env::scenario! {
         chat_part_mention(&|part, span| {
             let value = part.put_object(span, "value", ObjType::Map).unwrap();
             part.put(&value, "$variant", "str").unwrap();
-            part.put(&value, "$field/str/0", mention_of(BEA)).unwrap();
+            part.put(&value, "$field/str/0", member_value(BEA)).unwrap();
         });
     }
 
@@ -347,7 +347,7 @@ tilo_test_env::scenario! {
         chat_part_mention(&|part, span| {
             let value = part.put_object(span, "value", ObjType::Map).unwrap();
             part.put(&value, "$variant", "str").unwrap();
-            part.put(&value, "0", mention_of(BEA)).unwrap();
+            part.put(&value, "0", member_value(BEA)).unwrap();
         });
     }
 }
@@ -491,7 +491,7 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
     let messages = part.put_object(ROOT, "messages", ObjType::Map).unwrap();
     let entry = part.put_object(&messages, "m1", ObjType::Map).unwrap();
     let message = part.put_object(&entry, "v", ObjType::Map).unwrap();
-    part.put(&message, "author", ADA).unwrap();
+    part.put(&message, "author", member_value(ADA)).unwrap();
     part.put(&message, "channel", "c_general").unwrap();
     let body = part.put_object(&message, "body", ObjType::List).unwrap();
     let block = part.insert_object(&body, 0, ObjType::Map).unwrap();
@@ -612,7 +612,7 @@ fn tracker(issues: usize) -> AutoCommit {
         if at == 7 {
             doc.mark(
                 &thread,
-                Mark::new(MARK.into(), mention_of(BEA), 0, 4),
+                Mark::new(MARK.into(), member_value(BEA), 0, 4),
                 ExpandMark::None,
             )
             .unwrap();
@@ -642,7 +642,12 @@ fn comment(device: &Device, doc: &mut AutoCommit, at: usize, person: Option<&str
     if let Some(person) = person {
         doc.mark(
             &thread,
-            Mark::new(MARK.into(), mention_of(person), end, end.saturating_add(4)),
+            Mark::new(
+                MARK.into(),
+                member_value(person),
+                end,
+                end.saturating_add(4),
+            ),
             ExpandMark::None,
         )
         .unwrap();
@@ -718,7 +723,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
     let (_, all) = doc.get(ROOT, "issues").unwrap().unwrap();
     let (_, entry) = doc.get(&all, "i3").unwrap().unwrap();
     let (_, issue) = doc.get(&entry, "v").unwrap().unwrap();
-    doc.put(&issue, "author", BEA).unwrap();
+    doc.put(&issue, "author", member_value(BEA)).unwrap();
     let windows = doc.put_object(ROOT, "windows", ObjType::Map).unwrap();
     doc.put(&windows, BEA, BEA).unwrap();
     doc.commit();
