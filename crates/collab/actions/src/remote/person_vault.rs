@@ -15,10 +15,16 @@
 //! where the secret is used, and only at a place the item belongs to; each
 //! use is remembered with when, where and for whom ([`USES`]), never with
 //! what was handed.
+//!
+//! A use made with nobody watching, by an agent the person's host runs for
+//! them, asks the person first, in the conversation the agent works in.
+//! Their "Always" is a standing leave kept with the item: for that agent,
+//! that use and those places. [`USES`] lists the leaves beside the uses, and
+//! [`TAKE_BACK`] takes them back.
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActionAddress, RemoteActionTarget};
+use super::{ActionAddress, CatalogueRow, RemoteActionTarget, person_accounts, person_models};
 
 /// The provider the host answers the person's vault under.
 pub const PROVIDER: &str = "tilo.vault";
@@ -35,6 +41,10 @@ pub const REMOVE: &str = "remove";
 /// When and where an item was handed to something that signs in
 /// ([`UsesOf`]), as an [`ItemUses`].
 pub const USES: &str = "uses";
+/// Take back the standing leaves of an item ([`TakeBack`]): who may use it
+/// without its person being asked again. Answers what the item remembers
+/// then, as an [`ItemUses`].
+pub const TAKE_BACK: &str = "take-back";
 
 /// The kind of resource a reference is the address of: what a parameter that
 /// takes a secret by reference names as its resource kind.
@@ -252,6 +262,28 @@ pub struct ItemUse {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ItemUses {
     pub uses: Vec<ItemUse>,
+    /// Who may use the item without its person being asked again: the
+    /// standing leaves they gave with "Always", oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub always: Vec<StandingUse>,
+}
+
+/// One standing leave: an agent that may use the item for one use at the
+/// places named, without its person being asked again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StandingUse {
+    /// The agent, by its id: what [`TakeBack::agent`] names.
+    pub agent: String,
+    /// The name its person knew it under when they gave the leave.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub by: String,
+    /// What it may use the item for: the use's own word ([`use_word`]).
+    pub using: String,
+    /// The places the leave covers; see [`ItemView::belongs_to`].
+    pub places: Vec<String>,
+    /// When the person gave it, in seconds since the Unix epoch.
+    pub since: u64,
 }
 
 /// The item to forget.
@@ -259,6 +291,184 @@ pub struct ItemUses {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoveItem {
     pub item: ItemRef,
+}
+
+/// The item whose standing leaves to take back: every one, or only those
+/// of one agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TakeBack {
+    pub item: ItemRef,
+    /// The agent whose leaves to take back ([`StandingUse::agent`]); every
+    /// agent's when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+/// What every use by reference says of the reference it takes.
+const REFERENCE: &str = "The `reference` a question of kind `secret` was answered with \
+     (`vault.item:…`). It names the vault item and is never the secret itself.";
+/// What every use by reference says of the reason it may carry.
+const REASON: &str = "Why you need it, in one sentence your person reads when they are asked \
+     whether you may.";
+/// What every use by reference says of being asked first.
+const ASKED_FIRST: &str = "When you work with nobody watching, your person is asked first in the \
+     conversation whether you may use the item there: tell them it waits for their answer and \
+     do not make the call again. It runs when they allow it, and after their Always it runs \
+     without asking.";
+
+/// One use by reference, as a catalogue offers it.
+fn use_row(
+    (provider, resource, label): (&str, &str, &str),
+    (action, action_label): (&str, &str),
+    description: String,
+    params: Vec<crate::ActionParam>,
+) -> CatalogueRow {
+    let mut contract = crate::ActionContract {
+        // It signs in somewhere outside the workspace.
+        kind: crate::ActionKind::Outside,
+        ..crate::ActionContract::default()
+    };
+    // It takes an item's address, which a person never picks from a list.
+    contract.set_audience(crate::contract::Audience::Agents);
+    CatalogueRow::for_action(
+        provider,
+        provider,
+        crate::ActionDescriptor {
+            did: None,
+            state: crate::ActionState::default(),
+            semantic_identity: None,
+            address: ActionAddress::new(resource, action),
+            resource_kind: resource.to_owned(),
+            resource_label: label.to_owned(),
+            action_label: action_label.to_owned(),
+            keywords: Vec::new(),
+            icon: None,
+            description: Some(description),
+            locus: crate::ExecutionLocus::ServerPreferred,
+            kind: crate::OperationKind::Effect,
+            contract,
+            input: crate::InputSpec::None,
+            params,
+            view: None,
+        },
+    )
+}
+
+/// The actions that use an item by reference, as a catalogue offers them to
+/// an agent acting for the person: adding a mail account whose password the
+/// vault keeps, and keeping a provider's key from it. Each takes the item's
+/// reference ([`item_param`]) where the secret would stand, and says in its
+/// description how the reference is come by, so a model that lists the
+/// action reads how to ask and needs no instruction of its own.
+#[must_use]
+pub fn use_rows() -> Vec<CatalogueRow> {
+    use crate::{ActionParam, ParamType};
+    vec![
+        use_row(
+            (
+                person_accounts::PROVIDER,
+                person_accounts::RESOURCE,
+                "Mail accounts",
+            ),
+            (
+                person_accounts::ADD_MAIL_WITH_ITEM,
+                "Add mail account from vault",
+            ),
+            format!(
+                "Add a mail account for your person, signing in with a password their vault \
+                 keeps. You never hold the password. To get it, ask with Chat's `ask`, kind \
+                 `secret`, detail `{{kind: \"login\", belongsTo: [\"imap://<incomingHost>: \
+                <incomingPort>\", \"smtp://<outgoingHost>:<outgoingPort>\"], username}}`: your \
+                 person types it into a protected field, and the answer `filled` carries a \
+                 `reference` in its detail. Pass that reference as `password`. The item must \
+                 be a login that belongs to both servers, and it is sent nowhere else. \
+                 {ASKED_FIRST}"
+            ),
+            vec![
+                ActionParam::required("address", ParamType::Text, "The account's mail address."),
+                ActionParam::optional(
+                    "displayName",
+                    ParamType::Text,
+                    "The name mail from it carries.",
+                ),
+                ActionParam::optional(
+                    "username",
+                    ParamType::Text,
+                    "The name it signs in with, when that is neither the item's own nor the \
+                     address.",
+                ),
+                ActionParam::required(
+                    "incomingHost",
+                    ParamType::Text,
+                    "The server mail is read from (IMAP).",
+                ),
+                ActionParam::optional(
+                    "incomingPort",
+                    ParamType::Integer,
+                    "Its port; 993 when left out.",
+                ),
+                ActionParam::required(
+                    "outgoingHost",
+                    ParamType::Text,
+                    "The server mail is sent through (SMTP).",
+                ),
+                ActionParam::optional(
+                    "outgoingPort",
+                    ParamType::Integer,
+                    "Its port; 465 when left out.",
+                ),
+                item_param("password", REFERENCE),
+                ActionParam::optional("reason", ParamType::Text, REASON),
+            ],
+        ),
+        use_row(
+            (
+                person_models::PROVIDER,
+                person_models::RESOURCE,
+                "Model providers",
+            ),
+            (
+                person_models::SET_KEY_FROM_ITEM,
+                "Keep provider key from vault",
+            ),
+            format!(
+                "Keep the API key of one of your person's model providers from a key their \
+                 vault keeps. You never hold the key. To get it, ask with Chat's `ask`, kind \
+                 `secret`, detail `{{kind: \"key\", belongsTo: [\"<the web address of the \
+                 provider's endpoint, such as https://api.example.com>\"]}}`: your person types \
+                 it into a protected field, and the answer `filled` carries a `reference` in \
+                 its detail. Pass that reference as `key`. The item must be a key that belongs \
+                 to the provider's endpoint, and it is kept for no other. {ASKED_FIRST}"
+            ),
+            vec![
+                ActionParam::required(
+                    "provider",
+                    ParamType::Text,
+                    "The provider's id, as your person's model providers list it.",
+                ),
+                item_param("key", REFERENCE),
+                ActionParam::optional("reason", ParamType::Text, REASON),
+            ],
+        ),
+    ]
+}
+
+/// The use by reference `target` names, as [`use_rows`] offers it; `None`
+/// for every other action.
+#[must_use]
+pub fn use_of(target: &RemoteActionTarget) -> Option<crate::ActionDescriptor> {
+    use_rows().into_iter().find_map(|row| {
+        let action = row.action?;
+        (row.provider == target.provider && action.address == target.address).then_some(action)
+    })
+}
+
+/// The word a standing leave names the use `target` by
+/// ([`StandingUse::using`]): its provider and its action.
+#[must_use]
+pub fn use_word(target: &RemoteActionTarget) -> String {
+    format!("{}/{}", target.provider, target.address.action)
 }
 
 #[cfg(test)]
@@ -296,6 +506,100 @@ mod tests {
         ] {
             assert!(!looks_like_place(other), "{other:?}");
         }
+    }
+
+    /// Each use by reference takes the item's address where the secret
+    /// would stand and no secret anywhere, tells an agent how the reference
+    /// is come by, and is found again by its target and by no other.
+    #[test]
+    fn a_use_by_reference_takes_no_secret_and_says_how_to_ask() {
+        let rows = use_rows();
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            let action = row.action.as_ref().unwrap();
+            assert_eq!(
+                action
+                    .params
+                    .iter()
+                    .filter(|param| takes_item(param))
+                    .count(),
+                1,
+                "{}",
+                action.address.action
+            );
+            assert!(
+                !action
+                    .params
+                    .iter()
+                    .any(|param| param.ty == crate::ParamType::Secret)
+            );
+            assert_eq!(action.contract.kind, crate::ActionKind::Outside);
+            let description = action.description.as_deref().unwrap();
+            for said in ["kind `secret`", "`reference`", "asked first", "Always"] {
+                assert!(description.contains(said), "{said}: {description}");
+            }
+            let target = RemoteActionTarget {
+                provider: row.provider.clone(),
+                address: action.address.clone(),
+            };
+            assert_eq!(
+                use_of(&target).map(|found| found.address),
+                Some(action.address.clone())
+            );
+            assert_eq!(
+                use_word(&target),
+                format!("{}/{}", row.provider, action.address.action)
+            );
+        }
+        assert!(use_of(&target(LIST)).is_none());
+        assert!(use_of(&person_accounts::target(person_accounts::ADD_MAIL)).is_none());
+        assert!(use_of(&person_models::target(person_models::SET_KEY)).is_none());
+
+        // A review of a use shows the reference withheld, as it shows a secret.
+        let mail = use_of(&person_accounts::target(
+            person_accounts::ADD_MAIL_WITH_ITEM,
+        ))
+        .unwrap();
+        let arguments = serde_json::json!({
+            "address": "ada@example.test",
+            "incomingHost": "imap.example.test",
+            "outgoingHost": "smtp.example.test",
+            "password": format!("vault.item:{ID}"),
+        });
+        let draft = crate::Draft::render(&mail, arguments.as_object().unwrap());
+        let shown = serde_json::to_string(&draft).unwrap();
+        assert!(!shown.contains(ID), "{shown}");
+        assert!(shown.contains("ada@example.test"), "{shown}");
+    }
+
+    /// What an item remembers reads with and without standing leaves.
+    #[test]
+    fn standing_leaves_are_listed_beside_the_uses() {
+        let none: ItemUses = serde_json::from_value(serde_json::json!({"uses": []})).unwrap();
+        assert!(none.always.is_empty());
+        assert_eq!(
+            serde_json::to_value(&none).unwrap(),
+            serde_json::json!({"uses": []})
+        );
+        let leave = StandingUse {
+            agent: "scout".into(),
+            by: "Scout".into(),
+            using: "tilo.accounts/add-mail-with-item".into(),
+            places: vec!["imap://mail.example.test:993".into()],
+            since: 7,
+        };
+        let some = ItemUses {
+            uses: Vec::new(),
+            always: vec![leave],
+        };
+        let said = serde_json::to_value(&some).unwrap();
+        assert_eq!(said["always"][0]["agent"], "scout");
+        assert_eq!(said["always"][0]["since"], 7);
+        assert_eq!(serde_json::from_value::<ItemUses>(said).unwrap(), some);
+        let back: TakeBack =
+            serde_json::from_value(serde_json::json!({"item": format!("vault.item:{ID}")}))
+                .unwrap();
+        assert_eq!(back.agent, None);
     }
 
     /// A reference is an item's address and nothing else reads as one.

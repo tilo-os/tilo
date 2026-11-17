@@ -103,6 +103,45 @@ impl Workspaces {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = session;
     }
 
+    /// What proves an account's sign-in at its server before a use by
+    /// reference keeps the account.
+    pub(super) fn account_tester(&self) -> Arc<dyn AccountTester> {
+        Arc::clone(
+            &self
+                .inner
+                .vault_uses
+                .prover
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Prove the sign-ins of accounts added by reference through `prove`
+    /// from now on, which is told the account and the password it would
+    /// sign in with: a test stands in for the mail servers.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn sign_in_accounts_through(
+        &self,
+        prove: impl Fn(&str, &str) -> Result<String, String> + Send + Sync + 'static,
+    ) {
+        struct Proving<F>(F);
+        impl<F: Fn(&str, &str) -> Result<String, String> + Send + Sync> AccountTester for Proving<F> {
+            fn test(
+                &self,
+                account: &accounts::Account,
+                secret: &accounts::Secret,
+            ) -> Result<String, String> {
+                (self.0)(account.id.as_str(), &secret.password)
+            }
+        }
+        *self
+            .inner
+            .vault_uses
+            .prover
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(Proving(prove));
+    }
+
     /// The person `caller` asks for, on the device `certificate` certifies,
     /// from a workspace `workspace_id` names: what a request that keeps a
     /// person's own secrets needs before it runs. Unknown and forbidden are

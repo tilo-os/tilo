@@ -20,17 +20,24 @@
 //! person would be: the account or the provider, never the secret. Nothing here tells a caller why
 //! an argument did not read in the argument's own words, so what was meant
 //! as a secret is never echoed in a refusal.
+//!
+//! An agent this host runs itself, with no device of the person's on, uses
+//! an item through the host's own entry ([`super::hosted_use`]), which asks
+//! the person first. Their "Always" is a standing leave kept with the item.
+//! The person reads the leaves beside the uses and takes them back here,
+//! and no agent does either.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use accounts::vault_items::{self, ItemFacts, NewItem, Place, VaultItems};
 use serde_json::Value;
-use tilo_account_probe::{AccountTester, LiveAccountTester};
+use tilo_account_probe::AccountTester;
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_models::{self, ProviderView, SetKey, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{
-    self, AddItem, ItemKind, ItemRef, ItemUse, ItemUses, ItemView, KeptItems, RemoveItem, UsesOf,
+    self, AddItem, ItemKind, ItemRef, ItemUse, ItemUses, ItemView, KeptItems, RemoveItem,
+    StandingUse, TakeBack, UsesOf,
 };
 use tilo_actions::remote::{ActionHostError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
@@ -65,6 +72,13 @@ impl Workspaces {
             person_vault::USES => {
                 let of: UsesOf = argument(request, "an item's uses are read by its reference")?;
                 answer(uses(&root, &of.item))
+            }
+            person_vault::TAKE_BACK => {
+                let taking: TakeBack = argument(
+                    request,
+                    "what an agent may always use is taken back by the item's reference",
+                )?;
+                answer(take_back(&root, &taking))
             }
             _ => Err(ActionHostError::UnknownAction),
         }
@@ -124,7 +138,7 @@ impl Workspaces {
                     request,
                     "a mail account to add names its address, its servers and the vault item that is its password",
                 )?;
-                let kept = mail_with_item(Arc::new(LiveAccountTester), &root, adding, &by).await;
+                let kept = mail_with_item(self.account_tester(), &root, adding, &by).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -144,7 +158,7 @@ impl Workspaces {
 
 /// What a request's arguments name, or `what` they should have named. The
 /// reason never quotes the arguments.
-fn argument<T: serde::de::DeserializeOwned>(
+pub(super) fn argument<T: serde::de::DeserializeOwned>(
     request: &InvokeRequest,
     what: &str,
 ) -> Result<T, ActionHostError> {
@@ -230,12 +244,33 @@ fn said<T: serde::Serialize>(outcome: Result<T, String>) -> Result<Value, Action
     serde_json::to_value(outcome.map_err(refused)?).map_err(|error| refused(error.to_string()))
 }
 
+/// Take back the standing leaves of the item `taking` names, every agent's
+/// or one's, answering what the item remembers then.
+fn take_back(root: &Path, taking: &TakeBack) -> Result<ItemUses, vault_items::ItemError> {
+    let id =
+        vault_items::ItemId::parse(taking.item.id()).ok_or(vault_items::ItemError::NotFound)?;
+    VaultItems::open_in(root)?.take_back(&id, taking.agent.as_deref())?;
+    uses(root, &taking.item)
+}
+
 /// When and where the item `item` names was handed to something that signs
-/// in, and for whom.
+/// in, and for whom; and who may use it without its person being asked.
 fn uses(root: &Path, item: &ItemRef) -> Result<ItemUses, vault_items::ItemError> {
     let id = vault_items::ItemId::parse(item.id()).ok_or(vault_items::ItemError::NotFound)?;
+    let items = VaultItems::open_in(root)?;
     Ok(ItemUses {
-        uses: VaultItems::open_in(root)?
+        always: items
+            .standing(&id)?
+            .into_iter()
+            .map(|leave| StandingUse {
+                agent: leave.by,
+                by: leave.name,
+                using: leave.using,
+                places: leave.places.into_iter().map(String::from).collect(),
+                since: leave.since_unix,
+            })
+            .collect(),
+        uses: items
             .uses(&id)?
             .into_iter()
             .map(|used| ItemUse {
@@ -265,7 +300,7 @@ fn released(
 /// Add `adding` with the sign-in its vault item keeps, once `tester` saw its
 /// server accept it. The item must be a login that belongs to both servers
 /// the account names: a server it does not belong to is never sent it.
-async fn mail_with_item(
+pub(super) async fn mail_with_item(
     tester: Arc<dyn AccountTester>,
     root: &Path,
     adding: AddMailWithItem,
@@ -312,7 +347,11 @@ async fn mail_with_item(
 /// Keep the key the vault item `setting` names as its provider's API key.
 /// The item must be a key that belongs to the provider's endpoint, as the
 /// person set it: a key is never kept for an endpoint it does not belong to.
-fn key_from_item(root: &Path, setting: &SetKeyFromItem, by: &str) -> Result<ProviderView, String> {
+pub(super) fn key_from_item(
+    root: &Path,
+    setting: &SetKeyFromItem,
+    by: &str,
+) -> Result<ProviderView, String> {
     let config = super::person_settings::provider_config(root);
     let profile = config
         .profiles
@@ -399,6 +438,7 @@ mod tests {
             outgoing_host: "smtp.example.test".into(),
             outgoing_port: 465,
             password: password.clone(),
+            reason: String::new(),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

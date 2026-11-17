@@ -1096,6 +1096,8 @@ impl Workspaces {
 mod accounts_tests;
 mod branch;
 #[cfg(test)]
+mod hosted_use_tests;
+#[cfg(test)]
 mod mail_assistant_tests;
 #[cfg(test)]
 mod own_tests;

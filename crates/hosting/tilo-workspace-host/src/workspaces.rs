@@ -97,6 +97,9 @@ pub use person_telling::{Spenders, ToTell};
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
 mod person_vault;
+// A secret used by reference by a turn this host runs itself.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod hosted_use;
 mod personal;
 mod publication;
 use publication::{Change, SinceBase, starts_over, withdraws};
@@ -1000,6 +1003,9 @@ struct WorkspacesInner {
     /// its people keep ([`Workspaces::mail_session`]).
     #[cfg(not(target_arch = "wasm32"))]
     mail_session: std::sync::RwLock<person_settings::Session>,
+    /// What uses of a vault item by reference keep here ([`hosted_use`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    vault_uses: hosted_use::Uses,
     /// The inboxes this host watches, and who listens for them
     /// ([`mail_watch`]).
     #[cfg(not(target_arch = "wasm32"))]
@@ -1276,6 +1282,8 @@ impl Workspaces {
                 mail_session: std::sync::RwLock::new(Arc::new(
                     tilo_mail_session::LiveMailSession::default(),
                 )),
+                #[cfg(not(target_arch = "wasm32"))]
+                vault_uses: hosted_use::Uses::default(),
                 #[cfg(not(target_arch = "wasm32"))]
                 mail_watches: mail_watch::MailWatches::default(),
                 #[cfg(not(target_arch = "wasm32"))]

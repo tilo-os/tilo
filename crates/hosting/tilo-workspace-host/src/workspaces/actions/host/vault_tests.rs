@@ -29,7 +29,7 @@ const KEY: &str = "sk-live-ada-own-key";
 
 /// `target` asked by `caller`, on the device `device` certifies, in the
 /// workspace `workspace_id` carries.
-async fn ask_at(
+pub(super) async fn ask_at(
     host: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     (device, caller): (&DeviceCert, &Caller),
@@ -63,7 +63,7 @@ async fn ask_at(
 }
 
 /// `action` of the vault, asked as [`ask_at`] asks.
-async fn ask(
+pub(super) async fn ask(
     host: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
@@ -124,7 +124,7 @@ fn a_login(site: &str) -> Value {
 }
 
 /// Every file under `dir` whose bytes hold `needle`.
-fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
+pub(super) fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
     let mut holding = Vec::new();
     let mut waiting = vec![dir.to_path_buf()];
     while let Some(next) = waiting.pop() {
@@ -384,7 +384,7 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
 }
 
 /// A provider of whoever asks, at `https://models.example/v1`, by its id.
-async fn a_provider(
+pub(super) async fn a_provider(
     host: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
@@ -402,7 +402,7 @@ async fn a_provider(
 }
 
 /// A `kind` kept for `place` in the vault of whoever asks, by its reference.
-async fn kept_item(
+pub(super) async fn kept_item(
     host: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
