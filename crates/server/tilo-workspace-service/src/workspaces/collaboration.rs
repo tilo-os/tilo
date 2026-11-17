@@ -371,41 +371,41 @@ impl Workspaces {
             )));
         }
         let mut candidate = workspace.peer().clone();
-        if !candidate.admit_certificate(device.clone(), &self.inner.host.key, system_time(now))? {
+        let admitted =
+            candidate.admit_certificate(device.clone(), &self.inner.host.key, system_time(now))?;
+        if admitted {
+            let state = workspace.collaboration().clone();
+            workspace.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
+                Ok(state)
+            })?;
+            self.settle(&mut workspace).await?;
+        } else if !self
+            .inner
+            .host
+            .access
+            .projects_access(workspace.workspace_id(), device.device_public_key)
+            .await
+        {
             // Admitted already, but an earlier entry can have been cut off
             // between committing the admission and settling it (its page
             // closed meanwhile): the server would then decide the device's
             // changes against device_access that leave it out. Settle what
             // governance holds before answering.
-            if !self
-                .inner
-                .host
-                .access
-                .projects_access(workspace.workspace_id(), device.device_public_key)
-                .await
-            {
-                self.settle(&mut workspace).await?;
-            }
-            return Ok(false);
+            self.settle(&mut workspace).await?;
         }
-        let state = workspace.collaboration().clone();
-        workspace.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
-            Ok(state)
-        })?;
-        self.settle(&mut workspace).await?;
-        // The workspace keeps the grant it admitted, so every holder and every
-        // API server reads the same grant from the workspace itself.
+        // The workspace keeps the grant of every key it admitted, so every
+        // holder and every API server reads the same grant from the workspace
+        // itself, whichever way the key came in.
         if let Some(scope) = device.capabilities.agent {
-            self.record_grant(&mut workspace, device, scope, now)
-                .await?;
+            self.keep_grant(&mut workspace, device, scope, now).await?;
         }
-        Ok(true)
+        Ok(admitted)
     }
 
-    /// Record the grant `cert` was admitted under in `workspace`'s governance,
+    /// Keep the grant `cert` was admitted under in `workspace`'s governance,
     /// reaching `scope`, authored by this host: the workspace's holders and
     /// the API servers that read them see it from then on.
-    async fn record_grant(
+    async fn keep_grant(
         &self,
         workspace: &mut GovernedWorkspace,
         cert: &DeviceCert,
@@ -1498,6 +1498,19 @@ impl Workspaces {
             let settling = crate::timing::start();
             self.settle(workspace).await?;
             crate::timing::event("join.admit.settle", settling, joins.len() as u64);
+            // The workspace keeps the grant of every key it admitted, so every
+            // holder and every API server reads the same grant from the
+            // workspace itself, whichever way the key came in.
+            if let Ok(answers) = &admitted {
+                for (join, answer) in joins.iter().zip(answers) {
+                    let certificate = join.redemption.certificate();
+                    if answer.is_ok()
+                        && let Some(scope) = certificate.capabilities.agent
+                    {
+                        self.keep_grant(workspace, certificate, scope, now).await?;
+                    }
+                }
+            }
             // Someone invited from the wait list is in now: their entry
             // leaves it.
             workspace.forget_joined_wait_list();

@@ -816,6 +816,19 @@ fn check_of(action: &str) -> Option<&'static str> {
         .map(|verb| verb.check)
 }
 
+/// The certificate `device` is in `cert`'s chain of issuers: the key that
+/// minted `cert`, or one that stood in for the person when it was minted.
+fn minting_issuer(cert: &DeviceCert, device: &[u8; 32]) -> Option<DeviceCert> {
+    let mut issuer = cert.issuer.as_deref();
+    while let Some(cert) = issuer {
+        if cert.device_public_key == *device {
+            return Some(cert.clone());
+        }
+        issuer = cert.issuer.as_deref();
+    }
+    None
+}
+
 /// Whether `action` with `args` by a device of `owner`'s person or not needs
 /// the person's own confirmation, which this holder cannot ask for yet. The
 /// workspace's owner confirms removing and banning by asking.
@@ -1168,8 +1181,9 @@ impl Workspaces {
 
     /// The workspace `workspace_id` carries and the certificate of `caller`'s
     /// device in it, for the key that reads and revokes its own grants: the
-    /// device must be one the workspace admitted, and the grant may be any of
-    /// the person's, a key for one workspace included.
+    /// device must be one the workspace admitted, or one whose key it admitted
+    /// (the key that minted it), and the grant may be any of the person's, a
+    /// key for one workspace included.
     async fn grant_device(
         &self,
         workspace_id: WorkspaceId,
@@ -1183,7 +1197,11 @@ impl Workspaces {
             .peer()
             .certificates()
             .into_iter()
-            .find(|cert| cert.device_public_key == *device)
+            .find_map(|cert| {
+                (cert.device_public_key == *device)
+                    .then_some(cert.clone())
+                    .or_else(|| minting_issuer(&cert, device))
+            })
             .or_else(|| (host.device_public_key == *device).then(|| host.clone()))?;
         drop(workspace);
         (cert.user_public_key == *user).then_some((governed, cert))
