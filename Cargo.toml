@@ -429,6 +429,7 @@ members = [
     # Session
     "crates/session/color-pipeline",
     "crates/session/compositor",
+    "crates/session/app-keeper",
     "crates/session/surface-host",
     "crates/session/session",
     "crates/session/console-control",

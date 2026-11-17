@@ -51,6 +51,10 @@ reason = "it is the Wayland protocol and buffer stack, and everything else talks
   why = "it implements Wayland protocol handlers, written against smithay's wayland dispatch traits and surface data map, with no renderer or backend"
 
   [[rule.allow]]
+  package = "tilo-app-keeper"
+  why = "the app keeper is a Wayland server of its own for one app, written on smithay's protocol state with no renderer or backend; it reaches the compositor only as a Wayland client"
+
+  [[rule.allow]]
   package = "tilo-window-share"
   why = "a shared window's client dmabuf is staged for the encoder as smithay's buffer type without a copy; it uses smithay's allocator types, no renderer or backend"
 

@@ -256,6 +256,26 @@ where
     }
 }
 
+/// Call given closure with the pool a buffer lies in, without touching its contents
+///
+/// - The first argument is the descriptor the client created the pool from
+/// - The second argument is the pool's current size in bytes
+/// - The third argument is the specification of this buffer in this pool
+///
+/// A proxy hands the same memory on to another compositor this way instead of copying it.
+///
+/// If the buffer is not managed by the provided `ShmGlobal`, the closure is not called
+/// and this method will return `Err(BufferAccessError::NotManaged)`.
+pub fn with_buffer_pool<F, T>(buffer: &wl_buffer::WlBuffer, f: F) -> Result<T, BufferAccessError>
+where
+    F: FnOnce(std::os::unix::io::BorrowedFd<'_>, usize, BufferData) -> T,
+{
+    let data = buffer
+        .data::<ShmBufferUserData>()
+        .ok_or(BufferAccessError::NotManaged)?;
+    Ok(f(data.pool.fd(), data.pool.size(), data.data))
+}
+
 /// Call given closure with the contents of the given buffer for mutable access
 ///
 /// If the buffer is managed by the provided `ShmGlobal`, its contents are

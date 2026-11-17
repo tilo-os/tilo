@@ -366,3 +366,16 @@ the queue (`cleanup`) before they read, so at most the mappings still held
 stand.
 
 Remove this once upstream frees dropped mappings outside a frame.
+
+## The pool a shared-memory buffer lies in (`wl_shm`)
+
+A proxy between an app and the compositor (the app keeper) hands an app's
+buffers on to the compositor as they are, never copying pixels: it creates a
+pool upstream from the same descriptor and a buffer at the same place in it.
+smithay kept the pool's descriptor private. `src/wayland/shm/pool.rs`
+`Pool::fd` returns it, and `src/wayland/shm/mod.rs`
+`with_buffer_pool(buffer, |fd, pool_size, data| ..)` gives a buffer's pool
+descriptor, the pool's current size and the buffer's place in it without
+mapping or touching its contents.
+
+Remove this once upstream exposes a buffer's pool descriptor.

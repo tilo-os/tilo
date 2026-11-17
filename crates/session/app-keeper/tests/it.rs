@@ -1,0 +1,20 @@
+// One test binary; #[path] keeps the files in place.
+#![cfg(target_os = "linux")]
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::struct_excessive_bools,
+    clippy::type_complexity,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
+#[path = "support.rs"]
+mod support;
+
+#[path = "keeper.rs"]
+mod keeper;

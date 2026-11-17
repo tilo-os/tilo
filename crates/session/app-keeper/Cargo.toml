@@ -1,0 +1,54 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-app-keeper"
+description = "Keeps one app's Wayland windows open while the desktop restarts: a small Wayland server for the app that mirrors its windows to the desktop as one client, holds them while the desktop is away and recreates them on the next one."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tilo-app-keeper"
+path = "src/bin/tilo-app-keeper.rs"
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[features]
+# Lets a test make the keeper break the desktop's protocol on purpose, to
+# prove how a fault is held and reported.
+test-support = []
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The app's side: a Wayland server with smithay's protocol state (surfaces,
+# shared memory, dma-bufs, xdg-shell, outputs) and no renderer.
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend"] }
+# The desktop's side: one ordinary Wayland client.
+wayland-client = { workspace = true }
+wayland-protocols = { version = "0.32.12", features = ["client", "server", "unstable"] }
+serde.workspace = true
+serde_json.workspace = true
+# The control socket's frames: the length prefix every session socket uses.
+wire-frame = { path = "../../system/wire-frame" }
+# A socket in a directory of any depth.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# The peer's uid comes from SO_PEERCRED through libc: the kernel may report a
+# pid of 0, which rustix's credentials type cannot hold.
+libc.workspace = true
+# The descriptor the session hands with Attach (SCM_RIGHTS).
+rustix = { workspace = true, features = ["net", "fs", "process"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tilo-app-keeper = { path = ".", features = ["test-support"] }
+tilo-compositor = { path = "../compositor" }
+tempfile.workspace = true
+wayland-client = { workspace = true }
+wayland-protocols = { version = "0.32.12", features = ["client"] }
+
+[lints]
+workspace = true

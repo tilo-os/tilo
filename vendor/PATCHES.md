@@ -948,7 +948,9 @@ method sends back through its virtual keyboard go through
 the person's own. A state commit — the one that sets a mode — is queued rather
 than waited for: the atomic ioctl asks for the frame's event and the compositor
 keeps that frame, and the one queued behind it, until it arrives, instead of
-blocking the event loop while the driver trains the display's link. Five
+blocking the event loop while the driver trains the display's link. A
+shared-memory buffer names the pool it lies in (`shm::with_buffer_pool`), so
+the app keeper hands an app's pixels on to the compositor without copying them. Five
 imports and a cast are fixed so it builds without warnings. See
 `vendor/smithay/TILO-PATCH.md` for the details and when to drop each change.
 

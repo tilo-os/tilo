@@ -17677,6 +17677,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-app-keeper"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rustix 1.1.6",
+ "serde",
+ "serde_json",
+ "smithay",
+ "tempfile",
+ "tilo-app-keeper",
+ "tilo-compositor",
+ "tilo-files",
+ "tracing",
+ "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols",
+ "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-app-launch"
 version = "0.1.0"
 dependencies = [
@@ -28876,6 +28897,7 @@ dependencies = [
  "tilo-app",
  "tilo-app-cli",
  "tilo-app-id",
+ "tilo-app-keeper",
  "tilo-app-launch",
  "tilo-app-module",
  "tilo-app-package",
