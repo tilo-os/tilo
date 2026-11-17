@@ -276,7 +276,7 @@ grep -Fqx "native-session-output --backend drm trace=$native_trace" "$tmp/native
 native_flight="$tmp/native-state/tilo/session-logs/latest.log"
 head -n 1 "$native_flight" | grep -Fq " shell=$fake_native"
 grep -Fqx "native-session-output --backend drm trace=$native_trace" "$native_flight"
-tail -n 1 "$native_flight" | grep -Eq '^tilo-flight-record-v1 end=.* status=3 '
+tail -n 1 "$native_flight" | grep -Eq '^tilo-flight-entry-v1 end=.* status=3 '
 grep -Fqx 'handover=5' "$native_log.handover"
 grep -Fqx 'handover-writable=yes' "$native_log.handover"
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
@@ -341,14 +341,14 @@ grep -Fqx disabled "$log.cpu-paths"
 # The compositor's output still reaches the journal (the wrapper's stdout),
 # and the flight record keeps it with a start and an end record.
 grep -Fqx "native-session-output --backend drm trace=$flight_dir/frame-trace.csv" "$tmp/stdout"
-head -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
+head -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-entry-v1 start=.* pid=[0-9]+ shell='
 grep -Fqx "native-session-output --backend drm trace=$flight_dir/frame-trace.csv" "$flight_dir/latest.log"
-tail -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=7 logout_request=no restart_request=no$'
+tail -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-entry-v1 end=.* status=7 logout_request=no restart_request=no$'
 [ "$(stat -c %a "$flight_dir")" = 700 ]
 # The log events, kept apart from the measurement stream, are bracketed by
 # the same start and end records.
-head -n 1 "$flight_dir/events.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
-tail -n 1 "$flight_dir/events.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=7 logout_request=no restart_request=no$'
+head -n 1 "$flight_dir/events.log" | grep -Eq '^tilo-flight-entry-v1 start=.* pid=[0-9]+ shell='
+tail -n 1 "$flight_dir/events.log" | grep -Eq '^tilo-flight-entry-v1 end=.* status=7 logout_request=no restart_request=no$'
 [ "$(stat -c %a "$flight_dir/events.log")" = 600 ]
 # A dev image's compositor gets the control socket tilo-vm drives it through.
 grep -Fqx "control=$runtime_dir/tilo-session/test-control.sock" "$log.control"
@@ -385,9 +385,9 @@ set -e
 grep -Fqx 'control=' "$tmp/slow-log.control"
 grep -Fqx 'first-use=' "$tmp/slow-log.control"
 grep -Fqx "native-session-output --backend drm trace=$slow_dir/frame-trace.csv" "$tmp/slow-stdout"
-head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
+head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-entry-v1 start=.* pid=[0-9]+ shell='
 grep -Fqx "native-session-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
-tail -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=5 logout_request=no restart_request=no$'
+tail -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-entry-v1 end=.* status=5 logout_request=no restart_request=no$'
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A login names no XDG base directories (neither PAM nor the user manager
 # does); the compositor gets them under HOME, with the state directory its
@@ -475,7 +475,7 @@ fi
 grep -Fqx "native-session-output --backend headless trace=$tmp/held-state/tilo/session-logs/frame-trace.csv" \
   "$tmp/held-state/tilo/session-logs/latest.log"
 tail -n 1 "$tmp/held-state/tilo/session-logs/latest.log" \
-  | grep -Eq '^tilo-flight-record-v1 end=.* status=9 logout_request=no restart_request=no$'
+  | grep -Eq '^tilo-flight-entry-v1 end=.* status=9 logout_request=no restart_request=no$'
 cat >"$tmp/expected" <<'EOF'
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
@@ -623,10 +623,10 @@ while IFS= read -r cpu_path; do
 done <"$log.cpu-paths"
 
 tail -n 1 "$restart_dir/previous.log" \
-  | grep -Eq '^tilo-flight-record-v1 end=.* status=0 logout_request=no restart_request=yes$'
-head -n 1 "$restart_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
+  | grep -Eq '^tilo-flight-entry-v1 end=.* status=0 logout_request=no restart_request=yes$'
+head -n 1 "$restart_dir/latest.log" | grep -Eq '^tilo-flight-entry-v1 start=.* pid=[0-9]+ shell='
 tail -n 1 "$restart_dir/latest.log" \
-  | grep -Eq '^tilo-flight-record-v1 end=.* status=7 logout_request=no restart_request=no$'
+  | grep -Eq '^tilo-flight-entry-v1 end=.* status=7 logout_request=no restart_request=no$'
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 
 # A logout asked for while the restart is under way still wins: no second compositor starts, and

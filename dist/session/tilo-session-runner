@@ -347,7 +347,7 @@ set -e
 shell_pid=
 wait "$flight_relay_pid" 2>/dev/null || true
 flight_relay_pid=
-end_record=$(printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s' \
+end_record=$(printf 'tilo-flight-entry-v1 end=%s status=%s logout_request=%s' \
     "$(date --iso-8601=seconds)" "$status" "$([ -e "$logout_request" ] && printf yes || printf no)")
 printf '%s
 ' "$end_record" >>"$flight_log" 2>/dev/null || true

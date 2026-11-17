@@ -186,7 +186,7 @@ identity_manifest="cd $identity_dir && find . -mindepth 1 ! -path ./registry.jso
   # A desktop that died under the launch leaves no app to find on the bus;
   # say that, with the status the session wrapper recorded, rather than
   # blame the app.
-  session_end="$("$vm" ssh 'grep -a "^tilo-flight-record-v1 end=" "$HOME/.local/state/tilo/session-logs/latest.log"' 2>/dev/null || true)"
+  session_end="$("$vm" ssh 'grep -a "^tilo-flight-entry-v1 end=" "$HOME/.local/state/tilo/session-logs/latest.log"' 2>/dev/null || true)"
   [ -z "$session_end" ] || die "the desktop session ended while Notes opened: $session_end"
   die "Notes did not open on the joined device"
 }
