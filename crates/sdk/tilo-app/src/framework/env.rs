@@ -550,6 +550,13 @@ impl<R: Resource> ResourceEnv<R> {
     /// workspace's emoji, which are Chat's. Changes to it are decided by the
     /// workspace's grants on `owner`'s resource. `None` where the host keeps no
     /// such records (a view of a past version) or it cannot be opened.
+    ///
+    /// `None` too while the workspace has not delivered it to this device. A part of the
+    /// view ([`ViewCx::switch`](super::ViewCx::switch)) that asks for it then is built
+    /// again, it alone, once it is here: a view reads it where it shows it, and need not
+    /// ask twice. A view's root is not built again, so what outlives one answer (an effect,
+    /// a widget of the app's own) asks through [`Self::resource_opener`], which answers
+    /// with the document once it is here.
     pub fn shared_workspace<P: Resource>(
         &self,
         owner: &'static str,

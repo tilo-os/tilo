@@ -17,8 +17,13 @@ use ui_core::{LocalState, Theme, taffy};
 type BuildPart<K> = Box<dyn Fn(&K, &Rc<()>) -> Element>;
 
 /// The part for the key now, built with the given liveness token, when the
-/// key moved since the part shown was built; `None` while it has not.
-type Rebuild = Box<dyn FnMut(&Rc<()>) -> Option<Element>>;
+/// key moved since the part shown was built, or when the part is to be built
+/// again whatever the key (`true`); `None` otherwise.
+type Rebuild = Box<dyn FnMut(&Rc<()>, bool) -> Option<Element>>;
+
+/// Whether the part shown, kept alive by the token this is handed, read something as not
+/// here while it was built that has come since: it is then built again for the key it has.
+pub(crate) type Arrived = Box<dyn Fn(&Rc<()>) -> bool>;
 
 /// The part [`ViewCx::switch`](super::ViewCx::switch) shows for the current
 /// key. Rebuilt when the key changes; dropping the old part retires every
@@ -26,6 +31,9 @@ type Rebuild = Box<dyn FnMut(&Rc<()>) -> Option<Element>>;
 /// widget is one type whatever the key.
 pub(crate) struct Switch {
     rebuild: Rebuild,
+    /// What says the part shown is to be built again for the same key; `None` for a part
+    /// that follows its key alone.
+    arrived: Option<Arrived>,
     /// Dropping it retires every binding the shown part registered.
     alive: Rc<()>,
     part: Element,
@@ -36,20 +44,22 @@ impl Switch {
     pub(crate) fn keyed<K: Clone + PartialEq + 'static>(
         key: LocalState<K>,
         build: BuildPart<K>,
+        arrived: Option<Arrived>,
     ) -> Element {
         let mut shown = key.with(Clone::clone);
         let alive = Rc::new(());
         let part = build(&shown, &alive);
         Self::element(
-            Box::new(move |alive| {
+            Box::new(move |alive, again| {
                 let current = key.with(Clone::clone);
-                if current == shown {
+                if current == shown && !again {
                     return None;
                 }
                 let part = build(&current, alive);
                 shown = current;
                 Some(part)
             }),
+            arrived,
             alive,
             part,
         )
@@ -57,14 +67,20 @@ impl Switch {
 
     /// `part`, built once, whose bindings `alive` keeps until the part goes.
     pub(crate) fn mounted(alive: Rc<()>, part: Element) -> Element {
-        Self::element(Box::new(|_| None), alive, part)
+        Self::element(Box::new(|_, _| None), None, alive, part)
     }
 
     /// The switch as an element, its widget table compiled once whatever
     /// the key.
-    fn element(rebuild: Rebuild, alive: Rc<()>, part: Element) -> Element {
+    fn element(
+        rebuild: Rebuild,
+        arrived: Option<Arrived>,
+        alive: Rc<()>,
+        part: Element,
+    ) -> Element {
         Box::new(Self {
             rebuild,
+            arrived,
             alive,
             part,
             structure_dirty: false,
@@ -92,8 +108,13 @@ impl Switch {
     }
 
     fn reconcile(&mut self) {
+        // What the part shown read as not here while it was built, and has come since.
+        let again = self
+            .arrived
+            .as_ref()
+            .is_some_and(|arrived| arrived(&self.alive));
         let alive = Rc::new(());
-        if let Some(part) = (self.rebuild)(&alive) {
+        if let Some(part) = (self.rebuild)(&alive, again) {
             self.part = part;
             self.alive = alive;
             self.structure_dirty = true;

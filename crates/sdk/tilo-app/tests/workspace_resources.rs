@@ -546,3 +546,171 @@ fn a_frame_syncs_the_workspaces_emoji_once_however_many_lines_draw_them() {
     assert_eq!(few, many, "syncs grow with the lines drawn");
     assert!(many <= 2, "{many} syncs in one frame");
 }
+
+/// Another app of the workspace, whose view shows the workspace's agents in a part of its
+/// own, beside what the person opened and typed in the same window: a pane, and a field.
+struct ReadingApp;
+
+thread_local! {
+    /// How often [`ReadingApp`]'s view, its pane and its part of the agents were built.
+    static BUILT: std::cell::Cell<(usize, usize, usize)> =
+        const { std::cell::Cell::new((0, 0, 0)) };
+    /// What the person typed into [`ReadingApp`]'s field, as its view holds it.
+    static TYPED: std::cell::RefCell<Option<LocalState<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn count_built(count: impl FnOnce(&mut (usize, usize, usize))) {
+    BUILT.with(|built| {
+        let mut now = built.get();
+        count(&mut now);
+        built.set(now);
+    });
+}
+
+impl ResourceApp for ReadingApp {
+    type Resource = Note;
+    const ID: &'static str = "so.tilo.test-jottings";
+    const TITLE: &'static str = "Notes";
+
+    fn view(cx: &mut ViewCx<Note>) -> Element {
+        count_built(|built| built.0 = built.0.saturating_add(1));
+        let typed = cx.local(String::new());
+        TYPED.with(|held| *held.borrow_mut() = Some(typed.clone()));
+        let open = cx.local(false);
+        let pane = cx.switch(&open, |_cx, open| {
+            count_built(|built| built.1 = built.1.saturating_add(1));
+            Box::new(Text::new(if *open {
+                "the pane is open"
+            } else {
+                "the pane is shut"
+            }))
+        });
+        // The agents are read where they are shown: in the part that shows them.
+        let always = cx.local(());
+        let agents = cx.switch(&always, |cx, ()| {
+            count_built(|built| built.2 = built.2.saturating_add(1));
+            let shown = match cx
+                .shared_workspace::<tilo_app::tilo_workspace_agent::WorkspaceAgents>(
+                    tilo_app::tilo_workspace_agent::OWNER,
+                ) {
+                Some(agents) => {
+                    let names: Vec<String> = agents
+                        .get()
+                        .active()
+                        .map(|agent| agent.name.clone())
+                        .collect();
+                    if names.is_empty() {
+                        "no agent works here".to_owned()
+                    } else {
+                        names.join(", ")
+                    }
+                }
+                None => "the agents are not here".to_owned(),
+            };
+            Box::new(Text::new(&shown))
+        });
+        let opened = open.clone();
+        Box::new(
+            Column::new()
+                .push(Box::new(TextInput::from_state(&typed).with_id("typed")))
+                .push(Box::new(
+                    Button::new("open-pane", "Open the pane").on_view(move || opened.set(true)),
+                ))
+                .push(pane)
+                .push(agents),
+        )
+    }
+}
+
+/// Whether `app`'s window says `text`: as a name, a value or a description a screen reader
+/// reads, or in what it draws.
+fn shows<A: ResourceApp>(app: &mut TestApp<A>, text: &str) -> bool {
+    let read = app.harness().a11y_nodes().iter().any(|(_, node)| {
+        [node.label(), node.value(), node.description()]
+            .into_iter()
+            .flatten()
+            .any(|said| said.contains(text))
+    });
+    read || app
+        .harness()
+        .inspection_json()
+        .is_ok_and(|drawn| drawn.contains(text))
+}
+
+/// A window whose view read a document of its workspace as not here shows it once the
+/// workspace delivers it, with no reload: the part that asked for it is built again, it
+/// alone, and what the person had open and had typed in the same window stays.
+#[test]
+fn a_part_that_read_a_workspaces_document_as_not_here_shows_it_when_it_arrives() {
+    use tilo_app::tilo_workspace_agent::{
+        self as workspace_agent, WorkspaceAgents, workspace_agents,
+    };
+
+    let mut app =
+        TestApp::<ReadingApp>::awaiting_the_workspace(WORKSPACE, workspace_agent::OWNER).unwrap();
+    let agents_id =
+        tilo_app::resource::DocumentId::parse(&tilo_app::resource::workspace::document_id(AGENTS))
+            .unwrap();
+    assert!(
+        shows(&mut app, "the agents are not here"),
+        "on their way, the agents are not read as none"
+    );
+    assert!(
+        app.wanted_resources().contains(&agents_id),
+        "the workspace is asked for them"
+    );
+
+    // The person opens a pane and types in the same window.
+    app.harness().click_named("open-pane").unwrap();
+    app.harness().click_named("typed").unwrap();
+    app.harness().type_text("half a thought");
+    app.frame();
+    let typed = || {
+        TYPED
+            .with(|held| held.borrow().as_ref().map(LocalState::get))
+            .unwrap_or_default()
+    };
+    assert!(shows(&mut app, "the pane is open"));
+    assert_eq!(typed(), "half a thought");
+    let before = BUILT.with(std::cell::Cell::get);
+
+    // The workspace delivers its agents: one works there.
+    app.workspace_delivers::<WorkspaceAgents>(workspace_agent::OWNER, |agents| {
+        agents
+            .invoke(
+                &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    name: tilo_app::tilo_resource::NonBlank::parse("Scout").expect("a name"),
+                    keeper: None,
+                    id: None,
+                    model: None,
+                    colour: None,
+                    mcp_client: None,
+                }),
+            )
+            .map_err(|error| error.to_string())
+    })
+    .unwrap();
+    // The window's own frames take it up: nobody opens it again, and nothing is forced.
+    for _ in 0..4 {
+        app.frame();
+    }
+    assert!(
+        shows(&mut app, "Scout"),
+        "the part shows the agents that arrived, with no reload"
+    );
+    assert!(!shows(&mut app, "the agents are not here"));
+    let after = BUILT.with(std::cell::Cell::get);
+    assert_eq!(after.0, before.0, "the view was not built again");
+    assert_eq!(after.1, before.1, "nor the pane beside the part");
+    assert_eq!(
+        after.2,
+        before.2.saturating_add(1),
+        "the part that asked was built again, once"
+    );
+    assert!(
+        shows(&mut app, "the pane is open"),
+        "what the person had open stays open"
+    );
+    assert_eq!(typed(), "half a thought", "what they had typed stays");
+}
