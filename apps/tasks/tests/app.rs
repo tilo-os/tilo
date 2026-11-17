@@ -1364,3 +1364,105 @@ fn a_german_window_reads_the_tasks_catalogue() {
     catalog.set_locale("en-US");
     assert_eq!(catalog.t("tasks-title"), "Tasks");
 }
+
+/// The entry of the window bar's menu named `name`, as the window declares it now.
+fn bar_menu_entry(app: &mut TestApp<App>, name: &str) -> Option<ui::window_toolbar::ToolbarAction> {
+    let _ = app.harness().poll_frame();
+    ui::window_toolbar::declared()
+        .expect("the window declares its slots")
+        .actions
+        .into_iter()
+        .find(|action| action.menu && action.name == name)
+}
+
+// USER REQUIREMENT: a person deletes a project from the interface. Its own page offers it in
+// the window bar's menu; Undo takes a deleted project back, so nobody is asked first, as with
+// a deleted note; and a member who may only read is offered nothing they could press.
+#[test]
+fn a_projects_page_offers_to_delete_it_and_undo_brings_it_back() {
+    let mut app = open();
+    app.harness().present_in_window_bar();
+    app.call(
+        "create-area",
+        json!({ "name": "Launch", "kind": "project" }),
+    )
+    .expect("create the project");
+    app.call("create-area", json!({ "name": "Upkeep", "kind": "area" }))
+        .expect("create the area");
+    let id_of = |app: &TestApp<App>, name: &str| {
+        app.state()
+            .areas
+            .iter()
+            .find(|(_, area)| area.name == name)
+            .map(|(id, _)| id.clone())
+            .expect("the project or area by its name")
+    };
+    let (launch, upkeep) = (id_of(&app, "Launch"), id_of(&app, "Upkeep"));
+
+    // The list of issues is no project: its bar offers to delete nothing.
+    assert!(bar_menu_entry(&mut app, "Delete project").is_none());
+
+    // An area's page names what it would delete.
+    app.call_on(&tasks::model::area_resource(&upkeep), "open", json!({}))
+        .expect("open the area");
+    assert!(bar_menu_entry(&mut app, "Delete area").is_some());
+    assert!(bar_menu_entry(&mut app, "Delete project").is_none());
+
+    app.call_on(&tasks::model::area_resource(&launch), "open", json!({}))
+        .expect("open the project");
+    let entry = bar_menu_entry(&mut app, "Delete project")
+        .expect("the project's page offers to delete it, in the bar's menu");
+    assert!(
+        entry.enabled,
+        "a member who may change the tracker may delete"
+    );
+
+    // Refusal: a viewer finds the entry disabled, and a press of it asks and deletes nothing.
+    app.set_role(ui::Role::Viewer);
+    let refused = bar_menu_entry(&mut app, "Delete project").expect("a viewer is shown the entry");
+    assert!(!refused.enabled, "a viewer may not delete a project");
+    app.harness()
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action { id: refused.id });
+    let _ = app.harness().poll_frame();
+    assert!(app.asking().is_none(), "nothing is asked of a viewer");
+    assert!(
+        app.state().area(&launch).is_some(),
+        "a viewer's press deletes nothing"
+    );
+    app.set_role(ui::Role::Editor);
+
+    // Pressed by someone who may, the project goes at once and the area beside it stays.
+    // Nobody is asked: the page that says the project is gone names the way back.
+    let entry = bar_menu_entry(&mut app, "Delete project").expect("the entry");
+    app.harness()
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action { id: entry.id });
+    let _ = app.harness().poll_frame();
+    assert!(
+        app.asking().is_none(),
+        "Undo takes a deleted project back, so nobody is asked first"
+    );
+    assert!(
+        app.state().area(&launch).is_none(),
+        "the project is deleted"
+    );
+    assert!(
+        app.state().area(&upkeep).is_some(),
+        "only the project whose page it was goes"
+    );
+    assert!(
+        app.harness().targets().contains_key("tasks-project-gone"),
+        "the page says the project was deleted, and that Undo brings it back"
+    );
+    assert!(
+        bar_menu_entry(&mut app, "Delete project").is_none(),
+        "nothing is left to delete on that page"
+    );
+
+    // Cancellation: the window's Undo brings the project back, with its page and its entry.
+    assert!(app.undo());
+    assert_eq!(
+        app.state().area(&launch).map(|area| area.name.as_str()),
+        Some("Launch")
+    );
+    assert!(bar_menu_entry(&mut app, "Delete project").is_some());
+}
