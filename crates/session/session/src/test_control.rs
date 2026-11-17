@@ -191,7 +191,7 @@ pub fn owner_decision(
 /// actions go through, the layout, what stands over it, the workspaces this computer holds, whether
 /// the person locked the screen, whether the lock screen's own frame is on it, and the agents admitted
 /// at the person's API.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct Session<'a> {
     pub(crate) published: &'a Surfaces,
     pub(crate) handle: &'a DesktopHandle,
@@ -220,8 +220,12 @@ pub(crate) struct Session<'a> {
     pub(crate) pointer_shown: bool,
     /// The clipboard's history and the selection it reads.
     pub(crate) clipboard: &'a crate::clipboard::Clipboard,
-    /// This device's share of the person's one keyboard and pointer.
+    /// This device's share of the person's one keyboard and pointer: where the pointer is here, the
+    /// device it drives, and what the devices driving this one sent.
     pub(crate) shared_input: Option<&'a crate::shared_input::SharedInput>,
+    /// What the person was told, as the session's own notifications service keeps it: the banners
+    /// up and the centre behind them, whichever shell draws them.
+    pub(crate) notifications: tilo_desktop_surface::DesktopNotifications,
 }
 
 /// One request a connection sent the loop, and where its answer goes.

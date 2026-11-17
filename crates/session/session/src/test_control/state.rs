@@ -261,9 +261,7 @@ pub(super) fn keeping_devices(tree: &Layout, session: &Session<'_>, ctx: &Contex
 /// whether the person has seen it. The id is the one [the notifications' own `act` and `open-notice`
 /// verbs](crate::notifications::RESOURCE) take, so a tool chooses a notice as the person does.
 fn notices_shown(session: &Session<'_>) -> Json {
-    let Some(desktop) = session.handle.notifications() else {
-        return Json::Null;
-    };
+    let desktop = &session.notifications;
     let log = desktop.log();
     Json::Array(
         log.history()
