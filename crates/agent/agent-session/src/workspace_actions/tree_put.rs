@@ -66,6 +66,16 @@ pub(super) struct Putting {
     pub(super) name: String,
 }
 
+/// Write the tree's file actions as `caller`, as the host admitted them, until dropped: each
+/// change the call makes then names who made it, which History shows and Undo takes back as
+/// theirs ([`tilo_fs::namespace::acting_as`]).
+pub(super) fn acting_for(caller: &Caller) -> tilo_fs::namespace::ActingAs {
+    tilo_fs::namespace::acting_as(Some(
+        tilo_actions::ActionInvoker::admitted(caller.acting())
+            .named(caller.agent_name().map(str::to_owned)),
+    ))
+}
+
 fn refused(reason: impl Into<String>) -> Outcome {
     Outcome::Rejected(ActionCallError::Refused {
         reason: reason.into(),
@@ -202,16 +212,16 @@ impl Putting {
 }
 
 impl Worker {
-    /// Whether `caller` may do `kind` with the files of the workspace `workspace_id`: the
-    /// person this holder works for may; anyone else as the workspace's policy answers now
-    /// for what its Files app keeps, an agent held to its bound. So an agent whose rules
-    /// refuse it Files is refused the workspace's folder here, as a search of the workspace
-    /// answers it none of its files.
-    pub(super) fn may_in_files(
+    /// Whether `caller` may do each of `verbs` (the tree's file actions,
+    /// [`fs_protocol::file_action::verbs`]) to the files of the workspace `workspace_id`, or
+    /// with none named read them: decided at each action's own node of the workspace's tree
+    /// as every other action is, the person this holder works for as the owner, anyone else
+    /// as the workspace's policy answers now, an agent held to its bound.
+    pub(super) fn may_on_tree(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        kind: ActionKind,
+        verbs: &[&str],
     ) -> bool {
         if self.serves_as_owner(caller) {
             return true;
@@ -221,8 +231,14 @@ impl Worker {
         };
         self.permissions_across(workspace_id, &who, &workspace_id.to_string())
             .is_some_and(|permissions| {
-                let files = TreePath::root().app(FILES_APP);
-                permissions.answer(&files, kind) == Answer::Allow
+                let tree = TreePath::root().app(FILES_APP).kind(tree::TREE_KIND);
+                if verbs.is_empty() {
+                    return permissions.answer(&tree, ActionKind::Read) == Answer::Allow;
+                }
+                verbs.iter().all(|verb| {
+                    permissions.answer(&tree.clone().action(*verb), ActionKind::Undoable)
+                        == Answer::Allow
+                })
             })
     }
 
@@ -407,9 +423,15 @@ impl Worker {
         Outcome,
     > {
         use tilo_actions::ActionOutput;
-        if !self.may_in_files(workspace_id, caller, ActionKind::Undoable) {
+        use fs_protocol::file_action::verbs;
+        if !self.may_on_tree(
+            workspace_id,
+            caller,
+            &[verbs::NEW_FOLDER, verbs::NEW_FILE, verbs::WRITE],
+        ) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
+        let _acting = acting_for(caller);
         let arguments = invoke_arguments(&request.argument);
         let many = arguments.contains_key("files");
         let store = self

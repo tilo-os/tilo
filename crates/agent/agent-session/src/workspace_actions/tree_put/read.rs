@@ -9,7 +9,7 @@
 //! it ([`fs_content::whole`]) or, for a text document, from the tree itself.
 //!
 //! Nothing is written, so nothing is taken back. A read is answered to whoever may read what
-//! Files keeps in the workspace ([`Worker::may_in_files`]).
+//! Files keeps in the workspace ([`Worker::may_on_tree`]).
 
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionOutput;
@@ -217,11 +217,7 @@ impl Worker {
         request: &InvokeRequest,
         named: &str,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
-        if !self.may_in_files(
-            workspace_id,
-            caller,
-            ui::permissions::policy::ActionKind::Read,
-        ) {
+        if !self.may_on_tree(workspace_id, caller, &[]) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
         let arguments = invoke_arguments(&request.argument);
