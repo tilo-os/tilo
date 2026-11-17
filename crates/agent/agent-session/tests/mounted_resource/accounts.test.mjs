@@ -34,7 +34,7 @@ test('mounted fixture seeds both accounts in the entry page’s current namespac
       if (path === '/host.mjs') return response.end(host);
       // Stop after real fixture seeding and selection, before connecting a relay.
       if (path === '/device-key.mjs') return response.end(`
-        export {idbStorage} from '/real-device-key.mjs';
+        export {idbStorage, rememberBrowserDevice} from '/real-device-key.mjs';
         export async function openDeviceKey() { throw Error('account-selection-verified'); }
       `);
       const module = path === '/real-device-key.mjs' ? 'device-key.mjs' : path.slice(1);
