@@ -15,8 +15,8 @@ use crate::model::{Folder, Mailbox, Message};
 pub const MAIL_KIND: &str = "Mail";
 pub const FOLDER_KIND: &str = "Mail folders";
 
-fn no_subject() -> String {
-    crate::i18n::no_subject()
+fn untitled() -> String {
+    crate::i18n::untitled()
 }
 
 fn folder_icon(folder: Folder) -> &'static str {
@@ -97,7 +97,7 @@ fn recipients(message: &Message) -> String {
 
 fn message_entry(message: &Message) -> SearchEntry {
     let title = if message.subject.trim().is_empty() {
-        no_subject()
+        untitled()
     } else {
         message.subject.clone()
     };

@@ -871,7 +871,7 @@ struct WrittenDraft {
 fn draft_markdown(draft: &WrittenDraft) -> String {
     let mut out = String::new();
     let subject = if draft.subject.trim().is_empty() {
-        crate::i18n::no_subject()
+        crate::i18n::untitled()
     } else {
         draft.subject.trim().to_owned()
     };
@@ -900,7 +900,7 @@ fn markdown(messages: &[(&Id, &HeldMessage)]) -> String {
             out.push_str("\n---\n\n");
         }
         let subject = if held.subject.trim().is_empty() {
-            crate::i18n::no_subject()
+            crate::i18n::untitled()
         } else {
             held.subject.trim().to_owned()
         };

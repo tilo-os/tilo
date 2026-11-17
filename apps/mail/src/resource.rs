@@ -1394,7 +1394,7 @@ impl Mail {
 pub(crate) fn draft_label(draft: &DraftState) -> String {
     let subject = draft.subject.trim();
     let subject = if subject.is_empty() {
-        crate::i18n::no_subject()
+        crate::i18n::untitled()
     } else {
         subject.to_owned()
     };
