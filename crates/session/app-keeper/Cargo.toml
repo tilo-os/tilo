@@ -27,7 +27,7 @@ test-support = []
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend"] }
 # The desktop's side: one ordinary Wayland client.
 wayland-client = { workspace = true }
-wayland-protocols = { version = "0.32.12", features = ["client", "server", "unstable"] }
+wayland-protocols = { version = "0.32.12", features = ["client", "server", "unstable", "staging"] }
 serde.workspace = true
 serde_json.workspace = true
 # The control socket's frames: the length prefix every session socket uses.
@@ -48,7 +48,7 @@ tilo-app-keeper = { path = ".", features = ["test-support"] }
 tilo-compositor = { path = "../compositor" }
 tempfile.workspace = true
 wayland-client = { workspace = true }
-wayland-protocols = { version = "0.32.12", features = ["client"] }
+wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
 
 [lints]
 workspace = true

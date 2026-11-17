@@ -53,6 +53,10 @@ pub(crate) struct Kept {
     pub input: Option<Region>,
     /// Frame callbacks not yet done, each with the desktop generation it was sent to (0: none).
     pub frames: Vec<(WlCallback, u64)>,
+    /// The app made a fractional-scale object for this surface.
+    pub wants_fractional_scale: bool,
+    /// The scale the desktop last asked for, kept across a restart.
+    pub preferred_scale: Option<f64>,
     pub role: Role,
     pub up: Option<UpSurface>,
 }
@@ -71,6 +75,8 @@ impl Kept {
             opaque: None,
             input: None,
             frames: Vec::new(),
+            wants_fractional_scale: false,
+            preferred_scale: None,
             role: Role::None,
             up: None,
         }
@@ -179,6 +185,9 @@ pub(crate) struct UpSurface {
     pub surface: c::wl_surface::WlSurface,
     pub role: UpRole,
     pub pushed: Pushed,
+    pub viewport: Option<wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport>,
+    pub content_type: Option<wayland_protocols::wp::content_type::v1::client::wp_content_type_v1::WpContentTypeV1>,
+    pub fractional_scale: Option<wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1>,
 }
 
 pub(crate) enum UpRole {
@@ -228,6 +237,8 @@ pub(crate) struct Pushed {
     max: Option<(i32, i32)>,
     maximized: Option<bool>,
     fullscreen: Option<(bool, Option<String>)>,
+    viewport: Option<crate::viewporter::Viewport>,
+    content_type: Option<u32>,
 }
 
 /// Whether `value` differs from what was pushed, recording it as pushed.
@@ -769,8 +780,12 @@ impl State {
             surface: up_surface,
             role,
             pushed,
+            viewport: None,
+            content_type: None,
+            fractional_scale: None,
         });
         self.request_surface_feedback(id);
+        self.request_fractional_scale(id);
         true
     }
 
@@ -908,6 +923,21 @@ impl State {
         let Some(up) = self.up.as_ref() else {
             return;
         };
+        let viewport = self
+            .surfaces
+            .get(id)
+            .map(|kept| Self::viewport_of(&kept.surface));
+        let content_type = self.surfaces.get(id).map(|kept| {
+            with_states(&kept.surface, |states| {
+                u32::from(
+                    *states
+                        .cached_state
+                        .get::<smithay::wayland::content_type::ContentTypeSurfaceCachedState>()
+                        .current()
+                        .content_type(),
+                )
+            })
+        });
         let Some(kept) = self.surfaces.get_mut(id) else {
             return;
         };
@@ -966,6 +996,53 @@ impl State {
             surface.set_input_region(region.as_ref());
             if let Some(region) = region {
                 region.destroy();
+            }
+        }
+        self.push_protocol_state(id, viewport, content_type);
+    }
+
+    /// A surface's viewport and content type, which the desktop has objects of its own for.
+    fn push_protocol_state(
+        &mut self,
+        id: &ObjectId,
+        viewport: Option<crate::viewporter::Viewport>,
+        content_type: Option<u32>,
+    ) {
+        let Some(up) = self.up.as_ref() else {
+            return;
+        };
+        let Some(kept) = self.surfaces.get_mut(id) else {
+            return;
+        };
+        let Some(us) = kept.up.as_mut() else {
+            return;
+        };
+        if let Some(viewport) = viewport
+            && (viewport != (None, None) || us.viewport.is_some())
+            && differs(&mut us.pushed.viewport, &viewport)
+        {
+            if let Some(known) = us.viewport.as_ref().filter(|known| known.is_alive()) {
+                crate::viewporter::set_viewport(known, viewport);
+            } else if let Some(manager) = up.viewporter.clone() {
+                let made = crate::viewporter::make_viewport(&manager, &us.surface, &up.qh);
+                crate::viewporter::set_viewport(&made, viewport);
+                us.viewport = Some(made);
+            }
+        }
+        if let Some(raw) = content_type
+            && differs(&mut us.pushed.content_type, &raw)
+            && let Ok(kind) =
+                wayland_protocols::wp::content_type::v1::client::wp_content_type_v1::Type::try_from(
+                    raw,
+                )
+            && let Some(manager) = up.content_type.clone()
+        {
+            if let Some(known) = us.content_type.as_ref().filter(|known| known.is_alive()) {
+                known.set_content_type(kind);
+            } else {
+                let made = manager.get_surface_content_type(&us.surface, &up.qh, ());
+                made.set_content_type(kind);
+                us.content_type = Some(made);
             }
         }
     }

@@ -624,3 +624,76 @@ fn a_fault_is_attributed_to_the_window_that_caused_it_not_the_last_one_sent() {
     assert!(first.broken, "the app whose window caused the fault ended");
     assert!(!second.broken, "the app pushed last is not blamed");
 }
+
+#[test]
+fn a_viewport_crops_and_scales_the_window_on_the_desktop() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Cropped", Some("cropped"));
+    app.show(&mut rig, (100, 80), RED);
+    assert_eq!((rig.windows()[0].2.2, rig.windows()[0].2.3), (100, 80));
+    let _viewport = app.viewport(Some((0.0, 0.0, 50.0, 40.0)), Some((50, 40)));
+    rig.pump(&mut [&mut app], |rig, _| {
+        let (_, _, (_, _, w, h)) = rig.windows()[0];
+        (w, h) == (50, 40)
+    });
+    let (_, _, (x, y, w, h)) = rig.windows()[0];
+    assert_eq!(rig.pixel((x + w / 2) as u32, (y + h / 2) as u32), RED);
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| {
+        rig.windows()
+            .first()
+            .is_some_and(|(_, _, (_, _, w, h))| (*w, *h) == (50, 40))
+    });
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn the_desktops_fractional_scale_reaches_the_app_and_follows_a_restart() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Scaled", Some("scaled"));
+    app.show(&mut rig, (100, 80), GREEN);
+    let _scale = app.request_fractional_scale();
+    rig.pump(&mut [&mut app], |_, apps| {
+        !apps[0].heard.preferred_scales.is_empty()
+    });
+    assert_eq!(app.heard.preferred_scales.last().copied(), Some(120));
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new_at_scale(640, 480, 1.5);
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.preferred_scales.last().copied() == Some(180)
+    });
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new_at_scale(640, 480, 2.0);
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.preferred_scales.last().copied() == Some(240)
+    });
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn a_content_type_the_app_sets_survives_a_restart() {
+    use wayland_protocols::wp::content_type::v1::client::wp_content_type_v1::Type;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Video", Some("video"));
+    app.show(&mut rig, (100, 80), GREEN);
+    let _content = app.content_type(Type::Video);
+    rig.settle(&mut [&mut app]);
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    assert_eq!(rig.keeper.describe().fault, None);
+    let (_, _, (x, y, _, _)) = rig.windows()[0];
+    assert_eq!(rig.pixel((x + 50) as u32, (y + 40) as u32), GREEN);
+}

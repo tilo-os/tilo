@@ -46,12 +46,14 @@
 mod child;
 mod control;
 mod dmabuf;
+mod fractional;
 mod outputs;
 mod pings;
 mod seat;
 mod state;
 mod surfaces;
 mod upstream;
+mod viewporter;
 pub mod wire;
 
 use std::collections::HashMap;

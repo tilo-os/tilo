@@ -18,9 +18,20 @@ use wayland_client::protocol::{
     wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::wp::content_type::v1::client::{
+    wp_content_type_manager_v1::WpContentTypeManagerV1,
+    wp_content_type_v1::{self, WpContentTypeV1},
+};
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
     zwp_linux_dmabuf_v1, zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
+};
+use wayland_protocols::wp::viewporter::client::{
+    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_popup::XdgPopup, xdg_positioner::XdgPositioner, xdg_surface,
@@ -32,9 +43,14 @@ pub const OUTPUT: &str = "HEADLESS-1";
 
 /// A desktop of one output.
 pub fn desktop(width: i32, height: i32) -> Compositor {
+    desktop_at_scale(width, height, 1.0)
+}
+
+/// A desktop whose output has `scale`.
+pub fn desktop_at_scale(width: i32, height: i32, scale: f64) -> Compositor {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
     compositor
-        .add_output(&OutputConfig::new(OUTPUT, width, height))
+        .add_output(&OutputConfig::new(OUTPUT, width, height).with_scale(scale))
         .expect("output");
     compositor
 }
@@ -69,7 +85,12 @@ impl Rig {
 
     /// A new desktop, attached as a session would after a restart.
     pub fn attach_new(&mut self, width: i32, height: i32) {
-        let mut compositor = desktop(width, height);
+        self.attach_new_at_scale(width, height, 1.0);
+    }
+
+    /// A new desktop whose output has `scale`.
+    pub fn attach_new_at_scale(&mut self, width: i32, height: i32, scale: f64) {
+        let mut compositor = desktop_at_scale(width, height, scale);
         let socket = compositor.connect_client().expect("desktop connection");
         self.keeper.attach(socket).expect("attach");
         self.desktop = Some(compositor);
@@ -255,6 +276,10 @@ pub struct Heard {
     pub output_modes: Vec<(u32, i32, i32)>,
     pub globals_removed: Vec<u32>,
     pub dmabuf: Option<ZwpLinuxDmabufV1>,
+    pub viewporter: Option<WpViewporter>,
+    pub fractional_scale: Option<WpFractionalScaleManagerV1>,
+    pub preferred_scales: Vec<u32>,
+    pub content_type: Option<WpContentTypeManagerV1>,
     pub dmabuf_done: usize,
     pub surface_feedback_done: usize,
     pub configures: Vec<(i32, i32, Vec<u32>)>,
@@ -410,6 +435,57 @@ impl App {
         }
     }
 
+    /// A viewport on the window surface, with `src` and `dst` as the app asks for them.
+    pub fn viewport(
+        &self,
+        src: Option<(f64, f64, f64, f64)>,
+        dst: Option<(i32, i32)>,
+    ) -> WpViewport {
+        let qh = self.qh();
+        let surface = self.surface.clone().unwrap();
+        let viewport: WpViewport = self
+            .heard
+            .viewporter
+            .as_ref()
+            .expect("a viewporter")
+            .get_viewport(&surface, &qh, ());
+        match src {
+            Some((x, y, w, h)) => viewport.set_source(x, y, w, h),
+            None => viewport.set_source(0.0, 0.0, -1.0, -1.0),
+        }
+        match dst {
+            Some((w, h)) => viewport.set_destination(w, h),
+            None => viewport.set_destination(-1, -1),
+        }
+        surface.commit();
+        viewport
+    }
+
+    /// Ask the desktop for this window's preferred scale.
+    pub fn request_fractional_scale(&self) -> WpFractionalScaleV1 {
+        let qh = self.qh();
+        self.heard
+            .fractional_scale
+            .as_ref()
+            .expect("a fractional scale manager")
+            .get_fractional_scale(self.surface.as_ref().unwrap(), &qh, ())
+    }
+
+    /// Tell the desktop what kind of content the window shows.
+    pub fn content_type(&self, kind: wp_content_type_v1::Type) -> WpContentTypeV1 {
+        let qh = self.qh();
+        let surface = self.surface.clone().unwrap();
+        let object: WpContentTypeV1 = self
+            .heard
+            .content_type
+            .as_ref()
+            .expect("a content type manager")
+            .get_surface_content_type(&surface, &qh, ());
+        object.set_content_type(kind);
+        surface.commit();
+        object
+    }
+
     /// Ask for the next frame callback on the window.
     pub fn request_frame(&self) -> WlCallback {
         let qh = self.qh();
@@ -491,6 +567,15 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 "wl_output" => heard
                     .outputs
                     .push(registry.bind(name, version.min(4), qh, name)),
+                "wp_viewporter" => {
+                    heard.viewporter = Some(registry.bind(name, 1, qh, ()));
+                }
+                "wp_fractional_scale_manager_v1" => {
+                    heard.fractional_scale = Some(registry.bind(name, 1, qh, ()));
+                }
+                "wp_content_type_manager_v1" => {
+                    heard.content_type = Some(registry.bind(name, 1, qh, ()));
+                }
                 "zwp_linux_dmabuf_v1" if version >= 4 => {
                     let dmabuf: ZwpLinuxDmabufV1 = registry.bind(name, version.min(5), qh, ());
                     dmabuf.get_default_feedback(qh, ());
@@ -744,6 +829,26 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, SurfaceFeedbackSeen> for Heard {
     }
 }
 
+impl Dispatch<WpFractionalScaleV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            heard.preferred_scales.push(scale);
+        }
+    }
+}
+
+delegate_noop!(Heard: ignore WpViewporter);
+delegate_noop!(Heard: ignore WpViewport);
+delegate_noop!(Heard: ignore WpFractionalScaleManagerV1);
+delegate_noop!(Heard: ignore WpContentTypeManagerV1);
+delegate_noop!(Heard: ignore WpContentTypeV1);
 delegate_noop!(Heard: ignore WlCompositor);
 delegate_noop!(Heard: ignore WlSubcompositor);
 delegate_noop!(Heard: ignore WlSubsurface);

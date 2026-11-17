@@ -52,6 +52,13 @@ pub(crate) struct Upstream {
     pub shm_formats: Vec<u32>,
     pub wm_base: Option<cx::xdg_wm_base::XdgWmBase>,
     pub dmabuf: Option<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>,
+    pub viewporter: Option<wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter>,
+    pub fractional_scale: Option<
+        wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    >,
+    pub content_type: Option<
+        wayland_protocols::wp::content_type::v1::client::wp_content_type_manager_v1::WpContentTypeManagerV1,
+    >,
     pub feedback: FeedbackParts,
     pub xdg_outputs: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub seat: Option<c::wl_seat::WlSeat>,
@@ -94,6 +101,9 @@ impl Upstream {
                 shm_formats: Vec::new(),
                 wm_base: None,
                 dmabuf: None,
+                viewporter: None,
+                fractional_scale: None,
+                content_type: None,
                 feedback: FeedbackParts::default(),
                 xdg_outputs: None,
                 seat: None,
@@ -174,46 +184,62 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        let Some(up) = state.up.as_mut() else {
-            return;
-        };
-        match event {
+        let (name, interface, version) = match &event {
             c::wl_registry::Event::Global {
                 name,
                 interface,
                 version,
-            } => match interface.as_str() {
-                "wl_compositor" => {
-                    up.compositor = Some(registry.bind(name, version.min(6), qh, ()));
+            } => (*name, interface.clone(), *version),
+            c::wl_registry::Event::GlobalRemove { name } => {
+                state.desktop_output_removed(*name);
+                return;
+            }
+            _ => return,
+        };
+        // A global the desktop offers is offered to the app, once: an app already running when
+        // a later desktop lacks it keeps its objects, which go inert.
+        state.offer_global(&interface);
+        let Some(up) = state.up.as_mut() else {
+            return;
+        };
+        match interface.as_str() {
+            "wl_compositor" => {
+                up.compositor = Some(registry.bind(name, version.min(6), qh, ()));
+            }
+            "wl_subcompositor" => up.subcompositor = Some(registry.bind(name, 1, qh, ())),
+            "wl_shm" => up.shm = Some(registry.bind(name, 1, qh, ())),
+            "xdg_wm_base" => up.wm_base = Some(registry.bind(name, version.min(6), qh, ())),
+            "zwp_linux_dmabuf_v1" if version >= 4 => {
+                up.dmabuf = Some(registry.bind(name, version.min(5), qh, ()));
+            }
+            "zxdg_output_manager_v1" => {
+                let manager: zxdg_output_manager_v1::ZxdgOutputManagerV1 =
+                    registry.bind(name, version.min(3), qh, ());
+                for output in &mut up.outputs {
+                    output.xdg = Some(manager.get_xdg_output(&output.wl, qh, output.global));
                 }
-                "wl_subcompositor" => up.subcompositor = Some(registry.bind(name, 1, qh, ())),
-                "wl_shm" => up.shm = Some(registry.bind(name, 1, qh, ())),
-                "xdg_wm_base" => up.wm_base = Some(registry.bind(name, version.min(6), qh, ())),
-                "zwp_linux_dmabuf_v1" if version >= 4 => {
-                    up.dmabuf = Some(registry.bind(name, version.min(5), qh, ()));
-                }
-                "zxdg_output_manager_v1" => {
-                    let manager: zxdg_output_manager_v1::ZxdgOutputManagerV1 =
-                        registry.bind(name, version.min(3), qh, ());
-                    for output in &mut up.outputs {
-                        output.xdg = Some(manager.get_xdg_output(&output.wl, qh, output.global));
-                    }
-                    up.xdg_outputs = Some(manager);
-                }
-                "wl_seat" if up.seat.is_none() => {
-                    up.seat = Some(registry.bind(name, version.min(SEAT_VERSION), qh, ()));
-                }
-                "wl_output" => {
-                    let wl: c::wl_output::WlOutput = registry.bind(name, version.min(4), qh, name);
-                    let xdg = up
-                        .xdg_outputs
-                        .as_ref()
-                        .map(|manager| manager.get_xdg_output(&wl, qh, name));
-                    up.outputs.push(UpOutput::new(name, wl, xdg));
-                }
-                _ => {}
-            },
-            c::wl_registry::Event::GlobalRemove { name } => state.desktop_output_removed(name),
+                up.xdg_outputs = Some(manager);
+            }
+            "wl_seat" if up.seat.is_none() => {
+                up.seat = Some(registry.bind(name, version.min(SEAT_VERSION), qh, ()));
+            }
+            "wp_viewporter" => {
+                up.viewporter = Some(registry.bind(name, 1, qh, ()));
+            }
+            "wp_fractional_scale_manager_v1" => {
+                up.fractional_scale = Some(registry.bind(name, 1, qh, ()));
+            }
+            "wp_content_type_manager_v1" => {
+                up.content_type = Some(registry.bind(name, 1, qh, ()));
+            }
+            "wl_output" => {
+                let wl: c::wl_output::WlOutput = registry.bind(name, version.min(4), qh, name);
+                let xdg = up
+                    .xdg_outputs
+                    .as_ref()
+                    .map(|manager| manager.get_xdg_output(&wl, qh, name));
+                up.outputs.push(UpOutput::new(name, wl, xdg));
+            }
             _ => {}
         }
     }
@@ -543,6 +569,11 @@ wayland_client::delegate_noop!(State: ignore c::wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(State: ignore c::wl_region::WlRegion);
 wayland_client::delegate_noop!(State: ignore cx::xdg_positioner::XdgPositioner);
 wayland_client::delegate_noop!(State: ignore zxdg_output_manager_v1::ZxdgOutputManagerV1);
+wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter);
+wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport);
+wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::content_type::v1::client::wp_content_type_manager_v1::WpContentTypeManagerV1);
+wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::content_type::v1::client::wp_content_type_v1::WpContentTypeV1);
 
 impl Dispatch<c::wl_subsurface::WlSubsurface, SurfaceRef> for State {
     fn event(

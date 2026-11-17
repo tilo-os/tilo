@@ -60,6 +60,11 @@ pub struct State {
     smithay_seat: SeatState<Self>,
     dmabuf: DmabufState,
     pub(crate) dmabuf_global: Option<DmabufGlobal>,
+    /// The app-facing globals this keeper chose to offer, once a desktop offered them.
+    pub(crate) viewporter: Option<smithay::wayland::viewporter::ViewporterState>,
+    pub(crate) fractional_scale:
+        Option<smithay::wayland::fractional_scale::FractionalScaleManagerState>,
+    pub(crate) content_type: Option<smithay::wayland::content_type::ContentTypeState>,
     /// What the desktop answered each surface's own feedback request, kept while it is away.
     pub(crate) surface_feedback: crate::dmabuf::SurfaceFeedbacks,
     /// Every live surface of the app, by its id.
@@ -103,6 +108,9 @@ impl State {
             smithay_seat: SeatState::new(),
             dmabuf: DmabufState::new(),
             dmabuf_global: None,
+            viewporter: None,
+            fractional_scale: None,
+            content_type: None,
             surface_feedback: crate::dmabuf::SurfaceFeedbacks::default(),
             surfaces: HashMap::new(),
             next_seq: 0,
@@ -120,6 +128,19 @@ impl State {
             faulted: HashSet::new(),
             outbox: Vec::new(),
             ready_once: false,
+        }
+    }
+
+    /// Offer the app a global the desktop just offered, once.
+    pub(crate) fn offer_global(&mut self, interface: &str) {
+        match interface {
+            "wp_viewporter" => self.offer_viewporter(),
+            "wp_fractional_scale_manager_v1" => self.offer_fractional_scale(),
+            "wp_content_type_manager_v1" if self.content_type.is_none() => {
+                self.content_type =
+                    Some(smithay::wayland::content_type::ContentTypeState::new::<Self>(&self.dh));
+            }
+            _ => {}
         }
     }
 
@@ -422,3 +443,4 @@ delegate_shm!(State);
 delegate_dmabuf!(State);
 delegate_output!(State);
 delegate_xdg_shell!(State);
+smithay::delegate_content_type!(State);
