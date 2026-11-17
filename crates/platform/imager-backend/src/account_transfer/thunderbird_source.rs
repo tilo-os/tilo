@@ -5,7 +5,7 @@
 //! A transfer that stays on this computer streams the granted Home instead of building the bundle.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use accounts::email::{AccountConfig, AuthMethod};
