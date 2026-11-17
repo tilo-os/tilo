@@ -981,6 +981,19 @@ impl Session {
         } else {
             Vec::new()
         };
+        // Who is here, placed into a copy of the layout as the members of the workspace in front:
+        // the tree the loop holds lists nobody. The bar's faces and a notice's names read them so.
+        let place_here: Rc<dyn Fn(&mut tilo_desktop_model::Layout)> = {
+            let sync = sync.clone();
+            let notes = std::sync::Arc::clone(&notes);
+            Rc::new(move |tree: &mut tilo_desktop_model::Layout| {
+                if let Some(sync) = &sync {
+                    sync.show(tree, &notes, &|app: &str| {
+                        Some(crate::app_names::app_name(app))
+                    });
+                }
+            })
+        };
         // Who is here, over the windows: the roster the bar's faces open and
         // where everyone else's pointer is.
         let people = crate::people::mount(
@@ -1001,17 +1014,7 @@ impl Session {
                 handle: handle.clone(),
                 sync: sync.clone(),
                 // Who is here as the bar's faces are drawn from them: the app wire's.
-                here: {
-                    let sync = sync.clone();
-                    let notes = std::sync::Arc::clone(&notes);
-                    Rc::new(move |tree: &mut tilo_desktop_model::Layout| {
-                        if let Some(sync) = &sync {
-                            sync.show(tree, &notes, &|app: &str| {
-                                Some(crate::app_names::app_name(app))
-                            });
-                        }
-                    })
-                },
+                here: Rc::clone(&place_here),
                 intents: Rc::clone(&intents),
                 invitable: Rc::clone(&invitable),
             },
@@ -1532,22 +1535,25 @@ impl Session {
             let naming = handle.clone();
             crate::mentions::Mentions::over(crate::mentions::Given {
                 person: vec![options.person.clone()],
-                store: Some(store.clone()),
-                records: Some(Rc::new(crate::platform::records::Linked::over(
-                    store,
-                    crate::platform::records::Changes::clone(&changes),
-                ))),
+                store: Some(store),
+                // The workspaces' records are the engine's: what their apps and the person's
+                // other devices write lands there, never in the session's own store.
+                records: engine.as_ref().map(|engine| {
+                    Rc::new(crate::platform::records::Held::over(
+                        std::sync::Arc::clone(engine),
+                        crate::platform::records::Changes::clone(&changes),
+                    )) as Rc<dyn crate::platform::records::Records>
+                }),
                 notices: Some(crate::notifications::RoleNotices::of(&notifications)),
                 name: Rc::new(move |person: &str| {
-                    naming
-                        .read(|tree| {
-                            tree.workspaces
-                                .iter()
-                                .flat_map(|workspace| workspace.members.iter())
-                                .find(|member| member.id == collab_types::MemberId::person(person))
-                                .map(|member| member.name.clone())
-                                .filter(|name| !name.is_empty())
-                        })
+                    let mut tree = naming.read(Clone::clone);
+                    place_here(&mut tree);
+                    tree.workspaces
+                        .iter()
+                        .flat_map(|workspace| workspace.members.iter())
+                        .find(|member| member.id == collab_types::MemberId::person(person))
+                        .map(|member| member.name.clone())
+                        .filter(|name| !name.is_empty())
                         .unwrap_or_else(tilo_desktop::here::guest_label)
                 }),
                 wake: Some(options.wake.handle()),

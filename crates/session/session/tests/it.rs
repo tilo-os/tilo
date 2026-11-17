@@ -155,8 +155,6 @@ mod logging;
 mod lounge_e2e;
 #[path = "mcp_server_workspace.rs"]
 mod mcp_server_workspace;
-#[path = "mention_notice.rs"]
-mod mention_notice;
 #[path = "network_agent_questions.rs"]
 mod network_agent_questions;
 #[path = "network_unlock.rs"]

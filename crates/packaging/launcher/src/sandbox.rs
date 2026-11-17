@@ -411,6 +411,9 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
         "TILO_CONTINUITY_RESUME_SCHEMA",
         "TILO_CONTINUITY_RESUME_HEX",
         tilo_process::environment::WINDOWLESS_ENV,
+        // The item the window opens on (a conversation another member's send landed in): a
+        // process started for that window learns it nowhere else.
+        tilo_process::environment::REVEAL_ENV,
     ] {
         let Ok(value) = std::env::var(key) else {
             continue;
@@ -1000,6 +1003,9 @@ mod tests {
         )
     }
 
+    /// The item a window opens on, as a launch names it.
+    const REVEAL: &str = "chat.workspace/messages/m1";
+
     /// Value of `--setenv <key> <value>` for `key`, or `None` if absent.
     fn setenv_value<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
         argv.windows(3)
@@ -1556,7 +1562,8 @@ mod tests {
                 let mut env = tilo_test_env::ScopedEnv::new();
                 env.set("TILO_CONTINUITY_INSTANCE", "42")
                     .set("TILO_CONTINUITY_RESUME_SCHEMA", "7")
-                    .set("TILO_CONTINUITY_RESUME_HEX", "7b7d");
+                    .set("TILO_CONTINUITY_RESUME_HEX", "7b7d")
+                    .set(tilo_process::environment::REVEAL_ENV, REVEAL);
                 let argv = build_bwrap_argv(
                     &mk_manifest("off"),
                     Path::new("/host/pkg"),
@@ -1575,6 +1582,11 @@ mod tests {
                 assert_eq!(
                     setenv_value(&argv, "TILO_CONTINUITY_RESUME_HEX"),
                     Some("7b7d")
+                );
+                // A window started on another member's item opens on it.
+                assert_eq!(
+                    setenv_value(&argv, tilo_process::environment::REVEAL_ENV),
+                    Some(REVEAL)
                 );
             }
             {

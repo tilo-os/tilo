@@ -126,14 +126,43 @@ impl Device {
         Mentions::over(Given {
             person: vec![person.to_owned()],
             store: Some(self.store.clone()),
-            records: Some(Rc::new(crate::platform::records::Linked::over(
-                self.store.clone(),
-                self.changes.clone(),
-            )) as Rc<dyn Records>),
+            records: Some(
+                Rc::new(Stored::over(self.store.clone(), self.changes.clone())) as Rc<dyn Records>,
+            ),
             notices: Some(Rc::clone(shown) as Rc<dyn Notices>),
             name: Rc::new(name),
             wake: None,
         })
+    }
+}
+
+/// What a device's store keeps, with the changes noted as they were written.
+struct Stored {
+    store: Store,
+    changes: Changes,
+}
+
+impl Stored {
+    fn over(store: Store, changes: Changes) -> Self {
+        Self { store, changes }
+    }
+}
+
+impl Records for Stored {
+    fn take_changed(&self) -> Vec<Changed> {
+        self.changes.take()
+    }
+
+    fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
+        crate::platform::records::document(self.store.as_ref(), app, workspace, route)
+    }
+
+    /// The kind the workspace's index names its first document as.
+    fn kind(&self, app: &str, workspace: &str) -> String {
+        crate::platform::records::named_checkouts(self.store.as_ref(), app, workspace)
+            .and_then(|named| named.into_iter().next())
+            .map(|(checkout, _)| checkout.kind.as_str().to_owned())
+            .unwrap_or_default()
     }
 }
 
@@ -532,7 +561,7 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
 /// A device's records as a page reads them: what changed of a record since some heads, apart from
 /// the record, and every whole read counted.
 struct Counted {
-    linked: crate::platform::records::Linked,
+    linked: Stored,
     store: Store,
     whole: std::cell::Cell<usize>,
 }
@@ -668,10 +697,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
     device.already_held(TASKS, TRACKER, &mut doc);
     let shown = Rc::new(Shown::default());
     let records = Rc::new(Counted {
-        linked: crate::platform::records::Linked::over(
-            device.store.clone(),
-            device.changes.clone(),
-        ),
+        linked: Stored::over(device.store.clone(), device.changes.clone()),
         store: device.store.clone(),
         whole: std::cell::Cell::new(0),
     });

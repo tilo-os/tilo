@@ -941,38 +941,82 @@ impl DurableStore for Noted {
     }
 }
 
-/// This device's records, read through its store and the changes they were noted with.
+/// What each workspace holds, as this device's engine keeps it: what its apps write, what the
+/// person's other devices replicate and what search reads, with the changes noted as they land.
 #[cfg(target_os = "linux")]
-pub struct Linked {
-    store: Store,
+pub struct Held {
+    engine: Arc<crate::engine::Engine>,
     changes: Changes,
 }
 
 #[cfg(target_os = "linux")]
-impl Linked {
-    /// This device's records in `store`, with `changes` saying what changed in them.
+impl Held {
+    /// What `engine` holds, with `changes` saying what moved in it.
     #[must_use]
-    pub fn over(store: Store, changes: Changes) -> Self {
-        Self { store, changes }
+    pub fn over(engine: Arc<crate::engine::Engine>, changes: Changes) -> Self {
+        Self { engine, changes }
+    }
+
+    /// What `app`'s document at `route` in `workspace` holds since `heads`: all of it without
+    /// heads. Nothing while its keys are not here yet.
+    fn read(
+        &self,
+        (app, workspace, route): (&str, &str, &str),
+        heads: Option<&[automerge::ChangeHash]>,
+    ) -> Option<crate::engine::ResourceReading> {
+        let heads: Option<Vec<[u8; 32]>> =
+            heads.map(|heads| heads.iter().map(|head| head.0).collect());
+        self.engine
+            .record_update(workspace, app, route, heads.as_deref())
+            .inspect_err(|error| tracing::warn!(%error, %app, %route, "a document is not read"))
+            .ok()
     }
 }
 
 #[cfg(target_os = "linux")]
-impl Records for Linked {
+impl Records for Held {
     fn take_changed(&self) -> Vec<Changed> {
         self.changes.take()
     }
 
-    fn document(&self, app: &str, workspace: &str, record: &str) -> Option<AutoCommit> {
-        document(self.store.as_ref(), app, workspace, record)
+    fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
+        let Some(crate::engine::ResourceReading::Captured { bytes, .. }) =
+            self.read((app, workspace, route), None)
+        else {
+            return None;
+        };
+        AutoCommit::load(&bytes)
+            .inspect_err(|error| tracing::warn!(%error, %app, %route, "a document does not load"))
+            .ok()
     }
 
-    /// The kind the workspace's index names its first record as: the workspace's own word for the
-    /// records its app keeps.
+    fn since(
+        &self,
+        app: &str,
+        workspace: &str,
+        route: &str,
+        heads: &[automerge::ChangeHash],
+    ) -> Since {
+        match self.read((app, workspace, route), Some(heads)) {
+            Some(crate::engine::ResourceReading::Unchanged(_)) => Since::Unchanged,
+            Some(crate::engine::ResourceReading::Changes { heads, bytes, .. }) => Since::Changes {
+                heads: heads.into_iter().map(automerge::ChangeHash).collect(),
+                bytes,
+            },
+            _ => Since::Whole,
+        }
+    }
+
+    /// The kind the workspace's index names its first document as: the workspace's own word for
+    /// what its app keeps.
     fn kind(&self, app: &str, workspace: &str) -> String {
-        named_checkouts(self.store.as_ref(), app, workspace)
-            .and_then(|named| named.into_iter().next())
-            .map(|(checkout, _)| checkout.kind.as_str().to_owned())
+        self.document(app, workspace, "")
+            .and_then(|index| {
+                ui::resource::index::discoverable_references(&index)
+                    .into_iter()
+                    .next()
+            })
+            .map(|checkout| checkout.kind.as_str().to_owned())
             .unwrap_or_default()
     }
 }
