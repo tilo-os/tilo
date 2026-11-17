@@ -71,6 +71,7 @@ pub enum DevicesAccessEffect {
         ask: String,
         #[param("The name the device is let in under")]
         label: String,
+        #[param("Whether it is let in: true approves it, false declines it")]
         approve: bool,
     },
     /// Name a device of the person's: what their device lists read it by from
@@ -1148,16 +1149,20 @@ fn device_row(device: &DeviceView, draft: &str) -> LiveRow {
         })
         .bound(),
     );
-    for reason in REVOKE_REASONS {
-        row = row.operation(
-            SettingsEffect::from(DevicesAccessEffect::RevokeDevice {
-                device: key.clone(),
-                reason: reason.to_owned(),
-            })
-            .bound(),
-        );
-    }
-    row
+    row.operation(revocation(DevicesAccessEffect::RevokeDevice {
+        device: key,
+        reason: REMOVED.to_owned(),
+    }))
+}
+
+/// Taking a device or a browser back, as its row offers it: once, bound to
+/// what it ends, asking why. The reasons are the parameter's choices, so the
+/// page's own button, the search, an agent and the screen reader name one of
+/// them to the same action. An address carries one action: the host refuses
+/// a surface that offers an address twice, and withdraws every action of the
+/// app with it.
+fn revocation(effect: DevicesAccessEffect) -> ui::tilo_actions::ActionSpec {
+    SettingsEffect::from(effect).bound_asking(&["reason"])
 }
 
 /// Naming `device`: a button that opens a field holding the name it reads by,
@@ -1258,20 +1263,14 @@ fn caption(text: &str) -> Element {
 }
 
 fn browser_row(browser: &BrowserEntry<'_>) -> LiveRow {
-    let mut row = LiveRow::typed::<Device>(
+    LiveRow::typed::<Device>(
         format!("settings.device-browser:{}", browser.id),
         browser.label(),
-    );
-    for reason in REVOKE_REASONS {
-        row = row.operation(
-            SettingsEffect::from(DevicesAccessEffect::RevokeBrowser {
-                browser: browser.id.to_owned(),
-                reason: reason.to_owned(),
-            })
-            .bound(),
-        );
-    }
-    row
+    )
+    .operation(revocation(DevicesAccessEffect::RevokeBrowser {
+        browser: browser.id.to_owned(),
+        reason: REMOVED.to_owned(),
+    }))
 }
 
 fn browser_item(
@@ -1326,16 +1325,28 @@ fn agent_row(agent: &AgentEntry<'_>, draft: &str) -> LiveRow {
             .bound(),
         );
     }
-    for session in agent.grant.iter().flat_map(|grant| &grant.sessions) {
-        row = row.operation(
-            SettingsEffect::from(DevicesAccessEffect::StopSession {
-                grant: id.clone(),
-                session: session.name.clone(),
-            })
-            .bound(),
-        );
+    if let Some(grant) = agent.grant.filter(|grant| !grant.sessions.is_empty()) {
+        row = row.operation(stop_session(&id, &grant.sessions));
     }
     row
+}
+
+/// Ending one of an agent's open sessions, as its row offers it: once, bound
+/// to the grant, asking which. The sessions open now are the parameter's
+/// choices, by the names History gives them.
+fn stop_session(grant: &str, open: &[mcp_server::AgentSession]) -> ui::tilo_actions::ActionSpec {
+    let effect = SettingsEffect::from(DevicesAccessEffect::StopSession {
+        grant: grant.to_owned(),
+        session: String::new(),
+    });
+    let mut params = effect.bound_asking(&["session"]).params().to_vec();
+    for param in &mut params {
+        param.choices = open
+            .iter()
+            .map(|session| session.name.clone().into())
+            .collect();
+    }
+    effect.bound_asking_params(params)
 }
 
 fn agent_item(
@@ -1403,22 +1414,24 @@ fn agent_item(
     )
 }
 
+/// The answer to a device that asks, as its row offers it: once, bound to
+/// the ask, asking whether it is let in. Approving and declining are the two
+/// values of that one parameter, never two actions under one address.
 fn asking_row(asking: &Asking) -> LiveRow {
-    let mut row = LiveRow::typed::<AskingDevice>(
+    LiveRow::typed::<AskingDevice>(
         format!("settings.device-asking:{}", asking.ask),
         asking.label.clone(),
-    );
-    for approve in [true, false] {
-        row = row.operation(
-            SettingsEffect::from(DevicesAccessEffect::AnswerDevice {
-                ask: asking.ask.clone(),
-                label: asking.label.clone(),
-                approve,
-            })
-            .bound(),
-        );
-    }
-    row
+    )
+    .operation(
+        SettingsEffect::from(DevicesAccessEffect::AnswerDevice {
+            ask: asking.ask.clone(),
+            label: asking.label.clone(),
+            // What the row holds until its caller answers: nobody is let in
+            // by an answer that was not given.
+            approve: false,
+        })
+        .bound_asking(&["approve"]),
+    )
 }
 
 fn asking_lines(asking: &Asking) -> Vec<String> {
