@@ -1018,19 +1018,18 @@ impl Replica {
         kind: &str,
         permissions: &PermissionContext,
     ) -> Vec<ActionDescriptor> {
-        self.read(|doc| {
-            discover_views(
-                self.kind,
-                self.app_id,
-                doc,
-                &tilo_actions::remote::ViewResourceQuery {
-                    id: id.to_owned(),
-                    kind: kind.to_owned(),
-                },
-                permissions,
-            )
-        })
-        .unwrap_or_default()
+        let wanted = tilo_actions::remote::ViewResourceQuery {
+            id: id.to_owned(),
+            kind: kind.to_owned(),
+        };
+        // An item of a chain the app keeps beside its record (an issue in
+        // one of the tracker's parts) is in no record's document alone: the
+        // view publishes it, with the view its opener shows.
+        if let Some(published) = published_resource(&self.view.published(), id) {
+            return views_of(published, self.app_id, &wanted, permissions);
+        }
+        self.read(|doc| discover_views(self.kind, self.app_id, doc, &wanted, permissions))
+            .unwrap_or_default()
     }
 
     /// Perform one published operation through the view, the API a
@@ -1486,6 +1485,31 @@ fn discover_views(
             Err(_) => return Vec::new(),
         },
     };
+    views_of(published, app_id, wanted, permissions)
+}
+
+/// The resource `id` among `resources` and their children, as published.
+fn published_resource(
+    resources: &[tilo_actions::ResourceSpec],
+    id: &str,
+) -> Option<tilo_actions::ResourceSpec> {
+    resources.iter().find_map(|resource| {
+        if resource.id.as_str() == id {
+            Some(resource.clone())
+        } else {
+            published_resource(&resource.children, id)
+        }
+    })
+}
+
+/// The views `wanted` offers in `published`, a resource of `app_id`, that
+/// `permissions` let the caller open.
+fn views_of(
+    published: tilo_actions::ResourceSpec,
+    app_id: &str,
+    wanted: &tilo_actions::remote::ViewResourceQuery,
+    permissions: &PermissionContext,
+) -> Vec<ActionDescriptor> {
     let Some(permitted) = permissions.permitted_resource(app_id, published) else {
         return Vec::new();
     };
