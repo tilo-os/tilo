@@ -414,7 +414,7 @@ pub mod __private {
         pub flat: bool,
         /// For a flattened parameter, its type's fields and their published
         /// types, by name: what names an enum or record a nested argument is.
-        pub flat_types: Option<fn(&mut crate::TypeSet) -> Vec<(String, crate::FieldType)>>,
+        pub flat_types: Option<crate::surface::FlatTypes>,
         /// It takes content another action produced, by its hash, beside
         /// the verb's other parameters.
         pub content: bool,

@@ -14,12 +14,16 @@ use crate::resource::Resource;
 use crate::shape::Shape;
 use crate::vocabulary::{Declaration, vocabulary};
 
+/// A flattened parameter's record fields and their published types, by name, as the code
+/// declares them.
+pub type FlatTypes = fn(&mut TypeSet) -> Vec<(String, FieldType)>;
+
 /// The published parameters of an action, each typed by its Rust type when
 /// the code declares one and by its schema otherwise.
 fn params_of(
     params: &[tilo_actions::ActionParam],
     param_types: &[(&'static str, FieldTypeOf)],
-    flat_types: Option<fn(&mut TypeSet) -> Vec<(String, FieldType)>>,
+    flat_types: Option<FlatTypes>,
     types: &mut TypeSet,
 ) -> Vec<ParamSurface> {
     // A flattened parameter is published as its record's own fields: their

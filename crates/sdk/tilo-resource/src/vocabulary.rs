@@ -228,7 +228,7 @@ pub struct Declaration {
     pub param_types: Vec<(&'static str, ParamFieldType)>,
     /// For a flattened parameter, its record's fields and their types, by
     /// name: the verb's own parameters even though the code declares one.
-    pub flat_types: Option<fn(&mut crate::TypeSet) -> Vec<(String, crate::surface::FieldType)>>,
+    pub flat_types: Option<crate::surface::FlatTypes>,
     /// The type of the value it answers with, when the code declares one
     /// ([`JsonSchema::field_type`](crate::JsonSchema::field_type)): what the
     /// surface publishes of its result.
