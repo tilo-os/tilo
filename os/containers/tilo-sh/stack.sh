@@ -2088,12 +2088,14 @@ remote_shell() {
 # start_supervisor ARGS…: the stack on the build server as one long-running
 # program, which is what keeps its ports served here and its memory admitted
 # there while it runs. The stack's own bring-up comes first, so the process is
-# only kept alive once its services answer; `down` ends it.
+# only kept alive once its services answer; `down` ends it. The drop-in's own
+# environment carries the state it serves, which is how its pid file is known
+# to be this stack's (`supervisor_pid`).
 start_supervisor() {
   local envs=() inner
   mapfile -t envs < <(remote_env)
   inner=$(printf 'bash %q ' "$here/stack.sh"; printf '%q ' "$@")
-  ( cd "$repo" && setsid "$cargo" exec \
+  ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" "$cargo" exec \
       --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
       -- env "${envs[@]}" bash -c "$inner && exec sleep infinity" ) \
     >> "$state/logs/remote.log" 2>&1 < /dev/null 9>&- &
