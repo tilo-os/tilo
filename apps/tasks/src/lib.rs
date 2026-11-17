@@ -247,13 +247,11 @@ impl ResourceApp for App {
         };
         let window = Window::of(cx);
         #[cfg(feature = "samples")]
-        if let (Some(scene), Some(chain), Some(me)) =
-            (
-                cx.fixture::<sample::Scene>(),
-                &window.chain,
-                cx.me().and_then(ui::tilo_resource::MemberId::person_id),
-            )
-        {
+        if let (Some(scene), Some(chain), Some(me)) = (
+            cx.fixture::<sample::Scene>(),
+            &window.chain,
+            cx.me().and_then(ui::tilo_resource::MemberId::person_id),
+        ) {
             sample::fill(*scene, chain, me);
         }
         router(cx, &nav, &window);

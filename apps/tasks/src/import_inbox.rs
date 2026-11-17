@@ -351,9 +351,11 @@ mod tests {
                 }),
             ),
         ];
-        let chain = Chain::<IssuePart>::detached(crate::APP_ID, &ui::tilo_resource::MemberId::person("ada"), || {
-            Rc::new(Tracker::default())
-        })
+        let chain = Chain::<IssuePart>::detached(
+            crate::APP_ID,
+            &ui::tilo_resource::MemberId::person("ada"),
+            || Rc::new(Tracker::default()),
+        )
         .unwrap();
         assert!(apply(&chain, &entries).unwrap());
         let parts = chain.parts();

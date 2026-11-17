@@ -91,7 +91,13 @@ fn collect(
     }
 }
 
-fn tree(tasks: &Tasks, nav: &Nav, window: &Window, filter: &Filter, me: Option<&ui::tilo_resource::MemberId>) -> Element {
+fn tree(
+    tasks: &Tasks,
+    nav: &Nav,
+    window: &Window,
+    filter: &Filter,
+    me: Option<&ui::tilo_resource::MemberId>,
+) -> Element {
     let issues = tasks.issues();
     if issues.is_empty() {
         return Box::new(

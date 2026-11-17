@@ -117,7 +117,12 @@ impl Filter {
         self.matches(issue, me) || self.shows_below(issues, id, me)
     }
 
-    fn shows_below(&self, issues: &Issues<'_>, id: &Id, me: Option<&ui::tilo_resource::MemberId>) -> bool {
+    fn shows_below(
+        &self,
+        issues: &Issues<'_>,
+        id: &Id,
+        me: Option<&ui::tilo_resource::MemberId>,
+    ) -> bool {
         issues
             .children(Some(id))
             .any(|(child, issue)| self.shows(issues, child, issue, me))
