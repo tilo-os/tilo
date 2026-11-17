@@ -325,6 +325,18 @@ impl HostedVm {
         Ok(())
     }
 
+    /// The size a command runs this VM at: `size` when the VM can take it — it
+    /// has no disk yet, or it is asleep — and the size it has when it is awake,
+    /// since a command does not resize a machine that is running. A host that
+    /// places a workspace's VM fixes its size; the size a command names is what
+    /// the VM would be made at.
+    pub fn want_size(&mut self, size: VmSize) -> Result<(), VmError> {
+        match self.resize(size) {
+            Err(VmError::Lifecycle(LifecycleError::Busy)) if self.awake() => Ok(()),
+            other => other,
+        }
+    }
+
     /// Look at the running VM: is it alive, what runs in it. Suspends it
     /// once it has been idle for the limit. `sessions` is how many sessions the
     /// host started in it that are still running (a browser's, the apps'): they

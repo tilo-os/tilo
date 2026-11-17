@@ -554,6 +554,9 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
         vm_host status >&2 2>/dev/null || true
         echo '--- the VM host said:' >&2
         sudo -n podman logs --tail 60 tilo-sh-vm-host-0 >&2 2>/dev/null || true
+        echo '--- what the host said of its VMs:' >&2
+        sudo -n podman logs tilo-sh-vm-host-0 2>&1 \
+          | grep -E 'tilo-legacy hosted:' | tail -40 >&2 || true
         echo '--- the relay said of the Browser:' >&2
         bash "$here/stack.sh" logs relay 2>/dev/null \
           | grep -iE 'browser|environment|hosted|session|suspend|stop' | tail -60 >&2 || true

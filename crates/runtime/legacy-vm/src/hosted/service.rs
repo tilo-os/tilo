@@ -499,8 +499,18 @@ impl Service {
             let Ok(mut vm) = entry.vm.try_lock() else {
                 continue;
             };
-            if let Err(error) = vm.poll(held_sessions(&entry)) {
-                eprintln!("tilo-legacy hosted: {}: {error}", entry.id());
+            let held = held_sessions(&entry);
+            match vm.poll(held) {
+                Err(error) => eprintln!("tilo-legacy hosted: {}: {error}", entry.id()),
+                // A VM that goes to sleep says what took it for idle: its own id and
+                // what the host counted as running in it.
+                Ok(()) if vm.phase() == Phase::Suspending => {
+                    eprintln!(
+                        "tilo-legacy hosted: {}: suspending (nothing ran in its guest, {held} session(s) held)",
+                        entry.id()
+                    );
+                }
+                Ok(()) => {}
             }
             let measured = (self.weigh)(&vm);
             // What holds memory runs: its process is what the host weighs.
@@ -716,8 +726,10 @@ impl Service {
             return Err(BrowserError::Session(DELETED.to_owned()));
         }
         let woke = (|| {
-            vm.resize(size)?;
-            *lock(&entry.size) = size;
+            // A command runs the VM at the size it has when it is awake: the size
+            // named is what a VM that is not running here would be made at.
+            vm.want_size(size)?;
+            *lock(&entry.size) = vm.identity().size;
             vm.ensure(&shares, kind == Kind::Apps)
         })();
         entry.awake.store(vm.awake(), Ordering::SeqCst);
@@ -1101,6 +1113,7 @@ impl Service {
         let Some(entry) = self.entry(workspace, environment) else {
             return Ok(());
         };
+        eprintln!("tilo-legacy hosted: {}: asked to suspend", entry.id());
         end_sessions(&entry, BROWSER_GRACE);
         let mut vm = lock(&entry.vm);
         let result = vm.suspend();
