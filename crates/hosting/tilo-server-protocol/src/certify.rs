@@ -708,7 +708,7 @@ mod tests {
                 "id": serde_json::json!(vec![0u8; 32]),
                 "agent_id": "agent",
                 "agent_label": "Jane Doe's agent",
-                "run": "",
+                "title": "",
                 "action_label": "Send the form",
                 "resource_label": "browser.page",
                 "arguments": [],
