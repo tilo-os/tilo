@@ -182,6 +182,54 @@ pub(super) fn worked_here(agent: &Agent) -> bool {
         .is_none_or(|sub| sub.runs == sub::RUNS_ON_HOST)
 }
 
+/// A turn this server works, and the bound its calls carry.
+type OnTurn = (
+    tilo_action_policy::turn::Turn,
+    Vec<tilo_action_policy::Rule>,
+);
+
+/// The turn of a lead's that `delivery` is written on, as `roster` holds the two agents now.
+///
+/// Only a job or a note a sub-agent gave a sub-agent of its own team has one: both are listed
+/// and work for the person the message is for, this server works the lead, and the other was
+/// started under it. Then this server worked the lead's turns itself, in the lead's own
+/// conversation, and the bound is the one the lead's keeper set on it. The list keeps who gave
+/// a job or a note and not which message the lead's turn answered then, so the turn named is
+/// the one the lead's own job began: every later turn of a sub-agent is work on that job.
+///
+/// None for everything else, which stays outside a turn: what a person's own agent gave, and
+/// whatever a sub-agent would give upward, beside itself or for another person.
+fn lead_turn(roster: &WorkspaceAgents, delivery: &Delivery) -> Option<OnTurn> {
+    let lead = roster.get(&Id::from_raw(delivery.by.clone()))?;
+    let above = lead.sub.as_ref()?;
+    let under = roster.agents.iter().find(|agent| {
+        agent
+            .sub
+            .as_ref()
+            .is_some_and(|sub| sub.conversation == delivery.conversation)
+    })?;
+    let one_team = lead.is_active()
+        && under.is_active()
+        && worked_here(lead)
+        && lead.keeper == delivery.person
+        && under.keeper == delivery.person
+        && roster.started_under(under, &lead.id.0);
+    if !one_team {
+        return None;
+    }
+    let job = chat::cause::message_id(
+        &MemberId::person(lead.keeper.as_str()),
+        &key_of(&lead.id.0, JOB),
+    );
+    Some((
+        tilo_action_policy::turn::Turn::new(
+            chat::summons::conversation_address(&Id::from_raw(above.conversation.clone())),
+            job.to_string(),
+        ),
+        lead.bound_rules().unwrap_or_default(),
+    ))
+}
+
 /// Where a sub-agent's turn writes in Chat, and whom its words may name there.
 #[derive(Clone)]
 pub(super) struct Own {
@@ -567,6 +615,12 @@ impl HostAgents {
     /// made, whose turns are not kept to one conversation.
     pub(super) async fn own_of(&self, workspace: &str, turn: &Turn) -> Option<Own> {
         let sub = turn.agent.sub.as_ref()?;
+        Some(self.own_in(workspace, &sub.conversation).await)
+    }
+
+    /// The sub-agent's conversation `conversation`, with the members of `workspace` a name
+    /// written there is bound to.
+    async fn own_in(&self, workspace: &str, conversation: &str) -> Own {
         let members = self
             .workspaces
             .summary(workspace)
@@ -580,10 +634,10 @@ impl HostAgents {
                         .map(|member| (member.id, member.name)),
                 )
             });
-        Some(Own {
-            conversation: sub.conversation.clone(),
+        Own {
+            conversation: conversation.to_owned(),
             members,
-        })
+        }
     }
 
     /// The person `person` as their own device is admitted in `workspace`, and the server's
@@ -711,11 +765,55 @@ impl HostAgents {
             .is_some_and(|roster| roster.get(&Id::from_raw(id.to_owned())).is_some())
     }
 
+    /// The turn `delivery` is written on when a lead gave it to one of its own team, with the
+    /// bound of that turn ([`lead_turn`]); none for what any other agent gave.
+    ///
+    /// # Errors
+    /// The list could not be read, or the lead's words name a member of the workspace.
+    async fn of_lead(
+        &self,
+        workspace: &str,
+        delivery: &Delivery,
+    ) -> Result<Option<OnTurn>, String> {
+        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        let Some(roster) = self
+            .read::<WorkspaceAgents>(workspace, CHAT, &document)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(on) = lead_turn(&roster, delivery) else {
+            return Ok(None);
+        };
+        let there = self.own_in(workspace, &delivery.conversation).await;
+        if there.names_nobody(&delivery.text) {
+            Ok(Some(on))
+        } else {
+            Err("a sub-agent's words name no member of the workspace".to_owned())
+        }
+    }
+
+    /// Write `delivery`, a job or a note the list holds, into its sub-agent's conversation as
+    /// the words of the agent that gave it.
+    ///
+    /// What a person's own agent gave is written in that agent's name outside a turn, where the
+    /// service holds it to what the list keeps for the agent. What a sub-agent gave one of its
+    /// own team is this server's to carry as well, and outside a turn nothing is taken in a
+    /// sub-agent's name but the three writes its own rules let it, of which asking an agent is
+    /// none. So that one message is written for the lead's turn ([`lead_turn`]), with the bound
+    /// the lead's keeper set on it, as every call of a turn this server works is, and through
+    /// the service as it serves everyone. It is carried as plain words only: words that name a
+    /// member of the workspace are not written, as a sub-agent's own turn is taken none
+    /// ([`admits`]), so nothing a lead gives its team reaches a member or asks another agent.
     async fn deliver(&self, workspace: &str, delivery: &Delivery) -> Result<(), String> {
         let (service, person) = self.person_in(workspace, &delivery.person).await?;
         let caller = person
             .delegated_to(delivery.by.clone())
             .named(&delivery.by_name);
+        let caller = match self.of_lead(workspace, delivery).await? {
+            Some((turn, bound)) => caller.on_turn(turn, bound),
+            None => caller,
+        };
         let label = cut(delivery.by_name.trim(), LABEL_BYTES);
         ask_agent(
             &service,
@@ -1035,6 +1133,184 @@ mod tests {
         assert!(
             !own(None).names_nobody("plain words"),
             "with no list read, no words are taken"
+        );
+    }
+
+    /// A person's own agent, a lead it started, the lead's worker, a sub-agent beside the lead
+    /// and one a coding harness works, each made by the list's own actions.
+    fn team() -> WorkspaceAgents {
+        use tilo_workspace_agent::workspace_agents::{
+            CreateAgent, SetSubAgentLimits, StartSubAgent,
+        };
+        let start = |name: &str, job: &str| {
+            WorkspaceAgents::START_SUB_AGENT.with(StartSubAgent {
+                sub_agent: tilo_workspace_agent::NewSubAgent {
+                    name: name.to_owned(),
+                    job: job.to_owned(),
+                    ..tilo_workspace_agent::NewSubAgent::default()
+                },
+            })
+        };
+        let mut list = tilo_resource::Replica::<WorkspaceAgents>::new().as_author("ada");
+        list.set_now_ms(1_700_000_000_000);
+        list.apply(WorkspaceAgents::CREATE_AGENT.with(CreateAgent {
+            name: tilo_resource::NonBlank::parse("Assistant").expect("a name"),
+            keeper: None,
+            id: Some("main".to_owned()),
+            model: None,
+            colour: None,
+            mcp_client: None,
+        }))
+        .expect("a person makes their own agent");
+        list.apply(
+            WorkspaceAgents::SET_SUB_AGENT_LIMITS.with(SetSubAgentLimits {
+                agent: Id::from_raw("main"),
+                depth: Some(2),
+                at_once: None,
+            }),
+        )
+        .expect("its keeper lets sub-agents go two deep");
+        let mut list = list.as_agent_for("main", "ada");
+        list.apply(start("Lead", "Build the feature"))
+            .expect("the person's own agent starts a lead");
+        list.apply(start("Other", "Find the deck"))
+            .expect("and one beside it");
+        list.apply(WorkspaceAgents::START_SUB_AGENT.with(StartSubAgent {
+            sub_agent: tilo_workspace_agent::NewSubAgent {
+                name: "Coder".to_owned(),
+                job: "Fix the sign-up".to_owned(),
+                coding: Some(tilo_workspace_agent::NewCoding {
+                    repository: "code/app/".to_owned(),
+                    ..tilo_workspace_agent::NewCoding::default()
+                }),
+                ..tilo_workspace_agent::NewSubAgent::default()
+            },
+        }))
+        .expect("and one a coding harness works in the workspace's machine");
+        let mut list = list.as_agent_for("lead", "ada");
+        list.apply(start("Worker", "Write the tests"))
+            .expect("the lead starts its worker");
+        list.state().expect("the list reads")
+    }
+
+    /// `list` with its lead changed by `change`.
+    fn with_lead(list: &WorkspaceAgents, change: impl Fn(&mut Agent)) -> WorkspaceAgents {
+        let mut agents: Vec<Agent> = list.agents.iter().cloned().collect();
+        for agent in &mut agents {
+            if agent.id.0 == "lead" {
+                change(agent);
+            }
+        }
+        WorkspaceAgents {
+            agents: agents.into(),
+        }
+    }
+
+    #[test]
+    fn a_job_is_written_on_its_leads_turn_only_for_the_leads_own_team() {
+        let list = team();
+        let own = |agent: &str| {
+            list.get(&Id::from_raw(agent))
+                .and_then(|agent| agent.sub.as_ref())
+                .map(|sub| sub.conversation.clone())
+                .expect("a sub-agent's own conversation")
+        };
+        let given = |by: &str, to: &str, person: &str| Delivery {
+            person: person.to_owned(),
+            by: by.to_owned(),
+            by_name: by.to_owned(),
+            conversation: to.to_owned(),
+            kind: JOB,
+            key: key_of("worker", JOB),
+            text: "Write the tests".to_owned(),
+        };
+        let to_worker = given("lead", &own("worker"), "ada");
+
+        // A lead's job to its worker: the lead's turn in the lead's own conversation, the one its
+        // own job began, with the bound its keeper set on the lead.
+        let (turn, bound) = lead_turn(&list, &to_worker)
+            .expect("a lead's job to its worker is written on the lead's turn");
+        assert_eq!(
+            turn.conversation,
+            chat::summons::conversation_address(&Id::from_raw(own("lead")))
+        );
+        assert_eq!(
+            turn.message,
+            chat::cause::message_id(&MemberId::person("ada"), &key_of("lead", JOB)).to_string()
+        );
+        assert!(bound.is_empty(), "nothing narrows this lead: {bound:?}");
+        let refusal = tilo_action_policy::Rule::new(
+            tilo_action_policy::TreePath::workspace("w").app("so.tilo.notes"),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Deny,
+        );
+        let narrowed = with_lead(&list, |lead| {
+            lead.bound = vec![tilo_workspace_agent::Bound::of(&refusal)];
+        });
+        let (_, bound) = lead_turn(&narrowed, &to_worker).expect("a narrowed lead's job as well");
+        assert!(
+            bound.len() == 1 && bound[0].answer == tilo_action_policy::Answer::Deny,
+            "the turn carries what the lead's keeper bounded the lead to: {bound:?}"
+        );
+
+        // Everything else stays outside a turn, where the list's own rules for the agent decide.
+        for (what, by, to, person) in [
+            (
+                "a person's own agent gives a job outside a turn",
+                "main",
+                own("lead"),
+                "ada",
+            ),
+            (
+                "a worker gives nothing upward",
+                "worker",
+                own("lead"),
+                "ada",
+            ),
+            (
+                "a lead gives nothing to one beside it",
+                "lead",
+                own("other"),
+                "ada",
+            ),
+            ("nor to itself", "lead", own("lead"), "ada"),
+            (
+                "nor into a conversation that is no sub-agent's",
+                "lead",
+                "direct:main".to_owned(),
+                "ada",
+            ),
+            ("nor for another person", "lead", own("worker"), "grace"),
+        ] {
+            assert!(
+                lead_turn(&list, &given(by, &to, person)).is_none(),
+                "{what}"
+            );
+        }
+        let retired = with_lead(&list, |lead| {
+            lead.state = tilo_workspace_agent::AgentState::Retired;
+        });
+        assert!(
+            lead_turn(&retired, &to_worker).is_none(),
+            "a lead that was retired gives nothing on a turn"
+        );
+        // A lead a coding harness works in the workspace's machine: where it works is as the
+        // list's own item for such a sub-agent says it.
+        let coder = list
+            .get(&Id::from_raw("coder"))
+            .and_then(|agent| agent.sub.clone())
+            .expect("the sub-agent a coding harness works");
+        let elsewhere = with_lead(&list, |lead| {
+            lead.sub = lead.sub.take().map(|own| tilo_workspace_agent::Sub {
+                started_by: own.started_by,
+                conversation: own.conversation,
+                depth: own.depth,
+                ..coder.clone()
+            });
+        });
+        assert!(
+            lead_turn(&elsewhere, &to_worker).is_none(),
+            "a lead this server does not work has no turn of this server's"
         );
     }
 }
