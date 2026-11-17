@@ -1405,6 +1405,14 @@ impl Server {
                 .pointer("/error/message")
                 .and_then(Value::as_str)
                 .unwrap_or("the workspace refused");
+            // The workspace records its keys' revocations: a key it refused
+            // as revoked is told so, and asks the person for another.
+            if why.contains("key_revoked") {
+                return Err(
+                    v1::errors::ApiError::new("key_revoked", "this key was revoked")
+                        .next("ask the person for a new key"),
+                );
+            }
             return Err(unavailable(why.to_owned()));
         }
         lock(&self.sessions).insert(id, Arc::clone(&opened));

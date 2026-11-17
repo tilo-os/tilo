@@ -91,9 +91,9 @@ an invocation of its own, named for the key ("Visa backend #3").
 | `PUT /v1/workspaces/{workspace}/unattended` `{on}` | lets the keys made for this workspace alone run commands in its Linux machine (`terminal#run`) without asking the person each time, here and in branches made from it (MCP: `workspace/unattended#set {on}`; `tilo_read workspace/unattended` reads it). `on: true` asks the person on their approving device: `202` pending with an `ask`, the run answering `{"workspace", "unattended": true}` once they allow it and failing if they do not. `on: false` answers `200` at once and asks again from the next command. Only the workspace's owner has it; a key reaching all their workspaces is still asked. Listings say `"unattended": true` while it is on |
 | `GET /v1/workspaces/{workspace}/export` | `{"workspace", "exported_at_ms", "resources": [...], "unread": [...]}`: every resource of every app, read whole and streamed as it reads |
 | `DELETE /v1/workspaces/{workspace}` | `{"deleted": "…", "revoked_keys": [...]}`: final, with everything in it and every key minted for it |
-| `GET /v1/keys` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}` |
+| `GET /v1/keys` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}`: this key and the keys it minted, read from the workspace's own record when the key reaches one |
 | `POST /v1/keys` `{workspace, name?, expires_in?}` | `201` a key for one workspace, minted from this one: `{"grant", "token", "mcp_url", "expires_at_ms"}`; the person is not asked |
-| `DELETE /v1/keys/{grant}` | revokes this key or one it minted, and every key it minted |
+| `DELETE /v1/keys/{grant}` | revokes this key or one it minted, and every key it minted; the workspace a revoked key reaches records the revocation, so every front door and holder refuses it |
 
 ## Resources
 

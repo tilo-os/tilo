@@ -91,6 +91,12 @@ pub(crate) const CANCEL_INVITATION: &str = "invitation.cancel";
 /// The people in the workspace and their roles: what whoever invites sees
 /// before and after inviting.
 pub(crate) const MEMBERS: &str = "member.list";
+/// The keys this workspace admitted for the calling person: each grant its
+/// governance records, its name, the workspace it reaches and until when.
+pub(crate) const KEYS: &str = "key.list";
+/// Revoke a key the caller holds or one it minted: the workspace records the
+/// revocation, and every holder and front door refuses the key from then on.
+pub(crate) const REVOKE_KEY: &str = "key.revoke";
 /// The calling person's own name in the workspace: what its member list and
 /// the invitations they make show for them, from any of their devices or
 /// keys. Every member names themself, so it is no governance action and no
@@ -176,7 +182,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 20] = [
+const VERBS: [Verb; 22] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -318,6 +324,24 @@ const VERBS: [Verb; 20] = [
         gate: governance::INSTALL_APP,
         kind: roles::GOVERNANCE_KIND,
         params: app_params,
+    },
+    Verb {
+        id: KEYS,
+        label: "List the keys this workspace admitted",
+        // Nothing gates it: a key lists the grants of its own person's, and
+        // the front door shows it only the key itself and the keys it minted.
+        gate: "",
+        kind: ActionKind::Read,
+        params: Vec::new,
+    },
+    Verb {
+        id: REVOKE_KEY,
+        label: "Revoke a key",
+        // As listing: its own person's grant, and only the key itself or one
+        // it minted, which the handler checks.
+        gate: "",
+        kind: roles::GOVERNANCE_KIND,
+        params: key_params,
     },
 ];
 
@@ -539,6 +563,14 @@ fn app_file_params() -> Vec<ActionParam> {
 
 fn app_params() -> Vec<ActionParam> {
     vec![app_param()]
+}
+
+fn key_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "grant",
+        ParamType::Text,
+        "The key's grant, as the workspace lists it: the key itself or one it minted.",
+    )]
 }
 
 fn connector_secret_params() -> Vec<ActionParam> {
@@ -1053,6 +1085,29 @@ impl Workspaces {
         (asking && cert.user_public_key == *user).then_some((governed, cert))
     }
 
+    /// The workspace `workspace_id` carries and the certificate of `caller`'s
+    /// device in it, for the key that reads and revokes its own grants: the
+    /// device must be one the workspace admitted, and the grant may be any of
+    /// the person's, a key for one workspace included.
+    async fn grant_device(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+    ) -> Option<(Governed, DeviceCert)> {
+        let (user, device) = (caller.user_public_key()?, caller.device_public_key()?);
+        let governed = self.held(workspace_id).await?;
+        let workspace = governed.lock().await;
+        let host = &self.inner.host.cert;
+        let cert = workspace
+            .peer()
+            .certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == *device)
+            .or_else(|| (host.device_public_key == *device).then(|| host.clone()))?;
+        drop(workspace);
+        (cert.user_public_key == *user).then_some((governed, cert))
+    }
+
     /// What `caller`, on the device `certificate` when the transport named
     /// it, may do here about workspace `workspace_id` (`None` when asked of
     /// the host itself): the governance of the workspace it carries, their own
@@ -1270,12 +1325,35 @@ impl Workspaces {
     ) -> Result<Value, ActionHostError> {
         let address = &request.target.address;
         let gate = gate_of(&address.action).ok_or(ActionHostError::UnknownAction)?;
-        let (governed, device) = self
-            .governed_by(workspace_id, caller)
-            .await
-            .ok_or(ActionHostError::UnknownAction)?;
+        // A key's own record is read by the key itself, whatever its grant may
+        // govern: the workspace lists the grants of its person's, and only the
+        // key or the key that minted it revokes one.
+        let listed_key = matches!(address.action.as_str(), KEYS | REVOKE_KEY);
+        let (governed, device) = match self.governed_by(workspace_id, caller).await {
+            Some(found) => found,
+            None if listed_key => self
+                .grant_device(workspace_id, caller)
+                .await
+                .ok_or(ActionHostError::UnknownAction)?,
+            None => return Err(ActionHostError::UnknownAction),
+        };
         let workspace = {
             let workspace = governed.lock().await;
+            // A key its person revoked acts no longer: the workspace's record
+            // of the revocation refuses every call it would make here, from
+            // whichever front door it comes.
+            let revoked_ms = workspace
+                .peer()
+                .governance()
+                .workspace_grants()
+                .into_iter()
+                .find(|grant| grant.device == hex::encode(device.device_public_key))
+                .and_then(|grant| grant.revoked_ms);
+            if let Some(revoked_ms) = revoked_ms {
+                return Err(ActionHostError::Refused {
+                    reason: format!("key_revoked: this key was revoked at {revoked_ms}"),
+                });
+            }
             // Unknown and forbidden are the same answer. A verb with no gate
             // is the caller's own business, which its run decides: naming
             // themselves, in [`NAME`]'s case, and nobody else.
@@ -1322,8 +1400,53 @@ impl Workspaces {
             governance::INSTALL_APP | UNINSTALL_APP => self.governance_apps(action, call).await,
             UPLOAD_APP_FILE => self.upload_app_piece(call.workspace, call.args),
             SET_CONNECTOR_SECRET => connector_secret(call.args),
+            KEYS => self.governance_keys(call).await,
+            REVOKE_KEY => self.governance_revoke_key(call).await,
             _ => self.governance_members(action, call).await,
         }
+    }
+
+    /// The grants this workspace records of the calling person's: each key it
+    /// admitted, with the grant that minted it when one did.
+    async fn governance_keys(&self, call: GovernanceCall<'_>) -> Result<Value, ActionHostError> {
+        let grants = self
+            .grants_of(call.workspace, &call.device.user_public_key)
+            .await
+            .map_err(|error| refused(&error))?;
+        Ok(json!({"grants": grants}))
+    }
+
+    /// Revoke the key `grant` names, the caller's own or one it minted: the
+    /// workspace records its person's revocation, and every holder and front
+    /// door refuses it from then on.
+    async fn governance_revoke_key(
+        &self,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionHostError> {
+        let id = call.args.required_text("grant")?.to_owned();
+        let mine = tilo_peer_state::WorkspaceGrant::id_of(&call.device.device_public_key);
+        let grants = self
+            .grants_of(call.workspace, &call.device.user_public_key)
+            .await
+            .map_err(|error| refused(&error))?;
+        let own = id == mine
+            || grants
+                .iter()
+                .any(|grant| grant.id == id && grant.parent.as_deref() == Some(mine.as_str()));
+        if !own {
+            return Err(ActionHostError::UnknownAction);
+        }
+        let now_ms = tilo_clock::unix_now_ns() / 1_000_000;
+        let changed = self
+            .revoke_grant(call.workspace, &id, now_ms)
+            .await
+            .map_err(|error| refused(&error))?;
+        if !changed {
+            return Err(ActionHostError::Refused {
+                reason: "that key is revoked already, or this workspace never admitted it".into(),
+            });
+        }
+        Ok(json!({"revoked": id}))
     }
 
     /// Making the workspace a public workspace, taking it back, and what it is

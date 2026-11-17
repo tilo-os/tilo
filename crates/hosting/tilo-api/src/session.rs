@@ -31,6 +31,7 @@
 //! server says nothing of it itself.
 
 pub mod invocations;
+pub mod keys;
 pub mod members;
 pub mod unattended;
 

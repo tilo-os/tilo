@@ -356,6 +356,20 @@ impl Workspaces {
         )?;
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
+        // A key whose grant this workspace records as revoked never enters it
+        // again, whichever front door it comes through.
+        let revoked_ms = workspace
+            .peer()
+            .governance()
+            .workspace_grants()
+            .into_iter()
+            .find(|grant| grant.device == hex::encode(device.device_public_key))
+            .and_then(|grant| grant.revoked_ms);
+        if let Some(revoked_ms) = revoked_ms {
+            return Err(CollaborationError::new(format!(
+                "key_revoked: this key was revoked at {revoked_ms}"
+            )));
+        }
         let mut candidate = workspace.peer().clone();
         if !candidate.admit_certificate(device.clone(), &self.inner.host.key, system_time(now))? {
             // Admitted already, but an earlier entry can have been cut off
@@ -409,8 +423,30 @@ impl Workspaces {
                 one @ AgentScope::Workspace(_) => Some(one.name()),
             },
             expires_ms: cert.expires_at_ns.map(|expiry| expiry / 1_000_000),
+            // A key that another grant minted names it, so the key that made
+            // it lists it wherever the workspace is held.
+            parent: cert
+                .issuer
+                .as_deref()
+                .map(|issuer| WorkspaceGrant::id_of(&issuer.device_public_key)),
             created_ms: cert.issued_at_ns / 1_000_000,
             revoked_ms: None,
+        };
+        // Recording the grant of a key this workspace revoked does not bring
+        // it back: its person's revocation stands.
+        let held_revocation = workspace
+            .peer()
+            .governance()
+            .workspace_grants()
+            .into_iter()
+            .find(|held| held.id == grant.id)
+            .and_then(|held| held.revoked_ms);
+        let grant = match held_revocation {
+            Some(revoked_ms) => WorkspaceGrant {
+                revoked_ms: Some(revoked_ms),
+                ..grant
+            },
+            None => grant,
         };
         let mut candidate = workspace.peer().clone();
         if candidate
@@ -424,7 +460,54 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Change the role of the member `request.user_public_key` in `workspace`.
+    /// The grants `workspace` records of `person`'s, as its governance keeps
+    /// them: each key it admitted, when it admitted it, and whether its person
+    /// revoked it.
+    pub async fn grants_of(
+        &self,
+        workspace: &str,
+        person: &[u8; 32],
+    ) -> Result<Vec<WorkspaceGrant>, CollaborationError> {
+        let workspace = self.workspace(workspace).await?;
+        let workspace = workspace.lock().await;
+        let person = hex::encode(person);
+        Ok(workspace
+            .peer()
+            .governance()
+            .workspace_grants()
+            .into_iter()
+            .filter(|grant| grant.person == person)
+            .collect())
+    }
+
+    /// Mark the grant `id` of `workspace` revoked at `now_ms`, authored by
+    /// this host: every holder and front door that reads the workspace refuses
+    /// the key from then on. Answers whether it changed the workspace.
+    pub async fn revoke_grant(
+        &self,
+        workspace: &str,
+        id: &str,
+        now_ms: u64,
+    ) -> Result<bool, CollaborationError> {
+        let workspace = self.workspace(workspace).await?;
+        let mut workspace = workspace.lock().await;
+        let at = system_time(now_ms.saturating_mul(1_000_000));
+        let mut candidate = workspace.peer().clone();
+        if !candidate.governance_mut().author_workspace_grant_revoked(
+            id,
+            now_ms,
+            &self.inner.host.key,
+            at,
+        )? {
+            return Ok(false);
+        }
+        let state = workspace.collaboration().clone();
+        workspace.commit(candidate, &self.inner.host.key, at, |_, _| Ok(state))?;
+        self.settle(&mut workspace).await?;
+        drop(workspace);
+        Ok(true)
+    }
+
     pub async fn set_member_role(
         &self,
         workspace: &str,

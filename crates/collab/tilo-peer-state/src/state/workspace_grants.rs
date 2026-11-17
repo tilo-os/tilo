@@ -38,6 +38,11 @@ pub struct WorkspaceGrant {
     /// revokes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_ms: Option<u64>,
+    /// The grant that minted it, when one did: the grant whose key certified
+    /// this one, so the key that made it lists it. `None` for a key its
+    /// person approved at a front door.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     /// When the workspace admitted it, Unix milliseconds.
     pub created_ms: u64,
     /// When its person revoked it, Unix milliseconds; `None` while live.
@@ -170,6 +175,7 @@ mod tests {
             name: "Visa backend".into(),
             scope: None,
             expires_ms: None,
+            parent: None,
             created_ms: 1,
             revoked_ms: None,
         }
