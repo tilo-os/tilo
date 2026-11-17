@@ -151,14 +151,29 @@ pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -
 ///
 /// # Panics
 ///
-/// The endpoint cannot bind or the host cannot open.
+/// The endpoint cannot bind or the server cannot open.
 pub async fn test_host_with_grants(
     state_root: &Path,
     key: &SigningKey,
     cert: &DeviceCert,
     grants: Option<usize>,
 ) -> TestHost {
-    host_on(state_root, key, cert, None, grants).await
+    host_on(state_root, key, cert, None, grants, None).await
+}
+
+/// The same server, keeping the keys of people's sealed stores under `keys`,
+/// apart from `state_root`.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the server cannot open.
+pub async fn test_server_keeping_keys_apart(
+    state_root: &Path,
+    keys: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+) -> TestHost {
+    host_on(state_root, key, cert, None, None, Some(keys)).await
 }
 
 /// The same host, run on a device that takes part in its workspaces' channels,
@@ -195,6 +210,7 @@ pub async fn test_host_holding(
         cert,
         Some(DeviceKeyGroups { keys, sink: None }),
         None,
+        None,
     )
     .await
 }
@@ -207,6 +223,7 @@ async fn host_on(
     cert: &DeviceCert,
     channels: Option<DeviceKeyGroups>,
     grants: Option<usize>,
+    people_keys: Option<&Path>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
@@ -220,7 +237,8 @@ async fn host_on(
     let host = WorkspaceHost::open(
         HostConfig {
             max_workspace_grants: grants,
-            // A host serving other people's workspaces takes their work in them.
+            people_keys: people_keys.map(Path::to_owned),
+            // A server of other people's workspaces takes their work in them.
             ..HostConfig::new(
                 state_root.to_owned(),
                 tilo_relay_protocol::WorkSetting {
