@@ -79,7 +79,9 @@ pub(super) fn answer(
         email,
         imap_host,
         imap_port,
-        imap_tls: true,
+        // The port says how the connection starts: 143 upgrades with
+        // STARTTLS, every other port is TLS from the first byte.
+        imap_tls: accounts::email::Security::of_imap(true, imap_port).wraps(),
         smtp_host,
         smtp_port,
         smtp_tls: true,

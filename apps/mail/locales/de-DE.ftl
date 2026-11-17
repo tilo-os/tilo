@@ -335,6 +335,7 @@ mail-status-no-recipient = Trage einen Empfänger ein, bevor du sendest
 mail-status-sending = Wird gesendet…
 mail-status-already-sent = Bereits gesendet
 mail-status-sent = Nachricht gesendet
+mail-status-sent-unfiled = Nachricht gesendet. Der Mailserver hat keine Kopie in seinem Ordner „Gesendet“ abgelegt: { $error }
 mail-status-draft-gone = Dieser Entwurf ist nicht mehr da
 mail-status-invitation-drafted = Einladung entworfen
 mail-status-outbox-cancelled = Aus dem Postausgang genommen; nichts wurde gesendet

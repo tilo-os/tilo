@@ -109,6 +109,15 @@ pub(crate) fn engine_error_text(context: &str, message: &str) -> Notice {
     }
 }
 
+/// What Mail says when a message that left has no copy in its account's
+/// Sent folder: that it was sent, and why its server kept none.
+pub(crate) fn unfiled_notice(reason: String) -> Notice {
+    Notice::warning(CATALOG.t_args(
+        "mail-status-sent-unfiled",
+        &[("error", ArgValue::Text(reason))],
+    ))
+}
+
 /// How staging a chosen attachment ended, in the window's words.
 pub(crate) fn staged_notice(name: String, result: Result<(), String>) -> Notice {
     let name = ArgValue::Text(name);

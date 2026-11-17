@@ -338,6 +338,7 @@ mail-status-no-recipient = Add a recipient before sending
 mail-status-sending = Sending…
 mail-status-already-sent = Already sent
 mail-status-sent = Message sent
+mail-status-sent-unfiled = Message sent. The mail server kept no copy in its Sent folder: { $error }
 mail-status-draft-gone = That draft is gone
 mail-status-invitation-drafted = Invitation drafted
 mail-status-outbox-cancelled = Taken out of the outbox; nothing was sent

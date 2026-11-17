@@ -22,7 +22,10 @@ tilo-dav = { path = "../../system/tilo-dav" }
 # outbound connection makes them.
 tilo-net = { path = "../tilo-net" }
 rustls.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "time"] }
+# The SMTP sign-in is spoken by hand, a line at a time, so the probe carries
+# no mail transport: only the encoding its `AUTH` exchange is written in.
+base64.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util"] }
 tokio-rustls.workspace = true
 serde_json.workspace = true
 # A deadline that is the same clock on every host, a page included.

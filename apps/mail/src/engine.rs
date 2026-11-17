@@ -259,6 +259,13 @@ pub enum EngineEvent {
         request_id: EngineRequestId,
         wire_bytes: usize,
     },
+    /// A message that left has no copy in its account's Sent folder: one was
+    /// to be filed there and could not be. Told after [`Self::Sent`], which
+    /// never waits for the copy.
+    Unfiled {
+        request_id: EngineRequestId,
+        reason: String,
+    },
     Authorized {
         request_id: EngineRequestId,
         account_id: String,
@@ -282,6 +289,7 @@ impl EngineEvent {
             | Self::Folders { request_id, .. }
             | Self::Fetched { request_id, .. }
             | Self::Sent { request_id, .. }
+            | Self::Unfiled { request_id, .. }
             | Self::Arrived { request_id, .. }
             | Self::Found { request_id, .. }
             | Self::Authorized { request_id, .. }
@@ -759,12 +767,73 @@ pub mod live {
             })
         }
 
+        /// Keep a copy of a message that left in the account's Sent folder,
+        /// read, as its writer has read it. A server that files what it
+        /// sends is left to it, and a folder that already holds the message
+        /// is not given it twice.
+        fn file_sent(
+            &mut self,
+            account: &AccountConfig,
+            mime: &[u8],
+            message_id: Option<&str>,
+        ) -> Result<(), String> {
+            let places = self.places_of(account)?;
+            let listed = places.holds(Folder::Sent);
+            let folder = places.name(Folder::Sent).to_owned();
+            let held = message_id
+                .and_then(crate::sync::imap_quoted)
+                .map(|id| format!("HEADER MESSAGE-ID {id}"));
+            let hosts = (account.imap_host.clone(), account.smtp_host.clone());
+            let mime = mime.to_vec();
+            let made = self.run(account, move |session| {
+                let (folder, held, mime) = (folder.clone(), held.clone(), mime.clone());
+                let (imap_host, smtp_host) = hosts.clone();
+                Box::pin(async move {
+                    let gmail = session
+                        .capabilities()
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .has_str(accounts::email::GMAIL_CAPABILITY);
+                    if accounts::email::servers_file_sent(&imap_host, &smtp_host, gmail) {
+                        return Ok(false);
+                    }
+                    if listed {
+                        if let Some(held) = &held {
+                            session.select(&folder).await.map_err(|e| e.to_string())?;
+                            let found =
+                                session.uid_search(held).await.map_err(|e| e.to_string())?;
+                            if !found.is_empty() {
+                                return Ok(false);
+                            }
+                        }
+                    } else {
+                        // A plain server holds no Sent folder until a mail
+                        // program makes one.
+                        session.create(&folder).await.map_err(|e| {
+                            format!("the server keeps no Sent folder and would not make one: {e}")
+                        })?;
+                    }
+                    session
+                        .append(&folder, Some("(\\Seen)"), None, &mime)
+                        .await
+                        .map_err(|e| format!("{folder} would not take the copy: {e}"))?;
+                    Ok(!listed)
+                })
+            })?;
+            if made {
+                // The folder made here is listed with the server's own mark
+                // the next time its folders are read.
+                self.places.remove(&account.email);
+            }
+            Ok(())
+        }
+
         fn handle_send(
             &self,
             account: &AccountConfig,
             draft: &Draft,
             files: &[crate::model::SendFile],
-        ) -> Result<usize, SmtpFailure> {
+        ) -> Result<Vec<u8>, SmtpFailure> {
             let creds = resolve_auth(&self.custodian, account).map_err(SmtpFailure::Failed)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
             let bytes = build_mime_from(&from, draft, files).map_err(SmtpFailure::Failed)?;
@@ -784,7 +853,7 @@ pub mod live {
                 Ok(smtp_send_with_tls(account, draft, &creds, &bytes, tls).await)
             })
             .map_err(SmtpFailure::Failed)??;
-            Ok(bytes.len())
+            Ok(bytes)
         }
 
         fn process_connect(
@@ -824,7 +893,7 @@ pub mod live {
         }
 
         fn process_send(
-            &self,
+            &mut self,
             request_id: EngineRequestId,
             kind: EngineRequestKind,
             account: &AccountConfig,
@@ -833,11 +902,19 @@ pub mod live {
             out: &Sender<EngineEvent>,
         ) {
             match self.handle_send(account, draft, files) {
-                Ok(wire_bytes) => {
+                Ok(mime) => {
+                    // The message left, and that is said first: a server
+                    // slow to take the copy never holds back that it went
+                    // out, and one that will not take it does not unsend it.
                     let _ = out.send(EngineEvent::Sent {
                         request_id,
-                        wire_bytes,
+                        wire_bytes: mime.len(),
                     });
+                    (self.wake)();
+                    let message_id = draft.wire.message_id.as_deref();
+                    if let Err(reason) = self.file_sent(account, &mime, message_id) {
+                        let _ = out.send(EngineEvent::Unfiled { request_id, reason });
+                    }
                 }
                 Err(failure) => {
                     let (context, message) = match failure {
@@ -1020,6 +1097,10 @@ pub mod live {
             account.imap_port
         };
         let tcp = crate::connect::tcp(host, port).await?;
+        let tcp = match account.imap_security() {
+            accounts::email::Security::Tls => tcp,
+            accounts::email::Security::StartTls => upgrade_to_tls(tcp).await?,
+        };
         let connector = tokio_rustls::TlsConnector::from(tls);
         let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| format!("invalid IMAP host name: {e}"))?;
@@ -1044,6 +1125,41 @@ pub mod live {
                     .map_err(|(e, _)| classify_conn_failure(&e.to_string()))
             }
         }
+    }
+
+    /// How long a server may take to answer one step of the upgrade.
+    const UPGRADE_ANSWER: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Ask a server reached in the clear for TLS: its greeting, then
+    /// `STARTTLS`. Nothing signs in before the upgrade, and what the server,
+    /// or anyone between, sent in the clear after its answer is dropped with
+    /// this client's buffer.
+    async fn upgrade_to_tls(tcp: tokio::net::TcpStream) -> Result<tokio::net::TcpStream, String> {
+        let unanswered = || classify_conn_failure("the IMAP server timed out before the upgrade");
+        let mut client = async_imap::Client::new(tcp);
+        let greeting = tokio::time::timeout(UPGRADE_ANSWER, client.read_response())
+            .await
+            .map_err(|_| unanswered())?;
+        let ready = greeting.and_then(Result::ok).is_some_and(|greeting| {
+            matches!(
+                greeting.parsed(),
+                async_imap::imap_proto::Response::Data {
+                    status: async_imap::imap_proto::Status::Ok,
+                    ..
+                }
+            )
+        });
+        if !ready {
+            return Err("the server did not greet as an IMAP server".into());
+        }
+        tokio::time::timeout(
+            UPGRADE_ANSWER,
+            client.run_command_and_check_ok("STARTTLS", None),
+        )
+        .await
+        .map_err(|_| unanswered())?
+        .map_err(|_| "the IMAP server offers no secure connection on this port".to_string())?;
+        Ok(client.into_inner())
     }
 
     const IDLE_RENEW: std::time::Duration = std::time::Duration::from_secs(25 * 60);
@@ -1888,6 +2004,222 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                     "{layout:?}: {found:?}"
                 );
             }
+        }
+
+        /// A message sent through a plain server is filed in its Sent
+        /// folder, which the engine makes when the server holds none, and
+        /// sent again under the same id it is not filed twice. A server
+        /// that files what it sends is left to it.
+        #[test]
+        fn a_sent_message_is_filed_once_where_the_server_files_none() {
+            use crate::fake_imap::{FakeImap, Layout};
+            use crate::fake_servers::FakeSmtp;
+
+            for (layout, sent_folder, copies) in [
+                (Layout::Plain, "Sent", 1),
+                (Layout::Gmail, "[Gmail]/Sent Mail", 0),
+            ] {
+                let (imap, smtp) = ui::rt::app()
+                    .block_on(async move {
+                        let tls = server_tls_config();
+                        (
+                            FakeImap::start(layout, tls.clone()).await,
+                            FakeSmtp::start(tls).await,
+                        )
+                    })
+                    .unwrap();
+                let account = AccountConfig {
+                    display_name: "Me".into(),
+                    email: "me@example.com".into(),
+                    username: "me@example.com".into(),
+                    password: "app-password".into(),
+                    imap_host: "127.0.0.1".into(),
+                    imap_port: imap.port,
+                    smtp_host: "127.0.0.1".into(),
+                    smtp_port: smtp.port,
+                    auth: AuthMethod::Password,
+                    ..Default::default()
+                };
+                let draft = Draft {
+                    to: "rcpt@example.com".into(),
+                    subject: "Filed once".into(),
+                    body: "Hello.".into(),
+                    wire: crate::model::WireIds {
+                        message_id: Some("filed-once@example.com".into()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let engine = LiveEngine::trusting(
+                    tilo_content::ContentStore::memory(),
+                    Arc::new(|| {}),
+                    accepting_client_config(),
+                )
+                .unwrap();
+                let (requests, events) = super::super::spawn_with(Box::new(engine));
+                for round in 1..=2 {
+                    requests
+                        .send(super::EngineRequest::send(
+                            account.clone(),
+                            Box::new(draft.clone()),
+                            Vec::new(),
+                        ))
+                        .unwrap();
+                    // The message is said to have left first, and its copy
+                    // is filed by the time the request is settled.
+                    let mut left = false;
+                    loop {
+                        match events
+                            .recv_timeout(ui::testing::hang_bound())
+                            .expect("the engine answers")
+                        {
+                            super::EngineEvent::Sent { .. } => left = true,
+                            super::EngineEvent::Unfiled { reason, .. } => {
+                                panic!("{layout:?}: no copy was filed: {reason}")
+                            }
+                            super::EngineEvent::Completed {
+                                kind: super::EngineRequestKind::Send,
+                                ..
+                            } => break,
+                            super::EngineEvent::Error { message, .. } => {
+                                panic!("{layout:?}: {message}")
+                            }
+                            _ => {}
+                        }
+                    }
+                    assert!(left, "{layout:?}: the message left");
+                    assert_eq!(smtp.sent().len(), round, "{layout:?}: it left each time");
+                    let filed = imap.messages(sent_folder);
+                    assert_eq!(filed.len(), copies, "{layout:?}: round {round}");
+                    for copy in &filed {
+                        assert!(copy.flags.iter().any(|flag| flag == "\\Seen"));
+                        assert!(String::from_utf8_lossy(&copy.raw).contains("Subject: Filed once"));
+                    }
+                }
+            }
+        }
+
+        /// A message leaves even when its copy cannot be filed: it is said
+        /// to have left first, and then why its Sent folder holds none.
+        #[test]
+        fn a_message_is_said_to_have_left_before_its_copy_is_refused() {
+            use crate::fake_imap::{FakeImap, Layout};
+            use crate::fake_servers::FakeSmtp;
+
+            let (imap, smtp) = ui::rt::app()
+                .block_on(async move {
+                    let tls = server_tls_config();
+                    (
+                        FakeImap::start(Layout::Plain, tls.clone()).await,
+                        FakeSmtp::start(tls).await,
+                    )
+                })
+                .unwrap();
+            imap.refuse_appends();
+            let account = AccountConfig {
+                display_name: "Me".into(),
+                email: "me@example.com".into(),
+                username: "me@example.com".into(),
+                password: "app-password".into(),
+                imap_host: "127.0.0.1".into(),
+                imap_port: imap.port,
+                smtp_host: "127.0.0.1".into(),
+                smtp_port: smtp.port,
+                auth: AuthMethod::Password,
+                ..Default::default()
+            };
+            let draft = Draft {
+                to: "rcpt@example.com".into(),
+                subject: "No copy".into(),
+                body: "Hello.".into(),
+                ..Default::default()
+            };
+            let engine = LiveEngine::trusting(
+                tilo_content::ContentStore::memory(),
+                Arc::new(|| {}),
+                accepting_client_config(),
+            )
+            .unwrap();
+            let (requests, events) = super::super::spawn_with(Box::new(engine));
+            requests
+                .send(super::EngineRequest::send(
+                    account,
+                    Box::new(draft),
+                    Vec::new(),
+                ))
+                .unwrap();
+            let mut told = Vec::new();
+            loop {
+                match events
+                    .recv_timeout(ui::testing::hang_bound())
+                    .expect("the engine answers")
+                {
+                    super::EngineEvent::Sent { .. } => told.push("sent".to_owned()),
+                    super::EngineEvent::Unfiled { reason, .. } => told.push(reason),
+                    super::EngineEvent::Error { message, .. } => panic!("{message}"),
+                    super::EngineEvent::Completed {
+                        kind: super::EngineRequestKind::Send,
+                        ..
+                    } => break,
+                    _ => {}
+                }
+            }
+            assert_eq!(smtp.sent().len(), 1, "the message left");
+            assert_eq!(told.len(), 2, "{told:?}");
+            assert_eq!(told[0], "sent");
+            assert!(told[1].contains("would not take the copy"), "{told:?}");
+            assert!(imap.messages("Sent").is_empty());
+        }
+
+        /// A plain server on a port that starts in the clear, as Dovecot
+        /// serves 143: the engine upgrades the connection before it signs
+        /// in, and then reads the inbox over the one session.
+        #[test]
+        fn a_plain_server_that_upgrades_is_signed_in_to_only_once_secure() {
+            use crate::fake_imap::{FakeImap, Layout};
+
+            let server = ui::rt::app()
+                .block_on(FakeImap::start_starttls(Layout::Plain, server_tls_config()))
+                .unwrap();
+            server.append("INBOX", &mail("m1", "Over STARTTLS", "Hello."), &[]);
+            let account = AccountConfig {
+                email: "me@example.com".into(),
+                username: "me@example.com".into(),
+                password: "app-password".into(),
+                imap_host: "127.0.0.1".into(),
+                imap_port: server.port,
+                imap_tls: false,
+                auth: AuthMethod::Password,
+                ..Default::default()
+            };
+            let engine = LiveEngine::trusting(
+                tilo_content::ContentStore::memory(),
+                Arc::new(|| {}),
+                accepting_client_config(),
+            )
+            .unwrap();
+            let (requests, events) = super::super::spawn_with(Box::new(engine));
+            requests
+                .send(super::EngineRequest::fetch(account, Folder::Inbox))
+                .unwrap();
+            let synced = loop {
+                match events
+                    .recv_timeout(ui::testing::hang_bound())
+                    .expect("the engine answers")
+                {
+                    super::EngineEvent::Fetched { synced, .. } => break synced,
+                    super::EngineEvent::Error { message, .. } => panic!("{message}"),
+                    _ => {}
+                }
+            };
+            assert_eq!(synced.messages.len(), 1);
+            assert_eq!(synced.messages[0].subject, "Over STARTTLS");
+            assert_eq!(server.logins(), 1, "one session lists and reads");
+            assert_eq!(
+                server.cleartext_logins(),
+                0,
+                "nothing signs in before the connection is secure"
+            );
         }
 
         #[test]

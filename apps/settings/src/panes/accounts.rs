@@ -843,6 +843,11 @@ struct AccountDraft {
     username: String,
     server: String,
     password: String,
+    /// A mail account's servers as its person wrote them: each a name, or a
+    /// name and a port after a colon. One left empty is worked out from the
+    /// address, or stays as the account had it.
+    incoming: String,
+    outgoing: String,
 }
 
 type Settle = Box<dyn FnOnce(&mut AccountsPane, Result<(), String>) -> Step>;
@@ -915,6 +920,10 @@ pub struct AccountsPane {
     form_email: ui::LocalState<String>,
     form_user: ui::LocalState<String>,
     form_server: ui::LocalState<String>,
+    /// A mail account's servers as its person wrote them: each a name, or a
+    /// name and a port after a colon.
+    form_incoming: ui::LocalState<String>,
+    form_outgoing: ui::LocalState<String>,
     reauth_password: ui::LocalState<String>,
     reauth_error: Option<String>,
     reauth_id: Option<String>,
@@ -1005,6 +1014,8 @@ impl AccountsPane {
             form_email: ui::LocalState::new(String::new()),
             form_user: ui::LocalState::new(String::new()),
             form_server: ui::LocalState::new(String::new()),
+            form_incoming: ui::LocalState::new(String::new()),
+            form_outgoing: ui::LocalState::new(String::new()),
             reauth_password: ui::LocalState::new(String::new()),
             reauth_error: None,
             reauth_id: None,
@@ -1078,6 +1089,25 @@ impl AccountsPane {
         self.form_email.set(email.into());
         self.form_user.set(user.into());
         self.form_server.set(server.into());
+    }
+
+    #[doc(hidden)]
+    pub fn set_form_mail_servers_for_test(&self, incoming: &str, outgoing: &str) {
+        self.form_incoming.set(incoming.into());
+        self.form_outgoing.set(outgoing.into());
+    }
+
+    #[doc(hidden)]
+    pub fn form_mail_servers_for_test(&self) -> (String, String) {
+        (
+            self.form_incoming.with(Clone::clone),
+            self.form_outgoing.with(Clone::clone),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn form_error_for_test(&self) -> Option<&str> {
+        self.form_error.as_deref()
     }
 
     #[doc(hidden)]
@@ -1556,6 +1586,16 @@ impl AccountsPane {
                         .unwrap_or_default()
                         .into(),
                 );
+                self.form_incoming.set(mail_server_written(
+                    &stored.config,
+                    "imap_host",
+                    "imap_port",
+                ));
+                self.form_outgoing.set(mail_server_written(
+                    &stored.config,
+                    "smtp_host",
+                    "smtp_port",
+                ));
             }
             self.form_user.set(
                 stored
@@ -1705,6 +1745,8 @@ impl AccountsPane {
         self.form_email.set(String::new());
         self.form_user.set(String::new());
         self.form_server.set(String::new());
+        self.form_incoming.set(String::new());
+        self.form_outgoing.set(String::new());
         self.form_password.set(String::new());
     }
 
@@ -2454,6 +2496,18 @@ impl AccountsPane {
             .with_id("accounts.form.server")
             .with_accessible_name(&server_url)
             .with_placeholder(&server_placeholder);
+        let incoming_label = t("accounts-incoming-server");
+        let outgoing_label = t("accounts-outgoing-server");
+        let incoming = TextInput::from_state(&self.form_incoming)
+            .with_kind(TextInputKind::Url)
+            .with_id("accounts.form.incoming")
+            .with_accessible_name(&incoming_label)
+            .with_placeholder(&server_placeholder);
+        let outgoing = TextInput::from_state(&self.form_outgoing)
+            .with_kind(TextInputKind::Url)
+            .with_id("accounts.form.outgoing")
+            .with_accessible_name(&outgoing_label)
+            .with_placeholder(&server_placeholder);
         let buttons = Row::new()
             .push(Box::new(Self::bound(
                 cx,
@@ -2484,6 +2538,8 @@ impl AccountsPane {
                 ];
                 if kind == AccountKind::Mail {
                     fields.push(field_row(&login_name, Box::new(user)));
+                    fields.push(field_row(&incoming_label, Box::new(incoming)));
+                    fields.push(field_row(&outgoing_label, Box::new(outgoing)));
                 } else {
                     fields.push(field_row(&server_label, Box::new(server)));
                 }
@@ -2745,6 +2801,9 @@ impl AccountsPane {
                     ..Default::default()
                 };
                 config.autofill_from_email();
+                // A server its person wrote replaces the one the address
+                // suggests: someone who runs their own server names it.
+                set_mail_servers(&mut config, &draft.incoming, &draft.outgoing)?;
                 merge_config(
                     &mut stored.config,
                     config
@@ -2752,14 +2811,38 @@ impl AccountsPane {
                         .map_err(|_| "could not prepare email settings")?,
                 );
             }
-            AccountKind::Mail => merge_config(
-                &mut stored.config,
-                serde_json::json!({
-                    "email": identity,
-                    "display_name": name.trim(),
-                    "username": if username.is_empty() { identity } else { username }
-                }),
-            ),
+            AccountKind::Mail => {
+                merge_config(
+                    &mut stored.config,
+                    serde_json::json!({
+                        "email": identity,
+                        "display_name": name.trim(),
+                        "username": if username.is_empty() { identity } else { username }
+                    }),
+                );
+                // A server left as the form showed it keeps every setting it
+                // had, a connection that upgrades on another port included.
+                // One its person rewrote is taken as written.
+                let incoming =
+                    rewritten_server(&draft.incoming, &stored.config, "imap_host", "imap_port");
+                let outgoing =
+                    rewritten_server(&draft.outgoing, &stored.config, "smtp_host", "smtp_port");
+                if !(incoming.is_empty() && outgoing.is_empty()) {
+                    let mut config = AccountConfig::from_value(stored.config.clone())
+                        .map_err(|_| "could not prepare email settings")?;
+                    set_mail_servers(&mut config, incoming, outgoing)?;
+                    merge_config(
+                        &mut stored.config,
+                        serde_json::json!({
+                            "imap_host": config.imap_host,
+                            "imap_port": config.imap_port,
+                            "imap_tls": config.imap_tls,
+                            "smtp_host": config.smtp_host,
+                            "smtp_port": config.smtp_port
+                        }),
+                    );
+                }
+            }
             AccountKind::CalDav => merge_config(
                 &mut stored.config,
                 serde_json::json!({"display_name": name.trim(), "server_url": server, "username": identity}),
@@ -2865,6 +2948,8 @@ impl AccountsPane {
             username: username.to_string(),
             server: server.to_string(),
             password: password.to_string(),
+            incoming: String::new(),
+            outgoing: String::new(),
         };
         let mut pane = Self::from_dir_in(account_root.clone(), AccountDirectory::default(), false);
         let outcome = Rc::new(std::cell::RefCell::new(None));
@@ -3227,6 +3312,8 @@ impl AccountsPane {
             let email = self.form_email.with(Clone::clone);
             let user = self.form_user.with(Clone::clone);
             let server = self.form_server.with(Clone::clone);
+            let incoming = self.form_incoming.with(Clone::clone);
+            let outgoing = self.form_outgoing.with(Clone::clone);
             let password = self.form_password.with(Clone::clone);
             let Some(kind) = self.form_kind else {
                 return;
@@ -3248,6 +3335,8 @@ impl AccountsPane {
                 username: user,
                 server,
                 password,
+                incoming,
+                outgoing,
             };
             let account = match Self::prepare_metadata(&self.account_root, &draft) {
                 Ok(account) => account,
@@ -3615,6 +3704,97 @@ fn find_mailbox<'a>(
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|existing| existing.eq_ignore_ascii_case(email))
     })
+}
+
+/// A mail server as its person wrote it: a name, or a name and a port after
+/// a colon, an IPv6 address in brackets so its colons are not a port's.
+/// `None` for a field left empty.
+fn mail_server(written: &str) -> Result<Option<(String, Option<u16>)>, String> {
+    let written = written.trim();
+    if written.is_empty() {
+        return Ok(None);
+    }
+    let invalid = || t("accounts-mail-server-invalid");
+    let (name, port, bracketed) = if let Some(rest) = written.strip_prefix('[') {
+        let (address, after) = rest.split_once(']').ok_or_else(invalid)?;
+        match after.strip_prefix(':') {
+            Some(port) => (address, Some(port), true),
+            None if after.is_empty() => (address, None, true),
+            None => return Err(invalid()),
+        }
+    } else {
+        match written.rsplit_once(':') {
+            Some((name, port)) => (name, Some(port), false),
+            None => (written, None, false),
+        }
+    };
+    let named = !name.is_empty()
+        && name.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') || (bracketed && c == ':')
+        });
+    if !named {
+        return Err(invalid());
+    }
+    let port = port
+        .map(|port| {
+            port.parse::<u16>()
+                .ok()
+                .filter(|port| *port != 0)
+                .ok_or_else(invalid)
+        })
+        .transpose()?;
+    Ok(Some((name.to_owned(), port)))
+}
+
+/// Take the servers a person wrote for a mail account into its settings. A
+/// server written without a port is on the usual one, and the port says how
+/// an IMAP connection starts: 143 upgrades with STARTTLS, every other port
+/// is TLS from the first byte. A field left empty changes nothing.
+fn set_mail_servers(
+    config: &mut AccountConfig,
+    incoming: &str,
+    outgoing: &str,
+) -> Result<(), String> {
+    if let Some((name, port)) = mail_server(incoming)? {
+        config.imap_host = name;
+        config.imap_port = port.unwrap_or(993);
+        config.imap_tls = accounts::email::Security::of_imap(true, config.imap_port).wraps();
+    }
+    if let Some((name, port)) = mail_server(outgoing)? {
+        config.smtp_host = name;
+        config.smtp_port = port.unwrap_or(465);
+    }
+    Ok(())
+}
+
+/// A mail server of the account with `settings` as a person writes one: its
+/// name, a colon and its port.
+fn mail_server_written(settings: &serde_json::Value, host: &str, port: &str) -> String {
+    let name = settings
+        .get(host)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    match settings.get(port).and_then(serde_json::Value::as_u64) {
+        Some(port) if name.contains(':') => format!("[{name}]:{port}"),
+        Some(port) if !name.is_empty() => format!("{name}:{port}"),
+        _ => name.to_owned(),
+    }
+}
+
+/// What a person wrote for a mail server of the account with `settings`, or
+/// nothing when they left the field as the form showed it.
+fn rewritten_server<'a>(
+    written: &'a str,
+    settings: &serde_json::Value,
+    host: &str,
+    port: &str,
+) -> &'a str {
+    let written = written.trim();
+    if written == mail_server_written(settings, host, port) {
+        ""
+    } else {
+        written
+    }
 }
 
 fn merge_config(target: &mut serde_json::Value, updates: serde_json::Value) {

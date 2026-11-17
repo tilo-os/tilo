@@ -47,8 +47,8 @@ pub const BEGIN_SEND: &str = "begin-send";
 /// One piece of a begun message's file ([`SendPiece`]), answering the bytes
 /// the host holds of that file ([`PieceKept`]).
 pub const SEND_PIECE: &str = "send-piece";
-/// Send the message begun under an id ([`SendId`]), answering nothing: the
-/// message left, or the reason it did not.
+/// Send the message begun under an id ([`SendId`]), answering what became of
+/// it once it left ([`SentMail`]), or the reason it did not leave.
 pub const SEND: &str = "send";
 /// Tell one account's server what changed about a message ([`MarkMail`]):
 /// read, starred, moved or removed.
@@ -341,6 +341,18 @@ pub struct PieceKept {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SendId {
     pub send: String,
+}
+
+/// What [`SEND`] answers once the message left.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SentMail {
+    /// Why the account's Sent folder holds no copy of the message, when the
+    /// host tried to file one and could not. The message left all the same.
+    /// Absent when the copy is filed, the folder already held it, or the
+    /// account's server files what it sends by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unfiled: Option<String>,
 }
 
 /// What one message's server is told.

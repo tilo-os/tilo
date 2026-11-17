@@ -44,6 +44,84 @@ impl AuthMethod {
     }
 }
 
+/// How a connection to a mail server becomes secure. There is no third way:
+/// nothing signs in over a connection that stays in the clear.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Security {
+    /// TLS from the first byte, as on IMAP's port 993.
+    Tls,
+    /// The connection starts in the clear and is upgraded with `STARTTLS`
+    /// before anything signs in, as on IMAP's port 143.
+    StartTls,
+}
+
+/// The port IMAP is registered on in the clear. A server there cannot be
+/// spoken TLS to from the first byte, so a connection to it always upgrades.
+pub const IMAP_CLEAR_PORT: u16 = 143;
+
+impl Security {
+    /// How the IMAP server on `port` is reached by an account whose
+    /// `imap_tls` setting is `wrapped`: the setting decides, except on
+    /// [`IMAP_CLEAR_PORT`], which only ever upgrades.
+    #[must_use]
+    pub const fn of_imap(wrapped: bool, port: u16) -> Self {
+        if wrapped && port != IMAP_CLEAR_PORT {
+            Self::Tls
+        } else {
+            Self::StartTls
+        }
+    }
+
+    /// The `imap_tls` setting an account keeps for this.
+    #[must_use]
+    pub const fn wraps(self) -> bool {
+        matches!(self, Self::Tls)
+    }
+}
+
+/// How the IMAP server of the account with `settings` is reached: what
+/// [`AccountConfig::imap_security`] answers, for a reader that holds the
+/// settings as they are stored.
+#[must_use]
+pub fn imap_security_of(settings: &serde_json::Value) -> Security {
+    let wrapped = settings
+        .get("imap_tls")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let port = settings
+        .get("imap_port")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|port| u16::try_from(port).ok())
+        .unwrap_or(993);
+    Security::of_imap(wrapped, port)
+}
+
+/// The IMAP capability Gmail names itself by.
+pub const GMAIL_CAPABILITY: &str = "X-GM-EXT-1";
+
+/// Whether an account's own servers keep a copy of every message they send
+/// in its Sent folder, so a mail program must not file a second one. Gmail
+/// does, and is known by its name or by naming itself among its IMAP
+/// capabilities ([`GMAIL_CAPABILITY`], which the caller looks for).
+/// Microsoft's servers do, and are known by their names. A plain server
+/// files nothing.
+#[must_use]
+pub fn servers_file_sent(imap_host: &str, smtp_host: &str, names_itself_gmail: bool) -> bool {
+    let filing = |host: &str| {
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        [
+            "gmail.com",
+            "googlemail.com",
+            "outlook.com",
+            "office365.com",
+            "office.com",
+        ]
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+    };
+    names_itself_gmail || filing(imap_host) || filing(smtp_host)
+}
+
 /// Account-level connection settings. This is exactly the form the
 /// account-setup screen collects and the transport layer consumes.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +130,9 @@ pub struct AccountConfig {
     pub email: String,
     pub imap_host: String,
     pub imap_port: u16,
+    /// Whether the IMAP connection is TLS from the first byte. Otherwise it
+    /// starts in the clear and upgrades with `STARTTLS` before anything
+    /// signs in ([`AccountConfig::imap_security`]).
     pub imap_tls: bool,
     pub smtp_host: String,
     pub smtp_port: u16,
@@ -167,6 +248,12 @@ impl AccountConfig {
         serde_json::to_value(self)
     }
 
+    /// How this account's IMAP server is reached.
+    #[must_use]
+    pub const fn imap_security(&self) -> Security {
+        Security::of_imap(self.imap_tls, self.imap_port)
+    }
+
     /// What the account is called: its display name, falling back to the
     /// email, falling back to a generic placeholder.
     pub fn label(&self) -> &str {
@@ -276,6 +363,74 @@ mod tests {
             }
         );
         assert!(AccountConfig::from_value(serde_json::json!({"email": 42})).is_err());
+    }
+
+    /// A connection is TLS from the first byte or upgraded before anything
+    /// signs in, and a reader of the stored settings decides as the account
+    /// does.
+    #[test]
+    fn an_imap_connection_is_wrapped_or_upgraded_and_never_clear() {
+        let wrapped = AccountConfig::default();
+        assert_eq!(wrapped.imap_security(), Security::Tls);
+        assert!(wrapped.imap_security().wraps());
+        // What an account moved in from another mail program kept.
+        let upgraded = AccountConfig {
+            imap_tls: false,
+            imap_port: 1143,
+            ..Default::default()
+        };
+        assert_eq!(upgraded.imap_security(), Security::StartTls);
+        // Port 143 only ever upgrades, whatever is stored beside it.
+        let clear_port = AccountConfig {
+            imap_port: IMAP_CLEAR_PORT,
+            ..Default::default()
+        };
+        assert_eq!(clear_port.imap_security(), Security::StartTls);
+        assert!(!clear_port.imap_security().wraps());
+        for config in [wrapped, upgraded, clear_port] {
+            let stored = config.to_value().expect("encode connection metadata");
+            assert_eq!(imap_security_of(&stored), config.imap_security());
+        }
+        // Settings that name no security are TLS from the first byte.
+        assert_eq!(
+            imap_security_of(&serde_json::json!({"imap_port": 993})),
+            Security::Tls
+        );
+        assert_eq!(
+            imap_security_of(&serde_json::json!({"imap_port": 143})),
+            Security::StartTls
+        );
+    }
+
+    #[test]
+    fn only_servers_that_file_what_they_send_are_left_to_it() {
+        assert!(servers_file_sent("imap.gmail.com", "smtp.gmail.com", false));
+        assert!(servers_file_sent(
+            "mail.example.org",
+            "mail.example.org",
+            true
+        ));
+        assert!(servers_file_sent(
+            "outlook.office365.com",
+            "smtp.office365.com",
+            false
+        ));
+        assert!(servers_file_sent(
+            "imap-mail.outlook.com",
+            "smtp-mail.outlook.com",
+            false
+        ));
+        assert!(!servers_file_sent(
+            "mail.example.org",
+            "mail.example.org",
+            false
+        ));
+        // A name that only ends like one of theirs is not theirs.
+        assert!(!servers_file_sent(
+            "notoutlook.com",
+            "mail.notgmail.com",
+            false
+        ));
     }
 
     #[test]

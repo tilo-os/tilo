@@ -446,9 +446,12 @@ impl EngineConnector {
                     self.ask_moved(&account, &to);
                 }
             }
+            // A copy the account's server kept none of changes nothing
+            // here: the message left, which its completion says.
             EngineEvent::Connected { .. }
             | EngineEvent::Folders { .. }
             | EngineEvent::Sent { .. }
+            | EngineEvent::Unfiled { .. }
             | EngineEvent::Authorized { .. } => {}
         }
     }

@@ -69,6 +69,12 @@ impl Places {
         Self { names }
     }
 
+    /// Whether the server listed a folder of its own for `folder`. One it
+    /// did not list is named by [`Folder::imap_name`] and may not exist yet.
+    pub fn holds(&self, folder: Folder) -> bool {
+        matches!(folder, Folder::Inbox | Folder::Starred) || self.names.contains_key(&folder)
+    }
+
     pub fn name(&self, folder: Folder) -> &str {
         match folder {
             Folder::Inbox | Folder::Starred => "INBOX",

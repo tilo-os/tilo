@@ -26,7 +26,7 @@ use tilo_account_probe::{AccountTester, LiveAccountTester};
 use tilo_actions::remote::person_accounts::{
     AddMailAccount, BeginSend, MAX_SEND_FILE_BYTES, MAX_SEND_FILES, MAX_SEND_PIECE_BYTES,
     MAX_SEND_TOTAL_BYTES, MailAccount, MailAccounts, PieceKept, SendId, SendMail, SendPiece,
-    StartedSend,
+    SentMail, StartedSend,
 };
 use tilo_actions::remote::person_accounts::{FetchMail, FetchedMail, MarkMail};
 use tilo_actions::remote::person_models::{
@@ -281,7 +281,9 @@ async fn add_mail_with(
         email: adding.address.trim().to_owned(),
         imap_host: adding.incoming_host.trim().to_owned(),
         imap_port: adding.incoming_port,
-        imap_tls: true,
+        // The port says how the connection starts: 143 upgrades with
+        // STARTTLS, every other port is TLS from the first byte.
+        imap_tls: accounts::email::Security::of_imap(true, adding.incoming_port).wraps(),
         smtp_host: adding.outgoing_host.trim().to_owned(),
         smtp_port: adding.outgoing_port,
         smtp_tls: true,
@@ -511,14 +513,19 @@ fn send_piece(root: &Path, piece: &SendPiece) -> Result<PieceKept, String> {
 }
 
 /// Send the message begun under `sending`'s id: the files its pieces made,
-/// its invitation, and what it says.
-async fn send_staged(root: &Path, sending: SendId) -> Result<(), String> {
+/// its invitation, and what it says. Answers what became of its copy in the
+/// account's Sent folder.
+async fn send_staged(root: &Path, sending: SendId) -> Result<SentMail, String> {
     send_staged_with(Arc::new(LiveMailSession::default()), root, sending).await
 }
 
 /// [`send_staged`] through `session`, so a test sends to a server it stands
 /// in for.
-async fn send_staged_with(session: Session, root: &Path, sending: SendId) -> Result<(), String> {
+async fn send_staged_with(
+    session: Session,
+    root: &Path,
+    sending: SendId,
+) -> Result<SentMail, String> {
     let (dir, beginning) = begun_send(root, &sending.send)?;
     let mut files = Vec::with_capacity(beginning.files.len());
     for (index, file) in beginning.files.iter().enumerate() {
@@ -578,7 +585,7 @@ async fn send_with(
     sending: SendMail,
     files: Vec<Attachment>,
     invitation: Option<String>,
-) -> Result<(), String> {
+) -> Result<SentMail, String> {
     let (account, secret) = account_with_secret(root, &sending.account)?;
     tokio::task::spawn_blocking(move || {
         session.send(&account, &secret, &sending, &files, invitation.as_deref())
@@ -999,6 +1006,8 @@ mod mail_session_tests {
         asked: Mutex<Vec<String>>,
         carried: Mutex<Vec<(String, Vec<u8>)>>,
         invitation: Mutex<Option<String>>,
+        /// Why the server's Sent folder holds no copy of what is sent next.
+        unfiled: Mutex<Option<String>>,
     }
 
     impl tilo_mail_session::MailSession for Fixture {
@@ -1030,7 +1039,7 @@ mod mail_session_tests {
             sending: &SendMail,
             files: &[Attachment],
             invitation: Option<&str>,
-        ) -> Result<(), String> {
+        ) -> Result<SentMail, String> {
             self.asked.lock().unwrap().push(format!(
                 "send {} to {} with {} carrying {} files and invitation {:?}",
                 account.id,
@@ -1046,7 +1055,9 @@ mod mail_session_tests {
                     .push((file.filename.clone(), file.bytes.clone()));
             }
             *self.invitation.lock().unwrap() = invitation.map(str::to_owned);
-            Ok(())
+            Ok(SentMail {
+                unfiled: self.unfiled.lock().unwrap().clone(),
+            })
         }
 
         fn mark(
@@ -1265,8 +1276,11 @@ mod mail_session_tests {
         .unwrap_err();
         assert!(refused.contains("offset 5"), "{refused}");
 
+        // The message leaves though its copy could not be filed, and the
+        // page is told why its Sent folder holds none.
+        *fixture.unfiled.lock().unwrap() = Some("Sent would not take the copy".into());
         let session: Session = fixture.clone();
-        runtime
+        let sent = runtime
             .block_on(send_staged_with(
                 session,
                 root,
@@ -1275,6 +1289,14 @@ mod mail_session_tests {
                 },
             ))
             .unwrap();
+        assert_eq!(
+            sent.unfiled.as_deref(),
+            Some("Sent would not take the copy")
+        );
+        assert_eq!(
+            serde_json::to_value(&sent).unwrap(),
+            serde_json::json!({"unfiled": "Sent would not take the copy"})
+        );
         assert_eq!(
             fixture.carried.lock().unwrap().clone(),
             vec![("contract.pdf".to_owned(), b"%PDF-".to_vec())]
