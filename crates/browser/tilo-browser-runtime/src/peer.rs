@@ -1079,6 +1079,9 @@ pub async fn revoke_device(
     for handle in crate::peer_sync::handles_of(&hex::encode(entry.user_public_key)) {
         handle.send(Cmd::Revoke(entry.clone())).map_err(js_error)?;
     }
+    // Announced: whatever lists the person's devices on this page has them
+    // read from the host once more.
+    crate::identity_api::devices_moved();
     serde_json::to_string(&entry).map_err(js_error)
 }
 
@@ -1175,6 +1178,11 @@ impl PairingHost {
         let issued = tilo_relay_client::answer_pairing(&self.0, &root, digest, approved)
             .await
             .map_err(js_error)?;
+        if issued.is_some() {
+            // One device more: whatever lists the person's devices on this
+            // page has them read from the host once more.
+            crate::identity_api::devices_moved();
+        }
         issued
             .map(|cert| serde_json::to_string(&cert).map_err(js_error))
             .transpose()
