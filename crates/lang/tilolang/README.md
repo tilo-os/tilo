@@ -576,7 +576,9 @@ The type between `<` and `>` is what makes a decode typed; only `json.decode` ta
 
 **Parameter defaults.** An action parameter may have a default written in terms of the
 parameters before it. An invocation that leaves the argument out gets it, computed when it is
-invoked on what the invoker sees, and records it as the argument; an explicit argument wins:
+invoked on what the invoker sees, and records it as the argument; an explicit argument wins.
+A view's parameter may take one too, as a component option (`online: Bool = false`), which a
+call that leaves it out gets:
 
 ```
 action check(item: Todo, done: Bool = not item.done) (label: if done { "Check" } else { "Uncheck" }, on: item.done) {

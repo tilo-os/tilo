@@ -1602,9 +1602,12 @@ impl Resolver<'_> {
                         .map(|(i, _)| (at, i)),
                 );
             } else {
+                // A view that takes a default is a component ([`crate::checker::is_template`]) and
+                // never reads as a callable here: what a call leaves out is filled where it
+                // expands. A `fn`'s parameters take none.
                 for p in ast_params {
                     if let Some(d) = &p.default {
-                        self.err("E028", d.span, format!("`{}` is a parameter of the {} `{}`; only an action's parameters take a default, which the action's invoker gets when they leave it out", p.name.name, kind.word(), name.name));
+                        self.err("E028", d.span, format!("`{}` is a parameter of the {} `{}`; a fn's parameters take no default", p.name.name, kind.word(), name.name));
                     }
                 }
             }

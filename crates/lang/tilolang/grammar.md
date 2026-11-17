@@ -53,7 +53,7 @@ scenario   = "scenario" string [ "->" type ] block ;
 trigger    = "trigger" Ident params ( "every" duration
                                    | "at" ident "." ident ) ":" expr ;   (* the action it runs *)
 params     = "(" [ param { "," param } ] ")" ;
-param      = ident ":" type [ marker ] [ "=" expr ] ;             (* defaults: action parameters only *)
+param      = ident ":" type [ marker ] [ "=" expr ] ;             (* a default: an action's parameter, or a component view's option; not a fn's *)
 marker     = "(" ident ")"                                        (* a place a view supplies: (above) *)
            | "(" "label" ":" string ")" ;                         (* what a person gives it is called *)
 opts       = "(" ident ":" expr { "," ident ":" expr } ")" ;       (* icon:, label:, on:, key:, group:, did: *)

@@ -500,8 +500,9 @@ convergence.md, "Actions".
 
 - **Parameter defaults.** An action parameter may have a default, `done: Bool = not item.done`.
   It reads only the parameters before it (E028 otherwise), in the discipline of a `fn`: no
-  actions, no `invoker`, no `now`. Only an action's parameters take one (E028 for a fn, view or
-  variant field). Each default is a function of its own, exported as
+  actions, no `invoker`, no `now`. A component view's option may take one too
+  (`online: Bool = false`), which a call that leaves the option out gets; a `fn` parameter and
+  a variant field take none (E028). Each default is a function of its own, exported as
   `d_<action id>_<param>` and taking the parameters before it; metadata lists it on the
   parameter (`default`: the export and the default as written, for descriptions).
 - **When it is computed.** When the action is invoked without the argument, on the invoker's
