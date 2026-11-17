@@ -41,9 +41,11 @@ row view note_row for Note
 
 place view notes for Notebook
 
-/// Starts a note at the top of the tree. Its title starts empty: what is typed first names it.
-primary action new_note(nb: Notebook) -> Note (icon: .plus) {
-    nb.notes.insert(Note(title: ""))
+/// Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the
+/// caller knows them already. Started from the notebook both are empty: what is typed first
+/// names it.
+primary action new_note(nb: Notebook, title: Text = "", body: Text = "") -> Note (icon: .plus) {
+    nb.notes.insert(Note(title: title, body: RichText.from_markdown(body)))
 }
 
 /// Starts a note inside `n`'s own, after the notes it already holds.
@@ -141,6 +143,12 @@ destructive action delete(nb: Notebook, n: Note) (icon: .trash, key: "Delete") {
 /// Renames a note.
 action retitle(n: Note, title: Text) (icon: .pencil, label: "Rename") {
     n.title = title
+}
+
+/// Writes `text` (Markdown) at the end of a note, under what it says already: a line, a list or
+/// a paragraph added to it.
+action add_text(n: Note, text: Text) (icon: .pencil, label: "Add text", did: "added to a note") {
+    n.body = RichText(n.body, RichText.from_markdown(text))
 }
 
 /// Files a note titled `title` and tagged `tag` in one step: what another app writes down of

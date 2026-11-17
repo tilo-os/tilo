@@ -107,9 +107,18 @@ primary action new_task(
     at: Option<Time> = .none,
     assignee: Option<Actor> = .none,
     title: Text = "",
+    remind: Option<Time> = .none,
 ) -> Task (icon: .plus, label: "New task", key: "Ctrl+N") {
     tasks.items.insert(
-        Task(title: title, due: due, at: at, assignee: assignee, project: p, section: s),
+        Task(
+            title: title,
+            due: due,
+            at: at,
+            remind: remind,
+            assignee: assignee,
+            project: p,
+            section: s,
+        ),
     )
 }
 
@@ -158,28 +167,40 @@ action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task uses time (
 /// Sets the day a task is due by, from the presets or a day the person picks.
 action due_today(t: Task) uses time (label: "Today", icon: .star, key: "Ctrl+T", group: "Due") {
     require not t.done "It is done already"
-    t.due = today
+    schedule(t, today)
 }
 
 /// Makes a task due tomorrow.
 action due_tomorrow(t: Task) uses time (label: "Tomorrow", icon: .calendar, group: "Due") {
     require not t.done "It is done already"
-    t.due = today + 1d
+    schedule(t, today + 1d)
 }
 
 /// Makes a task due at the start of next week.
 action due_next_week(t: Task) uses time (label: "Next week", icon: .calendar, group: "Due") {
     require not t.done "It is done already"
-    t.due = today.start_of_week() + 1w
+    schedule(t, today.start_of_week() + 1w)
 }
 
-/// Makes a task due on a day the person picks.
+/// Makes a task due on a day the person picks. Its moment and its reminder move with it, at the
+/// same time of day: a task due Wednesday at six, reminded at six, moved to Friday is due Friday
+/// at six and reminded then.
 action schedule(t: Task, due: Option<Date>) (
     label: "Pick date",
     icon: .calendar,
     key: "Ctrl+D",
     group: "Due",
 ) {
+    if let from = t.due {
+        if let to = due {
+            if let a = t.at {
+                t.at = a + (to - from)
+            }
+            if let r = t.remind {
+                t.remind = r + (to - from)
+            }
+        }
+    }
     t.due = due
 }
 
@@ -192,8 +213,13 @@ action due_clear(t: Task) (label: "No date", group: "Due") {
 /// Rings a task's reminder when its moment comes, once for the whole workspace, window or not.
 trigger ring(t: Task) at t.remind: remind(t)
 
-/// Sets the moment whoever is doing a task is reminded of it.
+/// Sets the moment whoever is doing a task is reminded of it. A reminder on a day after the task
+/// is due moves the task to that day, its moment with it: being told of a task once its day has
+/// gone is no reminder, so "move the reminder to Friday" moves both.
 action remind_at(t: Task, when: Time) uses time (label: "Remind me", icon: .bell, group: "Remind") {
+    if let d = t.due {
+        if when.day() > d { schedule(t, when.day()) }
+    }
     t.remind = when
 }
 

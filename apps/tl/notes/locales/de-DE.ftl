@@ -34,7 +34,7 @@ d-mavvhka7-filter-pinned = Angeheftet
 d-mavvhka7-filter-tags = Schlagwörter
 
 d-qymo5lg2 = Neue Notiz
-    .doc = Beginnt eine Notiz oben im Baum.
+    .doc = Beginnt eine Notiz oben im Baum, mit dem Titel `title` und dem Text `body` (Markdown), wenn der Aufrufer sie schon kennt.
 
 d-37dxigeq = Untergeordnete Notiz
     .doc = Beginnt eine Notiz in der von `n`, nach den Notizen, die sie schon hält.
@@ -64,6 +64,10 @@ d-nydyehwn = Löschen
 
 d-zvgl2tzt = Umbenennen
     .doc = Benennt eine Notiz um.
+
+d-6fwsh5ui = Text hinzufügen
+    .doc = Schreibt `text` (Markdown) ans Ende einer Notiz, unter das, was sie schon sagt: eine Zeile, eine Liste oder ein Absatz dazu.
+    .did = hat einer Notiz etwas hinzugefügt
 
 d-gc34cbhl = Notiz ablegen
     .doc = Legt in einem Schritt eine Notiz mit dem Titel `title` und dem Schlagwort `t` an: was eine andere App von dem aufschreibt, was sie getan hat (der Morgen in Heute), ohne auf die gemachte Notiz zu warten, um sie zu benennen.
@@ -169,6 +173,12 @@ d-jo2tztsx-n = N
 d-nydyehwn-n = N
 
 d-zvgl2tzt-title = Titel
+
+d-qymo5lg2-title = Titel
+
+d-qymo5lg2-body = Text
+
+d-6fwsh5ui-text = Text
 
 d-gc34cbhl-title = Titel
 
