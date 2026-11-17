@@ -893,6 +893,13 @@ impl WorkspaceState {
         self.records.contains(route)
     }
 
+    /// Whether this replica holds the document at `route` at all, opened or not: what a
+    /// caller asks before it reads the document, rather than reading it whole to find out.
+    fn holds_document(&self, route: &DocumentRoute) -> bool {
+        self.engine
+            .holds_resource(&route.cluster_id, &route.app_id, &route.document)
+    }
+
     /// What changed of the record at `route` since `held`, the heads a
     /// replica merged last: only the changes after them where the record
     /// holds them, the record whole where it does not (or where nothing was

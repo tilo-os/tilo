@@ -290,9 +290,8 @@ fn a_pass_after_one_note_changed_reads_that_note_alone() {
     }
     app.settle();
     let first = notes::part::chain().part(0);
-    let before = app
-        .read_document_of(&first, |doc| doc.clone().get_heads())
-        .unwrap();
+    let mut kept = app.read_document_of(&first, Clone::clone).unwrap();
+    let before = kept.get_heads();
     let page = page_of(&app, "Note 7");
     call(
         &mut app,
@@ -305,8 +304,24 @@ fn a_pass_after_one_note_changed_reads_that_note_alone() {
     let heads = after.get_heads();
     assert_eq!(
         pages_changed(&mut after, &before, &heads),
-        BTreeSet::from([page]),
+        BTreeSet::from([page.clone()]),
         "only the written note is read again"
+    );
+    // The service merges the change into the part it kept and reads what it touched from the
+    // patches the merge logged, not by walking the part again: the same note, and no other.
+    let change = after.save_after(&before);
+    let mut held = HeldPart {
+        doc: kept,
+        heads: before.iter().map(|head| head.0).collect(),
+    };
+    assert_eq!(
+        held.merge(
+            DocumentMutation::Incremental(change),
+            heads.iter().map(|head| head.0).collect()
+        )
+        .unwrap(),
+        Some(BTreeSet::from([page])),
+        "a merge of one note's change touches that note alone"
     );
 }
 
@@ -316,6 +331,165 @@ fn placed(pairs: &[(&str, Option<&str>)]) -> Placed {
         .iter()
         .map(|(id, parent)| ((*id).to_owned(), (0, parent.map(str::to_owned))))
         .collect()
+}
+
+/// The part `index` of the notes `app` holds, as the service keeps it between passes: its
+/// document and the heads it merged last.
+fn held_part(app: &TestApp<notes::NotesShell>, index: u64) -> HeldPart {
+    let route = notes::part::chain().part(index);
+    let doc = app.read_document_of(&route, Clone::clone).unwrap();
+    let heads = doc.clone().get_heads().iter().map(|head| head.0).collect();
+    HeldPart { doc, heads }
+}
+
+/// The notes and files as a first pass over `app`'s notes leaves them: every part
+/// read and every note's file made.
+fn followed_whole(app: &TestApp<notes::NotesShell>) -> Followed {
+    let mut followed = Followed {
+        parts: BTreeMap::new(),
+        placed: Placed::new(),
+        hidden: BTreeSet::new(),
+        tree: Namespace::new("notes").unwrap(),
+        chunks: None,
+        files: Files::new(),
+        last: 0,
+    };
+    let mut dirty = BTreeSet::new();
+    for (index, _) in app.chain_parts::<notes::PagePart>() {
+        let part = held_part(app, index);
+        for page in page_keys(&part.doc) {
+            if let Some(parent) = parent_in(&part.doc, &page) {
+                followed.placed.insert(page.clone(), (index, parent));
+            }
+            dirty.insert(page);
+        }
+        followed.parts.insert(index, part);
+    }
+    followed.files = files_of(&followed.tree);
+    followed.hidden = hidden(&followed.placed);
+    dirty.extend(followed.files.keys().cloned());
+    let notes = dirty
+        .iter()
+        .map(|page| (page.clone(), followed.note(page)))
+        .collect();
+    reconcile(&mut followed.tree, &mut followed.files, &notes, 1);
+    followed
+}
+
+/// `heads` as the documents name them.
+fn change_heads(heads: &[[u8; 32]]) -> Vec<automerge::ChangeHash> {
+    heads.iter().copied().map(automerge::ChangeHash).collect()
+}
+
+/// One pass over the notes `app` holds now: each part merged with the changes it took since
+/// the last pass, and the notes that changed read and brought into step with their files.
+/// Answers how long the pass took and how many notes it read. What the workspace hands a
+/// pass — each part's changes since it was read — is gathered first, untimed.
+fn pass(followed: &mut Followed, app: &TestApp<notes::NotesShell>) -> (std::time::Duration, usize) {
+    let mut updates = Vec::new();
+    for (index, part) in &followed.parts {
+        let route = notes::part::chain().part(*index);
+        if app
+            .read_document_of(&route, |doc| doc.clone().get_heads())
+            .is_some_and(|heads| heads == change_heads(&part.heads))
+        {
+            continue;
+        }
+        let mut after = app.read_document_of(&route, Clone::clone).unwrap();
+        let change = after.save_after(&change_heads(&part.heads));
+        updates.push((
+            *index,
+            DocumentMutation::Incremental(change),
+            after.get_heads(),
+        ));
+    }
+    let began = std::time::Instant::now();
+    let mut dirty = BTreeSet::new();
+    for (index, mutation, heads) in updates {
+        let part = followed.parts.get_mut(&index).unwrap();
+        let changed = part
+            .merge(mutation, heads.iter().map(|head| head.0).collect())
+            .unwrap()
+            .unwrap_or_default();
+        dirty.extend(changed);
+    }
+    let notes: BTreeMap<String, Option<Note>> = dirty
+        .iter()
+        .map(|page| (page.clone(), followed.note(page)))
+        .collect();
+    reconcile(&mut followed.tree, &mut followed.files, &notes, 2);
+    (began.elapsed(), notes.len())
+}
+
+/// `tree` names a file for every note `app` holds, reading what the note reads, and the
+/// notes' files stay in step with the notes.
+fn matches_the_notes(app: &TestApp<notes::NotesShell>, tree: &mut Namespace) -> usize {
+    let notes = notes_of(app);
+    assert_eq!(
+        files_of(tree).len(),
+        notes.len(),
+        "the folder holds a file for every note and no other"
+    );
+    for note in &notes {
+        let path = format!("Notes/{}", file_name(&note.title));
+        let written = file(tree, &path).unwrap_or_default();
+        assert_eq!(
+            written.trim(),
+            String::from_utf8_lossy(&note.markdown).trim(),
+            "{path} reads what its note reads"
+        );
+    }
+    notes.len()
+}
+
+/// A pass after one note changed in a notebook of `pages` notes: the pass reads the note
+/// that changed alone, and the folder still matches the notes.
+fn pass_after_one_edit(pages: usize) -> (std::time::Duration, usize) {
+    let mut app = notebook();
+    // Imported as a window imports a set of files, rather than a note at a time: a thousand
+    // notes made one action each would cost the test more than the pass it times.
+    for chunk in (0..pages).collect::<Vec<_>>().chunks(50) {
+        let files: Vec<Value> = chunk
+            .iter()
+            .map(|n| {
+                json!({
+                    "path": format!("wiki/{n}.md"),
+                    "title": format!("Note {n}"),
+                    "markdown": format!("What note {n} says, in a sentence of its own."),
+                })
+            })
+            .collect();
+        call(&mut app, "import-markdown-files", json!({ "files": files })).unwrap();
+    }
+    app.settle();
+    let mut followed = followed_whole(&app);
+    let page = page_of(&app, "Note 5");
+    call(
+        &mut app,
+        "write-note",
+        json!({ "page": page, "markdown": "Written again, and only this one." }),
+    )
+    .unwrap();
+    app.settle();
+    let (took, read) = pass(&mut followed, &app);
+    let counting = matches_the_notes(&app, &mut followed.tree);
+    assert_eq!(counting, pages);
+    (took, read)
+}
+
+#[test]
+fn a_pass_after_one_note_changed_costs_the_note_not_the_notebook() {
+    let (small, small_read) = pass_after_one_edit(10);
+    let (large, large_read) = pass_after_one_edit(1_000);
+    println!(
+        "one note's edit: 10 notes in {small:?} reading {small_read}, 1,000 notes in \
+         {large:?} reading {large_read}"
+    );
+    assert_eq!(small_read, 1, "a pass of ten reads the note that changed");
+    assert_eq!(
+        large_read, 1,
+        "a pass of a thousand reads the same note alone"
+    );
 }
 
 #[test]

@@ -605,6 +605,7 @@ impl Worker {
     /// and files they touched, so one note's edit costs that note in a notebook of
     /// thousands.
     pub(super) fn project_notes(&mut self, workspace_id: WorkspaceId) -> Result<(), String> {
+        let started = std::time::Instant::now();
         let tree_name = tree_document();
         let notes_route = DocumentRoute {
             app_id: NOTES_APP.to_owned(),
@@ -670,6 +671,7 @@ impl Worker {
             %workspace_id,
             notes = dirty.len(),
             edits = edits.len(),
+            took = ?started.elapsed(),
             "notes folder: a pass over the notes and their files that changed"
         );
         let applied = self.apply_note_edits(workspace_id, &notes_route, &mut followed.tree, edits);
@@ -705,7 +707,8 @@ impl Worker {
 
     /// Ask for each part of the notes `state` does not hold yet. Which note is shown needs
     /// every part: a note under one in a part not here yet would read as one whose parent is
-    /// gone, and its file be put in the trash. An error names how many are missing.
+    /// gone, and its file be put in the trash. An error names how many are missing. Whether
+    /// each part is here is the workspace's own answer, not the part read whole to find out.
     fn ask_for_missing_parts(
         &mut self,
         workspace_id: WorkspaceId,
@@ -714,7 +717,7 @@ impl Worker {
     ) -> Result<(), String> {
         let missing: Vec<DocumentRoute> = parts
             .iter()
-            .filter(|(_, route)| state.document(route).is_err())
+            .filter(|(_, route)| !state.holds_document(route))
             .map(|(_, route)| route.clone())
             .collect();
         if !missing.is_empty() {
@@ -901,6 +904,34 @@ struct HeldPart {
     heads: Vec<[u8; 32]>,
 }
 
+impl HeldPart {
+    /// Merge what the part took since it was read, answering the notes that changed: only
+    /// they are read again, so a pass costs the notes that changed, never the part. `None`
+    /// when the change is the part whole (one read from the start: it was compacted), to be
+    /// read whole.
+    fn merge(
+        &mut self,
+        mutation: DocumentMutation,
+        heads: Vec<[u8; 32]>,
+    ) -> Result<Option<BTreeSet<String>>, String> {
+        let DocumentMutation::Incremental(change) = mutation else {
+            self.doc.reset_diff_cursor();
+            return Ok(None);
+        };
+        // The diff below reads the patches this merge logged; without the index it walks
+        // every operation of the part, so a note's edit would cost the part again.
+        self.doc.update_diff_cursor();
+        let before = self.doc.get_heads();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut self.doc, &change)
+            .map_err(|error| error.to_string())?;
+        let after = self.doc.get_heads();
+        let changed = pages_changed(&mut self.doc, &before, &after);
+        self.doc.update_diff_cursor();
+        self.heads = heads;
+        Ok(Some(changed))
+    }
+}
+
 /// What the host holds of a workspace's notes and the tree its folder is, between passes
 /// over them ([`Worker::project_notes`]): each part of the notes and the tree as it merged
 /// them last, where each note is kept and which notes are not shown, and which file is each
@@ -1025,19 +1056,19 @@ impl Followed {
             };
             match state.update(route, Some(&part.heads))? {
                 None => {}
-                Some((DocumentMutation::Incremental(change), heads)) => {
-                    let before = part.doc.get_heads();
-                    tilo_automerge::ApplyIncoming::load_incoming(&mut part.doc, &change)
-                        .map_err(|error| error.to_string())?;
-                    let after = part.doc.get_heads();
-                    let changed = pages_changed(&mut part.doc, &before, &after);
-                    part.heads = heads;
+                Some((mutation, heads)) => {
+                    let Some(changed) = part.merge(mutation, heads)? else {
+                        tracing::debug!(
+                            part = *index,
+                            "notes folder: a part reads back whole, so the notes are read whole again"
+                        );
+                        return Ok(None);
+                    };
                     for page in &changed {
                         moved |= self.replace(*index, page);
                     }
                     dirty.extend(changed);
                 }
-                Some((DocumentMutation::Snapshot(_), _)) => return Ok(None),
             }
         }
         if moved {
