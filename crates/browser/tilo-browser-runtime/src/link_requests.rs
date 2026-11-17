@@ -5,7 +5,7 @@
 //! the page's own desktop.
 
 use tilo_desktop_search::providers::settings::SETTINGS_ROOT;
-use tilo_session_core::notice::Place;
+use tilo_service::notice::Place;
 use ui::shell::SETTINGS_APP;
 
 /// Settings at the page `anchor` names, as search opens it: its window's

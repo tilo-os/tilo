@@ -21,6 +21,7 @@
 //! catalogue, one reader and one api over them.
 
 pub mod lines;
+pub mod notice;
 pub mod questions;
 mod worker;
 /// What a resource of a kind this crate publishes from outside a document is

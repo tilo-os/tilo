@@ -10,6 +10,8 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tilo-actions = { path = "../../collab/actions" }
+# The event sounds a notice makes, played where it is shown.
+settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 # The content store a service's documents keep their large parts in.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-content = { path = "../../system/content" }

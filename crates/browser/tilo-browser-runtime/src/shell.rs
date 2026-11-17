@@ -96,7 +96,7 @@ pub(crate) enum HostRequest {
     /// workspace's session open it there, as a mention's notice does. It never reaches the
     /// embedding page.
     #[serde(skip)]
-    ShowInApp(tilo_session_core::notice::Place),
+    ShowInApp(tilo_service::notice::Place),
     /// Show what `link` names in `app`, the app that claims its scheme, through its `open-link` on
     /// `resource`: the page has the workspace's session hand it the link, in the window it has or
     /// one it opens. It never reaches the embedding page.

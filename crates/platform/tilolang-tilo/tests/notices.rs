@@ -4,8 +4,8 @@
 
 use automerge::AutoCommit;
 use serde_json::{Map, Value as Json, json};
+use tilo_service::notice::{Closed, Notice};
 use tilo_service::{Service, Started};
-use tilo_session_core::notice::{Closed, Notice};
 use tilolang_runtime::{Actor, InvokeOutcome, Meta, Resolution, Value};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::meta::MetaExt as _;
@@ -97,7 +97,7 @@ impl Recorder {
     }
 }
 
-impl tilo_session_core::notice::Notices for Recorder {
+impl tilo_service::notice::Notices for Recorder {
     fn show(&self, notice: &Notice) {
         self.shown.borrow_mut().push(notice.clone());
     }
@@ -204,7 +204,7 @@ fn id_of(tag: &str) -> String {
 }
 
 /// Where choosing the notice lands, as the session makes it.
-fn place(notice: &Notice) -> ui::mentions::Place {
+fn place(notice: &Notice) -> tilo_service::notice::Place {
     notice.place.clone().expect("it opens what it names")
 }
 
@@ -622,7 +622,7 @@ fn what_a_notice_opens_resolves_from_another_device() {
     assert_eq!(place.app, TASKS_APP);
     assert_eq!(place.resource, call);
     assert_eq!(
-        ui::mentions::Place::from_activation(&place.activation()),
+        tilo_service::notice::Place::from_activation(&place.activation()),
         Some(place),
         "choosing it opens what it names"
     );
@@ -666,7 +666,7 @@ fn a_notice_from_an_app_with_its_own_documents_opens_the_persons_own() {
     );
     assert_eq!(place.resource, note.as_str());
     assert_eq!(
-        ui::mentions::Place::from_activation(&place.activation()),
+        tilo_service::notice::Place::from_activation(&place.activation()),
         Some(place)
     );
 }

@@ -181,8 +181,9 @@ pub fn desktop_offer_host_action(id: u64, offer: &str) -> Result<(), JsValue> {
                 .ask_personally(offer.action, offer.title, offer.body);
         } else {
             desktop.persistence.notifications.post(
-                tilo_session_core::notice::Notice::asks(&offer.action, offer.title, offer.body)
-                    .shown(),
+                tilo_desktop_surface::notifications::Notification::of_notice(
+                    &offer.action.ask(offer.title, offer.body),
+                ),
             );
         }
         m.window.request_redraw();

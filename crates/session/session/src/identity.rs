@@ -25,7 +25,7 @@ use tilo_desktop_surface::{DesktopHandle, HostAction};
 use tilo_files::native::Watched;
 use ui::local_identity::{LocalIdentity, LocalIdentitySource, RuntimeIdentity};
 
-use crate::platform::notice::{Notice, Notices};
+use crate::platform::notice::Notices;
 
 /// Who sits at this device, as the loop asks for it.
 #[derive(Clone)]
@@ -181,7 +181,7 @@ pub fn offer(
     if action.is_personal() {
         handle.ask_personally(action, title.into(), body.into());
     } else {
-        notices.show(&Notice::asks(&action, title, body));
+        notices.show(&action.ask(title, body));
     }
 }
 

@@ -27,8 +27,6 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilo-live = { path = "../../collab/tilo-live", features = ["live_session"] }
 # The undo log and the clock are the toolkit's shared, portable parts.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
-# The event sounds a notice makes, played by the host that shows it.
-settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 # A request another device answers, and the lock that holds what waits for it.
 # A place found by text whose search answers later says why when it places nothing: the person
 # typed it, so a refusal the row did not show is told.

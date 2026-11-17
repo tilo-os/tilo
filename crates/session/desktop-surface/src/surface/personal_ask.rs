@@ -33,6 +33,26 @@ impl HostAction {
     pub fn is_personal(&self) -> bool {
         self.source == Some(HostActionSource::Identity)
     }
+
+    /// The notice asking the person to do this action, telling in `body` what it is about: it
+    /// offers the action and "Not now", and stays until they answer it or put it off.
+    #[must_use]
+    pub fn ask(
+        &self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> tilo_service::notice::Notice {
+        tilo_service::notice::Notice::new(self.source_label(), 1, title, body)
+            .about(tilo_service::notice::NotificationIconKind::Permission)
+            .choosing(vec![
+                (self.key(), self.title.clone()),
+                (
+                    crate::notifications::NOT_NOW_ACTION.to_owned(),
+                    crate::i18n::t("notification-not-now"),
+                ),
+            ])
+            .staying(Some(std::time::Duration::ZERO))
+    }
 }
 
 impl DesktopHandle {

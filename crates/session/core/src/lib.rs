@@ -5,7 +5,6 @@
 //! removes the copy the other host kept, so the two run the same rules.
 
 pub mod layout;
-pub mod notice;
 pub mod presence;
 pub mod shell;
 pub mod super_tap;

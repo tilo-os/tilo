@@ -191,7 +191,7 @@ impl crate::browser::Desktop {
             self.requests
                 .borrow_mut()
                 .push(crate::shell::HostRequest::ShowInApp(
-                    tilo_session_core::notice::Place {
+                    tilo_service::notice::Place {
                         app,
                         resource: target.id.clone(),
                         anchor: target.id.clone(),

@@ -49,28 +49,15 @@ impl NotificationSeverity {
     }
 }
 
-/// What a notification is about, when the desktop itself knows: plain information leads with its
-/// glyph. `Generic` has none of its own, so the notification leads with its sender's mark, and with
-/// the system's bell when no app is named. `System` is the desktop's own notice about the machine,
-/// which leads with the same bell whoever raises it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum NotificationIconKind {
-    #[default]
-    Generic,
-    System,
-    Workspace,
-    Permission,
-}
+pub use tilo_service::notice::NotificationIconKind;
 
-impl NotificationIconKind {
-    /// The glyph this kind leads a card with.
-    pub fn icon(self) -> Option<ui::icons::Icon> {
-        match self {
-            Self::Generic => None,
-            Self::System => Some(ui::icons::Icon::Bell),
-            Self::Workspace => Some(ui::icons::Icon::LayoutGrid),
-            Self::Permission => Some(ui::icons::Icon::Fingerprint),
-        }
+/// The glyph a notification about `kind` of news leads its card with.
+fn kind_icon(kind: NotificationIconKind) -> Option<ui::icons::Icon> {
+    match kind {
+        NotificationIconKind::Generic => None,
+        NotificationIconKind::System => Some(ui::icons::Icon::Bell),
+        NotificationIconKind::Workspace => Some(ui::icons::Icon::LayoutGrid),
+        NotificationIconKind::Permission => Some(ui::icons::Icon::Fingerprint),
     }
 }
 
@@ -217,6 +204,24 @@ pub struct Notification {
 }
 
 impl Notification {
+    /// The row a desktop shows for `notice`, where it keeps the person's notifications on a layout
+    /// of its own: what choosing it does comes back through
+    /// [`Notices::take_chosen`](tilo_service::notice::Notices::take_chosen).
+    #[must_use]
+    pub fn of_notice(notice: &tilo_service::notice::Notice) -> Self {
+        let mut shown = Self::new(notice.title.clone(), notice.body.clone())
+            .stated(notice.urgency, notice.expires_after)
+            .with_icon_kind(notice.leading);
+        shown.actions.clone_from(&notice.actions);
+        if !notice.app.is_empty() {
+            shown.app_name = Some(notice.app.clone());
+        }
+        if notice.machine_wide {
+            shown = shown.machine_wide();
+        }
+        shown
+    }
+
     /// Default severity is `Info` , default dismiss window [`DEFAULT_DISMISS_AFTER`].
     pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
         Self {
@@ -371,9 +376,7 @@ impl Notification {
     /// one arrived with it, else the glyph for what the notification is about, else its sender's
     /// glyph, and the system's bell for a notification from no app. Never an empty leading gutter.
     pub fn mark(&self) -> ui::widget::toast::SenderMark<'_> {
-        let glyph = self
-            .icon_kind
-            .icon()
+        let glyph = kind_icon(self.icon_kind)
             .or_else(|| self.sender_glyph())
             .unwrap_or(ui::icons::Icon::Bell);
         ui::widget::toast::SenderMark::new(self.app_image.as_ref(), Some(glyph))

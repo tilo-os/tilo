@@ -7,8 +7,8 @@
 
 use automerge::AutoCommit;
 use serde_json::{Map, Value as Json, json};
+use tilo_service::notice::Notice;
 use tilo_service::{Service, Started};
-use tilo_session_core::notice::Notice;
 use tilolang::IdsLock;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value};
 use tilolang_tilo::host::Host;
@@ -326,7 +326,7 @@ fn tasks_root(service: &ResourceService) -> tilo_actions::ResourceId {
 #[derive(Default)]
 struct Told(std::rc::Rc<std::cell::RefCell<Vec<Notice>>>);
 
-impl tilo_session_core::notice::Notices for Told {
+impl tilo_service::notice::Notices for Told {
     fn show(&self, notice: &Notice) {
         self.0.borrow_mut().push(notice.clone());
     }

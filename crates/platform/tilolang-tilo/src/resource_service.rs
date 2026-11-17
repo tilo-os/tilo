@@ -74,7 +74,7 @@ pub struct ResourceService {
     /// ([`crate::notices::Notices`]).
     notices: crate::notices::Notices,
     /// Where they are shown: the session's notifications. Until it is set, nothing is shown.
-    tell: Option<Box<dyn tilo_session_core::notice::Notices>>,
+    tell: Option<Box<dyn tilo_service::notice::Notices>>,
     /// The places a resource's `open` asked the session for since [`Service::take_open`] last
     /// took them, each with the actor that asked: opening is the session's arranging step
     /// (`docs/designs/app-language/one-app-model.md` §3), never the document's change.
@@ -979,7 +979,7 @@ impl ResourceService {
 
     /// Where the notices the workspace holds for this device's person are shown: the session's
     /// notifications, the ones every app's notification goes through.
-    pub fn set_tell(&mut self, tell: impl tilo_session_core::notice::Notices + 'static) {
+    pub fn set_tell(&mut self, tell: impl tilo_service::notice::Notices + 'static) {
         self.tell = Some(Box::new(tell));
     }
 
@@ -1007,7 +1007,7 @@ impl ResourceService {
     }
 
     /// Mark seen the notices the person dismissed on this device since the last look: their
-    /// notification closed because they dismissed it ([`tilo_session_core::notice::Closed::Dismissed`]),
+    /// notification closed because they dismissed it ([`tilo_service::notice::Closed::Dismissed`]),
     /// not because it ran out or because another device of theirs saw it.
     fn dismissed(&mut self) {
         let Some(tell) = &self.tell else {
@@ -1016,7 +1016,7 @@ impl ResourceService {
         let ids: Vec<String> = tell
             .take_closed()
             .into_iter()
-            .filter(|(_, reason)| *reason == tilo_session_core::notice::Closed::Dismissed)
+            .filter(|(_, reason)| *reason == tilo_service::notice::Closed::Dismissed)
             .filter_map(|(tag, _)| self.notices.shown_as(&tag).map(str::to_owned))
             .collect();
         for id in ids {

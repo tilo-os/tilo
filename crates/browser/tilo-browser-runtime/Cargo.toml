@@ -198,6 +198,8 @@ deferred-page-layout = []
 deferred-page-search = []
 
 [dependencies]
+# What a notice says and where choosing it lands.
+tilo-service = { version = "0.1.0", path = "../../session/service" }
 # The host's endpoint address, as the page receives and dials it.
 iroh-base = { workspace = true }
 # Sorts without a copy of std's sort per call site, which kept the web

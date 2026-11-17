@@ -3,7 +3,7 @@
 //! A notice is a document of the host's `Notice` type, written by `notify` in the change that told
 //! the person ([`tilolang_runtime::notify`]). Every device of the workspace reads it like any
 //! document; this shows it to that notice's person, and to no one else's, as one
-//! [`tilo_session_core::notice::Notice`].
+//! [`tilo_service::notice::Notice`].
 //!
 //! What one device told is kept ([`Notices::kept`]) so a restart tells nothing twice, and what the
 //! document held when it first looked is old news ([`Notices::step`]): a document that reached it in a
@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tilo_session_core::notice::{Notice, Place};
+use tilo_service::notice::{Notice, Place};
 use tilolang::{
     HOST_APP, NOTICE_BODY, NOTICE_OPENS, NOTICE_SEEN, NOTICE_TITLE, NOTICE_TO, NOTICE_TYPE,
 };

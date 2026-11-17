@@ -1,19 +1,16 @@
 //! One notice a role tells the person, and where choosing it lands.
 //!
-//! A role that knows something the person should know — a mention of them in a record, a
-//! filesystem running out — tells it as one [`Notice`] through [`Notices`]. What a host does with
-//! it is the host's: the native session posts it to the person's notifications, the page hands it
-//! to the notifier its host serves. What the person chose comes back through the same boundary, so a
+//! A role that knows something the person should know — a mention of them in a document, a
+//! filesystem running out — tells it as one [`Notice`] through [`Notices`]. What the session does
+//! with it is its own: the native session posts it to the person's notifications, the page hands it
+//! to the notifier it is served. What the person chose comes back through the same boundary, so a
 //! role never reads a platform's notification log.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use settings_store::system_sounds::SystemSoundEvent;
-use tilo_desktop_surface::notifications::{NOT_NOW_ACTION, Notification, NotificationIconKind};
-use tilo_desktop_surface::surface::HostAction;
-
-pub use ui::mentions::{Place, SCHEME};
+use tilo_actions::MemberId;
 
 /// The name a notice that opens something offers that choice under.
 pub const OPEN_ACTION: &str = "open";
@@ -88,22 +85,6 @@ impl Notice {
         }
     }
 
-    /// The person is asked to do `action`, and told in `body` what it is about: it offers the
-    /// action and "Not now", and stays until they answer it or put it off.
-    #[must_use]
-    pub fn asks(action: &HostAction, title: impl Into<String>, body: impl Into<String>) -> Self {
-        Self::new(action.source_label(), 1, title, body)
-            .about(NotificationIconKind::Permission)
-            .choosing(vec![
-                (action.key(), action.title.clone()),
-                (
-                    NOT_NOW_ACTION.to_owned(),
-                    tilo_desktop_surface::i18n::t("notification-not-now"),
-                ),
-            ])
-            .staying(Some(Duration::ZERO))
-    }
-
     /// Told under `tag`, so a later telling of the same thing replaces it.
     #[must_use]
     pub fn tagged(mut self, tag: impl Into<String>) -> Self {
@@ -145,34 +126,19 @@ impl Notice {
         self.sound = Some(event);
         self
     }
+}
 
-    /// The notification a host's own notifier shows for it: what the person clicks carries the
-    /// place's activation.
-    #[must_use]
-    pub fn notification(&self) -> ui::notify::Notification {
-        let notification = ui::notify::Notification::new(&self.tag, &self.title, &self.body);
-        match &self.place {
-            Some(place) => notification.with_activation(place.activation()),
-            None => notification,
-        }
-    }
-
-    /// The row a host's own layout shows for it, where the host keeps the person's notifications on a
-    /// layout of its own: what choosing it does comes back through [`Notices::take_chosen`].
-    #[must_use]
-    pub fn shown(&self) -> Notification {
-        let mut shown = Notification::new(self.title.clone(), self.body.clone())
-            .stated(self.urgency, self.expires_after)
-            .with_icon_kind(self.leading);
-        shown.actions.clone_from(&self.actions);
-        if !self.app.is_empty() {
-            shown.app_name = Some(self.app.clone());
-        }
-        if self.machine_wide {
-            shown = shown.machine_wide();
-        }
-        shown
-    }
+/// What a notification is about, when the desktop itself knows: plain information leads with its
+/// glyph. `Generic` has none of its own, so the notification leads with its sender's mark, and with
+/// the system's bell when no app is named. `System` is the desktop's own notice about the machine,
+/// which leads with the same bell whoever raises it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum NotificationIconKind {
+    #[default]
+    Generic,
+    System,
+    Workspace,
+    Permission,
 }
 
 /// Why a notice the person was shown is gone.
@@ -209,4 +175,101 @@ pub trait Notices {
     fn take_closed(&self) -> Vec<(String, Closed)> {
         Vec::new()
     }
+}
+
+/// Where choosing a notice lands: the app keeping a record, the record, and the item in it, opened
+/// as a search hit is: the `open` of `resource`, told `anchor` as the item to show.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Place {
+    /// The app keeping the record, by package id.
+    pub app: String,
+    /// The record, as its route names it: empty for the app's own record of the workspace.
+    pub record: String,
+    /// The resource whose `open` shows the item, or empty for the record as a whole.
+    pub resource: String,
+    /// The item that `open` shows (`<kind>/<field>/<id>` for an item of a record), or empty for
+    /// the resource itself.
+    pub anchor: String,
+}
+
+/// The activation scheme a notice's [`Place`] is carried by: what a host that reports clicks hands back
+/// when the person chooses it.
+pub const SCHEME: &str = "tilo-mention";
+
+/// What the tag of a mention's notice starts with ([`Place::tag`]): how a host showing them knows which
+/// of its notifications are theirs.
+pub const TAGS: &str = "mention:";
+
+impl Place {
+    /// The activation URI a host carries the place by:
+    /// `tilo-mention:<app>?<record>#<resource>#<anchor>`, each part percent-encoded.
+    #[must_use]
+    pub fn activation(&self) -> String {
+        format!(
+            "{SCHEME}:{}?{}#{}#{}",
+            encode(&self.app),
+            encode(&self.record),
+            encode(&self.resource),
+            encode(&self.anchor)
+        )
+    }
+
+    /// The place an [`Self::activation`] names.
+    #[must_use]
+    pub fn from_activation(uri: &str) -> Option<Self> {
+        let rest = uri.strip_prefix(SCHEME)?.strip_prefix(':')?;
+        let (app, rest) = rest.split_once('?')?;
+        let (record, rest) = rest.split_once('#')?;
+        let (resource, anchor) = rest.split_once('#')?;
+        let place = Self {
+            app: decode(app)?,
+            record: decode(record)?,
+            resource: decode(resource)?,
+            anchor: decode(anchor)?,
+        };
+        (!place.app.is_empty()).then_some(place)
+    }
+
+    /// The tag a notice of this place for `person` goes by: the same on every device and window, so the
+    /// host shows it once.
+    #[must_use]
+    pub fn tag(&self, person: &MemberId) -> String {
+        format!(
+            "{TAGS}{}/{}/{}/{}/{}",
+            self.app,
+            self.record,
+            self.resource,
+            self.anchor,
+            person.id()
+        )
+    }
+}
+
+fn encode(part: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(part.len());
+    for byte in part.bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'/' | b':' | b'@')
+        {
+            out.push(char::from(byte));
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
+}
+
+fn decode(part: &str) -> Option<String> {
+    let mut out = Vec::with_capacity(part.len());
+    let mut bytes = part.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let hex = [bytes.next()?, bytes.next()?];
+            out.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+        } else {
+            out.push(byte);
+        }
+    }
+    String::from_utf8(out).ok()
 }
