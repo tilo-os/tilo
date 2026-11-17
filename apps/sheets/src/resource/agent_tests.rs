@@ -162,7 +162,7 @@ fn verbs_taking_a_sheet_take_its_name_and_refuse_one_the_workbook_lacks() {
         json!({"sheet": "Nowhere", "start": "A1", "rows": [[1]]}),
     );
     assert!(
-        refused.contains("no sheet `Nowhere`") && refused.contains("`Q3 sales`"),
+        refused.contains("no sheet named Nowhere") && refused.contains("Q3 sales"),
         "{refused}"
     );
 }
