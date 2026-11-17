@@ -30,7 +30,7 @@
 //! turn costs is counted on the agent's record, and an agent whose keeper's daily limit is
 //! reached stops and says so.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -38,8 +38,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage,
-    RemoteActionTarget,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
+    RemoteActionTarget, pending,
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
 use tilo_agent_session::model::PlanTurns;
@@ -57,9 +57,11 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
 use crate::workspace_bots::events::PersonEvents;
+use crate::workspace_bots::initiative::Initiative;
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{ModelRefusal, PersonModel, Spender};
 use tilo_actions::remote::person_events;
+use tilo_actions::remote::person_initiative;
 use turn_provider::TurnProvider;
 
 mod answers;
@@ -114,9 +116,12 @@ const ANSWER_WITH_VIEW: &str = "answer_with_view";
 pub struct WorkspaceActionProvider {
     actions: WorkspaceActions,
     workspace: WorkspaceId,
-    /// The events this host runs for its people, where it runs any: what an agent sets up, pauses,
-    /// changes and removes for the person its turn is for.
+    /// The events this device runs for its people, where it runs any: what an agent sets up,
+    /// pauses, changes and removes for the person its turn is for.
     events: Option<PersonEvents>,
+    /// What the people's assistants find to do on their own, where this server keeps it: the
+    /// look-round an agent reads, turns on and off for the person its turn is for.
+    initiative: Option<Initiative>,
     /// What this service answers itself for the one turn it serves, beside the workspace's
     /// resources ([`TurnProvider`]).
     own: Vec<Arc<dyn TurnProvider>>,
@@ -125,11 +130,62 @@ pub struct WorkspaceActionProvider {
     /// The one conversation a sub-agent's turn writes in, while this serves such a turn
     /// ([`sub_agents::admits`]).
     kept_to: Option<sub_agents::Own>,
+    /// What its own services answered, for a caller that follows an invocation.
+    answered: OwnAnswers,
+}
+
+/// What the services answered here have said, kept for whoever follows the invocation. They
+/// answer with the receipt alone and the workspace's actions never hear of it, while a turn's
+/// tools read how an invocation ended by observing it: without this an action that was carried
+/// out is told to the model as one still pending.
+#[derive(Clone, Default)]
+struct OwnAnswers(Arc<Mutex<VecDeque<(InvocationId, Caller, InvocationUpdate)>>>);
+
+impl OwnAnswers {
+    /// The most answers kept. A turn's tools observe an invocation as soon as it is admitted,
+    /// so only the newest are ever asked for.
+    const KEPT: usize = 64;
+
+    /// Keep how `receipt` says `caller`'s invocation ended. One that admitted nothing, or
+    /// says nothing of the end yet, leaves nothing to follow.
+    fn keep(&self, caller: &Caller, receipt: &InvocationReceipt) {
+        let invocation = receipt.invocation;
+        let update = match &receipt.status {
+            ReceiptStatus::Completed { output } => InvocationUpdate::Succeeded {
+                invocation,
+                output: output.clone(),
+            },
+            ReceiptStatus::Failed { error } => InvocationUpdate::Failed {
+                invocation,
+                error: error.clone(),
+            },
+            ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
+                invocation,
+                message: message.clone(),
+            },
+            ReceiptStatus::Rejected { .. } | ReceiptStatus::Accepted => return,
+        };
+        let mut kept = self.0.lock_recover();
+        if kept.len() >= Self::KEPT {
+            kept.pop_front();
+        }
+        kept.push_back((invocation, caller.clone(), update));
+    }
+
+    /// How invocation `id` ended, for the `caller` that made it and nobody else.
+    fn of(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.0
+            .lock_recover()
+            .iter()
+            .rev()
+            .find(|(invocation, by, _)| invocation == id && by == caller)
+            .map(|(_, _, update)| InvocationState::new(*id, update.clone()))
+    }
 }
 
 impl WorkspaceActionProvider {
     #[must_use]
-    pub const fn new(actions: WorkspaceActions, workspace: WorkspaceId) -> Self {
+    pub fn new(actions: WorkspaceActions, workspace: WorkspaceId) -> Self {
         Self {
             actions,
             workspace,
@@ -137,11 +193,21 @@ impl WorkspaceActionProvider {
             own: Vec::new(),
             ended: None,
             kept_to: None,
+            initiative: None,
+            answered: OwnAnswers::default(),
         }
     }
 
+    /// This service, answering also for `initiative`: the server's own actions on what a
+    /// person's assistant finds to do on its own.
+    #[must_use]
+    pub fn offering_initiative(mut self, initiative: Option<Initiative>) -> Self {
+        self.initiative = initiative;
+        self
+    }
+
     /// This host, answering also for `events`: the host's own actions on a person's scheduled
-    /// work and events, listed and taken beside the workspace's records.
+    /// work and events, listed and taken beside the workspace's resources.
     #[must_use]
     pub fn offering(mut self, events: Option<PersonEvents>) -> Self {
         self.events = events;
@@ -196,6 +262,16 @@ impl ActionProvider for WorkspaceActionProvider {
         {
             return Pending::ready(Ok(events.catalogue(self.workspace, caller, &query)));
         }
+        if let Some(initiative) = &self.initiative
+            && query.provider.as_deref() == Some(person_initiative::PROVIDER)
+        {
+            return Pending::ready(Ok(initiative.catalogue(self.workspace, caller, &query)));
+        }
+        let initiative = self
+            .initiative
+            .as_ref()
+            .filter(|_| query.provider.is_none())
+            .and_then(|initiative| initiative.provider(self.workspace, caller));
         // A listing of everything names the events' provider beside the records'.
         let events = self
             .events
@@ -235,6 +311,7 @@ impl ActionProvider for WorkspaceActionProvider {
             RemoteActionMessage::CatalogueResponse { result, .. } => result.map(|mut page| {
                 page.providers.extend(events);
                 page.providers.extend(offered);
+                page.providers.extend(initiative);
                 page
             }),
             _ => Err(unavailable()),
@@ -254,7 +331,25 @@ impl ActionProvider for WorkspaceActionProvider {
         if let Some(events) = &self.events
             && request.target.provider == person_events::PROVIDER
         {
-            return Pending::ready(Ok(events.invoke(self.workspace, caller, &request)));
+            let receipt = events.invoke(self.workspace, caller, &request);
+            self.answered.keep(caller, &receipt);
+            return Pending::ready(Ok(receipt));
+        }
+        if let Some(initiative) = &self.initiative
+            && request.target.provider == person_initiative::PROVIDER
+        {
+            // Kept whoever still waits: a tool that stopped waiting asks later how it went.
+            let (answered, by) = (self.answered.clone(), caller.clone());
+            let (completer, answer) = pending();
+            initiative
+                .invoking(self.workspace, caller, request)
+                .then(move |receipt| {
+                    if let Some(receipt) = receipt {
+                        answered.keep(&by, &receipt);
+                        completer.complete(Ok(receipt));
+                    }
+                });
+            return answer;
         }
         if let Some(own) = self.own.iter().find(|own| own.takes(&request.target))
             && let Some(ended) = &self.ended
@@ -275,6 +370,7 @@ impl ActionProvider for WorkspaceActionProvider {
             .as_ref()
             .and_then(|ended| ended.of(id))
             .or_else(|| self.actions.observe(caller, id))
+            .or_else(|| self.answered.of(caller, id))
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
@@ -292,6 +388,9 @@ impl ActionProvider for WorkspaceActionProvider {
     }
 }
 
+/// What a search answers with, when it has.
+type Searched = Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError>>;
+
 /// What a turn on this server finds in what its workspace holds.
 ///
 /// The workspace's action service searches what the workspace holds for every device that asks
@@ -300,18 +399,26 @@ impl ActionProvider for WorkspaceActionProvider {
 /// same service the same question, as the caller its tools act as: the person's session,
 /// handed to the agent on that turn with the rules the turn is decided by. So a turn finds what
 /// that caller may read and nothing else, decided where every other caller's search is decided,
-/// and nothing is searched a second way here.
+/// and nothing is searched a second way here. Narrowed to a
+/// conversation or to a stretch of time ([`tilo_actions::remote::Within`]) it is the same
+/// question still.
 impl tilo_actions::remote::ResourceSearch for WorkspaceActionProvider {
-    fn find(
+    fn find(&self, caller: &Caller, needle: &str) -> Searched {
+        self.find_within(caller, needle, &tilo_actions::remote::Within::default())
+    }
+
+    fn find_within(
         &self,
         caller: &Caller,
         needle: &str,
-    ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError>> {
+        within: &tilo_actions::remote::Within,
+    ) -> Searched {
         self.serve(
             caller,
             RemoteActionMessage::SearchRequest {
                 correlation: 0,
                 needle: needle.to_owned(),
+                within: within.clone(),
             },
         )
         .map(|answer| match answer {
@@ -402,6 +509,8 @@ pub struct HostAgents {
     events: Option<PersonEvents>,
     /// What carries out the answers to what code of this server asked.
     carriers: asks::Carriers,
+    /// What the people's assistants find to do on their own, which a turn's tools reach too.
+    initiative: Option<Initiative>,
 }
 
 impl HostAgents {
@@ -414,11 +523,20 @@ impl HostAgents {
             going: Arc::default(),
             events: None,
             carriers: Arc::default(),
+            initiative: None,
         };
         // What a turn asks its person is put to them in its conversation.
         agents.ask_in_conversations();
         agents.carry_sends();
         agents
+    }
+
+    /// These agents, whose turns reach `initiative`: an agent reads its person's look-round and
+    /// turns it on and off through the server's own actions.
+    #[must_use]
+    pub fn with_initiative(mut self, initiative: Option<Initiative>) -> Self {
+        self.initiative = initiative;
+        self
     }
 
     /// These agents, whose turns reach `events`: an agent sets its person's scheduled work and
@@ -814,6 +932,7 @@ impl HostAgents {
         let mut scope = TurnScope {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone())
+                .offering_initiative(self.initiative.clone())
                 .keeping_to(self.own_of(workspace, turn).await),
             person: Caller::authenticated(person, device).in_workspace(workspace),
             workspace: workspace.to_owned(),
@@ -978,7 +1097,8 @@ impl HostAgents {
             .map(|keeper| {
                 // Every call is counted on the agent's day as it is answered, so turns of
                 // one agent going at once cannot each spend the day's whole limit.
-                self.workspaces
+                let theirs = self
+                    .workspaces
                     .person_model(keeper, sub_agents::kind_of(&turn.agent))
                     .working_in(workspace_id)
                     .spending_as(Spender {
@@ -987,7 +1107,21 @@ impl HostAgents {
                         name: sub_agents::payer(turn).name.clone(),
                         day: day.to_owned(),
                         limit_micros: sub_agents::payer(turn).spend_limit_micros,
-                    })
+                    });
+                // A turn a look of its person's look-round started counts on the
+                // look-round's own day as well, and stops where that day's limit is reached.
+                let look_round = self.initiative.as_ref().and_then(|initiative| {
+                    initiative.day_of_turn(
+                        &workspace_id.to_string(),
+                        &turn.person,
+                        &turn.cause,
+                        day,
+                    )
+                });
+                match look_round {
+                    Some(look_round) => theirs.spending_as(look_round),
+                    None => theirs,
+                }
             });
         let linked = match theirs {
             Some(theirs) => {

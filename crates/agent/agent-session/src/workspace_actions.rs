@@ -185,6 +185,7 @@ enum Job {
         workspace_id: WorkspaceId,
         caller: Caller,
         needle: String,
+        within: tilo_actions::remote::Within,
         done: Completer<Result<Vec<tilo_actions::remote::Found>, ActionCallError>>,
     },
     /// The changes to a workspace's records after a cursor.
@@ -612,12 +613,14 @@ impl WorkspaceActions {
             RemoteActionMessage::SearchRequest {
                 correlation,
                 needle,
+                within,
             } => {
                 let (done, answer) = pending();
                 let job = Job::Search {
                     workspace_id,
                     caller: caller.clone(),
                     needle,
+                    within,
                     done,
                 };
                 if let Err(Job::Search { done, .. }) = self.submit(job) {
@@ -1793,8 +1796,9 @@ impl Worker {
                     workspace_id,
                     caller,
                     needle,
+                    within,
                     done,
-                } => done.complete(self.search(workspace_id, &caller, &needle)),
+                } => done.complete(self.search(workspace_id, &caller, (&needle, &within))),
                 Job::Changes {
                     workspace_id,
                     caller,

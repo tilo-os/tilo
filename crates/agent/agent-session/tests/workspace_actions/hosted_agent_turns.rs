@@ -6,7 +6,10 @@ use std::sync::Mutex;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
 };
-use tilo_server::workspace_agents::{HostAgents, Model};
+use tilo_server::{
+    workspace_agents::{HostAgents, Model},
+    workspace_bots::events::PersonEvents,
+};
 use ui::tilo_resource::{Id, Resource as _};
 use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
@@ -263,11 +266,11 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
         )
         .unwrap();
 
-    let hosts = Arc::new(Mutex::new(Vec::new()));
+    let unasked = Arc::new(Mutex::new(Vec::new()));
     let agents = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
-        Some(never_asked(Arc::clone(&hosts))),
+        Some(never_asked(Arc::clone(&unasked))),
     );
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
@@ -280,7 +283,7 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     .unwrap();
 
     assert!(
-        hosts.lock().unwrap().is_empty(),
+        unasked.lock().unwrap().is_empty(),
         "the host's own model is not asked for a keeper who linked theirs"
     );
     let asked = theirs.asked();
@@ -404,14 +407,17 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
             true,
         )
         .unwrap();
-    let hosts = Arc::new(Mutex::new(Vec::new()));
+    let unasked = Arc::new(Mutex::new(Vec::new()));
     let agents = HostAgents::new(
         workspaces.clone(),
         actions,
-        Some(never_asked(Arc::clone(&hosts))),
+        Some(never_asked(Arc::clone(&unasked))),
     );
     agents.answer(&workspace, &turns[0]).await.unwrap();
-    assert!(hosts.lock().unwrap().is_empty(), "no other model is asked");
+    assert!(
+        unasked.lock().unwrap().is_empty(),
+        "no other model is asked"
+    );
     let told = said(tracker(&workspaces, &workspace, &tasks_record).await);
     assert!(
         told.iter()
@@ -955,7 +961,7 @@ async fn long_notes(
 /// stood. The question goes to the keeper's own model once they linked one, and is counted on
 /// the agent's day as its turns are.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
+async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     use tilo_server::workspaces::person_model::ProviderProtocol;
     use tilo_server::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
 
@@ -1007,8 +1013,8 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
 
     // The keeper linked nothing yet, so the server's model answers the turn, and the summary's
     // question is asked as the turn was.
-    let hosts = Arc::new(Mutex::new(Vec::new()));
-    let asked = Arc::clone(&hosts);
+    let unasked = Arc::new(Mutex::new(Vec::new()));
+    let asked = Arc::clone(&unasked);
     let agents = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
@@ -1063,7 +1069,7 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
         reply.work
     );
     {
-        let calls = hosts.lock().unwrap();
+        let calls = unasked.lock().unwrap();
         assert_eq!(calls.len(), 2, "one call answers, one summarises");
         assert!(calls[1].tools.is_empty(), "a summary is words, no tools");
         assert!(
@@ -1165,7 +1171,7 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
         "a summary is words, no tools"
     );
     assert_eq!(
-        hosts.lock().unwrap().len(),
+        unasked.lock().unwrap().len(),
         2,
         "the host's model is not asked once the keeper linked their own"
     );
@@ -1216,6 +1222,149 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
     page.peer.close();
 }
 
+/// A model that takes each of `calls` in turn through `tilo_do`, the tool its turn has for an
+/// action, and then says `said`.
+fn does_then_answers(
+    calls: Vec<serde_json::Value>,
+    said: &'static str,
+    asked: Arc<Mutex<Vec<ModelRequest>>>,
+) -> Model {
+    Arc::new(move || {
+        let mut answers: Vec<ModelResponse> = calls
+            .iter()
+            .enumerate()
+            .map(|(at, call)| {
+                answer(
+                    vec![Content::ToolCall(ToolCall {
+                        id: format!("call-{}", at + 1),
+                        name: "tilo_do".into(),
+                        input: call.clone(),
+                        extra_content: None,
+                    })],
+                    StopReason::ToolCalls,
+                    1_000,
+                )
+            })
+            .collect();
+        answers.push(answer(
+            vec![Content::Text { text: said.into() }],
+            StopReason::EndTurn,
+            1_000,
+        ));
+        Some(Box::new(Scripted {
+            answers,
+            asked: Arc::clone(&asked),
+        }) as Box<dyn tilo_agent_session::model::PlanTurns>)
+    })
+}
+
+/// What the turn's tools answered the model's call `call`, as the request after it carries it:
+/// the words, and whether they were told as a failure.
+fn answered_to(request: &ModelRequest, call: &str) -> (String, bool) {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .find_map(|content| match content {
+            Content::ToolResult(result) if result.call_id == call => {
+                Some((result.content.clone(), result.is_error))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the model was answered nothing for {call}: {request:?}"))
+}
+
+/// What a person's events answer reaches the model of a turn. An action of theirs is answered
+/// with its receipt alone, while the tools a turn has read how an invocation ended by following
+/// it: the assistant sets an event up and then lists its person's events, both through
+/// `tilo_do`, and is told what each answered, not that it is still pending.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (served, actions) = crate::harness::hosted::serving_records_with_actions(
+        &root,
+        &server,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    let workspaces = served.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&served, &browser, &server, &workspace).await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    // The workspace as a person has it: their agent made to work here, and the chat with them
+    // in it.
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    let catalogue = crate::common::catalogue();
+    let governor = workspaces.governor().clone();
+    workspaces
+        .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
+        .await
+        .unwrap();
+    let events = PersonEvents::start(workspaces.clone(), state.path().join("events"), None);
+
+    write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        (&root, &browser),
+        "Remind me every morning to call home.",
+    )
+    .await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = HostAgents::new(
+        workspaces.clone(),
+        actions.clone(),
+        Some(does_then_answers(
+            vec![
+                serde_json::json!({
+                    "path": "tilo.events/events#set-up",
+                    "args": {
+                        "name": "Call home",
+                        "when": "every day at 09:00",
+                        "instruction": "Say that it is time to call home.",
+                    },
+                }),
+                serde_json::json!({"path": "tilo.events/events#list"}),
+            ],
+            "You will be reminded every morning.",
+            Arc::clone(&asked),
+        )),
+    )
+    .with_events(Some(events));
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        agents.answer(&workspace, &turns[0]),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the turn never ended; the model was asked {:?} times",
+            asked.lock().unwrap().len()
+        )
+    })
+    .unwrap();
+
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 3, "two tool calls, then what each answered");
+    let (set_up, failed) = answered_to(&asked[1], "call-1");
+    assert!(
+        !failed && set_up.starts_with("ok"),
+        "what setting the event up answered the model: {set_up}"
+    );
+    // Taken after: the event is one of its person's now.
+    let (listed, failed) = answered_to(&asked[2], "call-2");
+    assert!(
+        !failed && listed.starts_with("ok") && listed.contains("Call home"),
+        "what the person's events answered the model: {listed}"
+    );
+}
+
 /// What a turn finds by words in what its workspace holds.
 #[path = "hosted_search.rs"]
 mod search;
@@ -1227,3 +1376,7 @@ mod asks;
 /// A turn that answers with a view it wrote.
 #[path = "hosted_agent_views.rs"]
 mod views;
+
+#[cfg(test)]
+#[path = "hosted_initiative.rs"]
+mod hosted_initiative;

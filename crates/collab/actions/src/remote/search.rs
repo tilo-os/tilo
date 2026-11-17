@@ -10,24 +10,25 @@
 //! desktop the one search it runs — the palette, text typed on the canvas
 //! and an agent's `find` — and on a provider with no desktop its ranking of the
 //! records it holds. Its results are the ranking's own, best first, each
-//! naming the resource a caller addresses.
+//! naming the resource a caller addresses. A search may be narrowed to where
+//! a thing was said and when ([`Within`]).
 
 use super::{ActionCallError, ActionProvider, Caller, Pending, RemoteActionMessage};
 
-/// What `needle` finds in `caller`'s workspace, by `provider`'s own search,
+/// What `needle` finds in `caller`'s workspace, narrowed to `within`, by `provider`'s own search,
 /// answered for `correlation` ([`ActionProvider::resource_search`]).
 pub(super) fn searched<H: ActionProvider>(
     provider: &H,
     caller: &Caller,
     correlation: u64,
-    needle: &str,
+    (needle, within): (&str, &Within),
 ) -> Pending<RemoteActionMessage> {
     let respond = move |result| RemoteActionMessage::SearchResponse {
         correlation,
         result,
     };
     match provider.resource_search() {
-        Some(search) => search.find(caller, needle).map(respond),
+        Some(search) => search.find_within(caller, needle, within).map(respond),
         None => Pending::ready(respond(Err(ActionCallError::Unavailable {
             reason: "this provider holds no records to search".into(),
         }))),
@@ -62,12 +63,91 @@ pub struct Found {
     /// same id, and only this says which record a result is of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// When it was said or happened, in seconds since the Unix epoch, where what its app tells
+    /// search says so (a message: when it was written).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<i64>,
 }
 
 /// The kind of a result that is a file of the workspace's folder: its
 /// [`Found::resource`] is the file's path there (`legal/contract.txt`), which
 /// a computer that logged in has below the workspace's folder.
 pub const FOUND_FILE: &str = "file";
+
+/// What a search that cannot be narrowed answers one that asks it to.
+pub const NOT_NARROWED: &str =
+    "this search cannot be narrowed to a conversation or a time: search by words alone";
+
+/// What a search is narrowed to, beside its words: where a thing was said or is kept, and
+/// when. Empty, it narrows nothing.
+///
+/// What an app tells search about a resource says both, where it has them (a message: the
+/// conversation it is in and when it was written). So a search narrowed to one conversation or
+/// to last week is answered from what search already holds, and nothing is read through for
+/// it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Within {
+    /// Where: what a result is placed in (a conversation), by its published id or by the id it
+    /// goes by among its kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
+    /// From this moment on, in seconds since the Unix epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<i64>,
+    /// Before this moment, in seconds since the Unix epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<i64>,
+}
+
+impl Within {
+    /// Whether it narrows nothing.
+    #[must_use]
+    pub const fn is_everything(&self) -> bool {
+        self.place.is_none() && !self.is_timed()
+    }
+
+    /// Whether it narrows to a stretch of time.
+    #[must_use]
+    pub const fn is_timed(&self) -> bool {
+        self.after.is_some() || self.before.is_some()
+    }
+
+    /// Whether something placed at `place` (the published id of where it is, and the id that
+    /// goes by) at `when` is inside it. What names no place is outside a search narrowed to
+    /// one, and what names no time outside a search narrowed to a stretch of it.
+    #[must_use]
+    pub fn holds(&self, place: Option<(&str, &str)>, when: Option<i64>) -> bool {
+        let placed = self.place.as_deref().is_none_or(|wanted| {
+            place.is_some_and(|(published, known)| wanted == published || wanted == known)
+        });
+        let timed = !self.is_timed()
+            || when.is_some_and(|when| {
+                self.after.is_none_or(|after| when >= after)
+                    && self.before.is_none_or(|before| when < before)
+            });
+        placed && timed
+    }
+
+    /// The moment `text` names, in seconds since the Unix epoch: a day (`2026-11-10`, its first
+    /// second in UTC) or a moment with its offset (`2026-11-10T14:00:00Z`).
+    #[must_use]
+    pub fn moment(text: &str) -> Option<i64> {
+        let text = text.trim();
+        if let Ok(moment) = chrono::DateTime::parse_from_rfc3339(text) {
+            return Some(moment.timestamp());
+        }
+        let day = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()?;
+        Some(day.and_hms_opt(0, 0, 0)?.and_utc().timestamp())
+    }
+
+    /// How the moment `when` reads in an answer, as [`Self::moment`] reads it back:
+    /// `2026-11-10T14:02:00Z`.
+    #[must_use]
+    pub fn said_at(when: i64) -> Option<String> {
+        chrono::DateTime::from_timestamp(when, 0)
+            .map(|moment| moment.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+    }
+}
 
 /// A provider's search of what its workspace holds, as it offers it to a caller
 /// who asks by words. A desktop answers with its one search, the palette's
@@ -88,6 +168,26 @@ pub trait ResourceSearch: Send + Sync {
         caller: &super::Caller,
         needle: &str,
     ) -> super::Pending<Result<Vec<Found>, ActionCallError>>;
+
+    /// [`Self::find`] narrowed to `within`. A search that cannot narrow says so
+    /// ([`NOT_NARROWED`]) and never answers with everything instead: what is asked of last week
+    /// is not answered with all time.
+    ///
+    /// # Errors
+    /// As [`Self::find`], and where this search cannot be narrowed.
+    fn find_within(
+        &self,
+        caller: &super::Caller,
+        needle: &str,
+        within: &Within,
+    ) -> super::Pending<Result<Vec<Found>, ActionCallError>> {
+        if within.is_everything() {
+            return self.find(caller, needle);
+        }
+        super::Pending::ready(Err(ActionCallError::Unavailable {
+            reason: NOT_NARROWED.into(),
+        }))
+    }
 }
 
 /// The stem an English word is matched by: its plural, its participle and
@@ -145,7 +245,43 @@ fn doubles_its_last_letter(stem: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::stem_word;
+    use super::{Within, stem_word};
+
+    #[test]
+    fn a_search_is_narrowed_by_where_a_thing_is_and_when() {
+        let conversation = ("pad/threads/t1", "t1");
+        let last_week = Within {
+            place: Some("pad/threads/t1".into()),
+            after: Within::moment("2026-11-10"),
+            before: Within::moment("2026-11-17T00:00:00Z"),
+        };
+        assert_eq!(last_week.after, Some(1_794_268_800));
+        let inside = Within::moment("2026-11-12T09:30:00+01:00");
+        assert!(last_week.holds(Some(conversation), inside));
+        // By the id the place goes by, too.
+        let by_id = Within {
+            place: Some("t1".into()),
+            ..Within::default()
+        };
+        assert!(by_id.holds(Some(conversation), None));
+        // The stretch holds its first second and not its last.
+        assert!(last_week.holds(Some(conversation), last_week.after));
+        assert!(!last_week.holds(Some(conversation), last_week.before));
+        // Elsewhere, earlier, and what says neither where nor when.
+        assert!(!last_week.holds(Some(("pad/threads/t2", "t2")), inside));
+        assert!(!last_week.holds(Some(conversation), Within::moment("2026-11-09")));
+        assert!(!last_week.holds(None, inside));
+        assert!(!last_week.holds(Some(conversation), None));
+        // Nothing narrows nothing.
+        assert!(Within::default().is_everything() && Within::default().holds(None, None));
+        assert!(!last_week.is_everything());
+        // A moment reads back as it is written, and words that name none name none.
+        assert_eq!(
+            Within::said_at(1_794_268_800).as_deref(),
+            Some("2026-11-10T00:00:00Z")
+        );
+        assert_eq!(Within::moment("next week"), None);
+    }
 
     #[test]
     fn a_stem_undoes_an_inflection_and_nothing_else() {

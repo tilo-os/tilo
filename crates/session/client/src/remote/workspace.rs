@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use tilo_actions::remote::{
     ActionCallError, Caller, ChangeFeed, ChangePage, Found, Pending, RemoteActionMessage,
-    ResourceSearch, pending,
+    ResourceSearch, Within, pending,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -20,13 +20,23 @@ pub(super) struct SessionSearch(pub(super) SessionActions);
 pub(super) struct SessionChanges(pub(super) SessionActions);
 
 impl ResourceSearch for SessionSearch {
-    fn find(&self, _caller: &Caller, needle: &str) -> Pending<Result<Vec<Found>, ActionCallError>> {
-        let needle = needle.to_owned();
+    fn find(&self, caller: &Caller, needle: &str) -> Pending<Result<Vec<Found>, ActionCallError>> {
+        self.find_within(caller, needle, &Within::default())
+    }
+
+    fn find_within(
+        &self,
+        _caller: &Caller,
+        needle: &str,
+        within: &Within,
+    ) -> Pending<Result<Vec<Found>, ActionCallError>> {
+        let (needle, within) = (needle.to_owned(), within.clone());
         self.0.ask(
             |waiting| &mut waiting.searches,
             move |correlation| RemoteActionMessage::SearchRequest {
                 correlation,
                 needle,
+                within,
             },
         )
     }

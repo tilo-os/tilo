@@ -20,6 +20,7 @@ use tilo_agent_session::bot::host_steps::{
 
 /// A person's events through the host's own actions.
 mod events;
+mod initiative;
 /// The host's own answers for the programs it runs for a person.
 mod judging;
 /// A program's triggers at a time its person's calendars hold.
@@ -52,7 +53,7 @@ pub(super) async fn bot_host(
 
 /// The same host run on a device that takes part in its workspaces' channels,
 /// as a server whose device owns workspaces does.
-async fn bot_host_taking_part(
+async fn bot_server_taking_part(
     state: &std::path::Path,
     key: &ed25519_dalek::SigningKey,
     cert: &DeviceCert,
@@ -118,7 +119,7 @@ fn texts_by(posts: &[chat::chat::Message], person: [u8; 32]) -> Vec<String> {
         .collect()
 }
 
-/// The chat's first part of messages, as a record of the workspace.
+/// The chat's first part of messages, as a document of the workspace.
 fn first_part() -> String {
     chat::parts::part(0).as_str().to_owned()
 }
@@ -1784,7 +1785,7 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("greeter.json");
-    // Its answer goes to a channel the chat does not have.
+    // Its answer goes to a conversation the chat does not have.
     let start = || {
         member_runner(
             &workspaces,
@@ -2201,7 +2202,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     let (key, cert) = crate::workspaces::fixtures::governor_with(
         tilo_user_identity::DeviceCapabilities::member(),
     );
-    let server = bot_host_taking_part(scratch.path(), &key, &cert).await;
+    let server = bot_server_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let (guest, guest_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
@@ -2505,7 +2506,7 @@ pub(super) fn discord_bridge() -> installed::InstalledBot {
     }
 }
 
-/// The workspace's Chat categories by name, each with its channels' names.
+/// The workspace's Chat categories by name, each with its conversations' names.
 async fn chat_layout(workspaces: &Workspaces, workspace: &str) -> Vec<(String, Vec<String>)> {
     let record = workspace_resource(&AppCatalogue::native(), CHAT);
     let saved = workspaces

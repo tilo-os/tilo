@@ -118,6 +118,7 @@ impl Host {
             arguments: serde_json::Map::new(),
             app: Some("so.tilo.notes".into()),
             provider: None,
+            when: None,
         }]));
     }
 }

@@ -19,11 +19,16 @@
 //!   agent by the person it acts for ([`placed_for`]);
 //! - the files of the workspace's folder only where it may read what the Files app keeps.
 //!
+//! A search may be narrowed to where a thing was said and when ([`Within`]). What an app tells
+//! search of a resource says both, where it has them (a message: its conversation and when it
+//! was written), so only those entries are ranked, and with no words they are listed, the
+//! newest first. What says neither, and the files, are outside a narrowed search.
+//!
 //! Each hit is then answered as the resource the caller's listing names it by, asked through the
 //! same catalogue a listing reads, so a caller acts on a hit by the path it lists: the note, not
 //! the notebook it is in.
 
-use tilo_actions::remote::{ChangePage, Found};
+use tilo_actions::remote::{ChangePage, Found, Within};
 use ui::history_source::feed::DocumentKey;
 use ui::search::index_publication::IndexEntry;
 
@@ -72,6 +77,15 @@ fn placed_for(person: &ui::permissions::policy::PersonId, entry: &IndexEntry) ->
         .is_none_or(|members| members.contains(&ui::permissions::MemberId::Person(person.clone())))
 }
 
+/// Whether `entry` is inside what a search is narrowed to: where its app says it is, and when.
+fn inside(within: &Within, entry: &IndexEntry) -> bool {
+    let place = entry
+        .place
+        .as_ref()
+        .map(|place| (place.anchor.as_str(), place.identity.as_str()));
+    within.holds(place, entry.when)
+}
+
 /// Where the workspace decides the item `resource` names as `<kind>/<field>/<item>` in the
 /// resource at `route`: what a grant on that item alone names. `None` for an id of another
 /// shape, which no such grant names.
@@ -94,7 +108,7 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        needle: &str,
+        (needle, within): (&str, &Within),
     ) -> Result<Vec<Found>, ActionCallError> {
         if !self.admits_member(workspace_id, caller) {
             return Err(ActionCallError::NotPermitted);
@@ -118,14 +132,30 @@ impl Worker {
             })
             .take(crate::search::MOST_SEARCHED)
             .collect();
-        let (docs, searched) = self.searchable(workspace_id, &routes, &person);
-        let hits = crate::search::search(&docs, needle, None, docs.len());
+        let (docs, searched) = self.searchable(workspace_id, &routes, (&person, within));
+        // Words rank what holds them. With no words, a search narrowed to a place or a time
+        // lists what it holds there, the newest first, and one narrowed to nothing finds
+        // nothing.
+        let ranked: Vec<usize> = if !needle.trim().is_empty() {
+            crate::search::search(&docs, needle, None, docs.len())
+                .into_iter()
+                .map(|hit| hit.index)
+                .collect()
+        } else if within.is_everything() {
+            Vec::new()
+        } else {
+            let mut newest: Vec<usize> = (0..docs.len()).collect();
+            newest.sort_by_key(|at| {
+                std::cmp::Reverse(searched.get(*at).and_then(|entry| entry.as_ref()?.when))
+            });
+            newest
+        };
         let mut found: Vec<Found> = Vec::new();
-        for hit in hits {
+        for at in ranked {
             if found.len() >= MOST_FOUND {
                 break;
             }
-            let (Some(doc), Some(what)) = (docs.get(hit.index), searched.get(hit.index)) else {
+            let (Some(doc), Some(what)) = (docs.get(at), searched.get(at)) else {
                 continue;
             };
             let resource = match what {
@@ -140,7 +170,7 @@ impl Worker {
         }
         // And the files of the workspace's folder, by their paths there, for a caller who may
         // read them.
-        if self.reads_files(workspace_id, who.as_ref(), &cluster_id) {
+        if within.is_everything() && self.reads_files(workspace_id, who.as_ref(), &cluster_id) {
             found.extend(self.found_files(workspace_id, &cluster_id, needle, MOST_FOUND));
         }
         Ok(found)
@@ -194,7 +224,7 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         routes: &[(DocumentRoute, Readable)],
-        person: &ui::permissions::policy::PersonId,
+        (person, within): (&ui::permissions::policy::PersonId, &Within),
     ) -> (Vec<crate::search::SearchDoc>, Vec<Option<IndexEntry>>) {
         let mut docs = Vec::new();
         let mut searched = Vec::new();
@@ -220,7 +250,10 @@ impl Worker {
             };
             let entries = entries.unwrap_or_default();
             for entry in entries.iter() {
-                if !readable.reads(route, &entry.resource) || !placed_for(person, entry) {
+                if !readable.reads(route, &entry.resource)
+                    || !placed_for(person, entry)
+                    || !inside(within, entry)
+                {
                     continue;
                 }
                 let text = entry
@@ -241,7 +274,10 @@ impl Worker {
             }
             // What its app tells search nothing about is ranked whole, so only for a caller
             // who may read all of it.
-            if !entries.is_empty() || !matches!(readable, Readable::Whole) {
+            if !entries.is_empty()
+                || !matches!(readable, Readable::Whole)
+                || !within.is_everything()
+            {
                 continue;
             }
             let text = if let Some(records) = records.as_deref_mut() {
@@ -306,6 +342,7 @@ impl Worker {
                     arguments: serde_json::Map::new(),
                     app: Some(route.app_id.clone()),
                     provider: Some(record_provider(route)),
+                    when: entry.when,
                 });
             }
         }
@@ -335,6 +372,7 @@ impl Worker {
             arguments: serde_json::Map::new(),
             app: Some(route.app_id.clone()),
             provider: Some(record_provider(route)),
+            when: None,
         })
     }
 
