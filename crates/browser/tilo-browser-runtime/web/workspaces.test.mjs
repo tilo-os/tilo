@@ -617,6 +617,7 @@ test('a paired device is kept as its person and reconnects as them, never as a p
   const codes = [];
   await pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, invite: '0f'.repeat(16), listed: commons,
     displayName: 'Ada', memberships: options.memberships, onPairingCode: code => codes.push(code),
+    findProfile: async () => null, agree: async () => true,
     pair: async pairing => { calls.connected.push(pairing); knock(pairing); return {workspace: 'WORKSPACE'}; }});
   const paired = calls.connected[0];
   assert.equal(paired.userPublicKey, person);
@@ -968,8 +969,10 @@ test('a browser is not paired to the person it already is: the link is refused i
   const before = store.get(KEY);
   const link = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person.userPublicKey, invite: '0f'.repeat(16), listed: commons,
     memberships: options.memberships, onPairingCode: () => assert.fail('no code is shown: no host was asked'),
+    findProfile: async () => null,
     pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }};
-  const refused = await pairViaHost({...link, holds: person.userPublicKey}).then(() => null, error => error);
+  const refused = await pairViaHost({...link, holds: person.userPublicKey, agree: () => assert.fail('nobody is asked whose device this becomes: it is its own person’s already')})
+    .then(() => null, error => error);
   assert.equal(store.get(KEY), before, 'what this browser keeps of the host is as it was: it is not marked paired');
   assert.deepEqual(calls.paired, [], 'the host is asked nothing, so the link is not spent and nobody is asked to approve');
   assert.equal(refused?.name, 'HostAdmissionError');
@@ -981,7 +984,7 @@ test('a browser is not paired to the person it already is: the link is refused i
   for (const holds of [identity(0x44).userPublicKey, null]) {
     store.delete(KEY);
     calls.paired.length = 0;
-    await pairViaHost({...link, holds, onPairingCode: () => {}});
+    await pairViaHost({...link, holds, onPairingCode: () => {}, agree: async () => true});
     assert.equal(calls.paired.length, 1, String(holds));
     assert.equal(keptMembership(commons, {getItem: key => store.get(key)}).paired, true, String(holds));
   }
@@ -1018,4 +1021,84 @@ test('a browser that was paired to its own person is its own person again; a dev
   assert.deepEqual(await unmarkOwnPairing(keeps(person),
     {getItem: () => plain, setItem: () => assert.fail('nothing to change')}), []);
   assert.equal(asked, 0);
+});
+
+/** A host that answers what it keeps of a person's profile, and keeps what it was asked. */
+const profileHost = (asked, kept) => async (url, init) => {
+  asked.push({url: String(url), body: init?.body});
+  return reply({body: {profile: kept(init?.body)}});
+};
+
+test('a device says whose it becomes before any host is asked to let it in, and stopping there pairs nothing', async () => {
+  const {PAIRING_STOPPED} = await import('./pairing.mjs');
+  const {calls, options, store} = harness();
+  const person = '33'.repeat(32);
+  const asked = [];
+  const said = [];
+  const link = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, invite: '0f'.repeat(16), listed: commons,
+    memberships: options.memberships, onPairingCode: () => {},
+    fetch: profileHost(asked, key => ({version: 1, user_public_key: key, display_name: 'Ada Lovelace'})),
+    pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }};
+  const stopped = await pairViaHost({...link, agree: async who => { said.push({...who, paired: calls.paired.length}); return false; }})
+    .then(() => null, error => error);
+  assert.deepEqual(asked, [{url: 'https://workspaces.example/peer/v1/profile/fetch', body: person}],
+    'the host that keeps the person is asked who they are, by the key the link names');
+  assert.deepEqual(said, [{userPublicKey: person, name: 'Ada Lovelace', holds: null, paired: 0}],
+    'the person is told before the host is asked to let the device in');
+  assert.equal(stopped?.name, 'HostAdmissionError');
+  assert.equal(stopped?.code, 'stopped');
+  assert.equal(stopped?.message, PAIRING_STOPPED);
+  assert.deepEqual(calls.paired, [], 'the host is asked nothing: the link is not spent and nobody is asked to approve');
+  assert.equal(store.get(KEY), undefined, 'and this browser keeps nothing of it');
+
+  await pairViaHost({...link, agree: async () => true});
+  assert.equal(calls.paired.length, 1, 'having agreed, it asks');
+  assert.equal(keptMembership(commons, {getItem: key => store.get(key)}).paired, true);
+});
+
+test('the name a device shows is its host’s word for the person the link names, and never another’s', async () => {
+  const {calls, options} = harness();
+  const person = '33'.repeat(32);
+  const names = [];
+  const link = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, listed: commons, memberships: options.memberships,
+    onPairingCode: () => {}, agree: async who => { names.push(who.name); return false; },
+    pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }};
+  const hosts = [
+    // The host keeps no profile of them.
+    async () => reply({body: {profile: null}}),
+    // It answers with someone else's.
+    async () => reply({body: {profile: {version: 1, user_public_key: '44'.repeat(32), display_name: 'Bo Smith'}}}),
+    // It does not answer, or answers that it cannot.
+    async () => { throw new TypeError('Failed to fetch'); },
+    async () => reply({status: 500}),
+    // It answers with a name that would turn the sentence round.
+    async () => reply({body: {profile: {version: 1, user_public_key: person, display_name: 'Ada‮\nLovelace'}}}),
+  ];
+  for (const fetch of hosts) await assert.rejects(pairViaHost({...link, fetch}), {code: 'stopped'});
+  assert.deepEqual(names, ['', '', '', '', 'Ada Lovelace']);
+  assert.deepEqual(calls.paired, []);
+});
+
+test('a device that stopped while it waited keeps nothing, though its request was approved meanwhile', async () => {
+  const {PAIRING_STOPPED} = await import('./pairing.mjs');
+  const {options, store} = harness();
+  let stopped = false;
+  let letGo = 0;
+  const refused = await pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '33'.repeat(32), invite: '0f'.repeat(16),
+    listed: commons, memberships: options.memberships, findProfile: async () => null, agree: async () => true, stopped: () => stopped,
+    onPairingCode: () => {},
+    // The person stops while the other device decides, and it approves all the same.
+    pair: async () => { stopped = true; return {workspace: 'WORKSPACE', dispose: async () => { letGo += 1; }}; }}).then(() => null, error => error);
+  assert.equal(refused?.code, 'stopped');
+  assert.equal(refused?.message, PAIRING_STOPPED);
+  assert.equal(letGo, 1, 'the device it would have been is let go');
+  assert.equal(store.get(KEY), undefined, 'and this browser is kept as nobody’s device');
+});
+
+test('nothing pairs a device that was not first told whose it becomes', async () => {
+  const {calls, options} = harness();
+  await assert.rejects(pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '33'.repeat(32), listed: commons,
+    memberships: options.memberships, findProfile: async () => null,
+    pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }}), TypeError);
+  assert.deepEqual(calls.paired, []);
 });

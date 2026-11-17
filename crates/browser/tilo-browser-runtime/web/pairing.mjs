@@ -9,9 +9,12 @@
  * `forInvites`). A 64-hex `pair` names no invite: any of the person's
  * devices may answer it.
  *
- * The new device reads the link (`parsePairSecret`), names itself
- * (`deviceLabel`: "Safari on iPhone"), shows the code the host derives and
- * waits; a refusal is said in plain words (`pairingFailure`).
+ * The new device reads the link (`parsePairSecret`) and, before it asks any
+ * host to let it in, says whose device it would become (`pairingWhose`): a
+ * link is written by whoever made it, and the device that follows one acts
+ * as that person from then on. Only when its person goes on does it name
+ * itself (`deviceLabel`: "Safari on iPhone"), show the code the host derives
+ * and wait; a refusal is said in plain words (`pairingFailure`).
  */
 
 /** How long a pairing link works. */
@@ -33,6 +36,53 @@ export const PAIRING_CLOCK = 'The clock of this device and the clock of your wor
  * made it. No host was asked, so the link still works on the device it was
  * made for. */
 export const PAIRING_SAME_PERSON = 'This browser is already signed in as you, so nothing was paired. Open the link on the device you want to add.';
+
+/** Said on a device whose person stopped, when it had said whose device it
+ * would become or while it waited (`pairViaHost`, workspaces.mjs). It keeps
+ * nothing; one that waited has left its page, so its request is gone too. */
+export const PAIRING_STOPPED = 'Nothing was paired. This device was added to nobody’s devices.';
+
+/**
+ * What a device says before it asks to become a device of a person, under
+ * the sentence that names them (`pairingWhose`): what follows from going
+ * on, what it means for a browser that is somebody already (`already`), and
+ * the two ways on. Stopping asks no host and spends no link.
+ */
+export const PAIRING_WHOSE = Object.freeze({
+  heading: 'Add this device?',
+  consequence: 'Whoever made this link approves it on a device of theirs. From then on this device acts as them, and what you do here is theirs.',
+  already: 'This browser is signed in as someone else. Here it would act as the person above instead.',
+  go: 'Add this device',
+  stop: 'Stop',
+});
+
+/**
+ * A person's name as a sentence of this page holds it: one line of at most
+ * 64 characters, with nothing in it that turns the text around it (the
+ * characters that set a direction) or breaks its line. Empty when there is
+ * no name to show.
+ */
+export function shownName(name) {
+  const plain = String(name ?? '').replace(/[\u200E\u200F\u061C\u202A-\u202E\u2066-\u2069]/gu, '')
+    .replace(/[\p{Cc}\s]+/gu, ' ').trim();
+  return Array.from(plain).slice(0, 64).join('').trim();
+}
+
+/**
+ * Whose device this one becomes, in one sentence: said before it asks to be
+ * let in and again on its waiting card. `name` is what the host that keeps
+ * that person answers for the key the link names (their own profile there,
+ * `fetchProfile`), never a word of the link's own; a host that names nobody
+ * leaves the sentence to say so. A name is no proof of who made the link,
+ * since everyone chooses their own: the sentence asks the one question its
+ * reader can answer, whether that is them.
+ */
+export function pairingWhose(name) {
+  const shown = shownName(name);
+  return shown
+    ? `You are adding this device to ${shown}’s devices. If that is not you, stop.`
+    : 'You are adding this device to the devices of someone this host has no name for. If you did not make this link yourself, stop.';
+}
 
 /**
  * What a device that opened a pairing link shows around its code while it
@@ -166,6 +216,8 @@ export function whenRequested(requestedAtMs, {now = Date.now(), locale} = {}) {
 export function pairingFailure(error) {
   // This browser's own answer, before any host was asked.
   if (error?.code === 'same-person') return PAIRING_SAME_PERSON;
+  // Its person's own: they stopped.
+  if (error?.code === 'stopped') return PAIRING_STOPPED;
   const text = String(error?.message ?? error ?? '');
   if (/declined/i.test(text)) return PAIRING_DECLINED;
   if (/used already/i.test(text)) return PAIRING_USED;

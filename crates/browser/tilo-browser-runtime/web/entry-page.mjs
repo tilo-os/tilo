@@ -31,7 +31,7 @@ import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
-import {deviceLabel, PAIRING_WAIT, pairingFailure, pairingStatus, pairSecret, whenRequested} from './pairing.mjs';
+import {deviceLabel, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
@@ -411,16 +411,62 @@ function pairingAsk(request, decide) {
   return {close};
 }
 
+/**
+ * Asked on a device before it asks a host to make it a person's: whose
+ * device it becomes (`whose`, the sentence of `pairingWhose`), what follows
+ * from that, what it means for a browser that is somebody already
+ * (`already`), and the two ways on. Stop has the focus, so a stray Enter
+ * pairs nothing. Resolves to whether the person went on.
+ */
+function pairingAgree(whose, {already = false} = {}) {
+  return new Promise(resolve => {
+    const card = pairCard('pair-whose', PAIRING_WHOSE.heading, 'alertdialog');
+    const actions = document.createElement('div');
+    actions.className = 'tilo-entry-actions';
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'tilo-entry-primary';
+    go.textContent = PAIRING_WHOSE.go;
+    const stop = document.createElement('button');
+    stop.type = 'button';
+    stop.textContent = PAIRING_WHOSE.stop;
+    const answer = agreed => { card.remove(); resolve(agreed); };
+    go.addEventListener('click', () => answer(true));
+    stop.addEventListener('click', () => answer(false));
+    actions.append(go, stop);
+    card.append(paragraph(whose, 'tilo-pair-whose'), paragraph(PAIRING_WHOSE.consequence),
+      ...(already ? [paragraph(PAIRING_WHOSE.already)] : []), actions);
+    document.body.append(card);
+    stop.focus();
+  });
+}
+
 /** Said on a new device while the person's other device decides on it:
- * which device that is, the code it shows beside its ask, and what to do
- * when it does not ask (`PAIRING_WAIT`). */
-function pairingWait(code) {
+ * which device that is, the code it shows beside its ask, whose device this
+ * one becomes (`whose`, as it said before it asked), and what to do when
+ * nothing asks (`PAIRING_WAIT`). Its Stop is the way out (`onStop`). */
+function pairingWait(code, whose, onStop) {
   document.documentElement.dataset.pairingCode = code;
   const card = pairCard('pair-wait', PAIRING_WAIT.heading, 'status');
-  card.append(paragraph(PAIRING_WAIT.where), paragraph(code, 'tilo-pair-digits'),
-    paragraph(PAIRING_WAIT.then, 'tilo-pair-note'), paragraph(PAIRING_WAIT.otherwise, 'tilo-pair-note'));
+  const stop = document.createElement('button');
+  stop.type = 'button';
+  stop.textContent = PAIRING_WHOSE.stop;
+  stop.addEventListener('click', () => onStop());
+  card.append(paragraph(PAIRING_WAIT.where), paragraph(code, 'tilo-pair-digits'), paragraph(whose, 'tilo-pair-whose'),
+    paragraph(PAIRING_WAIT.then, 'tilo-pair-note'), paragraph(PAIRING_WAIT.otherwise, 'tilo-pair-note'), stop);
   document.body.append(card);
   return () => card.remove();
+}
+
+/** Leave a pairing that waits: the address loses its link and the page
+ * loads again as the bare site. The host hears the page's request go with
+ * it, so nobody can approve this device any more. */
+function leavePairing() {
+  const bare = new URL(location.href);
+  bare.hash = '';
+  bare.search = '';
+  location.assign(bare.href);
+  location.reload();
 }
 
 /**
@@ -1166,13 +1212,26 @@ export async function startEntryPage({mode}) {
     pairDevice: async ({origin, workspace, userPublicKey, invite, listed}) => {
       displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
       let waiting = () => {};
+      // Whose device this becomes, as its person was told before anything
+      // was asked, and whether they stopped while it waited.
+      let whose = '';
+      let stopped = false;
       try {
         // The person this browser already is, where it keeps one: the one
         // this tab opened, else the one it keeps (a tab that opens a link
         // has opened nobody yet). It is told so, never paired to them.
         const holds = currentIdentity()?.userPublicKey ?? (await keptIdentity().catch(() => null))?.rootPublicKey ?? null;
         return await pairViaHost({origin, workspace, userPublicKey, invite, listed, runtime, displayName, holds,
-          label: deviceLabel(), onPairingCode: code => { waiting(); waiting = pairingWait(code); }});
+          label: deviceLabel(),
+          agree: who => {
+            whose = pairingWhose(who.name);
+            return pairingAgree(whose, {already: Boolean(who.holds)});
+          },
+          stopped: () => stopped,
+          onPairingCode: code => {
+            waiting();
+            waiting = pairingWait(code, whose, () => { stopped = true; leavePairing(); });
+          }});
       } catch (error) {
         // The host's answer, or this browser's own, said as what to do next; anything else as any failure.
         const said = pairingFailure(error);
