@@ -6947,6 +6947,22 @@ impl AppBrokerState {
         Some(here)
     }
 
+    /// The next time what a watch of `caller`'s workspace follows may have changed, as this
+    /// broker can tell it ([`tilo_actions::remote::ActionHost::changed`]): the roster it reads
+    /// from its membership and its agents' grants, and nothing for the records, which its apps
+    /// keep and whose writes it is not told of.
+    pub fn changed(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        scope: tilo_actions::remote::WatchScope,
+    ) -> Option<tilo_actions::remote::Pending<()>> {
+        self.here(caller)?;
+        match scope {
+            tilo_actions::remote::WatchScope::Records => None,
+            tilo_actions::remote::WatchScope::Here => Some(self.policy_changed()),
+        }
+    }
+
     /// The name a person reads for `agent`: the one the workspace's record of its agents gives
     /// it, or its id where the record names no agent.
     fn agent_name(listed: &[crate::services::ListedAgent], agent: &str) -> String {

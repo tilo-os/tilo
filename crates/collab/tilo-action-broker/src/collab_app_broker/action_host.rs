@@ -738,7 +738,9 @@ impl AppBrokerState {
             // Nor does it search or follow another device's workspace
             // through it: those are an agent's and the person's.
             | RemoteActionMessage::SearchRequest { .. }
-            | RemoteActionMessage::ChangesRequest { .. } => None,
+            | RemoteActionMessage::ChangesRequest { .. }
+            // Nor does it wait for another device's workspace to change.
+            | RemoteActionMessage::ChangedRequest { .. } => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -755,6 +757,7 @@ impl AppBrokerState {
             | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
+            | RemoteActionMessage::ChangedResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {
@@ -3235,6 +3238,42 @@ impl AppBrokerState {
         id: &tilo_actions::InvocationId,
     ) -> Option<Pending<()>> {
         self.action_next_change(caller, id, self.invocation_changes())
+    }
+
+    /// Resolves on the next announcement of what an authorization decision reads, or after
+    /// [`CHANGE_SAFETY_INTERVAL`] without one: what a waiter re-reads the workspace's roster on
+    /// ([`tilo_actions::remote::ActionHost::changed`]). The announcement is process-wide, so a
+    /// change another device's session made, or a tool that rewrote the identity store, wakes it
+    /// as well; a wake that finds the roster as it was costs one read.
+    pub fn policy_changed(&self) -> Pending<()> {
+        let (woken, mut wakes) = tokio::sync::mpsc::channel::<()>(1);
+        let watch = tilo_identity_host::policy_change::Watch::new(move || {
+            let _ = woken.try_send(());
+        });
+        // Armed before it is handed out, so a change made between the caller's read and this
+        // answer is reported instead of waited past.
+        let seen = watch.arm();
+        let (changed, change) = pending();
+        let wait = async move {
+            if tilo_identity_host::policy_change::epoch() == seen {
+                tokio::select! {
+                    _ = wakes.recv() => {}
+                    () = tilo_rt::sleep(CHANGE_SAFETY_INTERVAL) => {}
+                    // A waiter that found its answer some other way holds no task meanwhile.
+                    () = changed.abandoned() => return,
+                }
+            }
+            drop(watch);
+            changed.complete(());
+        };
+        // A waiter on a thread of its own (the control API's connections) waits on the app
+        // runtime: without one it would hear no change.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(wait));
+        } else if let Ok(runtime) = tilo_rt::try_app() {
+            drop(runtime.spawn(wait));
+        }
+        change
     }
 
     /// Ask an invocation `caller` admitted to stop, answered once the

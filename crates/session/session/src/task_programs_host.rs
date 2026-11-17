@@ -227,6 +227,14 @@ impl ActionHost for Current {
         self.host().next_change(caller, id)
     }
 
+    fn changed(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        scope: tilo_actions::remote::WatchScope,
+    ) -> Option<Pending<()>> {
+        self.host().changed(caller, scope)
+    }
+
     fn cancel(
         &self,
         caller: &tilo_actions::remote::Caller,

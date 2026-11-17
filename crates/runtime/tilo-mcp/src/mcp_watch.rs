@@ -11,6 +11,7 @@
 //! roster for presence.
 use super::*;
 use crate::step::DeclaredRun;
+use tilo_actions::remote::WatchScope;
 
 /// One invocation of this session, as `tilo_watch` follows it: what it ran,
 /// the run it is a step of, and how it stands.
@@ -40,9 +41,6 @@ const DEFAULT_WATCH_MS: u64 = 25_000;
 /// The longest a watch holds, so a caller's connection is never held longer
 /// than it named.
 const MAX_WATCH_MS: u64 = 60_000;
-/// How often a held watch looks again: at the invocation the host may have
-/// moved on, the resource's history, and the roster.
-const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_millis(500);
 /// How many of a resource's changes one look reads.
 const HISTORY_PAGE: u64 = 50;
 
@@ -127,16 +125,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         });
         keep_latest(&mut runs);
         drop(runs);
+        self.runs_moved();
     }
 
     /// Note that `invocation` reached `phase`, which is terminal.
     pub(super) fn watch_run_ended(&self, invocation: &str, phase: &str) {
         ended(&mut self.runs.lock_recover(), invocation, phase);
+        self.runs_moved();
     }
 
     /// Note that `invocation` is held for the person, who allows it or not in their tab.
     pub(super) fn watch_run_held(&self, invocation: &str) {
         held(&mut self.runs.lock_recover(), invocation);
+        self.runs_moved();
     }
 
     /// The run a watch attributes this session's calls to: the title a call
@@ -163,10 +164,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             None | Some("") => self.watch_now(path).await?,
             Some(text) => Cursor::parse(text)?,
         };
+        // Listened for before anything is read, and again each time it wakes the watch: what is
+        // read after an arming is covered by it, so a source that moves between a read and the
+        // wait still wakes this watch, and a source that is already armed is not asked again.
+        let mut listening = self.watch_changed();
         loop {
-            // Listened for before anything is read, so a state that moves in between still
-            // wakes this watch.
-            let state_moved = self.host.session_state_changed(&self.caller());
             let mut events = Vec::new();
             self.watch_states(&mut cursor, &mut events);
             self.watch_runs(&mut cursor, &mut events).await;
@@ -182,18 +184,80 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 reply.structured = Some(answer);
                 return Ok(reply);
             }
-            // A state's move wakes the watch at once; the sources that signal nothing (the
-            // feed, a resource's history, the roster) are looked at again after a while.
-            let look_again = tokio::time::sleep(LOOK_AGAIN);
-            match state_moved {
-                Some(moved) => {
-                    tokio::select! {
-                        _ = moved => {}
-                        () = look_again => {}
-                    }
-                }
-                None => look_again.await,
+            if self.hold(&mut listening, deadline).await {
+                // What woke the watch is spent: listened for again before the next read. A source
+                // whose answer was abandoned tells nothing more, and the watch holds to its own
+                // deadline instead of reading again on a timer.
+                listening = self.watch_changed();
             }
+        }
+    }
+
+    /// Waits until a source the watch follows may have changed, or until `deadline`: `true` when
+    /// a source's own signal woke it, `false` when its wait ran out or nothing signals it.
+    async fn hold(
+        &self,
+        listening: &mut Option<tilo_actions::remote::Pending<()>>,
+        deadline: std::time::Instant,
+    ) -> bool {
+        let until = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
+        let Some(wake) = listening.as_mut() else {
+            until.await;
+            return false;
+        };
+        tokio::select! {
+            woken = wake => woken.is_some(),
+            () = until => false,
+        }
+    }
+
+    /// Every source this watch follows, listened for before anything is read so that a change
+    /// between a read and the wait still wakes it: where the workspace and this device's writes
+    /// stand, the workspace's records, who is in it, each of this session's runs still going, and
+    /// the runs of this session itself. A host that cannot tell of a source leaves it out, and
+    /// that source then costs the watch the rest of its wait.
+    fn watch_changed(&self) -> Option<tilo_actions::remote::Pending<()>> {
+        let caller = self.caller();
+        let mut changed: Vec<tilo_actions::remote::Pending<()>> = Vec::new();
+        changed.extend(self.host.session_state_changed(&caller));
+        changed.extend(self.host.changed(&caller, WatchScope::Records));
+        changed.extend(self.host.changed(&caller, WatchScope::Here));
+        let going: Vec<String> = self
+            .runs
+            .lock_recover()
+            .iter()
+            .filter(|run| !is_terminal(&run.phase))
+            .map(|run| run.invocation.clone())
+            .collect();
+        for invocation in going {
+            let Ok(id) = invocation_id(&invocation) else {
+                continue;
+            };
+            // The host's own signal for an invocation, which it answers when the invocation may
+            // have moved.
+            changed.extend(self.host.next_change(&caller, &id));
+        }
+        changed.push(self.runs_changed());
+        first_wake(changed)
+    }
+
+    /// Resolves on the next run event of this session: an invocation of it starting, being held
+    /// for its person, or ending ([`Self::runs_moved`]).
+    fn runs_changed(&self) -> tilo_actions::remote::Pending<()> {
+        let (changed, change) = tilo_actions::remote::pending();
+        let mut waiting = self.run_waiters.lock_recover();
+        // A wait another source woke the watch from tells nobody: forgotten here rather than kept
+        // until the next run.
+        waiting.retain(|woken| !woken.is_abandoned());
+        waiting.push(changed);
+        change
+    }
+
+    /// Wake every watch of this session: a run of it started, was held for its person, or ended.
+    fn runs_moved(&self) {
+        let waiting = std::mem::take(&mut *self.run_waiters.lock_recover());
+        for changed in waiting {
+            changed.complete(());
         }
     }
 
@@ -475,6 +539,27 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 /// The path a watch names, when it names one.
 fn path_named(path: Option<&str>) -> Option<&str> {
     path.map(str::trim).filter(|path| !path.is_empty())
+}
+
+/// One answer for any of `waits`: resolves when the first of them does, which is a reason to
+/// look again. `None` for no waits at all, which leaves a caller only its deadline.
+fn first_wake(
+    waits: Vec<tilo_actions::remote::Pending<()>>,
+) -> Option<tilo_actions::remote::Pending<()>> {
+    let mut waits = waits.into_iter();
+    let first = waits.next()?;
+    let (woken, wake) = tilo_actions::remote::pending();
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(woken)));
+    for wait in std::iter::once(first).chain(waits) {
+        let slot = std::sync::Arc::clone(&slot);
+        wait.then(move |_| {
+            let woken = slot.lock().ok().and_then(|mut slot| slot.take());
+            if let Some(woken) = woken {
+                woken.complete(());
+            }
+        });
+    }
+    Some(wake)
 }
 
 /// The entries of a `history` verb's answer `value`, oldest first: its

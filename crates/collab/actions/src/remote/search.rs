@@ -12,7 +12,27 @@
 //! records it holds. Its results are the ranking's own, best first, each
 //! naming the resource a caller addresses.
 
-use super::ActionHostError;
+use super::{ActionHost, ActionHostError, Caller, Pending, RemoteActionMessage};
+
+/// What `needle` finds in `caller`'s workspace, by `host`'s own search,
+/// answered for `correlation` ([`ActionHost::resource_search`]).
+pub(super) fn searched<H: ActionHost>(
+    host: &H,
+    caller: &Caller,
+    correlation: u64,
+    needle: &str,
+) -> Pending<RemoteActionMessage> {
+    let respond = move |result| RemoteActionMessage::SearchResponse {
+        correlation,
+        result,
+    };
+    match host.resource_search() {
+        Some(search) => search.find(caller, needle).map(respond),
+        None => Pending::ready(respond(Err(ActionHostError::Unavailable {
+            reason: "this host holds no records to search".into(),
+        }))),
+    }
+}
 
 /// One resource a search found, as every caller of the one search reads a
 /// result: the resource it is about, what it is, and what it reads as. It

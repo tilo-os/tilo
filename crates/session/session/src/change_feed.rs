@@ -29,6 +29,27 @@ impl Feeds {
     pub(crate) fn keep(&self, engine: Arc<Engine>) {
         let _ = self.engine.set(engine);
     }
+
+    /// What wakes a waiter when a write lands in one of this device's workspaces: the replica's
+    /// own arrivals, which the session tells every landing from another device or app to.
+    /// `None` before the session opened its replica, and a waiter then waits until its own
+    /// deadline.
+    pub(crate) fn watching(&self) -> Option<Pending<()>> {
+        let engine = self.engine.get()?;
+        let mut landed = engine.arrivals().watching();
+        landed.mark_unchanged();
+        let runtime = tilo_rt::try_app().ok()?;
+        let (changed, change) = tilo_actions::remote::pending();
+        drop(runtime.spawn(async move {
+            tokio::select! {
+                _ = landed.changed() => {}
+                // Nobody reads the answer any more: nothing to wake.
+                () = changed.abandoned() => return,
+            }
+            changed.complete(());
+        }));
+        Some(change)
+    }
 }
 
 impl ChangeFeed for Feeds {

@@ -665,6 +665,22 @@ impl ActionHost for CertifiedLocalActionHost {
             .action_next_change(&self.effective, id, self.state.invocation_changes())
     }
 
+    /// The next time something an admission decision reads may have changed, which is what the
+    /// workspace's roster — its people's governance, its agents' grants, the fleet certifying
+    /// them — is read from. `None` for the records: the apps keep them, and this broker is not
+    /// told when one is written.
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: tilo_actions::remote::WatchScope,
+    ) -> Option<Pending<()>> {
+        self.check(caller).ok()?;
+        match scope {
+            tilo_actions::remote::WatchScope::Records => None,
+            tilo_actions::remote::WatchScope::Here => Some(self.state.policy_changed()),
+        }
+    }
+
     fn cancel(
         &self,
         caller: &Caller,

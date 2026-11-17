@@ -30,7 +30,7 @@ fn bound(publication: &str, key: &str) -> String {
 }
 
 #[derive(Clone)]
-struct Notes {
+pub(super) struct Notes {
     /// Whether the app runs; a launch from the workspace sets it.
     running: Arc<Mutex<bool>>,
     /// Which publication the bound ids belong to: a restart changes it.
@@ -121,7 +121,7 @@ enum Installed {
 type Unanswered = tilo_actions::remote::Completer<Result<CataloguePage, ActionHostError>>;
 
 impl Notes {
-    fn new(running: bool) -> Self {
+    pub(super) fn new(running: bool) -> Self {
         Self {
             running: Arc::new(Mutex::new(running)),
             publication: "2a4120d7-2f63-4578-aed8-11cb91ed3628",
@@ -168,12 +168,12 @@ impl Notes {
 
     /// One new step in every note's history: `entry` as the history verb
     /// answers it.
-    fn changed(&self, entry: Value) {
+    pub(super) fn changed(&self, entry: Value) {
         self.history.lock().unwrap().push(entry);
     }
 
     /// Who is in the workspace now.
-    fn people(&self, here: Option<Vec<tilo_actions::remote::Here>>) {
+    pub(super) fn people(&self, here: Option<Vec<tilo_actions::remote::Here>>) {
         *self.here.lock().unwrap() = here;
     }
 
@@ -1093,7 +1093,7 @@ fn long_page(lines: usize, cursor: Option<&str>) -> Value {
     page
 }
 
-fn run<F: std::future::Future>(future: F) -> F::Output {
+pub(super) fn run<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1128,7 +1128,7 @@ async fn tool<H: ActionHost + Send + Sync + 'static>(
     )
 }
 
-fn agent<H>(host: &H) -> McpServer<H>
+pub(super) fn agent<H>(host: &H) -> McpServer<H>
 where
     H: ActionHost + Clone + Send + Sync + 'static,
 {
@@ -2957,7 +2957,7 @@ async fn typed<H: ActionHost + Send + Sync + 'static>(
 }
 
 /// The same, for a call that names no run.
-async fn answer<H: ActionHost + Send + Sync + 'static>(
+pub(super) async fn answer<H: ActionHost + Send + Sync + 'static>(
     server: &McpServer<H>,
     name: &str,
     arguments: Value,

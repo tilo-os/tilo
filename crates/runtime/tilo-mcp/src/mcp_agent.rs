@@ -2921,5 +2921,9 @@ mod tests;
 mod link_tests;
 
 #[cfg(test)]
+#[path = "mcp_watch_tests.rs"]
+mod watch_tests;
+
+#[cfg(test)]
 #[path = "mcp_agent_publisher_tests.rs"]
 mod publisher_tests;

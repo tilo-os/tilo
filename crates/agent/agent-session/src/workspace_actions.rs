@@ -53,6 +53,7 @@ mod bounded;
 mod canonical;
 mod catalogue;
 mod catch_up;
+mod change;
 mod content;
 mod feedback;
 mod found;
@@ -107,9 +108,9 @@ use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
     ActionHostError, ActorPlace, Caller, CataloguePage, CatalogueQuery, CatalogueRow, Completer,
-    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionMessage, application_provider, application_provider_record, pending,
-    provider_workspace,
+    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
+    MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionMessage, application_provider,
+    application_provider_record, pending, provider_workspace,
 };
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate,
@@ -188,6 +189,14 @@ enum Job {
         after: Option<String>,
         done: Completer<Result<tilo_actions::remote::ChangePage, ActionHostError>>,
     },
+    /// A caller waits for what it follows in a workspace to change
+    /// ([`tilo_actions::remote::ActionHost::changed`]): a write landing in the workspace's
+    /// records, or who is in it moving.
+    Changed {
+        workspace_id: WorkspaceId,
+        caller: Caller,
+        done: Completer<Result<(), ActionHostError>>,
+    },
     /// A page of a workspace's runs ([`runs`]).
     Invocations {
         workspace_id: WorkspaceId,
@@ -227,6 +236,7 @@ impl Job {
             Self::Search { .. } => "search",
             Self::Changes { .. } => "changes",
             Self::Invocations { .. } => "invocations",
+            Self::Changed { .. } => "changed",
             Self::Joined(_) => "joined",
             Self::Forget(_) => "forget",
             Self::NotesFolder(_) => "notes-folder",
@@ -244,6 +254,7 @@ impl Job {
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
             | Self::Invocations { workspace_id, .. }
+            | Self::Changed { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
             | Self::NotesFolder(workspace_id) => Some(*workspace_id),
             Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
@@ -258,9 +269,10 @@ impl Job {
         match self {
             Self::Catalogue { query, .. } => catalogue_keys(query),
             // Every record the workspace holds is searched and followed.
-            Self::Search { .. } | Self::Changes { .. } | Self::Invocations { .. } => {
-                Keys::Workspace
-            }
+            Self::Search { .. }
+            | Self::Changes { .. }
+            | Self::Invocations { .. }
+            | Self::Changed { .. } => Keys::Workspace,
             Self::Feedback { .. }
             | Self::Invoke { .. }
             | Self::Ran(_)
@@ -600,6 +612,23 @@ impl WorkspaceActions {
                     result,
                 })
             }
+            // What a call follows of the workspace is read again on either scope when a write
+            // lands in its records, so the device need not tell them apart.
+            RemoteActionMessage::ChangedRequest { correlation, .. } => {
+                let (done, answer) = pending();
+                let job = Job::Changed {
+                    workspace_id,
+                    caller: caller.clone(),
+                    done,
+                };
+                if let Err(Job::Changed { done, .. }) = self.submit(job) {
+                    done.complete(Err(unavailable()));
+                }
+                answer.map(move |result| RemoteActionMessage::ChangedResponse {
+                    correlation,
+                    result,
+                })
+            }
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
@@ -620,6 +649,7 @@ impl WorkspaceActions {
             | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
+            | RemoteActionMessage::ChangedResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         })
     }
@@ -965,6 +995,8 @@ struct Workspace {
     changes: ui::history_source::feed::ChangeLog,
     /// What its records' histories say of its runs ([`runs`]).
     run_index: invocations::Index,
+    /// Who waits for what a watch of this workspace follows to change ([`change::Watchers`]).
+    watchers: change::Watchers,
 }
 
 impl Drop for Workspace {
@@ -1004,99 +1036,8 @@ impl Workspace {
             records: None,
             changes: ui::history_source::feed::ChangeLog::new(),
             run_index: invocations::Index::default(),
+            watchers: change::Watchers::default(),
         })
-    }
-
-    fn pump(&mut self, workspace_id: WorkspaceId) {
-        // The records a run of writes landed in, once each. What a landing
-        // reads is the record as it stands at the read, so one per record
-        // answers for all of a run's landings — and a busy workspace's writes
-        // otherwise cost a read for every write since the last request.
-        let mut landed: Vec<DocumentRoute> = Vec::new();
-        for event in self.member.take(workspace_id) {
-            match event {
-                Event::HostReady {
-                    ws: ready,
-                    records_when_opened,
-                    ..
-                } if ready == workspace_id => {
-                    self.ready = true;
-                    self.when_opened = records_when_opened;
-                }
-                Event::RecordOpened {
-                    ws: opened,
-                    route: Some(route),
-                    answer,
-                    ..
-                } if opened == workspace_id => {
-                    tracing::debug!(
-                        app = %route.app_id,
-                        record = %route.record,
-                        ?answer,
-                        asked = self.asked.contains(&route),
-                        "workspace actions: the workspace answered for a record"
-                    );
-                    // The host sent all it holds of a record this member
-                    // asked for, and sends its changes from now on: none
-                    // means it holds none of it. Another person's own record
-                    // is answered as theirs: not absent, never founded here.
-                    if self.asked.remove(&route) {
-                        match answer {
-                            tilo_session_client::RecordAnswer::Sent { frames: 0 } => {
-                                self.absent.insert(route.clone());
-                            }
-                            tilo_session_client::RecordAnswer::NotYours => {
-                                self.not_yours.insert(route.clone());
-                            }
-                            tilo_session_client::RecordAnswer::Sent { .. } => {}
-                        }
-                        self.answered.insert(route);
-                    }
-                }
-                Event::Landed { route, .. } => {
-                    if WorkspaceId::parse(&route.cluster_id) != Some(workspace_id) {
-                        continue;
-                    }
-                    if !landed.contains(&route) {
-                        landed.push(route);
-                    }
-                }
-                _ => {}
-            }
-        }
-        for route in landed {
-            let engine = self.peer.engine();
-            // Undecided: the replica holds the record and cannot read it yet. Keys that
-            // arrived for a record it holds nothing of leave nothing undecided.
-            // Asked without reading the record out, as a write lands for every post;
-            // this device's own writes not taken in yet leave only a read to decide.
-            let reads = engine
-                .record_revision(&route.cluster_id, &route.app_id, &route.record)
-                .and_then(|revision| match revision {
-                    Some(_) => Ok(true),
-                    None => engine
-                        .record(&route.cluster_id, &route.app_id, &route.record)
-                        .map(|read| read.is_some()),
-                });
-            let undecided = match reads {
-                Ok(reads) => !reads,
-                Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
-                    records
-                        .iter()
-                        .any(|(app, record)| *app == route.app_id && *record == route.record)
-                }),
-            };
-            if undecided {
-                self.undecided.insert(route.clone());
-            } else {
-                self.undecided.remove(&route);
-            }
-            self.records
-                .get_or_insert_with(|| {
-                    WorkspaceRecords::new(&route.cluster_id, Arc::clone(self.peer.engine()))
-                })
-                .landed(&route);
-        }
     }
 
     /// The workspace as the session's replica holds it now.
@@ -1423,19 +1364,21 @@ impl Worker {
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
         loop {
-            let due = match (
+            let due = [
                 self.joining_until(),
                 session_voice::next_due(&self.workspaces),
-            ) {
-                (Some(joining), Some(voice)) => Some(joining.min(voice)),
-                (joining, voice) => joining.or(voice),
-            };
+                self.watchers_until(),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             let next = match due {
                 Some(until) => jobs.recv_timeout(until.saturating_duration_since(Instant::now())),
                 None => jobs
                     .recv()
                     .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
             };
+            self.expire_watchers();
             match next {
                 Ok((queued, job)) => {
                     self.admit(queued, job);
@@ -1450,6 +1393,7 @@ impl Worker {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     self.give_up_joining();
                     self.tick_voices();
+                    self.expire_watchers();
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -1748,6 +1692,11 @@ impl Worker {
                     after,
                     done,
                 } => done.complete(self.changes(workspace_id, &caller, after.as_deref())),
+                Job::Changed {
+                    workspace_id,
+                    caller,
+                    done,
+                } => self.watch(workspace_id, &caller, done),
                 Job::Invocations {
                     workspace_id,
                     caller,

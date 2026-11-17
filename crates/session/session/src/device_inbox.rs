@@ -63,6 +63,14 @@ impl ActionHost for Shared {
         self.0.next_change(caller, id)
     }
 
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: tilo_actions::remote::WatchScope,
+    ) -> Option<tilo_actions::remote::Pending<()>> {
+        self.0.changed(caller, scope)
+    }
+
     fn cancel(
         &self,
         caller: &Caller,

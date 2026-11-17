@@ -844,6 +844,24 @@ impl ActionHost for RuntimeActionHost {
             .session_state_changed(session.admission.caller())
     }
 
+    /// What a watch of the workspace follows, routed and authorized as [`Self::here`] and
+    /// [`Self::session_state`] are: the session host's own signal for a session this runtime
+    /// serves, and the broker's for one it runs itself.
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: tilo_actions::remote::WatchScope,
+    ) -> Option<Pending<()>> {
+        if let Some(session) = &self.session {
+            session.check(caller, &self.joined).ok()?;
+            return session.host.changed(session.admission.caller(), scope);
+        }
+        if !self.admitted(caller) {
+            return None;
+        }
+        self.broker.state().changed(&on_this_device(caller), scope)
+    }
+
     /// Routed and authorized exactly as [`Self::observe`]: a caller that may
     /// not observe an invocation may not wait on it either.
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {

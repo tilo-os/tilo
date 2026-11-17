@@ -173,7 +173,8 @@ impl AgentMember {
             }
             // An agent holds no workspace of its own to search or follow.
             message @ (RemoteActionMessage::SearchRequest { .. }
-            | RemoteActionMessage::ChangesRequest { .. }) => {
+            | RemoteActionMessage::ChangesRequest { .. }
+            | RemoteActionMessage::ChangedRequest { .. }) => {
                 let Some(refused) = tilo_actions::remote::refuse(
                     &message,
                     ActionHostError::Unavailable {
@@ -227,6 +228,7 @@ impl AgentMember {
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
+            | RemoteActionMessage::ChangedResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return,
         };
         match RemoteActionFrame::new(reply).encode() {

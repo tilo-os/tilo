@@ -2363,6 +2363,21 @@ impl ActionHost for Host {
         Some(Arc::clone(&self.session.changes) as Arc<dyn tilo_actions::remote::ChangeFeed>)
     }
 
+    /// The next write landing in this device's replica of any of its workspaces, which is what
+    /// a watch of its records and of a resource's history reads. `None` for its roster: this
+    /// host keeps none to say who is in the workspace, so a watch of presence holds until its
+    /// own deadline.
+    fn changed(
+        &self,
+        _caller: &Caller,
+        scope: tilo_actions::remote::WatchScope,
+    ) -> Option<Pending<()>> {
+        match scope {
+            tilo_actions::remote::WatchScope::Records => self.session.changes.watching(),
+            tilo_actions::remote::WatchScope::Here => None,
+        }
+    }
+
     /// The records a connection reads outside their apps: the workspace's own, as the broker
     /// decides them, and the records of packages this session runs itself (the shell), which its
     /// services keep: a program reads them by the app, as it reads Notes', with no case of its own.

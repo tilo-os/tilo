@@ -71,6 +71,8 @@ pub mod task_programs;
 #[cfg(any(test, feature = "test-support"))]
 mod test_host;
 mod wait;
+mod watch;
+pub use watch::{CHANGED_UNAVAILABLE, Here, WatchScope};
 mod window_actions;
 mod within;
 pub mod workspace_activity;
@@ -844,17 +846,6 @@ impl From<WireHostError> for ActionHostError {
     }
 }
 
-/// One member of a workspace present now: a person, or an agent acting in it.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Here {
-    /// The member's id: a person's user root key, or an agent's id.
-    pub who: String,
-    /// The name people read for them; the id when the roster names none.
-    pub name: String,
-    /// `person` or `agent`.
-    pub kind: String,
-}
-
 /// A peer that runs actions on behalf of authenticated remote callers.
 ///
 /// Implementations resolve authority from `caller` alone and must be
@@ -918,6 +909,18 @@ pub trait ActionHost {
     /// nothing changes: a waiter bounds its own wait.
     fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
         let _ = caller;
+        None
+    }
+
+    /// Resolves the next time what a watch of the workspace follows under `scope` may have
+    /// changed, so a waiter reads it again then instead of on a timer; `None` when this host
+    /// cannot tell, and the waiter then waits until its own deadline.
+    ///
+    /// Wakeups may be spurious: the waiter reads again and tolerates finding nothing new. A host
+    /// that answers `Some` must resolve it within a bounded interval even when nothing changes,
+    /// so a change it failed to signal costs latency rather than a stalled waiter.
+    fn changed(&self, caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
+        let _ = (caller, scope);
         None
     }
 
@@ -1178,6 +1181,16 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<ContentLink, ActionHostError>,
     },
+    /// Ask the device to answer when what a watch follows under `scope` may have
+    /// changed ([`ActionHost::changed`]): a write landed in the workspace's records,
+    /// or who is in it moved.
+    ChangedRequest { correlation: u64, scope: WatchScope },
+    /// Answer to [`Self::ChangedRequest`], same correlation: it may have changed, or
+    /// why this host cannot tell when it does.
+    ChangedResponse {
+        correlation: u64,
+        result: Result<(), ActionHostError>,
+    },
 }
 
 /// One record a reader asks for over the action API: alone, or `joined`
@@ -1223,6 +1236,7 @@ impl RemoteActionMessage {
                 wait_ms: Some(_),
                 ..
             }) | Self::Confirm { .. }
+                | Self::ChangedRequest { .. }
         )
     }
 
@@ -1245,6 +1259,7 @@ impl RemoteActionMessage {
                 | Self::Confirm { .. }
                 | Self::SearchRequest { .. }
                 | Self::ChangesRequest { .. }
+                | Self::ChangedRequest { .. }
         )
     }
 }
@@ -1282,26 +1297,6 @@ fn not_kept(message: &RemoteActionMessage) -> Option<RemoteActionMessage> {
             reason: reason.into(),
         },
     )
-}
-
-/// What `needle` finds in `caller`'s workspace, by `host`'s own search,
-/// answered for `correlation` ([`ActionHost::resource_search`]).
-fn searched<H: ActionHost>(
-    host: &H,
-    caller: &Caller,
-    correlation: u64,
-    needle: &str,
-) -> Pending<RemoteActionMessage> {
-    let respond = move |result| RemoteActionMessage::SearchResponse {
-        correlation,
-        result,
-    };
-    match host.resource_search() {
-        Some(search) => search.find(caller, needle).map(respond),
-        None => Pending::ready(respond(Err(ActionHostError::Unavailable {
-            reason: "this host holds no records to search".into(),
-        }))),
-    }
 }
 
 /// The changes to `caller`'s workspace's records after `after`, from
@@ -1477,9 +1472,12 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         RemoteActionMessage::SearchRequest {
             correlation,
             needle,
-        } => searched(host, caller, correlation, &needle),
+        } => search::searched(host, caller, correlation, &needle),
         RemoteActionMessage::ChangesRequest { correlation, after } => {
             changed(host, caller, correlation, after.as_deref())
+        }
+        RemoteActionMessage::ChangedRequest { correlation, scope } => {
+            watch::noticed(host, caller, correlation, scope)
         }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
@@ -1498,6 +1496,7 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::ConfirmResponse { .. }
         | RemoteActionMessage::SearchResponse { .. }
         | RemoteActionMessage::ChangesResponse { .. }
+        | RemoteActionMessage::ChangedResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
@@ -1580,6 +1579,12 @@ pub fn refuse(
                 result: Err(error),
             }
         }
+        RemoteActionMessage::ChangedRequest { correlation, .. } => {
+            RemoteActionMessage::ChangedResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1597,6 +1602,7 @@ pub fn refuse(
         | RemoteActionMessage::ConfirmResponse { .. }
         | RemoteActionMessage::SearchResponse { .. }
         | RemoteActionMessage::ChangesResponse { .. }
+        | RemoteActionMessage::ChangedResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     })
 }

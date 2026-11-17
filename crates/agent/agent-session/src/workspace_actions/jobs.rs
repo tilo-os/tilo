@@ -21,6 +21,7 @@ impl Job {
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
             | Self::Invocations { workspace_id, .. }
+            | Self::Changed { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
             | Self::Joined(workspace_id)
             | Self::Forget(workspace_id)
