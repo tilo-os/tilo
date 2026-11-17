@@ -19,7 +19,7 @@ pub mod queue;
 mod tests;
 
 pub use event::{
-    AppEvent, ConnectorEvent, DocumentEvent, Event, ItemRef, ScheduleEvent, TimeEvent,
+    AppEvent, ConnectorEvent, DocumentEvent, Event, ItemRef, ScheduleEvent, SourceEvent, TimeEvent,
     app_event_object, event_of,
 };
 pub use matching::{

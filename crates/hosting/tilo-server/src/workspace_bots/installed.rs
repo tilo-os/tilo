@@ -58,6 +58,7 @@ use tilo_content::{ContentStore, WorkspaceStores};
 use tilo_automation::grant::OUTBOX_FIELD;
 use tilo_lock::MutexRecover as _;
 
+mod sources;
 mod times;
 /// How long the runner waits with nothing to do before it looks again.
 const IDLE: Duration = Duration::from_secs(30);
@@ -147,6 +148,10 @@ struct Progress {
     /// trigger's place among the program's triggers.
     #[serde(default)]
     times: BTreeMap<usize, tilo_automation::resource_time::Answered>,
+    /// What each trigger on something new in a source has taken in, by the
+    /// trigger's place among the program's triggers.
+    #[serde(default)]
+    sources: BTreeMap<usize, tilo_automation::source_change::Seen>,
 }
 
 impl Progress {
@@ -249,6 +254,9 @@ pub struct BotRunner {
     /// The next moment of a time a resource holds that the program waits
     /// for, ms since the epoch, so its idle wait ends at it too.
     next_time_ms: Option<i64>,
+    /// The mail of the person the program is carried out for, heard for as
+    /// long as one of its triggers waits on it.
+    mail: Option<sources::Mail>,
     /// The emoji pictures already kept for the connectors, by address.
     kept: Mutex<BTreeSet<String>>,
     /// Records of the workspace the bot follows that this host could not read
@@ -351,6 +359,7 @@ impl BotRunner {
             next_schedule_ms: None,
             person: None,
             next_time_ms: None,
+            mail: None,
             kept: Mutex::new(BTreeSet::new()),
             unreadable: Mutex::new(BTreeSet::new()),
             #[cfg(test)]
@@ -367,6 +376,7 @@ impl BotRunner {
     pub fn runs_for(mut self, person: String, steps: Arc<dyn HostSteps>) -> Self {
         self.person = Some(person.clone());
         self.api.runs_for(person, steps);
+        self.hear_sources();
         self
     }
 
@@ -439,11 +449,14 @@ impl BotRunner {
         // what members write does not wake it, so hundreds of reminders
         // cost a workspace's writers nothing. A run still reads the records
         // as they stand when it starts.
-        let follows = self
-            .shortcut
-            .triggers
-            .iter()
-            .any(|trigger| Timed::of(trigger).is_none() && !times::waits_on_a_time(trigger));
+        let follows = self.shortcut.triggers.iter().any(|trigger| {
+            Timed::of(trigger).is_none()
+                && !times::waits_on_a_time(trigger)
+                && !sources::waits_on_a_source(trigger)
+        });
+        // Mail that arrives wakes a program that waits on its person's.
+        let hears_mail = self.hears_mail();
+        let mut mail = self.workspaces.mail_arrival_changes();
         loop {
             if let Err(error) = self.step().await {
                 tracing::warn!(installation = %self.bot.installation, %error, "bot runner did not finish a pass");
@@ -476,6 +489,11 @@ impl BotRunner {
                     }
                 }
                 () = events.notified() => {}
+                arrived = mail.changed(), if hears_mail => {
+                    if arrived.is_err() {
+                        return;
+                    }
+                }
                 () = tokio::time::sleep(wake) => {}
             }
         }
@@ -563,6 +581,7 @@ impl BotRunner {
     async fn take_in(&mut self, now_ms: i64) -> Result<Vec<Firing>, String> {
         let mut firings = self.schedule_firings(now_ms).await;
         firings.extend(self.time_firings(now_ms).await);
+        firings.extend(self.source_firings(now_ms).await);
         let armed = [Armed {
             firer: Firer::Bot {
                 installation: &self.bot.installation,

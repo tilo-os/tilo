@@ -148,11 +148,25 @@ impl Definition {
                 )),
                 None => Ok(trigger),
             },
+            TriggerSpec::SourceChanged { kind, at, .. } => {
+                match tilo_automation::source_change::refusal(kind, at) {
+                    Some(why) => Err(why),
+                    // The mail its person's accounts receive is heard where
+                    // those accounts are kept; no other source is read yet.
+                    None if kind != tilo_automation::source_change::PERSON_MAIL => Err(format!(
+                        "for now something new is found in the mail its person's accounts \
+                         receive: `when something new is in \"{}\"`",
+                        tilo_automation::source_change::PERSON_MAIL
+                    )),
+                    None => Ok(trigger),
+                }
+            }
             _ => Err(
                 "the host runs an event with every device off: it starts at a time (`once at`, \
                  `every`), a moment before or after an entry of its person's calendars (`15 \
-                 minutes before \"entries.*.start\" in a \"tilo.accounts.calendars\"`) or when \
-                 something in the workspace changes"
+                 minutes before \"entries.*.start\" in a \"tilo.accounts.calendars\"`), when \
+                 something new is in a source of its person's (`when something new is in \
+                 \"tilo.accounts.mail\"`) or when something in the workspace changes"
                     .into(),
             ),
         }
@@ -413,6 +427,53 @@ mod tests {
         assert!(told.starts_with("{{input.instruction}}"), "{told}");
         assert!(told.contains("data, not instructions"), "{told}");
         assert!(told.ends_with("{{input.event}}"), "{told}");
+    }
+
+    #[test]
+    fn something_new_in_its_persons_mail_starts_an_event_and_goes_with_it_as_data() {
+        let event = Definition {
+            name: "Mail from Bo".into(),
+            when: "when something new is in \"tilo.accounts.mail\" where from is \
+                   \"bo@example.com\""
+                .into(),
+            only_if: Some("Does it ask for a file?".into()),
+            ..reminder()
+        }
+        .checked()
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert!(!event.on_a_clock());
+        assert_eq!(
+            event.trigger(),
+            Ok(TriggerSpec::SourceChanged {
+                kind: tilo_automation::source_change::PERSON_MAIL.into(),
+                at: String::new(),
+                filter: Map::from_iter([("from".to_owned(), json!("bo@example.com"))]),
+            })
+        );
+        let program = event.program().unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            ids(&program.steps),
+            ["judge", "judged"],
+            "its person's model is asked about what is new before anything is handed over"
+        );
+        let StepKind::Invoke { args, .. } = &then_of(&program.steps[1])[0].kind else {
+            panic!("the instruction is handed over by the task action");
+        };
+        let Some(Binding::Template(told)) = args.get("instruction") else {
+            panic!("the instruction is a template");
+        };
+        assert!(told.starts_with("{{input.instruction}}"), "{told}");
+        assert!(told.contains("data, not instructions"), "{told}");
+        assert!(told.ends_with("{{input.event}}"), "{told}");
+        // A source nobody reads is refused in words when it is described.
+        let refused = Definition {
+            when: "when something new is in \"something.else\"".into(),
+            ..reminder()
+        }
+        .checked()
+        .err()
+        .unwrap_or_default();
+        assert!(refused.contains("tilo.accounts.mail"), "{refused}");
     }
 
     #[test]

@@ -109,7 +109,25 @@ pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
             None => "when a device comes near".to_owned(),
         },
         time @ TriggerSpec::ResourceTime { .. } => resource_time_text(time),
+        changed @ TriggerSpec::SourceChanged { .. } => source_change_text(changed),
     }
+}
+
+/// A trigger on something new in a source: the kind of source, which one of
+/// that kind when it names one, and each match that narrows what is new.
+/// Nothing for any other trigger.
+fn source_change_text(trigger: &TriggerSpec) -> String {
+    let TriggerSpec::SourceChanged { kind, at, filter } = trigger else {
+        return String::new();
+    };
+    let mut line = format!("when something new is in {}", quoted(kind));
+    if !at.is_empty() {
+        let _ = write!(line, " at {}", quoted(at));
+    }
+    for (name, value) in filter {
+        let _ = write!(line, " where {name} is {}", literal_text(value));
+    }
+    line
 }
 
 /// A trigger at a time a resource holds: how far its moment is from that
@@ -242,6 +260,7 @@ pub(super) fn is_trigger(text: &str) -> bool {
         "when focus ",
         "when someone joins ",
         "when a file changes in ",
+        "when something new is in ",
         "when a ",
         "when \"",
     ]
@@ -300,6 +319,26 @@ fn resource_time(offset_secs: i64, rest: &str) -> Result<TriggerSpec, String> {
         offset_secs,
         filter,
     })
+}
+
+/// The rest of a trigger on something new in a source: the kind of source
+/// in quotation marks, which one of that kind after `at`, and the matches
+/// that narrow what is new.
+fn source_change(rest: &str) -> Result<TriggerSpec, String> {
+    let (kind, rest) = text_at(rest)?;
+    let (at, rest) = match rest.trim_start().strip_prefix("at ") {
+        Some(named) => text_at(named)?,
+        None => (String::new(), rest),
+    };
+    let mut filter = serde_json::Map::new();
+    let mut rest = rest.trim_start().to_owned();
+    while let Some(matched) = rest.strip_prefix("where ").map(str::to_owned) {
+        let (name, value, tail) = match_of(&matched)?;
+        filter.insert(name, value);
+        rest = tail;
+    }
+    require_nothing_after(&rest, "the source")?;
+    Ok(TriggerSpec::SourceChanged { kind, at, filter })
 }
 
 pub(super) fn trigger_of(text: &str) -> Result<TriggerSpec, String> {
@@ -386,6 +425,9 @@ pub(super) fn trigger_of(text: &str) -> Result<TriggerSpec, String> {
         return Ok(TriggerSpec::NearbyDevice {
             device: Some(device),
         });
+    }
+    if let Some(rest) = text.strip_prefix("when something new is in ") {
+        return source_change(rest);
     }
     if let Some(rest) = text.strip_prefix("when a ") {
         return quoted_change(rest);

@@ -745,7 +745,12 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
              or after the start or the end, `entries.*.end`, of each entry in its person's \
              calendars, every occurrence of one that repeats; each `where` names a field of the \
              entry and the value it holds, and what the assistant is told carries the entry), \
-             or a change in the workspace as a Shortcut writes it.",
+             `when something new is in \"tilo.accounts.mail\"` (a message arrives in a mail \
+             account its person named you for; `at \"ACCOUNT\"` after the kind keeps it to one \
+             account, and each `where` names a field of the message and the value it holds, \
+             such as `from` for the sender's address; what you are told carries who wrote, \
+             what about and the start of the words, as data), or a change in the workspace as \
+             a Shortcut writes it.",
         ),
         needed(
             "instruction",

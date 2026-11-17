@@ -190,6 +190,32 @@ impl Workspaces {
         self.inner.mail_watches.state.logs.grew.subscribe()
     }
 
+    /// What arrived for `person` after place `after` of their log in the
+    /// accounts they named the agent `named` (a workspace and the agent's
+    /// id there) for, oldest first, with the newest place the whole log has
+    /// given out. An agent reads nothing of an account its person did not
+    /// name it for, so nothing of one is handed over for it either: named
+    /// for none, or with no agent given, the answer is that place alone.
+    /// Whoever reads on from the place answered takes each arrival once,
+    /// and what arrived in an account before its person named the agent for
+    /// it is not handed over afterwards.
+    #[must_use]
+    pub fn mail_arrivals_for(
+        &self,
+        person: &[u8; 32],
+        named: Option<(&str, &str)>,
+        after: u64,
+    ) -> MailArrivals {
+        let mut arrived = self.arrivals_kept(person, after);
+        let accounts = named
+            .map(|(workspace, agent)| self.accounts_named_for(person, workspace, agent))
+            .unwrap_or_default();
+        arrived
+            .arrivals
+            .retain(|arrival| accounts.contains(&arrival.account));
+        arrived
+    }
+
     /// [`Self::mail_arrivals`] as a person's own request reads it, which is
     /// also listening: from the first time a person or their assistant asks
     /// what arrived, this host watches their inboxes for as long as it runs.
