@@ -19,8 +19,10 @@
 //! open, the HTML presenter, which a page mounted
 //! with `dom: true` asks for, the directory and invite sheets and the
 //! shortcut guide, which opening one asks for, a hosted window's page, which
-//! the first page to reach the shell asks for, and the renderer's maker, which
-//! the page asks for as it compiles its pipelines.
+//! the first page to reach the shell asks for, the renderer's maker, which
+//! the page asks for as it compiles its pipelines, and the code that runs a
+//! view written in the app language, which the first view an app places asks
+//! for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -292,6 +294,14 @@ split_code! {
         => tilo_ui::history_mode::HISTORY, module = "history", hash = "e1a7c5039b6d2f84";
 }
 
+split_code! {
+    /// The code that runs a view written in the app language (the language's compiler and
+    /// interpreter, and the UI host's half of a window): the first view an app places asks for
+    /// it.
+    mod written_views: ui::written_view::MakeWrittenView = tilo_written_view::builtin()
+        => ui::written_view::WRITTEN_VIEWS, module = "written_views", hash = "5a17c9e2d04b83f6";
+}
+
 /// Once the page has drawn its first frame, fetch the search engine's code.
 ///
 /// The engine is a module of its own here, and a search that fetches it has no
@@ -384,6 +394,7 @@ pub(crate) fn register() {
     settings_keeper::register();
     renderer::register();
     pdf_words::register();
+    written_views::register();
     prepare_settings_keeper_after_first_frame();
     prepare_page_drops_after_first_frame();
 }

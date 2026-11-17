@@ -17,7 +17,9 @@ use std::rc::Rc;
 use fs_protocol::files::{FIRST_TREE_CHUNK, FileNodeKind, TreeChunk};
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeChunks, TreeEntry, chunk_document_id};
 use ui::carry_out::{ContentLinkAsk, ContentLinkFile, Offers};
-use ui::framework::{Dispatcher, Live, People, RecordOpener, ResourceApp, ViewCx, WorkspaceResource};
+use ui::framework::{
+    Dispatcher, Live, People, RecordOpener, ResourceApp, ViewCx, WorkspaceResource,
+};
 use ui::i18n::EmbeddedCatalog;
 use ui::icons::Icon;
 use ui::tilo_actions::remote::ApplicationLaunch;

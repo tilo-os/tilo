@@ -35,6 +35,11 @@ struct RecordingHost {
     listed: std::sync::Mutex<serde_json::Value>,
     asking: std::sync::Mutex<serde_json::Value>,
     sheet: std::sync::Mutex<Sheet>,
+    /// What the MCP server answers of the person's agents. None answers
+    /// here until a test says what.
+    served: std::sync::Mutex<Option<serde_json::Value>>,
+    /// The actions this host refuses whoever asks, after noting the ask.
+    refused: std::sync::Mutex<Vec<ui::tilo_actions::remote::RemoteActionTarget>>,
 }
 
 /// How the session's shell answers an ask to open one of its sheets.
@@ -71,6 +76,8 @@ impl RecordingHost {
             listed: std::sync::Mutex::new(listed),
             asking: std::sync::Mutex::new(serde_json::json!({"asking": []})),
             sheet: std::sync::Mutex::default(),
+            served: std::sync::Mutex::default(),
+            refused: std::sync::Mutex::default(),
         })
     }
 
@@ -157,13 +164,21 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
         } else if request.target == device_pairing::target(device_pairing::ASKING) {
             self.asking.lock().unwrap().clone()
         } else if request.target == mcp_server::target(mcp_server::SERVER) {
-            return ui::tilo_actions::remote::Pending::ready(Err(
-                ui::tilo_actions::remote::ActionHostError::UnknownAction,
-            ));
+            let answer = self.served.lock().unwrap().clone();
+            let Some(answer) = answer else {
+                return ui::tilo_actions::remote::Pending::ready(Err(
+                    ActionHostError::UnknownAction,
+                ));
+            };
+            answer
         } else {
             serde_json::json!({})
         };
+        let refused = self.refused.lock().unwrap().contains(&request.target);
         self.asked.lock().unwrap().push(request);
+        if refused {
+            return ui::tilo_actions::remote::Pending::ready(Err(ActionHostError::NotPermitted));
+        }
         ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
             invocation,
             status: ui::tilo_actions::remote::ReceiptStatus::Completed {
@@ -560,42 +575,62 @@ tilo_test_env::scenario! {
         assert_eq!(plain(&agent_may(&agents[2])), "Only in Launch plan");
     }
 
-    phase the_published_rows_offer_what_can_be_done;
+    phase the_staged_rows_pass_the_hosts_check_and_offer_what_can_be_done;
+    // Read from the window that publishes them, after the check the host
+    // makes of a surface. A capture opens without that check, so it is made
+    // here: rows counted beside the app carried one address four times.
     {
         en();
-        let model = AccessModel::shown(sample());
-        let devices: Vec<LiveRow> = model
-            .entries()
-            .into_iter()
-            .filter_map(|entry| match entry {
-                Entry::Device(device) if !device.current => Some(device_row(device, "")),
-                Entry::Browser(browser) if browser.revocable() => Some(browser_row(&browser)),
-                _ => None,
-            })
-            .collect();
+        let mut app = TestApp::<SettingsShell>::capture(Some("devices_access"))
+            .expect("the staged page opens");
+        let violations = app.harness().component_contract_violations();
+        assert!(violations.is_empty(), "the host would refuse: {violations:?}");
+
+        let phone = published_row(&mut app, &format!("settings.device:{}", key(2)))
+            .expect("the phone is published");
         assert_eq!(
-            devices.len(),
-            2,
-            "the phone and the browser; the removed phone is gone"
+            verbs(&phone),
+            ["rename-device", "revoke-device"],
+            "naming it, and taking it back"
+        );
+        assert_eq!(asks(offered(&phone, "revoke-device")), [reason_asked()]);
+        let browser = published_row(&mut app, &format!("settings.device-browser:{BROWSER}"))
+            .expect("the browser is published");
+        assert_eq!(verbs(&browser), ["revoke-browser"]);
+        assert_eq!(asks(offered(&browser, "revoke-browser")), [reason_asked()]);
+        assert!(
+            published_row(&mut app, &format!("settings.device:{}", key(4))).is_none(),
+            "the removed phone is gone"
+        );
+        assert!(
+            published_row(&mut app, &format!("settings.device:{}", key(1))).is_none(),
+            "this computer is taken back from another device, not from here"
+        );
+
+        let nightly = published_row(
+            &mut app,
+            &format!("settings.agent-grant:{}", "cc".repeat(32)),
+        )
+        .expect("the script's key is published");
+        assert_eq!(
+            verbs(&nightly),
+            ["revoke-agent", "stop-session"],
+            "remove, and stop its open session"
         );
         assert_eq!(
-            devices[0].clone().into_resource().actions.len(),
-            REVOKE_REASONS.len() + 1,
-            "every way to take it back, and naming it"
+            asks(offered(&nightly, "stop-session")),
+            [("session".to_owned(), vec!["Nightly export #12".to_owned()])]
         );
-        let agents: Vec<_> = model
-            .agents()
-            .iter()
-            .map(|agent| agent_row(agent, "").into_resource())
-            .collect();
-        assert_eq!(agents.len(), 3);
-        let nightly = agents
-            .iter()
-            .find(|row| row.id.as_str().ends_with(&"cc".repeat(32)))
-            .unwrap();
-        assert_eq!(nightly.actions.len(), 2, "remove, and stop its open run");
-        let asking = asking_row(&model.asking[0]).into_resource();
-        assert_eq!(asking.actions.len(), 2, "approve or decline");
+        let asking = published_row(
+            &mut app,
+            &format!("settings.device-asking:{}", "dd".repeat(32)),
+        )
+        .expect("the device that asks is published");
+        assert_eq!(verbs(&asking), ["answer-device"], "approve or decline");
+        assert_eq!(
+            asks(offered(&asking, "answer-device")),
+            [("approve".to_owned(), Vec::new())]
+        );
     }
 }
 
@@ -813,5 +848,514 @@ tilo_test_env::scenario! {
                 "{label}: the shell answers later"
             );
         }
+    }
+}
+
+const OTHER_COMPUTER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+const ASK: &str = "dd";
+const FIRST_SESSION: &str = "Claude Code #1";
+const SECOND_SESSION: &str = "Claude Code #2";
+
+/// What a person with more than one of everything has listed: this computer
+/// and another, a browser with two tabs, a device asking to join, and an
+/// agent with two sessions open.
+fn a_full_list(now: i64) -> std::sync::Arc<RecordingHost> {
+    let mut listed = record(now);
+    listed.as_array_mut().unwrap().push(serde_json::json!({
+        "label": "MacBook Air", "key_hex": OTHER_COMPUTER,
+        "fingerprint": "22 22 22 22 22 22", "current": false, "revoked": false,
+        "issued_ms": now - 9 * DAY, "last_active_ms": now - 2 * DAY}));
+    let host = RecordingHost::new(listed);
+    *host.asking.lock().unwrap() = serde_json::json!({"asking": [
+        {"ask": ASK, "label": "Safari on iPad", "code": "482 913", "via": "Pixel 9"},
+    ]});
+    *host.served.lock().unwrap() = Some(serde_json::json!({
+        "endpoint": "https://mcp.tilo.sh",
+        "grants": [{"id": LAPTOP_AGENT, "agent": "Claude Code", "device": "laptop",
+            "granted_ms": now - 2 * DAY, "sessions": [
+                {"name": FIRST_SESSION, "started_ms": now - 9 * MINUTE},
+                {"name": SECOND_SESSION, "started_ms": now - 2 * MINUTE},
+            ]}],
+    }));
+    host
+}
+
+fn computer_row_id() -> String {
+    format!("settings.device:{OTHER_COMPUTER}")
+}
+
+fn browser_row_id() -> String {
+    format!("settings.device-browser:{BROWSER}")
+}
+
+fn asking_row_id() -> String {
+    format!("settings.device-asking:{ASK}")
+}
+
+fn agent_row_id() -> String {
+    format!("settings.agent-grant:{LAPTOP_AGENT}")
+}
+
+fn revoke() -> ui::tilo_actions::remote::RemoteActionTarget {
+    identity_admin::target(identity_admin::REVOKE)
+}
+
+fn object(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    match value {
+        serde_json::Value::Object(object) => object,
+        other => panic!("an object, not {other}"),
+    }
+}
+
+/// The row `id` as the window publishes it now, in the tree a host reads.
+fn published_row(
+    app: &mut TestApp<SettingsShell>,
+    id: &str,
+) -> Option<ui::tilo_actions::ResourceSpec> {
+    fn find(
+        resources: &[ui::tilo_actions::ResourceSpec],
+        id: &str,
+    ) -> Option<ui::tilo_actions::ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource.clone())
+            } else {
+                find(&resource.children, id)
+            }
+        })
+    }
+    find(&app.harness().resources(), id)
+}
+
+/// The verbs `row` offers, in order, each under an address of its own: one
+/// address offered twice is what the host refuses.
+fn verbs(row: &ui::tilo_actions::ResourceSpec) -> Vec<&str> {
+    let verbs: Vec<&str> = row.actions.iter().map(|spec| spec.id.as_str()).collect();
+    for verb in &verbs {
+        assert_eq!(
+            verbs.iter().filter(|other| other == &verb).count(),
+            1,
+            "{} offers `{verb}` once",
+            row.id.as_str()
+        );
+    }
+    verbs
+}
+
+fn offered<'a>(
+    row: &'a ui::tilo_actions::ResourceSpec,
+    verb: &str,
+) -> &'a ui::tilo_actions::ActionSpec {
+    row.actions
+        .iter()
+        .find(|spec| spec.id == verb)
+        .unwrap_or_else(|| panic!("{} offers `{verb}`", row.id.as_str()))
+}
+
+/// What `spec` asks its caller for: each parameter, with the values it takes
+/// when they are a list. Each is required: the row binds everything else.
+fn asks(spec: &ui::tilo_actions::ActionSpec) -> Vec<(String, Vec<String>)> {
+    spec.params()
+        .iter()
+        .map(|param| {
+            assert!(param.required, "`{}` asks for `{}`", spec.id, param.name);
+            (
+                param.name.to_string(),
+                param.choices.iter().map(ToString::to_string).collect(),
+            )
+        })
+        .collect()
+}
+
+/// Why a device or a browser is taken back, as its one action asks.
+fn reason_asked() -> (String, Vec<String>) {
+    (
+        "reason".to_owned(),
+        REVOKE_REASONS.iter().map(ToString::to_string).collect(),
+    )
+}
+
+/// Settings open on Devices and access with everything of [`a_full_list`]
+/// read. Opening is itself the check: the test app does not open on a
+/// surface the host would refuse.
+fn window_on_a_full_list(host: &std::sync::Arc<RecordingHost>) -> TestApp<SettingsShell> {
+    let mut app = window_on(host);
+    tilo_test_env::wait_until("every list of the page to be read", || {
+        app.settle();
+        [computer_row_id(), browser_row_id(), asking_row_id()]
+            .iter()
+            .all(|id| published_row(&mut app, id).is_some())
+            && published_row(&mut app, &agent_row_id())
+                .is_some_and(|row| row.actions.iter().any(|spec| spec.id == "stop-session"))
+    });
+    app
+}
+
+/// A person's click on the control named `name`, and the frames after it.
+fn press(app: &mut TestApp<SettingsShell>, name: &str) {
+    app.harness()
+        .click_named(name)
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+    app.settle();
+}
+
+/// What the host was asked at `target`, once it was asked anything there.
+fn asked_at_last(
+    app: &mut TestApp<SettingsShell>,
+    host: &RecordingHost,
+    target: &ui::tilo_actions::remote::RemoteActionTarget,
+) -> Vec<serde_json::Map<String, serde_json::Value>> {
+    tilo_test_env::wait_until("the host to be asked", || {
+        app.settle();
+        !host.asked_at(target).is_empty()
+    });
+    host.asked_at(target)
+}
+
+/// The person agrees to what the host asks before something is taken back.
+/// A control bound to such an action never confirms it itself: the host
+/// asks about that row's action, and until the person agreed the host that
+/// keeps their devices has heard nothing.
+fn agree(app: &mut TestApp<SettingsShell>, host: &RecordingHost, row: &str, verb: &str) {
+    let (asked, _) = app.asking().expect("taking it back asks first");
+    assert_eq!(
+        (asked.resource.as_str(), asked.action.as_str()),
+        (row, verb)
+    );
+    assert!(
+        host.asked_at(&revoke()).is_empty(),
+        "nothing is taken back before the person agreed"
+    );
+    assert_eq!(app.confirm_asked(), Some(asked));
+}
+
+fn now() -> i64 {
+    i64::try_from(ui::time::unix_now_ms()).unwrap()
+}
+
+tilo_test_env::scenario! {
+    fn the_rows_of_devices_and_access_are_a_surface_the_host_accepts;
+
+    phase settings_opens_on_a_person_with_more_than_one_of_everything;
+    // Another computer, a browser with two tabs, a device asking to join and
+    // an agent with two sessions open: each put one address on its row
+    // several times, and the host withdrew every action of Settings for it.
+    {
+        let host = a_full_list(now());
+        let mut app = window_on_a_full_list(&host);
+        let violations = app.harness().component_contract_violations();
+        assert!(violations.is_empty(), "the host would refuse: {violations:?}");
+    }
+
+    phase each_row_offers_each_verb_once_and_asks_for_what_differed;
+    {
+        let host = a_full_list(now());
+        let mut app = window_on_a_full_list(&host);
+
+        let computer = published_row(&mut app, &computer_row_id()).unwrap();
+        assert_eq!(verbs(&computer), ["rename-device", "revoke-device"]);
+        assert_eq!(asks(offered(&computer, "revoke-device")), [reason_asked()]);
+        assert!(
+            asks(offered(&computer, "rename-device")).is_empty(),
+            "the name is the row's, as the person types it"
+        );
+
+        let browser = published_row(&mut app, &browser_row_id()).unwrap();
+        assert_eq!(verbs(&browser), ["revoke-browser"]);
+        assert_eq!(asks(offered(&browser, "revoke-browser")), [reason_asked()]);
+
+        let asking = published_row(&mut app, &asking_row_id()).unwrap();
+        assert_eq!(verbs(&asking), ["answer-device"]);
+        let answer = offered(&asking, "answer-device");
+        assert_eq!(asks(answer), [("approve".to_owned(), Vec::new())]);
+        assert_eq!(answer.params()[0].ty, ui::tilo_actions::ParamType::Boolean);
+
+        let agent = published_row(&mut app, &agent_row_id()).unwrap();
+        assert_eq!(
+            verbs(&agent),
+            ["revoke-device", "rename-device", "stop-session"]
+        );
+        assert_eq!(
+            asks(offered(&agent, "stop-session")),
+            [(
+                "session".to_owned(),
+                vec![FIRST_SESSION.to_owned(), SECOND_SESSION.to_owned()]
+            )],
+            "the sessions open now, by the names History gives them"
+        );
+    }
+
+    phase taking_back_keeps_the_contract_it_was_declared_with;
+    // What a caller needs and what it is asked first are the declaration's,
+    // whether the row binds the reason or asks for it.
+    {
+        let host = a_full_list(now());
+        let mut app = window_on_a_full_list(&host);
+        for (row, effect) in [
+            (
+                computer_row_id(),
+                DevicesAccessEffect::RevokeDevice {
+                    device: OTHER_COMPUTER.into(),
+                    reason: REMOVED.into(),
+                },
+            ),
+            (
+                browser_row_id(),
+                DevicesAccessEffect::RevokeBrowser {
+                    browser: BROWSER.into(),
+                    reason: REMOVED.into(),
+                },
+            ),
+        ] {
+            let declared = SettingsEffect::from(effect).bound();
+            let row = published_row(&mut app, &row).unwrap();
+            let spec = offered(&row, declared.id.as_str());
+            assert_eq!(spec.contract, declared.contract, "{}", spec.id);
+            assert_eq!(
+                spec.contract.confirmation,
+                ui::tilo_actions::ConfirmationPolicy::Confirm,
+                "{}: it asks first",
+                spec.id
+            );
+            assert_eq!(
+                spec.contract.risk,
+                ui::tilo_actions::RiskLevel::Destructive,
+                "{}",
+                spec.id
+            );
+        }
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_press_on_the_page_reaches_the_rows_one_action_with_its_argument;
+
+    phase declining_declines_and_approving_approves;
+    // They were two actions under one address, and a button names its
+    // action by address: whichever was pressed, the first one ran.
+    {
+        for (button, approve) in [("decline", false), ("approve", true)] {
+            let host = a_full_list(now());
+            let mut app = window_on_a_full_list(&host);
+            press(&mut app, &format!("settings.access.asking.{ASK}.{button}"));
+            assert_eq!(
+                asked_at_last(
+                    &mut app,
+                    &host,
+                    &device_pairing::target(device_pairing::ANSWER)
+                ),
+                [object(serde_json::json!({"ask": ASK, "label": "Safari on iPad",
+                    "approve": approve, "confirm": true}))],
+                "{button}"
+            );
+        }
+    }
+
+    phase stopping_one_of_two_sessions_stops_that_one;
+    {
+        for session in [SECOND_SESSION, FIRST_SESSION] {
+            let host = a_full_list(now());
+            let mut app = window_on_a_full_list(&host);
+            // The sessions are in the row's details.
+            press(&mut app, &format!("settings.access.agent.{LAPTOP_AGENT}"));
+            press(
+                &mut app,
+                &format!("settings.access.agent.{LAPTOP_AGENT}.stop.{session}"),
+            );
+            assert_eq!(
+                asked_at_last(&mut app, &host, &mcp_server::target(mcp_server::STOP)),
+                [object(serde_json::json!({"grant": LAPTOP_AGENT, "session": session}))],
+                "{session}"
+            );
+        }
+    }
+
+    phase removing_another_computer_takes_it_back_as_retired_once_confirmed;
+    {
+        let host = a_full_list(now());
+        let mut app = window_on_a_full_list(&host);
+        press(
+            &mut app,
+            &format!("settings.access.device.{OTHER_COMPUTER}.ask-remove"),
+        );
+        assert!(
+            host.asked_at(&revoke()).is_empty(),
+            "the first press only says what removing does"
+        );
+        press(
+            &mut app,
+            &format!("settings.access.device.{OTHER_COMPUTER}.remove"),
+        );
+        agree(&mut app, &host, &computer_row_id(), "revoke-device");
+        assert_eq!(
+            asked_at_last(&mut app, &host, &revoke()),
+            [object(serde_json::json!({"device": OTHER_COMPUTER, "reason": "retired",
+                "confirm": true}))]
+        );
+        let sent = host
+            .asked()
+            .into_iter()
+            .find(|request| request.target == revoke())
+            .unwrap();
+        assert_eq!(sent.confirmation, Some(Confirmation::Confirmed));
+    }
+
+    phase removing_a_browser_takes_every_tab_of_it_back;
+    {
+        let host = a_full_list(now());
+        let mut app = window_on_a_full_list(&host);
+        press(&mut app, &format!("settings.access.browser.{BROWSER}.ask-remove"));
+        press(&mut app, &format!("settings.access.browser.{BROWSER}.remove"));
+        agree(&mut app, &host, &browser_row_id(), "revoke-browser");
+        tilo_test_env::wait_until("both tabs to be taken back", || {
+            app.settle();
+            host.asked_at(&revoke()).len() == 2
+        });
+        assert_eq!(
+            host.asked_at(&revoke()),
+            [
+                object(serde_json::json!({"device": key(0x31), "reason": "retired",
+                    "confirm": true})),
+                object(serde_json::json!({"device": key(0x32), "reason": "retired",
+                    "confirm": true})),
+            ]
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_caller_names_the_argument_and_a_denial_stays_a_denial;
+
+    phase the_search_or_an_agent_says_why_a_device_is_taken_back;
+    {
+        let host = a_full_list(now());
+        let mut app = window_on_a_full_list(&host);
+        app.call_confirmed_on(
+            &computer_row_id(),
+            "revoke-device",
+            serde_json::json!({"reason": "stolen"}),
+        )
+        .expect("a reason of the choices, confirmed, is carried out");
+        assert_eq!(
+            asked_at_last(&mut app, &host, &revoke()),
+            [object(serde_json::json!({"device": OTHER_COMPUTER, "reason": "stolen",
+                "confirm": true}))]
+        );
+    }
+
+    phase an_argument_the_action_does_not_take_is_refused_before_the_host_hears;
+    {
+        let host = a_full_list(now());
+        let mut app = window_on_a_full_list(&host);
+        for arguments in [
+            // Not one of the reasons.
+            serde_json::json!({"reason": "bored"}),
+            // No reason at all: the row holds none for its caller.
+            serde_json::json!({}),
+            // The device is the row's, never its caller's.
+            serde_json::json!({"reason": "lost", "device": THIS_DEVICE}),
+        ] {
+            let refused = app.call_confirmed_on(
+                &computer_row_id(),
+                "revoke-device",
+                arguments.clone(),
+            );
+            assert!(refused.is_err(), "{arguments}: {refused:?}");
+        }
+        // An answer nobody gave lets nobody in, and declines nobody.
+        let unanswered = app.call_on(&asking_row_id(), "answer-device", serde_json::json!({}));
+        assert!(unanswered.is_err(), "{unanswered:?}");
+        // A session that is not one of the agent's open ones.
+        let stranger = app.call_on(
+            &agent_row_id(),
+            "stop-session",
+            serde_json::json!({"session": "Codex #7"}),
+        );
+        assert!(stranger.is_err(), "{stranger:?}");
+        app.settle();
+        for target in [
+            revoke(),
+            device_pairing::target(device_pairing::ANSWER),
+            mcp_server::target(mcp_server::STOP),
+        ] {
+            assert!(host.asked_at(&target).is_empty(), "{target:?}");
+        }
+    }
+
+    phase without_its_confirmation_nothing_is_taken_back;
+    {
+        let host = a_full_list(now());
+        let mut app = window_on_a_full_list(&host);
+        for (row, verb) in [
+            (computer_row_id(), "revoke-device"),
+            (browser_row_id(), "revoke-browser"),
+        ] {
+            let refused = app.call_on(&row, verb, serde_json::json!({"reason": "lost"}));
+            assert_eq!(
+                refused,
+                Err(ui::tilo_actions::ApiError::ConfirmationRequired),
+                "{verb}"
+            );
+        }
+        app.settle();
+        assert!(host.asked_at(&revoke()).is_empty());
+    }
+
+    phase a_member_who_may_only_read_takes_nothing_back;
+    {
+        let host = a_full_list(now());
+        let mut app = window_on_a_full_list(&host);
+        app.set_role(ui::permissions::Role::Viewer);
+        app.settle();
+        for (row, verb) in [
+            (computer_row_id(), "revoke-device"),
+            (browser_row_id(), "revoke-browser"),
+        ] {
+            let refused =
+                app.call_confirmed_on(&row, verb, serde_json::json!({"reason": "lost"}));
+            assert!(refused.is_err(), "{verb}: {refused:?}");
+        }
+        app.settle();
+        assert!(
+            host.asked_at(&revoke()).is_empty(),
+            "what a member may not do reaches no host"
+        );
+    }
+
+    phase the_hosts_refusal_reaches_the_person_who_pressed;
+    {
+        let host = a_full_list(now());
+        host.refused.lock().unwrap().push(revoke());
+        let mut app = window_on_a_full_list(&host);
+        press(
+            &mut app,
+            &format!("settings.access.device.{OTHER_COMPUTER}.ask-remove"),
+        );
+        press(
+            &mut app,
+            &format!("settings.access.device.{OTHER_COMPUTER}.remove"),
+        );
+        agree(&mut app, &host, &computer_row_id(), "revoke-device");
+        tilo_test_env::wait_until("the host's refusal to be told", || {
+            app.settle();
+            !app.harness().control_failures().is_empty()
+                || app.harness().refusal_said().is_some()
+        });
+        let failed = format!("{:?}", app.harness().control_failures());
+        let said = format!("{:?}", app.harness().refusal_said());
+        let told = format!("{failed} {said}");
+        assert!(
+            told.contains(&ActionHostError::NotPermitted.to_string()),
+            "{told}"
+        );
+        assert_eq!(
+            host.asked_at(&revoke()).len(),
+            1,
+            "asked once, and not again after the refusal"
+        );
+        assert!(
+            published_row(&mut app, &computer_row_id()).is_some(),
+            "the computer is still one of the person's"
+        );
     }
 }

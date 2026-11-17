@@ -60,7 +60,17 @@ impl ResourceApp for ProviderSettingsApp {
     const TITLE: &'static str = "Model providers";
     const ICON: Option<&'static str> = Some("settings");
     fn view(cx: &mut ViewCx<Providers>) -> Element {
-        let window = ProviderSurface::attached(cx);
+        let administration = ProviderSurface::administration(cx);
+        if !administration.is_available() && cx.mode().is_live() {
+            // Nothing here administers providers. A person whose workspace
+            // runs on a host keeps theirs there, and this window shows
+            // those: one place holds their keys, whichever window they
+            // open. Where no host answers, it says who sets providers up.
+            // A window that only describes itself keeps describing the
+            // panel, whose requests are the ones this app records.
+            return crate::person_models::everything_or(cx, administered_elsewhere);
+        }
+        let window = ProviderSurface::attached(cx, administration);
         let rows = Rc::clone(&window.rows);
         cx.window_effects(ProviderSurface::effect);
         cx.publishing(
@@ -69,6 +79,16 @@ impl ResourceApp for ProviderSettingsApp {
         )
     }
 }
+/// Who sets providers up, where this window cannot.
+fn administered_elsewhere() -> Element {
+    Box::new(
+        ui::widget::EmptyState::new(crate::i18n::t("agent-provider-admin-only-title"))
+            .with_icon(ui::icons::Icon::Lock)
+            .with_message(crate::i18n::t("agent-provider-admin-only-message"))
+            .with_id("model-provider-administration"),
+    )
+}
+
 #[derive(Clone, Default)]
 pub(super) struct Bindings {
     actions: Option<Actions<Providers>>,
@@ -100,9 +120,9 @@ pub(super) struct ProviderSurface {
     rows: Rc<RefCell<Vec<LiveRow>>>,
 }
 impl ProviderSurface {
-    /// The panel over the administration the launcher granted, a host lent,
-    /// or a live window reaches on its own, binding its controls to `cx`.
-    fn attached(cx: &ViewCx<Providers>) -> Self {
+    /// The administration the launcher granted, a host lent, or a live
+    /// window reaches on its own.
+    fn administration(cx: &ViewCx<Providers>) -> ProviderAdministration {
         let mut administration =
             LAUNCHER_ADMIN.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
         let mut lent = false;
@@ -113,6 +133,11 @@ impl ProviderSurface {
         if !lent && !administration.is_available() && cx.mode().is_live() {
             administration = ProviderAdministration::from_launcher().unwrap_or_default();
         }
+        administration
+    }
+
+    /// The panel over `administration`, binding its controls to `cx`.
+    fn attached(cx: &ViewCx<Providers>, administration: ProviderAdministration) -> Self {
         let window = Self {
             panel: ProviderPanel::new(
                 Bindings {
@@ -181,14 +206,7 @@ impl Widget for ProviderSurface {
         let child = self.composed.build_layout_kept(
             || -> Box<dyn Widget> {
                 if panel.administered_elsewhere() {
-                    return Box::new(
-                        ui::widget::EmptyState::new(crate::i18n::t(
-                            "agent-provider-admin-only-title",
-                        ))
-                        .with_icon(ui::icons::Icon::Lock)
-                        .with_message(crate::i18n::t("agent-provider-admin-only-message"))
-                        .with_id("model-provider-administration"),
-                    );
+                    return administered_elsewhere();
                 }
                 Box::new(
                     panel

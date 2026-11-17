@@ -12,8 +12,8 @@ use fs_protocol::FileDocumentId;
 use uuid::Uuid;
 
 use super::{
-    IndexedDocument, NODES_KEY, Namespace, NodeKind, NodeRow, NodeWalk, Obj, DOCUMENT_ID_KEY,
-    RECORD_ID_MIGRATION_DOMAIN, ROOT_ID, ROOT_DOCUMENT_ID_KEY, DocumentIndexDigest, TreeIndex,
+    DOCUMENT_ID_KEY, DocumentIndexDigest, IndexedDocument, NODES_KEY, Namespace, NodeKind, NodeRow,
+    NodeWalk, Obj, RECORD_ID_MIGRATION_DOMAIN, ROOT_DOCUMENT_ID_KEY, ROOT_ID, TreeIndex,
     escape_path_name, read_name, str_at,
 };
 
@@ -102,7 +102,8 @@ impl Namespace {
             let Some(node) = self.node(&id) else {
                 continue;
             };
-            let node_document_id = str_at(&self.doc, &node, DOCUMENT_ID_KEY).and_then(parse_document_id);
+            let node_document_id =
+                str_at(&self.doc, &node, DOCUMENT_ID_KEY).and_then(parse_document_id);
             // `document_id_for_id` answers the reserved root id from the document root and every
             // other node from its own object; the structural index bound the node's own key.
             let document_id = if id == ROOT_ID {
@@ -260,7 +261,9 @@ impl Namespace {
             return;
         }
         let document_id = Self::deterministic_document_id(id);
-        let _ = self.doc.put(&node, DOCUMENT_ID_KEY, document_id.0.to_string());
+        let _ = self
+            .doc
+            .put(&node, DOCUMENT_ID_KEY, document_id.0.to_string());
         self.tree.bind_document(id, document_id);
     }
 
@@ -433,9 +436,11 @@ impl Namespace {
     pub(super) fn ensure_document_ids(&mut self) {
         if self.root_document_id().is_none() {
             let document_id = Self::deterministic_document_id(ROOT_ID);
-            let _ = self
-                .doc
-                .put(&Obj::index(), ROOT_DOCUMENT_ID_KEY, document_id.0.to_string());
+            let _ = self.doc.put(
+                &Obj::index(),
+                ROOT_DOCUMENT_ID_KEY,
+                document_id.0.to_string(),
+            );
         }
         let ids: Vec<_> = self.doc.sorted_node_ids().into_iter().collect();
         for id in ids {
