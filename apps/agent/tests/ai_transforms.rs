@@ -31,9 +31,9 @@ use tilo_actions::remote::{
 use tilo_agent::transform::{self, TransformModel};
 use tilo_automation::{
     AGENT_APP_ID, AGENT_TASK_ACTION, ActionCatalog, AskRequest, Binding, CheckErrorKind,
-    ConfirmationRequest, InvocationHooks, InvocationId, InvocationMode, InvocationOutcome,
-    InvocationReport, InvocationRequest, InvocationTrigger, NoShortcuts, Shortcut, Step,
-    StepFailure, StepKind, check, run,
+    ConfirmationRequest, InvocationHooks, InvocationMode, InvocationOutcome, InvocationReport,
+    InvocationRequest, InvocationTrigger, NoShortcuts, Shortcut, Step, StepFailure, StepKind,
+    check, run,
 };
 
 /// Answers from a script, counting how often it was asked.
@@ -276,7 +276,7 @@ fn run_shortcut(
         &Unattended,
         InvocationRequest {
             shortcut,
-            invocation: InvocationId::new(),
+            invocation: tilo_automation::InvocationId::new(),
             caller: Caller::local_person("ada"),
             mode: InvocationMode::Unattended,
             trigger: InvocationTrigger::Manual,

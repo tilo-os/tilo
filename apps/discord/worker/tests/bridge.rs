@@ -310,7 +310,7 @@ where
             );
             assert_eq!(
                 report.outcome,
-                tilo_automation::RunOutcome::Completed,
+                tilo_automation::InvocationOutcome::Completed,
                 "{what}: {report:#?}"
             );
         }
