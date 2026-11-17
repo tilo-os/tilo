@@ -49,7 +49,7 @@ pub const CANVAS: &str = "Canvas";
 pub const FRAMES: &str = "so.tilo.shell:frames";
 /// The caret pointing puts on the canvas (canvas.md §1), as assistive technology names it: the
 /// field's own words for a person to read.
-pub const CANVAS_CARET: &str = "Find or ask";
+pub const CANVAS_CARET: &str = "Ask or find anything";
 /// The Enter key, as the compositor's keyboard reads it.
 pub const KEY_ENTER: u32 = 28;
 /// The Escape key.

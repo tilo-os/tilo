@@ -94,14 +94,16 @@ view canvas(a: Layout, name: Text, framed: Bool, lists: Bool) {
         if pointed.len() > 0 {
             ui.MapPin(
                 name: "Caret",
-                x: (pointed.at(0) ?? 0) + caret_inset(pointed),
-                y: (pointed.at(1) ?? 0) + caret_inset(pointed),
+                x: (pointed.at(0) ?? 0) + caret_inset(pointed) - composer_padding(),
+                y: (pointed.at(1) ?? 0) + caret_inset(pointed) - composer_padding(),
                 width: caret_room(
                     pointed.at(2) ?? 0,
                     (seen.at(0) ?? 0) + (seen.at(2) ?? 0) - (pointed.at(0) ?? 0),
                 ),
                 height: composer_height(),
             ) {
+                // The card stands its padding up and to the left, so the caret in its field is
+                // where the person pointed.
                 composer(typed, pointed, seen)
             }
         }
@@ -173,6 +175,11 @@ view composer(typed: State<Text>, pointed: State<List<Int>>, seen: State<List<In
 /// How tall the composer stands, in canvas pixels: its one line and the card around it.
 fn composer_height() -> Int {
     56
+}
+
+/// How far the composer's field stands inside its card, in canvas pixels: the card's padding.
+fn composer_padding() -> Int {
+    16
 }
 
 /// Whether the place `p` of the strip `s` hugs what it holds up to its box rather than filling
