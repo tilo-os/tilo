@@ -62,6 +62,7 @@ mod follow;
 mod found;
 mod found_files;
 mod host_actions;
+mod index;
 mod invocation_log;
 mod invocations;
 mod jobs;
@@ -332,6 +333,18 @@ struct Shared {
     projecting: Mutex<HashSet<WorkspaceId>>,
     /// Records whose name in their app's index waits to be read again.
     renaming: Mutex<HashSet<DocumentRoute>>,
+    /// What search read of the documents, counted for the timing lines and for the tests that
+    /// hold a query to the index instead of to what it is built from.
+    search: SearchActivity,
+}
+
+/// Documents search opened, by what it read them for.
+#[derive(Default)]
+struct SearchActivity {
+    /// Documents opened to read what their apps publish to search while a query waited.
+    opened: std::sync::atomic::AtomicU64,
+    /// Documents opened to read the same between requests, so that a query never has to.
+    warmed: std::sync::atomic::AtomicU64,
 }
 
 /// The host's page actions over every record of its workspaces.
@@ -360,6 +373,7 @@ impl WorkspaceActions {
                 in_conversation: std::sync::RwLock::default(),
                 projecting: Mutex::default(),
                 renaming: Mutex::default(),
+                search: SearchActivity::default(),
             }),
             catalogue,
         }
@@ -386,6 +400,20 @@ impl WorkspaceActions {
         if let Some(jobs) = self.shared.jobs.lock_recover().as_ref() {
             let _ = jobs.send((Instant::now(), Job::Forget(workspace_id)));
         }
+    }
+
+    /// How many documents search opened to read what their apps publish, since the service
+    /// started: a query answered from the index opens none, however much the workspace holds.
+    #[must_use]
+    pub fn search_documents_opened(&self) -> u64 {
+        self.shared.search.opened.load(Ordering::Relaxed)
+    }
+
+    /// How many documents were read for the search index between requests, as they landed:
+    /// what keeps a find from opening them while the person waits.
+    #[must_use]
+    pub fn search_documents_warmed(&self) -> u64 {
+        self.shared.search.warmed.load(Ordering::Relaxed)
     }
 
     /// `caller`'s session became an agent's run in `workspace_id`: the run is
@@ -1032,9 +1060,9 @@ struct Workspace {
     /// Records whose writes landed in the session's replica that it cannot open yet: their
     /// keys, surface or deciding governance have not arrived.
     undecided: BTreeSet<DocumentRoute>,
-    /// The workspace's records in the session's replica, once a write to one
+    /// The workspace's documents in the session's replica, once a write to one
     /// named the workspace.
-    records: Option<WorkspaceDocuments>,
+    documents: Option<WorkspaceDocuments>,
     /// What the host says for the runs it executes here ([`session_voice`]).
     sessions: session_voice::Sessions,
     /// What changed in its records, for those following it ([`found`]).
@@ -1079,7 +1107,7 @@ impl Workspace {
             not_yours: HashSet::new(),
             gave_up: GaveUp::default(),
             undecided: BTreeSet::new(),
-            records: None,
+            documents: None,
             changes: ui::history_source::feed::ChangeLog::new(),
             run_index: invocations::Index::default(),
             watchers: change::Watchers::default(),
@@ -1089,12 +1117,12 @@ impl Workspace {
     /// The workspace as the session's replica holds it now.
     fn state(&mut self) -> WorkspaceState {
         let engine = Arc::clone(self.peer.engine());
-        match &mut self.records {
-            Some(records) => WorkspaceState {
-                workspace: Some(records.workspace().to_owned()),
-                records: records.people_first(),
+        match &mut self.documents {
+            Some(kept) => WorkspaceState {
+                workspace: Some(kept.workspace().to_owned()),
+                records: kept.people_first(),
                 engine,
-                revision: records.landings(),
+                revision: kept.landings(),
             },
             None => WorkspaceState {
                 workspace: None,
@@ -1237,8 +1265,8 @@ impl Workspace {
     /// The cluster id of the workspace `workspace_id` names, from what the member has
     /// seen of it: its records, or, in a workspace with none yet, its governance.
     fn cluster_id(&self, workspace_id: WorkspaceId) -> Option<String> {
-        if let Some(records) = &self.records {
-            return Some(records.workspace().to_owned());
+        if let Some(kept) = &self.documents {
+            return Some(kept.workspace().to_owned());
         }
         self.peer
             .engine()
@@ -1314,6 +1342,9 @@ struct Worker {
     save_grace: Duration,
     /// Writes served since the pace was last measured with the full grace.
     save_probes: u32,
+    /// Whether documents search keeps no entries for wait for the next pass that reads them:
+    /// what the thread builds while no request waits on it ([`Worker::warm_entries`]).
+    warming: bool,
 }
 
 /// The API's answer for an action it has nothing by that address.
@@ -1467,6 +1498,7 @@ impl Worker {
             unmounted: HashMap::new(),
             save_grace: publish::SAVE_GRACE,
             save_probes: 0,
+            warming: false,
         }
     }
 
@@ -1501,6 +1533,12 @@ impl Worker {
                 }
                 continue;
             }
+            // A document whose write landed since the last pass is read for the index here,
+            // between requests: a find answers from the index, never by opening every one
+            // while the person waits.
+            if self.warming {
+                self.warming = !self.warm_entries(index::WARM_SLICE);
+            }
             let due = [
                 self.joining_until(),
                 session_voice::next_due(&self.workspaces),
@@ -1510,7 +1548,12 @@ impl Worker {
             .flatten()
             .min();
             let next = match due {
+                // With documents still to read for the index, the thread never waits: it takes
+                // a request that is queued, else reads the next, so the index is ready as soon
+                // as the workspace is.
+                Some(_) if self.warming => jobs.recv_timeout(Duration::ZERO),
                 Some(until) => jobs.recv_timeout(until.saturating_duration_since(Instant::now())),
+                None if self.warming => jobs.recv_timeout(Duration::ZERO),
                 None => jobs
                     .recv()
                     .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
@@ -1980,6 +2023,11 @@ impl Worker {
         }
         for ((route, _, _), held) in &mut self.bounded {
             catch_up(route, &mut held.held, &state);
+        }
+        // A write that landed since the last pass is read for the index as soon as this
+        // request is answered, so the next find answers from it.
+        if !self.warming && self.unindexed_any() {
+            self.warming = true;
         }
         Ok(state)
     }

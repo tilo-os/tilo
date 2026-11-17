@@ -32,10 +32,12 @@ use tilo_actions::remote::{ChangePage, Found, Within};
 use ui::history_source::feed::DocumentKey;
 use ui::search::index_publication::IndexEntry;
 
+use std::collections::HashMap;
+
 use super::bounded::Bounded;
 use super::{
-    ActionCallError, ActionKind, Answer, Caller, CatalogueQuery, DocumentRoute, Needs, TreePath,
-    Worker, WorkspaceId, record_provider,
+    ActionCallError, ActionKind, Answer, Caller, CatalogueQuery, CatalogueRow, DocumentRoute,
+    Needs, TreePath, Worker, WorkspaceId, record_provider,
 };
 use crate::workspace_documents::Reading;
 
@@ -113,7 +115,9 @@ impl Worker {
         if !self.admits_member(workspace_id, caller) {
             return Err(ActionCallError::NotPermitted);
         }
+        let began = std::time::Instant::now();
         let state = self.refresh(workspace_id, Needs::Workspace)?;
+        let refresh_ms = began.elapsed().as_millis();
         let Some(cluster_id) = state.workspace.clone() else {
             return Ok(Vec::new());
         };
@@ -133,6 +137,7 @@ impl Worker {
             .take(crate::search::MOST_SEARCHED)
             .collect();
         let (docs, searched) = self.searchable(workspace_id, &routes, (&person, within));
+        let entries_ms = began.elapsed().as_millis();
         // Words rank what holds them. With no words, a search narrowed to a place or a time
         // lists what it holds there, the newest first, and one narrowed to nothing finds
         // nothing.
@@ -151,6 +156,10 @@ impl Worker {
             newest
         };
         let mut found: Vec<Found> = Vec::new();
+        // One listing of a document answers for every hit in it: a listing mounts the document
+        // and reads it out, and a search that named twenty hits in one notebook paid for the
+        // notebook twenty times.
+        let mut listings: HashMap<DocumentRoute, Vec<CatalogueRow>> = HashMap::new();
         for at in ranked {
             if found.len() >= MOST_FOUND {
                 break;
@@ -159,7 +168,9 @@ impl Worker {
                 continue;
             };
             let resource = match what {
-                Some(entry) => self.named_resource(workspace_id, caller, &doc.route, entry),
+                Some(entry) => self.listed_resource(&doc.route, entry).or_else(|| {
+                    self.named_resource(workspace_id, caller, &doc.route, entry, &mut listings)
+                }),
                 None => self.leading_resource(workspace_id, caller, &doc.route),
             };
             if let Some(resource) = resource
@@ -168,11 +179,23 @@ impl Worker {
                 found.push(resource);
             }
         }
+        let named_ms = began.elapsed().as_millis();
         // And the files of the workspace's folder, by their paths there, for a caller who may
         // read them.
         if within.is_everything() && self.reads_files(workspace_id, who.as_ref(), &cluster_id) {
             found.extend(self.found_files(workspace_id, &cluster_id, needle, MOST_FOUND));
         }
+        tracing::debug!(
+            needle,
+            routes = routes.len(),
+            docs = docs.len(),
+            found = found.len(),
+            refresh_ms,
+            entries_ms,
+            named_ms,
+            total_ms = began.elapsed().as_millis(),
+            "workspace actions: a search answered"
+        );
         Ok(found)
     }
 
@@ -232,14 +255,28 @@ impl Worker {
             return (docs, searched);
         };
         let engine = std::sync::Arc::clone(workspace.peer.engine());
-        let mut records = workspace.records.as_mut();
+        let mut kept = workspace.documents.as_mut();
         let readings = &mut self.titles;
+        let counted = &self.shared.search;
         for (route, readable) in routes {
             let mut read = |bytes: Vec<u8>| readings.entries(&route.app_id, bytes);
-            // Read once per change of the record where the replica's records are followed; read
-            // whole where nothing landed yet to follow them by.
-            let (entries, changed) = if let Some(records) = records.as_deref_mut() {
-                (records.entries(route, read), records.changed(route))
+            // What the app publishes for search is read once per change where the replica's
+            // documents are followed; where none is followed, the document is read whole.
+            let (entries, changed) = if let Some(kept) = kept.as_deref_mut() {
+                // The index keeps what each document's app publishes, read as it landed
+                // ([`Worker::warm_entries`]): a query answers from it without opening the
+                // document, and opens only one that arrived since its last warm pass.
+                let (entries, opened) = if kept.indexed(route) {
+                    (kept.kept_entries(route), false)
+                } else {
+                    kept.entries(route, read)
+                };
+                if opened {
+                    counted
+                        .opened
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                (entries, kept.changed(route))
             } else {
                 let bytes = engine
                     .record(&route.cluster_id, &route.app_id, &route.document)
@@ -280,8 +317,8 @@ impl Worker {
             {
                 continue;
             }
-            let text = if let Some(records) = records.as_deref_mut() {
-                records.text(route, Reading::Plain)
+            let text = if let Some(kept) = kept.as_deref_mut() {
+                kept.text(route, Reading::Plain)
             } else {
                 engine
                     .record(&route.cluster_id, &route.app_id, &route.document)
@@ -309,14 +346,77 @@ impl Worker {
     /// its own row, asked for among the rows that mention its id under each resource its id
     /// extends (a note under its notebook), the nearest first, then at the record's top. `None`
     /// for a resource the caller lists nothing of.
+    /// The path `entry` itself names, as its app publishes it: the resource a caller addresses
+    /// it by, which the app's own search index holds ([`IndexEntry::resource`]). `None` for an
+    /// entry that names an action on another resource, which the app's listing names: naming
+    /// that one mounts and reads the document.
+    fn listed_resource(&self, route: &DocumentRoute, entry: &IndexEntry) -> Option<Found> {
+        // An action on another resource names it instead: that resource is what a caller
+        // addresses, and only the app's listing names it.
+        if entry
+            .action
+            .as_ref()
+            .is_some_and(|action| action.resource != entry.resource)
+        {
+            return None;
+        }
+        Some(Found {
+            resource: entry.resource.clone(),
+            kind: self
+                .catalogue
+                .get(&route.app_id)
+                .map(|app| app.resource_type.as_str().to_owned())
+                .unwrap_or_default(),
+            label: entry.title.clone(),
+            open: entry.action.as_ref().map(|action| action.action.clone()),
+            arguments: serde_json::Map::new(),
+            app: Some(route.app_id.clone()),
+            provider: Some(record_provider(route)),
+            when: entry.when,
+        })
+    }
+
+    /// The resource `entry` is about, in the document at `route`, as `caller`'s listing names
+    /// it: its own row, asked for among the rows that mention its id under each resource its id
+    /// extends (a note under its notebook), the nearest first, then at the document's top.
+    /// `None` for a resource the caller lists nothing of.
     fn named_resource(
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         route: &DocumentRoute,
         entry: &IndexEntry,
+        listings: &mut HashMap<DocumentRoute, Vec<CatalogueRow>>,
     ) -> Option<Found> {
         let id = entry.resource.as_str();
+        // What the document lists from its top, asked once for every hit in it.
+        if !listings.contains_key(route) {
+            let query = CatalogueQuery {
+                provider: Some(record_provider(route)),
+                max_results: NAMING_ROWS,
+                ..CatalogueQuery::default()
+            };
+            let rows = self
+                .catalogue_page(workspace_id, caller, &query)
+                .map(|page| page.rows)
+                .unwrap_or_default();
+            listings.insert(route.clone(), rows);
+        }
+        if let Some(row) = listings
+            .get(route)
+            .and_then(|rows| rows.iter().find(|row| row.resource.id == id))
+        {
+            return Some(Found {
+                resource: row.resource.id.clone(),
+                kind: row.resource.kind.clone(),
+                label: row.resource.label.clone(),
+                open: None,
+                arguments: serde_json::Map::new(),
+                app: Some(route.app_id.clone()),
+                provider: Some(record_provider(route)),
+                when: entry.when,
+            });
+        }
         let holders = id
             .match_indices('/')
             .map(|(at, _)| id.get(..at).map(str::to_owned))

@@ -115,7 +115,7 @@ impl Worker {
         // this session (an agent's first call is often an open).
         let engine = Arc::clone(workspace.peer.engine());
         let Some(held) = workspace
-            .records
+            .documents
             .get_or_insert_with(|| WorkspaceDocuments::new(named, engine))
             .desktop()
         else {

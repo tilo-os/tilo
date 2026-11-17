@@ -156,7 +156,7 @@ impl Workspace {
             } else {
                 self.undecided.remove(&route);
             }
-            self.records
+            self.documents
                 .get_or_insert_with(|| {
                     WorkspaceDocuments::new(&route.cluster_id, Arc::clone(self.peer.engine()))
                 })

@@ -122,9 +122,9 @@ impl PageActions {
     }
 }
 
-/// The workspace's host as this page's search asks it: its search of what the workspace holds,
-/// over the session the page holds with it.
-pub(crate) struct WorkspaceHost {
+/// The workspace's own search as this page's palette asks it, over the session the page holds
+/// with the workspace.
+pub(crate) struct WorkspaceSearch {
     pub search: Arc<dyn tilo_actions::remote::ResourceSearch>,
     pub workspace: String,
     /// What asks for the shell's pass that lists the host's answer.
@@ -142,7 +142,7 @@ pub(crate) struct SearchParts {
     pub store: tilo_session::platform::Store,
     pub content: tilo_content::ContentStore,
     pub files: Option<Rc<crate::page_files::WorkspaceFiles>>,
-    pub host: Option<WorkspaceHost>,
+    pub host: Option<WorkspaceSearch>,
     pub wake: Arc<dyn Fn() + Send + Sync>,
     pub reveals: crate::browser::Reveals,
 }
@@ -151,6 +151,7 @@ pub(crate) struct SearchParts {
 fn mount(parts: SearchParts) -> Rc<SessionSearch> {
     // The page holds the records of the apps it opened; the workspace's host holds the rest and
     // ranks them, over the session the page already holds with it.
+    let served_here = parts.host.is_some();
     let host_search = parts.host.map(|host| {
         tilo_desktop_search::Held::new(tilo_desktop_search::providers::hosted::HostSearch::new(
             host.search,
@@ -165,6 +166,10 @@ fn mount(parts: SearchParts) -> Rc<SessionSearch> {
             records: Some(tilo_session::records::Records::over(
                 parts.store,
                 crate::replicated::changes(),
+                // What the documents hold is the workspace's own search to find, over every one
+                // it keeps: the page's rows are their names, which its indexes hold, and reading
+                // every document here would open the whole workspace each time one changed.
+                !served_here,
             )),
             workspace_files: parts.files.map(|files| files.source()),
             host_search,
