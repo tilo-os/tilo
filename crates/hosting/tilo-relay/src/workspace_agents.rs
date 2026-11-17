@@ -78,12 +78,12 @@ const WENT_ON: &str = "I am going on with what you wrote next, and answer below.
 /// What a turn is told before what its person wrote while it worked.
 const CAME_SINCE: &str = "While you were working, your person wrote again. Take it into your work \
                           and answer it too:";
-/// What the reply says of a turn that a host which stopped left begun.
+/// What the reply says of a turn that a server which stopped left begun.
 const LEFT_BEGUN: &str = "I was interrupted while I worked on this: the server restarted after I \
                           had started. I did not start over, so that nothing is done twice. Ask \
                           again and I begin anew.";
 
-/// The app that keeps the conversations and the workspace's record of its agents.
+/// The app that keeps the conversations and the workspace's list of its agents.
 const CHAT: &str = "so.tilo.chat";
 /// The app that keeps the issues.
 const TASKS: &str = "so.tilo.tasks";
@@ -102,6 +102,9 @@ const MOST_RESULT_BYTES: usize = 24 * 1024;
 const TOOL_TIME: Duration = Duration::from_secs(120);
 /// How long the host waits for one of its own record writes (the reply, the comment) to be taken.
 const WRITE_WAIT: Duration = Duration::from_secs(30);
+/// The tool a turn in a conversation answers with a view through: Chat's own
+/// `answer-with-view`, on the reply to the turn's ask.
+const ANSWER_WITH_VIEW: &str = "answer_with_view";
 
 /// The host's action service, answering for one workspace as an [`ActionHost`]: what the agent's
 /// tools run on, and what its replies are written through.
@@ -1226,6 +1229,72 @@ impl Reply {
         }
     }
 
+    /// Put the view the model wrote on the reply to the message, through Chat's own
+    /// `answer-with-view`, as the agent acting for the person inside this turn: what the model
+    /// reads back, and whether it failed. The message is the turn's own ask, and the view's
+    /// author is whoever Chat pins from this caller: nothing the model says names either.
+    async fn view(&self, input: &Value) -> (String, bool) {
+        let Ask::Message { part, message, .. } = &self.ask else {
+            return (
+                "only an answer in a conversation carries a view".to_owned(),
+                true,
+            );
+        };
+        let given = input.as_object().cloned().unwrap_or_default();
+        if let Some(other) = given
+            .keys()
+            .find(|key| !matches!(key.as_str(), "source" | "reads"))
+        {
+            return (
+                format!(
+                    "{ANSWER_WITH_VIEW} takes `source` and `reads` and nothing else, not \
+                     `{other}`: whose view it is and which message it answers are never arguments"
+                ),
+                true,
+            );
+        }
+        let (Some(source), Some(reads)) = (
+            given.get("source").filter(|source| source.is_string()),
+            given.get("reads").filter(|reads| reads.is_array()),
+        ) else {
+            return (
+                format!(
+                    "{ANSWER_WITH_VIEW} takes `source`, the view as text, and `reads`, the list \
+                     of the apps it reads"
+                ),
+                true,
+            );
+        };
+        let route = DocumentRoute {
+            app_id: CHAT.to_owned(),
+            cluster_id: self.workspace.clone(),
+            document: part.clone(),
+        };
+        let mut arguments = Map::new();
+        arguments.insert("message".into(), json!(message));
+        arguments.insert("source".into(), source.clone());
+        arguments.insert("reads".into(), reads.clone());
+        let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
+        match invoke_named(
+            &self.host,
+            &self.caller,
+            &route,
+            &resource,
+            "answer-with-view",
+            arguments,
+        )
+        .await
+        {
+            Ok(_) => (
+                "The view is on your reply, shown live to everyone who reads it. Now say in a \
+                 sentence or two what it shows."
+                    .to_owned(),
+                false,
+            ),
+            Err(why) => (format!("The view was not posted: {why}"), true),
+        }
+    }
+
     /// Record `work` on the reply to the message, with `say` as its words when it has none yet.
     async fn work(&self, work: Value, say: Option<&str>) {
         let Ask::Message { part, message, .. } = &self.ask else {
@@ -1386,10 +1455,12 @@ async fn work(
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0),
     };
-    let tools = match tool_definitions(&server).await {
+    let mut tools = match tool_definitions(&server).await {
         Ok(tools) => tools,
         Err(error) => return (Outcome::Failed(error), 0),
     };
+    // A turn in a conversation may answer with a view it writes.
+    tools.extend(view_tool(turn));
     let mut messages = vec![
         Message::text(Role::System, instructions(turn)),
         Message::text(Role::User, turn.request.clone()),
@@ -1567,7 +1638,11 @@ async fn run_calls(
             return None;
         }
         reply.doing(&call.name).await;
-        let (content, is_error) = call_tool(server, &call.name, call.input.clone()).await;
+        let (content, is_error) = if call.name == ANSWER_WITH_VIEW {
+            Box::pin(reply.view(&call.input)).await
+        } else {
+            call_tool(server, &call.name, call.input.clone()).await
+        };
         if is_error {
             let said: String = content.chars().take(LOGGED_CHARS).collect();
             tracing::info!(tool = %call.name, %said, "a tool of an agent on the workspace's server was refused or failed");
@@ -1624,7 +1699,15 @@ fn instructions(turn: &Turn) -> String {
         name = turn.agent.name,
         conversation = turn.conversation,
     );
-    format!("{every}{}{told}", sub_agents::told(turn))
+    // Where the answer is a reply in a conversation, it may carry a view.
+    let view = if matches!(turn.ask, Ask::Message { .. }) {
+        " When what is asked for keeps changing or is easier seen than read (a count, a list, \
+         a status), answer with a view through `answer_with_view`, then say in a sentence \
+         what it shows."
+    } else {
+        ""
+    };
+    format!("{every}{view}{}{told}", sub_agents::told(turn))
 }
 
 /// The tools the turn's server offers, as the model is told them.
@@ -1659,6 +1742,25 @@ async fn tool_definitions(
             })
         })
         .collect())
+}
+
+/// The tool a turn in a conversation answers with a view through, as the model is told it: when
+/// a view is the right answer and how one is written ([`chat::message_view::GUIDE`]). None for
+/// an issue's turn, whose answer is a comment.
+fn view_tool(turn: &Turn) -> Option<ToolDefinition> {
+    matches!(turn.ask, Ask::Message { .. }).then(|| ToolDefinition {
+        name: ANSWER_WITH_VIEW.to_owned(),
+        description: chat::message_view::GUIDE.to_owned(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "source": {"type": "string"},
+                "reads": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["source", "reads"],
+            "additionalProperties": false,
+        }),
+    })
 }
 
 /// Run tool `name` with `arguments` on the turn's server: what it answered, as the model reads it,

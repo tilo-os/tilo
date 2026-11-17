@@ -10687,6 +10687,93 @@
         ],
         "description": ""
       },
+      "chat.messages.post-view.Arguments": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "text": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "reads": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "channel",
+          "text",
+          "source",
+          "reads"
+        ],
+        "description": ""
+      },
+      "chat.messages.answer-with-view.Arguments": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "reads": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "say": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "message",
+          "source",
+          "reads"
+        ],
+        "description": ""
+      },
+      "chat.messages.rewrite-view.Arguments": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "reads": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "message",
+          "source",
+          "reads"
+        ],
+        "description": ""
+      },
       "chat.messages.carry-counts.Arguments": {
         "type": "object",
         "properties": {
@@ -30825,6 +30912,24 @@
       "resource": "chat.messages",
       "action": "stop-agent",
       "arguments": "#/components/schemas/chat.messages.stop-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.messages",
+      "action": "post-view",
+      "arguments": "#/components/schemas/chat.messages.post-view.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.messages",
+      "action": "answer-with-view",
+      "arguments": "#/components/schemas/chat.messages.answer-with-view.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.messages",
+      "action": "rewrite-view",
+      "arguments": "#/components/schemas/chat.messages.rewrite-view.Arguments"
     },
     {
       "app": "so.tilo.chat",

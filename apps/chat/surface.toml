@@ -738,6 +738,12 @@ fields = [
   { path = "messages.*.stopped", type = { option = { named = "Stopped" } }, readonly = true, stored = "record" },
   { path = "messages.*.stopped.attempt", type = "int" },
   { path = "messages.*.stopped.at", type = "int" },
+  { path = "messages.*.view", type = { option = { named = "View" } }, readonly = true, stored = "record" },
+  { path = "messages.*.view.source", type = "text" },
+  { path = "messages.*.view.reads", type = { list = "text" } },
+  { path = "messages.*.view.version", type = "int" },
+  { path = "messages.*.view.at", type = "int" },
+  { path = "messages.*.view.earlier", type = { list = { named = "Earlier" } } },
   { path = "messages.*.attempts", type = "int", readonly = true },
   { path = "earlier", type = { map = { map = "int" } }, readonly = true },
 ]
@@ -938,6 +944,37 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "post-view"
+incoming_message = true
+kind = "undoable"
+params = [
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "source", type = "text", required = true, schema = { type = "string" } },
+  { name = "reads", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "answer-with-view"
+kind = "undoable"
+params = [
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "source", type = "text", required = true, schema = { type = "string" } },
+  { name = "reads", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "say", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "rewrite-view"
+kind = "undoable"
+params = [
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "source", type = "text", required = true, schema = { type = "string" } },
+  { name = "reads", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
 id = "carry-counts"
 kind = "undoable"
 params = [
@@ -1048,6 +1085,15 @@ fields = [
 ]
 
 [[resources.types]]
+name = "Earlier"
+fields = [
+  { name = "version", type = "int" },
+  { name = "source", type = "text" },
+  { name = "reads", type = { list = "text" } },
+  { name = "at", type = "int" },
+]
+
+[[resources.types]]
 name = "MarkSpan"
 fields = [
   { name = "start", type = "int" },
@@ -1098,6 +1144,7 @@ fields = [
   { name = "question", type = { option = { named = "Question" } } },
   { name = "cause", type = { option = { named = "Cause" } } },
   { name = "stopped", type = { option = { named = "Stopped" } } },
+  { name = "view", type = { option = { named = "View" } } },
   { name = "attempts", type = "int" },
 ]
 
@@ -1269,6 +1316,16 @@ name = "Transition"
 fields = [
   { name = "state", type = { named = "AgentWorkState" } },
   { name = "since", type = "int" },
+]
+
+[[resources.types]]
+name = "View"
+fields = [
+  { name = "source", type = "text" },
+  { name = "reads", type = { list = "text" } },
+  { name = "version", type = "int" },
+  { name = "at", type = "int" },
+  { name = "earlier", type = { list = { named = "Earlier" } } },
 ]
 
 [[resources.types]]

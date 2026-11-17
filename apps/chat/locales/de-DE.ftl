@@ -478,10 +478,15 @@ chat-messages-withdraw-question = Eine Frage zurückziehen
 chat-messages-settle-question = Sagen, was aus einer Antwort wurde
 chat-messages-ask-agent = Einen Agenten fragen
 chat-messages-stop-agent = Die Arbeit eines Agenten stoppen
+chat-messages-post-view = Eine Ansicht senden
+chat-messages-answer-with-view = Mit einer Ansicht antworten
+chat-messages-rewrite-view = Eine Ansicht neu schreiben
 # Was einen Zug gestartet hat, den niemand getippt hat: steht dort, wo sonst der Name steht.
 chat-cause-reminder = Erinnerung: { $label }
 chat-cause-event = Ereignis: { $label }
 chat-cause-news = Neuigkeit: { $label }
+chat-view-attached = Eine Ansicht ist angehängt
+chat-view-attached-of = Eine Ansicht von { $apps } ist angehängt
 # The question a message asks one person: what an action that asks first would
 # do, its answers, and how it stands once it no longer waits.
 chat-question-on = Bei „{ $resource }“

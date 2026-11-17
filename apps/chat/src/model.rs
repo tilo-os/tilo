@@ -277,6 +277,8 @@ pub struct Message {
     pub question: Option<crate::question::Question>,
     /// What started the turn it asks for, when a person did not type it.
     pub cause: Option<crate::cause::Cause>,
+    /// The view it carries, written in the app language.
+    pub view: Option<crate::message_view::View>,
     /// How many times a person asked the agent again for an answer to this
     /// message (`retry`): the attempt the agent answers in now.
     pub attempts: u32,
@@ -740,6 +742,7 @@ mod tests {
             share: None,
             question: None,
             cause: None,
+            view: None,
             attempts: 0,
             sending: false,
         }

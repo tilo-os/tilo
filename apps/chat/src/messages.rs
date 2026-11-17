@@ -31,6 +31,7 @@ use crate::chat::{
     Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting, ProviderStream, Revision,
     ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, author, reply_id_at, seconds,
 };
+use crate::message_view::View;
 use crate::parts::{self, ChatPart};
 use crate::question::{Choice, Question};
 
@@ -190,6 +191,7 @@ impl ChatPart {
                 share: posting.share,
                 question: posting.question,
                 cause: posting.cause,
+                view: posting.view,
                 ..Message::new(channel.clone(), author, ts, posting.text)
             },
         );
@@ -990,6 +992,159 @@ impl ChatPart {
         Ok(())
     }
 
+    /// Post a view.
+    ///
+    /// Post a message that carries a view: a small piece of interface
+    /// written in the app language over what the workspace's apps keep,
+    /// shown live in the message to everyone who reads the conversation.
+    /// `answer-with-view` says how a view is written and when one is the
+    /// right answer; an agent answering the message that asked it uses that
+    /// verb. `text` is what the message says in words: every reader sees
+    /// it, and it is all that search, notifications and a reader that
+    /// cannot show a view have, so say there what the view shows.
+    #[action(incoming_message)]
+    pub fn post_view(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The channel")] channel: Id,
+        #[param("What the message says, in words: what the view shows")] text: NonBlank,
+        #[param("The view: one `view` declaration and the functions it calls")] source: String,
+        #[param("The apps the view reads, each as the view calls it")] reads: Vec<String>,
+        #[param("The message it answers in a thread")] parent: Option<Id>,
+    ) -> Result<(), Refusal> {
+        let ts = seconds(cx);
+        let view = View::written(source, reads, ts)?;
+        let id = cx.id();
+        self.append(
+            cx,
+            id,
+            &channel,
+            ts,
+            Posting {
+                text: text.into_string(),
+                parent,
+                view: Some(view),
+                ..Posting::default()
+            },
+        )
+        .map(drop)
+    }
+
+    /// Answer with a view.
+    ///
+    /// Put a view on your reply to the message that asked you: a small
+    /// piece of interface written in the app language over what the
+    /// workspace's apps keep. It is shown live in your reply to everyone
+    /// who reads the conversation, each as themselves: it shows what that
+    /// reader may read, and it is drawn again whenever what it reads
+    /// changes, whoever changed it. Answer with a view when what was asked
+    /// for keeps changing or is easier seen than read: a count, a list, a
+    /// status, things someone wants to keep an eye on. Answer in words
+    /// alone when the answer is one fact that will not move.
+    ///
+    /// `source` is one `view` declaration and the functions it calls, and
+    /// nothing else: no types, no actions, no `use`. It names an app by the
+    /// last part of its id (`tasks` for `so.tilo.tasks`) and reads what
+    /// that app keeps for the workspace, by the names its `read` shows:
+    /// `view projects() { for a in tasks.tracker.areas { text(a.name) } }`.
+    /// A control invokes one of the app's own actions, named as the app
+    /// names it with `_` for `-`: `button("Delete", on:
+    /// tasks.delete_area(tasks.tracker, a.id))`. In a view you wrote a
+    /// press only suggests: the reader is shown the action with its
+    /// arguments, and allows that one thing or not.
+    ///
+    /// `reads` lists every app the view reads, each as the view calls it
+    /// (`["tasks"]`); the view is given those apps and no other. `say` is
+    /// your reply's words when it has none yet: every reader sees them, and
+    /// they are all that search, notifications and a reader that cannot
+    /// show a view have, so say there what the view shows. Calling it again
+    /// in the same turn writes the view again, as `rewrite-view` does.
+    #[action(item = messages, audience = "agents")]
+    pub fn answer_with_view(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        #[param("The view: one `view` declaration and the functions it calls")] source: String,
+        #[param("The apps the view reads, each as the view calls it")] reads: Vec<String>,
+        #[param("The reply's words, when it has none yet: what the view shows")] say: Option<
+            String,
+        >,
+    ) -> Result<(), Refusal> {
+        let me = author(cx)?;
+        let at = seconds(cx);
+        let summons = self
+            .messages
+            .get(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        let channel = summons.channel.clone();
+        let thread = summons.parent.clone().unwrap_or_else(|| message.clone());
+        // The reply of the attempt the message is in: the one the agent's work is kept on.
+        let reply = reply_id_at(message, &me, summons.attempts);
+        // Checked before the reply is made: a view that is refused leaves nothing behind.
+        let first = View::written(source.clone(), reads.clone(), at)?;
+        if !self.messages.contains(&reply) {
+            self.append(
+                cx,
+                reply.clone(),
+                &channel,
+                at,
+                Posting {
+                    parent: Some(thread),
+                    ..Posting::default()
+                },
+            )?;
+        }
+        let row = self
+            .messages
+            .get_mut(&reply)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        if row.author != me {
+            return Err(Refusal::new("only the reply's author gives it a view"));
+        }
+        match row.view.as_mut() {
+            Some(view) => view.written_again(source, reads, at)?,
+            None => row.view = Some(first),
+        }
+        if let Some(say) = say
+            && row.text.is_empty()
+            && say.len() <= MAX_MESSAGE_TEXT_BYTES
+        {
+            row.text = say;
+        }
+        Ok(())
+    }
+
+    /// Write a view again.
+    ///
+    /// Replace the view a message of yours carries by a new writing of it:
+    /// the same message then shows the new view to everyone, and the form
+    /// before is kept with it. `message` is the message that carries the
+    /// view, not the one that asked for it. Only the message's author
+    /// writes its view again.
+    #[action(item = messages)]
+    pub fn rewrite_view(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        #[param("The view: one `view` declaration and the functions it calls")] source: String,
+        #[param("The apps the view reads, each as the view calls it")] reads: Vec<String>,
+    ) -> Result<(), Refusal> {
+        let at = seconds(cx);
+        let row = self
+            .messages
+            .get_mut(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        if author(cx)? != row.author {
+            return Err(Refusal::new(
+                "only its author writes a message's view again",
+            ));
+        }
+        row.view
+            .as_mut()
+            .ok_or_else(|| Refusal::new("the message carries no view"))?
+            .written_again(source, reads, at)
+    }
+
     /// Carry the counts of the parts before.
     ///
     /// What a part keeps of the parts before it: for each, how many
@@ -1139,7 +1294,8 @@ impl Chained for ChatPart {
 
     fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
         use chat_part::{
-            Ask, AskAgent, DeliverMessage, EditMessage, Post, RecordWork, StreamOutput,
+            AnswerWithView, Ask, AskAgent, DeliverMessage, EditMessage, Post, PostView, RecordWork,
+            RewriteView, StreamOutput,
         };
         let holding = |message: &Id| {
             parts
@@ -1165,6 +1321,10 @@ impl Chained for ChatPart {
                     },
             })
             | ChatPartAction::Ask(Ask {
+                parent: Some(parent),
+                ..
+            })
+            | ChatPartAction::PostView(PostView {
                 parent: Some(parent),
                 ..
             }) => holding(parent),
@@ -1196,13 +1356,16 @@ impl Chained for ChatPart {
             | ChatPartAction::DeliverMessage(_)
             | ChatPartAction::PostFile(_)
             | ChatPartAction::ShareResource(_)
-            | ChatPartAction::ShareWindow(_) => new(),
+            | ChatPartAction::ShareWindow(_)
+            | ChatPartAction::PostView(_) => new(),
             // A reply being streamed stays where it started.
             ChatPartAction::StreamOutput(StreamOutput { reply, .. }) => {
                 holding(&Id::from_raw(reply.clone())).or_else(|_| new())
             }
             ChatPartAction::RecordWork(RecordWork { message, .. })
-            | ChatPartAction::EditMessage(EditMessage { message, .. }) => holding(message),
+            | ChatPartAction::EditMessage(EditMessage { message, .. })
+            | ChatPartAction::AnswerWithView(AnswerWithView { message, .. })
+            | ChatPartAction::RewriteView(RewriteView { message, .. }) => holding(message),
             other => match Self::item_of(other) {
                 Some(message) => holding(&message),
                 // A field edit of the part (a message inserted whole, as
@@ -1247,6 +1410,7 @@ impl Chained for ChatPart {
                     Some(chat.mentions(share.text.as_deref().unwrap_or_default(), &[]));
             }
             ChatPartAction::Ask(ask) => takes_posts(chat, &ask.channel)?,
+            ChatPartAction::PostView(post) => takes_posts(chat, &post.channel)?,
             ChatPartAction::AskAgent(ask) => {
                 takes_posts(chat, &ask.channel)?;
                 // Who the conversation is with, for the verb to check its
@@ -1282,6 +1446,7 @@ impl Chained for ChatPart {
             ChatPartAction::ShareResource(share) => &share.channel,
             ChatPartAction::ShareWindow(share) => &share.channel,
             ChatPartAction::Ask(ask) => &ask.channel,
+            ChatPartAction::PostView(post) => &post.channel,
             ChatPartAction::AskAgent(ask) => &ask.channel,
             _ => return None,
         };
@@ -1304,6 +1469,8 @@ impl ChatPart {
             | ChatPartAction::AnswerQuestion(chat_part::AnswerQuestion { message, .. })
             | ChatPartAction::WithdrawQuestion(chat_part::WithdrawQuestion { message, .. })
             | ChatPartAction::SettleQuestion(chat_part::SettleQuestion { message, .. })
+            | ChatPartAction::AnswerWithView(chat_part::AnswerWithView { message, .. })
+            | ChatPartAction::RewriteView(chat_part::RewriteView { message, .. })
             | ChatPartAction::StopAgent(chat_part::StopAgent { message }) => Some(message.clone()),
             // A field edit of one message (a reaction) names it in its path.
             ChatPartAction::FieldEdit(edit) => match edit.path() {

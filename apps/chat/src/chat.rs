@@ -340,6 +340,11 @@ pub struct Message {
     /// ([`crate::summons::Stopped`]).
     #[model(readonly)]
     pub stopped: Option<crate::summons::Stopped>,
+    /// The view it carries: a small piece of interface written in the app
+    /// language, shown live where the message is read. Its author is this
+    /// message's ([`crate::message_view`]).
+    #[model(readonly)]
+    pub view: Option<crate::message_view::View>,
     /// How many times a person asked the agent again for an answer to this
     /// message (`retry`): the attempt the agent answers in now. The answer of
     /// attempt `n` is the reply [`reply_id_at`] derives, so asking again never
@@ -375,6 +380,7 @@ impl Message {
             question: None,
             cause: None,
             stopped: None,
+            view: None,
             attempts: 0,
         }
     }
@@ -929,6 +935,8 @@ pub(crate) struct Posting {
     pub question: Option<crate::question::Question>,
     /// What started the turn it asks for, when a person did not type it.
     pub cause: Option<crate::cause::Cause>,
+    /// The view it carries.
+    pub view: Option<crate::message_view::View>,
     /// Who the text refers to, as the chat resource resolved it where the
     /// message was written.
     pub mentions: Vec<crate::mention::Mention>,

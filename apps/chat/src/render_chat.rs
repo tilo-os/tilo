@@ -792,6 +792,8 @@ pub(crate) struct RowM {
     pub(crate) resource_h: f64,
     /// The question the message asks, drawn under what it carries.
     question_h: f64,
+    /// The line that says the message carries a view.
+    view_h: f64,
     att_h: f64,
     react_h: f64,
     edited_h: f64,
@@ -821,6 +823,7 @@ impl RowM {
             reasoning_h: 0.0,
             resource_h: 0.0,
             question_h: 0.0,
+            view_h: 0.0,
             att_h: 0.0,
             react_h: 0.0,
             edited_h: 0.0,
@@ -845,6 +848,7 @@ impl RowM {
             + self.reasoning_h
             + self.resource_h
             + self.question_h
+            + self.view_h
             + self.edited_h
             + self.att_h
             + self.react_h
@@ -927,6 +931,7 @@ mod tests {
             share: None,
             question: None,
             cause: None,
+            view: None,
             attempts: 0,
             sending: false,
         };
@@ -1118,6 +1123,7 @@ mod tests {
                 reasoning_h: 0.0,
                 resource_h: 0.0,
             question_h: 0.0,
+            view_h: 0.0,
                 att_h: 0.0,
                 react_h: 0.0,
                 edited_h: 0.0,
