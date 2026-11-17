@@ -161,6 +161,53 @@ struct Row {
     key: Option<String>,
 }
 
+/// What a native app's directory listed under its document, listed once for one read.
+struct Listing {
+    /// The id the directory lists the document as.
+    published: String,
+    /// The document's own listing first, then each part kept beside it.
+    parts: Vec<Part>,
+}
+
+/// One listing of a native app's directory: the document's own, or a part kept beside it.
+struct Part {
+    /// The id the part was listed under.
+    under: String,
+    /// The kind the keys it lists start with: the document's own name for the document.
+    kind: String,
+    /// The schema of that kind.
+    root: &'static TypeSchema,
+    /// The rows it listed.
+    rows: Vec<Json>,
+}
+
+impl Listing {
+    /// The items of the collection `field` of the resource listed by `key`, in the order the
+    /// directory lists them: each by its own id, which a program holds it by after the
+    /// document's ([`held_id`]). The document's collections hold what the parts kept
+    /// beside it list in theirs too.
+    fn items(&self, document: &str, key: &str, field: &str) -> Vec<String> {
+        let mut items: Vec<String> = Vec::new();
+        for part in &self.parts {
+            let under = if key == document {
+                format!("{}/{field}/", part.kind)
+            } else {
+                format!("{key}/{field}/")
+            };
+            for row in &part.rows {
+                let Some(item) = keyed(row).and_then(|key| key.strip_prefix(&under)) else {
+                    continue;
+                };
+                if !item.is_empty() && !item.contains('/') && !items.iter().any(|seen| seen == item)
+                {
+                    items.push(item.to_owned());
+                }
+            }
+        }
+        items
+    }
+}
+
 /// Reads of a native app's documents: the app's own read of a resource, and a query over the
 /// resources its directory lists.
 pub struct NativeReads<'a> {
@@ -180,28 +227,42 @@ impl<'a> NativeReads<'a> {
     /// runs: the type's id, every field by its id, or `{"missing": true}` for a resource the app
     /// does not hold.
     pub fn read(&self, app: &str, item: &str, ty: &str) -> Result<Json, String> {
-        let record = self.record(app)?;
+        let document = self.document_name(app)?;
         let Some((doc, rest)) = split_id(item) else {
             return Err(format!("`{item}` is no resource id"));
         };
-        if doc != record {
+        if doc != document {
             return Err(format!(
-                "{app} keeps `{doc}`; the document a program reads is `{record}`"
+                "{app} keeps `{doc}`; the document a program reads is `{document}`"
             ));
         }
-        let (content, key) = if rest.is_none() {
+        let collections: Vec<&FieldSchema> = lookup(ty)
+            .into_iter()
+            .flat_map(|schema| &schema.fields)
+            .filter(|field| field.kind == MergeKind::Collection)
+            .collect();
+        let (content, key, listing) = if rest.is_none() {
             let (_, root_ty) = self.root(app)?;
             if ty != root_ty {
-                return Err(format!("{record} is a {root_ty}, not a {ty}"));
+                return Err(format!("{document} is a {root_ty}, not a {ty}"));
             }
-            (
-                self.content(app, &self.document_row(app)?)?,
-                record.to_owned(),
-            )
+            // The document's collections are what its directory lists, listed once; a document
+            // that keeps none is read without listing it.
+            let listing = if collections.is_empty() {
+                None
+            } else {
+                Some(self.listing(app, ty)?)
+            };
+            let row = match &listing {
+                Some(listing) => self.document_row_in(app, &listing.published)?,
+                None => self.document_row(app)?,
+            };
+            (self.content(app, &row)?, document.to_owned(), listing)
         } else {
             // A program's id names the item, not the collection it sits in: two collections of
             // one type are told apart by asking the app each in turn.
-            let rows = self.rows(app, ty)?;
+            let listing = self.listing(app, ty)?;
+            let rows = self.rows_in(app, &listing, ty)?;
             let mut candidates = rows.iter().filter(|row| row.held == item);
             let Some(first) = candidates.next() else {
                 return Ok(json!({"missing": true}));
@@ -214,27 +275,20 @@ impl<'a> NativeReads<'a> {
                 found = self.content(app, row).map(|content| (content, row));
             }
             let (content, row) = found?;
-            (content, row.key.clone().unwrap_or_else(|| row.held.clone()))
+            let key = row.key.clone().unwrap_or_else(|| row.held.clone());
+            (content, key, Some(listing))
         };
-        self.read_values(app, ty, &content, &key)
-    }
-
-    /// `content`, the app's answer for the resource of the type `ty` its directory lists by
-    /// `key`, as a read of it values it: its collections are what the directory lists under it.
-    fn read_values(&self, app: &str, ty: &str, content: &Json, key: &str) -> Result<Json, String> {
         if !content.is_object() {
             return Err(format!(
                 "{app} answered a {ty} read of no fields: {content}"
             ));
         }
-        let mut fields = self.fields(ty, content)?;
-        for field in lookup(ty)
-            .into_iter()
-            .flat_map(|schema| &schema.fields)
-            .filter(|field| field.kind == MergeKind::Collection)
-        {
-            let items = self.listed(app, key, key_of(&field.id))?;
-            fields.insert(field.id.clone(), FieldValue::Items(items));
+        let mut fields = self.fields(ty, &content)?;
+        if let Some(listing) = &listing {
+            for field in collections {
+                let items = listing.items(document, &key, key_of(&field.id));
+                fields.insert(field.id.clone(), FieldValue::Items(items));
+            }
         }
         Ok(json!({
             "type": ty,
@@ -243,24 +297,6 @@ impl<'a> NativeReads<'a> {
                 .map(|(id, value)| (id, field_json(&value)))
                 .collect::<serde_json::Map<String, Json>>(),
         }))
-    }
-
-    /// The items of the collection `field` of the resource the app's directory lists by `key`,
-    /// in the order the directory lists them: each by its own id, which a program holds it by
-    /// after the record's ([`held_id`]).
-    fn listed(&self, app: &str, key: &str, field: &str) -> Result<Vec<String>, String> {
-        let under = format!("{key}/{field}/");
-        let published = self.published(app)?;
-        let mut items: Vec<String> = Vec::new();
-        for row in self.calls.children(app, &published)? {
-            let Some(item) = keyed(&row).and_then(|key| key.strip_prefix(&under)) else {
-                continue;
-            };
-            if !item.is_empty() && !item.contains('/') && !items.iter().any(|seen| seen == item) {
-                items.push(item.to_owned());
-            }
-        }
-        Ok(items)
     }
 
     /// What the app `app` answers to a program's `request` to read it.
@@ -290,7 +326,9 @@ impl<'a> NativeReads<'a> {
     fn answer_read(&self, app: &str, ty: &str, id: &str) -> Result<Json, String> {
         let schema = self.schema_of(app, ty)?;
         let row = match split_id(id) {
-            Some((doc, None)) if doc == self.record(app)? && schema.id == self.root(app)?.1 => {
+            Some((doc, None))
+                if doc == self.document_name(app)? && schema.id == self.root(app)?.1 =>
+            {
                 self.document_row(app)?
             }
             Some((_, Some(_))) => self
@@ -417,7 +455,7 @@ impl<'a> NativeReads<'a> {
     }
 
     /// The document `app` publishes.
-    fn record(&self, app: &str) -> Result<&str, String> {
+    fn document_name(&self, app: &str) -> Result<&str, String> {
         self.native.record(app).ok_or_else(|| {
             format!("{app} publishes no document a program reads: invoke its actions instead")
         })
@@ -437,14 +475,14 @@ impl<'a> NativeReads<'a> {
 
     /// [`Self::published`], from `top`, the top of the app's directory as it listed it.
     fn published_in(&self, app: &str, top: &[Json]) -> Result<String, String> {
-        let record = self.record(app)?;
+        let document = self.document_name(app)?;
         top.iter()
-            .find(|row| keyed(row) == Some(record))
+            .find(|row| keyed(row) == Some(document))
             .and_then(|row| row.get("id"))
             .and_then(Json::as_str)
             .map(str::to_owned)
             .ok_or_else(|| {
-                format!("{app} lists no `{record}`: a program reads what its directory lists")
+                format!("{app} lists no `{document}`: a program reads what its directory lists")
             })
     }
 
@@ -475,11 +513,15 @@ impl<'a> NativeReads<'a> {
 
     /// The row of the document itself: the resource the app's directory lists its document as.
     fn document_row(&self, app: &str) -> Result<Row, String> {
-        let id = self.published(app)?;
+        self.document_row_in(app, &self.published(app)?)
+    }
+
+    /// [`Self::document_row`], the document listed as `published`.
+    fn document_row_in(&self, app: &str, published: &str) -> Result<Row, String> {
         Ok(Row {
-            held: self.record(app)?.to_owned(),
-            under: id.clone(),
-            id,
+            held: self.document_name(app)?.to_owned(),
+            under: published.to_owned(),
+            id: published.to_owned(),
             key: None,
         })
     }
@@ -489,57 +531,76 @@ impl<'a> NativeReads<'a> {
     /// resource the app's directory lists under it whose type is `ty`. What an item reads as, the
     /// app says when it is read ([`Self::content`]).
     fn rows(&self, app: &str, ty: &str) -> Result<Vec<Row>, String> {
-        let record = self.record(app)?;
-        let (root, _) = self.root(app)?;
-        if ty == root.id {
+        if ty == self.root(app)?.0.id {
             return Ok(vec![self.document_row(app)?]);
         }
+        self.rows_in(app, &self.listing(app, ty)?, ty)
+    }
+
+    /// What the app's directory lists under its document, for a read of the type `ty`: the
+    /// document's own listing, and the listing of each part it keeps beside it (a tracker's
+    /// issues, in the parts of a chain) that holds resources of `ty` — every part, for the
+    /// document's own type, whose collections they fill.
+    fn listing(&self, app: &str, ty: &str) -> Result<Listing, String> {
+        let document = self.document_name(app)?;
+        let (root, _) = self.root(app)?;
         let published = self.published(app)?;
-        let mut found = Vec::new();
-        let mut seen = BTreeSet::new();
+        let mut own = Vec::new();
         let mut beside = Vec::new();
         for row in self.calls.children(app, &published)? {
-            // What the app keeps beside its document (a tracker's issues, in the parts of a chain)
-            // is listed under it as a resource of its own kind: its items are the document's too,
-            // held by the document's id as the document's own are.
-            let within = keyed(&row).is_some_and(|key| key.starts_with(&format!("{record}/")));
+            // What the app keeps beside its document is listed under it as a resource of its own
+            // kind: its items are the document's too, held by the document's id as the
+            // document's own are.
+            let within = keyed(&row).is_some_and(|key| key.starts_with(&format!("{document}/")));
             if !within
                 && let Some(kind) = row.get("kind").and_then(Json::as_str)
                 && let Some(kind_root) = self.kind_root(app, kind)
                 && let Some(id) = row.get("id").and_then(Json::as_str)
             {
-                if holds_type(kind_root, ty, 0) {
+                if ty == root.id || holds_type(kind_root, ty, 0) {
                     beside.push((id.to_owned(), kind.to_owned(), kind_root));
                 }
                 continue;
             }
-            let Some(key) = keyed(&row) else { continue };
-            if !seen.insert(key.to_owned()) || item_type(record, root, key) != Some(ty) {
-                continue;
-            }
-            let Some(id) = row.get("id").and_then(Json::as_str) else {
-                continue;
-            };
-            found.push(Row {
-                held: held_id(record, key),
-                id: id.to_owned(),
-                under: published.clone(),
-                key: Some(key.to_owned()),
+            own.push(row);
+        }
+        let mut parts = vec![Part {
+            under: published.clone(),
+            kind: document.to_owned(),
+            root,
+            rows: own,
+        }];
+        for (under, kind, root) in beside {
+            let rows = self.calls.children(app, &under)?;
+            parts.push(Part {
+                under,
+                kind,
+                root,
+                rows,
             });
         }
-        for (under, kind, kind_root) in beside {
-            for row in self.calls.children(app, &under)? {
-                let Some(key) = keyed(&row) else { continue };
-                if !seen.insert(key.to_owned()) || item_type(&kind, kind_root, key) != Some(ty) {
+        Ok(Listing { published, parts })
+    }
+
+    /// [`Self::rows`], from what the app's directory listed.
+    fn rows_in(&self, app: &str, listing: &Listing, ty: &str) -> Result<Vec<Row>, String> {
+        let document = self.document_name(app)?;
+        let mut found = Vec::new();
+        let mut seen = BTreeSet::new();
+        for part in &listing.parts {
+            for row in &part.rows {
+                let Some(key) = keyed(row) else { continue };
+                if !seen.insert(key.to_owned()) || item_type(&part.kind, part.root, key) != Some(ty)
+                {
                     continue;
                 }
                 let Some(id) = row.get("id").and_then(Json::as_str) else {
                     continue;
                 };
                 found.push(Row {
-                    held: held_id(record, key),
+                    held: held_id(document, key),
                     id: id.to_owned(),
-                    under: under.clone(),
+                    under: part.under.clone(),
                     key: Some(key.to_owned()),
                 });
             }
