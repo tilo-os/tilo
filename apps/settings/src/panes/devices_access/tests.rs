@@ -3,7 +3,12 @@
 
 use super::*;
 
-use ui::tilo_actions::remote::{Caller, InvokeRequest, identity_admin};
+use ui::prelude::TestApp;
+use ui::tilo_actions::remote::{
+    ActionHostError, Caller, Completer, InvocationReceipt, InvokeRequest, identity_admin,
+};
+
+use crate::resource::SettingsShell;
 
 fn en() {
     ui::i18n::I18nManager::init("en-US");
@@ -29,6 +34,30 @@ struct RecordingHost {
     asked: std::sync::Mutex<Vec<InvokeRequest>>,
     listed: std::sync::Mutex<serde_json::Value>,
     asking: std::sync::Mutex<serde_json::Value>,
+    sheet: std::sync::Mutex<Sheet>,
+}
+
+/// How the session's shell answers an ask to open one of its sheets.
+#[derive(Default)]
+enum Sheet {
+    /// At once and with nothing: the sheet on the screen is its answer.
+    #[default]
+    Opens,
+    /// With why this caller may not have it.
+    Refused,
+    /// Not yet: the answers it still owes.
+    Held(Vec<(ui::tilo_actions::InvocationId, Completer<Answer>)>),
+}
+
+type Answer = Result<InvocationReceipt, ActionHostError>;
+
+fn opened(invocation: ui::tilo_actions::InvocationId) -> InvocationReceipt {
+    InvocationReceipt {
+        invocation,
+        status: ui::tilo_actions::remote::ReceiptStatus::Completed {
+            output: ui::tilo_actions::ActionOutput::default(),
+        },
+    }
 }
 
 const THIS_DEVICE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -41,7 +70,23 @@ impl RecordingHost {
             asked: std::sync::Mutex::default(),
             listed: std::sync::Mutex::new(listed),
             asking: std::sync::Mutex::new(serde_json::json!({"asking": []})),
+            sheet: std::sync::Mutex::default(),
         })
+    }
+
+    fn shell(&self, sheet: Sheet) {
+        *self.sheet.lock().unwrap() = sheet;
+    }
+
+    /// The shell opens every sheet it was asked for and held back.
+    fn open_held(&self) {
+        let held = match &mut *self.sheet.lock().unwrap() {
+            Sheet::Held(held) => std::mem::take(held),
+            Sheet::Opens | Sheet::Refused => Vec::new(),
+        };
+        for (invocation, answer) in held {
+            answer.complete(Ok(opened(invocation)));
+        }
     }
 
     fn asked(&self) -> Vec<InvokeRequest> {
@@ -87,6 +132,26 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
         >,
     > {
         let invocation = request.invocation;
+        if [
+            session_actions::SHOW_PAIR_DEVICE,
+            session_actions::SHOW_CONNECT,
+        ]
+        .iter()
+        .any(|sheet| request.target == session_actions::target(sheet))
+        {
+            self.asked.lock().unwrap().push(request);
+            return match &mut *self.sheet.lock().unwrap() {
+                Sheet::Opens => ui::tilo_actions::remote::Pending::ready(Ok(opened(invocation))),
+                Sheet::Refused => {
+                    ui::tilo_actions::remote::Pending::ready(Err(ActionHostError::NotPermitted))
+                }
+                Sheet::Held(held) => {
+                    let (answer, pending) = ui::tilo_actions::remote::pending();
+                    held.push((invocation, answer));
+                    pending
+                }
+            };
+        }
         let value = if request.target == identity_admin::target(identity_admin::DEVICES) {
             self.listed.lock().unwrap().clone()
         } else if request.target == device_pairing::target(device_pairing::ASKING) {
@@ -531,5 +596,222 @@ tilo_test_env::scenario! {
         assert_eq!(nightly.actions.len(), 2, "remove, and stop its open run");
         let asking = asking_row(&model.asking[0]).into_resource();
         assert_eq!(asking.actions.len(), 2, "approve or decline");
+    }
+}
+
+/// This device and an agent's key, as the host lists them: rows that each
+/// offer an action once. A browser's row and another device's offer taking
+/// it back once per reason under one address, which the test app refuses to
+/// open on, as the host refuses to publish it.
+fn this_device_and_an_agent() -> serde_json::Value {
+    let mut listed = record(0);
+    listed.as_array_mut().unwrap().truncate(2);
+    listed
+}
+
+/// Settings as a person has it open on Devices and access, with `host`
+/// answering what the page asks of the session.
+fn window_on(host: &std::sync::Arc<RecordingHost>) -> TestApp<SettingsShell> {
+    en();
+    let served = host.clone();
+    crate::area::replace_in_next_window(move |context| {
+        DevicesAccessArea::new(
+            context,
+            ui::RemoteActions::with_host(served, Caller::local_person("owner")),
+        )
+    });
+    let mut app = TestApp::<SettingsShell>::new().expect("Settings opens");
+    let pane = crate::categories::Category::DevicesAccess;
+    app.effect_on(
+        &crate::effects::pane_row_id(pane),
+        &crate::effects::open_pane(pane),
+    )
+    .expect("Devices and access opens");
+    app.settle();
+    app
+}
+
+/// The two buttons that bring a device or an agent in: the button, what it
+/// says, the sheet of the shell it asks for, and its effect.
+fn sheets() -> [(
+    &'static str,
+    &'static str,
+    &'static str,
+    DevicesAccessEffect,
+); 2] {
+    [
+        (
+            "settings.access.add-device",
+            "Add a device",
+            session_actions::SHOW_PAIR_DEVICE,
+            DevicesAccessEffect::ShowPairDevice,
+        ),
+        (
+            "settings.access.connect",
+            "Connect an agent or computer",
+            session_actions::SHOW_CONNECT,
+            DevicesAccessEffect::ShowConnect,
+        ),
+    ]
+}
+
+fn published(app: &mut TestApp<SettingsShell>, id: &str) -> ui::tilo_actions::ActionSpec {
+    fn find(
+        resources: &[ui::tilo_actions::ResourceSpec],
+        id: &str,
+    ) -> Option<ui::tilo_actions::ActionSpec> {
+        resources.iter().find_map(|resource| {
+            resource
+                .actions
+                .iter()
+                .find(|spec| spec.id == id)
+                .cloned()
+                .or_else(|| find(&resource.children, id))
+        })
+    }
+    find(&app.harness().resources(), id).expect("Settings publishes the effect")
+}
+
+tilo_test_env::scenario! {
+    fn adding_a_device_or_an_agent_asks_the_shell_for_its_sheet;
+
+    phase a_press_on_each_button_is_carried_out_not_refused;
+    // The press goes the way a person's does: the button's bound effect
+    // through the app's dispatch, where the framework holds the handler to
+    // what the effect declares.
+    {
+        for (button, _, sheet, _) in sheets() {
+            let host = RecordingHost::new(this_device_and_an_agent());
+            let mut app = window_on(&host);
+            app.harness()
+                .click_named(button)
+                .expect("the button is on the page");
+            app.settle();
+            assert_eq!(app.harness().refusal_said(), None, "{button}");
+            assert!(
+                app.harness().control_failures().is_empty(),
+                "{button}: {:?}",
+                app.harness().control_failures()
+            );
+            assert_eq!(
+                host.asked_at(&session_actions::target(sheet)).len(),
+                1,
+                "{button} asks the shell for its sheet once"
+            );
+        }
+    }
+
+    phase the_caller_hears_once_the_shell_has_answered;
+    {
+        for (_, _, sheet, effect) in sheets() {
+            let host = RecordingHost::new(this_device_and_an_agent());
+            host.shell(Sheet::Held(Vec::new()));
+            let mut app = window_on(&host);
+            app.start_effect(&SettingsEffect::from(effect))
+                .expect("it answers later, as the job it declares");
+            app.settle();
+            assert_eq!(host.asked_at(&session_actions::target(sheet)).len(), 1);
+            assert!(
+                !app.effect_progress()
+                    .iter()
+                    .any(ui::tilo_actions::InvocationUpdate::is_terminal),
+                "nothing is answered before the shell has"
+            );
+            host.open_held();
+            tilo_test_env::wait_until("the shell's answer to reach the caller", || {
+                app.settle();
+                app.effect_progress().iter().any(|update| {
+                    matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+                })
+            });
+        }
+    }
+
+    phase the_shells_refusal_reaches_whoever_asked;
+    {
+        for (_, _, sheet, effect) in sheets() {
+            let host = RecordingHost::new(this_device_and_an_agent());
+            host.shell(Sheet::Refused);
+            let mut app = window_on(&host);
+            let refused = app
+                .effect(&SettingsEffect::from(effect))
+                .expect_err("the shell refused");
+            assert_eq!(host.asked_at(&session_actions::target(sheet)).len(), 1);
+            assert!(
+                matches!(
+                    &refused,
+                    ui::tilo_actions::ApiError::Failed(why)
+                        if *why == ActionHostError::NotPermitted.to_string()
+                ),
+                "{refused:?}"
+            );
+        }
+    }
+
+    phase a_caller_that_gives_up_is_told_so_and_a_late_sheet_changes_nothing;
+    {
+        for (_, _, _, effect) in sheets() {
+            let host = RecordingHost::new(this_device_and_an_agent());
+            host.shell(Sheet::Held(Vec::new()));
+            let mut app = window_on(&host);
+            let invocation = app
+                .start_effect(&SettingsEffect::from(effect))
+                .expect("it answers later, as the job it declares");
+            app.settle();
+            assert!(
+                matches!(
+                    app.cancel_effect(invocation),
+                    Some(ui::tilo_actions::InvocationUpdate::Cancelled { .. })
+                ),
+                "the caller that gave up is told it was cancelled"
+            );
+            host.open_held();
+            app.settle();
+            assert!(
+                !app.effect_progress().iter().any(|update| {
+                    matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+                }),
+                "an answer nobody waits for is told to nobody"
+            );
+        }
+    }
+
+    phase who_may_run_them_and_what_they_read_as_are_a_views;
+    // Each was a view: offered to the person at this device alone, needing
+    // no more of a workspace than reading does, asking no confirmation,
+    // harmless to repeat. Answering later changes none of that.
+    {
+        let host = RecordingHost::new(this_device_and_an_agent());
+        let mut app = window_on(&host);
+        for (_, label, _, effect) in sheets() {
+            let spec = published(&mut app, effect.id());
+            assert_eq!(plain(&spec.label), label);
+            assert!(
+                spec.contract.runs_on_invokers_device(),
+                "{label}: only the person at this device, and those acting for them"
+            );
+            assert!(
+                matches!(spec.contract.need().kind, ui::tilo_actions::ActionKind::Read),
+                "{label}: a workspace's grants have nothing more to allow than reading"
+            );
+            assert!(
+                matches!(
+                    spec.contract.confirmation,
+                    ui::tilo_actions::ConfirmationPolicy::None
+                ),
+                "{label}"
+            );
+            assert!(
+                matches!(spec.contract.retry, ui::tilo_actions::RetryPolicy::Idempotent),
+                "{label}: asking again shows the same sheet"
+            );
+            assert!(
+                matches!(
+                    spec.contract.execution,
+                    ui::tilo_actions::ExecutionMode::Background { .. }
+                ),
+                "{label}: the shell answers later"
+            );
+        }
     }
 }
