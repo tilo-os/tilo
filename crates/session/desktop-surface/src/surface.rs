@@ -660,6 +660,34 @@ impl DesktopHandle {
         shared.changed();
     }
 
+    /// Report how tall the place `group` of the workspace `workspace` is drawn now: view state the
+    /// person's own canvas says of what it sees, kept on this shell's tree where the canvas reads
+    /// it on its next ordinary frame. It changes no window, strip or place, so it neither marks the
+    /// tree replaced (which would build every view again) nor counts a change of it: the canvas
+    /// that reported it goes on drawing, and a place's free area on the canvas is what the person
+    /// sees of it (`canvas.md` §1, §7). Whether it changed anything.
+    pub fn report_drawn(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        group: tilo_desktop_model::GroupId,
+        height: u32,
+    ) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let Some(held) = shared
+            .tree
+            .workspaces
+            .iter_mut()
+            .find(|held| held.id() == workspace)
+        else {
+            return false;
+        };
+        if !held.layout.set_drawn_height(group, height) {
+            return false;
+        }
+        shared.wake.wake();
+        true
+    }
+
     /// The workspace snapshot, excluding process-local stream proxies and device presentation.
     /// Durable profile saves still use the full tree.
     pub fn shared_tree(&self) -> Layout {

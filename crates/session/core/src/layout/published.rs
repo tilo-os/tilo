@@ -123,6 +123,7 @@ pub(super) fn place_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
         .with_did("pinned"),
         position_action(key, words),
         size_action(key, words),
+        drawn_action(key, words),
         action(words, "close", "Close a place", Vec::new(), move |_| {
             LayoutAction::Close {
                 place: count_of(&closed),
@@ -242,6 +243,33 @@ fn size_action(key: &str, words: &Words) -> ActionSpec {
         },
     )
     .with_did("sized")
+}
+
+/// `drawn`: how tall a hugging place is drawn now, its key bound in. What its canvas reports as
+/// the view grows and shrinks, never a step of the person's.
+fn drawn_action(key: &str, words: &Words) -> ActionSpec {
+    let drawn = key.to_owned();
+    let mut spec = action(
+        words,
+        "drawn",
+        "Report how tall a hugging place is drawn now, as its canvas sees it",
+        vec![required(
+            words,
+            "drawn",
+            "height",
+            ParamType::Integer,
+            "Its drawn height in canvas pixels",
+        )],
+        move |args| LayoutAction::Drawn {
+            place: count_of(&drawn),
+            height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
+        },
+    )
+    .for_audience(Audience::Agents);
+    // View state the canvas reports as it draws, never a change of the layout the person asked
+    // for: it reads, and it takes back nothing.
+    spec.type_mut().contract.kind = tilo_actions::ActionKind::Read;
+    spec
 }
 
 /// The actions that float a place and snap it back, its key bound into each as every place action's

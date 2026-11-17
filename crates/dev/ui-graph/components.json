@@ -3089,6 +3089,14 @@
           "value": {
             "list": "int"
           }
+        },
+        {
+          "name": "drawn",
+          "doc": "A hugging pin's view came to a height of its own and the pin is laid out at it: carries the pin's key and its drawn height in canvas pixels. Reported once each time that height changes, never every frame, so a view that reads it as free area on the canvas (`canvas.md` §1, §7) learns what the pin takes without a report a frame.",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
         }
       ],
       "semantics": {

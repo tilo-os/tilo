@@ -62,6 +62,10 @@ view canvas(a: Layout, name: Text, framed: Bool, lists: Bool) {
         // none — points there as a click does: the caret stands at it.
         on context(target: Text, at: List<Int>): set(pointed, at).then(set(pointed_at, target))
         on resize(target: Text, at: List<Int>): size_place(target, at)
+        // The height a hugging place is drawn at, in canvas pixels, as the map lays it out: the
+        // area under it is free for what the person asks there, though the place could grow into
+        // it (canvas.md §1, §7). The session keeps it as view state, never a step of arranging.
+        on drawn(target: Text, at: List<Int>): drew_place(target, at)
         for s in a.strips {
             if s.placed {
                 for p in places_of(a, s.key) {
@@ -175,6 +179,14 @@ fn caret_inset(pointed: List<Int>) -> Int {
 /// height in canvas pixels: one arranging step of the person's, its corner where it stood.
 action size_place(key: Text, size: List<Int>) (label: "Size it") {
     session.size(place: the_place(key), width: size.at(0) ?? 720, height: size.at(1) ?? 520)
+}
+
+/// Keeps how tall the hugging place `key` is drawn now, `size` carrying its height in canvas
+/// pixels as the map lays it out: the free area under it on the canvas is what the person sees
+/// there (canvas.md §1, §7), though the place could grow into it. View state the person's own
+/// canvas reports, never a step of arranging: Undo leaves it alone.
+action drew_place(key: Text, size: List<Int>) {
+    session.drawn(place: the_place(key), height: size.at(0) ?? 0)
 }
 
 /// Puts a resource dropped on the canvas where it was let go. A place that already stands on the

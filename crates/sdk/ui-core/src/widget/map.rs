@@ -189,6 +189,12 @@ pub struct MapProps {
     /// "Everything stays in view").
     #[component(event(value = Vec<i64>))]
     pub seen: Event,
+    /// A hugging pin's view came to a height of its own and the pin is laid out at it: carries the
+    /// pin's key and its drawn height in canvas pixels. Reported once each time that height
+    /// changes, never every frame, so a view that reads it as free area on the canvas (`canvas.md`
+    /// §1, §7) learns what the pin takes without a report a frame.
+    #[component(event(value = String, at = Vec<i64>))]
+    pub drawn: Event,
     /// A rectangle the view points at, in canvas pixels (`x`, `y`, width, height), drawn as the
     /// light outline a drag across the canvas draws: the rectangle the person dragged, kept while
     /// they say what fills it.
@@ -368,6 +374,10 @@ pub struct Map {
     /// solve (a turn before its words arrive), by key: laid out at their most, which is not yet
     /// how tall they are, so the camera does not follow them there.
     unsaid: Rc<RefCell<std::collections::HashSet<String>>>,
+    /// How tall each hugging pin was last reported as drawn, by key (canvas pixels): the map
+    /// reports a pin's drawn height (`Self::drawn`) only when it differs from this, so a view that
+    /// reads it as free area on the canvas learns of a change once, never once a frame.
+    drawn_said: Rc<RefCell<HashMap<String, u32>>>,
     /// Where each pin stands on the canvas, in the order of `pins`, as the region reads it at each
     /// solve: a pin moved in place ([`Described::set_props`]) is laid out where it stands now,
     /// though the region was built while it stood elsewhere.
@@ -417,6 +427,9 @@ pub struct Map {
     resize: Event,
     /// What pointing reports first: the part of the canvas the person sees as they point.
     seen: Event,
+    /// What a hugging pin reports as its view comes to a height of its own: the pin's key and its
+    /// drawn height in canvas pixels, once each time that height changes.
+    drawn: Event,
     /// The edge or corner being dragged, until it is let go.
     edge_drag: Option<EdgeDrag>,
     /// The rectangle the view points at, in canvas pixels, drawn as a light outline.
@@ -461,6 +474,10 @@ struct Lens {
     asked: Option<Point>,
     answer: Option<String>,
     asked_among: Vec<String>,
+    /// How tall each hugging pin was last reported as drawn, by key: a map built again around the
+    /// same pins reports no height it reported already, so a view reading it as the canvas's free
+    /// area is not told the same height again by a rebuild.
+    drawn_said: HashMap<String, u32>,
     /// What the person's hand is doing on the map that was built again under it: a press not let
     /// go yet, a pan or an edge being dragged, and where the pointer is. The release reaches the
     /// new map, which answers it as the old one would have; without these a click made while an
@@ -494,6 +511,7 @@ impl Drop for Map {
                 asked: self.asked,
                 answer: self.answer.take(),
                 asked_among: std::mem::take(&mut self.asked_among),
+                drawn_said: std::mem::take(&mut *self.drawn_said.borrow_mut()),
                 hand: Hand {
                     cursor: self.cursor,
                     pan: self.pan.take(),
@@ -532,6 +550,7 @@ impl Map {
             placed: Rc::default(),
             laid: Rc::default(),
             unsaid: Rc::default(),
+            drawn_said: Rc::default(),
             pin_places: Rc::default(),
             reveal: None,
             glide: None,
@@ -548,6 +567,7 @@ impl Map {
             context: Event::None,
             resize: Event::None,
             seen: Event::None,
+            drawn: Event::None,
             edge_drag: None,
             outline: None,
             key: String::new(),
@@ -609,6 +629,9 @@ impl Map {
         // it before this layout places it.
         self.rect = lens.rect;
         self.placed.borrow_mut().extend(lens.placed);
+        // The heights the map reported before are the heights it reported: a pin that did not
+        // change is not reported again, and one that comes back to the canvas keeps what it said.
+        self.drawn_said.borrow_mut().extend(lens.drawn_said);
         // What the person pointed at before the map was built again is still what an arriving
         // place answers.
         if self.asked.is_none() {
@@ -978,6 +1001,11 @@ impl Map {
         let motion = self.motion;
         let laid: Rc<RefCell<HashMap<String, Rect>>> = Rc::clone(&self.laid);
         let unsaid = Rc::clone(&self.unsaid);
+        let drawn_said = Rc::clone(&self.drawn_said);
+        let put_drawn = self.drawn.clone();
+        // What each pin stands for, by its key, as its view named it: the report names the place
+        // the way pointing at it does (`item_of`), never the toolkit's own key.
+        let items = self.items.clone();
         let mut region = Manual::new(move |cx| -> Result<Size<f32>, WidgetLayoutError> {
             let available = cx.available();
             // The tallest a hugging place stands: the viewport, less the room a place that
@@ -995,6 +1023,9 @@ impl Map {
             let places = places.borrow();
             let mut out: HashMap<String, Rect> = HashMap::with_capacity(places.len());
             let mut silent = std::collections::HashSet::new();
+            // What each hugging pin that stands at a height of its own is drawn at this solve, in
+            // canvas pixels, by its key: reported below, only where it changed.
+            let mut drawn_now: Vec<(String, u32)> = Vec::new();
             for index in 0..cx.len() {
                 let Some(place) = places.get(index) else {
                     continue;
@@ -1055,12 +1086,47 @@ impl Map {
                         placed.follow(rect, true, motion, source, now);
                     }
                     rect = Rect::from_origin_size(placed.rect(now).origin(), rect.size());
+                    // What a hugging pin takes on the canvas, in canvas pixels: the height it is
+                    // drawn at, without the handle's band over it. The report below sends it once
+                    // each time it changes, so a view reading the canvas's free area knows what
+                    // the person sees the pin take (`canvas.md` §1, §7).
+                    if place.hug && !silent.contains(key) {
+                        let view = rect.height() - place.band;
+                        let drawn = view / camera.zoom;
+                        drawn_now.push((
+                            key.clone(),
+                            u32::try_from(drawn.round() as i64).unwrap_or(1),
+                        ));
+                    }
                     out.insert(key.clone(), rect);
                 }
                 cx.place(index, rect)?;
             }
             *laid.borrow_mut() = out;
             *unsaid.borrow_mut() = silent;
+            // A hugging pin whose view came to a height of its own is laid out at it, and the map
+            // reports that height once, as what the pin takes on the canvas: the view that reads
+            // the canvas's free area knows what the person sees, not the most the place could
+            // grow to (canvas.md §1, §7). Only a change is reported, never every solve.
+            {
+                let mut said = drawn_said.borrow_mut();
+                // A pin the map no longer holds is forgotten, so it reports its height again when
+                // it comes back to the canvas.
+                said.retain(|key, _| drawn_now.iter().any(|(held, _)| held == key));
+                for (key, height) in drawn_now {
+                    if said.insert(key.clone(), height) == Some(height) {
+                        continue;
+                    }
+                    put_drawn.fire(Some(crate::component::Value::List(vec![
+                        crate::component::Value::Text(
+                            items.get(&key).cloned().unwrap_or_else(|| key.clone()),
+                        ),
+                        crate::component::Value::List(vec![crate::component::Value::Int(
+                            i64::from(height),
+                        )]),
+                    ])));
+                }
+            }
             // The region is its viewport: a canvas does not grow with what it holds.
             Ok(Size {
                 width: available.width.max(0.0),
@@ -1090,6 +1156,7 @@ impl Described for Map {
             context,
             resize,
             seen,
+            drawn,
             outline,
             hint,
         } = props;
@@ -1097,6 +1164,7 @@ impl Described for Map {
         map.hint = hint.filter(|hint| !hint.trim().is_empty());
         map.resize = resize;
         map.seen = seen;
+        map.drawn = drawn;
         map.outline = outline_of(&outline);
         map.ground = ground;
         map.name = name.unwrap_or_default();
@@ -1145,6 +1213,7 @@ impl Described for Map {
             context,
             resize,
             seen,
+            drawn,
             outline,
             hint,
         } = props;
@@ -1155,6 +1224,7 @@ impl Described for Map {
         }
         self.resize = resize;
         self.seen = seen;
+        self.drawn = drawn;
         let outline = outline_of(&outline);
         if outline != self.outline {
             self.outline = outline;

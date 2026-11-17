@@ -498,7 +498,14 @@ pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Ke
         .collect();
     for (group, place) in &workspace.layout.places {
         if shown.contains(group) {
-            layout.places.entry(*group).or_insert(*place);
+            // How tall the place is drawn is the person's own canvas saying what it sees, never
+            // the document's: the document holds the place's size, and the drawing on this device
+            // stands over it (`CanvasPlace::drawn_height`).
+            layout
+                .places
+                .entry(*group)
+                .and_modify(|held| held.drawn_height = place.drawn_height)
+                .or_insert(*place);
         }
     }
     if kept.writing {

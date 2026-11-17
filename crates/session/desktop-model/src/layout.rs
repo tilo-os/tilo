@@ -434,7 +434,7 @@ pub const WINDOW_MIN_HEIGHT: u32 = 120;
 
 /// Where a window group stands on the canvas, in canvas pixels: its top-left
 /// corner and its size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct CanvasPlace {
     pub x: i32,
     pub y: i32,
@@ -445,6 +445,30 @@ pub struct CanvasPlace {
     /// sized — a rectangle they dragged, an edge they pulled — keeps its height exactly.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hugs: bool,
+    /// How tall a hugging place is drawn now, in canvas pixels, as the person's own canvas
+    /// reports it: the height what it shows comes to, up to [`Self::height`]. View state, never
+    /// an arranging step and never written: it names no size the person gave, the canvas that
+    /// draws the place reports it again, and a place that stops hugging drops it.
+    #[serde(skip)]
+    pub drawn_height: Option<u32>,
+}
+
+impl PartialEq for CanvasPlace {
+    fn eq(&self, other: &Self) -> bool {
+        self.x == other.x
+            && self.y == other.y
+            && self.width == other.width
+            && self.height == other.height
+            && self.hugs == other.hugs
+    }
+}
+
+impl Eq for CanvasPlace {}
+
+impl std::hash::Hash for CanvasPlace {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (self.x, self.y, self.width, self.height, self.hugs).hash(state);
+    }
 }
 
 impl CanvasPlace {
@@ -456,6 +480,7 @@ impl CanvasPlace {
             width,
             height,
             hugs: false,
+            drawn_height: None,
         }
     }
 
@@ -464,6 +489,33 @@ impl CanvasPlace {
     pub fn hugging(mut self) -> Self {
         self.hugs = true;
         self
+    }
+
+    /// The area of the canvas this place takes now: its full height, or a hugging place's height
+    /// as it is drawn when its canvas has reported one. Every free-area check stands a place
+    /// against this, so what the person sees free is what is free (`canvas.md` §1, §3, §7).
+    #[must_use]
+    pub fn occupied(&self) -> Self {
+        let mut occupied = Self {
+            drawn_height: None,
+            ..*self
+        };
+        if let Some(drawn) = self.drawn_height.filter(|_| self.hugs) {
+            occupied.height = drawn.min(self.height).max(1);
+        }
+        occupied
+    }
+
+    /// Report how tall this hugging place is drawn now, in canvas pixels: what its canvas sees of
+    /// what it shows, up to its height. A place that does not hug keeps no drawn height. Whether
+    /// anything changed.
+    pub fn drawn(&mut self, height: u32) -> bool {
+        let height = self.hugs.then(|| height.clamp(1, self.height));
+        if self.drawn_height == height {
+            return false;
+        }
+        self.drawn_height = height;
+        true
     }
 
     /// This place as a window's: no smaller than [`WINDOW_MIN_WIDTH`] ×
@@ -509,10 +561,13 @@ impl CanvasPlace {
 
     /// Whether the two stand too close on a canvas: closer than [`CANVAS_GAP`] side by side, or
     /// than [`CANVAS_ROW_GAP`] one over the other, so the caption over the lower one is never
-    /// under the upper one.
+    /// under the upper one. A hugging place takes the height it is drawn at, not the most it
+    /// could grow to ([`Self::occupied`]): this is the one place the canvas's crowding rule
+    /// reads it.
     #[must_use]
     pub fn crowds_on_canvas(&self, other: &Self) -> bool {
-        self.crowds_apart(other, CANVAS_GAP, CANVAS_ROW_GAP)
+        self.occupied()
+            .crowds_apart(&other.occupied(), CANVAS_GAP, CANVAS_ROW_GAP)
     }
 
     /// Whether this place stands wholly inside `area`.
@@ -852,9 +907,20 @@ impl WorkspaceLayout {
         }
         place.width = width;
         place.height = height;
-        // Sized by hand, it keeps the size it was given.
+        // Sized by hand, it keeps the size it was given: it no longer hugs, and how tall it was
+        // drawn is not its size.
         place.hugs = false;
+        place.drawn_height = None;
         true
+    }
+
+    /// Report how tall the hugging place `group` is drawn now, `height` canvas pixels: what its
+    /// canvas sees of what it shows, up to the place's height. A place that does not hug, and one
+    /// the layout does not hold, keeps nothing. Whether the layout changed.
+    pub fn set_drawn_height(&mut self, group: GroupId, height: u32) -> bool {
+        self.places
+            .get_mut(&group)
+            .is_some_and(|place| place.drawn(height))
     }
 
     /// Float `group` where `float` says (`None` snaps it back into the grid).
@@ -885,7 +951,7 @@ impl WorkspaceLayout {
             .places
             .iter()
             .filter(|(id, _)| Some(**id) != except)
-            .map(|(_, place)| *place)
+            .map(|(_, place)| place.occupied())
             .collect();
         let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds_on_canvas(o));
         let wanted = CanvasPlace::new(anchor.0, anchor.1, width, height);
@@ -1007,7 +1073,7 @@ impl WorkspaceLayout {
             .places
             .iter()
             .filter(|(id, _)| Some(**id) != except)
-            .map(|(_, place)| *place)
+            .map(|(_, place)| place.occupied())
             .collect();
         let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds_on_canvas(o));
         let gap = i64::from(CANVAS_GAP);
@@ -1085,7 +1151,7 @@ impl WorkspaceLayout {
             .places
             .iter()
             .filter(|(id, _)| Some(**id) != except)
-            .map(|(_, place)| *place)
+            .map(|(_, place)| place.occupied())
             .collect();
         let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds_on_canvas(o));
         let beside = Beside::new(subject, seen);
@@ -1604,6 +1670,75 @@ mod workspace_layout_tests {
                 10
             );
         }
+    }
+
+    /// A hugging place takes on the canvas the height it is drawn at once its canvas reports one,
+    /// and its full height until then: the free area under it is an area a person can use, though
+    /// the place could grow into it, and a place that does not hug takes its full height whatever
+    /// a drawing says (canvas.md §1, §7). A place sized by hand stops hugging and drops the height
+    /// it was drawn at.
+    #[test]
+    fn a_hugging_place_leaves_the_area_below_it_free_where_it_is_drawn() {
+        // A hugging place: 720 × 520 is the most it takes, drawn 140 tall. A place dragged just
+        // under where it is drawn, at the row gap's clearance, is free there.
+        let hugging = CanvasPlace::new(0, 0, 720, 520).hugging();
+        let mut drawn = hugging;
+        assert!(drawn.drawn(140), "a hugging place keeps its drawn height");
+        assert_eq!(
+            drawn.occupied().height,
+            140,
+            "it takes what it is drawn at on the canvas"
+        );
+        // A place dragged to just under what is drawn, at the row gap's clearance.
+        let below_drawn = i32::try_from(140 + CANVAS_ROW_GAP).expect("a canvas row");
+        let under = CanvasPlace::new(0, below_drawn + 1, 400, 260);
+        assert!(
+            !under.crowds_on_canvas(&drawn),
+            "the area below the height it is drawn at is free: {under:?} vs {drawn:?}"
+        );
+        assert!(
+            under.crowds_on_canvas(&hugging),
+            "without a drawn height, the place takes its full height: {hugging:?}"
+        );
+        let layout = canvas(&[(1, drawn)]);
+        let placed = layout.free_place_near((0, below_drawn), 400, 260, None);
+        assert_eq!(
+            (placed.x, placed.y),
+            (0, below_drawn),
+            "a place put under it stands where it was asked, clear of what is drawn"
+        );
+        // The area to its trailing side is the line it is drawn to, not its tallest: a place put
+        // beside it at its line stands there.
+        let beside = canvas(&[(1, drawn)]).free_place_next_to(drawn, 300, 200, None);
+        let trailing = i32::try_from(720 + CANVAS_GAP).expect("a canvas column");
+        assert_eq!(
+            (beside.x, beside.y),
+            (trailing, 0),
+            "beside the place at its line, clear of what is drawn"
+        );
+        assert!(!beside.crowds_on_canvas(&drawn));
+        // A place that does not hug keeps its full height, whatever a drawing reported.
+        let mut sized = CanvasPlace::new(0, 0, 720, 520);
+        assert!(!sized.drawn(140), "a place that does not hug keeps nothing");
+        assert_eq!(sized.drawn_height, None);
+        let below = CanvasPlace::new(0, 300, 400, 260);
+        assert!(
+            below.crowds_on_canvas(&sized),
+            "a place its person sized takes its full height: {sized:?}"
+        );
+        // Sized by hand, a hugging place stops hugging and keeps the size it was given.
+        let mut by_hand = canvas(&[(1, hugging)]);
+        let group: GroupId = 1;
+        by_hand.set_drawn_height(group, 140);
+        assert_eq!(
+            by_hand.place_of(group).and_then(|p| p.drawn_height),
+            Some(140)
+        );
+        assert!(by_hand.set_size(group, 700, 500));
+        let resized = by_hand.place_of(group).expect("its place");
+        assert!(!resized.hugs, "sized by hand it no longer hugs");
+        assert_eq!(resized.drawn_height, None, "and the drawing is dropped");
+        assert_eq!((resized.width, resized.height), (700, 500));
     }
 
     /// A place under another keeps its caption's band clear of the one above (canvas.md §7,

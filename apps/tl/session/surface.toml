@@ -944,6 +944,15 @@ required = true
 type = "int"
 
 [[resources.verbs]]
+id = "drawn"
+kind = "read"
+
+[[resources.verbs.params]]
+name = "height"
+required = true
+type = "int"
+
+[[resources.verbs]]
 id = "close"
 kind = "undoable"
 params = []
