@@ -11,8 +11,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::{
-    BackdropImage, BackdropRequest, CursorIcon, HostKey, HostedOutput, KeyClaim, Region, Scroll,
-    WindowCover, WindowPicture,
+    BackdropImage, BackdropRequest, CursorIcon, HostKey, HostedOutput, KeyClaim, KeyModifiers,
+    Region, Scroll, WindowCover, WindowPicture,
 };
 
 /// How many pixels a side of one coverage cell is: the granularity at which a frame says what it
@@ -704,6 +704,11 @@ pub trait SurfaceHost {
 
     /// Scroll over the surface.
     fn pointer_axis(&mut self, _scroll: Scroll) {}
+
+    /// The modifiers held as the pointer acts on the surface, told before each of its buttons and
+    /// scrolls: Ctrl and a wheel zoom a canvas whether or not the surface had the Ctrl press, which
+    /// went to whoever has the keyboard.
+    fn pointer_modifiers(&mut self, _held: KeyModifiers) {}
 
     /// Whether keys should come to this surface instead of the focused window (an open launcher or
     /// menu).

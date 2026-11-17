@@ -299,6 +299,10 @@ impl SurfaceHost for Banners {
         self.host.pointer_axis(scroll);
     }
 
+    fn pointer_modifiers(&mut self, held: tilo_session_core::surface::KeyModifiers) {
+        self.host.pointer_modifiers(held);
+    }
+
     fn wants_keyboard(&self) -> bool {
         SurfaceHost::wants_keyboard(&self.host)
     }
@@ -619,6 +623,10 @@ impl SurfaceHost for ActivityLayer {
 
     fn pointer_axis(&mut self, scroll: Scroll) {
         self.host.pointer_axis(scroll);
+    }
+
+    fn pointer_modifiers(&mut self, held: tilo_session_core::surface::KeyModifiers) {
+        self.host.pointer_modifiers(held);
     }
 
     fn wants_keyboard(&self) -> bool {

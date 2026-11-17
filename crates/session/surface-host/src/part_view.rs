@@ -655,6 +655,12 @@ impl SurfaceHost for PartView {
         }
     }
 
+    fn pointer_modifiers(&mut self, held: tilo_session_core::surface::KeyModifiers) {
+        if let Some(open) = self.open.as_mut() {
+            open.widgets.pointer_modifiers(held);
+        }
+    }
+
     fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         let Some((x0, y0, x1, y1)) = outputs
             .iter()

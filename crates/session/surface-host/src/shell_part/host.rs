@@ -122,6 +122,10 @@ impl SurfaceHost for ShellPart {
         self.widgets.pointer_axis(scroll);
     }
 
+    fn pointer_modifiers(&mut self, held: tilo_session_core::surface::KeyModifiers) {
+        self.widgets.pointer_modifiers(held);
+    }
+
     fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         // A part not yet told which output it stands on covers all of them, the tightest
         // bounding box there is.

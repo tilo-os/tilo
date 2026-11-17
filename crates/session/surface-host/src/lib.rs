@@ -429,6 +429,14 @@ impl SurfaceHost for AppHost {
         self.input(mouse_input(button, pressed));
     }
 
+    fn pointer_modifiers(&mut self, held: tilo_session_core::surface::KeyModifiers) {
+        let modifiers = held.state();
+        if modifiers != self.modifiers {
+            self.modifiers = modifiers;
+            self.input(WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));
+        }
+    }
+
     fn pointer_axis(&mut self, scroll: Scroll) {
         self.input(mouse_wheel(scroll, self.placement.scale));
     }

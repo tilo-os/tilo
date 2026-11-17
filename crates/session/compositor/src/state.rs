@@ -1303,9 +1303,28 @@ impl State {
         }
     }
 
+    /// The modifiers the seat's keyboard holds now, as a hosted surface hears them.
+    fn held_modifiers(&self) -> KeyModifiers {
+        self.seat
+            .get_keyboard()
+            .map(|keyboard| {
+                let held = keyboard.modifier_state();
+                KeyModifiers {
+                    ctrl: held.ctrl,
+                    alt: held.alt,
+                    shift: held.shift,
+                    logo: held.logo,
+                    caps_lock: held.caps_lock,
+                }
+            })
+            .unwrap_or_default()
+    }
+
     pub(crate) fn pointer_axis(&mut self, scroll: Scroll, time: u32) {
         if let PointerTarget::Host(index) = self.pointer_target {
+            let held = self.held_modifiers();
             if let Some(host) = self.hosts.get_mut(index) {
+                host.pointer_modifiers(held);
                 host.pointer_axis(scroll);
             }
             return;
@@ -1418,7 +1437,9 @@ impl State {
             if pressed {
                 self.pressed_host = Some(index);
             }
+            let held = self.held_modifiers();
             if let Some(host) = self.hosts.get_mut(index) {
+                host.pointer_modifiers(held);
                 host.pointer_button(button, pressed);
             }
             return;
