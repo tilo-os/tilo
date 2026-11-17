@@ -30,7 +30,7 @@
 
 use tilo_actions::remote::{ChangePage, Found, Within};
 use ui::history_source::feed::DocumentKey;
-use ui::search::index_publication::IndexEntry;
+use ui::search::index_publication::{IndexEntry, IndexWeight};
 
 use std::collections::HashMap;
 
@@ -44,8 +44,12 @@ use crate::workspace_documents::Reading;
 /// The most records one search answers with.
 const MOST_FOUND: usize = 20;
 
-/// The most rows of a record's listing read to name one resource a search found in it.
+/// The most rows of one app's listing read to name the resource a search found in it.
 const NAMING_ROWS: u32 = 64;
+
+/// The most containers at an app's top level read, one page each, to name a
+/// resource it lists under one of them (a chain's issues).
+const NAMING_CONTAINERS: usize = 3;
 
 /// How much of one resource a search's caller may read.
 enum Readable {
@@ -138,6 +142,35 @@ impl Worker {
             .collect();
         let (docs, searched) = self.searchable(workspace_id, &routes, (&person, within));
         let entries_ms = began.elapsed().as_millis();
+        // One listing of a document answers for every hit in it: a listing mounts the document
+        // and reads it out, and a search that named twenty hits in one notebook paid for the
+        // notebook twenty times.
+        let mut listings: HashMap<DocumentRoute, Vec<CatalogueRow>> = HashMap::new();
+        let mut found: Vec<Found> = Vec::new();
+        // What a person types to name a resource as it is (`#12`, a handle) is
+        // found as written: the entry whose identity field is the whole of
+        // `needle` answers first, ahead of every entry that merely holds the
+        // word, and the ranking below fills in the rest.
+        for (entry, doc) in searched.iter().zip(&docs) {
+            if found.len() >= MOST_FOUND {
+                break;
+            }
+            let Some(entry) = entry else { continue };
+            let identity = entry.fields.iter().any(|(text, weight)| {
+                *weight == IndexWeight::Identity && text.trim().eq_ignore_ascii_case(needle.trim())
+            });
+            if !identity {
+                continue;
+            }
+            let resource = self.listed_resource(&doc.route, entry).or_else(|| {
+                self.named_resource(workspace_id, caller, &doc.route, entry, &mut listings)
+            });
+            if let Some(resource) = resource
+                && !found.iter().any(|held| held.resource == resource.resource)
+            {
+                found.push(resource);
+            }
+        }
         // Words rank what holds them. With no words, a search narrowed to a place or a time
         // lists what it holds there, the newest first, and one narrowed to nothing finds
         // nothing.
@@ -155,11 +188,6 @@ impl Worker {
             });
             newest
         };
-        let mut found: Vec<Found> = Vec::new();
-        // One listing of a document answers for every hit in it: a listing mounts the document
-        // and reads it out, and a search that named twenty hits in one notebook paid for the
-        // notebook twenty times.
-        let mut listings: HashMap<DocumentRoute, Vec<CatalogueRow>> = HashMap::new();
         for at in ranked {
             if found.len() >= MOST_FOUND {
                 break;
@@ -417,19 +445,25 @@ impl Worker {
                 when: entry.when,
             });
         }
+        let mut query = CatalogueQuery {
+            provider: Some(record_provider(route)),
+            needle: entry.resource.clone(),
+            max_results: NAMING_ROWS,
+            ..CatalogueQuery::default()
+        };
+        // A document that is a part of a chain keeps its items under the chain's address, never
+        // at its own top level: the part is one document of a set, and the address is what a
+        // listing names them all by.
+        let chain = ui::resource::DocumentId::parse(&route.document)
+            .and_then(|document| document.chain_part())
+            .map(|(chain, _)| ui::resource::chain_resource_id(&chain));
         let holders = id
             .match_indices('/')
             .map(|(at, _)| id.get(..at).map(str::to_owned))
             .rev()
             .chain(std::iter::once(None));
-        for parent in holders {
-            let query = CatalogueQuery {
-                provider: Some(record_provider(route)),
-                parent_resource: parent,
-                needle: entry.resource.clone(),
-                max_results: NAMING_ROWS,
-                ..CatalogueQuery::default()
-            };
+        for parent in holders.chain(chain.into_iter().map(Some)) {
+            query.parent_resource = parent;
             let Ok(page) = self.catalogue_page(workspace_id, caller, &query) else {
                 continue;
             };
@@ -441,7 +475,36 @@ impl Worker {
                     open: None,
                     arguments: serde_json::Map::new(),
                     app: Some(route.app_id.clone()),
-                    provider: Some(record_provider(route)),
+                    provider: query.provider,
+                    when: entry.when,
+                });
+            }
+        }
+        // An app that keeps its items in parts beside its own document lists them under a
+        // container its top level names: each container is one page read for the row it holds.
+        query.parent_resource = None;
+        let root = self.catalogue_page(workspace_id, caller, &query);
+        for container in root
+            .ok()?
+            .rows
+            .into_iter()
+            .filter(|row| row.has_children)
+            .map(|row| row.resource.id)
+            .take(NAMING_CONTAINERS)
+        {
+            query.parent_resource = Some(container);
+            let Ok(page) = self.catalogue_page(workspace_id, caller, &query) else {
+                continue;
+            };
+            if let Some(row) = page.rows.into_iter().find(|row| row.resource.id == id) {
+                return Some(Found {
+                    resource: row.resource.id,
+                    kind: row.resource.kind,
+                    label: row.resource.label,
+                    open: None,
+                    arguments: serde_json::Map::new(),
+                    app: Some(route.app_id.clone()),
+                    provider: query.provider,
                     when: entry.when,
                 });
             }

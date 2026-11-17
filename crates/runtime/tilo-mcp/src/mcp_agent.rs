@@ -54,6 +54,7 @@ mod view;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
 use answer::{action_row, action_rows, answer_of, outcome, text_result};
+use find::split_reference;
 use level::{LevelPages, LsCursor};
 use render::{
     action_line, action_page, block_line, parse_read_cursor, read_answer, restart_pause,
@@ -213,60 +214,6 @@ impl Reply {
     }
 }
 
-/// A path, taken apart: `app/segment/segment#action`.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct ParsedPath {
-    pub(super) app: String,
-    pub(super) segments: Vec<String>,
-    pub(super) action: Option<String>,
-}
-
-/// Parse `text`. A name containing `/`, `#` or `\` writes it with a leading
-/// backslash.
-pub(super) fn parse_path(text: &str) -> Result<ParsedPath, String> {
-    let mut parts: Vec<String> = vec![String::new()];
-    let mut action = String::new();
-    let mut in_action = false;
-    let mut escaped = false;
-    for character in text.trim().chars() {
-        if escaped {
-            escaped = false;
-            push_char(&mut parts, &mut action, in_action, character);
-            continue;
-        }
-        match character {
-            '\\' => escaped = true,
-            '#' if !in_action => in_action = true,
-            '/' if !in_action => parts.push(String::new()),
-            other => push_char(&mut parts, &mut action, in_action, other),
-        }
-    }
-    let action = in_action.then_some(action);
-    let mut parts = parts
-        .into_iter()
-        .map(|part| part.trim().to_owned())
-        .filter(|part| !part.is_empty());
-    let app = parts
-        .next()
-        .ok_or("a path starts with an app: notes/Todo")?;
-    let action = action
-        .map(|action| action.trim().to_owned())
-        .filter(|action| !action.is_empty());
-    Ok(ParsedPath {
-        app,
-        segments: parts.collect(),
-        action,
-    })
-}
-
-fn push_char(parts: &mut [String], action: &mut String, in_action: bool, character: char) {
-    if in_action {
-        action.push(character);
-    } else if let Some(part) = parts.last_mut() {
-        part.push(character);
-    }
-}
-
 /// A name written into a path: `/`, `#` and `\` escaped.
 fn path_name(name: &str) -> String {
     let mut written = String::with_capacity(name.len());
@@ -316,7 +263,7 @@ mod mcp_agent_tools;
 mod mcp_agent_pick;
 
 use mcp_agent_node::{Level, Node, level_of, shared_titles};
-use mcp_agent_paths::{CLOSE_MATCHES, close_matches, kind_address};
+use mcp_agent_paths::{CLOSE_MATCHES, ParsedPath, close_matches, kind_address, parse_path};
 use mcp_agent_pick::{
     action_rank, is_program_form, named_beyond_its_start, only_by_id, pick, pick_action,
     pick_action_anywhere, published_on, rank, reads_action,
@@ -1020,11 +967,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// resource there carries is asked of the app by name; anything else (a
     /// key, the start of a name, a name several carry, one that is not
     /// there) is decided on the whole level, as listing it shows. With them
-    /// comes the directory revision it was found at.
+    /// comes the directory revision it was found at. `at` is the address the
+    /// level is listed at, which a name not found is answered with.
     async fn step(
         &self,
         provider: &str,
-        app: &str,
+        at: &str,
         parent: Option<&Node>,
         segment: &str,
         levels: &mut Levels,
@@ -1075,13 +1023,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 return Ok((found, here));
             }
             if looks >= LOOKS_AGAIN || (here.read_on() && began.elapsed() >= LOOKS_MOMENT) {
-                let names: Vec<_> = (here.children.iter())
-                    .map(|node| node.name(&here.children))
+                // Each name as the address that takes it, not the word alone:
+                // a caller reading where it went wrong writes the next call
+                // from what it is told, and a word it cannot place is no
+                // address at all.
+                let addresses: Vec<_> = (here.children.iter())
+                    .map(|node| format!("{at}/{}", node.name(&here.children)))
                     .collect();
-                return Err(format!(
-                    "no {segment} in {app}; it has: {}",
-                    list_names(&names)
-                ));
+                return if addresses.is_empty() {
+                    Err(format!("no {segment} in {at}; it lists nothing here"))
+                } else {
+                    Err(format!(
+                        "no {segment} in {at}; it has: {}",
+                        list_names(&addresses)
+                    ))
+                };
             }
             looks = looks.saturating_add(1);
             tokio::time::sleep(restart_pause(looks.saturating_add(1))).await;
@@ -1280,13 +1236,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // `tasks.tracker/issues/7` names one resource whole, where its parts
         // named one at a time would name every kind that shares a word.
         if kind_address(&parsed.app).is_some() {
-            let address = if parsed.segments.is_empty() {
-                parsed.app.clone()
-            } else {
-                format!("{}/{}", parsed.app, parsed.segments.join("/"))
-            };
+            let address = parsed.address();
             if let Some(found) = self
-                .by_address(&app_id, &provider, &address, &mut levels)
+                .by_item_address(&app_id, &provider, &address, &mut levels)
                 .await?
             {
                 return Ok(found);
@@ -1297,10 +1249,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // the last of them was found at.
         let mut among: Vec<Vec<Node>> = Vec::new();
         let mut revision = String::new();
+        // The address each level is listed at, as the app's own listing writes
+        // it: what a name not found there is answered with.
+        let mut at = app.clone();
         for segment in &parsed.segments {
             let (found, siblings) = self
-                .step(&provider, &app, chain.last(), segment, &mut levels, forms)
+                .step(&provider, &at, chain.last(), segment, &mut levels, forms)
                 .await?;
+            at = format!("{at}/{}", found.name(&siblings.children));
             chain.push(found);
             among.push(siblings.children);
             revision = siblings.revision;
@@ -1447,7 +1403,22 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `structured` when the caller asked for typed answers
     /// (`_meta["so.tilo.mcp"].structured`): a read answers its
     /// [`ResourceRead`].
-    pub(super) async fn agent_call(&self, name: &str, args: Value, structured: bool) -> Value {
+    pub(super) async fn agent_call(&self, name: &str, mut args: Value, structured: bool) -> Value {
+        // A path written as what a person types to name a resource (`#12`) is
+        // read as the address the tools list it at before the call resolves
+        // it, so an agent going on from a prompt's words reaches the resource.
+        if let Some(path) = args.get("path").and_then(Value::as_str).map(str::to_owned)
+            && split_reference(&path).is_some()
+        {
+            match self.expand_reference(&path).await {
+                Ok(expanded) => {
+                    if let Some(fields) = args.as_object_mut() {
+                        fields.insert("path".into(), Value::String(expanded));
+                    }
+                }
+                Err(error) => return text_result(Err(error), structured, true),
+            }
+        }
         let result = match name {
             "tilo_ls" => match parse(args) {
                 Ok(args) => self.agent_ls(args, structured).await,

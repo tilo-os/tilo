@@ -2,7 +2,10 @@
 //! to one that would: an answer names a resource whole
 //! (`tasks.tracker/issues/7`), and that is a path the next call takes.
 
-use super::{ActionProvider, Level, Levels, McpServer, Node, ROOT_PEEK, Resolved};
+use super::{
+    ActionDescriptor, ActionProvider, Failure, Level, Levels, McpServer, Node, ROOT_PEEK, Resolved,
+    Value, json,
+};
 
 /// The close matches an action no resource offers is told with.
 pub(super) const CLOSE_MATCHES: usize = 5;
@@ -65,6 +68,90 @@ impl Node {
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
+    /// `arguments` with each parameter of `descriptor` that picks a resource of
+    /// the workspace (`ParamType::Resource`) bound from the address a caller
+    /// wrote: a path (`notes/Launch checklist`, the one `tilo_ls` lists) is
+    /// resolved as the tools resolve one, and handed over as the reference an
+    /// app takes (its app, kind, id and label). Any other value is the caller's
+    /// own reference, passed as given.
+    pub(super) async fn bind_resource_arguments(
+        &self,
+        descriptor: &ActionDescriptor,
+        mut arguments: serde_json::Map<String, Value>,
+    ) -> Result<serde_json::Map<String, Value>, Failure> {
+        for param in &descriptor.params {
+            // A resource parameter is typed as one, or declared as a reference
+            // to one of a kind (`resource = "notes.pages.pages"`): either way
+            // what it picks is a resource of the workspace.
+            let picks = param.ty == tilo_actions::ParamType::Resource
+                || param
+                    .schema
+                    .as_ref()
+                    .and_then(|schema| schema.get(tilo_actions::PICK_ANNOTATION))
+                    .and_then(Value::as_str)
+                    == Some("resource");
+            if !picks {
+                continue;
+            }
+            let Some(path) = arguments
+                .get(param.name.as_ref())
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let parsed = parse_path(&path).map_err(|why| format!("invalid_arguments: {why}"))?;
+            let resolved = match self.resolve(&parsed).await? {
+                (Ok(resolved), _) => resolved,
+                (Err(note), _) => return Err(format!("invalid_arguments: {note}").into()),
+            };
+            let Some(node) = resolved.node.clone() else {
+                return Err(format!(
+                    "invalid_arguments: {path} names no resource; tilo_ls {} lists what there is \
+                     to name",
+                    resolved.path
+                )
+                .into());
+            };
+            let kept = tilo_actions::remote::resource_parts(&resolved.provider)
+                .filter(|(app, _)| *app == resolved.app_id)
+                .map(|(_, kept)| kept.to_owned())
+                .filter(|kept| !kept.is_empty());
+            let mut reference = serde_json::Map::new();
+            reference.insert("app".into(), json!(resolved.app_id));
+            reference.insert("kind".into(), json!(node.kind));
+            reference.insert("id".into(), json!(node.id));
+            reference.insert("label".into(), json!(node.label));
+            if let Some(kept) = kept {
+                reference.insert("record".into(), json!(kept));
+            }
+            arguments.insert(param.name.to_string(), Value::Object(reference));
+        }
+        Ok(arguments)
+    }
+
+    /// The resource `address` names, written either as its listing publishes
+    /// it (`chat.messages/messages/m1`) or in the stable form a link carries
+    /// (`chat.messages.messages:m1`): both name one resource, so both are
+    /// answered alike.
+    pub(super) async fn by_item_address(
+        &self,
+        app_id: &str,
+        provider: &str,
+        address: &str,
+        levels: &mut Levels,
+    ) -> Result<Option<Resolved>, String> {
+        if let Some(found) = self.by_address(app_id, provider, address, levels).await? {
+            return Ok(Some(found));
+        }
+        let Some(form) = tilo_actions::item_form_of(address) else {
+            return Ok(None);
+        };
+        self.by_address(app_id, provider, &form, levels).await
+    }
+
     /// The resource the app lists under exactly `address`, with its actions
     /// and what it holds: an answer's own naming of what it made or changed.
     pub(super) async fn by_address(
@@ -136,5 +223,71 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             levels: std::mem::take(levels),
             revision: here.revision,
         }))
+    }
+}
+
+/// A path, taken apart: `app/segment/segment#action`.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ParsedPath {
+    pub(super) app: String,
+    pub(super) segments: Vec<String>,
+    pub(super) action: Option<String>,
+}
+
+impl ParsedPath {
+    /// The path as it names a resource, whole: the app and every segment,
+    /// without an action after `#`.
+    pub(super) fn address(&self) -> String {
+        if self.segments.is_empty() {
+            self.app.clone()
+        } else {
+            format!("{}/{}", self.app, self.segments.join("/"))
+        }
+    }
+}
+
+/// Parse `text`. A name containing `/`, `#` or `\` writes it with a leading
+/// backslash.
+pub(super) fn parse_path(text: &str) -> Result<ParsedPath, String> {
+    let mut parts: Vec<String> = vec![String::new()];
+    let mut action = String::new();
+    let mut in_action = false;
+    let mut escaped = false;
+    for character in text.trim().chars() {
+        if escaped {
+            escaped = false;
+            push_char(&mut parts, &mut action, in_action, character);
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '#' if !in_action => in_action = true,
+            '/' if !in_action => parts.push(String::new()),
+            other => push_char(&mut parts, &mut action, in_action, other),
+        }
+    }
+    let action = in_action.then_some(action);
+    let mut parts = parts
+        .into_iter()
+        .map(|part| part.trim().to_owned())
+        .filter(|part| !part.is_empty());
+    let app = parts
+        .next()
+        .ok_or("a path starts with an app: notes/Todo")?;
+    let action = action
+        .map(|action| action.trim().to_owned())
+        .filter(|action| !action.is_empty());
+    Ok(ParsedPath {
+        app,
+        segments: parts.collect(),
+        action,
+    })
+}
+
+fn push_char(parts: &mut [String], action: &mut String, in_action: bool, character: char) {
+    if in_action {
+        action.push(character);
+    } else if let Some(part) = parts.last_mut() {
+        part.push(character);
     }
 }

@@ -29,7 +29,71 @@ fn nothing_matches(query: &str) -> String {
     )
 }
 
+/// A path written as what a person types to name a resource (an issue's
+/// `#12`), split into that name and what follows it: `None` for a path that
+/// begins with anything else. The name goes up to the next unescaped `#`, which
+/// starts an action as it does after any other address.
+pub(super) fn split_reference(path: &str) -> Option<(&str, &str)> {
+    let text = path.trim();
+    let rest = text.strip_prefix('#')?;
+    let end = rest
+        .char_indices()
+        .find(|(at, character)| {
+            *character == '#'
+                && (*at == 0 || rest.as_bytes().get(at.saturating_sub(1)) != Some(&b'\\'))
+        })
+        .map_or(text.len(), |(at, _)| at.saturating_add(1));
+    let (reference, after) = text.split_at(end);
+    (!reference.trim_matches('#').trim().is_empty()).then_some((reference.trim(), after))
+}
+
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
+    /// What the workspace's search finds for `needle`, asked as whoever calls it: said plainly
+    /// when this device keeps no search, never answered with a ranking of its own.
+    async fn searched(&self, needle: &str, within: &Within) -> Result<Vec<Found>, Failure> {
+        let Some(search) = self.host.resource_search() else {
+            return Err(
+                "this host keeps no search of its workspace: list an app's directory instead \
+                 (tilo_ls names the apps)"
+                    .into(),
+            );
+        };
+        let found = search
+            .find_within(&self.caller, needle, within)
+            .await
+            .ok_or("the host's search stopped answering")??;
+        Ok(found)
+    }
+
+    /// `path` as the address the tools list the resource at, when it is
+    /// written as the reference a person types (`#12`): what the workspace's
+    /// search finds for it, named by the path `tilo_ls` writes. Any other path
+    /// is itself.
+    pub(super) async fn expand_reference(&self, path: &str) -> Result<String, Failure> {
+        let Some((reference, after)) = split_reference(path) else {
+            return Ok(path.to_owned());
+        };
+        let found = self.searched(reference, &Within::default()).await?;
+        let (_, running) = self.providers().await?;
+        let mut levels = Levels::new();
+        for hit in &found {
+            if hit.kind == tilo_actions::remote::FOUND_FILE {
+                continue;
+            }
+            if let Some((path, _)) = self
+                .locate(hit.app.as_deref(), hit, &running, &mut levels)
+                .await
+            {
+                return Ok(format!("{path}{after}"));
+            }
+        }
+        Err(format!(
+            "no resource of the workspace reads as {reference}; tilo_ls lists the apps and what \
+             they hold, and tilo_find looks for a word in them"
+        )
+        .into())
+    }
+
     /// What the workspace holds, by the host's own search: on a desktop the
     /// one search it runs, the palette's ranking and `place_found`'s, so a
     /// text an agent asks for answers what the person sees, in the person's
@@ -51,17 +115,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Err("query needs a word to look for".into());
         }
         let limit = args.limit.unwrap_or(FIND_HITS).clamp(1, 100);
-        let Some(search) = self.host.resource_search() else {
-            return Err(
-                "this host keeps no search of its workspace: list an app's directory instead \
-                 (tilo_ls names the apps)"
-                    .into(),
-            );
-        };
-        let found = search
-            .find_within(&self.caller, &words, &within)
-            .await
-            .ok_or("the host's search stopped answering")??;
+        let found = self.searched(&words, &within).await?;
         if found.is_empty() {
             return Ok(Reply::ok(nothing_matches(&args.query)));
         }
@@ -333,7 +387,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         None
     }
 
-    /// The app's other records, where it keeps one per file (a PDF each): a line and a row for
+    /// The app's other documents, where it keeps one per file (a PDF each): a line and a row
     /// each, by the path that names it (`pdf-viewer@record:…`) and what it holds. Listing the
     /// app shows the record it acts in; these are the rest, so none of them goes unseen.
     pub(super) async fn other_resources(
@@ -412,19 +466,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let mut names: Vec<String> = Vec::new();
         let mut here = node;
         for _ in 0..DEEP_READS {
+            // A row the app publishes at its own top level is named there,
+            // however deep its resource also nests it: the shortest address is
+            // the one the app's own listing writes.
+            let Ok(top) = self.level(provider, "", levels).await else {
+                return None;
+            };
+            if top.children.iter().any(|node| node.id == here.id) {
+                names.push(here.found_name(&top.children));
+                break;
+            }
             let parent = here.parent.clone();
             if parent.is_empty() {
-                // At the app's root: the top level names it there. A row the
-                // top level does not list (a body published beside its note)
-                // hangs under the container that feeds it, found by the key
-                // its own key extends.
-                let Ok(top) = self.level(provider, "", levels).await else {
-                    return None;
-                };
-                if top.children.iter().any(|node| node.id == here.id) {
-                    names.push(here.found_name(&top.children));
-                    break;
-                }
+                // A row the top level does not list (a body published beside
+                // its note) hangs under the container that feeds it, found by
+                // the key its own key extends.
                 // A field published beside its record (a note's body) hangs
                 // under the record that publishes it: the note is asked for
                 // the field's own name, one lookup.

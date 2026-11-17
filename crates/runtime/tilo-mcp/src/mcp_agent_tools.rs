@@ -22,7 +22,7 @@ fn tools() -> Vec<Value> {
     [
         (
             "tilo_ls",
-            "List what is in the workspace. No path: the apps. `notes`: an app's resources and actions; `notes/Todo`: a note's children and actions; `notes/Todo#rename`: an action's parameters. A path is app[@window]/resource names (title, kind or key, any case), stable across restarts. kind: resources or actions; limit and cursor page.",
+            "List what is in the workspace. No path: the apps. `notes`: an app's resources and actions; `notes/Todo`: a note's children and actions; `notes/Todo#rename`: an action's parameters. A path is app[@window]/resource names (title, kind or key), stable across restarts; or `#12` kind: resources or actions; limit and cursor page.",
             json!({"path":string,"kind":{"enum":["resources","actions"]},"limit":integer,"cursor":string}),
             json!([]),
             read.clone(),

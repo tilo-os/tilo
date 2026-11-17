@@ -97,6 +97,9 @@ enum Unread {
     MovedOn,
     /// The app cannot read its directory right now ([`cannot_be_read_now`]).
     CannotNow,
+    /// The app the query named could not be listed, and why: what it keeps did
+    /// not mount yet, or the caller may not read it now.
+    Unavailable(String),
 }
 
 /// A cursor `tilo_ls` issues: how many entries the listing is past, and,
@@ -269,6 +272,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     Unread::CannotNow => {
                         Err("the app cannot list what it has right now; try again".into())
                     }
+                    Unread::Unavailable(reason) => Err(reason),
                 };
             }
             from = Level::default();
@@ -329,6 +333,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .await?;
             if asked.stale_cursor {
                 return Ok(Err(Unread::MovedOn));
+            }
+            // What the caller named could not be listed: said in place of a
+            // level with nothing in it, and looked for again while the wait
+            // lasts, as a directory still being read is.
+            if let Some(reason) = &asked.unavailable {
+                return Ok(Err(Unread::Unavailable(reason.clone())));
             }
             if cannot_be_read_now(&asked) {
                 return Ok(Err(Unread::CannotNow));

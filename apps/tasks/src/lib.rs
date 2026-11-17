@@ -511,6 +511,13 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) {
     });
     let (numbered, opener) = (window.tasks.clone(), nav.clone());
     cx.on_open(move |anchor: &str| {
+        // The tracker itself, by the resource its own documents are published
+        // under: the window shows its issues, which is what it is.
+        if anchor.trim() == crate::model::KIND {
+            opener.project.set(None);
+            opener.open.set(None);
+            return Ok::<(), Refusal>(());
+        }
         // An issue, by the address its part publishes it under.
         if let Some((_, issue)) = ui::tilo_resource::items::item_of_resource::<IssuePart>(anchor) {
             opener.project.set(None);

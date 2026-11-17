@@ -443,6 +443,7 @@ fn directory_page(
             exhausted: page.exhausted,
             stale_cursor: page.stale_cursor,
             budget_exhausted: page.budget_exhausted,
+            unavailable: None,
         }),
         ActionDirectoryBridgeResponse::Resolution(resolution) => {
             let mut page = CataloguePage {

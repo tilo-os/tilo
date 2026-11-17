@@ -8,7 +8,7 @@
 //! naming one resource by path reads several pages.
 
 use super::{
-    CatalogueQuery, CatalogueRow, DocumentRoute, Worker, WorkspaceState, bounded, direct,
+    CatalogueQuery, CatalogueRow, DocumentRoute, Worker, WorkspaceState, bounded, direct, named,
     record_provider,
 };
 use tilo_actions::remote::{Caller, CataloguePage};
@@ -56,6 +56,7 @@ impl Worker {
             let room = wanted.saturating_sub(rows.len());
             rows.extend(admitted.into_iter().skip(passed).take(room));
         };
+        let mut failed: Option<(DocumentRoute, String)> = None;
         for route in routes {
             if rows.len() >= wanted {
                 break;
@@ -80,7 +81,10 @@ impl Worker {
                     skip = skip.saturating_sub(held);
                     rows.extend(listed.into_iter().map(kept));
                 }
-                Err(error) => self.did_not_mount(route, error),
+                Err(error) => {
+                    self.did_not_mount(route, error.clone());
+                    failed.get_or_insert_with(|| (route.clone(), error));
+                }
             }
             // The record's registered reads, over its retained source: kept
             // while the record stands where it was ([`super::canonical`]).
@@ -105,6 +109,18 @@ impl Worker {
             }
         }
         take(&mut rows, &mut skip, own);
+        // An app the query named and this device could not list says why: a
+        // page of no rows would tell its caller the app holds nothing, and an
+        // agent would go looking for another name for what is there.
+        if rows.is_empty()
+            && query.provider.is_some()
+            && let Some((route, error)) = failed
+        {
+            return CataloguePage::unavailable(
+                revision,
+                format!("{} cannot be listed: {error}", named(&route)),
+            );
+        }
         let more = rows.len() > size;
         rows.truncate(size);
         CataloguePage::window(revision, rows, query, more)
