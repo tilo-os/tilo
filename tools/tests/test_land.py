@@ -224,6 +224,22 @@ class LandTest(unittest.TestCase):
         self.assertIn("clean.txt", files)
         self.assertNotIn("worse.txt", files)
 
+    def test_a_change_without_rust_lands_ahead_of_one_that_compiles(self):
+        first = self.worktree("first", {"first.txt": "fine\n"})
+        compiles = self.worktree("compiles", {"code.rs": "fn main() {}\n"})
+        words = self.worktree("words", {"words.md": "fine\n"})
+        waiting = [self.land(first)]
+        state = self.clone / ".git" / "land" / "main" / "state.json"
+        deadline = time.monotonic() + HANG_BOUND
+        while "linting" not in (state.read_text() if state.exists() else ""):
+            self.assertLess(time.monotonic(), deadline, "the lander never started its first lint")
+            time.sleep(0.1)
+        found = self.answers(waiting + [self.land(compiles), self.land(words)])
+        self.assertEqual([result["status"] for _code, result in found], ["landed"] * 3, found)
+        git(self.clone, "fetch", "-q", "origin")
+        order = git(self.clone, "log", "--format=%s", "--reverse", "origin/main").splitlines()
+        self.assertLess(order.index("words"), order.index("compiles"), order)
+
     def test_a_merge_commit_is_refused(self):
         tree = self.worktree("merger", {"a.txt": "a\n"})
         git(tree, "checkout", "-q", "-b", "side", "origin/main")

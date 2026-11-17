@@ -69,6 +69,9 @@ SHOWN_LINES = 120
 # machine that compiles was away, or failed after compiling (a container it could not save).
 # The round is tried again, a few times, rather than answered.
 UNEXPLAINED_RETRIES = 3
+# What the push lint compiles, as tools/ci/pre_push_lint.py names it.
+RUST_SUFFIXES = (".rs", ".tl")
+RUST_NAMES = ("Cargo.toml", "Cargo.lock", "build.rs")
 # Rounds whose whole lint output is kept, to tell where a round's minutes went.
 KEPT_LINT_LOGS = 40
 UNEXPLAINED_RETRY_SECONDS = 30
@@ -394,7 +397,10 @@ class Lander:
         # The changes nothing points at go first; the ones a failure pointed at go together after
         # them, and each failure of theirs narrows them again.
         innocent = [entry for entry in entries if entry["id"] not in self.suspects]
-        entries = innocent or entries
+        # A change without Rust lints in seconds; behind a batch that compiles for minutes it
+        # would wait those minutes and share that batch's failures for nothing.
+        quick = [entry for entry in innocent if not self.compiles(entry)]
+        entries = quick or innocent or entries
         batch: list[tuple[dict, str]] = []
         for entry in entries:
             if len(batch) >= self.limit:
@@ -494,6 +500,17 @@ class Lander:
         finally:
             signal.signal(signal.SIGTERM, previous)
         return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+
+    def compiles(self, entry: dict) -> bool:
+        """Whether a change touches what the push lint compiles (tools/ci/pre_push_lint.py's rust_changes)."""
+        for commit in entry["commits"]:
+            listing = git(self.tree, "diff-tree", "-r", "--root", "--no-commit-id", "--name-only", commit)
+            if listing.returncode != 0:
+                return True
+            for path in listing.stdout.split():
+                if path.endswith(RUST_SUFFIXES) or path.rsplit("/", 1)[-1] in RUST_NAMES:
+                    return True
+        return False
 
     def logs(self) -> Path:
         """Where this round's lint keeps the whole output of each of its runs; the last few rounds stay."""
