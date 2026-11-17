@@ -337,7 +337,8 @@ pub fn kept_text(text: &str) -> String {
 
 /// `text` as a calendar keeps it at an address where its server holds `held`
 /// (`None`: nothing yet): [`kept_text`], except that a line naming somebody
-/// the server already writes to goes up exactly as the server holds it.
+/// the server already writes to goes up exactly as the server holds it, and
+/// that its event goes by the `UID` the server holds it under.
 ///
 /// A server that schedules by itself compares, for each person an entry
 /// names, what the entry said of who writes to them before a change and
@@ -350,27 +351,86 @@ pub fn kept_text(text: &str) -> String {
 /// has (3.2.1.1). Somebody the server writes to keeps the line it holds,
 /// where it goes on as it did and starts nothing. `SCHEDULE-FORCE-SEND`,
 /// which asks a server for a message it would not send (7.2), never goes up.
+///
+/// An event is known by its `UID`, to its server and to everybody the event
+/// was sent to. An entry another calendar program made is written out by
+/// this calendar under a `UID` of this calendar's making. Over what the
+/// server holds, that is refused (RFC 4791, 5.3.2.1), or, by a server that
+/// takes it, read as another event: the one it held called off and a new one
+/// sent out. So each event of the text goes up with the `UID` line the
+/// server holds.
 #[must_use]
 pub fn kept_beside(text: &str, held: Option<&str>) -> String {
     let written_for = held.map(server_written).unwrap_or_default();
+    let uid_held = held.and_then(uid_line_held);
+    let lines = pim_lines::unfold(text);
+    let parsed: Vec<Option<ContentLine>> =
+        lines.iter().map(|line| ContentLine::parse(line)).collect();
+    let events_own = events_own_lines(&parsed);
     let mut out = String::new();
-    for line in pim_lines::unfold(text) {
-        match ContentLine::parse(&line) {
+    for ((line, parsed), events_own) in lines.iter().zip(&parsed).zip(events_own) {
+        match parsed {
             Some(parsed) if parsed.name == "METHOD" => {}
-            Some(parsed) if names_somebody(&parsed) => {
-                let address = address_of(&parsed);
+            Some(parsed) if parsed.name == "UID" && events_own => {
+                fold_into(&mut out, uid_held.as_deref().unwrap_or(line));
+            }
+            Some(parsed) if names_somebody(parsed) => {
+                let address = address_of(parsed);
                 let as_held = written_for
                     .iter()
                     .find(|held| held.property == parsed.name && held.address == address);
                 match as_held {
                     Some(held) => fold_into(&mut out, &held.line),
-                    None => client_scheduled(&mut out, &parsed),
+                    None => client_scheduled(&mut out, parsed),
                 }
             }
-            _ => fold_into(&mut out, &line),
+            _ => fold_into(&mut out, line),
         }
     }
     out
+}
+
+/// For each of the unfolded `lines` of an iCalendar text, whether it is an
+/// event's own: it stands in a `VEVENT` and in nothing inside that, such as
+/// an alarm, which may go by a `UID` of its own.
+fn events_own_lines(lines: &[Option<ContentLine>]) -> Vec<bool> {
+    let mut open: Vec<bool> = Vec::new();
+    lines
+        .iter()
+        .map(|line| {
+            let Some(line) = line else {
+                return false;
+            };
+            if line.name == "BEGIN" {
+                open.push(line.begins("VEVENT"));
+                false
+            } else if line.name == "END" {
+                open.pop();
+                false
+            } else {
+                open.last().copied().unwrap_or(false)
+            }
+        })
+        .collect()
+}
+
+/// The `UID` line of the event the entry `held` holds, as it is held there.
+/// The parts of one entry go by one `UID`, so it is the first that says one.
+fn uid_line_held(held: &str) -> Option<String> {
+    let lines = pim_lines::unfold(held);
+    let parsed: Vec<Option<ContentLine>> =
+        lines.iter().map(|line| ContentLine::parse(line)).collect();
+    let events_own = events_own_lines(&parsed);
+    lines
+        .into_iter()
+        .zip(parsed)
+        .zip(events_own)
+        .find_map(|((line, parsed), events_own)| {
+            let says_one = events_own
+                && parsed
+                    .is_some_and(|parsed| parsed.name == "UID" && !parsed.value.trim().is_empty());
+            says_one.then_some(line)
+        })
 }
 
 /// A line of an entry a calendar server holds that leaves writing to
@@ -2326,9 +2386,55 @@ mod tests {
         // Where the server holds nothing, or nothing that names anybody,
         // every line is the client's.
         assert_eq!(kept_beside(changed, None), kept_text(changed));
-        let plain = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let plain = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:lunch-4@example.org\r\nEND:VEVENT\r\n\
+             END:VCALENDAR\r\n";
         assert_eq!(kept_beside(changed, Some(plain)), kept_text(changed));
         assert!(!leaves_writing_to_its_server(&kept_text(changed)));
+    }
+
+    /// Beside what its server holds, the kept text goes by the `UID` held
+    /// there: on the event and on each of its moved occurrences the line as
+    /// the server holds it, and on nothing inside them. Where the server
+    /// holds nothing, or nothing that says a `UID`, the text keeps its own.
+    #[test]
+    fn the_kept_text_beside_what_a_server_holds_goes_by_the_uid_held_there() {
+        let held = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID;X-MADE-BY=elsewhere:6F1E2C3A-0B1D-4E5F-8A9B-0C1D2E3F4A5B\r\n\
+             DTSTART:20261118T120000Z\r\nRRULE:FREQ=WEEKLY\r\n\
+             BEGIN:VALARM\r\nUID:alarm-held\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\n\
+             END:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ours = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:6f1e2c3a-0b1d-4e5f-8a9b-0c1d2e3f4a5b@tilo\r\nDTSTART:20261118T130000Z\r\n\
+             RRULE:FREQ=WEEKLY\r\n\
+             BEGIN:VALARM\r\nUID:alarm-ours\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\n\
+             END:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\n\
+             UID:6f1e2c3a-0b1d-4e5f-8a9b-0c1d2e3f4a5b@tilo\r\n\
+             RECURRENCE-ID:20261125T130000Z\r\nDTSTART:20261125T150000Z\r\nEND:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let uid_lines = |text: &str| -> Vec<String> {
+            pim_lines::unfold(text)
+                .into_iter()
+                .filter(|line| line.starts_with("UID"))
+                .collect()
+        };
+        let as_held = "UID;X-MADE-BY=elsewhere:6F1E2C3A-0B1D-4E5F-8A9B-0C1D2E3F4A5B";
+        let kept = kept_beside(ours, Some(held));
+        assert_eq!(
+            uid_lines(&kept),
+            [as_held, "UID:alarm-ours", as_held],
+            "{kept}"
+        );
+        assert!(kept.contains("DTSTART:20261118T130000Z"), "{kept}");
+        // The same event to this calendar either way.
+        assert_eq!(parse(&kept).0, parse(ours).0);
+        // Nothing held, or nothing held that says a UID: its own.
+        assert_eq!(uid_lines(&kept_beside(ours, None)), uid_lines(ours));
+        let nameless =
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID: \r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert_eq!(
+            uid_lines(&kept_beside(ours, Some(nameless))),
+            uid_lines(ours)
+        );
     }
 
     fn outlook_zone(tzid: &str) -> String {
