@@ -480,10 +480,11 @@ class Lander:
             environment = dict(os.environ)
             if "wasm32" in command and (page / "clippy.toml").is_file():
                 environment["CLIPPY_CONF_DIR"] = str(page)
-            run = subprocess.run(command, shell=True, cwd=self.tree, env=environment,
+            result = subprocess.run(command, shell=True, cwd=self.tree, env=environment,
                                  capture_output=True, text=True)
             message = None
-            for line in (run.stdout + run.stderr).splitlines():
+            before = len(found)
+            for line in (result.stdout + result.stderr).splitlines():
                 diagnostic = DIAGNOSTIC.match(line)
                 if diagnostic:
                     text = diagnostic.group(1)
@@ -493,6 +494,10 @@ class Lander:
                 if location and message:
                     found.add((message, location.group(1)))
                     message = None
+            if result.returncode != 0 and len(found) == before:
+                tail = (result.stdout + result.stderr).strip().splitlines()[-15:]
+                print(f"a failed lint named no diagnostic (exit {result.returncode}): {command[:200]}",
+                      *tail, sep="\n  ", flush=True)
         return found
 
     def moved(self, upstream: str) -> bool:
