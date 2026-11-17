@@ -552,9 +552,7 @@ impl CameraApp {
         }
     }
 
-    fn media_handoff_resource(app_id: &str, label: &str) -> ui::tilo_actions::ResourceSpec {
-        use ui::tilo_actions::ResourceSpec;
-
+    fn media_handoff_resource(app_id: &str, label: &str) -> ui::framework::LiveRow {
         let spec = crate::actions::ApplicationLaunch::content_spec(
             app_id,
             "open",
@@ -567,7 +565,8 @@ impl CameraApp {
                 &[("app", ui::i18n::ArgValue::Text(label.to_owned()))],
             ),
         );
-        ResourceSpec::new(format!("{app_id}.app"), "applications.app", label).with_action(spec)
+        ui::framework::LiveRow::new(format!("{app_id}.app"), "applications.app", label)
+            .operation(spec)
     }
 
     /// An emitter handing a capture to `app_id`, whose name `name` is a
@@ -575,7 +574,8 @@ impl CameraApp {
     fn media_handoff_emitter(app_id: &str, name: &str) -> Option<ActionEmitter<String>> {
         use ui::tilo_actions::ActionBinding;
 
-        let resource = Self::media_handoff_resource(app_id, &crate::CATALOG.t(name));
+        let resource =
+            Self::media_handoff_resource(app_id, &crate::CATALOG.t(name)).into_resource();
         let spec = resource.actions.first()?;
         ActionBinding::new(&resource, spec, |content_hash| {
             let mut arguments = serde_json::Map::new();
@@ -596,12 +596,13 @@ impl CameraApp {
         // affordance. The action payload itself delegates to Photos, but the
         // host can still re-resolve this address against the current Camera
         // resource surface before permitting the launch.
-        let resource = ui::tilo_actions::ResourceSpec::new(
+        let resource = ui::framework::LiveRow::new(
             "camera.capture",
             "camera.capture",
             crate::CATALOG.t("camera-resource-capture"),
         )
-        .with_action(crate::actions::open_photos_action());
+        .operation(crate::actions::open_photos_action())
+        .into_resource();
         ActionBinding::unit_for(&resource, "open-photos")
             .ok()
             .map(ActionEmitter::new)
