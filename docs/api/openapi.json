@@ -1580,7 +1580,7 @@
             "schema": {
               "type": "string"
             },
-            "description": ""
+            "description": "The address's entry, as `GET /v1/workspaces/{workspace}/members/wait-list` lists it"
           },
           {
             "$ref": "#/components/parameters/Invocation"

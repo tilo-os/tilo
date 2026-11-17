@@ -39,7 +39,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Client", ("Tilo", "AsyncTilo", "SignIn")),
     ("Transports", ("Transport", "HttpTransport", "NativeTransport")),
     ("Workspaces", ("Workspaces", "Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport")),
-    ("Resources", ("Resource", "FieldMap", "Listing", "Row", "Hit")),
+    ("Resources", ("Resource", "Entry", "FieldMap", "Listing", "Row", "Hit")),
     ("Runs", ("Run", "RunGroup", "RunOpening", "RunList", "RunInfo", "ProgramAnswer", "Event")),
     ("Files", ("Files",)),
     ("Keys", ("AccountKeys", "WorkspaceKeys", "Key", "MintedKey")),
