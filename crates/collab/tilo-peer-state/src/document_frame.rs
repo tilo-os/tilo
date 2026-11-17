@@ -300,7 +300,11 @@ pub fn with_own_writes(
     frames: &[Vec<u8>],
 ) -> Result<OwnRead, String> {
     let mut document = match base {
-        Some(bytes) => automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?,
+        Some(bytes) => {
+            // The replica's read this base comes from kept the document these bytes were saved
+            // from (`tilo_automerge::shared`): a copy, not a decode of the whole document again.
+            tilo_automerge::shared::load(bytes).map_err(|error| error.to_string())?
+        }
         None => automerge::AutoCommit::new(),
     };
     let mut transfers = Transfers::default();
@@ -562,6 +566,43 @@ mod tests {
             assert!(read_back.get(automerge::ROOT, "held").unwrap().is_some());
             let alone = with_own_writes(None, [1; 32], &frames).unwrap();
             assert_ne!(alone.revision, read.revision);
+        }
+
+        phase a_base_the_replica_kept_a_document_of_reads_as_that_document;
+        {
+            // A sealed document's read hands out the bytes it saved and keeps the document they
+            // were saved from. A writer's read over them takes that document: the copy held with
+            // these bytes says so by holding a change they do not.
+            let mut landing = AutoCommit::new();
+            let text = landing
+                .put_object(automerge::ROOT, "body", automerge::ObjType::Text)
+                .unwrap();
+            // Long enough that its save is one of the documents the cache keeps. Varied words
+            // do not compress: a repetition of one would save to a few kilobytes.
+            let words: Vec<String> = noise(60_000)
+                .iter()
+                .map(u8::to_string)
+                .collect();
+            landing.splice_text(&text, 0, 0, &words.join(" ")).unwrap();
+            let base = landing.save();
+            let mut kept = landing.fork();
+            kept.put(automerge::ROOT, "kept", "the document the bytes were saved from")
+                .unwrap();
+            kept.commit();
+            tilo_automerge::shared::hold(&base, &kept);
+            let read = with_own_writes(Some(&base), [1; 32], &[]).unwrap();
+            let read_back = AutoCommit::load(&read.bytes).unwrap();
+            assert_eq!(
+                read_back
+                    .get(automerge::ROOT, "kept")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("the document the bytes were saved from"),
+                "the document kept with the bytes, not a decode of them"
+            );
+            tilo_automerge::shared::clear();
         }
     }
 
