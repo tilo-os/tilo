@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# Draw every screen of Tilo Assistant to pictures, with nothing on screen: the app's own views
+# with the content of the window's drawing (Sources/AssistantDrawing), light and dark.
+#
+#   dist/apple/assistant-shots.sh OUT          the Mac's screens into OUT/mac, the iPhone's into OUT/phone
+#   dist/apple/assistant-shots.sh OUT mac      the Mac's alone: drawn by this Mac, in a window never put on a screen
+#   dist/apple/assistant-shots.sh OUT phone    the iPhone's alone: drawn in a simulator that shows no window
+#   dist/apple/assistant-shots.sh OUT told     what the system is handed outside the window, in the same
+#                                              simulator: the notifications with their buttons and the live
+#                                              activities, as OUT/phone/told.txt and two pictures of its screen
+#
+# The simulator is one of its own, named assistant-shots, made when it is missing and shut down
+# again after. DEVELOPER_DIR names the Xcode to build with, when it is not the selected one.
+set -euo pipefail
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+here="$repo/dist/apple"
+made="$repo/target/apple.noindex/assistant-simulator"
+fonts="$repo/target/apple.noindex/assistant-fonts"
+id=so.tilo.assistant.shots
+
+say() { printf 'assistant-shots: %s\n' "$*" >&2; }
+die() { say "$*"; exit 1; }
+
+[ $# -ge 1 ] || { sed -n '2,/^set /p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' >&2; exit 2; }
+mkdir -p "$1"
+out="$(cd "$1" && pwd)"
+what="${2:-all}"
+
+# Tilo Sans, the face the window is drawn in. The repository keeps no font: its font tool
+# prepares the catalogue once, outside the sources.
+faces() {
+  local catalogue="$repo/target/prepared-fonts" face
+  if [ ! -f "$catalogue/TiloSans[wdth,wght].ttf" ]; then
+    PATH="/opt/homebrew/bin:$PATH" python3 "$repo/tools/font-catalog.py" prepare \
+      "$repo/crates/sdk/ui-core/assets/fonts" "$catalogue" --scope product >&2 || die "Tilo Sans could not be prepared"
+  fi
+  mkdir -p "$fonts"
+  for face in "TiloSans[wdth,wght].ttf" "TiloSans-Italic[wdth,wght].ttf"; do cp "$catalogue/$face" "$fonts/"; done
+}
+
+mac() {
+  local scratch="$repo/target/apple.noindex/swiftpm-mac"
+  (cd "$here" && xcrun swift build --scratch-path "$scratch" --product AssistantShots >&2)
+  "$scratch/debug/AssistantShots" --out "$out/mac" --fonts "$fonts"
+}
+
+# The picture tool as an app of its own for a simulator, with the assistant's widget extension
+# inside it, so the live activity is drawn by the very extension the assistant's app carries.
+bundle() {
+  local sdk bin app="$made/Assistant Shots.app" appex
+  sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+  local flags=(-c release --triple "$(uname -m)-apple-ios26.4-simulator" --sdk "$sdk" --scratch-path "$made/swiftpm")
+  (cd "$here" && xcrun swift build "${flags[@]}" >&2)
+  bin="$(cd "$here" && xcrun swift build "${flags[@]}" --show-bin-path)"
+  appex="$app/PlugIns/AssistantWidgets.appex"
+  rm -rf "$app"
+  mkdir -p "$appex"
+  cp "$bin/AssistantShots" "$app/AssistantShots"
+  cp -R "$here/AssistantBundle/en.lproj" "$app/"
+  cp -R "$fonts" "$app/Fonts"
+  cat > "$app/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>Assistant Shots</string>
+  <key>CFBundleExecutable</key><string>AssistantShots</string>
+  <key>CFBundleIdentifier</key><string>$id</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>Assistant Shots</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.0.0</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneSimulator</string></array>
+  <key>CFBundleVersion</key><string>0.0.0</string>
+  <key>LSRequiresIPhoneOS</key><true/>
+  <key>MinimumOSVersion</key><string>26.4</string>
+  <key>NSSupportsLiveActivities</key><true/>
+  <key>UIApplicationSceneManifest</key><dict>
+    <key>UIApplicationSupportsMultipleScenes</key><false/>
+  </dict>
+  <key>UIDeviceFamily</key><array><integer>1</integer></array>
+  <key>UILaunchScreen</key><dict/>
+</dict></plist>
+PLIST
+  cp "$bin/AssistantWidgets" "$appex/AssistantWidgets"
+  cp -R "$here/AssistantBundle/en.lproj" "$appex/"
+  cp -R "$fonts" "$appex/Fonts"
+  sed -e "s/__NAME__/Assistant Shots/g" -e "s/__ID__/$id/g" "$here/AssistantBundle/Widgets-Info.plist" > "$appex/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleSupportedPlatforms:0 iPhoneSimulator" "$appex/Info.plist"
+  codesign --force --timestamp=none --sign - "$appex"
+  codesign --force --timestamp=none --sign - "$app"
+  printf '%s\n' "$app"
+}
+
+# The simulator of its own, booted with no window.
+simulator() {
+  local device
+  device="$(xcrun simctl list devices -j | python3 -I -c '
+import json, sys
+found = [d["udid"] for devices in json.load(sys.stdin)["devices"].values() for d in devices
+         if d["name"] == "assistant-shots" and d.get("isAvailable")]
+print(found[0] if found else "")
+')"
+  [ -n "$device" ] || device="$(xcrun simctl create assistant-shots "iPhone 18 Pro")"
+  xcrun simctl boot "$device" 2>/dev/null || true
+  xcrun simctl bootstatus "$device" -b >/dev/null
+  xcrun simctl status_bar "$device" override --time "9:41" >/dev/null 2>&1 || true
+  printf '%s\n' "$device"
+}
+
+phone() {
+  local app device container
+  app="$(bundle)"
+  device="$(simulator)"
+  mkdir -p "$out/phone"
+  xcrun simctl install "$device" "$app"
+  # The tool draws every screen into its documents and ends.
+  xcrun simctl launch --console --terminate-running-process "$device" "$id" > "$out/phone/drawn.txt" 2>&1 || true
+  grep '^SHOTS ' "$out/phone/drawn.txt" || die "the tool drew nothing: see $out/phone/drawn.txt"
+  container="$(xcrun simctl get_app_container "$device" "$id" data)"
+  cp "$container"/Documents/*.png "$out/phone/"
+  grep -q '^SHOTS done' "$out/phone/drawn.txt" || die "the tool did not finish"
+}
+
+told() {
+  local app device waited=0
+  app="$(bundle)"
+  device="$(simulator)"
+  mkdir -p "$out/phone"
+  xcrun simctl install "$device" "$app"
+  xcrun simctl launch --terminate-running-process "$device" "$id" --tell >/dev/null
+  # The tool keeps what it says in its documents, and stays, so its screen can be taken.
+  local kept
+  kept="$(xcrun simctl get_app_container "$device" "$id" data)/Documents/told.txt"
+  until grep -q '^TELL done' "$kept" 2>/dev/null; do
+    waited=$((waited + 1))
+    [ "$waited" -lt 90 ] || { say "the tool did not finish telling"; break; }
+    sleep 1
+  done
+  rm -f "$out/phone/told-all.txt"
+  cp "$kept" "$out/phone/told.txt" 2>/dev/null || die "the tool said nothing"
+  cat "$out/phone/told.txt"
+  xcrun simctl io "$device" screenshot "$out/phone/told-in-the-app.png" >/dev/null 2>&1
+  # Another app in front: the live activities stand in the island.
+  xcrun simctl launch "$device" com.apple.Preferences >/dev/null 2>&1 || true
+  sleep 4
+  xcrun simctl io "$device" screenshot "$out/phone/told-behind-another-app.png" >/dev/null 2>&1
+  xcrun simctl terminate "$device" "$id" >/dev/null 2>&1 || true
+  xcrun simctl terminate "$device" com.apple.Preferences >/dev/null 2>&1 || true
+}
+
+faces
+case "$what" in
+  all) mac; phone; told ;;
+  mac) mac ;;
+  phone) phone ;;
+  told) told ;;
+  *) die "mac, phone or told" ;;
+esac
+if [ "$what" != mac ]; then
+  xcrun simctl shutdown "$(simulator)" >/dev/null 2>&1 || true
+fi
+say "pictures are in $out"

@@ -1,0 +1,608 @@
+import Foundation
+
+// What the assistant's window shows, as plain values. Nothing here knows where the values come
+// from: `AssistantSource` hands them over, and the views draw them.
+
+/// Which conversation: the one main chat, or a sub-agent's own.
+public enum Chat: Hashable, Sendable {
+    case main
+    case subAgent(SubAgent.ID)
+}
+
+/// Whose assistant this is.
+public struct Person: Identifiable, Hashable, Sendable {
+    public typealias ID = Identifier<Person>
+    public var id: ID
+    public var name: String
+    /// The workspace the assistant lives in, as the sidebar's foot names it.
+    public var workspace: String
+
+    public init(id: ID, name: String, workspace: String) {
+        self.id = id
+        self.name = name
+        self.workspace = workspace
+    }
+
+    /// The letters in their picture: the first of the first and of the last word.
+    public var initials: String {
+        let words = name.split(whereSeparator: \.isWhitespace)
+        let letters = [words.first, words.count > 1 ? words.last : nil].compactMap { $0?.first }
+        return String(letters).uppercased()
+    }
+}
+
+/// Where this device stands with the person's Tilo.
+public enum Session: Equatable, Sendable {
+    /// Nobody is signed in on this device. The window shows the way in.
+    case signedOut
+    /// A link was taken, and a device where the person is signed in has yet to say yes.
+    case pairing
+    case signedIn(Person)
+}
+
+/// Whether the person's Tilo answers right now.
+public enum Reach: Equatable, Sendable {
+    case reachable
+    case unreachable
+}
+
+// MARK: - The conversation
+
+/// One piece of a conversation.
+public struct Item: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<Item>
+    public var id: ID
+    public var at: Date
+    public var content: Content
+    /// The task this belongs to. Pieces that follow one another under the same task stand under
+    /// one line that names it: the task's line with its replies.
+    public var task: TaskLine?
+    /// The assistant judged this important for the person's day: it carries the mark.
+    public var isImportant: Bool
+    /// Why this did not interrupt the person, in the assistant's own sentence. Nil when it did
+    /// interrupt, or when there is nothing to say about it.
+    public var keptQuiet: String?
+    /// What a notification says of this piece, in the assistant's words, where that is shorter
+    /// than the piece. Nil: the piece's own words.
+    public var notice: String?
+
+    public init(id: ID, at: Date, _ content: Content, task: TaskLine? = nil, isImportant: Bool = false,
+                keptQuiet: String? = nil, notice: String? = nil) {
+        self.id = id
+        self.at = at
+        self.content = content
+        self.task = task
+        self.isImportant = isImportant
+        self.keptQuiet = keptQuiet
+        self.notice = notice
+    }
+
+    public enum Content: Equatable, Sendable {
+        /// Words from the person, the assistant, or the main agent to a sub-agent.
+        case message(Message)
+        /// One line after the assistant acted alone: who reached out, and that it answered.
+        case report(String)
+        /// Something the assistant asks, with the answers as buttons.
+        case question(Question)
+        /// A secret it needs: a protected field that is no part of the conversation.
+        case secret(SecretRequest)
+        /// A service the person named by its address, which wants a sign-in.
+        case connection(ConnectionOffer)
+        /// Something the assistant set up to happen by itself, shown for review.
+        case event(EventCard)
+        /// What the person should know before something begins.
+        case brief(Brief)
+        /// A reminder the person asked for, when its time has come.
+        case reminder(String)
+    }
+}
+
+/// The line that names a task above the pieces that belong to it.
+public struct TaskLine: Equatable, Sendable {
+    public var task: AssistantTask.ID
+    public var title: String
+    public var standing: Standing
+
+    public init(task: AssistantTask.ID, title: String, standing: Standing = .none) {
+        self.task = task
+        self.title = title
+        self.standing = standing
+    }
+
+    /// What the line says after the task's name.
+    public enum Standing: Equatable, Sendable {
+        case none
+        /// It came at its time. The words say how often, as the source says it: "every day".
+        case scheduled(String)
+        /// The assistant acted alone, on a standing instruction.
+        case actedAlone
+        /// The task has this many replies, more than stand here.
+        case replies(Int)
+    }
+}
+
+public struct Message: Equatable, Sendable {
+    public var author: Author
+    /// Markdown.
+    public var text: String
+    public var attachments: [Attachment]
+    /// Live Tilo things that stand in this message. The views leave room for each and draw none.
+    public var live: [LiveThing]
+
+    public init(_ author: Author, _ text: String, attachments: [Attachment] = [], live: [LiveThing] = []) {
+        self.author = author
+        self.text = text
+        self.attachments = attachments
+        self.live = live
+    }
+
+    public enum Author: Equatable, Sendable {
+        case person
+        /// Whoever this conversation is with: the assistant in the main chat, the sub-agent in its own.
+        case assistant
+        /// The main agent, writing to a sub-agent: the job it gave, or an instruction while it works.
+        case mainAgent(MainAgentWord)
+    }
+
+    public enum MainAgentWord: Equatable, Sendable {
+        case job
+        case instruction
+    }
+}
+
+/// A file that came with a message.
+public struct Attachment: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<Attachment>
+    public var id: ID
+    public var name: String
+    /// The system's name for the kind of file, such as `public.png`.
+    public var type: String
+    public var bytes: Int?
+
+    public init(id: ID, name: String, type: String, bytes: Int? = nil) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.bytes = bytes
+    }
+}
+
+/// A live Tilo thing: an app on a record, or a written view on live records. What it is and how
+/// it is drawn is the source's own business. The frame only leaves room for it and hands this
+/// value to the view the source supplies.
+public struct LiveThing: Identifiable, Hashable, Sendable {
+    public typealias ID = Identifier<LiveThing>
+    public var id: ID
+    /// What it is called, for people and for VoiceOver.
+    public var title: String
+    /// Whatever the source needs to find it again. Nothing but the source's own view reads it.
+    public var reference: String
+
+    public init(id: ID, title: String, reference: String) {
+        self.id = id
+        self.title = title
+        self.reference = reference
+    }
+}
+
+/// An answer the person can give with one press.
+public struct Choice: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<Choice>
+    public var id: ID
+    /// What happens, in the assistant's words: "Send it".
+    public var title: String
+    /// The answer the assistant expects first.
+    public var isMain: Bool
+
+    public init(id: ID, title: String, isMain: Bool = false) {
+        self.id = id
+        self.title = title
+        self.isMain = isMain
+    }
+}
+
+public struct Question: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<Question>
+    public var id: ID
+    /// Markdown.
+    public var text: String
+    public var choices: [Choice]
+    /// The choice the person made. Nil while the question waits.
+    public var answer: Choice.ID?
+
+    public init(id: ID, text: String, choices: [Choice], answer: Choice.ID? = nil) {
+        self.id = id
+        self.text = text
+        self.choices = choices
+        self.answer = answer
+    }
+
+    public var waits: Bool { answer == nil }
+}
+
+/// A secret the assistant needs. It uses the secret and never reads it: what the person types
+/// goes to `AssistantSource.keep(_:for:)` and nowhere else.
+public struct SecretRequest: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<SecretRequest>
+    public var id: ID
+    /// Markdown.
+    public var text: String
+    /// What the secret is for: the name of a site or a service.
+    public var name: String
+    /// The person's password manager by name, when one is connected.
+    public var manager: String?
+    public var standing: Standing
+
+    public init(id: ID, text: String, name: String, manager: String? = nil, standing: Standing = .waiting) {
+        self.id = id
+        self.text = text
+        self.name = name
+        self.manager = manager
+        self.standing = standing
+    }
+
+    public enum Standing: Equatable, Sendable {
+        case waiting
+        /// The vault has it now.
+        case kept
+        /// The person did not give it.
+        case declined
+    }
+}
+
+public struct ConnectionOffer: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<ConnectionOffer>
+    public var id: ID
+    /// Markdown.
+    public var text: String
+    /// The service's name.
+    public var name: String
+    /// How many commands it offers once the person is signed in, when it says so.
+    public var commands: Int?
+    public var standing: Standing
+
+    public init(id: ID, text: String, name: String, commands: Int? = nil, standing: Standing = .waiting) {
+        self.id = id
+        self.text = text
+        self.name = name
+        self.commands = commands
+        self.standing = standing
+    }
+
+    public enum Standing: Equatable, Sendable {
+        case waiting
+        case connected
+        case declined
+    }
+}
+
+/// Something the assistant set up, shown in the conversation so the person can look at it and
+/// change it by answering.
+public struct EventCard: Equatable, Sendable {
+    /// Markdown.
+    public var text: String
+    public var automation: Automation
+    /// The answers, as a question the person may leave unanswered.
+    public var question: Question.ID
+    public var choices: [Choice]
+    public var answer: Choice.ID?
+
+    public init(text: String, automation: Automation, question: Question.ID, choices: [Choice],
+                answer: Choice.ID? = nil) {
+        self.text = text
+        self.automation = automation
+        self.question = question
+        self.choices = choices
+        self.answer = answer
+    }
+}
+
+public struct Brief: Equatable, Sendable {
+    /// The line above it, in the assistant's words: "Call in 15 minutes".
+    public var title: String
+    /// When what it prepares for begins, when that is known.
+    public var begins: Date?
+    /// Markdown.
+    public var text: String
+
+    public init(title: String, begins: Date? = nil, text: String) {
+        self.title = title
+        self.begins = begins
+        self.text = text
+    }
+}
+
+// MARK: - Sub-agents
+
+/// An agent the main agent started for one job. It is no task: the Tasks panel never lists it.
+public struct SubAgent: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<SubAgent>
+    public var id: ID
+    /// The job in a few words: "Usage drop: investigate".
+    public var title: String
+    /// What the main agent made it: "Coder". Empty until it has chosen.
+    public var role: String
+    public var standing: Standing
+    /// What runs it and where: "Claude Code on the cloud machine".
+    public var runsOn: String
+    public var started: Date
+    public var startedBy: Starter
+    /// When it finished, for one that is done.
+    public var finished: Date?
+    /// A live view of what it works on, when the source has one.
+    public var live: LiveThing?
+
+    public init(id: ID, title: String, role: String = "", standing: Standing = .working, runsOn: String = "",
+                started: Date, startedBy: Starter = .mainAgent, finished: Date? = nil, live: LiveThing? = nil) {
+        self.id = id
+        self.title = title
+        self.role = role
+        self.standing = standing
+        self.runsOn = runsOn
+        self.started = started
+        self.startedBy = startedBy
+        self.finished = finished
+        self.live = live
+    }
+
+    public enum Standing: Equatable, Sendable {
+        case working
+        case needsYou
+        case done
+        case failed
+        case stopped
+    }
+
+    public enum Starter: Equatable, Sendable {
+        case mainAgent
+        case person
+    }
+}
+
+// MARK: - Tasks, scheduled things and events
+
+/// A piece of work, however many sub-agents it takes.
+public struct AssistantTask: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<AssistantTask>
+    public var id: ID
+    public var title: String
+    public var standing: Standing
+    public var isImportant: Bool
+    /// What it waits for, or one line about it: "Two versions exist. Which one?"
+    public var note: String?
+    /// Where it stands in the main chat, when it does.
+    public var item: Item.ID?
+
+    public init(id: ID, title: String, standing: Standing, isImportant: Bool = false, note: String? = nil,
+                item: Item.ID? = nil) {
+        self.id = id
+        self.title = title
+        self.standing = standing
+        self.isImportant = isImportant
+        self.note = note
+        self.item = item
+    }
+
+    public enum Standing: Equatable, Sendable, CaseIterable {
+        case readyForReview
+        case needsInput
+        case inProgress
+        case upNext
+        case resolved
+    }
+}
+
+/// Something the assistant does by itself: at a time, or when something else happens. Each was
+/// set up by the assistant from what the person said, and is changed by telling it.
+public struct Automation: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<Automation>
+    public var id: ID
+    public var sort: Sort
+    /// "Morning rundown", "When a mail comes in".
+    public var title: String
+    /// One sentence under the title. For a scheduled thing when it comes ("Every day at 7:30."),
+    /// for an event what the assistant does then.
+    public var summary: String
+    /// The next time it comes, for a scheduled thing.
+    public var next: Date?
+    /// Whether it comes once and is gone after.
+    public var once: Bool
+    /// What must hold for an event to count: "The sender is new".
+    public var filter: String?
+    /// How many times something must happen before the event counts.
+    public var threshold: Int?
+    /// What the assistant keeps with it: "your style, from 14 replies".
+    public var note: String?
+    /// Whether it acts without asking first.
+    public var actsAlone: Bool
+    /// Off is paused.
+    public var isOn: Bool
+
+    public init(id: ID, sort: Sort, title: String, summary: String, next: Date? = nil, once: Bool = false,
+                filter: String? = nil, threshold: Int? = nil, note: String? = nil, actsAlone: Bool = false,
+                isOn: Bool = true) {
+        self.id = id
+        self.sort = sort
+        self.title = title
+        self.summary = summary
+        self.next = next
+        self.once = once
+        self.filter = filter
+        self.threshold = threshold
+        self.note = note
+        self.actsAlone = actsAlone
+        self.isOn = isOn
+    }
+
+    public enum Sort: Equatable, Sendable {
+        /// Something at a time.
+        case scheduled
+        /// Something that happens when something else does.
+        case event
+    }
+}
+
+// MARK: - Supervision
+
+/// What the assistant view shows: for looking, with a few switches.
+public struct Supervision: Equatable, Sendable {
+    public var isOn: Bool
+    /// The model of the main chat. Nil while the person has linked no provider.
+    public var model: String?
+    public var usage: Usage
+    public var connections: [Connection]
+    public var logins: [Login]
+    /// What the person's password manager holds for it: fetched when needed, never kept here.
+    public var manager: ManagerLogins?
+    /// What is important, in the person's own words, most general first.
+    public var importance: [String]
+    /// The situations those words depend on: "Travelling" is "no".
+    public var situations: [Situation]
+    /// What it has learned, newest first. `learnedCount` may be more than are listed.
+    public var learned: [Learned]
+    public var learnedCount: Int
+    public var places: [Place]
+    public var workspaces: [String]
+
+    public init(isOn: Bool = true, model: String? = nil, usage: Usage = Usage(), connections: [Connection] = [],
+                logins: [Login] = [], manager: ManagerLogins? = nil, importance: [String] = [],
+                situations: [Situation] = [], learned: [Learned] = [], learnedCount: Int? = nil,
+                places: [Place] = [], workspaces: [String] = []) {
+        self.isOn = isOn
+        self.model = model
+        self.usage = usage
+        self.connections = connections
+        self.logins = logins
+        self.manager = manager
+        self.importance = importance
+        self.situations = situations
+        self.learned = learned
+        self.learnedCount = learnedCount ?? learned.count
+        self.places = places
+        self.workspaces = workspaces
+    }
+
+    public struct Usage: Equatable, Sendable {
+        public var messagesToday: Int
+        public var tokensToday: Int
+        /// Spent today, in millionths of the currency.
+        public var spentTodayMicros: Int
+        /// The most it may spend in a day. Nil for no limit.
+        public var dailyLimitMicros: Int?
+        /// The currency's sign as the person reads it: "$".
+        public var currency: String
+
+        public init(messagesToday: Int = 0, tokensToday: Int = 0, spentTodayMicros: Int = 0,
+                    dailyLimitMicros: Int? = nil, currency: String = "$") {
+            self.messagesToday = messagesToday
+            self.tokensToday = tokensToday
+            self.spentTodayMicros = spentTodayMicros
+            self.dailyLimitMicros = dailyLimitMicros
+            self.currency = currency
+        }
+    }
+
+    public struct Connection: Identifiable, Equatable, Sendable {
+        public typealias ID = Identifier<Connection>
+        public var id: ID
+        public var name: String
+        public var added: Date
+        public var commands: Int
+
+        public init(id: ID, name: String, added: Date, commands: Int) {
+            self.id = id
+            self.name = name
+            self.added = added
+            self.commands = commands
+        }
+    }
+
+    /// Something it can sign in to. It uses the login and never sees it.
+    public struct Login: Identifiable, Equatable, Sendable {
+        public typealias ID = Identifier<Login>
+        public var id: ID
+        public var name: String
+        /// When the person typed it.
+        public var typed: Date
+        public var lastUsed: Date?
+
+        public init(id: ID, name: String, typed: Date, lastUsed: Date? = nil) {
+            self.id = id
+            self.name = name
+            self.typed = typed
+            self.lastUsed = lastUsed
+        }
+    }
+
+    public struct ManagerLogins: Equatable, Sendable {
+        /// The manager's name.
+        public var manager: String
+        /// One of them by name, so the line says something.
+        public var first: String
+        public var count: Int
+
+        public init(manager: String, first: String, count: Int) {
+            self.manager = manager
+            self.first = first
+            self.count = count
+        }
+    }
+
+    public struct Situation: Equatable, Sendable {
+        public var name: String
+        public var value: String
+
+        public init(name: String, value: String) {
+            self.name = name
+            self.value = value
+        }
+    }
+
+    public struct Learned: Identifiable, Equatable, Sendable {
+        public typealias ID = Identifier<Learned>
+        public var id: ID
+        public var text: String
+
+        public init(id: ID, text: String) {
+            self.id = id
+            self.text = text
+        }
+    }
+
+    /// Where it works: "The cloud machine", "always"; "This Mac", "in ~/Documents".
+    public struct Place: Equatable, Sendable {
+        public var name: String
+        public var detail: String
+
+        public init(name: String, detail: String) {
+            self.name = name
+            self.detail = detail
+        }
+    }
+}
+
+/// A model the person may choose, from their own providers.
+public struct ModelChoice: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<ModelChoice>
+    public var id: ID
+    public var name: String
+    public var provider: String
+
+    public init(id: ID, name: String, provider: String) {
+        self.id = id
+        self.name = name
+        self.provider = provider
+    }
+}
+
+/// The kinds of work a model is chosen for. They are Tilo's own kinds; there is no other list.
+public enum WorkKind: String, Sendable, CaseIterable {
+    /// The main chat answering.
+    case request
+    /// The main chat working.
+    case task
+    /// A sub-agent.
+    case subtask
+    /// A filter that judges.
+    case classifier
+}

@@ -1,0 +1,462 @@
+import Foundation
+
+/// An `AssistantSource` that keeps everything in memory, for tests and pictures. It starts
+/// empty and signed out, and nothing in it answers by itself: what the assistant would say is
+/// put in from outside (`post`, `change`), as a test or a picture needs it.
+public final class MemorySource: AssistantSource, @unchecked Sendable {
+    /// What a source holds when it starts.
+    public struct Content: Sendable {
+        public var session: Session = .signedOut
+        public var main: [Item] = []
+        public var subAgents: [SubAgent] = []
+        public var subAgentChats: [SubAgent.ID: [Item]] = [:]
+        public var tasks: [AssistantTask] = []
+        public var automations: [Automation] = []
+        public var supervision = Supervision()
+        public var models: [ModelChoice] = []
+        /// Who a pairing link signs in. Nil: Tilo cannot be reached.
+        public var pairsAs: Person?
+
+        public init() {}
+    }
+
+    private let lock = NSLock()
+    private let now: @Sendable () -> Date
+    private let sessionNow: Broadcast<Session>
+    private let reachNow = Broadcast<Reach>(.reachable)
+    private let agents: Broadcast<[SubAgent]>
+    private let taskList: Broadcast<[AssistantTask]>
+    private let automationList: Broadcast<[Automation]>
+    private let supervisionNow: Broadcast<Supervision>
+    private let modelChoices: [ModelChoice]
+    private let pairsAs: Person?
+    private var feeds: [Chat: Feed]
+    private var vault: [SecretRequest.ID: Secret] = [:]
+    private var files: [Attachment.ID: URL] = [:]
+    private var made = 0
+
+    public init(_ content: Content = Content(), now: @escaping @Sendable () -> Date = { Date() }) {
+        self.now = now
+        sessionNow = Broadcast(content.session)
+        agents = Broadcast(content.subAgents)
+        taskList = Broadcast(content.tasks)
+        automationList = Broadcast(content.automations)
+        supervisionNow = Broadcast(content.supervision)
+        modelChoices = content.models
+        pairsAs = content.pairsAs
+        var feeds: [Chat: Feed] = [.main: Feed(content.main)]
+        for agent in content.subAgents {
+            feeds[.subAgent(agent.id)] = Feed(content.subAgentChats[agent.id] ?? [])
+        }
+        self.feeds = feeds
+    }
+
+    // MARK: The far side, for tests and pictures
+
+    /// As if whoever the conversation is with had written this.
+    public func post(_ item: Item, in chat: Chat = .main) {
+        feed(chat)?.add([item])
+    }
+
+    /// As if a piece had changed on the far side.
+    public func change(_ item: Item, in chat: Chat = .main) {
+        feed(chat)?.change(where: { $0.id == item.id }) { $0 = item }
+    }
+
+    public func setAnswering(_ on: Bool, in chat: Chat = .main) {
+        feed(chat)?.setAnswering(on)
+    }
+
+    public func set(_ reach: Reach) {
+        reachNow.set(reach)
+    }
+
+    public func set(_ agent: SubAgent) {
+        agents.change { list in
+            if let index = list.firstIndex(where: { $0.id == agent.id }) { list[index] = agent }
+        }
+    }
+
+    /// What the vault holds for a request. The only way a kept secret is ever seen again.
+    public func kept(for request: SecretRequest.ID) -> Secret? {
+        lock.withLock { vault[request] }
+    }
+
+    /// Everything a conversation holds now.
+    public func items(in chat: Chat = .main) -> [Item] {
+        feed(chat)?.all ?? []
+    }
+
+    // MARK: The way in
+
+    public func session() -> AsyncStream<Session> { sessionNow.stream() }
+    public func reach() -> AsyncStream<Reach> { reachNow.stream() }
+
+    public func pair(with link: PairingLink) async throws {
+        guard let person = pairsAs, reachNow.current == .reachable else { throw SourceProblem.unreachable }
+        sessionNow.set(.pairing)
+        sessionNow.set(.signedIn(person))
+    }
+
+    public func signOut() async {
+        sessionNow.set(.signedOut)
+    }
+
+    // MARK: A conversation
+
+    public func conversation(_ chat: Chat) -> AsyncStream<ConversationChange> {
+        guard let feed = feed(chat) else { return AsyncStream { $0.yield(.all([])) } }
+        return feed.stream()
+    }
+
+    public func earlier(in chat: Chat, before item: Item.ID) async throws -> [Item] {
+        // Memory holds a conversation whole: nothing is older than what a listener got.
+        try signedIn()
+        return []
+    }
+
+    public func send(_ draft: Draft, to chat: Chat) async throws {
+        try signedIn()
+        guard !draft.isEmpty else { return }
+        guard let feed = feed(chat) else { throw SourceProblem.refused("This conversation is gone.") }
+        let attachments = draft.files.map { file in
+            let id = Attachment.ID(nextName("file"))
+            lock.withLock { files[id] = file.url }
+            return Attachment(id: id, name: file.name, type: "public.data")
+        }
+        feed.add([Item(id: Item.ID(nextName("item")), at: now(),
+                       .message(Message(.person, draft.text, attachments: attachments)))])
+    }
+
+    public func answer(_ question: Question.ID, with choice: Choice.ID) async throws {
+        try signedIn()
+        var problem: SourceProblem? = .refused("This question is gone.")
+        for feed in allFeeds() {
+            let found = feed.change(where: { $0.content.question(named: question) != nil }) { item in
+                switch item.content {
+                case .question(var asked):
+                    guard asked.waits else { problem = .refused("This was answered already."); return }
+                    guard asked.choices.contains(where: { $0.id == choice }) else {
+                        problem = .refused("This is not one of the answers."); return
+                    }
+                    asked.answer = choice
+                    item.content = .question(asked)
+                    problem = nil
+                case .event(var card):
+                    guard card.choices.contains(where: { $0.id == choice }) else {
+                        problem = .refused("This is not one of the answers."); return
+                    }
+                    card.answer = choice
+                    item.content = .event(card)
+                    problem = nil
+                default:
+                    break
+                }
+            }
+            if found { break }
+        }
+        if let problem { throw problem }
+    }
+
+    public func keep(_ secret: Secret, for request: SecretRequest.ID) async throws {
+        try signedIn()
+        guard !secret.isEmpty else { throw SourceProblem.refused("Nothing was typed.") }
+        try settle(request, as: .kept)
+        lock.withLock { vault[request] = secret }
+    }
+
+    public func fetchSecret(for request: SecretRequest.ID) async throws {
+        try signedIn()
+        try settle(request, as: .kept, needsManager: true)
+    }
+
+    public func decline(_ request: SecretRequest.ID) async throws {
+        try signedIn()
+        try settle(request, as: .declined)
+    }
+
+    public func authenticate(_ offer: ConnectionOffer.ID) async throws -> URL? {
+        try signedIn()
+        try settle(offer, as: .connected)
+        return nil
+    }
+
+    public func decline(_ offer: ConnectionOffer.ID) async throws {
+        try signedIn()
+        try settle(offer, as: .declined)
+    }
+
+    public func file(of attachment: Attachment.ID) async throws -> URL {
+        try signedIn()
+        guard let url = lock.withLock({ files[attachment] }) else {
+            throw SourceProblem.refused("This file is gone.")
+        }
+        return url
+    }
+
+    // MARK: Sub-agents
+
+    public func subAgents() -> AsyncStream<[SubAgent]> { agents.stream() }
+
+    public func startSubAgent(job: String) async throws {
+        try signedIn()
+        let job = job.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !job.isEmpty else { return }
+        let agent = SubAgent(id: SubAgent.ID(nextName("sub-agent")), title: job, started: now(), startedBy: .person)
+        let first = Item(id: Item.ID(nextName("item")), at: now(), .message(Message(.mainAgent(.job), job)))
+        lock.withLock { feeds[.subAgent(agent.id)] = Feed([first]) }
+        agents.change { $0.insert(agent, at: 0) }
+    }
+
+    public func stop(_ subAgent: SubAgent.ID) async throws {
+        try signedIn()
+        let time = now()
+        let stopped = agents.change { list -> Bool in
+            guard let index = list.firstIndex(where: { $0.id == subAgent }), list[index].standing == .working
+                    || list.contains(where: { $0.id == subAgent && $0.standing == .needsYou })
+            else { return false }
+            list[index].standing = .stopped
+            list[index].finished = time
+            return true
+        }
+        guard stopped else { throw SourceProblem.refused("This sub-agent does not work any more.") }
+    }
+
+    // MARK: Tasks, scheduled things and events
+
+    public func tasks() -> AsyncStream<[AssistantTask]> { taskList.stream() }
+
+    public func addTask(_ title: String) async throws {
+        try signedIn()
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        let task = AssistantTask(id: AssistantTask.ID(nextName("task")), title: title, standing: .upNext)
+        taskList.change { $0.append(task) }
+    }
+
+    public func automations() -> AsyncStream<[Automation]> { automationList.stream() }
+
+    public func setOn(_ on: Bool, for automation: Automation.ID) async throws {
+        try signedIn()
+        let found = automationList.change { list -> Bool in
+            guard let index = list.firstIndex(where: { $0.id == automation }) else { return false }
+            list[index].isOn = on
+            return true
+        }
+        guard found else { throw SourceProblem.refused("This is gone.") }
+    }
+
+    // MARK: Supervision
+
+    public func supervision() -> AsyncStream<Supervision> { supervisionNow.stream() }
+
+    public func setAssistantOn(_ on: Bool) async throws {
+        try signedIn()
+        supervisionNow.change { $0.isOn = on }
+    }
+
+    public func models() async throws -> [ModelChoice] {
+        try signedIn()
+        return modelChoices
+    }
+
+    public func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {
+        try signedIn()
+        guard let chosen = modelChoices.first(where: { $0.id == model }) else {
+            throw SourceProblem.refused("This model is not one of yours.")
+        }
+        // The view names the main chat's model: the one that answers.
+        if work == .request { supervisionNow.change { $0.model = chosen.name } }
+    }
+
+    public func forget(_ learned: Supervision.Learned.ID) async throws {
+        try signedIn()
+        supervisionNow.change { facts in
+            guard let index = facts.learned.firstIndex(where: { $0.id == learned }) else { return }
+            facts.learned.remove(at: index)
+            facts.learnedCount = max(0, facts.learnedCount - 1)
+        }
+    }
+
+    // MARK: Inside
+
+    private func signedIn() throws {
+        guard reachNow.current == .reachable else { throw SourceProblem.unreachable }
+        guard case .signedIn = sessionNow.current else { throw SourceProblem.signedOut }
+    }
+
+    private func feed(_ chat: Chat) -> Feed? {
+        lock.withLock { feeds[chat] }
+    }
+
+    private func allFeeds() -> [Feed] {
+        lock.withLock { Array(feeds.values) }
+    }
+
+    private func nextName(_ kind: String) -> String {
+        lock.withLock {
+            made += 1
+            return "\(kind)-made-\(made)"
+        }
+    }
+
+    private func settle(_ request: SecretRequest.ID, as standing: SecretRequest.Standing,
+                        needsManager: Bool = false) throws {
+        var problem: SourceProblem? = .refused("This request is gone.")
+        for feed in allFeeds() {
+            let found = feed.change(where: { $0.content.secret?.id == request }) { item in
+                guard case .secret(var asked) = item.content else { return }
+                guard asked.standing == .waiting else { problem = .refused("This was settled already."); return }
+                guard !needsManager || asked.manager != nil else {
+                    problem = .refused("No password manager is connected."); return
+                }
+                asked.standing = standing
+                item.content = .secret(asked)
+                problem = nil
+            }
+            if found { break }
+        }
+        if let problem { throw problem }
+    }
+
+    private func settle(_ offer: ConnectionOffer.ID, as standing: ConnectionOffer.Standing) throws {
+        var problem: SourceProblem? = .refused("This offer is gone.")
+        for feed in allFeeds() {
+            let found = feed.change(where: { $0.content.connection?.id == offer }) { item in
+                guard case .connection(var offered) = item.content else { return }
+                guard offered.standing == .waiting else { problem = .refused("This was settled already."); return }
+                offered.standing = standing
+                item.content = .connection(offered)
+                problem = nil
+            }
+            if found { break }
+        }
+        if let problem { throw problem }
+    }
+}
+
+extension Item.Content {
+    /// The question a piece asks under this name: its own, or its event card's.
+    func question(named id: Question.ID) -> Question.ID? {
+        switch self {
+        case .question(let asked) where asked.id == id: id
+        case .event(let card) where card.question == id: id
+        default: nil
+        }
+    }
+
+    public var secret: SecretRequest? {
+        if case .secret(let asked) = self { asked } else { nil }
+    }
+
+    public var connection: ConnectionOffer? {
+        if case .connection(let offered) = self { offered } else { nil }
+    }
+}
+
+/// A value many listeners follow: each gets what it is now, then every change.
+final class Broadcast<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+    private var listeners: [UUID: AsyncStream<Value>.Continuation] = [:]
+
+    init(_ value: Value) {
+        self.value = value
+    }
+
+    var current: Value { lock.withLock { value } }
+
+    func stream() -> AsyncStream<Value> {
+        AsyncStream { continuation in
+            let id = UUID()
+            lock.withLock {
+                continuation.yield(value)
+                listeners[id] = continuation
+            }
+            continuation.onTermination = { [weak self] _ in
+                self?.forget(id)
+            }
+        }
+    }
+
+    func set(_ new: Value) {
+        change { $0 = new }
+    }
+
+    @discardableResult
+    func change<Result>(_ body: (inout Value) -> Result) -> Result {
+        lock.withLock {
+            let result = body(&value)
+            for listener in listeners.values { listener.yield(value) }
+            return result
+        }
+    }
+
+    private func forget(_ id: UUID) {
+        lock.withLock { _ = listeners.removeValue(forKey: id) }
+    }
+}
+
+/// One conversation's pieces, and whoever listens to them.
+final class Feed: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [Item]
+    private var answering = false
+    private var listeners: [UUID: AsyncStream<ConversationChange>.Continuation] = [:]
+
+    init(_ items: [Item]) {
+        self.items = items
+    }
+
+    var all: [Item] { lock.withLock { items } }
+
+    func stream() -> AsyncStream<ConversationChange> {
+        AsyncStream { continuation in
+            let id = UUID()
+            lock.withLock {
+                continuation.yield(.all(items))
+                if answering { continuation.yield(.answering(true)) }
+                listeners[id] = continuation
+            }
+            continuation.onTermination = { [weak self] _ in
+                self?.forget(id)
+            }
+        }
+    }
+
+    func add(_ new: [Item]) {
+        lock.withLock {
+            items.append(contentsOf: new)
+            tell(.added(new))
+        }
+    }
+
+    /// Change the first piece that matches. Says whether one did. The piece is told on only
+    /// when the change made it different.
+    @discardableResult
+    func change(where matches: (Item) -> Bool, _ body: (inout Item) -> Void) -> Bool {
+        lock.withLock {
+            guard let index = items.firstIndex(where: matches) else { return false }
+            let before = items[index]
+            body(&items[index])
+            if items[index] != before { tell(.changed(items[index])) }
+            return true
+        }
+    }
+
+    func setAnswering(_ on: Bool) {
+        lock.withLock {
+            guard answering != on else { return }
+            answering = on
+            tell(.answering(on))
+        }
+    }
+
+    private func tell(_ change: ConversationChange) {
+        for listener in listeners.values { listener.yield(change) }
+    }
+
+    private func forget(_ id: UUID) {
+        lock.withLock { _ = listeners.removeValue(forKey: id) }
+    }
+}
