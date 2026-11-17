@@ -153,8 +153,10 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
         &catalogue,
         MAIL,
         WORKSPACE,
-        &MemberId::person("assistant"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("assistant"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("maker"),
+        },
         Seed::New,
     )
     .expect("a Mail record is held in a confined worker")
@@ -339,8 +341,10 @@ fn an_agent_is_offered_adding_an_account_its_person_is_asked_for() {
         &AppCatalogue::native(),
         MAIL,
         WORKSPACE,
-        &MemberId::person("assistant"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("assistant"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("maker"),
+        },
         Seed::New,
     )
     .expect("a Mail record is held in a confined worker");

@@ -261,7 +261,7 @@ impl ConfinedReplica {
     /// agent's renders go to the host's render service.
     pub(crate) fn is_agents(&self) -> bool {
         serde_json::from_str::<ReplicaActor>(&self.actor)
-            .is_ok_and(|actor| matches!(actor, ReplicaActor::Agent))
+            .is_ok_and(|actor| matches!(actor, ReplicaActor::Agent { .. }))
     }
 
     /// Collaboration route of this record: [`crate::Replica::wire_document`].
@@ -1524,8 +1524,10 @@ mod tests {
             &AppCatalogue::native(),
             "so.tilo.notes",
             WORKSPACE,
-            &tilo_actions::MemberId::person("maker"),
-            &ReplicaActor::Agent,
+            &tilo_actions::MemberId::agent("maker"),
+            &ReplicaActor::Agent {
+                person: tilo_actions::MemberId::person("maker"),
+            },
             Seed::New,
         )
         .unwrap();

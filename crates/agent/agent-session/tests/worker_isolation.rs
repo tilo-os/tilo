@@ -171,8 +171,10 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
     };
     let agent = crate::common::confined(
         app,
-        &MemberId::person("writer"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+        },
         Seed::Existing {
             record: page.document_id().clone(),
             changes: vec![snapshot],
@@ -227,8 +229,10 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
 fn bytes_that_are_not_automerge_never_reach_the_worker() {
     let agent = crate::common::confined(
         "so.tilo.scratchpad",
-        &MemberId::person("writer"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+        },
         Seed::New,
     )
     .unwrap();
@@ -251,8 +255,10 @@ fn a_dead_worker_is_replaced_from_what_the_host_holds() {
     let note = crate::common::scratchpad_body("").0;
     let agent = crate::common::confined(
         "so.tilo.scratchpad",
-        &MemberId::person("writer"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+        },
         Seed::New,
     )
     .unwrap();
@@ -291,8 +297,10 @@ fn records_of_many_workspaces_share_the_pools_workers_and_outlive_one_that_stops
                 &catalogue(),
                 "so.tilo.scratchpad",
                 &workspace,
-                &MemberId::person("writer"),
-                &ReplicaActor::Agent,
+                &MemberId::agent("writer"),
+                &ReplicaActor::Agent {
+                    person: MemberId::person("writer"),
+                },
                 Seed::New,
             )
             .unwrap();
@@ -383,8 +391,10 @@ fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
     };
     let agent = crate::common::confined(
         app,
-        &MemberId::person("writer"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+        },
         Seed::Existing {
             record: page.document_id().clone(),
             changes: vec![snapshot],
@@ -419,8 +429,10 @@ const SHEETS: &str = "so.tilo.sheets";
 fn agents_document(app: &str, workspace: Option<&ContentStore>) -> ConfinedReplica {
     let agent = crate::common::confined(
         app,
-        &MemberId::person("painter"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("painter"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("painter"),
+        },
         Seed::New,
     )
     .unwrap();
@@ -667,8 +679,10 @@ fn an_agent_exports_its_artwork_as_content_the_workspace_keeps() {
     // into its worker before the export runs.
     let exporting = crate::common::confined(
         CANVAS,
-        &MemberId::person("exporter"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("exporter"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("exporter"),
+        },
         Seed::Existing {
             record: agent.document_id().clone(),
             changes: vec![agent.read(|doc| doc.clone().save()).unwrap()],
@@ -956,8 +970,10 @@ fn an_agent_reads_a_pdf_the_workspace_holds_in_its_worker() {
     let open = |lent: Option<&ContentStore>| {
         let replica = crate::common::confined(
             PDF,
-            &MemberId::person("reader"),
-            &ReplicaActor::Agent,
+            &MemberId::agent("reader"),
+            &ReplicaActor::Agent {
+                person: MemberId::person("reader"),
+            },
             Seed::Existing {
                 record: agent.document_id().clone(),
                 changes: vec![agent.read(|doc| doc.clone().save()).unwrap()],

@@ -410,8 +410,10 @@ fn survey(app: &str) -> Vec<ActionDescriptor> {
         &crate::AppCatalogue::native(),
         app,
         WORKSPACE,
-        &tilo_actions::MemberId::person("measure"),
-        &crate::ReplicaActor::Agent,
+        &tilo_actions::MemberId::agent("measure"),
+        &crate::ReplicaActor::Agent {
+            person: tilo_actions::MemberId::person("maker"),
+        },
         crate::Seed::New,
     )
     .unwrap()

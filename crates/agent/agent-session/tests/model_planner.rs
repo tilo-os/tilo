@@ -33,8 +33,10 @@ impl PlanModel for Canned {
 fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
     let app = crate::common::open(
         app_id,
-        &tilo_actions::MemberId::person("agent"),
-        ReplicaActor::Agent,
+        &tilo_actions::MemberId::agent("agent"),
+        ReplicaActor::Agent {
+            person: tilo_actions::MemberId::person("agent"),
+        },
         Seed::New,
     )
     .unwrap();

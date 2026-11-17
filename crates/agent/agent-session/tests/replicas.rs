@@ -164,8 +164,10 @@ fn an_agent_mount_and_a_person_mount_converge() {
     assert!(matches!(snapshot, DocumentMutation::Snapshot(_)));
     let mut agent = crate::common::open(
         app,
-        &MemberId::person("writer"),
-        ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+        },
         Seed::Existing {
             record: page.document_id().clone(),
             changes: vec![bytes(snapshot)],
@@ -248,8 +250,10 @@ fn joined(
         catalogue,
         page.app_id(),
         WORKSPACE,
-        &MemberId::person("writer"),
-        ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+        },
         Seed::Existing {
             record: page.document_id().clone(),
             changes: vec![changes],
@@ -336,8 +340,10 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
     let app = "so.tilo.word-processor";
     let mut agent = crate::common::open(
         app,
-        &MemberId::person("writer"),
-        ReplicaActor::Agent,
+        &MemberId::agent("writer"),
+        ReplicaActor::Agent {
+            person: MemberId::person("writer"),
+        },
         Seed::New,
     )
     .unwrap();
@@ -388,8 +394,10 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
 fn an_agent_removes_a_clip_it_placed_without_being_asked() {
     let mut agent = crate::common::open(
         "so.tilo.video-editor",
-        &MemberId::person("editor"),
-        ReplicaActor::Agent,
+        &MemberId::agent("editor"),
+        ReplicaActor::Agent {
+            person: MemberId::person("editor"),
+        },
         Seed::New,
     )
     .unwrap();

@@ -112,8 +112,10 @@ fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
     let workspace = ContentStore::memory();
     let agent = crate::common::confined(
         MESSAGES,
-        &MemberId::person("assistant"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("assistant"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("assistant"),
+        },
         Seed::New,
     )
     .expect("a Messages record is held in a confined worker")

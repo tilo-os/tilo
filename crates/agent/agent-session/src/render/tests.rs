@@ -13,8 +13,10 @@ fn agents_video_survey() -> Vec<ActionDescriptor> {
         &AppCatalogue::new(component_apps()),
         VIDEO_EDITOR,
         WORKSPACE,
-        &MemberId::person("editor"),
-        ReplicaActor::Agent,
+        &MemberId::agent("editor"),
+        ReplicaActor::Agent {
+            person: MemberId::person("maker"),
+        },
         Seed::New,
     )
     .unwrap()

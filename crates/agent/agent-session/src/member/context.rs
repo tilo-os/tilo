@@ -417,8 +417,10 @@ impl AgentMember {
             &self.catalogue,
             app,
             &self.workspace,
-            &crate::control::person(&self.identity.delegation),
-            &crate::ReplicaActor::Agent,
+            &tilo_actions::MemberId::agent(crate::control::agent_id(&self.identity.delegation)),
+            &crate::ReplicaActor::Agent {
+                person: crate::control::person(&self.identity.delegation),
+            },
             Seed::New,
         );
         let descriptors = match record {

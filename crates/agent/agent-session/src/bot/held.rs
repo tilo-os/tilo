@@ -96,7 +96,7 @@ impl HeldDocuments {
         let access = match &self.actor {
             ReplicaActor::Bot { access, .. } | ReplicaActor::Member { access, .. } => access,
             ReplicaActor::Owner => return true,
-            ReplicaActor::Agent => return false,
+            ReplicaActor::Agent { .. } => return false,
         };
         let node = collab_types::document_node(&self.workspace, &route.app_id, &route.document);
         let now = tilo_clock::unix_now_ms();

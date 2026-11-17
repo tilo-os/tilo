@@ -222,8 +222,13 @@ pub enum ReplicaActor {
     /// The host's own device acting for its user (workspace actions): the
     /// record's owner, as a browser tab of the owner is.
     Owner,
-    /// A delegated agent, at the cap its record bounds it to.
-    Agent,
+    /// A delegated agent, at the cap its delegation bounds it to, for
+    /// `person`. The replica's member is the agent, so what it writes is the
+    /// agent's; the person is whose access bounds it.
+    Agent {
+        /// The person the agent acts for.
+        person: MemberId,
+    },
     /// An installed bot: its installer's access bounded by the bot's
     /// grants, built by the host from the workspace's policy before each run.
     Bot {
@@ -475,15 +480,26 @@ impl Replica {
         let for_agent = matches!(actor, ReplicaActor::Member { agent: Some(_), .. });
         let runs_effects = !matches!(actor, ReplicaActor::Bot { .. });
         let automated =
-            for_agent || matches!(actor, ReplicaActor::Agent | ReplicaActor::Bot { .. });
-        let runs_views = matches!(actor, ReplicaActor::Agent | ReplicaActor::Member { .. });
+            for_agent || matches!(actor, ReplicaActor::Agent { .. } | ReplicaActor::Bot { .. });
+        let runs_views = matches!(
+            actor,
+            ReplicaActor::Agent { .. } | ReplicaActor::Member { .. }
+        );
+        // What an agent's replica seeds belongs to the person it acts for: the
+        // change is the agent's, the document the person's.
+        let acted_for = match &actor {
+            ReplicaActor::Agent { person } => Some(person.clone()),
+            _ => None,
+        };
         let (invoker, permissions) = replica_access(actor, workspace, member);
-        let creator = invoker
-            .acting
-            .by
-            .member_id()
-            .cloned()
-            .unwrap_or_else(|| member.clone());
+        let creator = acted_for.unwrap_or_else(|| {
+            invoker
+                .acting
+                .by
+                .member_id()
+                .cloned()
+                .unwrap_or_else(|| member.clone())
+        });
         let (checkout, bytes, created) = seeded(definition, kind, workspace, &creator, seed)?;
         let opening = AttachedView::opening(definition, workspace, checkout, bytes)
             .for_invoker(&invoker)
@@ -1567,12 +1583,14 @@ fn replica_access(
 ) -> (tilo_actions::ActionInvoker, PermissionContext) {
     let mut invoker = tilo_actions::ActionInvoker::member(member.clone());
     let permissions = match actor {
-        ReplicaActor::Agent => {
+        ReplicaActor::Agent { person } => {
             let id = member.id();
-            let permissions = PermissionContext::member_of(workspace, member, Role::Editor);
+            // The agent is who the changes are by, for the person it acts for.
+            invoker = tilo_actions::ActionInvoker::agent(id).acting_for(person.id().to_owned());
+            let permissions = PermissionContext::member_of(workspace, &person, Role::Editor);
             let acting =
-                policy::Acting::agent(id).acting_for(policy::Acting::member(member.clone()));
-            let granted = policy::roles::agent_grants(workspace, id, id, &[]);
+                policy::Acting::agent(id).acting_for(policy::Acting::member(person.clone()));
+            let granted = policy::roles::agent_grants(workspace, id, person.id(), &[]);
             match permissions
                 .access()
                 .clone()

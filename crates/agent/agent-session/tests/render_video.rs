@@ -79,8 +79,10 @@ fn timeline(source: Option<&str>) -> Project {
 fn agents_document(project: &Project, workspace: &ContentStore) -> ConfinedReplica {
     let agent = crate::common::confined(
         VIDEO,
-        &MemberId::person("editor"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("editor"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("editor"),
+        },
         Seed::New,
     )
     .unwrap()
@@ -291,8 +293,10 @@ fn a_second_presence_views_a_frame_of_footage_the_first_imported() {
 
     let editor = crate::common::confined(
         VIDEO,
-        &MemberId::person("editor"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("editor"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("editor"),
+        },
         Seed::New,
     )
     .unwrap()
@@ -321,8 +325,10 @@ fn a_second_presence_views_a_frame_of_footage_the_first_imported() {
 
     let reviewer = crate::common::confined(
         VIDEO,
-        &MemberId::person("reviewer"),
-        &ReplicaActor::Agent,
+        &MemberId::agent("reviewer"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("reviewer"),
+        },
         Seed::Existing {
             record: editor.document_id().clone(),
             changes: vec![snapshot],
