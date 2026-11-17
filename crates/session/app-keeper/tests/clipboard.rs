@@ -338,14 +338,13 @@ fn a_drag_open_when_the_desktop_goes_is_cancelled_to_the_app() {
         app.heard.pointer_entered
     );
 
+    // A drag still open when the desktop goes must not outlive it: the keeper notices the
+    // socket close, as it does at an in-place restart, with nothing telling it first.
     rig.drop_desktop();
-    // A drag the desktop runs holds a handle that keeps the in-process compositor's sockets open,
-    // so the session's own detach tells the keeper, as it does before a restart.
-    rig.keeper.detach();
     rig.settle(&mut [&mut app]);
     assert!(
         !rig.keeper.describe().attached,
-        "the keeper noticed the desktop going"
+        "the keeper noticed the desktop going with a drag open"
     );
     assert!(
         app.heard.source_cancelled,

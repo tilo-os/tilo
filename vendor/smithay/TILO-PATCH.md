@@ -445,3 +445,13 @@ changes it and tells every `wl_output` (version 4 up) and `xdg-output` (version 
 `wl_output.done` last.
 
 Remove this once upstream lets a compositor name an output's description.
+## A drag does not keep the display alive
+
+`DnDGrab` held a strong `DisplayHandle`, and a compositor holds the grab from its seat, so a
+compositor dropped while a client's drag was open kept its display and every client socket
+alive. A desktop restarts in place by dropping the compositor, and the app keeper learns that its
+desktop went away from that socket closing, so nothing may outlive the drop.
+`src/wayland/selection/data_device/dnd_grab.rs` holds a `WeakHandle` and upgrades it while it
+sends.
+
+Remove this once upstream does not hold the display in a grab.

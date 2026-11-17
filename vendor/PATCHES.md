@@ -961,7 +961,8 @@ descriptor cannot be sized (a pipe, a socket) is refused when the buffer is
 made, instead of crashing a software renderer that maps it. A tablet tool's
 hardware identity reaches a client whole: both 64-bit values are sent as
 their two uint32 words. An output's
-description can be set, beyond what make, model and name derive. Five
+description can be set, beyond what make, model and name derive. A drag
+still open does not keep the display (and its clients' sockets) alive. Five
 imports and a cast are fixed so it builds without warnings. See
 `vendor/smithay/TILO-PATCH.md` for the details and when to drop each change.
 
