@@ -40,7 +40,10 @@ impl Shared {
                 std::time::Duration::from_secs(5),
             );
         }
-        if crate::termination::asked() {
+        // The apps a login's end takes with it leave the workspaces' layouts as they were. An
+        // in-place restart keeps them, so the last thing the person moved is written for the desktop
+        // that follows instead of being lost with the one that saw it.
+        if crate::termination::asked() && !crate::restart::restarting() {
             tilo_durable_writer::global().flush();
             return;
         }
@@ -54,6 +57,12 @@ impl Shared {
                 std::time::Duration::from_secs(5),
             );
         }
+        // What the layout keeps of the kept apps' windows, their keepers keep too: the windows
+        // take the tabs the write just saved in the session that follows.
+        #[cfg(target_os = "linux")]
+        self.restore
+            .borrow_mut()
+            .tell_placements(&self.desktop, self.launch.as_deref());
         tilo_durable_writer::global().flush();
     }
 
