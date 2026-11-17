@@ -15,6 +15,10 @@ pub struct HintPlaces {
     pub beyond: (bool, bool),
     pub hovered_bar: Option<Rect>,
     pub focused_bar: Option<Rect>,
+    /// The ground the focused (or hovered) window's bar gives to its drag: the whole free stretch
+    /// between its tabs and its buttons, where a hint's card may stand without covering any of
+    /// them. `None` when no window's bar takes the pointer.
+    pub bar_room: Option<Rect>,
     pub focused_edge: Option<(Line, WindowEdge)>,
     pub asking: bool,
     pub over: Vec<Rect>,
@@ -85,6 +89,16 @@ impl GroupRow {
             beyond,
             hovered_bar,
             focused_bar: focused.and_then(title_grab),
+            bar_room: self
+                .groups
+                .iter()
+                .enumerate()
+                .find(|(i, group)| {
+                    shown(*i, group)
+                        && !self.is_floating(group.id)
+                        && (group.focused || group.bar_grab_hit(self.last_cursor))
+                })
+                .and_then(|(_, group)| bar_room(group)),
             focused_edge: focused.and_then(|group| nearest_edge(group, viewport, self.last_cursor)),
             asking: focused.is_some_and(asking_for_input),
             over: self
@@ -140,6 +154,18 @@ fn grab_stretch(group: &super::WindowGroup, x: f64) -> Rect {
 
 fn free(group: &super::WindowGroup, p: Point) -> bool {
     group.bar_grab_hit(p) && !group.window_control_hit(p)
+}
+
+/// The stretch of `group`'s bar the person can take it by: the run between its tabs and its
+/// buttons (the window controls, the agent and the search control), whole bar height, that a
+/// hint's card stands in without covering any of them. It is the title grab, widened to the whole
+/// free run around it. `None` when the bar has no free run at all to take.
+fn bar_room(group: &super::WindowGroup) -> Option<Rect> {
+    let grab = title_grab(group)?;
+    let stretch = grab_stretch(group, grab.center().x);
+    // `grab_stretch` walks out from the grab's centre; taking in the grab whole keeps the room
+    // from ever being a sliver narrower than the spot it came from.
+    Some(stretch.union(grab))
 }
 
 /// How wide a stretch of bar must be to be where a window is taken: the
@@ -226,6 +252,7 @@ mod tests {
     };
     use crate::theme::Theme;
     use crate::widget::Widget as _;
+    use crate::window_toolbar::{ToolbarAction, WindowToolbar};
     use vello::kurbo::{Point, Rect};
 
     tilo_test_env::scenario! {
@@ -280,6 +307,71 @@ mod tests {
                 free.x0 >= group.tab_rects()[0].x1,
                 "{free:?} past the title"
             );
+        }
+
+        phase the_bar_room_a_hint_stands_in_covers_none_of_the_windows_controls;
+        // The move hint's card stands in the bar's free ground, between the title and the buttons: the
+        // room it is given is whole, on the window's own bar, and clear of every control there (the
+        // window's expand and close chips, its toolbar and its search), so a pill standing in it can
+        // never cover one.
+        {
+            let action = |id: &str| ToolbarAction {
+                id: id.into(),
+                icon: "refresh".into(),
+                name: id.into(),
+                enabled: true,
+                on: false,
+                menu: false,
+                items: Vec::new(),
+                navigates: false,
+                toggles: false,
+                destructive: false,
+                labelled: false,
+                primary: false,
+            };
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            for group in &mut row.groups {
+                group.bar_mut().set_window_controls(true);
+            }
+            let _ = row.groups[0].bar_mut().set_toolbar(
+                1,
+                Some(WindowToolbar {
+                    actions: vec![action("more"), action("share")],
+                    ..WindowToolbar::default()
+                }),
+            );
+            row.groups[0].focused = true;
+            let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            let group = &row.groups[0];
+            let room = row.hint_places().bar_room.expect("a focused bar takes the pointer");
+            let bar = group.bar_rect();
+            assert_eq!(room.y0, bar.y0, "it is the bar's own height: {room:?}");
+            assert_eq!(room.y1, bar.y1, "it is the bar's own height: {room:?}");
+            let title_past = group
+                .tab_rects()
+                .iter()
+                .map(|tab| tab.x1)
+                .fold(bar.x0, f64::max);
+            assert!(
+                room.x0 >= title_past - 0.5,
+                "it starts past the tabs and their title: {room:?} past {title_past}"
+            );
+            let (_, _, _, actions) = group.bar_for_tests().toolbar_rects();
+            let controls: Vec<Rect> = actions
+                .into_iter()
+                .chain(group.bar_for_tests().window_controls().iter().map(|(_, rect)| rect))
+                .chain([group.window_search().anchor()])
+                .filter(|rect| rect.area() > 0.0)
+                .collect();
+            assert!(!controls.is_empty(), "fixture: the bar shows its controls");
+            for control in &controls {
+                assert!(
+                    room.x1 <= control.x0 || room.x0 >= control.x1,
+                    "the bar's room {room:?} covers none of the window's controls, not {control:?}"
+                );
+            }
+            // The window in front, laid out whole, gives the hint a room wide enough for its pill.
+            assert!(room.width() >= 40.0, "the room takes a pill: {room:?}");
         }
 
         phase a_shown_window_reports_the_corners_its_app_stands_cards_in;

@@ -101,7 +101,7 @@ pub fn share_beside(
         return None;
     }
     // Floored so that rounding never pushes the pair a pixel past the edge.
-    let fitting = |px: f64| WindowWidth::Fraction(floor_permille(px, usable));
+    let fitting = |px: f64| WindowWidth::Share(floor_permille(px, usable));
     if spare >= SIDE_BY_SIDE_MIN_PX {
         return Some((neighbour, fitting(spare)));
     }
@@ -123,6 +123,11 @@ pub fn share_beside(
 /// `gap_px` apart, so the whole card stands beside what the person was reading
 /// instead of over it. `None` when the strip has no room for a window beside
 /// the card.
+///
+/// The room is a [`WindowWidth::Fraction`], not a [`WindowWidth::Share`]: the
+/// card stands there until the float snaps back, so the window beside it keeps
+/// that room whether or not another window is on the strip — nothing about it
+/// is the transient sharing [`share_beside`] does for a window that may leave.
 ///
 /// Returns `(beside, card)`.
 pub fn share_for_float(
@@ -168,6 +173,9 @@ pub fn equalize_widths(strip: &mut crate::layout::Strip) -> bool {
         .checked_div(count)
         .unwrap_or(WIDTH_MIN_PERMILLE)
         .max(WIDTH_MIN_PERMILLE);
+    // The person asked for equal widths: that is their choice, and it stays
+    // (a `Fraction`, like their own resize), unlike the share the shell
+    // gives windows so an opening neighbour fits.
     let width = WindowWidth::Fraction(share);
     let mut changed = false;
     for group in &mut strip.window_groups {
@@ -187,9 +195,19 @@ pub enum WindowWidth {
     Narrow,
     Normal,
     Wide,
-    /// An arbitrary fraction of the strip's usable width, in per-mille.
-    /// What a manual resize persists.
+    /// An arbitrary fraction of the strip's usable width, in per-mille: a
+    /// width the person set, by an edge drag or by picking the half tier.
+    /// It stays what they asked for whether or not the window has a
+    /// neighbour.
     Fraction(u32),
+    /// A share the shell gave a window so that it and its neighbour fit the
+    /// strip together ([`share_beside`]): the per-mille is the room it takes
+    /// beside another, and the width is the default's, not the person's, so a
+    /// lone window at it takes the strip ([`Self::resolve_in_strip`]) — the
+    /// same rule a lone [`Self::Normal`] window follows, whichever path left
+    /// it alone (a neighbour closing beside it here, or the window itself
+    /// carried to a strip of its own).
+    Share(u32),
 }
 
 impl WindowWidth {
@@ -200,7 +218,9 @@ impl WindowWidth {
             WindowWidth::Narrow => WIDTH_NARROW_PERMILLE,
             WindowWidth::Normal => WIDTH_NORMAL_PERMILLE,
             WindowWidth::Wide => WIDTH_WIDE_PERMILLE,
-            WindowWidth::Fraction(p) => (*p).clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE),
+            WindowWidth::Fraction(p) | WindowWidth::Share(p) => {
+                (*p).clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE)
+            }
         }
     }
 
@@ -243,13 +263,15 @@ impl WindowWidth {
     }
 
     /// [`Self::resolve`] for a window that is `alone` on its strip or not.
-    /// A lone window at the default width takes the strip's usable width
-    /// (up to [`ALONE_MAX_PX`]) instead of leaving a third of it empty;
-    /// once a second window joins it, it is two thirds again and the
+    /// A lone window at a default width — [`Self::Normal`] or a shell's
+    /// [`Self::Share`] — takes the strip's usable width (up to
+    /// [`ALONE_MAX_PX`]) instead of leaving a third of it empty; once a
+    /// second window joins it, the default is two thirds again and the
     /// newcomer takes the rest ([`share_beside`]). A width the person chose
-    /// (a tier or their own resize) stays what they asked for either way.
+    /// (a tier or their own resize, [`Self::Fraction`]) stays what they
+    /// asked for either way.
     pub fn resolve_in_strip(&self, strip_usable_px: f64, alone: bool) -> f64 {
-        if alone && matches!(self, WindowWidth::Normal) {
+        if alone && matches!(self, WindowWidth::Normal | WindowWidth::Share(_)) {
             let usable = strip_usable_px.max(1.0);
             return usable
                 .min(ALONE_MAX_PX)
@@ -276,6 +298,7 @@ impl<'de> Deserialize<'de> for WindowWidth {
             Normal,
             Wide,
             Fraction(u32),
+            Share(u32),
         }
         Ok(match Raw::deserialize(d)? {
             Raw::Narrow => WindowWidth::Narrow,
@@ -284,6 +307,7 @@ impl<'de> Deserialize<'de> for WindowWidth {
             Raw::Fraction(p) => {
                 WindowWidth::Fraction(p.clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE))
             }
+            Raw::Share(p) => WindowWidth::Share(p.clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE)),
         })
     }
 }
@@ -480,6 +504,26 @@ mod tests {
                 (WindowWidth::Fraction(500).resolve_in_strip(1376.0, true) - 688.0).abs()
                     < f64::EPSILON
             );
+            // A share the shell gave a window to fit beside a neighbour is the
+            // default's width, not the person's: alone, it takes the strip just
+            // as a lone `Normal` does. A window carried to a strip of its own is
+            // rebuilt at its share, and must widen there as one left alone in
+            // place does.
+            let shared = WindowWidth::Share(497);
+            assert!(
+                (shared.resolve_in_strip(1376.0, true) - 1376.0).abs() < f64::EPSILON,
+                "alone, a window at the shell's share takes the strip"
+            );
+            assert!(
+                (shared.resolve_in_strip(1376.0, false) - shared.resolve(1376.0)).abs()
+                    < f64::EPSILON,
+                "beside another, it keeps the share it was given"
+            );
+            // A share is written and read back as a share, and a share older builds
+            // stored as a plain fraction still reads as the width it meant.
+            let written = serde_json::to_string(&shared).unwrap();
+            assert_eq!(written, r#"{"Share":497}"#);
+            assert_eq!(serde_json::from_str::<WindowWidth>(&written).unwrap(), shared);
         }
 
         phase widths_load_as_clamped_fractions_with_a_pixel_floor;

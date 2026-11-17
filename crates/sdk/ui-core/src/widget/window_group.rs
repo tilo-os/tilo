@@ -1003,14 +1003,25 @@ impl WindowGroup {
     }
 
     /// Narrow (or widen) this window to `w` to share the screen with a
-    /// window opened beside it, remembering the width it had so that it
-    /// gets it back once it is alone on the strip again.
+    /// window opened beside it, remembering a width the person chose so that
+    /// they get it back once the window is alone on the strip again. A
+    /// default width needs no remembering: a [`WindowWidth::Share`] is
+    /// already the shell's, and a lone one takes the strip
+    /// ([`WindowWidth::resolve_in_strip`]), whether it is left alone by a
+    /// neighbour closing beside it here or by being carried to a strip of
+    /// its own, where a rebuilt window has no memory of its own at all.
     pub fn share_width(&mut self, w: WindowWidth) {
-        let before = self.width_before_share.unwrap_or(self.width);
+        let person_chose = |width: WindowWidth| {
+            matches!(
+                width,
+                WindowWidth::Fraction(_) | WindowWidth::Narrow | WindowWidth::Wide
+            )
+        };
+        let before = self
+            .width_before_share
+            .or_else(|| person_chose(self.width).then_some(self.width));
         self.set_width(w);
-        if self.width != before {
-            self.width_before_share = Some(before);
-        }
+        self.width_before_share = before;
     }
 
     pub fn set_width(&mut self, w: WindowWidth) {
@@ -1019,6 +1030,9 @@ impl WindowGroup {
         match w {
             WindowWidth::Fraction(p) => {
                 self.width = WindowWidth::Fraction(p.clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE));
+            }
+            WindowWidth::Share(p) => {
+                self.width = WindowWidth::Share(p.clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE));
             }
             other => self.width = other,
         }
