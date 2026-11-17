@@ -180,7 +180,7 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         .collect();
     assert_eq!(failed.len(), 1, "{:#?}", run.items);
     let test = failed[0].code.clone().unwrap();
-    let item = item_resource_id::<Terminal>("runs", first);
+    let item = item_resource_id::<Terminal>("commands", first);
     let offered: Vec<String> = app
         .actions()
         .unwrap()
@@ -195,7 +195,7 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
     let agent = ActionInvoker::agent("helper").acting_for("ada");
     app.call_by(
         agent,
-        &item_resource_id::<Terminal>("runs", first),
+        &item_resource_id::<Terminal>("commands", first),
         "rerun-test",
         serde_json::json!({ "test": test }),
     )

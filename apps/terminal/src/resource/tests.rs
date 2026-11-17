@@ -196,7 +196,7 @@ tilo_test_env::scenario! {
             Some(&serde_json::json!(request.as_str()))
         );
         let run =
-            tilo_automerge::items::collection_item_json(doc, &heads, "runs", request.as_str()).unwrap();
+            tilo_automerge::items::collection_item_json(doc, &heads, "commands", request.as_str()).unwrap();
         assert_eq!(run["command"], "cargo test -p signup");
         assert_eq!(run["cwd"], "/home/ada/signup");
         assert_eq!(run["exit"], 101);
