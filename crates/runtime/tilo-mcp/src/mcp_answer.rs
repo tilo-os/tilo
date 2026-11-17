@@ -290,6 +290,11 @@ pub(super) fn outcome(value: &Value) -> Reply {
     let mut text = match state {
         "succeeded" => {
             let mut text = String::from("ok");
+            // Content from outside the user's data is said to be so before it
+            // is shown, so a model reads the label before what it labels.
+            if let Some(note) = value.get(UNTRUSTED).and_then(Value::as_str) {
+                let _ = write!(text, "\n[{UNTRUSTED}: {note}]");
+            }
             let output = value.pointer("/update/output");
             if let Some(result) = output
                 .and_then(|output| output.get("value"))
