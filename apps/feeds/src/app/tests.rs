@@ -1674,7 +1674,10 @@ fn a_failed_subscription_says_so_in_its_own_row_until_it_refreshes() {
 
     let marked = feed_row(&a.core(), &failing);
     assert_eq!(
-        marked.status.as_ref().map(|status| status.row_status()),
+        marked
+            .status
+            .as_ref()
+            .map(ui::widget::NavItemStatus::row_status),
         Some(ui::widget::RowStatus::Error),
         "the subscription that failed is marked"
     );
