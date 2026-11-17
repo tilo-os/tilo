@@ -1195,7 +1195,7 @@ mod tests {
 
         phase a_file_keeps_the_comments_in_its_text_and_brings_them_back;
         {
-            let (mut replica, block) = written("The shop opens at seven.", "ada");
+            let (mut replica, block) = written("Doors open at seven.", "ada");
             replica
                 .apply(Document::ADD_COMMENT.with(document::AddComment {
                     block,

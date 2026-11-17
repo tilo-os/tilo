@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, Cursor, ObjId, ObjType, ReadDoc, Value};
+use automerge::{AutoCommit, Cursor, ObjId, ReadDoc};
 use tilo_actions::PresenceId;
 use ui::time::{Duration, Instant};
 
@@ -229,10 +229,7 @@ fn truncate(text: &str, max: usize) -> &str {
 fn text_obj(doc: &AutoCommit, region: RegionKind, block: &str) -> Option<ObjId> {
     let containers = crate::model::open(doc).ok()?;
     let obj = tilo_doc::model::region_block_obj(doc, &containers, region.to_region(), block)?;
-    match doc.get(&obj, tilo_doc::schema::BLOCK_TEXT).ok()? {
-        Some((Value::Object(ObjType::Text), text)) => Some(text),
-        _ => None,
-    }
+    tilo_doc::model::block_text_obj(doc, &obj)
 }
 
 fn block_len(doc: &AutoCommit, region: RegionKind, block: &str) -> Option<usize> {
