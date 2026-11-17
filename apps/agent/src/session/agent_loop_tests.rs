@@ -1380,6 +1380,13 @@ struct Fixture {
     script: Arc<Script>,
 }
 
+impl Fixture {
+    /// Carry out the task this fixture answers, to its end.
+    fn carried(&mut self) {
+        self.session.run_task(&self.run).unwrap();
+    }
+}
+
 fn fixture(title: &str, world: World, turns: Vec<Vec<TurnEvent>>) -> Fixture {
     paced_fixture(title, world, turns, None)
 }

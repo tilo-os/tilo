@@ -426,6 +426,8 @@ pub(super) struct LoopState {
     done_apps: HashMap<String, usize>,
     /// Parts the model explained it cannot do.
     unable: Vec<String>,
+    /// Whether the person asked a question: its answer is the reply, never an operation.
+    question: bool,
     /// Finishes refused for undone parts in this task.
     refusals: usize,
     /// Turns so far that only looked things up.
@@ -669,6 +671,7 @@ impl LoopState {
             parts: Vec::new(),
             done_apps: HashMap::new(),
             unable: Vec::new(),
+            question: false,
             refusals: 0,
             discovery_turns: 0,
             turn: 0,
@@ -789,9 +792,11 @@ impl LoopState {
     /// own operation would have. Without this a part done by a program stays undone, the
     /// finish is refused, and the model is pushed to open the app's window to satisfy it.
     ///
-    /// A program that changed nothing and answered — "summarise what changed in my notes" read
-    /// and printed — did the part in each app it read: a question is done by its answer, and its
-    /// finish was refused for want of a change nobody asked for.
+    /// A program that changed nothing did no part of a request to do something, whatever it
+    /// printed: "reply to Bo" is not answered by counting Mail's drafts and saying "checking what
+    /// happened in Mail", and counting it done there let the turn finish succeeded with the reply
+    /// never written. Only a request that is a question — "summarise what changed in my notes" —
+    /// is done by its answer, and then the program did the part in each app it read.
     pub(super) fn program_did(&mut self, step: &ui::tilo_reference::ProgramStep) {
         if step.outcome != ui::tilo_reference::StepOutcome::Done {
             return;
@@ -802,7 +807,10 @@ impl LoopState {
             .map(|change| change.resource.app.clone())
             .filter(|app| !app.is_empty())
             .collect();
-        if apps.is_empty() && step.answer.iter().any(|line| !line.trim().is_empty()) {
+        if apps.is_empty()
+            && self.question
+            && step.answer.iter().any(|line| !line.trim().is_empty())
+        {
             apps = self.programs.apps_named(&step.program);
         }
         apps.sort();
@@ -1244,6 +1252,8 @@ impl Session {
     fn note_implied_parts(run: &Asked, catalogue: &surface::Catalogue, state: &mut LoopState) {
         let request = run.request().to_lowercase();
         let question = asks_question(&request);
+        // A question is done by its answer; a request to do something only by doing it.
+        state.question = question;
         if !question
             && request.contains("chat")
             && asks_for_message(&request)

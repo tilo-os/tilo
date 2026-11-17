@@ -409,6 +409,26 @@ impl Session {
             .filter(|_| ran && !changed_nothing)
             .map(|reply| programs::reply_with_answer(reply, &for_a_person))
             .and_then(|reply| tools::spoken_reply(&reply));
+        // A reply that rides a step cannot end the turn while a declared part of the request has
+        // no successful operation yet: the request asked for something this step did not do, and
+        // the person would read a finished answer to it. The step answers with what is left
+        // instead, and the loop goes on to do it (or to name it `unable`). Without this, a step
+        // that only read Mail and said "Checking what happened in Mail." ended the turn succeeded
+        // with the reply to Bo never written.
+        let undone: Vec<String> = state
+            .undone_parts()
+            .iter()
+            .map(|part| format!("{} (in {})", part.text, part.app))
+            .collect();
+        if reply.is_some() && !undone.is_empty() {
+            let left = format!(
+                "\nNot finished: these parts of the request have no successful operation yet: \
+                 {}. Do them now, or finish with plan listing them under `unable` with the \
+                 reason. Your reply is held until they are done.",
+                undone.join("; ")
+            );
+            return Ok(Handled::Result(text + &left));
+        }
         if let Some(reply) = &reply {
             state.reply = Some(reply.clone());
         }
