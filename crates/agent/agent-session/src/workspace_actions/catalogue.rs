@@ -149,14 +149,26 @@ impl Worker {
         state: &WorkspaceState,
     ) -> Vec<CatalogueRow> {
         let mut rows = Vec::new();
+        // Whose conversations decide what is listed of them ([`super::direct`]).
+        let person = bounded.map_or_else(|| self.member.clone(), |who| who.person.clone());
         for route in wanted {
             let provider = record_provider(route);
+            let withheld = self.kept_from(&person, route, state);
             match self.listed(workspace_id, bounded, route, state) {
                 Ok(descriptors) => {
                     self.unmounted.remove(route);
-                    rows.extend(descriptors.into_iter().map(|descriptor| {
-                        CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
-                    }));
+                    rows.extend(
+                        descriptors
+                            .into_iter()
+                            .filter(|descriptor| !withheld.names(&descriptor.address.resource))
+                            .map(|descriptor| {
+                                CatalogueRow::for_action(
+                                    provider.clone(),
+                                    route.app_id.clone(),
+                                    descriptor,
+                                )
+                            }),
+                    );
                 }
                 Err(error) => self.did_not_mount(route, error),
             }

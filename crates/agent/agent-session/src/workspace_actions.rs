@@ -56,6 +56,7 @@ mod catalogue;
 mod catch_up;
 mod change;
 mod content;
+mod direct;
 mod feedback;
 mod found;
 mod found_files;
@@ -1278,6 +1279,8 @@ struct Worker {
     /// What the apps call the records the host changes, read in a confined
     /// worker kept for the next ([`publish`]).
     titles: crate::worker::ConfinedTitles,
+    /// What each of Chat's documents keeps of direct conversations ([`direct`]).
+    said_directly: direct::ReadOnce,
     /// The writes the job being served handed to the session, by workspace:
     /// an invocation is answered done only once the host holds them
     /// ([`publish::Worker::saving`]).
@@ -1420,6 +1423,7 @@ impl Worker {
             beside: HashMap::new(),
             channels_opened: HashSet::new(),
             titles: crate::worker::ConfinedTitles::default(),
+            said_directly: HashMap::new(),
             joining: HashMap::new(),
             clock: 0,
             handed: HashMap::new(),
@@ -2436,6 +2440,10 @@ impl Worker {
             .ok_or_else(unknown_action)?;
         let target = &self.with_document_resource(target, &route.app_id);
         let arguments = invoke_arguments(&request.argument);
+        // What is said in a direct conversation the caller's person takes no part in is not
+        // there for them: an action on it is answered as one on nothing, and no read answers
+        // with a row of it ([`direct`]).
+        let withheld = self.kept_from_caller(caller, &route, &state);
         // What the record publishes, its own API runs. What only its
         // committed source publishes — a canonical read of it — is asked of
         // that source, which reads the record and opens a worker for it: an
@@ -2447,12 +2455,13 @@ impl Worker {
                 .try_registered_read(workspace_id, caller, request)
                 .map_err(|error| *error)?
         {
-            return Ok((output, None));
+            return Ok((withheld.shown(output), None));
         }
         if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
             return Err(Outcome::Rejected(ActionCallError::StaleRevision));
         }
         let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
+        withheld.refuses(&target.address.resource)?;
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
             // Sharing asks the record for everything it lists, which is what
             // the link is chosen from.
@@ -2474,13 +2483,15 @@ impl Worker {
             if appearance.is_some() {
                 return Err(unknown_action());
             }
-            return self.perform_bounded(
-                workspace_id,
-                caller,
-                &who,
-                (request, &route, &state),
-                (target, arguments),
-            );
+            return self
+                .perform_bounded(
+                    workspace_id,
+                    caller,
+                    &who,
+                    (request, &route, &state),
+                    (target, arguments),
+                )
+                .map(|(output, left_at)| (withheld.shown(output), left_at));
         }
         // The one action asked for, not the whole listing: a record of ten
         // thousand items costs this what a record of ten does.
@@ -2515,7 +2526,7 @@ impl Worker {
             .map_err(|error| commit_failed(error.to_string(), false))?;
         self.commit_taken(workspace_id, &route, taken)
             .map_err(|reason| commit_failed(reason, true))?;
-        Ok((output, left_at))
+        Ok((withheld.shown(output), left_at))
     }
 
     /// Open an app on a new record of the workspace `named`, as its
