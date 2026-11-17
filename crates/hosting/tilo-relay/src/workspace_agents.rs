@@ -47,6 +47,8 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{Interaction, ModelRefusal, PersonModel, Spender};
 
+mod summary;
+
 /// The app that keeps the conversations and the workspace's record of its agents.
 const CHAT: &str = "so.tilo.chat";
 /// The app that keeps the issues.
@@ -186,6 +188,9 @@ pub struct Turn {
     pub cause: String,
     /// What the person asked, in words.
     pub request: String,
+    /// What the turn asks its agent to take into its conversation's summary while it answers
+    /// ([`chat::recall::told`]): none for most turns, and for every issue.
+    pub fold: Option<ui::collaboration::recall::Fold>,
 }
 
 impl Turn {
@@ -322,21 +327,21 @@ impl HostAgents {
                     let (request, _) = chat::summons::request(message);
                     // What came before it in the conversation, as every turn is told it: the
                     // same on a host as on the device that would answer it.
-                    let request = chat::recall::told(
+                    let told = chat::recall::told(
                         &chat,
                         &part,
                         &summons.conversation,
                         &summons.message,
                         &ui::permissions::MemberId::agent(&summons.agent),
                         request,
-                    )
-                    .instruction;
+                    );
                     turns.push(Turn {
                         agent: agent.clone(),
                         person: summons.person.clone(),
                         conversation: summons.address(),
                         cause: summons.message.to_string(),
-                        request,
+                        request: told.instruction,
+                        fold: told.fold,
                         ask: Ask::Message {
                             part: record.clone(),
                             message: summons.message.to_string(),
@@ -374,6 +379,7 @@ impl HostAgents {
                     conversation: tasks_model::issue_resource(&ask.issue),
                     cause: ask.cause.clone(),
                     request,
+                    fold: None,
                     ask: Ask::Issue {
                         record: record.clone(),
                         issue: ask.issue.to_string(),
@@ -482,6 +488,10 @@ impl HostAgents {
         };
         if cost > 0 {
             self.charge(workspace, &turn.agent, &day, cost).await;
+        }
+        if let Outcome::Answered(words) = &outcome {
+            self.keep_summary((workspace, workspace_id), turn, (&reply, words), &day)
+                .await;
         }
         reply.finished(&outcome).await
     }
