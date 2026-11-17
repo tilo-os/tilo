@@ -93,6 +93,11 @@ pub(crate) struct Replicated {
     pub(crate) record_since: fn(u32, &str, &str, &[ui::automerge::ChangeHash]) -> Since,
     /// The heads the workspace last delivered a record at, as the page took it in.
     pub(crate) record_heads: fn(u32, &str, &str) -> Option<Vec<ui::automerge::ChangeHash>>,
+    /// Answer what the window of a mount that shows one app alone asked to read of other apps'
+    /// documents ([`crate::browser::Mount::answer_reads_alone`]). The session that takes such a
+    /// read and what a reading is made of are reached from here alone, so they load with the
+    /// peer's code and not with the start module.
+    pub(crate) reads_alone: fn(&mut crate::browser::Mount),
     /// The content store a mount lends its windows: its workspace's.
     pub(crate) content: fn(u32) -> Option<tilo_content::ContentStore>,
     /// The workspace's answer whether the person may change `node`.
@@ -198,6 +203,15 @@ pub(crate) fn record_heads(
     installed(None, |replicated| {
         (replicated.record_heads)(id, app, record)
     })
+}
+
+/// Answer what `mount`, which shows one app alone, was asked to read of other apps' documents.
+/// Nothing while the peer's code is not in: what its window asked waits for it.
+pub(crate) fn answer_reads_alone(mount: &mut crate::browser::Mount) {
+    // Taken out of the table before it is called: the answering asks this table in turn.
+    if let Some(answer) = installed(None, |replicated| Some(replicated.reads_alone)) {
+        answer(mount);
+    }
 }
 
 pub(crate) fn content(id: u32) -> Option<tilo_content::ContentStore> {

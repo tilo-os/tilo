@@ -1518,6 +1518,10 @@ impl Collaborative for ChatApp {
         self.settle_resource_navigation();
         requests.extend(self.resource_navigation.remote_mut().take_collab_requests());
         requests.extend(self.moderation_requests());
+        // What a view shown alone asks of the session leaves with the window's own asks.
+        if let Some(alone) = self.alone.as_mut() {
+            requests.extend(alone.take_requests());
+        }
         self.native_voice.video.wanted = self.wanted_pictures();
         let before = self.native_voice.snapshot.state;
         requests.extend(self.native_voice.take_requests(ui::time::now()));
@@ -1535,6 +1539,11 @@ impl Collaborative for ChatApp {
                     .remote_mut()
                     .handle_collab_event(event);
                 self.settle_resource_navigation();
+                // A view shown alone hears what it asked, and shows it on the next pass.
+                if let Some(alone) = self.alone.as_mut() {
+                    alone.answered(event);
+                    self.request_relayout();
+                }
                 // The vault answered what was typed: the next pass takes it.
                 if self.secret_entry.is_saving() {
                     self.request_relayout();

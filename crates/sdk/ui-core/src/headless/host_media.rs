@@ -25,7 +25,18 @@ pub struct MediaQueue {
     owners: BTreeMap<String, (CallbackBinding, MediaRequest)>,
     ready: Vec<MediaRequest>,
     catalogues: Vec<(CallbackBinding, tilo_actions::remote::RemoteActionMessage)>,
+    /// What the components asked to read of other apps' documents, kept for a holder that
+    /// answers such reads from the documents it holds itself ([`Self::take_resource_reads`]).
+    reads: Vec<(CallbackBinding, tilo_actions::remote::RemoteActionMessage)>,
+    /// Whether the holder keeps no other app's document: a read of one is answered so as it is
+    /// asked ([`Self::refuse_resource_reads`]).
+    reads_refused: bool,
 }
+
+/// How many reads of other apps' documents wait for the holder at once; one asked beyond that is
+/// answered that it cannot be read now, and its reader asks again.
+const MAX_WAITING_READS: usize = 64;
+
 impl MediaQueue {
     /// Take local media commands from each retained component under its bound callback context.
     pub fn take(&mut self, frame: &mut FrameHarness) -> Vec<MediaRequest> {
@@ -44,6 +55,24 @@ impl MediaQueue {
             .into_iter()
             .map(|(_, message)| message)
             .collect()
+    }
+
+    /// Drain what the components asked to read of other apps' documents, as the last call that
+    /// took their requests kept it ([`Self::take`], [`Self::take_catalogue_requests`]): a holder
+    /// takes those every frame, and this visits no component again. A holder that keeps the
+    /// documents itself answers each read as its person may read it, and hands the answer back
+    /// as a collaboration event; the transport takes none of them.
+    pub fn take_resource_reads(&mut self) -> Vec<tilo_actions::remote::RemoteActionMessage> {
+        std::mem::take(&mut self.reads)
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect()
+    }
+
+    /// Answer every read of another app's document, as it is asked, that it cannot be read
+    /// here: for a holder that keeps no such document and reaches nobody who does.
+    pub fn refuse_resource_reads(&mut self) {
+        self.reads_refused = true;
     }
 
     fn pump(&mut self, frame: &mut FrameHarness) {
@@ -65,7 +94,10 @@ impl MediaQueue {
         requests.retain(|request| request.retired || self.pending.contains_key(&request.ticket));
         self.catalogues
             .retain(|(binding, _)| !binding.closing.get() && binding.lifetime.is_active());
+        self.reads
+            .retain(|(binding, _)| !binding.closing.get() && binding.lifetime.is_active());
         let mut took = false;
+        let reads_refused = self.reads_refused;
         let mut visit = |binding: &CallbackBinding,
                          widget: &mut dyn crate::widget::AppWidget,
                          _: &tilo_actions::ActionRegistry| {
@@ -123,7 +155,14 @@ impl MediaQueue {
                         .insert(request.owner.clone(), (binding.clone(), request.clone()));
                     requests.push(request);
                 } else if let CollabRequest::RemoteAction { message } = request {
-                    queue_catalogue(&mut self.catalogues, binding, widget, message);
+                    if matches!(
+                        message,
+                        tilo_actions::remote::RemoteActionMessage::ResourceRead { .. }
+                    ) {
+                        queue_read(&mut self.reads, reads_refused, binding, widget, message);
+                    } else {
+                        queue_catalogue(&mut self.catalogues, binding, widget, message);
+                    }
                 }
             }
             None
@@ -190,6 +229,49 @@ fn refusal(provider: &str, queued: usize) -> Option<&'static str> {
     }
 }
 
+/// Why the queue keeps no further read of another app's document while `waiting` of them wait
+/// for the holder, if it keeps none: the holder answers no such read (`refused`), or too many
+/// wait already.
+fn read_refusal(refused: bool, waiting: usize) -> Option<&'static str> {
+    if refused {
+        Some("another app's data cannot be read here")
+    } else if waiting >= MAX_WAITING_READS {
+        Some("too many reads are waiting here")
+    } else {
+        None
+    }
+}
+
+/// Keep `message`, a read of another app's document, for the holder. One the queue does not
+/// keep ([`read_refusal`]) is answered that it cannot be read.
+fn queue_read(
+    reads: &mut Vec<(CallbackBinding, tilo_actions::remote::RemoteActionMessage)>,
+    refused: bool,
+    binding: &CallbackBinding,
+    widget: &mut dyn crate::widget::AppWidget,
+    message: tilo_actions::remote::RemoteActionMessage,
+) {
+    use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
+    let Some(reason) = read_refusal(refused, reads.len()) else {
+        reads.push((binding.clone(), message));
+        return;
+    };
+    let RemoteActionMessage::ResourceRead { correlation, .. } = message else {
+        return;
+    };
+    crate::widget::handle_collab_event(
+        widget,
+        &CollabEvent::RemoteAction {
+            message: RemoteActionMessage::ResourceReading {
+                correlation,
+                result: Err(ActionCallError::Unavailable {
+                    reason: reason.into(),
+                }),
+            },
+        },
+    );
+}
+
 fn queue_catalogue(
     catalogues: &mut Vec<(CallbackBinding, tilo_actions::remote::RemoteActionMessage)>,
     binding: &CallbackBinding,
@@ -245,7 +327,26 @@ fn queue_catalogue(
 
 #[cfg(test)]
 mod tests {
-    use super::refusal;
+    use super::{MAX_WAITING_READS, read_refusal, refusal};
+
+    #[test]
+    fn a_holder_keeps_sixty_four_reads_waiting_and_none_where_it_answers_none() {
+        assert_eq!(MAX_WAITING_READS, 64);
+        assert_eq!(read_refusal(false, 0), None);
+        assert_eq!(read_refusal(false, 63), None);
+        assert_eq!(
+            read_refusal(false, 64),
+            Some("too many reads are waiting here")
+        );
+        assert_eq!(
+            read_refusal(false, 65),
+            Some("too many reads are waiting here")
+        );
+        assert_eq!(
+            read_refusal(true, 0),
+            Some("another app's data cannot be read here")
+        );
+    }
 
     #[test]
     fn only_actions_the_workspaces_host_runs_travel_to_it() {
