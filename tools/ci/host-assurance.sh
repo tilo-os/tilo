@@ -52,7 +52,18 @@ test -c /dev/loop-control || die 'no loop devices, which the install needs'
 losetup --find >/dev/null
 
 say 'install the server image'
-image=$(podman pull -q "oci-archive:$pub/image.oci.tar")
+# What this step is given and what it has to put it in, so a failure here says
+# which of the two ran out rather than only that the step died.
+printf 'image archive: %s bytes\n' "$(stat -c %s "$pub/image.oci.tar")" >&2
+df -h /var /tmp /target 2>&1 >&2 || true
+free -m >&2 || true
+# Copying from oci-archive: unpacks the whole archive into TMPDIR first; keep
+# that on the same disk as the rest of this step rather than wherever the
+# sandbox last pointed TMPDIR.
+export TMPDIR=$work/tmp
+mkdir -p "$TMPDIR"
+image=$(podman pull -q "oci-archive:$pub/image.oci.tar") \
+  || die "podman could not load $pub/image.oci.tar; the space and memory it had are above"
 [[ $(podman image inspect --format '{{.Digest}}' "$image") == "$(cat "$pub/digest")" ]] \
   || die "$pub/image.oci.tar is not the image $pub/digest names"
 podman tag "$image" localhost/tilo-host:ci
