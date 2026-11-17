@@ -25,9 +25,11 @@ cd "$repo_root"
 target=${CARGO_TARGET_DIR:-$repo_root/target}
 rm -rf "$out"
 mkdir -p "$out/bin"
-cargo build --locked --profile lounge-check -p tilo-api -p fake-discord \
-  --bin tilo-api --bin fake-discord
-for bin in tilo-api fake-discord; do cp "$target/lounge-check/$bin" "$out/bin/"; done
+# The API server starts a task's tilolang programs in tilolang-process, which it finds beside
+# itself: one build, one directory.
+cargo build --locked --profile lounge-check -p tilo-api -p fake-discord -p tilolang-process \
+  --bin tilo-api --bin fake-discord --bin tilolang-process
+for bin in tilo-api fake-discord tilolang-process; do cp "$target/lounge-check/$bin" "$out/bin/"; done
 bash tools/ci/publish/lounge-context.sh "$out/lounge" "$binaries" "$fonts"
 # Outside the image a Tilo program finds the font catalog in fonts/ beside itself,
 # and the stack reads this layout as it is (in a check, read-only).
