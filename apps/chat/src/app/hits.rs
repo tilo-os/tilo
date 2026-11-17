@@ -118,6 +118,11 @@ pub(crate) enum Hit {
     StopShare(Id),
     /// Let the others do this with the window a message of yours shares.
     SwitchShare(Id, crate::record::ShareAccess),
+    /// Give this answer to the question a message asks this person.
+    Answer {
+        msg: Id,
+        answer: String,
+    },
     /// Open the "Share a window" panel from the attach menu.
     ShareWindowPanel,
     /// What the people a window is shared with may do there.
@@ -203,6 +208,7 @@ impl Hit {
             Self::ShrinkShare(id) => format!("chat.shrink-share:{id}"),
             Self::StopShare(id) => format!("chat.stop-sharing:{id}"),
             Self::SwitchShare(id, access) => format!("chat.switch-share:{id}:{}", access.as_str()),
+            Self::Answer { msg, answer } => format!("chat.answer:{msg}:{answer}"),
             Self::ShareWindowPanel => "chat.share-window".into(),
             Self::ShareAccess(access) => format!("chat.share-access:{}", access.as_str()),
             Self::SharePick(tab) => format!("chat.share-pick:{tab}"),
@@ -452,6 +458,13 @@ impl ChatApp {
                                     .into(),
                             )],
                         )),
+                        Role::Button,
+                        false,
+                    ),
+                    // An answer reads as its button does: the asker's own
+                    // words, or the words of the kind's own answers.
+                    Hit::Answer { msg, answer } => (
+                        content(self.question_answer_label(msg, answer)),
                         Role::Button,
                         false,
                     ),

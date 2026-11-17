@@ -754,6 +754,7 @@ impl ChatApp {
             } else {
                 0.0
             },
+            question_h: self.row_question_height(m, editing, text_w, tr, theme),
             att_h,
             react_h,
             edited_h,
@@ -866,6 +867,10 @@ impl ChatApp {
         }
         if rm.resource_h > 0.0 {
             self.draw_message_resource(PaintCtx::new(scene, tf, tr, theme), &m, column, y, hits);
+        }
+        if rm.question_h > 0.0 {
+            let place = (column.text_x, f64::from(column.text_width));
+            self.draw_question(PaintCtx::new(scene, tf, tr, theme), &m, place, y, hits);
         }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;

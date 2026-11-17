@@ -307,6 +307,11 @@ pub struct Message {
     /// resource is the one its first resource attachment names.
     #[model(readonly)]
     pub share: Option<WindowShare>,
+    /// What it asks one person, and where that question stands: it waits
+    /// until they answer it, on every device, or its asker takes it back
+    /// ([`crate::question`]).
+    #[model(readonly)]
+    pub question: Option<crate::question::Question>,
     /// How many times a person asked the agent again for an answer to this
     /// message (`retry`): the attempt the agent answers in now. The answer of
     /// attempt `n` is the reply [`reply_id_at`] derives, so asking again never
@@ -339,6 +344,7 @@ impl Message {
             author_name: None,
             origin: None,
             share: None,
+            question: None,
             attempts: 0,
         }
     }
@@ -889,6 +895,8 @@ pub(crate) struct Posting {
     pub attachments: Vec<tilo_reference::Attached>,
     pub appearance: Option<tilo_actions::Appearance>,
     pub share: Option<WindowShare>,
+    /// What it asks one person.
+    pub question: Option<crate::question::Question>,
     /// Who the text refers to, as the chat record resolved it where the
     /// message was written.
     pub mentions: Vec<crate::mention::Mention>,

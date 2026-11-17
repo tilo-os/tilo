@@ -293,6 +293,8 @@ impl ResourceApp for ChatShell {
         } else {
             app
         };
+        // Where an answer to a question says it was pressed.
+        app.device = cx.device().map(str::to_owned);
         app.attach_framework(cx.dispatcher());
         if let Some(chain) = cx.chain::<crate::parts::ChatPart>() {
             app.attach_chain(chain);
