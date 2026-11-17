@@ -126,6 +126,9 @@ use wayland_protocols::xdg::toplevel_icon::v1::client::{
     xdg_toplevel_icon_manager_v1::{self as icon_manager, XdgToplevelIconManagerV1},
     xdg_toplevel_icon_v1::XdgToplevelIconV1,
 };
+use wayland_protocols::xdg::xdg_output::zv1::client::{
+    zxdg_output_manager_v1::ZxdgOutputManagerV1, zxdg_output_v1, zxdg_output_v1::ZxdgOutputV1,
+};
 use wayland_protocols_misc::server_decoration::client::{
     org_kde_kwin_server_decoration::{self as kde, Mode as KdeMode, OrgKdeKwinServerDecoration},
     org_kde_kwin_server_decoration_manager::OrgKdeKwinServerDecorationManager,
@@ -424,6 +427,10 @@ pub struct Heard {
     pub pointer: Option<WlPointer>,
     pub outputs: Vec<WlOutput>,
     pub output_modes: Vec<(u32, i32, i32)>,
+    pub xdg_output_manager: Option<ZxdgOutputManagerV1>,
+    /// The name and description the desktop gave the output through xdg-output.
+    pub xdg_name: Option<String>,
+    pub xdg_description: Option<String>,
     pub globals_removed: Vec<u32>,
     pub dmabuf: Option<ZwpLinuxDmabufV1>,
     pub viewporter: Option<WpViewporter>,
@@ -606,6 +613,7 @@ pub struct App {
     pub queue: EventQueue<Heard>,
     pub heard: Heard,
     pub surface: Option<WlSurface>,
+    pub xdg_output: Option<ZxdgOutputV1>,
     pub xdg: Option<XdgSurface>,
     pub toplevel: Option<XdgToplevel>,
     pub broken: bool,
@@ -627,6 +635,7 @@ impl App {
             queue,
             heard,
             surface: None,
+            xdg_output: None,
             xdg: None,
             toplevel: None,
             broken: false,
@@ -639,6 +648,18 @@ impl App {
                 && !heard.outputs.is_empty()
         });
         app
+    }
+
+    /// Ask the desktop what it calls the app's output.
+    pub fn describe_output(&mut self) {
+        let qh = self.qh();
+        let manager = self
+            .heard
+            .xdg_output_manager
+            .clone()
+            .expect("zxdg_output_manager_v1");
+        let output = self.heard.outputs.first().cloned().expect("an output");
+        self.xdg_output = Some(manager.get_xdg_output(&output, &qh, ()));
     }
 
     /// Send what is queued, read what arrived, without blocking.
@@ -1162,6 +1183,9 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 "wl_output" => heard
                     .outputs
                     .push(registry.bind(name, version.min(4), qh, name)),
+                "zxdg_output_manager_v1" => {
+                    heard.xdg_output_manager = Some(registry.bind(name, version.min(3), qh, ()));
+                }
                 "wp_viewporter" => {
                     heard.viewporter = Some(registry.bind(name, 1, qh, ()));
                 }
@@ -1308,6 +1332,25 @@ impl Dispatch<WlPointer, ()> for Heard {
                 heard
                     .buttons
                     .push((serial, button, state == wl_pointer::ButtonState::Pressed));
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZxdgOutputV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZxdgOutputV1,
+        event: zxdg_output_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zxdg_output_v1::Event::Name { name } => heard.xdg_name = Some(name),
+            zxdg_output_v1::Event::Description { description } => {
+                heard.xdg_description = Some(description);
             }
             _ => {}
         }
@@ -1638,6 +1681,7 @@ delegate_noop!(Heard: ignore WpViewport);
 delegate_noop!(Heard: ignore WpFractionalScaleManagerV1);
 delegate_noop!(Heard: ignore WpContentTypeManagerV1);
 delegate_noop!(Heard: ignore WpContentTypeV1);
+delegate_noop!(Heard: ignore ZxdgOutputManagerV1);
 delegate_noop!(Heard: ignore WlCompositor);
 delegate_noop!(Heard: ignore WlSubcompositor);
 delegate_noop!(Heard: ignore WlSubsurface);

@@ -213,6 +213,27 @@ impl Output {
         output.data::<OutputUserData>().and_then(|ud| ud.output.upgrade())
     }
 
+    /// Tell every client of this output its description changed.
+    pub(crate) fn wl_set_description(&self, description: String) {
+        let mut inner = self.inner.0.lock().unwrap();
+        inner.description.clone_from(&description);
+        // The xdg-output instance's description comes before wl_output's `done`, as on bind.
+        if let Some(xdg_output) = inner.xdg_output.as_ref() {
+            xdg_output.set_description(description.clone());
+        }
+        for output in &inner.instances {
+            let Ok(output) = output.upgrade() else {
+                continue;
+            };
+            if output.version() >= 4 {
+                output.description(description.clone());
+            }
+            if output.version() >= 2 {
+                output.done();
+            }
+        }
+    }
+
     pub(crate) fn wl_change_current_state(
         &self,
         new_mode: Option<Mode>,

@@ -88,6 +88,20 @@ impl XdgOutput {
         inner.instances.push(xdg_output.downgrade());
     }
 
+    /// Tell the instances a new description, its event only on the versions that have one.
+    pub(super) fn set_description(&self, description: String) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.description.clone_from(&description);
+        for instance in &inner.instances {
+            let Ok(instance) = instance.upgrade() else {
+                continue;
+            };
+            if instance.version() >= 2 {
+                instance.description(description.clone());
+            }
+        }
+    }
+
     pub(super) fn change_current_state(
         &self,
         new_mode: Option<Mode>,

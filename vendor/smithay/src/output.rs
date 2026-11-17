@@ -339,6 +339,20 @@ impl Output {
         self.inner.0.lock().unwrap().description.clone()
     }
 
+    /// Set the description clients are told for this output.
+    ///
+    /// [`Output::new`] derives it from the make, model and name; a compositor that knows the
+    /// display as a person does (a monitor's own name, a virtual display's purpose) sets its own.
+    pub fn set_description(&self, description: impl Into<String>) {
+        let description = description.into();
+        #[cfg(feature = "wayland_frontend")]
+        self.wl_set_description(description);
+        #[cfg(not(feature = "wayland_frontend"))]
+        {
+            self.inner.0.lock().unwrap().description = description;
+        }
+    }
+
     /// Returns the physical properties of the output
     pub fn physical_properties(&self) -> PhysicalProperties {
         self.inner.0.lock().unwrap().physical.clone()

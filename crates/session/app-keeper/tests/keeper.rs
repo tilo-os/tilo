@@ -305,6 +305,37 @@ fn the_output_stays_and_a_new_mode_updates_it_in_place() {
 }
 
 #[test]
+fn the_desktops_own_output_description_reaches_a_kept_app() {
+    use crate::support::OUTPUT;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.describe_output();
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.xdg_name.is_some() && apps[0].heard.xdg_description.is_some()
+    });
+    assert_eq!(app.heard.xdg_name.as_deref(), Some(OUTPUT));
+
+    // A desktop that calls the display by a name of its own: the app behind the keeper reads
+    // that name and description, not one it derived from make, model and connector.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new_with(|desktop| {
+        desktop
+            .set_output_description(OUTPUT, "Studio display")
+            .expect("the output's description");
+    });
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.xdg_description.as_deref() == Some("Studio display")
+    });
+    assert_eq!(
+        rig.desktop().outputs()[0].description.as_deref(),
+        Some("Studio display"),
+        "the desktop's own description is what the app reads"
+    );
+}
+
+#[test]
 fn a_fault_is_held_and_reported_and_a_second_ends_the_app() {
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);

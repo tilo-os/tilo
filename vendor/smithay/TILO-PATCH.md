@@ -435,3 +435,13 @@ every identity whose upper half is not zero reached a client truncated and a cli
 compares the value it read against the tool it knows saw a different pen.
 
 Remove this once upstream sends the high word from bit 32.
+## An output's description can be set
+
+`Output::new` derives the description clients read from `xdg-output` (make, model and name) and
+there was no setter. A desktop that knows a display by another name, and a proxy that repeats
+what that desktop said (the app keeper), could not pass it on. `src/output.rs`
+`Output::set_description`, with `src/wayland/output/mod.rs` and `src/wayland/output/xdg.rs`,
+changes it and tells every `wl_output` (version 4 up) and `xdg-output` (version 2 up) instance,
+`wl_output.done` last.
+
+Remove this once upstream lets a compositor name an output's description.

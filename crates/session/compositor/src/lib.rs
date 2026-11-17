@@ -2613,6 +2613,16 @@ impl Compositor {
             .collect()
     }
 
+    /// Set what the output `name` says it is, as a desktop whose display has a name of its own
+    /// does: what its clients read through `xdg-output`.
+    #[cfg(feature = "test-support")]
+    pub fn set_output_description(&mut self, name: &str, description: &str) -> Result<(), Error> {
+        Ok(self
+            .data
+            .backend
+            .set_output_description(name, description)?)
+    }
+
     /// The current buffer of the window `id`, if it is a linear dma-buf, read on the CPU: its
     /// width, height and RGBA pixels. `None` for a shared-memory buffer or a format this does not
     /// read. Lets a test see what a client handed over on a machine with no GPU.

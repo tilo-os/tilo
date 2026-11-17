@@ -32,6 +32,8 @@ struct Info {
     mode: Option<(i32, i32, i32)>,
     scale: i32,
     position: (i32, i32),
+    /// What the desktop calls the output, when it says more than make, model and name.
+    description: Option<String>,
 }
 
 impl Info {
@@ -71,6 +73,16 @@ impl UpOutput {
                 ..Info::default()
             },
         }
+    }
+}
+
+/// Tell the app the description the desktop gave `output`, when it is not what the output derives
+/// from make, model and name.
+fn describe(output: &Output, description: Option<&str>) {
+    if let Some(description) = description
+        && output.description() != description
+    {
+        output.set_description(description);
     }
 }
 
@@ -137,6 +149,7 @@ impl State {
                     output.set_preferred(mode);
                 }
                 output.change_current_state(mode, Some(transform), scale, position);
+                describe(&output, info.description.as_deref());
                 let global = output.create_global::<Self>(&self.dh);
                 self.outputs.insert(
                     at,
@@ -157,6 +170,7 @@ impl State {
             }
             kept.output
                 .change_current_state(mode, Some(transform), scale, position);
+            describe(&kept.output, info.description.as_deref());
             kept.seen = generation;
             return;
         }
@@ -166,6 +180,7 @@ impl State {
             output.set_preferred(mode);
         }
         output.change_current_state(mode, Some(transform), scale, position);
+        describe(&output, info.description.as_deref());
         let global = output.create_global::<Self>(&self.dh);
         self.outputs.push(KeptOutput {
             output,
@@ -316,6 +331,11 @@ impl Dispatch<zxdg_output_v1::ZxdgOutputV1, u32> for State {
             zxdg_output_v1::Event::Name { name } => {
                 if let Some(output) = state.up_output(*global) {
                     output.name = Some(name);
+                }
+            }
+            zxdg_output_v1::Event::Description { description } => {
+                if let Some(output) = state.up_output(*global) {
+                    output.info.description = Some(description);
                 }
             }
             // Before version 3 the xdg-output's own done ends its description.

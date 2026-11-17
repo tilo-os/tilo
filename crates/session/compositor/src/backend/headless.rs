@@ -725,6 +725,20 @@ impl Backend for HeadlessBackend {
         })
     }
 
+    fn set_output_description(
+        &mut self,
+        name: &str,
+        description: &str,
+    ) -> Result<(), BackendError> {
+        let output = self
+            .outputs
+            .iter()
+            .find(|output| output.output.name() == name)
+            .ok_or_else(|| BackendError(format!("no output named {name}")))?;
+        output.output.set_description(description);
+        Ok(())
+    }
+
     /// What the scene shows with the pointer and every pen's cursor drawn in front, as a display
     /// has them: what a test reads to see a cursor where the scene alone shows a window.
     fn screenshot_with_cursor(
