@@ -801,7 +801,7 @@ impl<C: ChildResource> ChildrenState<C> {
         child: &Id,
         action: &C::Action,
         invoker: &ActionInvoker,
-    ) -> Result<Vec<String>, ActionError> {
+    ) -> Result<Vec<(String, String)>, ActionError> {
         let need = tilo_resource::need_of::<C>(action);
         if let Some(permissions) = &self.workspace.permissions {
             let node = TreePath::root()
@@ -833,7 +833,7 @@ impl<C: ChildResource> ChildrenState<C> {
         child: &Id,
         action: &C::Action,
         invoker: &ActionInvoker,
-    ) -> Result<Vec<String>, ActionError> {
+    ) -> Result<Vec<(String, String)>, ActionError> {
         let encoded = tilo_resource::encode::<C>(action)?;
         let context = ActionContext::for_resource(child_resource_id::<C>(child), C::KIND, C::LABEL)
             .with_app(self.workspace.app_id, self.workspace.app_title)
@@ -855,9 +855,6 @@ impl<C: ChildResource> ChildrenState<C> {
                 )
                 .map(|envelope| {
                     ui_core::bound_dispatch::minted_items(doc, C::KIND, &[], &envelope, &before)
-                        .into_iter()
-                        .map(|(_, address)| address)
-                        .collect::<::std::vec::Vec<_>>()
                 })
                 .map_err(|error| ActionError::Refused(error.to_string()));
                 history.rebase(doc);
@@ -1158,13 +1155,18 @@ impl<C: ChildResource> ChildrenState<C> {
             LIFECYCLE_TYPE => {
                 let step: Lifecycle = tilo_actions::decode_json(&action.payload)
                     .map_err(|error| error.to_string())?;
+                let made = matches!(step, Lifecycle::Create { .. });
                 let child = self
                     .lifecycle(&step, invoker, tilo_resource::origin_now_ms(), live)
                     .map_err(|error| error.to_string())?;
-                Ok(tilo_actions::ActionOutput {
-                    value: None,
-                    resources: vec![child_resource_id::<C>(&child)],
-                })
+                // A step that makes a child says which, by its id and the
+                // address it is published under; the others change one that
+                // is already there.
+                let created = made.then(|| {
+                    let address = child_resource_id::<C>(&child);
+                    (child.to_string(), address)
+                });
+                Ok(answering(created.into_iter().collect()))
             }
             CHILD_ACTION_TYPE => {
                 let request: ChildAction = tilo_actions::decode_json(&action.payload)
@@ -1179,16 +1181,26 @@ impl<C: ChildResource> ChildrenState<C> {
                 let typed: C::Action = tilo_actions::decode_json(&request.action.payload)
                     .map_err(|error| error.to_string())?;
                 super::resources::not_by_app::<C>(&typed)?;
-                let resources = self
+                let created = self
                     .apply_to(&request.child, &typed, invoker)
                     .map_err(|error| error.to_string())?;
-                Ok(tilo_actions::ActionOutput {
-                    value: None,
-                    resources,
-                })
+                Ok(answering(created))
             }
             other => Err(format!("{} take no `{other}` action", C::LABEL)),
         }
+    }
+}
+
+/// What a container's action answers: every item it made, with its id and the
+/// address it is published under, beside whatever the action itself answered
+/// (`made`, `minted`), and the addresses a caller follows
+/// ([`tilo_actions::ActionOutput::resources`]).
+fn answering(created: Vec<(String, String)>) -> tilo_actions::ActionOutput {
+    let minted: Vec<String> = created.iter().map(|(id, _)| id.clone()).collect();
+    let resources = created.iter().map(|(_, address)| address.clone()).collect();
+    tilo_actions::ActionOutput {
+        value: ui_core::bound_dispatch::with_made(None, &minted, &created),
+        resources,
     }
 }
 

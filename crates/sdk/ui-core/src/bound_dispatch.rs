@@ -2503,7 +2503,7 @@ pub fn minted_items(
 /// `value` beside what the write made: the ids it minted, and per item its
 /// id and the address it is published under (`made`). A create thus answers
 /// what it made on every surface, and a bulk of them answers each.
-fn with_made(
+pub fn with_made(
     value: Option<serde_json::Value>,
     minted: &[String],
     items: &[(String, String)],

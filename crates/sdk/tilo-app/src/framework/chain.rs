@@ -487,8 +487,8 @@ struct Unsent {
 /// What became of an action applied to the part it changes.
 enum Write {
     /// Written into the parts named first, creating the item resources
-    /// listed second.
-    Done(Written, Vec<String>),
+    /// listed second: each item's id, and the address it is published under.
+    Done(Written, Vec<(String, String)>),
     /// The part is on its way from the workspace; nothing was written.
     Arriving,
 }
@@ -896,7 +896,7 @@ impl ChainCore {
         invoker: &ActionInvoker,
         place: Option<String>,
         written: &mut dyn FnMut(&mut ui_core::automerge::AutoCommit, &[ChangeHash]),
-    ) -> Result<Vec<String>, ActionError> {
+    ) -> Result<Vec<(String, String)>, ActionError> {
         let mut context = ActionContext::for_resource(&self.id, self.part.kind, self.part.label)
             .with_app(self.workspace.app_id, self.workspace.app_title)
             .with_invoker(invoker.clone())
@@ -935,9 +935,6 @@ impl ChainCore {
                         &envelope,
                         &before,
                     )
-                    .into_iter()
-                    .map(|(_, address)| address)
-                    .collect::<::std::vec::Vec<_>>()
                 })
                 .map_err(|error| ActionError::Refused(error.to_string()));
                 // Nobody's undo step: a part's edits are kept in its
@@ -1652,7 +1649,7 @@ impl ChainState {
         action: &dyn Any,
         invoker: &ActionInvoker,
         later: &mut Option<Later>,
-    ) -> Result<Option<(u64, Vec<String>)>, ActionError> {
+    ) -> Result<Option<(u64, Vec<(String, String)>)>, ActionError> {
         // Behind the ones already waiting: actions are applied in the order asked.
         if self.unsent().is_empty() {
             match self.try_apply(action, invoker)? {
@@ -1962,7 +1959,7 @@ impl ChainState {
         encoded: tilo_actions::EncodedAction,
         invoker: &ActionInvoker,
         place: Option<String>,
-    ) -> Result<Vec<String>, ActionError> {
+    ) -> Result<Vec<(String, String)>, ActionError> {
         self.write_answering(index, action, encoded, invoker, place, None)
     }
 
@@ -1977,7 +1974,7 @@ impl ChainState {
         invoker: &ActionInvoker,
         place: Option<String>,
         answering: Option<&str>,
-    ) -> Result<Vec<String>, ActionError> {
+    ) -> Result<Vec<(String, String)>, ActionError> {
         let answer = self.part().answer;
         let mut answered = |doc: &mut ui_core::automerge::AutoCommit, before: &[ChangeHash]| {
             if let Some(verb) = answering {
@@ -2230,32 +2227,42 @@ impl ResourceApi for ChainState {
         }
         match (self.part().decode)(action)? {
             part::Decoded::Group(group) => {
-                let resources = match self
+                let created = match self
                     .try_apply_group(&group, invoker)
                     .map_err(|error| error.to_string())?
                 {
                     Write::Done(_, created) => created,
                     Write::Arriving => Vec::new(),
                 };
-                Ok(tilo_actions::ActionOutput {
-                    value: None,
-                    resources,
-                })
+                Ok(answering(None, created))
             }
             part::Decoded::One(action) => {
                 self.answered.borrow_mut().take();
                 // One that waits for its part creates its items once it is written.
-                let resources = self
+                let created = self
                     .apply_as(&*action, invoker, &mut None)
                     .map_err(|error| error.to_string())?
                     .map(|(_, created)| created)
                     .unwrap_or_default();
-                Ok(tilo_actions::ActionOutput {
-                    value: self.answered.borrow_mut().take(),
-                    resources,
-                })
+                Ok(answering(self.answered.borrow_mut().take(), created))
             }
         }
+    }
+}
+
+/// What a chain action answers: every item it made, with its id and the
+/// address it is published under, beside whatever the action itself answered
+/// (`made`, `minted`), and the addresses a caller follows
+/// ([`tilo_actions::ActionOutput::resources`]).
+fn answering(
+    value: Option<serde_json::Value>,
+    created: Vec<(String, String)>,
+) -> tilo_actions::ActionOutput {
+    let minted: Vec<String> = created.iter().map(|(id, _)| id.clone()).collect();
+    let resources = created.iter().map(|(_, address)| address.clone()).collect();
+    tilo_actions::ActionOutput {
+        value: ui_core::bound_dispatch::with_made(value, &minted, &created),
+        resources,
     }
 }
 
