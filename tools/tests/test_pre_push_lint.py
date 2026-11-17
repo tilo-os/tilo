@@ -69,6 +69,7 @@ esac
 printf 'start %s %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
 sleep "${STUB_SLEEP:-0}"
 printf 'warning: a/Cargo.toml: version requirement `1.0+meta` includes semver metadata\\n'
+for n in $(seq 1 100); do printf '    Checking crate-%s v0.1.0\\n' "$n"; done
 printf 'stub says: unreachable value in a page build\\n'
 printf 'end %s %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
 exit "${STUB_STATUS:-0}"
@@ -397,6 +398,8 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("unreachable value in a page build", result.stderr)
         # What Cargo says about the workspace itself is not the person's to fix.
         self.assertNotIn("includes semver metadata", result.stderr)
+        # A wide lint's progress, a line per crate, would push the diagnostic out of the report.
+        self.assertNotIn("Checking crate-", result.stderr)
         self.assertIn("refusing the push", result.stderr)
 
     def test_a_new_branch_is_compared_with_the_main_it_forked_from(self):

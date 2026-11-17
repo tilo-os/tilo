@@ -86,6 +86,11 @@ CARGO_REMARKS = (
     "`bin` target `",
     "Blocking waiting for file lock on",
 )
+# Cargo's and rcargo's progress, one line per crate: a lint of the whole workspace prints
+# hundreds before its first diagnostic, and a failure report cut to its first lines showed
+# nothing else.
+PROGRESS = re.compile(r"^\s*(?:Checking|Compiling|Fresh|Building|Blocking|Downloading|Downloaded"
+                      r"|Locking|Updating|Adding|Documenting)\s|^\s*rcargo: (?:syncing|synced)")
 REF_TIPS = ("refs/remotes/{remote}/main", "refs/remotes/origin/main",
             "refs/remotes/origin/HEAD", "refs/heads/main")
 ZERO_OID = {"0"}
@@ -671,7 +676,7 @@ def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str) -
     for run, output in failed:
         say(f"pre-push: {run.label} failed - rerun: {' '.join(run.command)}")
         lines = [line for line in output.strip().splitlines()
-                 if not any(remark in line for remark in CARGO_REMARKS)]
+                 if not any(remark in line for remark in CARGO_REMARKS) and not PROGRESS.match(line)]
         for line in lines[:SHOWN_DIAGNOSTIC_LINES]:
             say(f"  {line}")
         if len(lines) > SHOWN_DIAGNOSTIC_LINES:
