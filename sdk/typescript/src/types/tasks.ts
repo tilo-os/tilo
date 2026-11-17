@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tasks@5f233b6ef94db006";
+export const SURFACE = "so.tilo.tasks@dbcb4eda35527380";
 
 /** One of "project", "area". */
 export type Kind = "project" | "area";
@@ -90,6 +90,25 @@ export interface Link {
   kind: string;
   resource: string;
   record: string | null;
+}
+
+export interface ListedIssue {
+  key: string | null;
+  under: string | null;
+  title: string;
+  parent: string | null;
+  body: string | null;
+  status: Status | null;
+  assignee: string | null;
+  url: string | null;
+  project: string | null;
+  priority: Priority | null;
+  estimate: number | null;
+  due_ms: number | null;
+  labels: string[] | null;
+  origin: Origin | null;
+  rank: string | null;
+  goal: Area | null;
 }
 
 export interface Message {
@@ -241,6 +260,11 @@ export interface CreateArgs {
 /** The arguments of `start`. */
 export interface StartArgs {
   before: number;
+}
+
+/** The arguments of `create-many`. */
+export interface CreateManyArgs {
+  issues: ListedIssue[];
 }
 
 /** The arguments of `rename`. */
@@ -458,6 +482,8 @@ export interface Issues extends tilo.Resource {
   }): Promise<void>;
   /** Runs `start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   startMany(items: StartArgs[]): Promise<tilo.ActionAnswer[]>;
+  // the app's `create-many` action is named as the SDK's bulk calls (`<action>Many`):
+  // run it with `action("create-many")`.
   rename(args: {
     issue: string;
     title: string;

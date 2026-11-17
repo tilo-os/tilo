@@ -28,6 +28,7 @@ __all__ = [
     "BudgetBy",
     "Issue",
     "Link",
+    "ListedIssue",
     "Message",
     "MessageKind",
     "NewIssue",
@@ -50,6 +51,7 @@ __all__ = [
     "DeleteAreaArgs",
     "CreateArgs",
     "StartArgs",
+    "CreateManyArgs",
     "RenameArgs",
     "MoveUnderArgs",
     "AssignArgs",
@@ -131,6 +133,24 @@ class Link(TypedDict):
     kind: str
     resource: str
     record: str | None
+
+class ListedIssue(TypedDict):
+    key: str | None
+    under: str | None
+    title: str
+    parent: str | None
+    body: str | None
+    status: Status | None
+    assignee: str | None
+    url: str | None
+    project: str | None
+    priority: Priority | None
+    estimate: int | None
+    due_ms: int | None
+    labels: list[str] | None
+    origin: Origin | None
+    rank: str | None
+    goal: Area | None
 
 class Message(TypedDict):
     author: str | None
@@ -271,6 +291,11 @@ StartArgs = TypedDict("StartArgs", {
 })
 """The arguments of `start`."""
 
+CreateManyArgs = TypedDict("CreateManyArgs", {
+    "issues": "list[ListedIssue]",
+})
+"""The arguments of `create-many`."""
+
 RenameArgs = TypedDict("RenameArgs", {
     "issue": "str",
     "title": "str",
@@ -409,7 +434,7 @@ StopArgs = TypedDict("StopArgs", {
 
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@5f233b6ef94db006"
+    __surface__ = "so.tilo.tasks@dbcb4eda35527380"
     areas: list[Entry[TrackerArea]]
 
     def create_area(self,
@@ -501,7 +526,7 @@ class Tracker(Resource):
 
 class Issues(Resource):
     """Issues — `tasks.issues`."""
-    __surface__ = "so.tilo.tasks@5f233b6ef94db006"
+    __surface__ = "so.tilo.tasks@dbcb4eda35527380"
     issues: list[Entry[Issue]]
     @property
     def before(self) -> int:
@@ -572,6 +597,8 @@ class Issues(Resource):
         """Runs `start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("start", items)
 
+    # the app's `create-many` action is named as a field of this kind: run it with
+    # `action("create-many")`.
     def rename(self,
         *,
         issue: str,

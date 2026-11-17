@@ -22,6 +22,7 @@ mod asks;
 mod effect;
 mod goal;
 mod issue;
+mod many;
 mod record;
 pub mod search;
 mod tracker_area;
@@ -35,6 +36,7 @@ pub use issue::{
     MAX_MESSAGE_CHARS, MAX_TITLE_CHARS, Message, MessageKind, NewIssue, Priority, Status,
     agent_assignee, checked_assignee, outside_assignee, person_assignee,
 };
+pub use many::{ListedIssue, MAX_MANY};
 pub use record::{Tracker, tracker};
 pub use tracker_area::{Kind, Person, TrackerArea};
 pub use work::{

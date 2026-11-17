@@ -25422,6 +25422,247 @@
         ],
         "description": ""
       },
+      "tasks.issues.create-many.Arguments": {
+        "type": "object",
+        "properties": {
+          "issues": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "assignee": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "body": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "due_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "estimate": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "goal": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "app": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "resource": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "resource",
+                    "app",
+                    "kind",
+                    "label"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "key": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "labels": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "origin": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "author": {
+                      "type": "string"
+                    },
+                    "created_ms": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "handle": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "reference": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "updated_ms": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "author",
+                    "source"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "parent": {
+                  "minLength": 1,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "priority": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "oneOf": [
+                        {
+                          "const": "none",
+                          "type": "string"
+                        },
+                        {
+                          "const": "urgent",
+                          "type": "string"
+                        },
+                        {
+                          "const": "high",
+                          "type": "string"
+                        },
+                        {
+                          "const": "medium",
+                          "type": "string"
+                        },
+                        {
+                          "const": "low",
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "project": {
+                  "minLength": 1,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "rank": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "oneOf": [
+                        {
+                          "const": "backlog",
+                          "type": "string"
+                        },
+                        {
+                          "const": "todo",
+                          "type": "string"
+                        },
+                        {
+                          "const": "in-progress",
+                          "type": "string"
+                        },
+                        {
+                          "const": "in-review",
+                          "type": "string"
+                        },
+                        {
+                          "const": "done",
+                          "type": "string"
+                        },
+                        {
+                          "const": "cancelled",
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "title": {
+                  "minLength": 1,
+                  "pattern": "\\S",
+                  "type": "string"
+                },
+                "under": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "title"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "issues"
+        ],
+        "description": ""
+      },
       "tasks.issues.rename.Arguments": {
         "type": "object",
         "properties": {
@@ -33205,6 +33446,12 @@
       "resource": "tasks.issues",
       "action": "start",
       "arguments": "#/components/schemas/tasks.issues.start.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "create-many",
+      "arguments": "#/components/schemas/tasks.issues.create-many.Arguments"
     },
     {
       "app": "so.tilo.tasks",

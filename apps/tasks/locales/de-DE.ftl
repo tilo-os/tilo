@@ -110,6 +110,7 @@ tasks-message-step = Ausgeführt
 ## Verlauf
 
 tasks-create = { $title } angelegt
+tasks-create-many = Aufgaben angelegt
 tasks-move-under = { $item } verschoben
 tasks-assign = { $item } zugewiesen
 tasks-place = { $item } auf dem Board verschoben
@@ -143,6 +144,7 @@ tasks-issues-issues-noun = { $count ->
    *[other] Aufgaben
 }
 tasks-issues-create = Neue Aufgabe
+tasks-issues-create-many = Neue Aufgaben
 tasks-issues-rename = Aufgabe umbenennen
 tasks-issues-move-under = Aufgabe verschieben
 tasks-issues-assign = Aufgabe zuweisen

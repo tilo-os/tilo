@@ -160,6 +160,49 @@ fn a_project_built_one_issue_a_call_takes_a_call_for_each_issue_move_and_comment
     assert_eq!(caller.writes, 41);
 }
 
+/// The same project with its issues made as one list: the project, its
+/// issues with their sub-issues in one call, then a call for each move and
+/// each comment.
+#[test]
+fn the_same_project_with_its_issues_made_as_one_list_takes_a_call_for_them_all() {
+    let mut caller = Caller::open();
+    caller.tracker(
+        "create-area",
+        json!({ "name": "Launch", "kind": "project" }),
+    );
+    let mut issues = Vec::new();
+    for top in 0..TOP {
+        issues.push(json!({
+            "key": format!("piece-{top}"),
+            "title": format!("Piece {top}"),
+            "project": "Launch",
+            "due_ms": due(top),
+        }));
+        for under in 0..UNDER_EACH {
+            issues.push(json!({
+                "title": format!("Piece {top}, step {under}"),
+                "project": "Launch",
+                "under": format!("piece-{top}"),
+            }));
+        }
+    }
+    let made = caller.write(&chain(), "create-many", json!({ "issues": issues }));
+    assert_eq!(made.len(), ISSUES, "the call answers every issue it made");
+    for issue in made.iter().take(MOVED) {
+        caller.write(issue, "place", json!({ "status": "in-progress" }));
+    }
+    for (at, issue) in made.iter().rev().take(COMMENTED).enumerate() {
+        caller.write(issue, "comment", json!({ "text": format!("Finding {at}") }));
+    }
+    assert_the_project_stands(&caller);
+    assert_eq!(
+        caller.writes,
+        2 + MOVED + COMMENTED,
+        "the project, its issues, then one call for each move and each comment"
+    );
+    assert_eq!(caller.writes, 22);
+}
+
 /// Reading back where the project stands: the tracker's listing names each
 /// issue and says nothing else of it, so its status, its parent, when it is
 /// wanted and who has it take a read of each issue.
