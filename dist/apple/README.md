@@ -344,8 +344,23 @@ sends. Attachments and dictation stand under the field, and dictation is the she
 until Save hands it to `AssistantSource.keep`, and the field is emptied before the call. It is
 never part of a message, a draft, a notification or a log, and a `Secret` prints nothing of
 itself. The Mac's window is not one the system restores, so nothing of it is written down for
-its next start; on an iPhone the field is covered while the app is not in front, which is
-when the system keeps a picture of the window.
+its next start; on an iPhone the field is covered from the moment the app leaves the front,
+which is when the system keeps a picture of the window.
+
+**The way in.** Before a device is paired the window offers to scan a code or paste a link.
+While a device where the person is signed in asks about a code, the window shows that code
+large (`Session.confirming`), so the two are compared before anyone approves.
+
+**Read out.** The Mac's window is read in three named parts in the order a person reads it:
+the sidebar, the conversation with its field, the Tasks panel. Every control is named by
+what it does, the drawing's dots between facts are pauses and not words, the person's own
+words are read as theirs, a question that waits says that it waits, and the protected field
+is one. On an iPhone the same views say the same.
+
+**At the largest text sizes** on an iPhone the signs grow with the words, a row too narrow
+for two things side by side stacks them, names are read whole on as many lines as they
+take, the way in scrolls, and the message field keeps its height while the conversation
+gives way.
 
 **A task's replies.** A task's line counts the replies the conversation does not show.
 Pressed, they open under the line (`AssistantSource.replies(of:in:)`), and the same press
@@ -385,7 +400,9 @@ dark: the Mac's by this Mac, in a window that is never put on a screen, and the 
 simulator that shows no window. The Mac's picture tool is signed before it is started
 (`TILO_APPLE_SIGNING_IDENTITY`): nothing that nobody signed is started on a Mac that someone
 works on. The script's head names the simulator, the kind of iPhone and the text size it is
-set to. Asked for `told`, it also hands the system the drawing's
+set to, and its other ways: `said` writes down what every screen of the iPhone says of itself
+to someone who cannot see it, `secret` types into the protected field and looks at the window
+as the app leaves the front, `typing` takes the whole screen with the keyboard up. Asked for `told`, it also hands the system the drawing's
 notifications and live activities there, and writes down what the system then holds.
 
 ## Limits
@@ -542,7 +559,14 @@ no log line, not the pasteboard, nothing the app keeps). Not checked by it, beca
 window on a screen shows it: the pointer's own way into the views (hover, how a press looks,
 a drag), the two pop-up menus, the search popover, the file picker and dictation (each puts a
 window of the system's on the screen), whether the conversation keeps its end in view while
-the field under it grows, and the app's first start on a screen.
+the field under it grows, and the app's first start on a screen. What the Mac's window says
+of itself is read by the same tests (`SaidTests`), part by part.
+
+The iPhone's screens are drawn in a simulator that shows no window, at the default and at the
+largest text size, on a large and on the smallest phone, and read out there (`said`). Not
+shown by a simulator: a notification on the lock screen with its buttons, a live activity on
+the lock screen and in the island, and the picture the system itself keeps of the app as it
+leaves the front. Those take a phone in a hand.
 
 `TiloLive` is checked by its own tests, which run the engine against a page that speaks as
 Tilo's does: where the page stands, a page that stopped or cannot draw, a change, reads,

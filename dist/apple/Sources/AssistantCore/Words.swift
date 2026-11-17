@@ -10,7 +10,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     // The sidebar.
     case assistant, mainChat = "main-chat", subAgents = "sub-agents", newSubAgent = "new-sub-agent"
     case search, searchField = "search-field", nothingFound = "nothing-found"
-    case noSubAgents = "no-sub-agents", showSidebar = "show-sidebar", hideSidebar = "hide-sidebar"
+    case noSubAgents = "no-sub-agents", showSidebar = "show-sidebar", hideSidebar = "hide-sidebar", sidebar
     case working, needsYou = "needs-you", done, doneToday = "done-today", doneYesterday = "done-yesterday"
     case doneOn = "done-on", failed, stopped
     // The conversation.
@@ -18,7 +18,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case lineScheduled = "line-scheduled", lineActedAlone = "line-acted-alone"
     case replyOne = "reply-one", replyMany = "reply-many", important
     case showReplyOne = "show-reply-one", showReplyMany = "show-reply-many", hideReplies = "hide-replies"
-    case noReplies = "no-replies"
+    case noReplies = "no-replies", conversation, you, waitsForAnswer = "waits-for-answer"
     case readyOne = "ready-one", readyMany = "ready-many", seeAllTasks = "see-all-tasks"
     case youChose = "you-chose", answering, earlier
     case nothingYet = "nothing-yet", nothingYetBody = "nothing-yet-body"
@@ -43,7 +43,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case addTask = "add-task", addTaskField = "add-task-field", add, close
     case nothingActive = "nothing-active", nothingUpNext = "nothing-up-next"
     case nothingScheduled = "nothing-scheduled", nothingResolved = "nothing-resolved"
-    case isOn = "is-on", showTasks = "show-tasks", hideTasks = "hide-tasks"
+    case isOn = "is-on", showTasks = "show-tasks", hideTasks = "hide-tasks", changeByTelling = "change-by-telling"
     // The assistant view.
     case assistantView = "assistant-view", assistantOn = "assistant-on", assistantPaused = "assistant-paused"
     case pause, resume, model, modelNote = "model-note", noModel = "no-model", noModelNote = "no-model-note", change
@@ -56,6 +56,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     // The way in.
     case wayInTitle = "way-in-title", wayInLead = "way-in-lead", scanCode = "scan-code", pasteLink = "paste-link"
     case wayInHelp = "way-in-help", wayInHelpOne = "way-in-help-one", pairing, noLink = "no-link", codeNoLink = "code-no-link"
+    case compareCode = "compare-code"
     case unreachable, cameraNotAllowed = "camera-not-allowed", tryAgain = "try-again", notReachable = "not-reachable"
     // The menu bar and the menus.
     case openApp = "open-app", waitsOne = "waits-one", waitsMany = "waits-many", waitsNone = "waits-none"
@@ -78,6 +79,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .noSubAgents: "None yet"
         case .showSidebar: "Show sidebar"
         case .hideSidebar: "Hide sidebar"
+        case .sidebar: "Sidebar"
         case .working: "working"
         case .needsYou: "needs you"
         case .done: "done"
@@ -97,6 +99,9 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .showReplyMany: "Show {count} replies"
         case .hideReplies: "Hide replies"
         case .noReplies: "Nothing more to show"
+        case .conversation: "Conversation"
+        case .you: "You"
+        case .waitsForAnswer: "Waiting for your answer"
         case .readyOne: "1 ready for review"
         case .readyMany: "{count} ready for review"
         case .seeAllTasks: "See all tasks"
@@ -166,6 +171,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .isOn: "On"
         case .showTasks: "Show tasks"
         case .hideTasks: "Hide tasks"
+        case .changeByTelling: "Opens the chat, where you change it by telling your assistant"
         case .assistantView: "Assistant view"
         case .assistantOn: "Assistant is on"
         case .assistantPaused: "Assistant is paused"
@@ -206,6 +212,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .wayInHelp: "Both come from “Pair a new device” on a device where you are signed in."
         case .wayInHelpOne: "It comes from “Pair a new device” on a device where you are signed in."
         case .pairing: "Waiting for Tilo"
+        case .compareCode: "A device where you are signed in shows a code and asks about it. Approve there only if it shows this one."
         case .noLink: "The clipboard holds no link."
         case .codeNoLink: "This code holds no link."
         case .unreachable: "Tilo cannot be reached. Check the connection, then try again."

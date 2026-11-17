@@ -11,6 +11,7 @@
 "no-sub-agents" = "None yet";
 "show-sidebar" = "Show sidebar";
 "hide-sidebar" = "Hide sidebar";
+"sidebar" = "Sidebar";
 "working" = "working";
 "needs-you" = "needs you";
 "done" = "done";
@@ -30,6 +31,9 @@
 "show-reply-many" = "Show {count} replies";
 "hide-replies" = "Hide replies";
 "no-replies" = "Nothing more to show";
+"conversation" = "Conversation";
+"you" = "You";
+"waits-for-answer" = "Waiting for your answer";
 "ready-one" = "1 ready for review";
 "ready-many" = "{count} ready for review";
 "see-all-tasks" = "See all tasks";
@@ -99,6 +103,7 @@
 "is-on" = "On";
 "show-tasks" = "Show tasks";
 "hide-tasks" = "Hide tasks";
+"change-by-telling" = "Opens the chat, where you change it by telling your assistant";
 "assistant-view" = "Assistant view";
 "assistant-on" = "Assistant is on";
 "assistant-paused" = "Assistant is paused";
@@ -141,6 +146,7 @@
 "pairing" = "Waiting for Tilo";
 "no-link" = "The clipboard holds no link.";
 "code-no-link" = "This code holds no link.";
+"compare-code" = "A device where you are signed in shows a code and asks about it. Approve there only if it shows this one.";
 "unreachable" = "Tilo cannot be reached. Check the connection, then try again.";
 "camera-not-allowed" = "Allow the camera for {app} in the system's settings to scan a code.";
 "try-again" = "Try again";

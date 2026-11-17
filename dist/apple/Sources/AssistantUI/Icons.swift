@@ -55,13 +55,20 @@ public enum Sign: String, CaseIterable, Sendable {
 public struct Glyph: View {
     private let sign: Sign
     private let side: CGFloat
+    private let grows: Bool
+    /// How much larger the person's text is than the drawing's.
+    @ScaledMetric(relativeTo: .body) private var grown: CGFloat = 1
 
-    public init(_ sign: Sign, side: CGFloat = 16) {
+    /// `grows`: whether the sign grows with the person's text size, up to twice. In a bar of the
+    /// system's it does not: the bar keeps its own height.
+    public init(_ sign: Sign, side: CGFloat = 16, grows: Bool = true) {
         self.sign = sign
         self.side = side
+        self.grows = grows
     }
 
     public var body: some View {
+        let side = side * (grows ? min(max(grown, 1), 2) : 1)
         let scale = side / 16
         sign.path(side: side)
             .stroke(style: StrokeStyle(lineWidth: 1.5 * scale, lineCap: .round, lineJoin: .round,

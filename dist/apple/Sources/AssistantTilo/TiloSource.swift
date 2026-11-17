@@ -168,7 +168,8 @@ public final class TiloSource: AssistantSource {
     private var sessionNow: Session {
         switch engine.state {
         case .open: person.map(Session.signedIn) ?? .pairing
-        case .pairing: .pairing
+        // The page shows a code at its join step: the window shows it too, to compare.
+        case .pairing(let code): code.isEmpty ? .pairing : .confirming(code: code)
         case .arriving: person.map(Session.signedIn) ?? .pairing
         case .away, .refused, .failed: person.map(Session.signedIn) ?? .signedOut
         }

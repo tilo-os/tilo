@@ -10,20 +10,38 @@ public struct WayIn: View {
     public init() {}
 
     public var body: some View {
-        VStack(spacing: 18) {
+        // In the middle of the window while it fits, and scrolled where the person's text size makes it taller.
+        GeometryReader { space in
+          ScrollView {
+            VStack(spacing: 18) {
             Mark(side: 56)
             VStack(spacing: 8) {
                 Text(AssistantWords.wayInTitle.said).font(.tilo(26, .semibold, relativeTo: .title))
                     .foregroundStyle(Token.ink).multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
-                Text(AssistantWords.wayInLead.said).font(.tilo(15))
-                    .foregroundStyle(Token.ink2).multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
+                // While a code is compared, the code is what the window is about.
+                if !comparing {
+                    Text(AssistantWords.wayInLead.said).font(.tilo(15))
+                        .foregroundStyle(Token.ink2).multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
+                }
             }
             if model.session == .pairing {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
                     Text(AssistantWords.pairing.said).font(.body14).foregroundStyle(Token.ink2)
+                }
+                .padding(.top, 6)
+            } else if case .confirming(let code) = model.session {
+                // The code the other device asks about, large enough to compare at a glance.
+                VStack(spacing: 10) {
+                    Text(code).font(.tiloMono(34)).kerning(3).foregroundStyle(Token.ink)
+                        .lineLimit(1).minimumScaleFactor(0.4)
+                        .padding(.horizontal, 22).padding(.vertical, 12)
+                        .background(Token.raised, in: RoundedRectangle(cornerRadius: Measure.cardRadius))
+                        .accessibilityLabel(code.filter { !$0.isWhitespace }.map(String.init).joined(separator: " "))
+                    Text(AssistantWords.compareCode.said).font(.body14).foregroundStyle(Token.ink2)
+                        .multilineTextAlignment(.center).frame(maxWidth: 420)
                 }
                 .padding(.top, 6)
             } else {
@@ -42,11 +60,16 @@ public struct WayIn: View {
                 Text(problem).font(.small125).foregroundStyle(Token.you).multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
             }
-            Text(help.said).font(.small125).foregroundStyle(Token.ink3)
-                .multilineTextAlignment(.center).frame(maxWidth: 420)
+            if !comparing {
+                Text(help.said).font(.small125).foregroundStyle(Token.ink3)
+                    .multilineTextAlignment(.center).frame(maxWidth: 420)
+            }
+            }
+            .padding(32)
+            .frame(maxWidth: .infinity, minHeight: space.size.height)
+          }
+          .scrollBounceBehavior(.basedOnSize)
         }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Token.content)
         #if os(iOS)
         .sheet(isPresented: $scans) {
@@ -57,6 +80,10 @@ public struct WayIn: View {
             .ignoresSafeArea()
         }
         #endif
+    }
+
+    private var comparing: Bool {
+        if case .confirming = model.session { true } else { false }
     }
 
     /// A phone scans or pastes; a Mac pastes.

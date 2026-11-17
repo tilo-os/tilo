@@ -9,13 +9,18 @@ struct CardBox<Content: View>: View {
     let name: String
     let note: String
     @ViewBuilder var content: Content
+    @Environment(\.dynamicTypeSize) private var textSize
 
     var body: some View {
+        // At the largest text sizes the note stands under the name, not squeezed beside it.
+        let large = textSize.isAccessibilitySize
+        let head = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
+            head {
                 Text(name).font(.tilo(14, .semibold)).foregroundStyle(Token.ink)
-                Spacer(minLength: 0)
-                Text(note).font(.small125).foregroundStyle(Token.ink2)
+                if !large { Spacer(minLength: 0) }
+                Text(note).font(.small125).foregroundStyle(Token.ink2).accessibilityLabel(note.spoken)
             }
             content
         }
@@ -69,6 +74,7 @@ struct SecretCard: View {
                         #endif
                         .onSubmit(save)
                         .accessibilityLabel(AssistantWords.secretField.said(["name": request.name]))
+                        .accessibilityHidden(covered)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -86,7 +92,6 @@ struct SecretCard: View {
                         .accessibilityHidden(true)
                     }
                 }
-                .accessibilityHidden(covered)
                 Flow(spacing: 8, lineSpacing: 8) {
                     Button(AssistantWords.save.said, action: save)
                         .buttonStyle(BoxButtonStyle(isMain: true))
@@ -187,6 +192,8 @@ struct EventCardView: View {
                             .buttonStyle(BoxButtonStyle(isMain: choice.isMain))
                     }
                 }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(AssistantWords.waitsForAnswer.said)
             }
         }
     }

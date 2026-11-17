@@ -7,6 +7,7 @@ public struct SupervisionView: View {
     @Environment(AssistantModel.self) private var model
     @Environment(\.wording) private var wording
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.dynamicTypeSize) private var textSize
     @State private var detail: Detail?
 
     enum Detail: String, Identifiable {
@@ -21,11 +22,16 @@ public struct SupervisionView: View {
         let facts = model.supervision
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 6) {
-                    Circle().fill(facts.isOn ? Token.on : Token.ink3).frame(width: 8, height: 8)
-                    Text((facts.isOn ? AssistantWords.assistantOn : AssistantWords.assistantPaused).said)
-                        .font(.title15).foregroundStyle(Token.ink)
-                    Spacer(minLength: 0)
+                // At the largest text sizes Pause stands under the line it belongs to, not squeezed beside it.
+                let large = textSize.isAccessibilitySize
+                let head = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout(spacing: 6))
+                head {
+                    HStack(spacing: 6) {
+                        Circle().fill(facts.isOn ? Token.on : Token.ink3).frame(width: 8, height: 8)
+                        Text((facts.isOn ? AssistantWords.assistantOn : AssistantWords.assistantPaused).said)
+                            .font(.title15).foregroundStyle(Token.ink)
+                    }
+                    if !large { Spacer(minLength: 0) }
                     Button((facts.isOn ? AssistantWords.pause : AssistantWords.resume).said) { model.setAssistantOn(!facts.isOn) }
                         .buttonStyle(LinkStyle()).font(.tilo(13, .medium, relativeTo: .callout))
                 }
@@ -82,7 +88,10 @@ public struct SupervisionView: View {
     /// Messages, tokens and money of the day: `.use`.
     private func usage(_ usage: Supervision.Usage) -> some View {
         let spent = wording.spent(usage)
-        return HStack(alignment: .top, spacing: 10) {
+        // At the largest text sizes each figure has a line of its own: three beside each other break in mid-word.
+        let row = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 10))
+        return row {
             figure(String(usage.messagesToday), AssistantWords.messagesToday.said)
             figure(wording.tokens(usage.tokensToday), AssistantWords.tokensToday.said)
             figure(spent.first, spent.second ?? "")
@@ -135,8 +144,10 @@ private struct FactLine<Action: View>: View {
 
     private var said: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(line.first).font(.body14).foregroundStyle(Token.ink)
-            if let second = line.second { Text(second).font(.small125).foregroundStyle(Token.ink2) }
+            Text(line.first).font(.body14).foregroundStyle(Token.ink).accessibilityLabel(line.first.spoken)
+            if let second = line.second {
+                Text(second).font(.small125).foregroundStyle(Token.ink2).accessibilityLabel(second.spoken)
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
     }

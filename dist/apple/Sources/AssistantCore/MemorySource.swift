@@ -18,6 +18,8 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         public var models: [ModelChoice] = []
         /// Who a pairing link signs in. Nil: Tilo cannot be reached.
         public var pairsAs: Person?
+        /// The code a pairing shows for the person to compare, when it shows one.
+        public var pairingCode: String?
 
         public init() {}
     }
@@ -33,6 +35,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private let modelChoices: [ModelChoice]
     private let pairsAs: Person?
     private let taskReplies: [AssistantTask.ID: [Item]]
+    private let pairingCode: String?
     private var feeds: [Chat: Feed]
     private var vault: [SecretRequest.ID: Secret] = [:]
     private var files: [Attachment.ID: URL] = [:]
@@ -48,6 +51,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         modelChoices = content.models
         pairsAs = content.pairsAs
         taskReplies = content.replies
+        pairingCode = content.pairingCode
         var feeds: [Chat: Feed] = [.main: Feed(content.main)]
         for agent in content.subAgents {
             feeds[.subAgent(agent.id)] = Feed(content.subAgentChats[agent.id] ?? [])
@@ -99,6 +103,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     public func pair(with link: PairingLink) async throws {
         guard let person = pairsAs, reachNow.current == .reachable else { throw SourceProblem.unreachable }
         sessionNow.set(.pairing)
+        if let pairingCode { sessionNow.set(.confirming(code: pairingCode)) }
         sessionNow.set(.signedIn(person))
     }
 

@@ -30,12 +30,12 @@ public struct TasksPanel: View {
                     Glyph(.plus).contentShape(Rectangle().inset(by: -5))
                 }
                 .accessibilityLabel(AssistantWords.addTask.said)
-                .help(AssistantWords.addTask.said)
+                .tip(AssistantWords.addTask.said)
                 Button(action: close) {
                     Glyph(.x).contentShape(Rectangle().inset(by: -5))
                 }
                 .accessibilityLabel(AssistantWords.close.said)
-                .help(AssistantWords.close.said)
+                .tip(AssistantWords.close.said)
             }
             .buttonStyle(.plain)
             .foregroundStyle(Token.ink3)
@@ -85,6 +85,9 @@ public struct TasksPanel: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        // One part of the window, read as one after the conversation.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(AssistantWords.tasks.said)
     }
 
     private func name(_ tab: AssistantModel.PanelTab) -> String {
@@ -162,10 +165,13 @@ private struct Empty: View {
 /// The small square a row begins with: `.bx`.
 private struct SignBox: View {
     let sign: Sign
+    /// How much larger the person's text is than the drawing's.
+    @ScaledMetric(relativeTo: .body) private var grown: CGFloat = 1
 
     var body: some View {
+        let side = 26 * min(max(grown, 1), 2)
         Glyph(sign).foregroundStyle(Token.ink2)
-            .frame(width: 26, height: 26)
+            .frame(width: side, height: side)
             .background(Token.raised, in: RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -175,6 +181,7 @@ private struct TaskRow: View {
     let task: AssistantTask
     let sign: Sign
     @Environment(AssistantModel.self) private var model
+    @Environment(\.dynamicTypeSize) private var textSize
 
     var body: some View {
         Button {
@@ -183,7 +190,8 @@ private struct TaskRow: View {
             HStack(alignment: .top, spacing: 10) {
                 SignBox(sign: sign)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(task.title).font(.body14).foregroundStyle(Token.ink).lineLimit(1)
+                    Text(task.title).font(.body14).foregroundStyle(Token.ink).lineLimit(textSize.isAccessibilitySize ? 4 : 1)
+                        .multilineTextAlignment(.leading)
                         .frame(minHeight: 26, alignment: .leading)
                     if task.isImportant { ImportantMark() }
                     if let note = task.note { Text(note).font(.small12).foregroundStyle(Token.ink3) }
@@ -229,6 +237,7 @@ private struct AutomationRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityHint(AssistantWords.changeByTelling.said)
             Toggle(automation.title, isOn: Binding(get: { automation.isOn }, set: { model.setOn($0, for: automation.id) }))
                 .toggleStyle(SwitchLook())
                 .labelsHidden()

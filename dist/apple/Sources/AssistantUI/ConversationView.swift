@@ -7,12 +7,16 @@ public struct ConversationView: View {
     private let chat: Chat
     /// For a picture of the secret's field filled; see `SecretCard.pictured`.
     private let picturedSecret: String
+    /// A line that stands at the conversation's beginning and scrolls with it, where the window has
+    /// no room to keep it in sight above.
+    private let head: String?
     @Environment(AssistantModel.self) private var model
     @Environment(\.wording) private var wording
 
-    public init(chat: Chat, picturedSecret: String = "") {
+    public init(chat: Chat, picturedSecret: String = "", head: String? = nil) {
         self.chat = chat
         self.picturedSecret = picturedSecret
+        self.head = head
     }
 
     public var body: some View {
@@ -24,6 +28,9 @@ public struct ConversationView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                       VStack(alignment: .leading, spacing: 8) {
+                        if let head {
+                            Text(head).font(.small12).foregroundStyle(Token.ink3).accessibilityLabel(head.spoken)
+                        }
                         if conversation.isLoaded, rows.isEmpty { empty }
                         if let agent = liveAgent, let thing = agent.live { LiveThingPlace(thing: thing) }
                         ForEach(rows) { row in
@@ -130,6 +137,8 @@ private struct PieceView: View {
             Bubble { MarkdownText(text: words) }
         case .question(let asked):
             Bubble { MarkdownText(text: asked.text) }
+                // Read out as what it is: a question, and that it waits.
+                .modifier(WaitsForAnswer(waits: asked.waits))
             QuickAnswers(choices: asked.choices, chosen: asked.answer) { model.answer(asked.id, with: $0.id) }
         case .secret(let asked):
             SecretCard(request: asked, pictured: picturedSecret)
@@ -139,6 +148,33 @@ private struct PieceView: View {
             EventCardView(card: card)
         case .brief(let brief):
             BriefView(brief: brief, isImportant: item.isImportant)
+        }
+    }
+}
+
+/// Reads a question out as one that waits, while it does.
+private struct WaitsForAnswer: ViewModifier {
+    let waits: Bool
+
+    func body(content: Content) -> some View {
+        if waits {
+            content.accessibilityElement(children: .combine).accessibilityValue(AssistantWords.waitsForAnswer.said)
+        } else {
+            content
+        }
+    }
+}
+
+/// Reads a bubble out as the person's own words, when it is.
+private struct SaidByPerson: ViewModifier {
+    let words: String?
+
+    func body(content: Content) -> some View {
+        if let words {
+            content.accessibilityElement(children: .ignore).accessibilityLabel("\(AssistantWords.you.said): \(words)")
+                .accessibilityAddTraits(.isStaticText)
+        } else {
+            content
         }
     }
 }
@@ -162,6 +198,9 @@ private struct MessageView: View {
             #if os(macOS)
             .textSelection(.enabled)
             #endif
+            // The person's own words are read out as theirs; everything else in a conversation is
+            // whoever it is with, or says who it is from in the line above it.
+            .modifier(SaidByPerson(words: message.author == .person ? Markdown.plain(message.text) : nil))
         }
         if !message.attachments.isEmpty {
             Flow(spacing: 8, lineSpacing: 6) {

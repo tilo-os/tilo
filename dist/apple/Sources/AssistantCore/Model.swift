@@ -37,6 +37,9 @@ public enum Session: Equatable, Sendable {
     case signedOut
     /// A link was taken, and a device where the person is signed in has yet to say yes.
     case pairing
+    /// A device where the person is signed in asks whether it shows this code. The window shows
+    /// it, so the person compares the two before they approve there.
+    case confirming(code: String)
     case signedIn(Person)
 }
 

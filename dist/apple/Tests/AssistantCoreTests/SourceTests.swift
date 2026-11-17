@@ -56,6 +56,28 @@ final class SourceTests: XCTestCase {
         XCTAssertNil(facts?.model, "there is no model before the person links a provider")
     }
 
+    func testAPairingShowsItsCodeToCompareBeforeTheDeviceIsIn() async throws {
+        var content = MemorySource.Content()
+        content.pairsAs = Drawing.person
+        content.pairingCode = "481 207"
+        let source = MemorySource(content)
+        let link = try XCTUnwrap(PairingLink(in: "https://tilo.example/pair#abc"))
+        async let seen = take(4, of: source.session())
+        try await Task.sleep(for: .milliseconds(50))
+        try await source.pair(with: link)
+        let standings = await seen
+        XCTAssertEqual(standings, [.signedOut, .pairing, .confirming(code: "481 207"), .signedIn(Drawing.person)])
+        // A pairing that shows no code goes on as before.
+        var plain = MemorySource.Content()
+        plain.pairsAs = Drawing.person
+        let quiet = MemorySource(plain)
+        async let before = take(3, of: quiet.session())
+        try await Task.sleep(for: .milliseconds(50))
+        try await quiet.pair(with: link)
+        let old = await before
+        XCTAssertEqual(old, [.signedOut, .pairing, .signedIn(Drawing.person)])
+    }
+
     func testATasksRepliesAreHandedOverWhenAskedFor() async throws {
         let source = Drawing.source()
         let replies = try await source.replies(of: "maya", in: .main)

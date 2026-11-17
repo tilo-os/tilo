@@ -76,6 +76,10 @@ enum Screens {
             $0.showsPanelInMain = true
         }
         await add("phone-sub-agent", Drawing.content(), path: [.chat(.subAgent("usage-drop"))]) { $0.open(.subAgent("usage-drop")) }
+        await add("phone-replies", Drawing.content()) { $0.toggleReplies(of: "maya", under: "maya", in: .main) }
+        var comparing = MemorySource.Content()
+        comparing.session = .confirming(code: "481 207")
+        await add("phone-compare-code", comparing)
         await add("phone-assistant-view", Drawing.content(), path: [.assistantView]) { $0.place = .assistantView }
         for (name, items, _) in pieces {
             await add("phone-\(name)", piece(items))
@@ -98,6 +102,8 @@ enum Screens {
         screens.append(Screen(name: "main-chat", size: window, view: rooted(await model(Drawing.content()), scheme) { MacWindow() }))
         let agent = await model(Drawing.content()) { $0.open(.subAgent("usage-drop")) }
         screens.append(Screen(name: "sub-agent", size: CGSize(width: 1280, height: 700), view: rooted(agent, scheme) { MacWindow() }))
+        let replies = await model(Drawing.content()) { $0.toggleReplies(of: "maya", under: "maya", in: .main) }
+        screens.append(Screen(name: "replies", size: window, view: rooted(replies, scheme) { MacWindow() }))
         let scheduled = await model(Drawing.content()) { $0.panelTab = .scheduled }
         screens.append(Screen(name: "scheduled-events", size: window, view: rooted(scheduled, scheme) { MacWindow() }))
         // The panel alone at the width the drawing gives it on its own board.

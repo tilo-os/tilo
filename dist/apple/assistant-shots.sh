@@ -8,6 +8,11 @@
 #   dist/apple/assistant-shots.sh OUT told     what the system is handed outside the window, in the same
 #                                              simulator: the notifications with their buttons and the live
 #                                              activities, as OUT/phone/told.txt and two pictures of its screen
+#   dist/apple/assistant-shots.sh OUT said     what every screen of the iPhone says of itself to someone who
+#                                              cannot see it, in the order it is read: OUT/phone/said-*.txt
+#   dist/apple/assistant-shots.sh OUT secret   the protected field with something typed into it, in front and as
+#                                              the app leaves the front: OUT/phone/secret.txt and its pictures
+#   dist/apple/assistant-shots.sh OUT typing   the main chat with the keyboard up, as the whole screen shows it
 #
 # The simulator is one of its own, made when it is missing and shut down again after.
 #
@@ -37,6 +42,15 @@ what="${2:-all}"
 simulator_name="${TILO_SHOTS_SIMULATOR:-assistant-shots}"
 jobs=()
 [ -z "${TILO_BUILD_JOBS:-}" ] || jobs=(-j "$TILO_BUILD_JOBS")
+
+# However a run ends, its simulator does not stay up after it.
+closing() {
+  [ "$what" != mac ] || return 0
+  local up
+  up="$(xcrun simctl list devices 2>/dev/null | sed -n "s/^ *$simulator_name (\([0-9A-F-]*\)) (Booted).*/\1/p" | head -1)"
+  [ -z "$up" ] || xcrun simctl shutdown "$up" >/dev/null 2>&1 || true
+}
+trap closing EXIT
 
 # Tilo Sans, the face the window is drawn in. The repository keeps no font: its font tool
 # prepares the catalogue once, outside the sources.
@@ -165,13 +179,76 @@ told() {
   xcrun simctl terminate "$device" com.apple.Preferences >/dev/null 2>&1 || true
 }
 
+# The picture tool put into the simulator and started in one of its ways, left running.
+started() { # the way
+  local app device
+  app="$(bundle)"
+  device="$(simulator)"
+  mkdir -p "$out/phone"
+  xcrun simctl install "$device" "$app"
+  xcrun simctl launch --terminate-running-process "$device" "$id" "$1" >/dev/null
+  printf '%s\n' "$device"
+}
+
+# Wait for a line in a file the tool keeps in its documents, and name the file.
+waited() { # device, file, line
+  local kept seconds=0
+  kept="$(xcrun simctl get_app_container "$1" "$id" data)/Documents/$2"
+  until grep -q "$3" "$kept" 2>/dev/null; do
+    seconds=$((seconds + 1))
+    [ "$seconds" -lt 60 ] || return 1
+    sleep 1
+  done
+  printf '%s\n' "$kept"
+}
+
+said() {
+  local app device container
+  app="$(bundle)"
+  device="$(simulator)"
+  mkdir -p "$out/phone"
+  xcrun simctl install "$device" "$app"
+  xcrun simctl launch --console --terminate-running-process "$device" "$id" --said > "$out/phone/said.txt" 2>&1 || true
+  grep -q '^SAID done' "$out/phone/said.txt" || die "the tool did not finish reading: see $out/phone/said.txt"
+  container="$(xcrun simctl get_app_container "$device" "$id" data)"
+  cp "$container"/Documents/said-*.txt "$out/phone/"
+}
+
+secret() {
+  local device kept container
+  device="$(started --secret)"
+  kept="$(waited "$device" secret.txt '^SECRET typed')" || die "nothing was typed into the protected field"
+  xcrun simctl io "$device" screenshot "$out/phone/secret-screen-in-front.png" >/dev/null 2>&1
+  # Another app in front: the system keeps a picture of the window the tool leaves behind.
+  xcrun simctl launch "$device" com.apple.Preferences >/dev/null 2>&1 || true
+  waited "$device" secret.txt '^SECRET done' >/dev/null || say "the tool did not say what it showed behind another app"
+  xcrun simctl io "$device" screenshot "$out/phone/secret-screen-behind.png" >/dev/null 2>&1
+  container="$(xcrun simctl get_app_container "$device" "$id" data)"
+  cp "$kept" "$out/phone/secret.txt"
+  cp "$container"/Documents/secret-*.png "$out/phone/" 2>/dev/null || true
+  cat "$out/phone/secret.txt"
+  xcrun simctl terminate "$device" "$id" >/dev/null 2>&1 || true
+  xcrun simctl terminate "$device" com.apple.Preferences >/dev/null 2>&1 || true
+}
+
+typing() {
+  local device
+  device="$(started --typing)"
+  sleep 7
+  xcrun simctl io "$device" screenshot "$out/phone/typing.png" >/dev/null 2>&1
+  xcrun simctl terminate "$device" "$id" >/dev/null 2>&1 || true
+}
+
 faces
 case "$what" in
   all) mac; phone; told ;;
   mac) mac ;;
   phone) phone ;;
   told) told ;;
-  *) die "mac, phone or told" ;;
+  said) said ;;
+  secret) secret ;;
+  typing) typing ;;
+  *) die "mac, phone, told, said, secret or typing" ;;
 esac
 if [ "$what" != mac ]; then
   xcrun simctl shutdown "$(simulator)" >/dev/null 2>&1 || true

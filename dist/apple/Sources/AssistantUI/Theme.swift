@@ -159,7 +159,12 @@ extension Font {
 
     /// The drawing's `--mono`.
     public static func tiloMono(_ size: CGFloat) -> Font {
-        .system(size: size, design: .monospaced)
+        #if os(iOS)
+        // The fixed face grows with the person's text size as the words around it do.
+        return .system(size: UIFontMetrics(forTextStyle: .body).scaledValue(for: size), design: .monospaced)
+        #else
+        return .system(size: size, design: .monospaced)
+        #endif
     }
 
     // The sizes the drawing uses, by what they are for.

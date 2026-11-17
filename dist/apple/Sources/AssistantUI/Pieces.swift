@@ -3,7 +3,15 @@ import SwiftUI
 
 // The small things a conversation is made of, each as the drawing draws it.
 
-/// Children one after the other, on as many lines as it takes: the drawing's wrapping rows.
+extension String {
+    /// A line as it is read out: the drawing's dots between facts are pauses, not words.
+    var spoken: String {
+        replacingOccurrences(of: " · ", with: ", ").replacingOccurrences(of: "· ", with: "")
+    }
+}
+
+/// Children one after the other, on as many lines as it takes: the drawing's wrapping rows. A
+/// child wider than a whole line gets the line and wraps inside it.
 struct Flow: Layout {
     var spacing: CGFloat = 8
     var lineSpacing: CGFloat = 8
@@ -19,19 +27,18 @@ struct Flow: Layout {
         var y = bounds.minY
         for line in lines(of: subviews, within: bounds.width) {
             var x = bounds.minX
-            for index in line.members {
-                let size = subviews[index].sizeThatFits(.unspecified)
-                let fitted = CGSize(width: min(size.width, bounds.width), height: size.height)
-                subviews[index].place(at: CGPoint(x: x, y: y + (line.height - fitted.height) / 2), anchor: .topLeading,
-                                      proposal: ProposedViewSize(fitted))
-                x += fitted.width + spacing
+            for member in line.members {
+                // Placed at the size it was measured at: what was given a line to wrap in wraps in it.
+                subviews[member.index].place(at: CGPoint(x: x, y: y + (line.height - member.size.height) / 2), anchor: .topLeading,
+                                             proposal: ProposedViewSize(member.size))
+                x += member.size.width + spacing
             }
             y += line.height + lineSpacing
         }
     }
 
     private struct Line {
-        var members: [Int] = []
+        var members: [(index: Int, size: CGSize)] = []
         var width: CGFloat = 0
         var height: CGFloat = 0
     }
@@ -41,17 +48,30 @@ struct Flow: Layout {
         var line = Line()
         for index in subviews.indices {
             let ideal = subviews[index].sizeThatFits(.unspecified)
-            let size = ideal.width > width ? subviews[index].sizeThatFits(ProposedViewSize(width: width, height: nil)) : ideal
+            var size = ideal.width > width ? subviews[index].sizeThatFits(ProposedViewSize(width: width, height: nil)) : ideal
+            size.width = min(size.width, width)
             if !line.members.isEmpty, line.width + spacing + size.width > width {
                 lines.append(line)
                 line = Line()
             }
             line.width += (line.members.isEmpty ? 0 : spacing) + size.width
             line.height = max(line.height, size.height)
-            line.members.append(index)
+            line.members.append((index, size))
         }
         if !line.members.isEmpty { lines.append(line) }
         return lines
+    }
+}
+
+extension View {
+    /// A tip for the pointer, on a Mac. A phone has no pointer, and would read the tip out after the name.
+    @ViewBuilder
+    func tip(_ words: String) -> some View {
+        #if os(macOS)
+        help(words)
+        #else
+        self
+        #endif
     }
 }
 
@@ -185,9 +205,13 @@ struct ImportantMark: View {
 
 /// The small green sign of something the assistant watches: `.eye`.
 struct EyeChip: View {
+    /// How much larger the person's text is than the drawing's: the sign grows with it, up to twice.
+    @ScaledMetric(relativeTo: .body) private var grown: CGFloat = 1
+
     var body: some View {
+        let side = 20 * min(max(grown, 1), 2)
         Glyph(.eye, side: 13).foregroundStyle(Token.on)
-            .frame(width: 20, height: 20)
+            .frame(width: side, height: side)
             .background(Token.onTint, in: RoundedRectangle(cornerRadius: 6))
     }
 }
@@ -207,7 +231,7 @@ struct TaskLineView: View {
         let said = wording.line(line.state)
         let replies = line.state.replies
         HStack(alignment: .top, spacing: 7) {
-            Glyph(.into).foregroundStyle(Token.ink3).frame(height: 20)
+            Glyph(.into).foregroundStyle(Token.ink3).frame(minHeight: 20)
             EyeChip()
             TitleRun(spacing: 7, lineSpacing: 2) {
                 Text(line.title).foregroundStyle(Token.ink)
@@ -403,6 +427,9 @@ struct QuickAnswers: View {
                 }
             }
             .padding(.top, 2)
+            // Read out as what it is: a question that waits, then its answers.
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(AssistantWords.waitsForAnswer.said)
         }
     }
 }
@@ -411,15 +438,20 @@ struct QuickAnswers: View {
 struct ReviewLine: View {
     let ready: Int
     @Environment(AssistantModel.self) private var model
+    @Environment(\.dynamicTypeSize) private var textSize
 
     var body: some View {
-        HStack(spacing: 12) {
+        // At the largest text sizes the way to all tasks stands under the count, not squeezed beside it.
+        let large = textSize.isAccessibilitySize
+        let row = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 12))
+        row {
             HStack(spacing: 8) {
                 Glyph(.check)
                 Text(AssistantWords.counted(ready, one: .readyOne, many: .readyMany))
             }
-            Spacer(minLength: 0)
+            if !large { Spacer(minLength: 0) }
             Button("\(AssistantWords.seeAllTasks.said) ›") { model.showTasks(.active) }.buttonStyle(LinkStyle())
+                .accessibilityLabel(AssistantWords.seeAllTasks.said)
         }
         .font(.body14)
         .foregroundStyle(Token.ink2)

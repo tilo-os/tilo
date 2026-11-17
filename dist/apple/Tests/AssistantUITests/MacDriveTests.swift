@@ -121,17 +121,17 @@ final class MacDriveTests: XCTestCase {
         XCTAssertTrue(drive.node(AssistantWords.mainChat.said, role: "AXButton")?.isSelected ?? false)
         XCTAssertTrue(drive.has(AssistantWords.tasks.said, role: "AXHeading"), "the Tasks panel stands beside the main chat")
 
-        drive.press("Usage drop: investigate, Coder · working", role: "AXButton")
+        drive.press("Usage drop: investigate, Coder, working", role: "AXButton")
         await drive.until("the sub-agent's window") { run.model.place == .chat(.subAgent("usage-drop")) }
         await drive.settle(300)
         let said = drive.tree()
-        XCTAssertTrue(said.contains { $0.isHeading && $0.label.hasPrefix("Usage drop: investigate, Coder · Claude Code on the cloud machine")
+        XCTAssertTrue(said.contains { $0.isHeading && $0.label.hasPrefix("Usage drop: investigate, Coder, Claude Code on the cloud machine, ")
             && $0.label.hasSuffix(AssistantWords.cannotReadMain.said) }, "its head says who it is, where it runs and that it cannot read the main chat")
         XCTAssertTrue(said.contains { $0.role == "AXTextArea" && $0.label == AssistantWords.messageSubAgent.said })
         XCTAssertTrue(drive.shows(AssistantWords.jobFromMain.said))
         XCTAssertTrue(drive.shows("is it only Safari?"))
         XCTAssertFalse(drive.has(AssistantWords.tasks.said, role: "AXHeading"), "a sub-agent's window is drawn without the panel")
-        XCTAssertTrue(drive.node("Usage drop: investigate, Coder · working", role: "AXButton")?.isSelected ?? false)
+        XCTAssertTrue(drive.node("Usage drop: investigate, Coder, working", role: "AXButton")?.isSelected ?? false)
         XCTAssertFalse(drive.node(AssistantWords.mainChat.said, role: "AXButton")?.isSelected ?? true)
         drive.picture("mac-driven-sub-agent")
 
@@ -224,7 +224,7 @@ final class MacDriveTests: XCTestCase {
         // See all tasks leads to the panel's first part.
         drive.press(AssistantWords.resolved.said, role: "AXButton")
         await drive.until("another part of the panel") { run.model.panelTab == .resolved }
-        drive.press("\(AssistantWords.seeAllTasks.said) ›", role: "AXButton")
+        drive.press(AssistantWords.seeAllTasks.said, role: "AXButton")
         await drive.until("the panel's first part") { run.model.panelTab == .active }
     }
 
@@ -244,7 +244,7 @@ final class MacDriveTests: XCTestCase {
         let said = drive.tree()
         let line = try XCTUnwrap(said.firstIndex { $0.label == AssistantWords.hideReplies.said })
         let reply = try XCTUnwrap(said.firstIndex { $0.value.contains("The October figures") })
-        let piece = try XCTUnwrap(said.firstIndex { $0.value.contains("Maya, who invested in your seed") })
+        let piece = try XCTUnwrap(said.firstIndex { $0.name.contains("Maya, who invested in your seed") })
         XCTAssertLessThan(line, reply)
         XCTAssertLessThan(reply, piece)
         drive.picture("mac-driven-replies-open")
@@ -310,7 +310,7 @@ final class MacDriveTests: XCTestCase {
         let run = try await Started.app()
         defer { run.end() }
         let drive = run.drive
-        drive.press(AssistantWords.assistant.said, role: "AXButton")
+        drive.press(AssistantWords.assistantView.said, role: "AXButton")
         await drive.until("the assistant view") { run.model.place == .assistantView }
         await drive.until("its first line") { drive.shows(AssistantWords.assistantOn.said) }
         for words in ["Claude Opus 5.5", AssistantWords.messagesToday.said, Wording().tokens(1_800_000), AssistantWords.connections.said,
@@ -569,7 +569,7 @@ final class MacDriveTests: XCTestCase {
             try XCTUnwrap(node).frame.offsetBy(dx: -window.frame.minX, dy: -window.frame.minY)
         }
         // Over the sidebar, above its first line.
-        let head = try inWindow(drive.node(AssistantWords.assistant.said, role: "AXButton"))
+        let head = try inWindow(drive.node(AssistantWords.assistantView.said, role: "AXButton"))
         XCTAssertLessThan(lights.maxX, Measure.sidebar)
         XCTAssertGreaterThanOrEqual(lights.minY, head.maxY, "the three buttons \(lights) stand above the sidebar's head \(head)")
         // The whole frame of the window, with its buttons, as it would stand on a screen.

@@ -54,7 +54,7 @@ struct BarButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
-        .help(label)
+        .tip(label)
     }
 }
 
@@ -126,7 +126,7 @@ public struct MacWindow: View {
             switch model.session {
             case .none:
                 Rectangle().fill(Token.content)
-            case .signedOut, .pairing:
+            case .signedOut, .pairing, .confirming:
                 WayIn()
             case .signedIn:
                 frame
@@ -152,7 +152,7 @@ public struct MacWindow: View {
                 case .chat(let chat):
                     ConversationView(chat: chat)
                     ReachLine()
-                    Composer(chat: chat)
+                    Composer(chat: chat).layoutPriority(1)
                 case .assistantView:
                     SupervisionView()
                 }
@@ -160,6 +160,9 @@ public struct MacWindow: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // The assistant view is a card on the page's ground, as the drawing has it.
             .background(model.place == .assistantView ? Token.page : Token.content)
+            // The middle of the window is read as one part, between the sidebar and the Tasks panel.
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel((model.place == .assistantView ? AssistantWords.assistantView : AssistantWords.conversation).said)
             if model.showsPanel, model.chat != nil {
                 Rectangle().fill(Token.line).frame(width: 1)
                 TasksPanel { model.showsPanel = false }
@@ -179,7 +182,8 @@ public struct MacWindow: View {
                     Text(agent.title).font(.title15).foregroundStyle(Token.ink).lineLimit(1)
                     Text(wording.header(agent)).font(.small12).foregroundStyle(Token.ink3).lineLimit(2)
                 }
-                .accessibilityElement(children: .combine)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(agent.title), \(wording.header(agent).spoken)")
                 .accessibilityAddTraits(.isHeader)
             }
             Spacer(minLength: 8)
@@ -210,6 +214,7 @@ public struct PhoneRoot: View {
     /// Whether the app is in front. When it leaves the front the system keeps a picture of its
     /// window, and what stands in a protected field is put out of sight before that.
     @State private var inFront = true
+    @Environment(\.dynamicTypeSize) private var textSize
 
     /// `path` is what stands on the list of conversations when the window opens: the main chat,
     /// unless something else is asked for. Empty is the list itself.
@@ -223,7 +228,7 @@ public struct PhoneRoot: View {
             switch model.session {
             case .none:
                 Rectangle().fill(Token.content).ignoresSafeArea()
-            case .signedOut, .pairing:
+            case .signedOut, .pairing, .confirming:
                 WayIn()
             case .signedIn:
                 NavigationStack(path: $path) {
@@ -256,14 +261,18 @@ public struct PhoneRoot: View {
         VStack(spacing: 0) {
             switch place {
             case .chat(let chat):
-                if case .subAgent(let id) = chat, let agent = model.subAgent(id) {
-                    Text(wording.header(agent)).font(.small12).foregroundStyle(Token.ink3)
+                // Who a sub-agent is and where it runs stays in sight over its conversation; at the
+                // largest text sizes it would take the conversation's room, so it scrolls with it.
+                let head: String? = if case .subAgent(let id) = chat, let agent = model.subAgent(id) { wording.header(agent) } else { nil }
+                if let head, !textSize.isAccessibilitySize {
+                    Text(head).font(.small12).foregroundStyle(Token.ink3)
+                        .accessibilityLabel(head.spoken)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16).padding(.vertical, 6)
                 }
-                ConversationView(chat: chat)
+                ConversationView(chat: chat, head: textSize.isAccessibilitySize ? head : nil)
                 ReachLine()
-                Composer(chat: chat)
+                Composer(chat: chat).layoutPriority(1)
             case .assistantView:
                 SupervisionView()
             }
@@ -271,20 +280,23 @@ public struct PhoneRoot: View {
         .background(Token.content)
         .navigationTitle(title(place))
         .navigationBarTitleDisplayMode(.inline)
+        // The bar stands on the window's own ground: the conversation does not show through its title.
+        .toolbarBackground(place == .assistantView ? Token.page : Token.content, for: .navigationBar)
+        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if case .chat = place {
                     Button {
                         model.showsPanel = true
                     } label: {
-                        Glyph(.panel, side: 20)
+                        Glyph(.panel, side: 20, grows: false)
                     }
                     .accessibilityLabel(AssistantWords.showTasks.said)
                 }
                 Button {
                     model.asksForJob = true
                 } label: {
-                    Glyph(.new, side: 20)
+                    Glyph(.new, side: 20, grows: false)
                 }
                 .accessibilityLabel(AssistantWords.newSubAgent.said)
             }

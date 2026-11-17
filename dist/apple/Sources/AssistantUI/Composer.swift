@@ -9,6 +9,7 @@ public struct Composer: View {
     private let chat: Chat
     @Environment(AssistantModel.self) private var model
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.dynamicTypeSize) private var textSize
     @State private var picksFile = false
     @State private var listening = Listening()
 
@@ -30,17 +31,20 @@ public struct Composer: View {
             HStack(alignment: .top, spacing: 12) {
                 ZStack(alignment: .topLeading) {
                     if text.wrappedValue.isEmpty {
-                        Text(placeholder).font(.field15).foregroundStyle(Token.ink3).lineLimit(1)
+                        Text(placeholder).font(.field15).foregroundStyle(Token.ink3)
+                            .lineLimit(textSize.isAccessibilitySize ? 2 : 1).minimumScaleFactor(textSize.isAccessibilitySize ? 0.7 : 1)
                             .allowsHitTesting(false).accessibilityHidden(true)
                     }
                     MarkdownField(text: text, label: placeholder, focus: model.fieldCalls) { model.send(in: chat) }
+                        // As tall as its words up to its tallest, whatever room is left: the conversation gives way, not the field.
+                        .fixedSize(horizontal: false, vertical: true)
                         .offset(y: -FieldStyle.rise)
                 }
                 .frame(minHeight: 26, alignment: .top)
                 Button {
                     model.send(in: chat)
                 } label: {
-                    Glyph(.ret).frame(width: 26, height: 22, alignment: .trailing).contentShape(Rectangle())
+                    Glyph(.ret).frame(minWidth: 26, minHeight: 22, alignment: .trailing).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(isEmpty ? Token.ink3 : Token.ink)
@@ -81,7 +85,7 @@ public struct Composer: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(AssistantWords.attach.said)
-                .help(AssistantWords.attach.said)
+                .tip(AssistantWords.attach.said)
                 Button {
                     listening.toggle(into: text)
                 } label: {
@@ -90,7 +94,7 @@ public struct Composer: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(listening.isOn ? Token.you : Token.ink2)
                 .accessibilityLabel((listening.isOn ? AssistantWords.stopDictating : AssistantWords.dictate).said)
-                .help((listening.isOn ? AssistantWords.stopDictating : AssistantWords.dictate).said)
+                .tip((listening.isOn ? AssistantWords.stopDictating : AssistantWords.dictate).said)
                 if let problem = listening.problem {
                     Text(problem).font(.small12).foregroundStyle(Token.ink3).lineLimit(2)
                 }
@@ -99,6 +103,7 @@ public struct Composer: View {
                 // The drawing shows how to send while something is being typed.
                 if !text.wrappedValue.isEmpty {
                     Text(AssistantWords.fieldHint.said).font(.small12).foregroundStyle(Token.ink3)
+                        .accessibilityLabel(AssistantWords.fieldHint.said.spoken)
                 }
                 #endif
             }
@@ -109,6 +114,8 @@ public struct Composer: View {
         .padding(.horizontal, Measure.columnGutter)
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity)
+        // As tall as it is, whatever room is left: where room is short the conversation gives way.
+        .fixedSize(horizontal: false, vertical: true)
         .fileImporter(isPresented: $picksFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { picked in
             guard case .success(let urls) = picked else { return }
             var draft = model.drafts[chat] ?? Draft(text: "")

@@ -151,6 +151,7 @@ final class AssistantDrive {
         case nil: break
         case .signedOut: once("session", ["is": "signedOut"])
         case .pairing: once("session", ["is": "pairing"])
+        case .confirming(let code): once("session", ["is": "confirming", "code": .string(code)])
         case .signedIn(let person):
             once("session", ["is": "signedIn", "name": .string(person.name), "workspace": .string(person.workspace),
                              "person": .string(String(person.id.value.prefix(6)))])

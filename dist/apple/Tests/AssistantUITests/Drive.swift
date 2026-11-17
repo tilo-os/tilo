@@ -72,6 +72,8 @@ struct Node: CustomStringConvertible {
     let role: String
     let subrole: String
     let label: String
+    /// What an AppKit control is called where it carries its name as a title: a menu's button.
+    let title: String
     let value: String
     let help: String
     /// Where it stands, in the screen's measure: the origin at the foot.
@@ -83,11 +85,15 @@ struct Node: CustomStringConvertible {
         var said = String(repeating: "  ", count: depth) + role
         if !subrole.isEmpty { said += " (\(subrole))" }
         if !label.isEmpty { said += " “\(label)”" }
+        if !title.isEmpty, title != label { said += " titled “\(title)”" }
         if !value.isEmpty { said += " = “\(value.prefix(70))”" }
         if isSelected { said += " [selected]" }
         if !isEnabled { said += " [off]" }
         return said
     }
+
+    /// What it is called when it is read out: its label, its title, or the words it is.
+    var name: String { !label.isEmpty ? label : (!title.isEmpty ? title : value) }
 
     var isButton: Bool { role == "AXButton" }
     var isHeading: Bool { role == "AXHeading" }
@@ -103,10 +109,17 @@ private struct Facts {
         object.responds(to: Selector(key)) ? object.value(forKey: key) : nil
     }
 
+    /// Words, however they are handed over: plain, or with how they look.
+    private func words(_ key: String) -> String? {
+        let given = asked(key)
+        return given as? String ?? (given as? NSAttributedString)?.string
+    }
+
     var role: String { (kept?.accessibilityRole() ?? (asked("accessibilityRole") as? NSAccessibility.Role))?.rawValue ?? "" }
     var subrole: String { (kept?.accessibilitySubrole() ?? (asked("accessibilitySubrole") as? NSAccessibility.Subrole))?.rawValue ?? "" }
-    var label: String { kept?.accessibilityLabel() ?? (asked("accessibilityLabel") as? String) ?? "" }
-    var help: String { kept?.accessibilityHelp() ?? (asked("accessibilityHelp") as? String) ?? "" }
+    var label: String { kept?.accessibilityLabel() ?? words("accessibilityLabel") ?? "" }
+    var title: String { kept?.accessibilityTitle() ?? words("accessibilityTitle") ?? "" }
+    var help: String { kept?.accessibilityHelp() ?? words("accessibilityHelp") ?? "" }
     var value: String { (kept?.accessibilityValue() ?? asked("accessibilityValue")).map { "\($0)" } ?? "" }
     var frame: CGRect { kept?.accessibilityFrame() ?? (asked("accessibilityFrame") as? NSValue)?.rectValue ?? .zero }
     var isSelected: Bool { kept?.isAccessibilitySelected() ?? (asked("isAccessibilitySelected") as? Bool) ?? false }
@@ -169,7 +182,7 @@ final class Drive {
             guard depth < 60 else { return }
             let facts = Facts(object: object)
             nodes.append(Node(object: object, depth: depth, role: facts.role, subrole: facts.subrole, label: facts.label,
-                              value: facts.value, help: facts.help, frame: facts.frame, isSelected: facts.isSelected,
+                              title: facts.title, value: facts.value, help: facts.help, frame: facts.frame, isSelected: facts.isSelected,
                               isEnabled: facts.isEnabled))
             for child in facts.children { walk(child, depth + 1) }
         }
@@ -179,6 +192,14 @@ final class Drive {
 
     func said(of root: NSView? = nil) -> String {
         tree(of: root).map(\.description).joined(separator: "\n")
+    }
+
+    /// What the window says of itself, kept as a file when TILO_SAID_DIR names a folder: for a
+    /// person to read what someone who cannot see the window is told.
+    func keep(_ name: String, of root: NSView? = nil) {
+        guard let folder = ProcessInfo.processInfo.environment["TILO_SAID_DIR"] else { return }
+        try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        try? Data((said(of: root) + "\n").utf8).write(to: URL(fileURLWithPath: folder).appendingPathComponent("\(name).txt"))
     }
 
     func nodes(_ label: String, role: String? = nil, in root: NSView? = nil) -> [Node] {
