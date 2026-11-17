@@ -404,6 +404,9 @@ impl CliError {
             }
             Self::Remote(error) => error.hint.clone(),
             Self::ToolMissing { tool, .. } => format!("install {tool} and make sure it is on PATH; tilo-vm doctor re-checks"),
+            Self::CommandFailed { stderr, .. } if stderr.contains("no surface") => {
+                "a --gl VM renders through a GL context outside the guest, and QEMU keeps no readable surface for that scanout: its real display cannot be captured from outside the guest. Use tilo-vm shot while the compositor is up, or a VM created without --gl when a frame from outside the guest is what a test needs (tilo-vm guide driving)".into()
+            }
             Self::CommandFailed { stderr, .. } if !stderr.is_empty() => {
                 "the command's own message above names the cause".into()
             }
@@ -1256,6 +1259,9 @@ mod tests {
             };
             let explained = failed("rsync: No such file or directory").hint();
             assert!(!explained.contains("rerun"), "{explained}");
+            let surface = failed("internal error: unable to execute QEMU command 'screendump': no surface").hint();
+            assert!(surface.contains("tilo-vm shot"), "{surface}");
+            assert!(surface.contains("--gl"), "{surface}");
             let silent = failed("").hint();
             assert!(silent.contains("rerun it by hand"), "{silent}");
             assert!(silent.contains("rsync a b"), "{silent}");

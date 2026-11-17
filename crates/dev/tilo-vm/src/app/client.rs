@@ -119,12 +119,15 @@ impl App {
         if command.is_empty() {
             let _ = write!(
                 text,
-                "\n  execute what you meant with it, e.g. {path} vm status (or rerun your command as: tilo-vm vm client {} -- <arguments>)",
-                vm.name
+                "\n  execute what you meant with it, e.g. {path} --target {} vm status (or rerun your command as: tilo-vm vm client {} -- <arguments>)",
+                vm.name, vm.name
             );
             return Ok(Outcome::new(text, data));
         }
-        let mut line = CommandLine::new(&path, &[]);
+        // The fetched client is another version: name the VM both ways it may
+        // read, so it never falls back to this machine's default VM.
+        let mut line =
+            CommandLine::new(&path, &["--target", vm.name.as_str()]).env("TILO_VM", &vm.name);
         for argument in command {
             line = line.arg(argument.clone());
         }

@@ -400,10 +400,10 @@ GL renders on /dev/dri/renderD128 (the first render node whose driver is not NVI
 ```
 
 Name another with `--render-node /dev/dri/renderD128` when more than one is
-usable. `tilo-vm vm shot` captures the VM's real display from outside the guest even
-with `--gl`: it is what shows a black frame or a frozen picture while the
-compositor restarts, when `tilo-vm shot` (the compositor's own frame) cannot
-answer at all.
+usable. A `--gl` VM's scanout lives in a GL context outside the guest, so `tilo-vm vm shot`
+cannot capture it (`no surface`); use `tilo-vm shot` for the compositor's own
+frame, or a VM without `--gl` when a frame from outside the guest is what a test needs
+(`tilo-vm guide driving`).
 
 Enable a supported active connection's magic-packet wake without reconnecting:
 
