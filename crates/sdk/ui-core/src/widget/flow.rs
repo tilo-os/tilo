@@ -36,6 +36,8 @@ pub(super) struct Flow {
     cache_rect: Rect,
     cache_theme: Option<Box<DrawnTheme>>,
     cache_permissions: u64,
+    /// The cache holds a write's mark on text ([`crate::presence::PresenceCtx::shows_writes`]).
+    cache_writes: bool,
     /// The input generation the cache was painted at
     /// ([`crate::input_generation`]), and whether that drawing read state
     /// outside the widgets that made it ([`crate::outside_paint`]): such a
@@ -113,6 +115,7 @@ impl Flow {
             cache_rect: Rect::ZERO,
             cache_theme: None,
             cache_permissions: 0,
+            cache_writes: false,
             cache_input: 0,
             cache_outside: false,
             cache_model: 0,
@@ -446,6 +449,9 @@ impl Flow {
             .is_none_or(|drawn| !drawn.is(theme));
         let tracked = crate::scene_parts::is_tracked(scene);
         let permissions_moved = self.cache_permissions != presence.paint_permission_generation();
+        // A write's mark fades on the text it landed in and then goes: while one stands, and on
+        // the frame after the last, the drawing is made again.
+        let writes = presence.shows_writes(crate::time::now());
         let input_moved =
             self.cache_outside && self.cache_input != crate::input_generation::generation();
         let model_moved = self.cache_model != crate::input_generation::model();
@@ -453,6 +459,8 @@ impl Flow {
             || size_changed
             || theme_changed
             || permissions_moved
+            || writes
+            || self.cache_writes
             || input_moved
             || model_moved
             || any_child_dirty
@@ -564,6 +572,7 @@ impl Flow {
                 self.cache_theme = Some(Box::new(DrawnTheme::of(theme)));
             }
             self.cache_permissions = presence.paint_permission_generation();
+            self.cache_writes = writes;
             self.cache_input = crate::input_generation::generation();
             self.cache_model = crate::input_generation::model();
             self.cache_present = true;

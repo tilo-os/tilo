@@ -1053,6 +1053,8 @@ pub struct ShownChange<'a> {
 pub struct ListRow {
     title: String,
     item: Option<String>,
+    /// The field of the item the title shows ([`Self::edits`]).
+    edits: Option<String>,
     prefix: Option<String>,
     laid_out: bool,
     title_elided: bool,
@@ -1139,6 +1141,7 @@ impl ListRow {
         Self {
             title,
             item: None,
+            edits: None,
             prefix: None,
             laid_out: false,
             title_elided: false,
@@ -1364,6 +1367,26 @@ impl ListRow {
     #[must_use]
     pub fn item(mut self, item: impl Into<String>) -> Self {
         self.item = Some(item.into()).filter(|item| !item.is_empty());
+        self.dirty = true;
+        self
+    }
+
+    /// Name the field of the row's item its title shows (`title`): a write there, an agent's
+    /// rename, is drawn on the title as on the field that edits it
+    /// ([`TextInput::set_edits`](crate::widget::TextInput::set_edits)), the characters it wrote
+    /// in the writer's colour and its caret wearing what it did.
+    #[must_use]
+    pub fn edits(mut self, field: impl Into<String>) -> Self {
+        self.edits = Some(field.into());
+        self.dirty = true;
+        self
+    }
+
+    /// A quiet word before the title, on its line and in the weaker ink: the item's reference
+    /// (`#1`), apart from the title it names.
+    #[must_use]
+    pub fn prefix(mut self, word: impl Into<String>) -> Self {
+        self.prefix = Some(word.into()).filter(|word| !word.is_empty());
         self.dirty = true;
         self
     }
@@ -2029,6 +2052,42 @@ impl ListRow {
             ),
             _ => outer,
         }
+    }
+
+    /// Each write in the item's field the title shows, drawn on the title ([`Self::edits`]).
+    fn draw_writes(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        band: Rect,
+    ) {
+        let (Some(field), Some(item)) = (&self.edits, &self.item) else {
+            return;
+        };
+        self.with_face(|face| {
+            presence.draw_writes_in(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                (Some(field), item, &self.title),
+                None,
+                &mut |text, _, start, end| {
+                    let (bands, caret, ink) = face.title_span(band, (start, end), text, theme);
+                    let caret = caret.unwrap_or_else(|| {
+                        let last = ink.last().copied().unwrap_or(band);
+                        Rect::new(last.x1, last.y0, last.x1 + 1.5, last.y1)
+                    });
+                    (
+                        bands,
+                        Some(
+                            crate::presence::LabeledCaret::within(caret, band.y0)
+                                .among(ink, band.x1),
+                        ),
+                    )
+                },
+            );
+        });
     }
 
     fn trailing_reserve(&self) -> Option<f64> {
@@ -2784,6 +2843,7 @@ impl Widget for ListRow {
             );
             face.title_elided(band, text_renderer, theme)
         });
+        self.draw_writes(scene, transform, text_renderer, theme, presence, band);
         if let Some(trailing) = &mut self.trailing {
             trailing
                 .element

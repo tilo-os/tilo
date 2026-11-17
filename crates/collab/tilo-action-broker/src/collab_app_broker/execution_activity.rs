@@ -232,6 +232,7 @@ fn anchor_of(
     action: &PublishedAction,
     resource: &tilo_actions::ActionResource,
     argument: Option<&str>,
+    named: Option<&str>,
 ) -> tilo_actions::InteractionAnchor {
     use tilo_actions::InteractionAnchor;
     let parsed = tilo_actions::remote::InvokeArgument::from_slot(argument);
@@ -250,16 +251,11 @@ fn anchor_of(
     // of that name (a rename's `title`) names the text it writes there: the
     // field showing it draws it as the writer's, with its caret at its end.
     // The item is the item resource it is offered on, or, offered on the
-    // record, its first parameter's id.
+    // record, the item its argument `named`.
+    let item = item_of_resource(&resource.id, &resource.kind).or_else(|| named.map(str::to_owned));
     if let Some(field) = action.contract.field.as_deref()
         && let tilo_actions::remote::InvokeArgument::Json(argument) = &parsed
-        && let Some(item) = item_of_resource(&resource.id, &resource.kind).or_else(|| {
-            let first = action
-                .params
-                .first()
-                .filter(|param| param.name.as_ref() != field)?;
-            Some(argument.get(first.name.as_ref())?.as_str()?.to_owned())
-        })
+        && let Some(item) = item.clone()
         && action
             .params
             .iter()
@@ -275,9 +271,10 @@ fn anchor_of(
             }],
         };
     }
-    // An item published as its own resource (`<kind>/<field>/<item>`) is what
-    // its actions act on, and the view draws it as a row.
-    if let Some(item) = item_of_resource(&resource.id, &resource.kind)
+    // An item published as its own resource (`<kind>/<field>/<item>`), or the
+    // one a verb of the record names, is what the step acts on, and the view
+    // draws it as a row.
+    if let Some(item) = item
         && !action
             .params
             .iter()
@@ -351,9 +348,9 @@ fn item_of_resource(resource: &str, kind: &str) -> Option<String> {
     (named == field && !item.is_empty() && !item.contains('/')).then(|| item.to_owned())
 }
 
-/// The name the surface published for the item `argument` names of the record
-/// `action` acts in, in words its app chose ("Book room 4 for Friday"): the
-/// label the item's own published resource carries.
+/// The item `argument` names of the record `action` acts in, and the name the
+/// surface published for it, in words its app chose ("Book room 4 for
+/// Friday"): the label the item's own published resource carries.
 ///
 /// An item's actions are published on the item's own resource and again on the
 /// record, the record's copy addressing the item by its id: the one parameter
@@ -365,7 +362,7 @@ fn item_named<'a>(
     action: &PublishedAction,
     surface: &'a PublishedSurface,
     argument: Option<&str>,
-) -> Option<&'a str> {
+) -> Option<(String, &'a str)> {
     let tilo_actions::remote::InvokeArgument::Json(argument) =
         tilo_actions::remote::InvokeArgument::from_slot(argument)
     else {
@@ -388,7 +385,7 @@ fn item_named<'a>(
             .get(names_the_item.name.as_ref())
             .and_then(serde_json::Value::as_str)
             == Some(item.as_str()))
-        .then_some(descriptor.resource_label.as_str())
+        .then_some((item, descriptor.resource_label.as_str()))
     })
 }
 
@@ -409,7 +406,10 @@ impl ShownActor {
         if shown.direct() && shown.app().is_none() && !remote {
             return None;
         }
-        let label = item_named(action, surface, argument).unwrap_or(&action.resource_label);
+        let named = item_named(action, surface, argument);
+        let label = named
+            .as_ref()
+            .map_or(action.resource_label.as_str(), |(_, label)| label);
         let resource = tilo_actions::ActionResource {
             id: action.resource.clone(),
             kind: action.resource_kind.clone(),
@@ -431,7 +431,12 @@ impl ShownActor {
                 creates: action.contract.creates.clone(),
                 did: action.did.clone(),
             },
-            anchor: anchor_of(action, &resource, argument),
+            anchor: anchor_of(
+                action,
+                &resource,
+                argument,
+                named.as_ref().map(|(item, _)| item.as_str()),
+            ),
             resource,
             group: context.and_then(|context| context.group.clone()),
             sequence: Arc::default(),
@@ -691,7 +696,7 @@ mod anchor_tests {
             }));
             assert_eq!(
                 item_named(&rename, &surface, Some(&named)),
-                Some("Book room 4 for Friday"),
+                Some(("7d2b".to_owned(), "Book room 4 for Friday")),
             );
             // A title that merely looks like an id names no item: only an item of
             // this record, addressed by its id, is the one the step acts on.
@@ -740,7 +745,7 @@ mod anchor_tests {
             let moving = slot(&serde_json::json!({ "issue": "7d2b", "parent": "9c1e" }));
             assert_eq!(
                 item_named(&mover, &moving_surface, Some(&moving)),
-                Some("Book room 4 for Friday"),
+                Some(("7d2b".to_owned(), "Book room 4 for Friday")),
                 "the issue it moves, not the one it moves it under",
             );
             // The same verb on another record's item is another step's item.
@@ -780,7 +785,7 @@ mod anchor_tests {
             let typed = slot(&serde_json::json!({ "done": true }));
             for argument in [None, Some("true"), Some(typed.as_str())] {
                 assert_eq!(
-                    anchor_of(&action, &resource, argument),
+                    anchor_of(&action, &resource, argument, None),
                     tilo_actions::InteractionAnchor::ListItems {
                         ids: vec!["7d2b".into()]
                     },
@@ -795,7 +800,7 @@ mod anchor_tests {
                 Vec::new(),
             );
             assert_eq!(
-                anchor_of(&action, &resource, None),
+                anchor_of(&action, &resource, None, None),
                 tilo_actions::InteractionAnchor::Resource
             );
         }
@@ -825,7 +830,7 @@ mod anchor_tests {
                 }
             }));
             assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&spliced))),
+                text_range(&anchor_of(&action, &resource, Some(&spliced), None)),
                 ("body".into(), "b3".into(), 4, 9),
                 "the characters it wrote, counted as the block counts them",
             );
@@ -840,7 +845,7 @@ mod anchor_tests {
                 }
             }));
             assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&replaced))),
+                text_range(&anchor_of(&action, &resource, Some(&replaced), None)),
                 ("body".into(), "b3".into(), 2, 5),
             );
             // A field edit that writes no characters (a whole value set) names the
@@ -853,7 +858,7 @@ mod anchor_tests {
                 }
             }));
             assert_eq!(
-                anchor_of(&action, &resource, Some(&set)),
+                anchor_of(&action, &resource, Some(&set), None),
                 tilo_actions::InteractionAnchor::Resource,
             );
         }
@@ -880,14 +885,14 @@ mod anchor_tests {
                 }
             }));
             assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&typed))),
+                text_range(&anchor_of(&action, &resource, Some(&typed), None)),
                 ("title".into(), "7d2b".into(), 5, 9),
             );
             let replaced = slot(&serde_json::json!({
                 "edit": {"path": [{"field": "name"}], "op": "replace", "text": "Mixer"}
             }));
             assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&replaced))),
+                text_range(&anchor_of(&action, &resource, Some(&replaced), None)),
                 ("name".into(), String::new(), 0, 5),
             );
             let (mut action, resource) = published(
@@ -903,10 +908,10 @@ mod anchor_tests {
             action.contract.field = Some("title".into());
             let renamed = slot(&serde_json::json!({ "title": "Book room four" }));
             assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&renamed))),
+                text_range(&anchor_of(&action, &resource, Some(&renamed), None)),
                 ("title".into(), "7d2b".into(), 0, 14),
             );
-            // Offered on the record, the item is its first parameter's id.
+            // Offered on the record, the item is the one its argument names.
             let (mut on_resource, resource) = published(
                 "so.tilo.tasks",
                 "tasks.tracker",
@@ -919,7 +924,7 @@ mod anchor_tests {
             on_resource.contract.field = Some("title".into());
             let renamed_by_id = slot(&serde_json::json!({ "issue": "7d2b", "title": "Book" }));
             assert_eq!(
-                text_range(&anchor_of(&on_resource, &resource, Some(&renamed_by_id))),
+                text_range(&anchor_of(&on_resource, &resource, Some(&renamed_by_id), Some("7d2b"))),
                 ("title".into(), "7d2b".into(), 0, 4),
             );
             // Offered on the item under the alias its window bound it as (a note's rename
@@ -939,7 +944,7 @@ mod anchor_tests {
             );
             bound.contract.field = Some("title".into());
             assert_eq!(
-                text_range(&anchor_of(&bound, &resource, Some(&renamed))),
+                text_range(&anchor_of(&bound, &resource, Some(&renamed), None)),
                 ("title".into(), "7d2b".into(), 0, 14),
             );
             let resource = tilo_actions::ActionResource {
@@ -947,11 +952,30 @@ mod anchor_tests {
                 kind: "so.tilo.tasks.issues".into(),
                 label: "Label".into(),
             };
+            // Offered on the record, a verb that writes no text of the item (a comment, a
+            // move to done) acts on the item its argument names: the row showing it.
+            let (mut comment, record) = published(
+                "so.tilo.tasks",
+                "tasks.tracker",
+                "comment",
+                vec![
+                    ActionParam::required_owned("issue", ParamType::Text, "Issue"),
+                    ActionParam::required_owned("text", ParamType::Text, "What it says"),
+                ],
+            );
+            comment.contract.field = Some("comments".into());
+            let said = slot(&serde_json::json!({ "issue": "7d2b", "text": "Room 4 is free" }));
+            assert_eq!(
+                anchor_of(&comment, &record, Some(&said), Some("7d2b")),
+                tilo_actions::InteractionAnchor::ListItems {
+                    ids: vec!["7d2b".into()]
+                },
+            );
             // A verb under a field whose text parameter is something else (a comment under
             // `comments`) acts on the item.
             action.contract.field = Some("comments".into());
             assert_eq!(
-                anchor_of(&action, &resource, Some(&renamed)),
+                anchor_of(&action, &resource, Some(&renamed), None),
                 tilo_actions::InteractionAnchor::ListItems {
                     ids: vec!["7d2b".into()]
                 },
@@ -976,7 +1000,7 @@ mod anchor_tests {
                 "text": "hello",
             }));
             assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&replaced))),
+                text_range(&anchor_of(&action, &resource, Some(&replaced), None)),
                 ("text".into(), "b1".into(), 4, 9),
                 "the characters it wrote, not the place it wrote them at",
             );
@@ -986,7 +1010,7 @@ mod anchor_tests {
                 "text": "héllo",
             }));
             assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&inserted))),
+                text_range(&anchor_of(&action, &resource, Some(&inserted), None)),
                 ("text".into(), "b1".into(), 12, 17),
                 "characters, as the place counts them, not bytes",
             );
@@ -996,7 +1020,7 @@ mod anchor_tests {
                 "text": "",
             }));
             assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&deleted))),
+                text_range(&anchor_of(&action, &resource, Some(&deleted), None)),
                 ("text".into(), "b1".into(), 3, 11),
             );
             // A place naming its collection says which region its blocks sit in.
@@ -1010,7 +1034,7 @@ mod anchor_tests {
                 ],
             );
             assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&replaced))).0,
+                text_range(&anchor_of(&action, &resource, Some(&replaced), None)).0,
                 "blocks",
             );
             // No place parameter, or no place argument: the resource.
@@ -1028,7 +1052,8 @@ mod anchor_tests {
                 anchor_of(
                     &action,
                     &resource,
-                    Some(&slot(&serde_json::json!({ "title": "x" })))
+                    Some(&slot(&serde_json::json!({ "title": "x" }))),
+                    None,
                 ),
                 tilo_actions::InteractionAnchor::Resource,
             );
@@ -1042,7 +1067,7 @@ mod anchor_tests {
                 ],
             );
             assert_eq!(
-                anchor_of(&action, &resource, None),
+                anchor_of(&action, &resource, None, None),
                 tilo_actions::InteractionAnchor::Resource,
             );
         }

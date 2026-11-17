@@ -161,21 +161,13 @@ impl ListRowFace<'_> {
 
         let geo = self.geometry(row, &m, ctx.text, theme);
         let extra = self.extra_lines() > 0;
-        let title_style = self.title_style(&m);
-        let title_line = RowMetrics::line(ctx.text, &title_style);
-        let spare = self.title_width(&geo, ctx.text, theme, &m);
-        let title = self.shown_title();
-        let lines =
-            ctx.text
-                .clamp_to_lines(&title, &title_style, spare, usize::from(self.title_lines));
-        let title_drawn = lines.len().clamp(1, usize::from(self.title_lines));
-        let unused = usize::from(self.title_lines).saturating_sub(title_drawn);
-        let block = self.text_block(ctx.text, &m) - title_line * crate::num::f64_of_usize(unused);
-        let text_top = if self.card {
-            self.card_content_top(row, &m, ctx.text, theme)
-        } else {
-            row.center().y - block / 2.0
-        };
+        let TitleLayout {
+            style: title_style,
+            line: title_line,
+            lines,
+            top: text_top,
+            x: title_x,
+        } = self.title_layout(row, &m, &geo, ctx.text, theme);
         let title_cy = text_top + title_line / 2.0;
         let facts_cy = if self.card {
             geo.facts_cy
@@ -289,7 +281,6 @@ impl ListRowFace<'_> {
                 None,
             );
         }
-        let title_x = text_x + self.prefix_width(ctx.text, &m);
         let mut y = text_top;
         let mut last_end = title_x;
         for line in &lines {
@@ -464,6 +455,87 @@ impl ListRowFace<'_> {
                 theme,
             );
         }
+    }
+
+    /// Where the title's lines stand in `row`: what [`Self::paint`] draws them by, and what a
+    /// write in the title is marked on.
+    fn title_layout(
+        &self,
+        row: Rect,
+        m: &RowMetrics,
+        geo: &RowGeometry,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> TitleLayout {
+        let style = self.title_style(m);
+        let line = RowMetrics::line(text, &style);
+        let spare = self.title_width(geo, text, theme, m);
+        let lines = text.clamp_to_lines(
+            &self.shown_title(),
+            &style,
+            spare,
+            usize::from(self.title_lines),
+        );
+        let drawn = lines.len().clamp(1, usize::from(self.title_lines));
+        let unused = usize::from(self.title_lines).saturating_sub(drawn);
+        let block = self.text_block(text, m) - line * crate::num::f64_of_usize(unused);
+        let top = if self.card {
+            self.card_content_top(row, m, text, theme)
+        } else {
+            row.center().y - block / 2.0
+        };
+        let x = geo.text_x + self.prefix_width(text, m);
+        TitleLayout {
+            style,
+            line,
+            lines,
+            top,
+            x,
+        }
+    }
+
+    /// Where the bytes `start..end` of the title stand in `rect`, one band per line they reach,
+    /// and the caret after them; with every line the title shows, the ink a tag beside that caret
+    /// leaves readable. Nothing for a range the shown title cut off.
+    pub(super) fn title_span(
+        &self,
+        rect: Rect,
+        (start, end): (usize, usize),
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> (Vec<Rect>, Option<Rect>, Vec<Rect>) {
+        let m = self.metrics(theme);
+        let geo = self.geometry(rect, &m, text, theme);
+        let layout = self.title_layout(rect, &m, &geo, text, theme);
+        let (mut bands, mut caret, mut ink) = (Vec::new(), None, Vec::new());
+        let mut from = 0;
+        let mut y = layout.top;
+        for line in &layout.lines {
+            let shown = line.trim_end_matches('\u{2026}');
+            let Some(at) = self.title.get(from..).and_then(|rest| rest.find(shown)) else {
+                break;
+            };
+            let (line_start, line_end) = (from + at, from + at + shown.len());
+            from = line_end;
+            let x_of = |text: &mut TextRenderer, byte: usize| {
+                let before = self.title.get(line_start..byte).unwrap_or_default();
+                layout.x + f64::from(text.measure_style(before, None, &layout.style).0)
+            };
+            let right = x_of(text, line_end);
+            ink.push(Rect::new(layout.x, y, right, y + layout.line));
+            let (a, b) = (start.max(line_start), end.min(line_end));
+            if a <= b && start <= line_end && end >= line_start {
+                let (x0, x1) = (x_of(text, a), x_of(text, b));
+                if a < b {
+                    bands.push(Rect::new(x0, y, x1, y + layout.line));
+                }
+                if (line_start..=line_end).contains(&end) {
+                    caret = Some(Rect::new(x1, y, x1 + 1.5, y + layout.line));
+                }
+            }
+            y += layout.line;
+        }
+        (bands, caret, ink)
     }
 
     /// The width the title is set in: its column, less the quiet word before it and the tags
@@ -813,4 +885,16 @@ impl ListRowFace<'_> {
             action.icon.draw(ctx.scene, ctx.transform, glyph, ink);
         }
     }
+}
+
+/// Where a row's title stands ([`ListRowFace::title_layout`]).
+struct TitleLayout {
+    style: crate::text_render::TextStyle,
+    /// One line's height.
+    line: f64,
+    lines: Vec<String>,
+    /// The first line's top.
+    top: f64,
+    /// Where the title's words start, past the quiet word before them.
+    x: f64,
 }

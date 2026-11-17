@@ -8,7 +8,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::model::{Issue, Status, Tracker};
+use crate::model::{Status, Tracker};
 use crate::part::{IssuePart, issue_part};
 use ui::prelude::*;
 use ui::reorder::{DropPlacement, ReorderDrop};
@@ -17,14 +17,14 @@ use ui::widget::{ListRow, TreeMarks, VecListModel, VirtualList};
 
 use crate::{Filter, Issues, Nav, Tasks, Window, reference, tr};
 
-/// What a row shows besides its label.
+/// What a row shows besides its title.
 #[derive(Clone)]
 struct Row {
     /// Its place in the list, which is what the rows are addressed by.
     key: u64,
     /// The issue it shows, which is what actions naming the issue are drawn on.
     issue: Id,
-    label: String,
+    title: String,
     /// The row it stands under, where it is a sub-issue.
     parent: Option<u64>,
     number: u64,
@@ -63,10 +63,6 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element 
     )
 }
 
-fn label(issue: &Issue) -> String {
-    format!("{}  {}", reference(issue.number), issue.title)
-}
-
 /// The rows under `parent`, each followed by its own: only what the filter
 /// shows, and the issues above it so the tree stays whole.
 fn collect(
@@ -87,7 +83,7 @@ fn collect(
         out.push(Row {
             key,
             issue: id.clone(),
-            label: label(issue),
+            title: issue.title.clone(),
             parent: parent_key,
             number: issue.number,
             status: issue.status,
@@ -235,8 +231,12 @@ fn row(
     let status = status_text(row);
     let closed = row.status.closed();
     Box::new(
-        ListRow::new(format!("key:{key}"), row.label.as_str())
+        // The reference stands before the title, apart from it: the title is the issue's own
+        // `title`, where an agent's rename is drawn as it lands.
+        ListRow::new(format!("key:{key}"), row.title.as_str())
+            .prefix(reference(row.number))
             .item(row.issue.as_str())
+            .edits("title")
             .depth(depths.depth(&key))
             .checkbox(closed, toggle)
             .checked(closed)

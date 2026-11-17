@@ -54,25 +54,48 @@ const CARD_MARGIN: f64 = 12.0;
 /// [`crate::motion::Attention::FLASH`]: the place a person should look at, once.
 const LOCUS_FLASH: f32 = 0.22;
 
-/// Where an app's activity cards stand in `viewport`: a column at the viewport's top-right corner,
-/// each a card's width and height, the shape and spacing the app draws them with
+/// Where an app's activity cards stand in `viewport` when nothing of the app is in the way: a
+/// column rising from its bottom-right corner, where a toast stands, each a card's width and
+/// height, the shape and spacing the app draws them with
 /// ([`PresenceCtx::interaction_card_layout`]).
 ///
 /// A host that stands cards of its own over a window ([`crate::control_hints`]) reads the same
 /// slots: a card placed by the toolkit and one the app draws never cover each other.
 #[must_use]
 pub fn interaction_card_slots(viewport: Rect) -> Vec<Rect> {
+    card_columns(viewport)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+}
+
+/// The columns cards may stand in, the one they prefer first: rising from the bottom-right corner,
+/// then the bottom-left, then hanging from the top-right and the top-left.
+fn card_columns(viewport: Rect) -> Vec<Vec<Rect>> {
     if viewport.width() < 96.0 || viewport.height() < 32.0 {
         return Vec::new();
     }
     let width = CARD_WIDTH.min((viewport.width() - CARD_MARGIN * 2.0).max(80.0));
-    let x1 = viewport.x1 - CARD_MARGIN;
-    (0..MAX_VISIBLE_CARDS)
-        .map(|index| {
-            let y = viewport.y0 + CARD_MARGIN + index as f64 * (CARD_HEIGHT + CARD_GAP);
-            Rect::new(x1 - width, y, x1, y + CARD_HEIGHT)
-        })
-        .collect()
+    let right = viewport.x1 - CARD_MARGIN - width;
+    let left = viewport.x0 + CARD_MARGIN;
+    let step = |index: usize| index as f64 * (CARD_HEIGHT + CARD_GAP);
+    let rising = |x: f64| -> Vec<Rect> {
+        (0..MAX_VISIBLE_CARDS)
+            .map(|index| {
+                let y1 = viewport.y1 - CARD_MARGIN - step(index);
+                Rect::new(x, y1 - CARD_HEIGHT, x + width, y1)
+            })
+            .collect()
+    };
+    let hanging = |x: f64| -> Vec<Rect> {
+        (0..MAX_VISIBLE_CARDS)
+            .map(|index| {
+                let y0 = viewport.y0 + CARD_MARGIN + step(index);
+                Rect::new(x, y0, x + width, y0 + CARD_HEIGHT)
+            })
+            .collect()
+    };
+    vec![rising(right), rising(left), hanging(right), hanging(left)]
 }
 
 #[derive(Debug, Clone)]
@@ -382,6 +405,14 @@ impl PresenceCtx {
         }
     }
 
+    /// Whether a write's mark stands on text at `now`: a widget draws it from its own content,
+    /// so a retained drawing of the widget is stale while the mark fades, and once it is gone.
+    pub fn shows_writes(&self, now: Instant) -> bool {
+        self.interactions
+            .values()
+            .any(|entry| entry.visible_at(now) && writes_text(&entry.interaction))
+    }
+
     /// All currently visible interactions in deterministic display order.
     /// The host uses this read-only view to resolve generic semantic-control
     /// anchors against the current accessibility tree before falling back to
@@ -668,7 +699,17 @@ impl PresenceCtx {
 
     /// An exact-locus label keeps the lifecycle visible when the generic rail
     /// is suppressed. Failure must not look like a successful pointer action.
+    ///
+    /// Drawn on the item it acted on (a row), the label says what it did there ("Helper: moved"):
+    /// the row already names the item, by its name now, where the step's own line would repeat
+    /// the name the item had when the step began.
     pub fn interaction_status_label(&self, interaction: &SemanticInteraction) -> String {
+        if matches!(
+            interaction.anchor,
+            tilo_actions::InteractionAnchor::ListItems { .. }
+        ) {
+            return self.interaction_status_label_written(interaction);
+        }
         self.interaction_status_label_doing(interaction, &step_line(interaction))
     }
 
@@ -742,16 +783,19 @@ impl PresenceCtx {
         viewport: Rect,
         now: Instant,
     ) -> Vec<InteractionCardPlacement> {
-        self.interaction_card_layout_excluding(viewport, now, &[])
+        self.interaction_card_layout_excluding(viewport, now, &[], &[])
     }
 
     /// Lay out fallback cards without duplicating invocations whose exact
-    /// action locus the host has resolved for this frame.
+    /// action locus the host has resolved for this frame, in the first corner
+    /// whose cards cover none of `occupied`: the app's words and controls stay
+    /// in sight and in reach.
     pub fn interaction_card_layout_excluding(
         &self,
         viewport: Rect,
         now: Instant,
         resolved: &[InvocationId],
+        occupied: &[Rect],
     ) -> Vec<InteractionCardPlacement> {
         let entries = self.card_entries(now, resolved);
         if entries.is_empty() || viewport.width() < 96.0 || viewport.height() < 32.0 {
@@ -763,7 +807,17 @@ impl PresenceCtx {
         if visible == 0 {
             return Vec::new();
         }
-        let slots = interaction_card_slots(viewport);
+        let columns = card_columns(viewport);
+        let clear = |column: &&Vec<Rect>| {
+            column.iter().take(visible).all(|slot| {
+                occupied
+                    .iter()
+                    .all(|taken| slot.intersect(*taken).is_zero_area())
+            })
+        };
+        let Some(slots) = columns.iter().find(clear).or_else(|| columns.first()) else {
+            return Vec::new();
+        };
         let mut out = Vec::with_capacity(visible);
         for (index, entry) in entries.iter().copied().take(visible).enumerate() {
             let Some(&rect) = slots.get(index) else {
@@ -792,10 +846,10 @@ impl PresenceCtx {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         now: Instant,
-        resolved: &[InvocationId],
+        (resolved, occupied): (&[InvocationId], &[Rect]),
     ) {
         let entries = self.card_entries(now, resolved);
-        let placements = self.interaction_card_layout_excluding(viewport, now, resolved);
+        let placements = self.interaction_card_layout_excluding(viewport, now, resolved, occupied);
         for (entry, placement) in entries.iter().zip(&placements) {
             self.draw_interaction_card(scene, transform, text_renderer, theme, entry, placement);
         }
@@ -1695,10 +1749,7 @@ mod tests {
                         .apply_interaction_at(interaction(1, 4, InteractionPhase::Applying), at)
                         .unwrap()
                 );
-                assert_eq!(
-                    presence.interactions_for_resource("file:draft", at)[0].sequence,
-                    3
-                );
+                assert_eq!(presence.visible_interactions(at)[0].sequence, 3);
             }
             // phase: an_invocation_cannot_substitute_its_actor_or_target
             {
@@ -1811,6 +1862,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 800.0, 600.0),
                 at,
                 &[resolved.invocation],
+                &[],
             );
             assert_eq!(cards.len(), 1);
             assert_eq!(cards[0].invocation, InvocationId(Uuid::from_u128(61)));
@@ -2421,6 +2473,77 @@ mod tests {
                 "a failed write says the step, not text that never landed: {name}"
             );
         }
+    }
+}
+
+impl PresenceCtx {
+    /// Draw each write that landed in `text`, the field `region` (any, where `None`) of the item
+    /// or block `block`, where it stands: its characters washed in the writer's colour, fading,
+    /// and its caret at their end wearing what it did ("Helper: renamed"). `place` gives, in the
+    /// caller's coordinates and measured with the renderer it is handed, the bands a byte range of
+    /// `text` covers and the caret at its end, where it wears one. A write drawn so leaves the activity rail; one the
+    /// person `edited` there at or after it was first drawn is put away. Returns who wrote what it
+    /// drew, whose own caret there needs no second tag.
+    pub fn draw_writes_in(
+        &self,
+        paint: &mut PaintCtx<'_>,
+        (region, block, text): (Option<&str>, &str, &str),
+        edited: Option<Instant>,
+        place: &mut dyn FnMut(
+            &mut TextRenderer,
+            &SemanticInteraction,
+            usize,
+            usize,
+        ) -> (Vec<Rect>, Option<super::LabeledCaret>),
+    ) -> Vec<MemberId> {
+        let now = crate::time::now();
+        let mut writers = Vec::new();
+        for interaction in self.visible_interactions(now) {
+            let Some((start, end)) = written_in(&interaction, region, block, text) else {
+                continue;
+            };
+            if let (Some(edited), Some(drawn)) =
+                (edited, self.interaction_drawn_at(interaction.invocation))
+                && edited >= drawn
+            {
+                self.note_shown(interaction.invocation);
+                continue;
+            }
+            // The text it wrote is its place, faded or not: no card stands for it elsewhere.
+            self.note_shown(interaction.invocation);
+            let Some(alpha) = self.interaction_fade(interaction.invocation, now) else {
+                continue;
+            };
+            let Some(user) = interaction
+                .actor
+                .members()
+                .first()
+                .map(|member| (*member).clone())
+            else {
+                continue;
+            };
+            let (bands, caret) = place(paint.text, &interaction, start, end);
+            let bands: Vec<(Rect, f32)> = bands
+                .into_iter()
+                .map(|band| (paint.transform.transform_rect_bbox(band), alpha))
+                .collect();
+            self.draw_peer_typing(paint.scene, paint.theme, &user, &bands);
+            self.note_drawn(interaction.invocation, now);
+            if let Some(caret) = caret {
+                let name = self.interaction_status_label_written(&interaction);
+                self.draw_action_caret_labeled_in(
+                    paint.scene,
+                    paint.theme,
+                    paint.text,
+                    paint.transform,
+                    &user,
+                    &name,
+                    caret,
+                );
+            }
+            writers.push(user);
+        }
+        writers
     }
 }
 

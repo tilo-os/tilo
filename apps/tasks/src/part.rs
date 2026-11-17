@@ -355,7 +355,7 @@ impl IssuePart {
     }
 
     /// Rename an issue: its title, as the board and its page show it.
-    #[action(item = issues, field = "title", step = "edit", writes = issues)]
+    #[action(item = issues, field = "title", step = "edit", did = "renamed", writes = issues)]
     pub fn rename(&mut self, issue: &Id, title: NonBlank) -> Result<(), Refusal> {
         let title = title.into_string();
         if title.chars().count() > crate::model::MAX_TITLE_CHARS {
