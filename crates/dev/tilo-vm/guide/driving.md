@@ -26,6 +26,12 @@ users and agents depend on. On the host, without a VM, the same story is
 - `tilo-vm vm shot` is the hypervisor's screenshot of the VM's real display,
   seat0: greetd's greeter, or the account that claimed it. Headless and vkms
   accounts never appear there. It needs no SSH.
+  A VM created with `--gl` renders through virgl into an `egl-headless`
+  display, and QEMU keeps no surface the machine can read for that scanout:
+  `vm shot` fails with `no surface`. For a frame from outside the guest, boot
+  the VM without `--gl` (software GL) where the scanout is readable, or
+  use `tilo-vm shot` while the compositor is up; the guest's serial line and
+  logs cover the moments it does not (`tilo-vm guide troubleshooting`).
 
 ## Real input devices (headful accounts)
 
