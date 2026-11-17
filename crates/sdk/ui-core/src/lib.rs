@@ -450,7 +450,8 @@ pub use reader_hud::{
     HudAction, HudControls, HudPlacement, HudSide, HudSwatch, MarkerDrag, SelectionHud,
 };
 pub use remote_actions::{
-    CancellationCall, CatalogueCall, Followed, InvocationCall, RemoteActions, RemoteActionsGuard,
+    CancellationCall, CatalogueCall, ChangedCall, Followed, FollowedRead, InvocationCall,
+    RemoteActions, RemoteActionsGuard, ResourceReadCall,
 };
 pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,

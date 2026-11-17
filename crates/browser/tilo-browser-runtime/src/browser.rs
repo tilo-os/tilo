@@ -1541,7 +1541,7 @@ fn present_desktop(
         &persistence,
         (&here, &session, (&owners, &opening_permissions)),
     )?;
-    let asks = session_asks::Asks::new(config.peer);
+    let asks = session_asks::Asks::new(config.peer, &openings, Rc::clone(&mentions_store));
     let mentions = mention_notices::over(
         mentions_store,
         &asks,
