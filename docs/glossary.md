@@ -38,6 +38,7 @@ the graph may make it.
 - **Resource**: the unit of data. An app declares resource types; a chat message is a resource.
   Per-person data (drafts, recents, view state) is resources in the workspace that belong to a
   person.
+- **Target**: the resource an action is offered on: its first parameter.
 - **Personal resources**: resources that belong to no workspace: a person's devices and keys,
   logins, settings that apply everywhere, browsing history, signature.
 - **Document**: internal storage of one or more resources (an automerge document). Apps never see it.
