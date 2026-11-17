@@ -283,14 +283,17 @@ impl PageWorkspaceSettings {
             .filter(|member| member.role.is_some() && !member.removed)
             .collect();
         let own = members.iter().find(|member| member.is_self);
-        let viewer = own.map(|member| member.id.key()).unwrap_or_default();
+        let viewer = own
+            .and_then(|member| member.id.person_id())
+            .unwrap_or_default()
+            .to_owned();
         let role = own.and_then(|member| member.role);
         let here = self.here.borrow();
         let mut rows: Vec<Row> = members
             .iter()
             .filter_map(|member| {
                 let role = member.role?;
-                let user = member.id.key();
+                let user = member.id.person_id()?.to_owned();
                 Some(Row {
                     name: Some(member.name.trim())
                         .filter(|name| !name.is_empty())

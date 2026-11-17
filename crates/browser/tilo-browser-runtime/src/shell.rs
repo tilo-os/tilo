@@ -1569,7 +1569,10 @@ impl BrowserShell {
             .own_label()
             .map_or_else(tilo_desktop::here::guest_label, str::to_owned);
         ProfileModel {
-            identity: ui::collaboration::local_user_id().key(),
+            identity: ui::collaboration::local_user_id()
+                .person_id()
+                .unwrap_or_default()
+                .to_owned(),
             name,
             colour: rgb.map(|(r, g, b)| ui::vello::peniko::Color::from_rgb8(r, g, b)),
             can_rename: self.handle.offers_host_action(RENAME_ACTION),

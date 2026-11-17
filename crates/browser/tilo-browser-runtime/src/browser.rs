@@ -300,9 +300,10 @@ impl Config {
         }
     }
     fn author(&self) -> String {
+        let me = ui::collaboration::local_user_id;
         self.author
             .clone()
-            .unwrap_or_else(|| ui::collaboration::local_user_id().key())
+            .unwrap_or_else(|| me().person_id().unwrap_or_default().to_owned())
     }
 
     /// Carry the mcp-server asks of `session` to the person's host, through
