@@ -17,7 +17,7 @@ use tilo_user_identity::{
     sign_device_cert, sign_revocation_entry,
 };
 
-use crate::common::{TestUser, client_endpoint};
+use crate::common::{TestDevice, TestUser, client_endpoint};
 
 fn browser_request(user: [u8; 32], device: &SigningKey) -> CertificationRequest {
     let now = tilo_clock::unix_now_ns();
@@ -68,6 +68,22 @@ async fn one_pending(approver: &mut Approver) -> tilo_relay::certify::PendingCer
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("the request never reached the approver");
+}
+
+/// `device`'s session with `relay` as an approver of its person's requests,
+/// and the endpoint that session lives on.
+async fn approver_at(relay: &Relay, device: &TestDevice) -> (iroh::endpoint::Endpoint, Approver) {
+    let endpoint = client_endpoint().await;
+    let approver = Approver::connect(
+        &endpoint,
+        relay.node_addr(),
+        device.cert.clone(),
+        &device.sk,
+        &RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    (endpoint, approver)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -310,4 +326,203 @@ async fn only_root_holders_approve_and_revoked_keys_are_refused() {
     .await
     .unwrap();
     assert!(matches!(outcome, CertificationOutcome::Denied(_)));
+}
+
+/// A request as a device whose clock reads `device_now_ns` dates it: issued
+/// at that reading, as `tilo-relay-client` signs one, and answering `invite`.
+fn request_dated(
+    user: [u8; 32],
+    device: &SigningKey,
+    device_now_ns: u64,
+    invite: [u8; 16],
+) -> CertificationRequest {
+    CertificationRequest {
+        version: CERTIFICATION_SCHEMA_VERSION,
+        user_public_key: user,
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "Browser".into(),
+        requested: DeviceCapabilities::member(),
+        nonce: rand::random(),
+        invite,
+        issued_at_ns: device_now_ns,
+        expires_at_ns: device_now_ns.saturating_add(60_000_000_000),
+        signature: [0; 64],
+    }
+    .sign(device)
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn devices_whose_clocks_run_ahead_of_the_hosts_pair_and_their_link_works_once() {
+    // Further ahead than anything here takes to arrive, so the host's clock
+    // is behind every date it reads. 20 ms between a laptop and the machine
+    // beside it did this to half of all pairings.
+    const AHEAD_NS: u64 = 2_000_000_000;
+    let invite = [9; 16];
+    let user = TestUser::fresh("Ada");
+    let laptop = user.enrol("laptop", DeviceCapabilities::primary());
+    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
+    let host = relay.node_addr();
+
+    let browser_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let request = request_dated(
+        user.user_pk,
+        &browser_key,
+        tilo_clock::unix_now_ns().saturating_add(AHEAD_NS),
+        invite,
+    );
+    let (code_tx, code_rx) = tokio::sync::oneshot::channel();
+    let browser_endpoint = client_endpoint().await;
+    let waiting = tokio::spawn({
+        let host = host.clone();
+        let request = request.clone();
+        async move {
+            request_certification(&browser_endpoint, host, request, |code| {
+                let _ = code_tx.send(code.to_string());
+            })
+            .await
+        }
+    });
+    let Ok(shown_in_browser) = code_rx.await else {
+        panic!(
+            "the host did not queue a request dated two seconds ahead of its clock: {:?}",
+            waiting.await.unwrap()
+        );
+    };
+
+    let (_approver_endpoint, mut approver) = approver_at(&relay, &laptop).await;
+    let pending = one_pending(&mut approver).await;
+    assert_eq!(pending.pairing_code, shown_in_browser);
+    assert_eq!(pending.request, request);
+
+    // The approving device's clock runs ahead of the host's too.
+    let cert = issue_device_cert(
+        &pending.request,
+        &user.user_sk,
+        &CertificationPolicy::browser(),
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns().saturating_add(AHEAD_NS),
+    )
+    .unwrap();
+    assert_eq!(
+        approver
+            .decide(
+                pending.request_digest,
+                ApproverDecision::Issue(cert.clone())
+            )
+            .await
+            .unwrap(),
+        ApproverReply::Decided,
+        "the host reads the certificate by its own clock, which is behind the approver's"
+    );
+    let (issued, host_cert) = match waiting.await.unwrap().unwrap() {
+        CertificationOutcome::Issued {
+            cert, host_cert, ..
+        } => (cert, host_cert),
+        other => panic!("the browser was not certified: {other:?}"),
+    };
+    assert_eq!(issued, cert);
+
+    // The host lets the new device in with it at once: its handshake reads
+    // the certificate by the host's own clock, exactly.
+    let client = RelayClient::connect_with_signer(
+        client_endpoint().await,
+        host.clone(),
+        Some(user.user_pk),
+        Some(host_cert.device_public_key),
+        tilo_relay_session::ClientCredentials {
+            cert: issued,
+            signer: &browser_key,
+            revocations: RevocationList::new(),
+            entering: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        client.relay_peer.device_public_key,
+        host_cert.device_public_key
+    );
+
+    // The allowance lets no link work twice: a second device that answers
+    // the same invite, its clock ahead as well, is turned away.
+    let second_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let second = request_dated(
+        user.user_pk,
+        &second_key,
+        tilo_clock::unix_now_ns().saturating_add(AHEAD_NS),
+        invite,
+    );
+    let second_endpoint = client_endpoint().await;
+    assert_eq!(
+        request_certification(&second_endpoint, host, second, |_| {})
+            .await
+            .unwrap(),
+        CertificationOutcome::Denied("this pairing link was used already; make a new one".into())
+    );
+    approver.close();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_dated_far_ahead_is_refused_for_its_clock_and_leaves_its_link_unspent() {
+    let invite = [3; 16];
+    let user = TestUser::fresh("Ada");
+    let laptop = user.enrol("laptop", DeviceCapabilities::primary());
+    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
+    let host = relay.node_addr();
+    let browser_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+
+    // Five minutes ahead: no clock that keeps time is that far from another.
+    let far = request_dated(
+        user.user_pk,
+        &browser_key,
+        tilo_clock::unix_now_ns().saturating_add(5 * 60 * 1_000_000_000),
+        invite,
+    );
+    let far_endpoint = client_endpoint().await;
+    let reason = match request_certification(&far_endpoint, host.clone(), far, |_| {})
+        .await
+        .unwrap()
+    {
+        CertificationOutcome::Denied(reason) => reason,
+        other => panic!("a request dated five minutes ahead was taken: {other:?}"),
+    };
+    assert_eq!(
+        reason,
+        tilo_user_identity::CertificationError::NotYetValid.to_string(),
+        "the refusal is about the request's date"
+    );
+    assert!(
+        reason.contains("the clocks of the two devices differ"),
+        "it names the clocks, never a link that expired: {reason}"
+    );
+
+    // Nothing was spent: dated by a clock that is right, the same link is
+    // queued and waits for the person.
+    let again = request_dated(
+        user.user_pk,
+        &browser_key,
+        tilo_clock::unix_now_ns(),
+        invite,
+    );
+    let browser_endpoint = client_endpoint().await;
+    let waiting = tokio::spawn({
+        let again = again.clone();
+        async move { request_certification(&browser_endpoint, host, again, |_| {}).await }
+    });
+    let (_approver_endpoint, mut approver) = approver_at(&relay, &laptop).await;
+    let pending = one_pending(&mut approver).await;
+    assert_eq!(pending.request, again);
+    assert_eq!(
+        approver
+            .decide(pending.request_digest, ApproverDecision::Deny)
+            .await
+            .unwrap(),
+        ApproverReply::Decided
+    );
+    assert_eq!(
+        waiting.await.unwrap().unwrap(),
+        CertificationOutcome::Denied("declined by the approving device".into())
+    );
+    approver.close();
 }
