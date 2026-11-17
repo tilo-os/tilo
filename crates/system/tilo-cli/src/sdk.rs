@@ -1020,8 +1020,25 @@ fn python_class(out: &mut String, class: &Class, surface: &str) {
         out.push('\n');
         return;
     }
+    let mut taken = python_fields(out, class);
+    let actions = python_actions(out, class, &mut taken);
+    if !actions.is_empty() {
+        let names: Vec<String> = actions.iter().map(|name| format!("\"{name}\"")).collect();
+        let _ = writeln!(
+            out,
+            "    # The actions a call reaches before the resource is read: `await tracker.create(...)`\n\
+             \x20   # needs no `load()` first.\n\
+             \x20   __actions__ = frozenset({{{}}})",
+            names.join(", ")
+        );
+        out.push('\n');
+    }
+    out.push('\n');
+}
+
+/// `class`'s fields as Python attributes and properties; answers the names they take.
+fn python_fields(out: &mut String, class: &Class) -> Vec<String> {
     let mut taken: Vec<String> = Vec::new();
-    let mut actions: Vec<String> = Vec::new();
     for (field, first) in distinct(&class.fields) {
         let name = python_name(&field.name);
         if !first {
@@ -1063,6 +1080,13 @@ fn python_class(out: &mut String, class: &Class, surface: &str) {
     if !class.fields.is_empty() {
         out.push('\n');
     }
+    taken
+}
+
+/// `class`'s actions as Python methods, each named apart from the names `taken` already;
+/// answers the methods written.
+fn python_actions(out: &mut String, class: &Class, taken: &mut Vec<String>) -> Vec<String> {
+    let mut actions: Vec<String> = Vec::new();
     for action in &class.actions {
         let name = python_name(&action.snake);
         if OWN.contains(&action.id.as_str()) {
@@ -1103,18 +1127,7 @@ fn python_class(out: &mut String, class: &Class, surface: &str) {
             out.push('\n');
         }
     }
-    if !actions.is_empty() {
-        let names: Vec<String> = actions.iter().map(|name| format!("\"{name}\"")).collect();
-        let _ = writeln!(
-            out,
-            "    # The actions a call reaches before the resource is read: `await tracker.create(...)`\n\
-             \x20   # needs no `load()` first.\n\
-             \x20   __actions__ = frozenset({{{}}})",
-            names.join(", ")
-        );
-        out.push('\n');
-    }
-    out.push('\n');
+    actions
 }
 
 fn python_action(out: &mut String, action: &Action) {
@@ -1480,8 +1493,39 @@ fn typescript_class(out: &mut String, class: &Class) {
         "export interface {} extends tilo.Resource {{",
         class.name
     );
+    let mut taken = typescript_fields(out, class);
+    let actions = typescript_actions(out, class, &mut taken);
+    out.push_str("}\n\n");
+    let listed: Vec<String> = actions.iter().map(|name| format!("\"{name}\"")).collect();
+    let _ = writeln!(
+        out,
+        "/** The actions `{class}` reaches before it is read: `ws` calls them without a\n\
+         \x20 `load()` first. */",
+        class = class.name
+    );
+    let _ = writeln!(
+        out,
+        "export const {}_ACTIONS = [{}] as const;\n",
+        class.name.to_uppercase(),
+        listed.join(", ")
+    );
+    let made = factory(class);
+    let _ = write!(
+        out,
+        "/** The `{}` kind at `path`. */\n\
+         export function {made}(ws: tilo.Workspace, path: string): {} {{\n\
+         \x20 return resourceProxy(ws, path, SURFACE, {}_ACTIONS) as unknown as {};\n\
+         }}\n\n",
+        class.kind,
+        class.name,
+        class.name.to_uppercase(),
+        class.name,
+    );
+}
+
+/// `class`'s fields as interface members; answers the names they take.
+fn typescript_fields(out: &mut String, class: &Class) -> Vec<String> {
     let mut taken: Vec<String> = Vec::new();
-    let mut actions: Vec<String> = Vec::new();
     for (field, first) in distinct(&class.fields) {
         if !first {
             let _ = writeln!(
@@ -1509,6 +1553,13 @@ fn typescript_class(out: &mut String, class: &Class) {
             comment(&field.title)
         );
     }
+    taken
+}
+
+/// `class`'s actions as interface methods, each named apart from the names `taken` already;
+/// answers the methods written.
+fn typescript_actions(out: &mut String, class: &Class, taken: &mut Vec<String>) -> Vec<String> {
+    let mut actions: Vec<String> = Vec::new();
     for action in &class.actions {
         if OWN.contains(&action.id.as_str()) {
             let _ = writeln!(
@@ -1556,32 +1607,7 @@ fn typescript_class(out: &mut String, class: &Class) {
             typescript_many(out, action, many);
         }
     }
-    out.push_str("}\n\n");
-    let listed: Vec<String> = actions.iter().map(|name| format!("\"{name}\"")).collect();
-    let _ = writeln!(
-        out,
-        "/** The actions `{class}` reaches before it is read: `ws` calls them without a\n\
-         \x20 `load()` first. */",
-        class = class.name
-    );
-    let _ = writeln!(
-        out,
-        "export const {}_ACTIONS = [{}] as const;\n",
-        class.name.to_uppercase(),
-        listed.join(", ")
-    );
-    let made = factory(class);
-    let _ = write!(
-        out,
-        "/** The `{}` kind at `path`. */\n\
-         export function {made}(ws: tilo.Workspace, path: string): {} {{\n\
-         \x20 return resourceProxy(ws, path, SURFACE, {}_ACTIONS) as unknown as {};\n\
-         }}\n\n",
-        class.kind,
-        class.name,
-        class.name.to_uppercase(),
-        class.name,
-    );
+    actions
 }
 
 /// The function that makes a `PdfDocument` at a path: `pdfDocument`, or `notesPage` where the
