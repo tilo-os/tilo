@@ -963,6 +963,31 @@ leaving is said with `taken_by_page`.
 A frame's forms are its own document's: `forms` and `fill_form` read and
 answer them with `frame`.
 
+### A text kept for one site
+
+A `fill` may carry `at` and `into` beside `secret: true`: the origin its text was released for
+(`https://example.com`, as `location.origin` spells it) and the kind of field it is for
+(`password`, `code` or `value`). Such a fill is the engine's half of filling in something a
+person keeps for one site, which whoever asks for the fill never holds itself.
+
+The engine decides where the text goes, in the step that writes it:
+
+- only in the page's own document. A fill that names an element of a frame is refused with
+  `foreign_frame` before any script is sent to the frame, whatever site the frame is of;
+- only where that document's own origin is `at` (`another_site` otherwise), so a page that was
+  sent on to another address, or left since the caller read it, gets nothing;
+- only into a page that arrived over https or from this computer (`not_secure`);
+- a `password` only into a password field (`not_a_password_field`), and anything only into a
+  field that takes text (`not_a_text_field`);
+- never into a form that sends to another site (`foreign_form`).
+
+A field filled this way is a secret from then on, whatever its type: every read says that it is
+set and how long, and none of what it holds, and a field that is no password field is drawn as
+dots. A plain `fill` with `secret` and no `at` is unchanged.
+
+What this does not decide: the page that receives the text is the site's own, and its scripts
+read their own fields.
+
 ### Private guarded text input
 
 `text_input` is a separate backend protocol; it does not activate page-agent

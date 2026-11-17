@@ -539,9 +539,13 @@ globalThis.__tiloPage ||= (() => {
   // whatever wrote it.
   const SECRET_TOKENS = /(^|\s)(cc-[a-z-]+|one-time-code|current-password|new-password)(\s|$)/i;
   const wasPassword = new WeakSet();
+  // A field that holds a text its person keeps for this site alone, written
+  // by `fillAt`: a secret for as long as the field is there, whatever its
+  // type and whatever the page says of it.
+  const released = new WeakSet();
   function secret(element) {
     if (!element || element.nodeType !== 1) return false;
-    if (wasPassword.has(element)) return true;
+    if (wasPassword.has(element) || released.has(element)) return true;
     const tag = element.localName;
     if (tag === 'input' && type(element) === 'password') { wasPassword.add(element); return true; }
     if (SECRET_TOKENS.test(element.getAttribute('autocomplete') || '')) return true;
@@ -1932,6 +1936,37 @@ globalThis.__tiloPage ||= (() => {
     if (element.localName !== 'input' || type(element) !== 'color') return;
     throw failure('native_chooser',
       `${ref} is a colour input, and ${verb} it opens the platform's colour picker, which no agent can see or use; set the colour with fill-page instead, giving #rrggbb such as #1d70b8`);
+  }
+
+  // A text the caller was handed for one site only: a password, a code or
+  // another value its person keeps for the origin `at`. It is written where
+  // this very document says it is at that origin, in the page's own document
+  // and no frame's, into a field of the kind it is for, whose form sends
+  // nowhere else. Each of those is decided here, in the step that writes, so
+  // a page that went elsewhere since the caller looked gets nothing. The
+  // field then counts as a secret for as long as it is there, and one that
+  // is no password field is drawn as dots.
+  function fillAt(ref, text, at, into) {
+    const element = resolve(ref), tag = element.localName, kind = type(element);
+    if (window.top !== window)
+      throw failure('foreign_frame', `${ref} is in a frame; what is kept for one site is written only into the page's own document`);
+    if (location.origin !== at)
+      throw failure('another_site', `This page is at ${location.origin}, which is not where that item belongs`);
+    if (!isSecureContext)
+      throw failure('not_secure', 'This page did not arrive over https; nothing kept for a site is written into it');
+    const password = tag === 'input' && kind === 'password';
+    if (into === 'password' && !password)
+      throw failure('not_a_password_field', `${ref} is not a password field; a password is written into nothing else`);
+    if (!(tag === 'textarea' || (tag === 'input' && !NOT_TEXT.has(kind) && !SET_VALUE.has(kind) && kind !== 'color')))
+      throw failure('not_a_text_field', `${ref} is not a field that takes text`);
+    const sends = element.form && foreignTarget(element.form, null);
+    if (sends)
+      throw failure('foreign_form', `${ref} is in a form that sends its data to ${sends}, another site than ${location.origin}`);
+    // Marked before it is written, so nothing said of the fill, a refusal
+    // included, tells any of the text.
+    released.add(element);
+    if (!password) element.style.setProperty('-webkit-text-security', 'disc', 'important');
+    return fill(ref, text, true);
   }
 
   function fill(ref, text, allowSecret) {
@@ -3641,7 +3676,12 @@ globalThis.__tiloPage ||= (() => {
           case 'locate': arm('pointer'); return acted(command.element, locate(command.element, command.cross_origin));
           case 'locate_box': return locateBox(command.element);
           case 'capture': return captureRegion(command.element);
-          case 'fill': { arm('script'); return acted(command.element, opening(() => fill(command.element, command.text, command.secret))); }
+          case 'fill': {
+            arm('script');
+            return acted(command.element, opening(() => typeof command.at === 'string'
+              ? fillAt(command.element, command.text, command.at, command.into)
+              : fill(command.element, command.text, command.secret)));
+          }
           case 'fill_files': arm('script'); return acted(command.element, fillFilesTarget(command.element, command.paths));
           case 'select': arm('script'); return acted(command.element, opening(() => select(command.element, command.values)));
           case 'submit': arm('script'); return acted(command.element, submit(command.element, command.cross_origin));

@@ -830,6 +830,45 @@ READS = {'/shadow': SHADOW, '/code': CODE, '/layout': LAYOUT, '/component-articl
          '/spaced': SPACED, '/waits': WAITS, '/waits-shadow': WAITS_SHADOW}
 
 
+# A sign-in as sites write them: a name, a password, the code a second step
+# asks for, and a field that is none of them.
+SIGN_IN = b"""<!doctype html><title>Sign in</title>
+<h1>Sign in</h1>
+<form action="/done" method="get">
+  <label>Email <input name="email" type="email"></label>
+  <label>Password <input name="password" type="password"></label>
+  <label>Code <input name="code" inputmode="numeric"></label>
+  <label>Remember as <input name="nick"></label>
+  <button>Sign in</button>
+</form>"""
+
+# The same sign-in inside another page: once from another site, once from the
+# page's own.
+SIGN_IN_HOLDER = b"""<!doctype html><title>Holder</title>
+<h1>Holder</h1>
+<iframe src="{OTHER}/sign-in" title="Another site" style="width:600px;height:260px;border:0"></iframe>
+<iframe src="/sign-in" title="Same site" style="width:600px;height:260px;border:0"></iframe>"""
+
+# A sign-in whose form sends what it is given to another site.
+SIGN_IN_ELSEWHERE = b"""<!doctype html><title>Sign in</title>
+<h1>Sign in</h1>
+<form action="{OTHER}/collect" method="post">
+  <label>Password <input name="password" type="password"></label>
+  <button>Sign in</button>
+</form>"""
+
+# A sign-in that goes to another site the moment its password field is used.
+SIGN_IN_LEAVING = b"""<!doctype html><title>Leaving</title>
+<h1>Leaving</h1>
+<form action="/done" method="get">
+  <label>Password <input name="password" type="password" onfocus="location.replace('{OTHER}/sign-in')"></label>
+</form>"""
+
+READS['/sign-in'] = SIGN_IN
+TWO_SITES.update({'/sign-in-holder': SIGN_IN_HOLDER, '/sign-in-elsewhere': SIGN_IN_ELSEWHERE,
+                  '/sign-in-leaving': SIGN_IN_LEAVING})
+
+
 # A sign-up form as a design system's components draw it, modelled on the
 # markup of Web Awesome's form controls (the successor of Shoelace's): each
 # field is a custom element that takes part in the form through
@@ -1089,6 +1128,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             onward = f'<script>setTimeout(() => location.replace("/hop?n={left - 1}"), 20)</script>' if left else ''
             return self.answer(f'<!doctype html><title>Hop {left}</title><h1>Hop {left}</h1>'
                                f'<label>Stop <input name="stop"></label><p>{left} to go</p>{onward}'.encode())
+        # A sign-in address that sends its visitor on to another site.
+        if path == '/sign-in-moved':
+            self.send_response(302)
+            self.send_header('Location', self.server.other + '/sign-in')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
         if path in READS:
             return self.answer(READS[path])
         if path in TWO_SITES:
@@ -1650,6 +1696,106 @@ class PageActions(unittest.TestCase):
         self.assertFalse(nothing['ok'])
         self.assertEqual(nothing['code'], 'no_field')
         self.assertFalse(self.page('fill_form', form='form9', answers={'Arrival': '2027-02-03'})['ok'])
+
+    def test_a_text_released_for_one_site_is_written_only_into_that_sites_own_page(self):
+        # What a person keeps for one site is written where the engine itself
+        # says the page is at that site, in the page's own document, into a
+        # field of the kind it is for. Nothing said of it afterwards tells any
+        # of it, and anywhere else it is not written at all.
+        mark, other_mark = 'released-marker-one-7f3a', 'released-marker-two-9c1d'
+        said = []
+
+        def heard(answer):
+            said.append(answer)
+            return answer
+
+        def bound(element, text, at, into):
+            return heard(self.page('fill', element=element, text=text, secret=True, at=at, into=into, actor='ada'))
+
+        def refused(element, text, at, into, code):
+            answer = bound(element, text, at, into)
+            self.assertEqual((answer['ok'], answer.get('code')), (False, code), answer)
+
+        def holds(name):
+            return self.main_world(f'document.querySelector("[name={name}]").value')
+
+        self.h.navigate(self.url + '/sign-in')
+        outline = heard(self.ok('outline', actor='ada'))['outline']
+        email, password, code, nick = (self.ref(outline, f'textbox "{name}"')
+                                       for name in ('Email', 'Password', 'Code', 'Remember as'))
+        # The same server under another name is another site.
+        renamed = f'http://localhost:{self.server.server_port}'
+        refused(password, mark, renamed, 'password', 'another_site')
+        # A password goes into a password field and into nothing else.
+        refused(email, mark, self.url, 'password', 'not_a_password_field')
+        self.assertEqual((holds('password'), holds('email')), ('', ''))
+        self.assertTrue(bound(password, mark, self.url, 'password')['ok'])
+        self.assertEqual(holds('password'), mark)
+        # Asked for again under another site's name, the field keeps what it has.
+        refused(password, other_mark, renamed, 'password', 'another_site')
+        self.assertEqual(holds('password'), mark)
+        # A code and a plain value are written into a text field, which is
+        # then a secret too and drawn as dots.
+        self.assertTrue(bound(code, other_mark, self.url, 'code')['ok'])
+        self.assertTrue(bound(nick, other_mark, self.url, 'value')['ok'])
+        self.assertEqual((holds('code'), holds('nick')), (other_mark, other_mark))
+        for name in ('code', 'nick'):
+            drawn = self.main_world(f'getComputedStyle(document.querySelector("[name={name}]")).webkitTextSecurity')
+            self.assertEqual(drawn, 'disc', name)
+        # Every read of the page says that the three fields are set, and how
+        # long, and none of what they hold.
+        after = heard(self.ok('outline', actor='ben'))['outline']
+        self.assertEqual(after.count(f'value=<{len(mark)} characters hidden>'), 3, after)
+        for read in (dict(action='changes', actor='ada'), dict(action='fields'), dict(action='forms'),
+                     dict(action='ledger', since=0), dict(action='console', since=0), dict(action='network', since=0)):
+            heard(self.ok(**read))
+
+        # An address that sends its visitor on: the page is where it arrived,
+        # not where it was asked for.
+        self.h.send(op='navigate', url=self.url + '/sign-in-moved')
+        self.h.until(lambda e: e['event'] == 'loaded' and e['url'].rstrip('/') == self.server.other + '/sign-in')
+        self.h.settle()
+        arrived = self.ref(heard(self.ok('outline', actor='ada'))['outline'], 'textbox "Password"')
+        self.assertEqual(self.main_world('location.origin'), self.server.other)
+        refused(arrived, mark, self.url, 'password', 'another_site')
+        self.assertEqual(holds('password'), '')
+
+        # A frame gets nothing: not another site's, and not the page's own.
+        self.h.navigate(self.url + '/sign-in-holder')
+        deadline = time.monotonic() + HANG_BOUND
+        while True:
+            # A frame between two documents is read again until both are there.
+            read = self.page('outline', actor='ada')
+            framed = re.findall(r'textbox "Password"[^\n]*\[ref=(d\d+e\d+)\]', read.get('outline', '')) if read['ok'] else []
+            if len(framed) == 2:
+                break
+            self.assertLess(time.monotonic(), deadline, read)
+            time.sleep(0.1)
+        for field in framed:
+            for site in (self.url, self.server.other):
+                refused(field, mark, site, 'password', 'foreign_frame')
+        self.assertNotIn('characters hidden', heard(self.ok('outline', actor='ada'))['outline'])
+
+        # A form that sends to another site gets nothing.
+        self.h.navigate(self.url + '/sign-in-elsewhere')
+        elsewhere = self.ref(heard(self.ok('outline', actor='ada'))['outline'], 'textbox "Password"')
+        refused(elsewhere, mark, self.url, 'password', 'foreign_form')
+        self.assertEqual(holds('password'), '')
+
+        # A page that leaves for another site as its field is used: what was
+        # written stayed with the document it was written into.
+        self.h.navigate(self.url + '/sign-in-leaving')
+        leaving = self.ref(heard(self.ok('outline', actor='ada'))['outline'], 'textbox "Password"')
+        bound(leaving, mark, self.url, 'password')
+        self.reads('heading "Sign in"', 'the page never went on to the other site')
+        self.assertEqual(self.main_world('location.origin'), self.server.other)
+        self.assertEqual(holds('password'), '')
+        for read in (dict(action='ledger', since=0), dict(action='console', since=0), dict(action='network', since=0)):
+            heard(self.ok(**read))
+
+        told = json.dumps(said)
+        self.assertNotIn(mark, told)
+        self.assertNotIn(other_mark, told)
 
     def test_no_secret_is_in_the_record_whatever_wrote_it(self):
         # What is written into a field that is secret by its nature is in

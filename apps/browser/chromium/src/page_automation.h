@@ -2124,6 +2124,13 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     Succeed(Text(value,"message"),outline,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);
   }
   void Evaluate() {
+    // A text released for one site is written into the page's own document.
+    // It is never handed to a frame's, whatever site the frame is of: the
+    // script that carries it does not reach the frame's process at all.
+    if(!PrivateText() && pending_->command->HasKey("at") && !world_frame_.number.empty()) {
+      Fail("foreign_frame",Text(pending_->command,"element")+" is in a frame; what is kept for one site is written only into the page's own document");
+      return;
+    }
     auto command=CefDictionaryValue::Create();
     const auto action=Action();
     const bool elementless=!pending_->command->HasKey("element");
@@ -2132,7 +2139,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(!PrivateText()) Mark(command);
     if(!PrivateText() && !world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
     // A wait's words travel with it: `text` to wait for, `gone` to see gone.
-    for(const char* key:{"element","text","gone","key","lease","history_scope"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
+    for(const char* key:{"element","text","gone","key","lease","history_scope","at","into"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
     for(const char* key:{"cross_origin","secret","native_caret","enabled"}) if(pending_->command->HasKey(key)) command->SetBool(key,pending_->command->GetBool(key));
     // A find names what to look for, so the words it matches travel with it.
     for(const char* key:{"role","name"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
