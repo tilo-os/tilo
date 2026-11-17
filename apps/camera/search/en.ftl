@@ -3,8 +3,8 @@
 # merely near its category. Desktop search matches every language's words
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
-search-keywords = webcam, photo, selfie, video recording, resource, take a picture, photo booth, cheese, kamoso, windows camera
+search-keywords = webcam, photo, selfie, video recording, video, film, capture, take a picture, photo booth, cheese, kamoso, windows camera
 # What the app does, in one plain phrase (English): the tag line under its
 # name in the Store and in search. No marketing; the packer signs it into the
 # manifest.
-app-tagline = Takes photos and resources video with your cameras
+app-tagline = Takes photos and video with your cameras
