@@ -70,20 +70,20 @@ snippets-snippet-favorite = { $new ->
 }
 snippets-snippet-folder = Moved { $item } to the folder { $new }
 snippets-snippet-language = Set the language of { $item } to { $new ->
-    [text] plain text
-    [shell] Shell
-    [rust] Rust
-    [sql] SQL
-    [git] Git
-    [python] Python
-    [javascript] JavaScript
-    [json] JSON
-    [yaml] YAML
-    [markdown] Markdown
-    [html] HTML
-    [css] CSS
-    [toml] TOML
-    [dockerfile] Dockerfile
+    [PlainText] plain text
+    [Shell] Shell
+    [Rust] Rust
+    [Sql] SQL
+    [Git] Git
+    [Python] Python
+    [JavaScript] JavaScript
+    [Json] JSON
+    [Yaml] YAML
+    [Markdown] Markdown
+    [Html] HTML
+    [Css] CSS
+    [Toml] TOML
+    [Dockerfile] Dockerfile
    *[other] { $new }
 }
 snippets-snippet-tags = Changed the tags of { $item }

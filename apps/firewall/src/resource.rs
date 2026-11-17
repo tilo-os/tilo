@@ -437,7 +437,7 @@ mod tests {
         // its variant's name.
         {
             use ui::automerge::{ObjType, ReadDoc as _, ScalarValue};
-            use ui::tilo_resource::{Model as _, Replica, Slot, evolution, read_key};
+            use ui::tilo_resource::{Replica, Slot, evolution, read_key};
             let mut replica = Replica::<Firewall>::new();
             replica
                 .apply(Firewall::import_of(&sample_config()))
@@ -453,7 +453,16 @@ mod tests {
                     let map = Slot::Key(&rule, "matcher")
                         .object(doc, ObjType::Map)
                         .unwrap();
-                    evolution::fixture(doc, &map, &matcher.to_json()).unwrap();
+                    // Each variant by the key it was stored under.
+                    let shape = match &matcher {
+                        crate::model::Matcher::Service(name) => {
+                            serde_json::json!({"$variant": "service", "0": name})
+                        }
+                        crate::model::Matcher::Port { port, proto } => serde_json::json!({
+                            "$variant": "port", "port": port, "proto": proto.label()
+                        }),
+                    };
+                    evolution::fixture(doc, &map, &shape).unwrap();
                     flattened.push(rule);
                 }
             }

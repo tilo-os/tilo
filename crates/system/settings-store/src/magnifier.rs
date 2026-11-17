@@ -37,7 +37,7 @@ pub fn zoom_from_label(label: &str) -> Option<u8> {
 /// as the lens.
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(from = "String", into = "&'static str")]
+#[serde(rename_all = "snake_case")]
 pub enum MagnifierView {
     /// A lens around the point of interest; the rest of the screen stays as it is.
     #[default]
@@ -80,18 +80,6 @@ impl crate::Labelled for MagnifierView {
 
     fn label(self) -> &'static str {
         Self::label(self)
-    }
-}
-
-impl From<String> for MagnifierView {
-    fn from(value: String) -> Self {
-        Self::parse(&value)
-    }
-}
-
-impl From<MagnifierView> for &'static str {
-    fn from(view: MagnifierView) -> Self {
-        view.as_str()
     }
 }
 

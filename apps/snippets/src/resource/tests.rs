@@ -320,7 +320,7 @@ fn search_finds_each_snippet_by_what_it_holds() {
     let hit = entries.iter().find(|e| e.title == "Deploy").unwrap();
     for held in [
         "Ops",
-        "shell",
+        "Shell",
         "k8s",
         "kubectl rollout",
         "Roll a deployment",

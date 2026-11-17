@@ -257,8 +257,8 @@ mod tests {
         locale_field(&mut app, "currency", "JPY").unwrap();
         locale_field(&mut app, "date_format", "EU").unwrap();
         locale_field(&mut app, "time_format", "H12").unwrap();
-        locale_field(&mut app, "measurement", "imperial").unwrap();
-        locale_field(&mut app, "first_day_of_week", "sunday").unwrap();
+        locale_field(&mut app, "measurement", "Imperial").unwrap();
+        locale_field(&mut app, "first_day_of_week", "Sunday").unwrap();
         let settings = app.settings::<Locale>();
         let locale = settings.get();
         assert_eq!(locale.currency, Currency::JPY);

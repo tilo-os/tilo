@@ -136,9 +136,9 @@ db-client-workspace-connections = Die gespeicherten Verbindungen geändert
 db-client-workspace-saved-queries = Die gespeicherten Abfragen geändert
 db-client-saved-connection-name = Die Verbindung { $item } umbenannt
 db-client-saved-connection-engine = Die Engine von { $item } auf { $new ->
-    [sqlite] SQLite
-    [postgres] PostgreSQL
-    [mysql] MySQL
+    [Sqlite] SQLite
+    [Postgres] PostgreSQL
+    [MySql] MySQL
    *[other] { $new }
 } gesetzt
 db-client-saved-connection-host = Den Host von { $item } auf { $new } gesetzt

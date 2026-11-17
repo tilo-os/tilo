@@ -1050,6 +1050,25 @@ mod tests {
         assert_eq!(thread.replies.values().next().unwrap().body, paragraphs);
     }
 
+    /// `value`, a JSON form, with each variant named as an older version
+    /// stored it: its name in lowercase.
+    fn stored(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, field) in fields.iter_mut() {
+                    match field {
+                        serde_json::Value::String(name) if key == "$variant" => {
+                            *name = name.to_lowercase();
+                        }
+                        other => stored(other),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(stored),
+            _ => {}
+        }
+    }
+
     #[test]
     fn a_reply_kept_with_flat_mark_values_migrates_to_values_stored_by_variant() {
         use automerge::ReadDoc as _;
@@ -1062,12 +1081,9 @@ mod tests {
         ui::tilo_resource::Slot::Key(&reply, "body")
             .remove(doc)
             .unwrap();
-        evolution::fixture(
-            doc,
-            &reply,
-            &serde_json::json!({ "body": paragraphs.to_json() }),
-        )
-        .unwrap();
+        let mut body = paragraphs.to_json();
+        stored(&mut body);
+        evolution::fixture(doc, &reply, &serde_json::json!({ "body": body })).unwrap();
         ui::tilo_resource::Slot::Key(&ROOT, evolution::VERSION_KEY)
             .put_scalar(doc, automerge::ScalarValue::Uint(2))
             .unwrap();
