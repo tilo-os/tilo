@@ -24,6 +24,7 @@ mod conversation;
 mod planning;
 mod selection_prompt;
 mod steps;
+mod summary;
 
 /// How long a task waits for the broker's pushed action catalogue.
 const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
@@ -331,6 +332,9 @@ pub struct Session {
     /// they keep from one call to the next; set up on the first call that
     /// needs them.
     web: Option<crate::tools::web::Web>,
+    /// Whom this session asks a single question outside a turn's own exchange with its model:
+    /// what a conversation's summary is kept with ([`summary`]).
+    single_shot: std::sync::Arc<dyn crate::transform::TransformModel>,
 }
 
 /// Ask the broker to select one current holder of this exact route. Safe to
@@ -402,6 +406,9 @@ impl Session {
                     |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection),
                 ),
         };
+        let single_shot = std::sync::Arc::new(crate::transform::GatewayModel {
+            launched: chooser.selection().cloned(),
+        });
         Ok(Self {
             cfg,
             link,
@@ -418,6 +425,7 @@ impl Session {
             failure_detail: None,
             spending: None,
             web: None,
+            single_shot,
         })
     }
 
@@ -563,6 +571,13 @@ impl Session {
     /// with, while every other part of the run stays the production one.
     pub fn set_chooser(&mut self, chooser: Chooser) {
         self.chooser = chooser;
+    }
+
+    /// Ask single questions of `model` from now on, in place of the gateway this session
+    /// connected with: how a harness scripts them, and how a host answers them with the model of
+    /// the person the agent works for.
+    pub fn set_single_shot(&mut self, model: std::sync::Arc<dyn crate::transform::TransformModel>) {
+        self.single_shot = model;
     }
 
     /// The chooser this session plans with now.

@@ -1,6 +1,20 @@
 //! The words the loop's model is asked with (the tools it carries are
 //! [`super::loop_definitions`]).
 
+/// What the loop's model is told before a request: what every agent is told ([`LOOP_SYSTEM`]),
+/// and after it what this agent's keeper told it about how to work for them, when they told it
+/// anything. An agent told nothing reads the same bytes as before, so the prompt's prefix stays
+/// the one a provider's cache holds.
+pub(crate) fn system_for(told: Option<&str>) -> std::borrow::Cow<'static, str> {
+    match told.map(str::trim).filter(|told| !told.is_empty()) {
+        None => std::borrow::Cow::Borrowed(LOOP_SYSTEM),
+        Some(told) => std::borrow::Cow::Owned(format!(
+            "{LOOP_SYSTEM}\n\nWhat the person who keeps you told you about how to work for them. \
+             It holds beside everything above:\n{told}"
+        )),
+    }
+}
+
 /// The loop's system prompt. Generic on purpose: it names no application and
 /// no operation.
 ///

@@ -78,7 +78,7 @@ mod wait;
 /// (crates/agent/agent-web-tools).
 pub use tilo_agent_web_tools as web;
 
-pub(crate) use prompt::LOOP_SYSTEM;
+pub(crate) use prompt::system_for;
 
 pub use schema::argument_lines_compact;
 

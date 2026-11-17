@@ -32,6 +32,9 @@ const CHAT_APP: (&str, &str) = ("chat", "Chat");
 /// Chat's verb that records a turn's work on the reply to its message: the one Chat's window
 /// publishes on each message, run here on the same record from the same declaration.
 const RECORD_WORK: &str = "record-work";
+/// Chat's verb that keeps a conversation's summary: the one its agent keeps while it answers a
+/// turn there ([`chat::recall`]), run here on Chat's record as `record-work` is.
+const KEEP_SUMMARY: &str = "keep-summary";
 
 /// One workspace as the pass hands it over: the grants its turns are decided against.
 pub(crate) struct WorkspaceFacts {
@@ -106,6 +109,20 @@ impl Conversations {
     fn agent_names(opened: &Opened) -> chat::projection::AgentNames {
         Self::workspace_agents(opened)
             .map(|record| record.get().active_names())
+            .unwrap_or_default()
+    }
+
+    /// What each of the workspace's agents was told by its keeper about how to work for them, by
+    /// the agent's id: what a turn's request carries to the model beside what every agent is told.
+    fn agent_instructions(opened: &Opened) -> std::collections::HashMap<String, String> {
+        Self::workspace_agents(opened)
+            .map(|record| {
+                record
+                    .get()
+                    .active()
+                    .filter_map(|agent| Some((agent.id.0.clone(), agent.told()?.to_owned())))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -204,6 +221,64 @@ impl Conversations {
         Err(unknown())
     }
 
+    /// Keep a conversation's summary through Chat's own `keep-summary` on the workspace's open Chat
+    /// record, as `invoker` (the agent answering a turn there): `arguments` are the verb's. Chat's
+    /// verb decides who may keep one and how far it reaches; nothing is decided here.
+    ///
+    /// # Errors
+    /// The arguments do not read, no open workspace holds the conversation, or Chat refused it.
+    fn keep_summary(
+        &self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::ApiError> {
+        let text = |name: &str| {
+            arguments
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    tilo_actions::ApiError::InvalidArguments(format!("a summary names its {name}"))
+                })
+        };
+        let channel = Id::from_raw(text("channel")?);
+        let through_ts = arguments
+            .get("through_ts")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| {
+                tilo_actions::ApiError::InvalidArguments(
+                    "a summary says when its last message was written".to_owned(),
+                )
+            })?;
+        let invoke = chat::Chat::KEEP_SUMMARY.with(chat::record::chat::KeepSummary {
+            channel: channel.clone(),
+            through: text("through")?,
+            through_ts,
+            text: text("text")?,
+        });
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let (Some(record), Some((_, part))) = (&opened.chat, &opened.part) else {
+                continue;
+            };
+            if !part
+                .get()
+                .messages
+                .iter()
+                .any(|(_, message)| message.channel == channel)
+            {
+                continue;
+            }
+            return record
+                .invoke_as(invoker, &invoke)
+                .map_err(|error| tilo_actions::ApiError::Failed(error.to_string()));
+        }
+        Err(tilo_actions::ApiError::Unknown(
+            tilo_actions::ActionAddress::new(resource, KEEP_SUMMARY),
+        ))
+    }
+
     /// Record on `turn` 's message that `agent` stopped before it answered it, through Chat's own
     /// `record-work` as the agent records its work: the person reads the failure on the reply and
     /// can ask the message again from there. Nothing is written over an answer the agent gave.
@@ -278,6 +353,12 @@ impl Conversations {
                     .get(&workspace.workspace)
                     .map(Self::agent_names)
                     .unwrap_or_default();
+                let instructions = self
+                    .open
+                    .borrow()
+                    .get(&workspace.workspace)
+                    .map(Self::agent_instructions)
+                    .unwrap_or_default();
                 let chat_record = chat.get();
                 let part_record = part.get();
                 turns(
@@ -286,6 +367,7 @@ impl Conversations {
                     &part_record,
                     person,
                     &names,
+                    &instructions,
                 )
             }
             None => Vec::new(),
@@ -742,6 +824,12 @@ impl tilo_service::Service for TurnSummonses {
                 tilo_actions::ActionOutput::default(),
             ));
         }
+        if action == KEEP_SUMMARY {
+            return self
+                .conversations
+                .keep_summary(invoker, resource, arguments)
+                .map(|()| tilo_service::Started::Done(tilo_actions::ActionOutput::default()));
+        }
         if action != RECORD_WORK {
             return Err(tilo_actions::ApiError::Unknown(
                 tilo_actions::ActionAddress::new(resource, action),
@@ -867,6 +955,16 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
     if let Some(declaration) = declaration {
         spec = spec.with_action(tilo_resource::declaration_spec(&declaration));
     }
+    // The summary of the conversation the turn is in is kept from the turn's own item too: the
+    // agent keeps it while it answers, whether or not Chat's window is open to publish the verb.
+    let summary = tilo_resource::vocabulary::<chat::Chat>()
+        .declarations()
+        .iter()
+        .find(|declaration| declaration.id == KEEP_SUMMARY)
+        .cloned();
+    if let Some(declaration) = summary {
+        spec = spec.with_action(tilo_resource::declaration_spec(&declaration));
+    }
     spec
 }
 
@@ -878,6 +976,7 @@ fn turns(
     part: &chat::parts::ChatPart,
     person: &str,
     agent_names: &chat::projection::AgentNames,
+    agent_instructions: &std::collections::HashMap<String, String>,
 ) -> Vec<(AgentTurn, String)> {
     chat::summons::summonses(chat, part)
         .into_iter()
@@ -888,15 +987,17 @@ fn turns(
             // What came before it in the conversation, as every turn is told it
             // ([`chat::recall::told`]): "what did I ask you before?" and "move the reminder to
             // Friday" are understood through it.
-            let instruction = chat::recall::told(
+            let told = chat::recall::told(
                 chat,
                 part,
                 &summons.conversation,
                 &summons.message,
                 &MemberId::agent(&summons.agent),
                 instruction,
-            )
-            .instruction;
+            );
+            let instruction = told.instruction;
+            let fold = told.fold;
+            let agent_instruction = agent_instructions.get(&summons.agent).cloned();
             let name = agent_names
                 .get(&summons.agent)
                 .cloned()
@@ -919,6 +1020,8 @@ fn turns(
                             (agent_names, &chat::projection::PeopleNames::new()),
                         ),
                         instruction,
+                        agent_instruction,
+                        fold,
                         subject,
                         spend: None,
                     },
@@ -995,10 +1098,17 @@ mod tests {
 
     /// The turns `chat` 's conversations give for the messages of `head` .
     fn read(chat: &chat::Chat, head: &chat::parts::ChatPart) -> Vec<AgentTurn> {
-        turns("w1", chat, head, ME, &chat::projection::AgentNames::new())
-            .into_iter()
-            .map(|(turn, _)| turn)
-            .collect()
+        turns(
+            "w1",
+            chat,
+            head,
+            ME,
+            &chat::projection::AgentNames::new(),
+            &std::collections::HashMap::new(),
+        )
+        .into_iter()
+        .map(|(turn, _)| turn)
+        .collect()
     }
 
     tilo_test_env::scenario! {
@@ -1311,6 +1421,7 @@ mod tests {
             &asked,
             ME,
             &chat::projection::AgentNames::new(),
+            &std::collections::HashMap::new(),
         );
         let sessions = crate::agent_sessions::AgentSessions::new();
         let held = |turns: Vec<(AgentTurn, String)>| vec![("w1".to_owned(), turns)];
