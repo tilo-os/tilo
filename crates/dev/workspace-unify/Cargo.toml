@@ -27,7 +27,7 @@ doc = false
 "accesskit_atspi_common-0_20_0" = { package = "accesskit_atspi_common", version = "^0.20.0", default-features = false, features = [] }
 "accesskit_consumer-0_39_0" = { package = "accesskit_consumer", version = "^0.39.0", default-features = false, features = [] }
 "accesskit_unix-0_23_0" = { package = "accesskit_unix", path = "../../../vendor/accesskit_unix", default-features = false, features = ["tokio"] }
-"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["store", "default", "hints", "hugging-face"] }
+"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["default", "hints", "hugging-face", "store"] }
 "accounts" = { path = "../../../crates/system/accounts", default-features = false, features = ["person"] }
 "activity" = { path = "../../../apps/activity", default-features = false, features = ["samples"] }
 "acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
@@ -1214,6 +1214,7 @@ doc = false
 "tilo-file-provider" = { path = "../../../crates/runtime/tilo-file-provider", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-firstboot-files" = { path = "../../../crates/system/firstboot-files", default-features = false, features = [] }
+"tilo-flight-log" = { path = "../../../crates/session/flight-log", default-features = false, features = [] }
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-formats" = { path = "../../../crates/sdk/tilo-formats", default-features = false, features = [] }
 "tilo-frame-metrics" = { path = "../../../crates/session/frame-metrics", default-features = false, features = [] }
@@ -1319,7 +1320,6 @@ doc = false
 "tilo-session-core" = { path = "../../../crates/session/core", default-features = false, features = [] }
 "tilo-session-logging" = { path = "../../../crates/session/session-logging", default-features = false, features = [] }
 "tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = [] }
-"tilo-flight-log" = { path = "../../../crates/session/flight-log", default-features = false, features = [] }
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }
 "tilo-settings-service" = { path = "../../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
@@ -1615,7 +1615,7 @@ doc = false
 "zvariant_utils-3_4_0" = { package = "zvariant_utils", version = "^3.4.0", default-features = false, features = ["default"] }
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.build-dependencies]
-"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["store", "default", "hints", "hugging-face"] }
+"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["default", "hints", "hugging-face", "store"] }
 "accounts" = { path = "../../../crates/system/accounts", default-features = false, features = ["person"] }
 "acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
 "adblock-0_12_1" = { package = "adblock", version = "^0.12.1", default-features = false, features = ["addr", "content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
@@ -2638,7 +2638,7 @@ doc = false
 "accesskit_atspi_common-0_20_0" = { package = "accesskit_atspi_common", version = "^0.20.0", default-features = false, features = [] }
 "accesskit_consumer-0_39_0" = { package = "accesskit_consumer", version = "^0.39.0", default-features = false, features = [] }
 "accesskit_unix-0_23_0" = { package = "accesskit_unix", path = "../../../vendor/accesskit_unix", default-features = false, features = ["tokio"] }
-"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["store", "default", "hints", "hugging-face"] }
+"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["default", "hints", "hugging-face", "store"] }
 "accounts" = { path = "../../../crates/system/accounts", default-features = false, features = ["person"] }
 "activity" = { path = "../../../apps/activity", default-features = false, features = ["samples"] }
 "acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
@@ -3822,6 +3822,7 @@ doc = false
 "tilo-file-provider" = { path = "../../../crates/runtime/tilo-file-provider", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-firstboot-files" = { path = "../../../crates/system/firstboot-files", default-features = false, features = [] }
+"tilo-flight-log" = { path = "../../../crates/session/flight-log", default-features = false, features = [] }
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-formats" = { path = "../../../crates/sdk/tilo-formats", default-features = false, features = [] }
 "tilo-frame-metrics" = { path = "../../../crates/session/frame-metrics", default-features = false, features = [] }
@@ -3925,7 +3926,6 @@ doc = false
 "tilo-session-core" = { path = "../../../crates/session/core", default-features = false, features = [] }
 "tilo-session-logging" = { path = "../../../crates/session/session-logging", default-features = false, features = [] }
 "tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = [] }
-"tilo-flight-log" = { path = "../../../crates/session/flight-log", default-features = false, features = [] }
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }
 "tilo-settings-service" = { path = "../../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
@@ -3956,7 +3956,6 @@ doc = false
 "tilo-unicode-emoji" = { path = "../../../crates/platform/tilo-unicode-emoji", default-features = false, features = [] }
 "tilo-unlock-protocol" = { path = "../../../crates/collab/tilo-unlock-protocol", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../../crates/collab/tilo-user-identity", default-features = false, features = [] }
-"tilo-workspace-host" = { path = "../../../crates/hosting/tilo-workspace-host", default-features = false, features = ["agents", "test-support", "web"] }
 "tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 "tilo-vello-shaders-0_9_0" = { package = "tilo-vello-shaders", path = "../../../vendor/vello_shaders", default-features = false, features = ["cpu", "default", "wgsl"] }
@@ -3980,6 +3979,7 @@ doc = false
 "tilo-workspace-agent" = { path = "../../../crates/platform/tilo-workspace-agent", default-features = false, features = [] }
 "tilo-workspace-directory" = { path = "../../../crates/session/workspace-directory", default-features = false, features = [] }
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
+"tilo-workspace-host" = { path = "../../../crates/hosting/tilo-workspace-host", default-features = false, features = ["agents", "test-support", "web"] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
@@ -4223,7 +4223,7 @@ doc = false
 "accesskit_atspi_common-0_20_0" = { package = "accesskit_atspi_common", version = "^0.20.0", default-features = false, features = [] }
 "accesskit_consumer-0_39_0" = { package = "accesskit_consumer", version = "^0.39.0", default-features = false, features = [] }
 "accesskit_unix-0_23_0" = { package = "accesskit_unix", path = "../../../vendor/accesskit_unix", default-features = false, features = ["tokio"] }
-"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["store", "default", "hints", "hugging-face"] }
+"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["default", "hints", "hugging-face", "store"] }
 "accounts" = { path = "../../../crates/system/accounts", default-features = false, features = ["person"] }
 "acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
 "adblock-0_12_1" = { package = "adblock", version = "^0.12.1", default-features = false, features = ["addr", "content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
