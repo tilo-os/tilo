@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # Runs tilolang-check.mjs over build-tilolang-web.sh's output in headless
 # Chrome for Testing, where the bundle was built (the builder, through
-<<<<<<< HEAD
 # `$CARGO exec`). Screenshots and
-=======
-# `$CARGO --fetch htmlrenderer/tilolang-check exec`). Screenshots and
->>>>>>> f4d59e5 (fix(policy): read the tree as it has become)
 # check.json land in $CARGO_TARGET_DIR/htmlrenderer/tilolang-check.
 set -euo pipefail
 export TMPDIR=${TMPDIR:-$(mktemp -d)}
