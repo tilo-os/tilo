@@ -416,7 +416,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 continue;
             }
             let mut event = change_event(path.unwrap_or_default(), Some(&app), None, entry);
-            event["change"] = json!(change);
+            if let Some(event) = event.as_object_mut() {
+                event.insert("change".to_owned(), json!(change));
+            }
             events.push(event);
         }
         cursor.change = last_change(Some(&page)).or(seen);
