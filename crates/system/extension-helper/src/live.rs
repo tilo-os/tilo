@@ -1129,10 +1129,10 @@ fn linked_layers(layout: &Layout) -> Vec<PathBuf> {
 
 /// Remove every layer that is neither linked nor mounted.
 ///
-/// The launcher runs this when a launch that bound the system profile per path ends, and the
-/// sandbox view's retirement runs it when the last sandbox holding a generation lets go: both are
-/// the moment a layer's last reader may have gone. An applying update holds the live lock, so a
-/// build in progress is never reaped.
+/// The sandbox view's retirement runs this when the last sandbox holding a generation lets go,
+/// which is the moment a layer's last reader may have gone. A launch that bound the system profile
+/// per path holds no generation; the layer it read goes with the next sweep after it ended. An
+/// applying update holds the live lock, so a build in progress is never reaped.
 pub fn prune(live: &dyn LiveHost, layout: &Layout) -> i32 {
     prune_layers(live, layout, &linked_layers(layout));
     0

@@ -66,10 +66,9 @@ immutable once merged, and every apply builds a fresh one from the mounted
 image instead of rewriting one. A layer is removed as soon as nothing mounts it
 any more: an app started before the update keeps the merged `/usr` it started
 with in its own mount namespace, and that mount still reads the layer, so the
-apply keeps it. It goes when the sandbox view built over it is retired, when
-the last app that bound the system profile per path exits, or at the latest
-with the next apply. Every boot deletes them all, because it boots the staged
-deployment that holds them.
+apply keeps it. It goes when the sandbox view built over it is retired, or
+with the next apply after its last reader ended. Every boot deletes them all,
+because it boots the staged deployment that holds them.
 
 ## One version per interface
 
