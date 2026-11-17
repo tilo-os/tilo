@@ -1686,6 +1686,45 @@ tilo_test_env::scenario! {
         assert!(state_of(&app).events.is_empty(), "a refused invitation leaves nothing");
     }
 
+    phase what_its_person_entered_themselves_is_no_invitations_to_change_or_cancel;
+    {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        let id = Uuid::new_v4();
+        app.call(
+            "new-event",
+            serde_json::json!({"event": {
+                "id": id.to_string(),
+                "title": "Board meeting",
+                "start": "2026-11-20T10:00",
+                "end": "2026-11-20T11:00",
+                "timezone": "Europe/Berlin",
+            }}),
+        )
+        .expect("an event its person enters themselves");
+        let before = state_of(&app).event(id).cloned().expect("the event");
+        // Text of its caller's own writing, under the identity of that event.
+        let under_its_identity = |method: &str, start: &str| {
+            invitation_ics(method, "Board meeting", start, "")
+                .replace("UID:quarterly-review-7@example.org", &format!("UID:{id}@tilo"))
+        };
+        for (what, ics) in [
+            ("a cancellation", under_its_identity("CANCEL", "20261120T100000")),
+            ("another time", under_its_identity("REQUEST", "20261120T160000")),
+        ] {
+            let answered = app.call("add-invitation", serde_json::json!({"ics": ics}));
+            assert_eq!(
+                state_of(&app).event(id).cloned(),
+                Some(before.clone()),
+                "{what} under the identity of an event its person entered themselves changed that event ({answered:?})"
+            );
+            let refused = answered.expect_err(what);
+            assert!(
+                format!("{refused:?}").contains("theirs to change or remove"),
+                "{what}: {refused:?}"
+            );
+        }
+    }
+
     phase an_event_no_calendar_holds_names_the_field_that_is_wrong;
     {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
