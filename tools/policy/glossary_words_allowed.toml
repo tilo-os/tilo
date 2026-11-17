@@ -47,6 +47,11 @@ words = ["relay"]
 identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseError"]
 
 [[allow]]
+reason = "The name a device's store and a page's store keep a run of unpublished writes under: files and keys written under it, found by it for as long as stores keep runs this way."
+words = ["custody"]
+paths = ["crates/collab/tilo-peer-state/src/owner/publication.rs"]
+
+[[allow]]
 reason = "An email's subject line."
 words = ["subject"]
 paths = [

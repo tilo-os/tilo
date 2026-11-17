@@ -1135,11 +1135,23 @@ pub(crate) fn kept_runs(view: &stored::StoredWorkspace) -> impl Iterator<Item = 
 }
 
 /// The name a store keeps the run of `workspace`'s ownership named `hash` under
-/// ([`super::Store::put_ownership`]).
+/// ([`super::Store::put_ownership`]). It is the name stores have kept such writes under since
+/// they kept any, which is not what the code calls them: a store finds what it wrote by it.
 #[must_use]
 pub fn ownership_run_name(workspace: WorkspaceId, hash: [u8; 32]) -> String {
+    kept_name(workspace, "custody", hash)
+}
+
+/// The name builds kept the same writes under for a while. A store reads them from here when
+/// they are not under the name above, and keeps them while its entry names them.
+#[must_use]
+pub fn ownership_name_between(workspace: WorkspaceId, hash: [u8; 32]) -> String {
+    kept_name(workspace, "ownership", hash)
+}
+
+fn kept_name(workspace: WorkspaceId, kept_as: &str, hash: [u8; 32]) -> String {
     format!(
-        "{workspace}.ownership.{}",
+        "{workspace}.{kept_as}.{}",
         blake3::Hash::from_bytes(hash).to_hex()
     )
 }
@@ -1147,9 +1159,15 @@ pub fn ownership_run_name(workspace: WorkspaceId, hash: [u8; 32]) -> String {
 impl stored::NativeAuthorityStorage {
     /// The name of every run of outgoing ownership this record names: what its store keeps
     /// beside it, and may let go of once a record it publishes no longer names it.
+    /// Each is named twice, by the two names a store may hold it under.
     pub fn ownership_runs(&self) -> impl Iterator<Item = String> + '_ {
         self.workspaces.iter().flat_map(|(workspace, stored)| {
-            kept_runs(stored).map(|hash| ownership_run_name(*workspace, hash))
+            kept_runs(stored).flat_map(|hash| {
+                [
+                    ownership_run_name(*workspace, hash),
+                    ownership_name_between(*workspace, hash),
+                ]
+            })
         })
     }
 }
@@ -2909,6 +2927,23 @@ mod tests {
 
     fn workspace() -> WorkspaceId {
         WorkspaceId::parse("23fb5a50-60db-42bd-bb3b-f597bfab1377").unwrap()
+    }
+
+    /// What a store keeps beside an entry has the name stores wrote it with before the code
+    /// called it anything else, and the name builds gave it for a while is the other one a
+    /// store looks under.
+    #[test]
+    fn kept_writes_are_named_as_stores_have_kept_them() {
+        let hash = [0xab; 32];
+        let hex = "ab".repeat(32);
+        assert_eq!(
+            super::ownership_run_name(workspace(), hash),
+            format!("23fb5a50-60db-42bd-bb3b-f597bfab1377.custody.{hex}")
+        );
+        assert_eq!(
+            super::ownership_name_between(workspace(), hash),
+            format!("23fb5a50-60db-42bd-bb3b-f597bfab1377.ownership.{hex}")
+        );
     }
 
     /// One history that cannot fold yet rests a while, and every other history of the

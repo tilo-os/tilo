@@ -70,7 +70,7 @@ pub trait FileHost: std::any::Any + Send + Sync {
     /// or fails.
     ///
     /// # Errors
-    /// The host refuses the publication, or `write` failed.
+    /// The publication is refused, or `write` failed.
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
@@ -132,7 +132,7 @@ fn part_of(parts: &Path, workspace: WorkspaceId, revision: u64) -> PathBuf {
     parts.join(format!("{workspace}.{revision}.json"))
 }
 
-/// The file a run of `workspace`'s outgoing ownership named `hash` is kept in.
+/// The file the writes of `workspace`'s outgoing ownership named `hash` are kept in.
 fn ownership_run_of(parts: &Path, workspace: WorkspaceId, hash: [u8; 32]) -> PathBuf {
     parts.join(crate::owner::ownership_run_name(workspace, hash))
 }
@@ -511,7 +511,7 @@ impl FileStore {
 
     /// Remove the workspace files `record`, the record as published, does not name: the one a
     /// workspace was published over, one a publication stopped before its index wrote, and the
-    /// runs of ownership that moved to its head.
+    /// kept writes of ownership that moved to its head.
     fn prune_parts(&self, record: &NativeAuthorityStorage) {
         let Ok(entries) = std::fs::read_dir(&self.parts) else {
             return;
@@ -603,8 +603,8 @@ impl Store for FileStore {
         }
         provision(&self.parts)?;
         let hash = *blake3::hash(bytes).as_bytes();
-        // Named by its contents: a run kept already is the same run, and nothing names a new
-        // one before this returns, so it never fences the store.
+        // Named by its contents: what is kept already is the same bytes, and nothing names
+        // new ones before this returns, so it never fences the store.
         tilo_files::native::atomic::replace(
             &ownership_run_of(&self.parts, workspace, hash),
             bytes,
@@ -614,8 +614,15 @@ impl Store for FileStore {
         Ok(hash)
     }
     fn read_ownership(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
-        let path = ownership_run_of(&self.parts, workspace, hash);
-        let file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
+        let file = match std::fs::File::open(ownership_run_of(&self.parts, workspace, hash)) {
+            // Kept by a build that named it as the code does.
+            Err(error) if error.kind() == ErrorKind::NotFound => std::fs::File::open(
+                self.parts
+                    .join(crate::owner::ownership_name_between(workspace, hash)),
+            ),
+            opened => opened,
+        }
+        .map_err(|error| error.to_string())?;
         let limit = crate::owner::publication::MAX_RUN_BYTES;
         let mut bytes = Vec::new();
         file.take((limit as u64).saturating_add(1))

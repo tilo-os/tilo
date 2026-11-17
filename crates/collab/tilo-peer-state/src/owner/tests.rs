@@ -85,7 +85,7 @@ fn enrolled_with(
 /// The file one workspace's record is in, as this device holds it: the
 /// snapshot the index names (`<workspace>.<revision>.json`), not the journal
 /// beside it (`<workspace>.<revision>.log`) nor a run of its outgoing ownership
-/// (`<workspace>.ownership.<hash>`), whose names begin the same way and hold
+/// (named by the workspace and the hash of its bytes), whose names begin the same way and hold
 /// bytes that are no document.
 fn workspace_file(path: &std::path::Path, workspace: WorkspaceId) -> PathBuf {
     let name = format!("{workspace}.");
