@@ -65,6 +65,13 @@ const SAVE_GRACE: std::time::Duration = std::time::Duration::from_millis(100);
 /// saved once they arrive, however late).
 const SAVE_WATCH: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long a caller's next action waits for the replica set aside while
+/// its last write was saved. Long enough for a save that outlived
+/// [`SAVE_GRACE`], short enough that the service's thread, which answers
+/// every request of its workspaces, is not held long by one: a save that
+/// outlives it lets the replica go and the record is opened again.
+pub(super) const REUSE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// One write the host handed to the session, as its log names it.
 pub(super) struct Written {
     app: String,
@@ -140,6 +147,59 @@ pub(super) enum Saving {
 pub(super) struct Unsaved {
     saved: tilo_session_client::Receipt<Result<(), String>>,
     written: Vec<Written>,
+    /// Who hears whether the writes were saved, besides the caller
+    /// ([`Self::watched`]).
+    heard: Vec<Heard>,
+}
+
+/// Whether writes still on their way were saved, for whoever waits on it.
+pub(super) struct SaveWatch {
+    saved: Mutex<Option<bool>>,
+    settled: std::sync::Condvar,
+}
+
+impl SaveWatch {
+    #[must_use]
+    pub(super) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            saved: Mutex::new(None),
+            settled: std::sync::Condvar::new(),
+        })
+    }
+
+    pub(super) fn set(&self, saved: bool) {
+        self.saved.lock_recover().get_or_insert(saved);
+        self.settled.notify_all();
+    }
+
+    /// How the writes ended, once they have: `None` while they are on their
+    /// way.
+    pub(super) fn outcome(&self) -> Option<bool> {
+        *self.saved.lock_recover()
+    }
+
+    /// Wait at most `bound` for the writes to settle: whether they were saved.
+    pub(super) fn wait(&self, bound: std::time::Duration) -> bool {
+        let (outcome, _) = self
+            .settled
+            .wait_timeout_while(self.saved.lock_recover(), bound, |outcome| {
+                outcome.is_none()
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let saved = outcome.unwrap_or(false);
+        drop(outcome);
+        saved
+    }
+}
+
+/// A [`SaveWatch`] told how its writes ended; one never told counts them
+/// not saved.
+struct Heard(Arc<SaveWatch>);
+
+impl Drop for Heard {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
 }
 
 impl Unsaved {
@@ -149,7 +209,16 @@ impl Unsaved {
         Self {
             saved,
             written: Vec::new(),
+            heard: Vec::new(),
         }
+    }
+
+    /// Hear whether these writes are saved: told once [`Self::settle`] knows,
+    /// and not saved when nobody settles them.
+    pub(super) fn watched(&mut self) -> Arc<SaveWatch> {
+        let watch = SaveWatch::new();
+        self.heard.push(Heard(Arc::clone(&watch)));
+        watch
     }
 
     /// Wait, off the service's thread, until the host holds the writes or
@@ -166,7 +235,11 @@ impl Unsaved {
         bound: std::time::Duration,
         settled: impl FnOnce(Result<(), ActionFailure>) + Send + 'static,
     ) {
-        let Self { saved, written } = self;
+        let Self {
+            saved,
+            written,
+            heard,
+        } = self;
         let watching = std::thread::Builder::new()
             .name("write-saved".into())
             .spawn(move || {
@@ -178,6 +251,7 @@ impl Unsaved {
                                 "not saved yet: it waits for its record's keys or the host",
                             );
                         }
+                        drop(heard);
                         settled(Err(unconfirmed_failure()));
                         let outcome = saved.recv().unwrap_or_else(|_| {
                             Err("the session ended before the host saved the change".into())
@@ -190,6 +264,9 @@ impl Unsaved {
                     }
                 };
                 log_saved(&written, &outcome);
+                for heard in &heard {
+                    heard.0.set(outcome.is_ok());
+                }
                 settled(outcome.map_err(|reason| {
                     unsaved_failure(format!("the host did not save the change: {reason}"))
                 }));
@@ -333,15 +410,29 @@ impl Worker {
         }
         let routes: HashSet<DocumentRoute> =
             self.handed.values().flatten().map(Written::route).collect();
-        let (outcome, unsaved) = match self.saving(workspace_id) {
+        let (outcome, mut unsaved) = match self.saving(workspace_id) {
             Saving::Saved => return (outcome, None),
             Saving::Failed(reason) => (Err(Outcome::Failed(unsaved_failure(reason))), None),
             Saving::Pending(unsaved) => (outcome, Some(unsaved)),
         };
         let holders: HashSet<DocumentRoute> =
             routes.iter().map(|route| self.holder_of(route)).collect();
-        self.bounded
-            .retain(|(route, _, _), _| !routes.contains(route) && !holders.contains(route));
+        let made: Vec<_> = self
+            .bounded
+            .keys()
+            .filter(|(route, _, _)| routes.contains(route) || holders.contains(route))
+            .cloned()
+            .collect();
+        // Set aside until the host holds what they wrote, and let go if it
+        // does not: a large write outlives the grace, and opening the
+        // record again for the caller's next action costs a read of all of
+        // it, more with every change it holds.
+        let watch = unsaved.as_mut().map(Unsaved::watched);
+        for key in made {
+            if let (Some(held), Some(watch)) = (self.bounded.remove(&key), &watch) {
+                self.parked.park(key, held, Arc::clone(watch));
+            }
+        }
         (outcome, unsaved)
     }
 
@@ -397,7 +488,11 @@ impl Worker {
                     waited_ms = waited.elapsed().as_millis(),
                     "workspace actions: a change's save outlived the grace; answered pending"
                 );
-                Saving::Pending(Unsaved { saved, written })
+                Saving::Pending(Unsaved {
+                    saved,
+                    written,
+                    heard: Vec::new(),
+                })
             }
             Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
                 let reason = "the host did not save the change: the session ended".to_owned();
@@ -418,7 +513,12 @@ impl Worker {
             else {
                 continue;
             };
-            Unsaved { saved, written }.settle(|_| {});
+            Unsaved {
+                saved,
+                written,
+                heard: Vec::new(),
+            }
+            .settle(|_| {});
         }
     }
 

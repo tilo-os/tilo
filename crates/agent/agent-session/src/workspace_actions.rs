@@ -1243,6 +1243,9 @@ struct Worker {
     mounted: BTreeMap<DocumentRoute, Mounted>,
     /// The replicas callers served within bounds act through ([`bounded`]).
     bounded: BTreeMap<bounded::BoundedKey, bounded::BoundedReplica>,
+    /// Callers' replicas whose last write is still on its way to be saved,
+    /// kept for the caller's next action ([`bounded::Parked`]).
+    parked: bounded::Parked<bounded::BoundedReplica>,
     /// The route of the mounted record each part is held beside.
     beside: HashMap<DocumentRoute, DocumentRoute>,
     /// The routes whose channel this worker opened for the session, so a
@@ -1386,6 +1389,7 @@ impl Worker {
             workspaces: HashMap::new(),
             mounted: BTreeMap::new(),
             bounded: BTreeMap::new(),
+            parked: bounded::Parked::default(),
             beside: HashMap::new(),
             channels_opened: HashSet::new(),
             titles: crate::worker::ConfinedTitles::default(),
@@ -1795,6 +1799,7 @@ impl Worker {
         self.shared.stores.lock_recover().remove(&workspace_id);
         self.mounted.retain(|route, _| !of(route));
         self.bounded.retain(|(route, _, _), _| !of(route));
+        self.parked.retain(|(route, _, _)| !of(route));
         self.beside.retain(|route, held| !of(route) && !of(held));
         self.channels_opened.retain(|route| !of(route));
         self.canonical.forget(of);

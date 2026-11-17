@@ -497,3 +497,112 @@ fn an_apps_index_is_not_one_of_its_records() {
         "a named record is the app's own: {named}"
     );
 }
+
+/// A caller's replica set aside while its write is saved comes back only
+/// once the host holds the write: the watch hears saved when the host saves
+/// it, and not saved when the host refuses it or nobody settles it.
+#[test]
+fn a_set_aside_replica_waits_for_its_write_to_be_saved() {
+    let wait = std::time::Duration::from_secs(10);
+    let watched = |outcome: Option<Result<(), String>>| {
+        let (answer, saved) = tilo_session_client::answer();
+        let mut unsaved = super::publish::Unsaved::waiting(saved);
+        let watch = unsaved.watched();
+        unsaved.settle(|_| {});
+        match outcome {
+            Some(outcome) => {
+                let _ = answer.send(outcome);
+            }
+            None => drop(answer),
+        }
+        watch.wait(wait)
+    };
+    assert!(watched(Some(Ok(()))), "saved");
+    assert!(!watched(Some(Err("refused".into()))), "refused");
+    assert!(!watched(None), "the session ended first");
+    let (_answer, saved) = tilo_session_client::answer();
+    let mut unsaved = super::publish::Unsaved::waiting(saved);
+    let watch = unsaved.watched();
+    drop(unsaved);
+    assert!(!watch.wait(wait), "never settled counts as not saved");
+}
+
+/// A caller's replica whose write outlived the host's grace is kept while
+/// the write is saved and handed back to the caller's next action once it
+/// is: the same replica, never one opened again over a record that grows
+/// with every change it holds. Before the host holds the write, or when it
+/// never does, nothing is handed back: nothing unsaved is acted on.
+#[test]
+fn a_replica_kept_for_a_slow_save_comes_back_to_the_caller_never_reopened() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let wait = Duration::from_millis(50);
+    let key = (
+        route(WORKSPACE, "so.tilo.tasks", ""),
+        "ada".into(),
+        None::<String>,
+    );
+    // The replica the caller acted through, identified by the one token
+    // inside it: one opened again would carry another.
+    let replica = Arc::new(());
+    let mut parked: super::bounded::Parked<Arc<()>> = super::bounded::Parked::default();
+    let watch = super::publish::SaveWatch::new();
+    parked.park(key.clone(), Arc::clone(&replica), Arc::clone(&watch));
+    assert!(
+        parked.unpark(&key, wait).is_none(),
+        "not handed back before the host holds what it wrote"
+    );
+
+    // The caller asks again while the save is still in flight: the replica
+    // waits, and is taken back once the host holds the write.
+    let watch = super::publish::SaveWatch::new();
+    parked.park(key.clone(), Arc::clone(&replica), Arc::clone(&watch));
+    let tell = {
+        let watch = Arc::clone(&watch);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            watch.set(true);
+        })
+    };
+    let reused = parked
+        .unpark(&key, Duration::from_secs(10))
+        .expect("the replica is handed back once the write is saved");
+    assert!(
+        Arc::ptr_eq(&replica, &reused),
+        "the very replica the caller acted through, never opened again"
+    );
+    tell.join().expect("the save was told");
+
+    // A write the host refuses, or never confirms, is never acted on again:
+    // the replica is let go and the next action opens what the workspace
+    // holds.
+    let rejecting = super::publish::SaveWatch::new();
+    parked.park(key.clone(), Arc::clone(&replica), Arc::clone(&rejecting));
+    rejecting.set(false);
+    assert!(
+        parked.unpark(&key, wait).is_none(),
+        "a refused write is let go"
+    );
+    let unconfirmed = super::publish::SaveWatch::new();
+    parked.park(key.clone(), Arc::clone(&replica), Arc::clone(&unconfirmed));
+    assert!(
+        parked.unpark(&key, wait).is_none(),
+        "a write nobody confirmed is let go"
+    );
+
+    // Another caller's replica is never handed this caller's.
+    let other = (
+        route(WORKSPACE, "so.tilo.tasks", ""),
+        "grace".into(),
+        None::<String>,
+    );
+    let saved = super::publish::SaveWatch::new();
+    saved.set(true);
+    parked.park(key.clone(), Arc::clone(&replica), Arc::clone(&saved));
+    assert!(parked.unpark(&other, wait).is_none());
+    let again = parked
+        .unpark(&key, wait)
+        .expect("still there for the caller it was set aside for");
+    assert!(Arc::ptr_eq(&replica, &again));
+}
