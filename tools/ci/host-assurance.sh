@@ -74,41 +74,51 @@ say 'install the server image'
 printf 'image archive: %s bytes\n' "$(stat -c %s "$pub/image.oci.tar")" >&2
 df -h /var /tmp /target 2>&1 >&2 || true
 free -m >&2 || true
+# A command whose failure must be readable: its stderr goes to the console as
+# well, which the log keeps even when the step exits at once.
+loud() {
+  local err=$work/stderr code
+  "$@" 2>"$err" || { code=$?; cat "$err" >/dev/console 2>/dev/null || true; return "$code"; }
+  cat "$err" >&2 2>/dev/null || true
+}
 # Copying from oci-archive: unpacks the whole archive into TMPDIR first; keep
 # that on the same disk as the rest of this step rather than wherever the
 # sandbox last pointed TMPDIR.
 export TMPDIR=$work/tmp
-mkdir -p "$TMPDIR"
+loud mkdir -p "$TMPDIR" || die "cannot make $TMPDIR"
 # The image as an unpacked OCI layout, the way the desktop disk checks load
 # theirs: a transport that reads the archive file itself holds every layer it
 # unpacks in the step's memory, which is what ended this step on its 1.16 GB
 # before it installed anything.
 layout=$work/image.oci
-rm -rf "$layout"
-mkdir -p "$layout"
-tar -xf "$pub/image.oci.tar" -C "$layout"
+loud rm -rf "$layout" || die "cannot clear $layout"
+loud mkdir -p "$layout" || die "cannot make $layout"
+loud tar -xf "$pub/image.oci.tar" -C "$layout" || die "cannot unpack $pub/image.oci.tar"
 # The tag the build wrote into the archive's index; without one podman takes
 # the layout's single image.
-tag=$(python3 -c 'import json, sys
+tag=$(loud python3 -c 'import json, sys
 for entry in json.load(open(sys.argv[1])).get("manifests", []):
     name = (entry.get("annotations") or {}).get("org.opencontainers.image.ref.name", "").rsplit("/", 1)[-1]
     if ":" in name:
         print(name.rsplit(":", 1)[1])
-        break' "$layout/index.json")
+        break' "$layout/index.json") || die "cannot read the tag in $layout/index.json"
 # The archive names its image, and the build wrote that name beside it. Read it
 # from the layout, not from podman: an image loaded out of a layout this way
 # carries no repository digest, so podman's is empty and comparing it proves
 # nothing.
-digest=$(skopeo inspect --format '{{.Digest}}' "oci:$layout${tag:+:$tag}") \
+digest=$(loud skopeo inspect --format '{{.Digest}}' "oci:$layout${tag:+:$tag}") \
   || die "skopeo cannot read the image in $pub/image.oci.tar"
 [[ $digest == "$(cat "$pub/digest")" ]] \
   || die "$pub/image.oci.tar holds $digest, not the image $pub/digest names"
-image=$(podman pull -q "oci:$layout${tag:+:$tag}") \
+image=$(loud podman pull -q "oci:$layout${tag:+:$tag}") \
   || die "podman could not load the image in $pub/image.oci.tar"
-podman tag "$image" localhost/tilo-host:ci
+loud podman tag "$image" localhost/tilo-host:ci || die "cannot name the loaded image"
+say 'install the image on a disk'
 TILO_IMAGE=localhost/tilo-host:ci TILO_SKIP_BUILD=1 TILO_DISTROBOX="" \
   TILO_OUTPUT=$work/install TILO_RUN=$work/install-run TILO_DISK_SIZE=64G \
-  TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-host:main-${target:0:7}-ci" ./os/dev/build-image.sh
+  TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-host:main-${target:0:7}-ci" \
+  ./os/dev/build-image.sh 2> >(tee /dev/console >&2) \
+  || die "the disk install failed"
 disk=$work/disk.qcow2
 mv "$work/install/qcow2/disk.qcow2" "$disk"
 
