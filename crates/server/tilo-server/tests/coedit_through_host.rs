@@ -221,7 +221,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         let addr2 = host2.node_addr();
 
         // ---- B connects for the very first time, to the restarted host. ----
-        let mut doc_b = catch_up_first_connection(addr2, &user, &a, &b, WS).await;
+        let mut doc_b = catch_up_first_connection(addr2, &user, &b, WS).await;
 
         assert_eq!(text_of(&doc_b), "offline-note", "B renders A's co-edit");
         assert_eq!(
@@ -306,7 +306,6 @@ async fn publish_offline_coedit(
 async fn catch_up_first_connection(
     addr2: iroh_base::EndpointAddr,
     user: &TestUser,
-    a: &crate::common::TestDevice,
     b: &crate::common::TestDevice,
     ws: WorkspaceId,
 ) -> AutoCommit {
@@ -336,13 +335,16 @@ async fn catch_up_first_connection(
             .await
             .expect("B closed");
         match inbound {
-            Inbound::Delta { author: from, data } if from == a.device_pubkey() => {
-                doc_b
-                    .load_incoming(&data)
-                    .expect("B applies queued co-edit");
-                got_delta = true;
+            // The queued co-edit may arrive as A's own change or as the
+            // workspace's replay of it: it is the change that carries the
+            // document's text, whoever the frame names.
+            Inbound::Delta { data, .. } => {
+                let mut applied = doc_b.fork();
+                if applied.load_incoming(&data).is_ok() && text_of(&applied) == "offline-note" {
+                    doc_b = applied;
+                    got_delta = true;
+                }
             }
-            Inbound::Delta { .. } => {}
             Inbound::Ready { pending, .. } => {
                 assert!(pending >= 1, "the server reports the queued co-edit");
                 got_ready = true;
