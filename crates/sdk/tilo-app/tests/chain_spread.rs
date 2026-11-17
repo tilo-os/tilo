@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-use tilo_app::framework::{Chain, Chained};
+use tilo_app::framework::{Chain, Chained, PartLimits};
 use tilo_app::prelude::*;
 use tilo_app::resource::{DocumentId, ResourceOwners, ResourceStore};
 use tilo_app::tilo_resource::Collection;
@@ -75,23 +75,6 @@ impl Chained for CardPart {
         DocumentId::derived("cards", &DocumentId::workspace_default())
     }
 
-    fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
-        if let CardPartAction::Rename(card_part::Rename { card, .. }) = &action.operation {
-            return parts
-                .iter()
-                .find(|(_, part)| part.cards.contains(card))
-                .map(|(index, _)| *index)
-                .ok_or_else(|| "no such card".to_owned());
-        }
-        Ok(parts.last().map_or(0, |(head, part)| {
-            if part.cards.len() >= PART_CARDS {
-                head.saturating_add(1)
-            } else {
-                *head
-            }
-        }))
-    }
-
     fn spread(
         action: &Self::Action,
         index: u64,
@@ -142,6 +125,7 @@ fn add(chain: &Chain<CardPart>, name: &str, points_at: &str) {
 
 #[test]
 fn a_change_spreads_to_the_parts_naming_what_it_changed() {
+    let _parts = PartLimits::scoped(PART_CARDS, usize::MAX);
     let store = device();
     let me = MemberId::person("ada");
     let deck = Rc::new(Deck::default());

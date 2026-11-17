@@ -80,6 +80,7 @@ mod api;
 mod dispatching;
 mod listing;
 mod part;
+mod place;
 mod reading;
 mod shares;
 
@@ -90,6 +91,9 @@ use listing::{Listing, Page};
 use part::{HeldPart, PartType, live_of};
 use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, read_spec};
 use shares::Written;
+
+pub(crate) use place::ItemIndex;
+pub use place::{PART_BYTES, PART_ITEMS, PartLimits};
 
 /// The operation type a chain's published actions are carried out under:
 /// the host applies the action to the part of the chain it names.
@@ -165,9 +169,25 @@ pub trait Chained: Resource {
     }
 
     /// The part `action` changes, given the parts this device holds, oldest
-    /// first: the one holding the item it names, or for a new item the head
-    /// (or the next part, once the head is full).
-    fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self::State>)]) -> Result<u64, String>;
+    /// first, when the app places it itself. `None` (the default) leaves it
+    /// to the chain's one placement for every app's items: the part holding
+    /// the item it names, or for a new item the newest part, or the next
+    /// once that is full.
+    fn part_for(
+        action: &Self::Action,
+        parts: &[(u64, Rc<Self::State>)],
+    ) -> Option<Result<u64, String>> {
+        let _ = (action, parts);
+        None
+    }
+
+    /// The item a new item `action` makes is kept beside, in the same
+    /// part: a reply beside the message it answers. `None` (the default)
+    /// keeps it with the newest items.
+    fn beside(action: &Self::Action) -> Option<tilo_resource::Id> {
+        let _ = action;
+        None
+    }
 
     /// The share of `action` each part carries out, when it names items
     /// kept in several parts (archive these messages): one action per part
@@ -287,6 +307,19 @@ pub trait Chained: Resource {
     /// everyone sees (a direct conversation).
     fn place(action: &Self::Action, base: &<Self::Base as Resource>::State) -> Option<String> {
         let _ = (action, base);
+        None
+    }
+
+    /// Answer a read of `item` that names no item a part keeps but
+    /// something the kind derives over every part held: the occurrences of
+    /// a calendar's events in a span of time, the free time in it. `None`
+    /// (the default) leaves the item to the part that keeps it.
+    fn read_over(
+        base: &<Self::Base as Resource>::State,
+        parts: &[(u64, Rc<Self::State>)],
+        item: &str,
+    ) -> Option<Result<serde_json::Value, String>> {
+        let _ = (base, parts, item);
         None
     }
 }
@@ -420,6 +453,9 @@ pub(crate) struct ChainState {
     unwritten: RefCell<Unwritten>,
     /// Whether the actions that waited are being applied now.
     draining: Cell<bool>,
+    /// Every item the parts held keep, by its id ([`ItemIndex`]): where an
+    /// action goes, and what [`Chain::find`] looks up.
+    index: RefCell<ItemIndex>,
     /// What the verb written last answers its caller with
     /// ([`Resource::answer`]), until [`ResourceApi::apply_answering`] takes it.
     answered: RefCell<Option<serde_json::Value>>,
@@ -1534,6 +1570,7 @@ impl ChainState {
             undone: RefCell::default(),
             unwritten: RefCell::default(),
             draining: Cell::new(false),
+            index: RefCell::default(),
             answered: RefCell::default(),
         };
         // Asked for as the chain opens, with the window's other resources:
@@ -1765,16 +1802,23 @@ impl ChainState {
             return Ok(Write::Arriving);
         }
         let base = (self.base)();
-        let parts = (part.typed)(&self.parts());
+        let held = self.parts();
+        let parts = (part.typed)(&held);
         let action =
             (part.prepare)(action, &*base, &*parts, invoker).map_err(ActionError::Refused)?;
-        let (place, index) = (part.route)(&*action, &*base, &*parts);
+        let (place, placed) = (part.route)(&*action, &*base, &*parts);
         drop(base);
-        if let Some(shares) = (part.split)(&*action, &*parts).map_err(ActionError::Refused)? {
+        if let Some(shares) = self
+            .shares(&*action, &*parts, &held)
+            .map_err(ActionError::Refused)?
+        {
             drop(parts);
             return self.write_shares(shares, invoker, place.as_deref());
         }
-        let index = index.map_err(ActionError::Refused)?;
+        let placed = placed.or_else(|| self.listed_part(&*action, &held).map(Ok));
+        let index = self
+            .place(&*action, placed, &held)
+            .map_err(ActionError::Refused)?;
         drop(parts);
         self.may(&*action)?;
         let head = self.core.parts.borrow().keys().next_back().copied();
@@ -1848,17 +1892,22 @@ impl ChainState {
         }
         let part = self.part();
         let base = (self.base)();
-        let parts = (part.typed)(&self.parts());
+        let held = self.parts();
+        let parts = (part.typed)(&held);
         let mut prepared = Vec::with_capacity(group.len());
         let mut places = Vec::with_capacity(group.len());
         let mut indices = Vec::with_capacity(group.len());
         for action in group {
             let action = (part.prepare)(&**action, &*base, &*parts, invoker)
                 .map_err(ActionError::Refused)?;
-            let (place, index) = (part.route)(&*action, &*base, &*parts);
+            let (place, placed) = (part.route)(&*action, &*base, &*parts);
+            let placed = placed.or_else(|| self.listed_part(&*action, &held).map(Ok));
             places.push(place);
             self.may(&*action)?;
-            indices.push(index.map_err(ActionError::Refused)?);
+            indices.push(
+                self.place(&*action, placed, &held)
+                    .map_err(ActionError::Refused)?,
+            );
             prepared.push(action);
         }
         drop(base);
@@ -2090,30 +2139,6 @@ impl ChainState {
             &|| (part.publish)(&self.core.id, &**state),
             part.table,
         )
-    }
-
-    /// [`ChainCore::read`] of the parts held, without the items the chain
-    /// does not show; an item read from the part keeping it
-    /// ([`Self::read_item`]).
-    pub(crate) fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
-        let part = self.part();
-        let read = ChainRead::of(payload)?;
-        let parts = self.parts();
-        let typed = (part.typed)(&parts);
-        let hidden = (part.hidden)(&*typed);
-        if let Some(item) = read.item.as_deref() {
-            let table = part
-                .table
-                .ok_or_else(|| format!("{} answer no reads", part.label))?;
-            return self.read_item(table, &parts, &hidden, item, read.version.as_deref());
-        }
-        let base = (self.base)();
-        let prepare = |filter: &mut listing::Filter| (part.prepare_read)(filter, &*base, &*typed);
-        let held: Vec<(u64, &dyn Any)> = parts
-            .iter()
-            .map(|(index, state)| (*index, &**state))
-            .collect();
-        self.core.read(part.table, &held, &read, &prepare, &hidden)
     }
 }
 

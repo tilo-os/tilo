@@ -27,8 +27,9 @@ type State = Rc<dyn Any>;
 /// An action of the parts' resource.
 type Action = Box<dyn Any>;
 
-/// Where an action happens, and the part it changes.
-type Route = (Option<String>, Result<u64, String>);
+/// Where an action happens, and the part the app places it in, when it
+/// places it itself ([`Chained::part_for`]).
+type Route = (Option<String>, Option<Result<u64, String>>);
 
 type ReadPart = fn(&ResourceStore, &DocumentId) -> Result<Box<dyn HeldPart>, String>;
 type Prepare = fn(&dyn Any, &dyn Any, &dyn Any, &ActionInvoker) -> Result<Action, String>;
@@ -76,6 +77,15 @@ pub(super) struct PartType {
     /// Where in the app's resource a prepared action happens
     /// ([`Chained::place`]), and the part it changes ([`Chained::part_for`]).
     pub(super) route: RouteOf,
+    /// Each item a part's state keeps.
+    pub(super) each_item: super::place::EachItem,
+    /// The item an action changes, or the one the new item it makes is
+    /// kept beside ([`Chained::beside`]).
+    pub(super) item: fn(&dyn Any) -> Option<tilo_resource::Id>,
+    /// The items a verb over several lists ([`Resource::listed_items`]).
+    pub(super) listed_items: fn(&dyn Any) -> Option<Vec<Option<tilo_resource::Id>>>,
+    /// That verb over only the entries at the positions given.
+    pub(super) keep_listed: fn(&dyn Any, &[usize]) -> Option<Action>,
     /// What an action is for the grants deciding it.
     pub(super) need: fn(&dyn Any) -> Option<ActionNeed>,
     pub(super) verb: fn(&dyn Any) -> Option<String>,
@@ -119,7 +129,13 @@ pub(super) struct PartType {
     pub(super) search: fn(&dyn Any) -> Vec<tilo_resource::SearchEntry>,
     pub(super) search_over: fn(&dyn Any, &dyn Any) -> Vec<tilo_resource::SearchEntry>,
     pub(super) prepare_read: fn(&mut Filter, &dyn Any, &dyn Any) -> Result<(), String>,
+    /// [`Chained::read_over`], from the app's resource and the parts.
+    pub(super) read_over: fn(&dyn Any, &dyn Any, &str) -> ReadOver,
 }
+
+/// What [`Chained::read_over`] answers: the item's content, or why not;
+/// `None` for an item a part keeps.
+type ReadOver = Option<Result<serde_json::Value, String>>;
 
 /// The table of `P`, one for the whole program.
 pub(super) struct Of<P>(std::marker::PhantomData<P>);
@@ -139,6 +155,10 @@ impl<P: Chained> Of<P> {
         typed: typed::<P>,
         prepare: prepare::<P>,
         route: route::<P>,
+        each_item: each_item::<P>,
+        item: item::<P>,
+        listed_items: listed_items::<P>,
+        keep_listed: keep_listed::<P>,
         need: need::<P>,
         verb: verb::<P>,
         is_step: is_step::<P>,
@@ -162,6 +182,7 @@ impl<P: Chained> Of<P> {
         search: search::<P>,
         search_over: search_over::<P>,
         prepare_read: prepare_read::<P>,
+        read_over: read_over::<P>,
     };
 }
 
@@ -295,19 +316,37 @@ fn prepare<P: Chained>(
     Ok(Box::new(action))
 }
 
-fn route<P: Chained>(
-    action: &dyn Any,
-    base: &dyn Any,
-    parts: &dyn Any,
-) -> (Option<String>, Result<u64, String>) {
+fn route<P: Chained>(action: &dyn Any, base: &dyn Any, parts: &dyn Any) -> Route {
     let action = match action_of::<P>(action) {
         Ok(action) => action,
-        Err(error) => return (None, Err(error)),
+        Err(error) => return (None, Some(Err(error))),
     };
     let place = base_of::<P>(base)
         .ok()
         .and_then(|base| P::place(action, base));
     (place, P::part_for(action, parts_of::<P>(parts)))
+}
+
+fn each_item<P: Chained>(
+    state: &dyn Any,
+    found: &mut dyn FnMut(tilo_resource::Id, &dyn Any, &'static tilo_resource::table::ModelTable),
+) {
+    if let Some(table) = P::RESOURCE_TABLE {
+        tilo_resource::stored_items::each_item(table, state, found);
+    }
+}
+
+fn item<P: Chained>(action: &dyn Any) -> Option<tilo_resource::Id> {
+    let action = action.downcast_ref::<P::Action>()?;
+    P::beside(action).or_else(|| P::action_item(action))
+}
+
+fn listed_items<P: Chained>(action: &dyn Any) -> Option<Vec<Option<tilo_resource::Id>>> {
+    P::listed_items(action.downcast_ref()?)
+}
+
+fn keep_listed<P: Chained>(action: &dyn Any, keep: &[usize]) -> Option<Action> {
+    P::keep_listed(action.downcast_ref()?, keep).map(|action| Box::new(action) as Action)
 }
 
 fn need<P: Chained>(action: &dyn Any) -> Option<ActionNeed> {
@@ -467,6 +506,13 @@ fn search_over<P: Chained>(base: &dyn Any, parts: &dyn Any) -> Vec<tilo_resource
         return Vec::new();
     };
     P::search_over(base, parts_of::<P>(parts))
+}
+
+fn read_over<P: Chained>(base: &dyn Any, parts: &dyn Any, item: &str) -> ReadOver {
+    match base_of::<P>(base) {
+        Ok(base) => P::read_over(base, parts_of::<P>(parts), item),
+        Err(error) => Some(Err(error)),
+    }
 }
 
 fn prepare_read<P: Chained>(

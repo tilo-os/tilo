@@ -355,3 +355,8 @@ test-outline-notebook-write = Write a page
 ## crates/sdk/tilo-app/tests/people.rs
 test-ticket = Ticket
 test-ticket-assign = Give the ticket to someone, or to nobody
+test-scale-log = Log
+test-scale-log-rename = Rename the log
+test-scale-log-entries = Entries
+test-scale-log-entries-add = Add entries
+test-scale-log-entries-say = Change what an entry says

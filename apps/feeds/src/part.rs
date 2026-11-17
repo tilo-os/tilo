@@ -620,8 +620,8 @@ impl Chained for ArticlePart {
         chain()
     }
 
-    fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
-        part_for(action, parts)
+    fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Option<Result<u64, String>> {
+        Some(part_for(action, parts))
     }
 
     fn prepare(

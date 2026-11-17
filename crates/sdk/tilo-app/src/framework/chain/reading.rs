@@ -80,16 +80,32 @@ pub(super) fn read_spec(label: &str, chain: &str, item: Option<&str>) -> tilo_ac
                 "On an item: a change id or exact causal frontier of the part keeping it (default: current)",
             )
             .nullable(),
+            // The chain's own read names no item, but a kind that derives
+            // something over every part (a calendar's span of events) answers
+            // it by name here, and a read of any item it holds takes its
+            // address: both are the item's content rather than a page.
+            tilo_actions::ActionParam::optional(
+                "item",
+                tilo_actions::ParamType::Text,
+                "The item to read whole: one of the chain's, or one the kind derives over every part (default: the listing)",
+            )
+            .nullable(),
         ]
         .into_iter()
         // An item is read whole, at a version; the chain's listing is paged.
-        .filter(|param| (param.name.as_ref() == "version") == item.is_some())
+        // The chain's own read can name the item, so it takes both.
+        .filter(|param| param.name.as_ref() != "item" || item.is_none())
         .collect(),
         move |args| {
             let given = args.to_json();
+            let asked = given
+                .get("item")
+                .and_then(serde_json::Value::as_str)
+                .filter(|item| !item.is_empty())
+                .map(str::to_owned);
             let payload = serde_json::json!({
                 "chain": chain,
-                "item": item,
+                "item": item.clone().or(asked),
                 "cursor": args.text("cursor"),
                 "pageSize": args.integer("pageSize"),
                 "fields": given.get("fields"),
@@ -226,5 +242,34 @@ impl ChainState {
             "{item} is in a part of these {} this device does not hold",
             part.label.to_lowercase()
         ))
+    }
+}
+
+impl ChainState {
+    /// [`ChainCore::read`] of the parts held, without the items the chain
+    /// does not show; an item read from the part keeping it
+    /// ([`Self::read_item`]).
+    pub(crate) fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
+        let part = self.part();
+        let read = ChainRead::of(payload)?;
+        let parts = self.parts();
+        let typed = (part.typed)(&parts);
+        let hidden = (part.hidden)(&*typed);
+        if let Some(item) = read.item.as_deref() {
+            if let Some(answer) = (part.read_over)(&*(self.base)(), &*typed, item) {
+                return answer;
+            }
+            let table = part
+                .table
+                .ok_or_else(|| format!("{} answer no reads", part.label))?;
+            return self.read_item(table, &parts, &hidden, item, read.version.as_deref());
+        }
+        let base = (self.base)();
+        let prepare = |filter: &mut listing::Filter| (part.prepare_read)(filter, &*base, &*typed);
+        let held: Vec<(u64, &dyn Any)> = parts
+            .iter()
+            .map(|(index, state)| (*index, &**state))
+            .collect();
+        self.core.read(part.table, &held, &read, &prepare, &hidden)
     }
 }

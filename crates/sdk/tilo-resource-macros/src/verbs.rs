@@ -244,6 +244,9 @@ struct ActionOptions {
     /// consequence on undo.
     undo: Option<syn::ExprPath>,
     writes: Vec<syn::Ident>,
+    /// `items = param`: the parameter listing the items the verb acts on,
+    /// each entry naming one (or none, for a new item).
+    items: Option<syn::Ident>,
     /// Resolves arguments from outside once, where the verb is invoked.
     prepare: Option<syn::Path>,
     /// `audience = "agents"` or `"people"`: who listings offer it to.
@@ -276,6 +279,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         within: Vec::new(),
         undo: None,
         writes: Vec::new(),
+        items: None,
         prepare: None,
         audience: None,
         by_app: false,
@@ -340,6 +344,8 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.prepare = Some(meta.value()?.parse::<syn::Path>()?);
         } else if meta.path.is_ident("writes") {
             options.writes.push(meta.value()?.parse::<syn::Ident>()?);
+        } else if meta.path.is_ident("items") {
+            options.items = Some(meta.value()?.parse::<syn::Ident>()?);
         } else if meta.path.is_ident("audience") {
             options.audience = Some(crate::audience_option(&meta)?);
         } else if meta.path.is_ident("by_app") {
@@ -348,7 +354,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.step = Some(crate::step_option(&meta)?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `did = \"...\"`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"`, `by_app`, `step = \"create\"` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `did = \"...\"`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `items = param`, `prepare = path`, `item = field`, `audience = \"agents\"`, `by_app`, `step = \"create\"` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -1139,6 +1145,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     let mut decls = Vec::new();
     let mut item_actions = Vec::new();
     let mut writes_arms = Vec::new();
+    let mut listed_arms = Vec::new();
+    let mut keep_arms = Vec::new();
     let mut item_checks = Vec::new();
     let mut verb_variants = Vec::new();
     let mut verb_ids = Vec::new();
@@ -1456,6 +1464,29 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 ))
             },
         );
+        if let Some(items) = &verb.options.items {
+            if !verb.params.iter().any(|param| param.ident == *items) {
+                return Err(syn::Error::new(
+                    items.span(),
+                    format!(
+                        "`{}` has no parameter `{items}` to list its items in",
+                        verb.method
+                    ),
+                ));
+            }
+            listed_arms.push(quote! {
+                #action_enum::#variant(params) => ::core::option::Option::Some(
+                    #krate::__private::listed_of(&params.#items),
+                ),
+            });
+            keep_arms.push(quote! {
+                #action_enum::#variant(params) => {
+                    let mut params = ::core::clone::Clone::clone(params);
+                    params.#items = #krate::__private::kept_of(&params.#items, keep);
+                    #action_enum::#variant(params)
+                }
+            });
+        }
         writes_arms.push(quote! {
             Self::#variant(params) => {
                 let _ = &params;
@@ -2382,6 +2413,44 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
 
             fn stamp(action: &mut Self::Action, now_ms: i64) {
                 action.now_ms = now_ms;
+            }
+
+            fn action_item(action: &Self::Action) -> ::core::option::Option<#krate::Id> {
+                match &action.operation {
+                    #action_enum::FieldEdit(edit) => match edit.path() {
+                        [#krate::Segment::Field(_), #krate::Segment::Item(item), ..] => {
+                            ::core::option::Option::Some(::core::clone::Clone::clone(item))
+                        }
+                        _ => ::core::option::Option::None,
+                    },
+                    operation => #krate::Operation::writes(operation).item,
+                }
+            }
+
+            fn listed_items(
+                action: &Self::Action,
+            ) -> ::core::option::Option<::std::vec::Vec<::core::option::Option<#krate::Id>>> {
+                #[allow(unreachable_patterns, reason = "most verbs list no items")]
+                match &action.operation {
+                    #(#listed_arms)*
+                    _ => ::core::option::Option::None,
+                }
+            }
+
+            fn keep_listed(
+                action: &Self::Action,
+                keep: &[usize],
+            ) -> ::core::option::Option<Self::Action> {
+                let _ = keep;
+                #[allow(unreachable_patterns, reason = "most verbs list no items")]
+                let operation = match &action.operation {
+                    #(#keep_arms)*
+                    _ => return ::core::option::Option::None,
+                };
+                ::core::option::Option::Some(#krate::Stamped {
+                    operation,
+                    now_ms: action.now_ms,
+                })
             }
 
             fn kind_of(action: &Self::Action) -> #krate::ActionKind {

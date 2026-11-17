@@ -205,9 +205,9 @@ pub struct ItemOps {
     item_texts: fn(&dyn Any, &'static str, &mut Vec<ItemText>),
     nested_items: fn(&dyn Any, &'static str, &mut Vec<ItemCollection>),
     /// The items, whatever their type.
-    list: for<'a> fn(&'a dyn Any) -> Option<&'a dyn crate::collection::ItemList>,
+    pub(crate) list: for<'a> fn(&'a dyn Any) -> Option<&'a dyn crate::collection::ItemList>,
     /// The items' type's table.
-    item_table: &'static ModelTable,
+    pub(crate) item_table: &'static ModelTable,
 }
 
 /// A collection whose items are published: its items' type's table.
