@@ -77,6 +77,8 @@ mod peer_parts;
 // The person's mail accounts and model providers, kept where their
 // workspace runs: a page has no mail connection and no vault of its own.
 #[cfg(not(target_arch = "wasm32"))]
+mod person_models;
+#[cfg(not(target_arch = "wasm32"))]
 mod person_settings;
 // A person's own model, asked for whatever this host runs for them.
 #[cfg(not(target_arch = "wasm32"))]

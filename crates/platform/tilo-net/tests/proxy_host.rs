@@ -568,3 +568,40 @@ async fn a_response_that_spends_the_budget_ends_in_an_error_not_a_short_body() {
     assert_eq!(refused.status(), 429);
     assert_eq!(refused.headers()[ERROR_HEADER], "over-budget");
 }
+
+/// A host's own request to an address a person named reaches the public
+/// internet alone: an address inside the network is refused before anything
+/// is dialled, and a name that resolves inside it is never dialled.
+#[tokio::test]
+async fn a_guarded_client_reaches_no_address_inside_the_network() {
+    use tilo_net::proxy::host::{check_destination, guarded_client};
+
+    let inside = Responder::silent();
+    let literal = url::Url::parse(&inside.url()).unwrap();
+    assert!(matches!(
+        check_destination(&literal, Destinations::Public),
+        Err(tilo_net::NetError::Blocked(_))
+    ));
+    check_destination(&literal, Destinations::Any).unwrap();
+    let public = url::Url::parse("https://models.example/v1/models").unwrap();
+    check_destination(&public, Destinations::Public).unwrap();
+    let file = url::Url::parse("file:///etc/hostname").unwrap();
+    assert!(check_destination(&file, Destinations::Any).is_err());
+
+    let resolves_inside: Lookup =
+        Arc::new(|_| Box::pin(async { Ok(vec![IpAddr::from([127, 0, 0, 1])]) }));
+    let guarded = guarded_client(Destinations::Public, Arc::clone(&resolves_inside)).unwrap();
+    let named = format!("http://models.example:{}/v1/models", inside.port());
+    assert!(guarded.get(&named).send().await.is_err());
+    inside.assert_untouched();
+
+    // The same name is dialled where it resolves once every address is let.
+    let answering = Responder::start(vec![Reply::status(200).body("listed")]);
+    let open = guarded_client(Destinations::Any, resolves_inside).unwrap();
+    let answer = open
+        .get(format!("http://models.example:{}/", answering.port()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), 200);
+}

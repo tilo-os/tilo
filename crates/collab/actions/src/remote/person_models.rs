@@ -8,6 +8,9 @@
 //! only: [`SET_KEY`] carries it in, [`ProviderView::configured`] says whether
 //! one is kept, and no reading carries it back.
 //!
+//! The host asks a provider for its models too ([`REFRESH_MODELS`]), with the
+//! key it keeps: a page never holds a key it could ask with.
+//!
 //! Local models are not here: they run on a device, which is where the pane
 //! that manages them lives.
 
@@ -32,9 +35,25 @@ pub const REMOVE_KEY: &str = "remove-key";
 /// Remove a provider and its key (`provider`), answering the providers that
 /// remain as a [`ModelProviders`].
 pub const REMOVE_PROVIDER: &str = "remove-provider";
+/// Add a provider the catalogue knows ([`AddPreset`]): its name, protocol,
+/// endpoint and where it lists its models are the catalogue's. Answers it as
+/// a [`ProviderView`].
+pub const ADD_PRESET: &str = "add-preset";
+/// Ask a provider (`provider`) for the models it offers, with the key the
+/// vault keeps for it, and keep that list: a [`ListedModels`].
+pub const REFRESH_MODELS: &str = "refresh-models";
+/// Add a model a provider offers and lists nowhere ([`AddModel`]), answering
+/// the provider as a [`ProviderView`].
+pub const ADD_MODEL: &str = "add-model";
+/// Choose the provider and model work runs on when its kind names none
+/// ([`SetDefault`]), answering the providers as a [`ModelProviders`].
+pub const SET_DEFAULT: &str = "set-default";
 /// Choose the model one kind of work runs on ([`SetAssignment`]), answering
 /// the providers as a [`ModelProviders`].
 pub const SET_ASSIGNMENT: &str = "set-assignment";
+/// Choose one model for several kinds of work together
+/// ([`SetAssignments`]), answering the providers as a [`ModelProviders`].
+pub const SET_ASSIGNMENTS: &str = "set-assignments";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
@@ -143,6 +162,77 @@ pub struct SetAssignment {
     pub model: Option<String>,
 }
 
+/// A provider of the catalogue to add, by the catalogue's name for it
+/// (`anthropic`, `gemini`, `openai`, `openrouter`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AddPreset {
+    pub preset: String,
+}
+
+/// A provider after its models were asked for ([`REFRESH_MODELS`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListedModels {
+    /// The provider, with the models now kept for it: the list it answered,
+    /// or the one kept before when it answered none.
+    pub provider: ProviderView,
+    /// Why the provider's list could not be read; absent when it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<ListingProblem>,
+}
+
+/// Why a provider's list of models could not be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ListingProblem {
+    /// No key is kept for the provider, so it was not asked.
+    NoKey,
+    /// The provider did not accept the key.
+    KeyRefused,
+    /// The provider has no list of models: its models are named by hand
+    /// ([`ADD_MODEL`]).
+    NoList,
+    /// The provider did not answer.
+    Unreachable,
+    /// The host does not call this address: it is not an https address on
+    /// the internet, and the host reaches no other.
+    NotAllowed,
+    /// The provider answered something that is no list of models.
+    Unreadable,
+}
+
+/// A model to add to a provider that lists none.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AddModel {
+    pub provider: String,
+    /// The model's id, as the provider's API names it.
+    pub model: String,
+}
+
+/// The provider and model work runs on when its kind names none.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetDefault {
+    pub provider: String,
+    pub model: String,
+}
+
+/// One model for several kinds of work, chosen together so they never
+/// differ by half a change: a person's main thread answers as `request` and
+/// works as `task`. With neither provider nor model, those kinds follow the
+/// default again.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetAssignments {
+    pub kinds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -197,5 +287,37 @@ mod tests {
         let following: SetAssignment =
             serde_json::from_value(serde_json::json!({"kind": "task"})).unwrap();
         assert_eq!(following.provider, None);
+    }
+
+    /// A list that could not be read says why in a word a page can put its
+    /// own sentence to, and a list that was read says nothing.
+    #[test]
+    fn a_listing_names_its_problem_or_none() {
+        let read = ListedModels::default();
+        let json = serde_json::to_value(&read).unwrap();
+        assert!(json.get("problem").is_none(), "{json}");
+        let refused = ListedModels {
+            problem: Some(ListingProblem::KeyRefused),
+            ..ListedModels::default()
+        };
+        let json = serde_json::to_value(&refused).unwrap();
+        assert_eq!(json["problem"], serde_json::json!("key-refused"));
+        assert_eq!(
+            serde_json::from_value::<ListedModels>(json).unwrap(),
+            refused
+        );
+    }
+
+    /// The main thread's two kinds are chosen in one request.
+    #[test]
+    fn several_kinds_take_one_model_together() {
+        let choosing: SetAssignments = serde_json::from_value(serde_json::json!({
+            "kinds": ["request", "task"],
+            "provider": "gemini",
+            "model": "gemini-pro",
+        }))
+        .unwrap();
+        assert_eq!(choosing.kinds, ["request", "task"]);
+        assert_eq!(choosing.model.as_deref(), Some("gemini-pro"));
     }
 }
