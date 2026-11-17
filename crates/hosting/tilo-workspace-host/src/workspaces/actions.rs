@@ -59,7 +59,7 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
     WORKSPACE_GOVERNANCE_PROVIDER, host_account, mcp_server, person_accounts, person_models,
-    workspace_governance_resource,
+    person_vault, workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
@@ -1062,6 +1062,23 @@ impl Workspaces {
                     })
                 }
             }
+            // A request that names its secret by reference carries none, so
+            // an agent acting for the person may ask it too: the vault decides
+            // whether the item belongs where it would be used.
+            #[cfg(not(target_arch = "wasm32"))]
+            (person_accounts::PROVIDER, _)
+                if request.target.address.action == person_accounts::ADD_MAIL_WITH_ITEM =>
+            {
+                self.vault_use_invoke(workspace_id, caller, certificate, request)
+                    .await
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            (person_models::PROVIDER, _)
+                if request.target.address.action == person_models::SET_KEY_FROM_ITEM =>
+            {
+                self.vault_use_invoke(workspace_id, caller, certificate, request)
+                    .await
+            }
             // The person's own mail accounts and model providers, kept here
             // when their workspace runs here: a page has no connection to a
             // mail server and no vault of its own.
@@ -1074,6 +1091,12 @@ impl Workspaces {
             (person_models::PROVIDER, _) => {
                 self.person_models_invoke(workspace_id, caller, certificate, request)
                     .await
+            }
+            // What the person keeps to sign in with, in that same vault:
+            // nothing of it is read back, and no agent asks.
+            #[cfg(not(target_arch = "wasm32"))]
+            (person_vault::PROVIDER, _) => {
+                self.person_vault_invoke(workspace_id, caller, certificate, request)
             }
             (host_account::PROVIDER, _)
                 if request.target == host_account::target(host_account::ACCOUNT) =>
@@ -2072,7 +2095,7 @@ fn mcp_value(workspaces: &Workspaces) -> Value {
 }
 
 /// The providers a relay that governs workspaces answers itself.
-const PROVIDERS: [&str; 5] = [
+const PROVIDERS: [&str; 6] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
     mcp_server::PROVIDER,
@@ -2080,6 +2103,8 @@ const PROVIDERS: [&str; 5] = [
     // because it has no mail connection and no vault of its own.
     person_accounts::PROVIDER,
     person_models::PROVIDER,
+    // What the person keeps to sign in with, in the same vault.
+    person_vault::PROVIDER,
 ];
 
 /// What a relay that governs workspaces answers remote actions addressed to it

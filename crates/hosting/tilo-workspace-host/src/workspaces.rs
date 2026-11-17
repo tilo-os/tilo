@@ -83,6 +83,9 @@ mod person_settings;
 // A person's own model, asked for whatever this host runs for them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod person_model;
+// What the person keeps to sign in with, in that same vault of theirs.
+#[cfg(not(target_arch = "wasm32"))]
+mod person_vault;
 mod personal;
 mod publication;
 use publication::{Change, SinceBase, starts_over, withdraws};
