@@ -4,7 +4,7 @@
 //! parent found, and write a value back touching only what changed. Every
 //! write is a *diff* — an unchanged scalar writes nothing, a string is spliced
 //! rather than replaced, a keyed collection moves one order key rather than
-//! renumbering — so concurrent edits from collaborators merge field by field
+//! renumbering — so concurrent edits from members merge field by field
 //! and an action that changes nothing commits nothing.
 //!
 //! Plain Rust types implement it here; `#[derive(Model)]` implements it for
@@ -1491,7 +1491,7 @@ impl Model for String {
 /// prefix, before their common suffix) with a single splice.
 ///
 /// One contiguous splice is what an edit is — typing, pasting, deleting a
-/// selection — so it merges with a collaborator's concurrent edits elsewhere
+/// selection — so it merges with a member's concurrent edits elsewhere
 /// in the text, and it is a change the host's undo inverts exactly. (A
 /// character-level diff of two unrelated strings scatters one edit across
 /// many splices.)
@@ -1546,7 +1546,7 @@ fn splice_changed_span(
                 isize::try_from(deleted).map_err(|_| ModelError::invalid("text too long"))?;
             doc.splice_text(text, position, deleted, inserted)?;
             // The characters written are the writer's, as a plain text edit's are: a field's
-            // stored text carries who wrote each run, so a collaborator's and an agent's words
+            // stored text carries who wrote each run, so a member's and an agent's words
             // show in their colour wherever the text is read.
             crate::text::mark_authored(doc, text, position, inserted)
                 .map_err(|error| ModelError::invalid(error.to_string()))?;
@@ -1958,7 +1958,7 @@ macro_rules! json_scalar {
 
 // A capability names who it reaches, and who granted it: the two policy values
 // a stored record holds beside its scope.
-json_scalar!(tilo_action_policy::MemberId, Principal);
+json_scalar!(tilo_action_policy::MemberId, Actor);
 json_scalar!(tilo_action_policy::Grantee, Text);
 
 /// An app's id is the string it is: written as one, read as one.

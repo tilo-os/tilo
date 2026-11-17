@@ -593,7 +593,7 @@ participant-bot = { $name } · Bot
 # wird nummeriert, für alle im Arbeitsbereich gleich.
 participant-numbered = { $name } ({ $number })
 interaction-agent = Agent
-interaction-collaborator = Mitwirkende Person
+interaction-member = Mitglied
 # Was jemand gerade tut: der Name, dann die Handlung im Präsens.
 interaction-editing-field = bearbeitet { $field }
 interaction-working = arbeitet

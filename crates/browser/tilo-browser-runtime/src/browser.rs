@@ -1806,7 +1806,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     // device: what a window's controls change of them is answered here.
     crate::kept_settings::serve(
         &mut frame,
-        &config.author(),
+        &MemberId::person(config.author()),
         ui::storage::SettingsDocument::Session,
     );
     if let Some(desktop) = &mut desktop {

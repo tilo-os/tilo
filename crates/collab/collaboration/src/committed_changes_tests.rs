@@ -40,7 +40,7 @@ impl ReadyReader {
         }))
     }
 
-    /// Another collaborator's edit: the committed document moves to the
+    /// Another member's edit: the committed document moves to the
     /// revision `[revision; 32]`, and a reader holding the current one is
     /// offered only the change. Returns the change bytes and the document
     /// as the reader held it.
@@ -81,7 +81,7 @@ impl ReadyReader {
     }
 }
 
-/// A collaborator's edit reaches a ready reader as the change alone, which
+/// A member's edit reaches a ready reader as the change alone, which
 /// applies to the document the owner holds; the reader is ready on the new
 /// revision once the owner merged it and its next read confirmed it.
 #[test]
@@ -147,10 +147,10 @@ fn changes_the_owner_cannot_apply_are_read_whole() {
     assert!(ready, "and is ready once that whole read is merged");
 }
 
-/// A revocation while a collaborator keeps editing: the reader's first read
+/// A revocation while a member keeps editing: the reader's first read
 /// after it is refused, and the reader closes with nothing delivered.
 #[test]
-fn a_revocation_while_a_collaborator_edits_closes_on_the_first_read() {
+fn a_revocation_while_a_member_edits_closes_on_the_first_read() {
     let mut reader = ReadyReader::start_with_changes();
     for (body, revision) in [("edit one", 8), ("edit two", 9)] {
         let _ = reader.edit_elsewhere(body, revision);

@@ -58,7 +58,7 @@ pub enum RunStatus {
 
 /// A bounded per-peer record of a completed live query. It is discoverable as
 /// a local resource, but never replicated: result data can reveal a server or
-/// rows another collaborator is not authorized to access.
+/// rows another member is not authorized to access.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryHistoryEntry {
     /// Stable local connection identity. History remains local, but this keeps

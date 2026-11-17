@@ -239,7 +239,7 @@ pub enum RichTextAction {
     },
     /// Replace all four page margins as one absolute page-setup operation.
     /// Keeping the rectangle atomic avoids transient invalid page geometry while
-    /// still giving history and collaborators a single authored mutation.
+    /// still giving history and members a single authored mutation.
     SetPageMargins {
         top: f64,
         right: f64,
@@ -262,7 +262,7 @@ pub enum RichTextAction {
     },
     /// Set an image crop in ten-thousandths of its source rectangle.  Keeping
     /// all four edges in one action is important: a crop must never briefly
-    /// become invalid while a collaborator/replay observes it.
+    /// become invalid while a member/replay observes it.
     SetImageCrop {
         block: String,
         left: i64,
@@ -1748,7 +1748,7 @@ impl Written {
     ///
     /// Every key carries its own mark, even typed straight after `author`'s
     /// own run. Relying on that run's mark to take the key in instead would
-    /// lose the key to a collaborator typing at the same place at the same
+    /// lose the key to a member typing at the same place at the same
     /// time: their key's mark, anchored where this key lands, would cover it
     /// and win.
     fn attribute(&self, dm: &mut DocMut<'_>, author: &tilo_resource::MemberId) {

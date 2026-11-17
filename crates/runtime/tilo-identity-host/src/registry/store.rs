@@ -560,7 +560,7 @@ pub fn selected_identity_path(workspace: &str) -> io::Result<Option<PathBuf>> {
         .map(|profile| profile.record_path))
 }
 
-/// [`selected_principal_id`] for the compositor's input and frame loop: it
+/// [`selected_actor_id`] for the compositor's input and frame loop: it
 /// never waits for the disk after the first call
 /// ([`IdentityRegistryStore::load_reconciled_prompt`]).
 ///
@@ -568,7 +568,7 @@ pub fn selected_identity_path(workspace: &str) -> io::Result<Option<PathBuf>> {
 ///
 /// Returns an error if the identity directory cannot be resolved or the first
 /// read fails.
-pub fn selected_principal_id_prompt(workspace: &str) -> io::Result<Option<String>> {
+pub fn selected_actor_id_prompt(workspace: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_prompt()?;
     Ok(registry

@@ -249,7 +249,7 @@ service shows a repair state.
 ## Presence in the system
 
 Every operation is a Tilo action on a resource, so assistive technology,
-automation, collaborators and tests use the same surface as the window.
+automation, members and tests use the same surface as the window.
 
 The image ships one pinned Wine runner and one pinned UMU/Proton runtime, so a
 fresh installation works offline after it acquires applications. Other runners

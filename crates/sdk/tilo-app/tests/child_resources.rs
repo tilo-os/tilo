@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
         assert_eq!(typed_sql(&app), "");
     }
 
-    phase a_collaborators_typing_merges_and_shows;
+    phase a_members_typing_merges_and_shows;
     {
         let mut app = open(Role::Owner);
         app.harness().type_text("select 1");

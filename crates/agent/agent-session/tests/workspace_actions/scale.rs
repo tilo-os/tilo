@@ -273,7 +273,7 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
     for index in 0..issues {
         let (took, _) = timed(agent.act(
             &base,
-            "tasks/Tasks",
+            "tasks/Issues",
             "create",
             &json!({"title": format!("Issue {index}"), "body": page(index)}),
         ))
@@ -299,7 +299,7 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
 
     // Its listing names each kind's actions once, and its rows only by id.
     let (list, (status, listed, list_bytes)) =
-        timed(agent.get(&format!("{base}/resources?path=tasks/Tasks&limit=40"))).await;
+        timed(agent.get(&format!("{base}/resources?path=tasks/Issues&limit=40"))).await;
     eprintln!("list issues: {list:?}, {list_bytes} bytes");
     assert_eq!(status, 200, "{listed}");
     assert!(
@@ -318,7 +318,7 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
         list_bytes < 64 * 1024,
         "a page of 40 issues is not their actions forty times: {list_bytes} bytes"
     );
-    let (task_rows, _) = every_row(&agent, &base, "tasks/Tasks", 200).await;
+    let (task_rows, _) = every_row(&agent, &base, "tasks/Issues", 200).await;
     assert!(
         task_rows.len() >= issues,
         "every issue is listed: {}",
@@ -327,7 +327,7 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
 
     // Its read is a page, and the cursor leads through every issue.
     let (read, (status, tracker, read_bytes)) =
-        timed(agent.get(&format!("{base}/resources/tasks/Tasks"))).await;
+        timed(agent.get(&format!("{base}/resources/tasks/Issues"))).await;
     eprintln!("read the tracker: {read:?}, {read_bytes} bytes");
     assert_eq!(status, 200, "{tracker}");
     assert!(
@@ -339,13 +339,18 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
     loop {
         seen = seen.saturating_add(
             page_read["children"].as_array().map_or(0, Vec::len)
-                + page_read["fields"]["issues"].as_array().map_or(0, Vec::len),
+                + page_read["fields"]["issues"].as_array().map_or(0, Vec::len)
+                + page_read["issues"].as_array().map_or(0, Vec::len),
         );
-        let Some(cursor) = page_read["cursor"].as_str().map(str::to_owned) else {
+        let Some(cursor) = page_read["cursor"]
+            .as_str()
+            .or_else(|| page_read["nextCursor"].as_str())
+            .map(str::to_owned)
+        else {
             break;
         };
         let (status, next, _) = agent
-            .get(&format!("{base}/resources/tasks/Tasks?cursor={cursor}"))
+            .get(&format!("{base}/resources/tasks/Issues?cursor={cursor}"))
             .await;
         assert_eq!(status, 200, "{next}");
         page_read = next;
@@ -354,14 +359,15 @@ async fn a_company_sized_workspace_answers_at_the_speed_of_an_empty_one() {
         seen >= issues,
         "every issue is read, a page at a time: {seen}"
     );
+    // Named by its kind, as a migration names it.
     let (act, _) = timed(agent.act(
         &base,
-        "tasks/Tasks",
+        "tasks/tasks.issues",
         "create",
         &json!({"title": "After the move"}),
     ))
     .await;
-    let (reread, _) = timed(agent.get(&format!("{base}/resources/tasks/Tasks"))).await;
+    let (reread, _) = timed(agent.get(&format!("{base}/resources/tasks/Issues"))).await;
     eprintln!("write an issue: {act:?}, then read: {reread:?}");
     for (call, took) in [
         ("listing issues", list),

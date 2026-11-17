@@ -34,7 +34,7 @@ pub fn roster_rows_named(
     let own_name = own_name
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .map(|name| labels.label(&MemberId::person(local_user).key(), name));
+        .map(|name| labels.label(local_user, name));
     let rows = rows_of(workspace, &workspace.present, &labels);
     (rows, own_name)
 }
@@ -45,20 +45,20 @@ fn names_of(
     local_user: &str,
     own_name: Option<&str>,
 ) -> ui::presence::ParticipantLabels {
-    let own_id = MemberId::person(local_user).key();
     let mut people: Vec<(String, String, Option<u64>)> = workspace
         .members
         .iter()
-        .filter(|member| member.id.is_person() && member.id.key() != own_id)
-        .map(|member| {
-            let id = member.id.key();
+        .filter_map(|member| Some((member.id.person_id()?, member)))
+        .filter(|(id, _)| *id != local_user)
+        .map(|(id, member)| {
+            let id = id.to_owned();
             let joined = workspace.policy.joined_at(&id).or(member.joined_at);
             (id, member.name.clone(), joined)
         })
         .collect();
     if let Some(name) = own_name.map(str::trim).filter(|name| !name.is_empty()) {
         people.push((
-            own_id,
+            local_user.to_owned(),
             name.to_owned(),
             workspace.policy.joined_at(local_user),
         ));
@@ -74,7 +74,7 @@ fn names_of(
 /// where two share a name), with this person by their own name: the one source every surface that
 /// names people reads, so a name is spelt and cased the same in People, the roster and settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PeopleNames(HashMap<String, String>);
+pub struct PeopleNames(HashMap<MemberId, String>);
 
 impl PeopleNames {
     /// The roster's names for the active workspace of `desktop`, as `local_user` (named
@@ -85,27 +85,27 @@ impl PeopleNames {
             return Self::default();
         };
         let labels = names_of(workspace, local_user, own_name);
-        let mut names: HashMap<String, String> = workspace
+        let mut names: HashMap<MemberId, String> = workspace
             .members
             .iter()
             .filter(|member| !member.name.trim().is_empty())
             .map(|member| {
-                (
-                    member.id.key(),
-                    labels.label(&member.id.key(), &member.name),
-                )
+                let name = match member.id.person_id() {
+                    Some(person) => labels.label(person, &member.name),
+                    None => member.name.clone(),
+                };
+                (member.id.clone(), name)
             })
             .collect();
         if let Some(own) = own_name.map(str::trim).filter(|own| !own.is_empty()) {
-            let id = MemberId::person(local_user).key();
-            names.insert(id, labels.label(&MemberId::person(local_user).key(), own));
+            names.insert(MemberId::person(local_user), labels.label(local_user, own));
         }
         Self(names)
     }
 
-    /// What the person `id` is called, when the roster names them.
+    /// What the member `id` is called, when the roster names them.
     #[must_use]
-    pub fn get(&self, id: &str) -> Option<&str> {
+    pub fn get(&self, id: &MemberId) -> Option<&str> {
         self.0.get(id).map(String::as_str)
     }
 }
@@ -139,7 +139,7 @@ fn row_of(
     let label = if is_agent {
         member.name.clone()
     } else {
-        labels.label(&member.id.key(), &member.name)
+        labels.label(member.id.id(), &member.name)
     };
     RosterRow {
         id: here.device.clone(),

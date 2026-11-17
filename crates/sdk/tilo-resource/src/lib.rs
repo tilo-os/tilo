@@ -54,7 +54,7 @@
 //!
 //! * **storage and sync** — the record is an Automerge document; every field
 //!   write is a minimal diff, text is spliced, collections are keyed and
-//!   fractionally ordered, so collaborators' concurrent edits merge;
+//!   fractionally ordered, so members' concurrent edits merge;
 //! * **replayable actions** — each `#[action]` method is a serializable
 //!   operation with typed parameters, applied deterministically (ids and time
 //!   come from [`ActionCx`]) and replayed byte-identically on every replica;

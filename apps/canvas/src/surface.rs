@@ -2344,7 +2344,7 @@ impl CanvasSurface {
         }
     }
 
-    /// Collaborators' selections, in their colours and with their names, where
+    /// Members' selections, in their colours and with their names, where
     /// the presence they published says they are.
     ///
     /// Read from `presence`, never from anything this window remembers about
@@ -2980,6 +2980,10 @@ fn draw_anchor(
 }
 
 impl Widget for CanvasSurface {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.picture();
+    }
+
     ui::provides!(dyn ui::collaboration::participants::Participants);
 
     fn set_motion_reduced(&mut self, reduced: bool) {

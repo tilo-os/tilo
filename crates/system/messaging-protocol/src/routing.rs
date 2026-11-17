@@ -27,7 +27,7 @@ pub enum Refusal {
     WrongService,
     WrongAccount,
     WrongDevice,
-    WrongPrincipal,
+    WrongActor,
     StaleLink,
     Unavailable,
     Revoked,
@@ -65,8 +65,8 @@ fn check_owned(
     expected: &Owner,
     live: &LiveBinding,
 ) -> Result<(), Refusal> {
-    if !expected.valid_principal() || expected.principal != live.owner.principal {
-        return Err(Refusal::WrongPrincipal);
+    if !expected.valid_actor() || expected.actor != live.owner.actor {
+        return Err(Refusal::WrongActor);
     }
     if route.account() != expected.account || route.account() != live.owner.account {
         return Err(Refusal::WrongAccount);
@@ -113,7 +113,7 @@ mod tests {
     use accounts::Account;
     fn owner() -> Owner {
         Owner {
-            principal: "11".repeat(32),
+            actor: "11".repeat(32),
             device: "device-a".into(),
             service: Service::Signal,
             account: "account-a".into(),
@@ -185,10 +185,10 @@ mod tests {
                 Err(Refusal::WrongDevice)
             );
             live.owner = owner();
-            live.owner.principal = "22".repeat(32);
+            live.owner.actor = "22".repeat(32);
             assert_eq!(
                 check(&store(), &route(), &owner(), &live),
-                Err(Refusal::WrongPrincipal)
+                Err(Refusal::WrongActor)
             );
             live.owner = owner();
             let mut disabled = AccountStore::new();

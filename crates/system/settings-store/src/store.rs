@@ -425,7 +425,7 @@ impl Store {
     }
 
     /// Who changed which leaf, oldest first: one object per changed leaf
-    /// with `at_ms`, `section`, `leaf`, `after`, `action`, `principal` and
+    /// with `at_ms`, `section`, `leaf`, `after`, `action`, `actor` and
     /// `invoked_by`, read from the documents' history.
     #[must_use]
     pub fn change_log(&self) -> Vec<Value> {
@@ -455,7 +455,7 @@ impl Store {
                     "leaf": field(leaf, "leaf"),
                     "after": field(leaf, "after"),
                     "action": field(message, "action"),
-                    "principal": field(message, "principal"),
+                    "actor": field(message, "actor"),
                     "invoked_by": field(message, "invoked_by"),
                 }));
             }
@@ -661,13 +661,13 @@ fn commit_edit(
 }
 
 #[must_use]
-pub fn made_by(message: &str, action_prefix: &str, principal: &str) -> bool {
+pub fn made_by(message: &str, action_prefix: &str, actor: &str) -> bool {
     serde_json::from_str::<Value>(message).is_ok_and(|message| {
         message
             .get("action")
             .and_then(Value::as_str)
             .is_some_and(|action| action.starts_with(action_prefix))
-            && message.get("principal").and_then(Value::as_str) == Some(principal)
+            && message.get("actor").and_then(Value::as_str) == Some(actor)
     })
 }
 
@@ -816,7 +816,7 @@ fn change_message(
             })
             .collect::<Vec<_>>(),
         "action": origin.action,
-        "principal": origin.principal,
+        "actor": origin.actor,
         "invoked_by": origin.invoked_by,
     })
     .to_string()
@@ -1345,7 +1345,7 @@ mod tests {
             assert_eq!(log[0]["section"], "power");
             assert_eq!(log[0]["leaf"], "blank_minutes");
             assert_eq!(log[0]["action"], "settings.power/field-edit");
-            assert_eq!(log[0]["principal"], ChangeOrigin::LOCAL_USER);
+            assert_eq!(log[0]["actor"], ChangeOrigin::LOCAL_USER);
         }
 
         phase a_document_edit_is_one_change_by_its_origin_and_its_bookkeeping_is_no_section;

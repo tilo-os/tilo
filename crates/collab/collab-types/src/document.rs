@@ -613,7 +613,7 @@ impl DocumentCheckout {
         self
     }
 
-    /// Workspace indexes contain names supplied by collaborators.  Keep the
+    /// Workspace indexes contain names supplied by members.  Keep the
     /// transport boundary typed and bounded before a host considers one.
     pub fn is_valid(&self) -> bool {
         DocumentId::parse(self.id.as_str()).is_some()

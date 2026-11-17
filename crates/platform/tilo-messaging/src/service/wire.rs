@@ -134,7 +134,7 @@ pub struct EnrollmentView {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Snapshot {
-    pub principal: String,
+    pub actor: String,
     pub accounts: Vec<AccountView>,
     pub enrollments: Vec<EnrollmentView>,
     pub proposals: u64,

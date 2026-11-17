@@ -366,9 +366,9 @@ pub fn store() -> Library {
                 ),
                 h2("Presence without noise"),
                 para(
-                    "Showing five remote cursors is delightful. Showing fifty is chaos. Good presence design fades collaborators into the periphery until they act.",
+                    "Showing five remote cursors is delightful. Showing fifty is chaos. Good presence design fades members into the periphery until they act.",
                 ),
-                bullet("Use colour sparingly — one hue per collaborator, nothing more."),
+                bullet("Use colour sparingly — one hue per member, nothing more."),
                 bullet("Animate arrivals and departures so the eye can track them."),
             ],
         ),

@@ -7,7 +7,7 @@ use vello::peniko::{Color, Fill};
 
 use crate::{ColorCompat, theme::Theme};
 
-/// Whether the principal is present or only represented by an unaccepted invitation.
+/// Whether the actor is present or only represented by an unaccepted invitation.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum AgentIdentityStyle {
     #[default]
@@ -19,7 +19,7 @@ pub enum AgentIdentityStyle {
 
 /// Paint Tilo's shared agent identity mark into `rect`.
 ///
-/// `color` is the principal's stable identity colour. The tile wears it, and the mark is inked
+/// `color` is the actor's stable identity colour. The tile wears it, and the mark is inked
 /// as a person's initials are on a face of the same colour
 /// ([`initial_ink`](crate::widget::avatar::initial_ink)): chosen through the active theme and
 /// tinted with the tile's hue, so an agent beside a person reads at the same weight in every

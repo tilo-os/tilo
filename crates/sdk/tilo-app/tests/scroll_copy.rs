@@ -20,7 +20,7 @@
 //! over the one before on a GPU target (copies, then damage), and the
 //! result compared with a full render of the same scene, in dark, light and
 //! high contrast. A step that is not a whole number of device pixels
-//! repaints the viewport instead, and still matches. A collaborator's
+//! repaints the viewport instead, and still matches. A member's
 //! pointer resting over the list, painted over the widgets as a window
 //! paints it ([`tilo_app::app::SurfaceDamage::painting_peers`]), does not
 //! stop the copies: its mark repaints where it is and where a copy took it.
@@ -102,7 +102,7 @@ fn task_row(row: &mut ViewCx<Checklist, Task>) -> Element {
 
 /// The window's surface: 800×600 logical pixels at `scale`, presented by a
 /// host that copies what a scroll keeps on screen when `copying`, with a
-/// collaborator's pointer resting at `peer` (logical pixels), if any.
+/// member's pointer resting at `peer` (logical pixels), if any.
 #[derive(Clone, Copy)]
 struct Surface {
     scale: f64,
@@ -423,7 +423,7 @@ struct Case {
     name: String,
     list: List,
     theme: fn() -> Theme,
-    /// How the window is presented. Where a collaborator's pointer rests
+    /// How the window is presented. Where a member's pointer rests
     /// over it, the same window is scrolled again without one, and the mark
     /// may cost a frame no more than a twentieth of the window.
     surface: Surface,
@@ -456,7 +456,7 @@ fn cases() -> Vec<Case> {
             },
         });
     }
-    // A collaborator's pointer over the list does not stop the copies.
+    // A member's pointer over the list does not stop the copies.
     for (theme_name, theme) in THEMES {
         for scale in [1.0, 2.0] {
             cases.push(Case {

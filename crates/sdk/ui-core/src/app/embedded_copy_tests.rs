@@ -3,7 +3,7 @@
 //! last ([`crate::scene_parts::damage_with_copies`],
 //! [`crate::scene_parts::present_copies`]) copies it and repaints the rest:
 //! every presented frame equals a full render of the host's scene, in dark,
-//! light and high contrast, at 100 % and 200 %, with a collaborator's mark
+//! light and high contrast, at 100 % and 200 %, with a member's mark
 //! and a badge the host draws over the app, and under a translucent layer
 //! (which copies nothing).
 
@@ -49,13 +49,13 @@ fn list_app(theme: &Theme) -> App {
 /// What the host draws besides the app.
 #[derive(Clone, Copy, Default)]
 struct Host {
-    /// A collaborator's pointer over the list, in host pixels.
+    /// A member's pointer over the list, in host pixels.
     peer: Option<Point>,
     /// A badge drawn over the app outside every damage part.
     badge: bool,
     /// The tile drawn inside a translucent group.
     translucent: bool,
-    /// The tile, its edge and the collaborator's mark drawn inside a part
+    /// The tile, its edge and the member's mark drawn inside a part
     /// bounded by the whole scene, as a strip's lane holds its windows.
     lane: bool,
 }
@@ -77,7 +77,7 @@ fn lay_out(tile: &mut EmbeddedApp, theme: &Theme) {
 
 /// The host's section, tracked for damage parts as the shell's are: a
 /// wallpaper, the tile (its ground, its clip, the app, its edge), a
-/// collaborator's mark and, outside every part, a badge.
+/// member's mark and, outside every part, a badge.
 fn section(
     tile: &mut EmbeddedApp,
     theme: &Theme,

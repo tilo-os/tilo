@@ -733,7 +733,7 @@ impl HostContext {
         std::mem::take(&mut self.launch_options)
     }
     /// Prepare the instance as a private window: its profile is thrown away with the process, and
-    /// nothing it shows reaches the person's other windows, devices or collaborators.
+    /// nothing it shows reaches the person's other windows, devices or members.
     pub fn provide_private(&mut self) {
         self.private = true;
     }

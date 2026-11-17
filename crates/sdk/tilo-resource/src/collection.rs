@@ -123,7 +123,7 @@ pub(crate) const VALUE: &str = "v";
 ///
 /// Stored as a map from id to `{ k: order key, v: value }`. Editing an item
 /// writes only that item; a move rewrites one order key; concurrent inserts
-/// from several collaborators interleave deterministically; deleting an item
+/// from several members interleave deterministically; deleting an item
 /// never disturbs another item's identity. This is the default container for
 /// anything a user adds, reorders or removes.
 ///

@@ -987,11 +987,23 @@ impl AttachedView {
     }
 
     /// What the view's records ask the workspace's hosts for
-    /// ([`RecordStore::wanted_records`]).
+    /// ([`RecordStore::wanted_records`]). Each chain with a part here reads
+    /// first: a chain follows what arrived only when it is read, so the part
+    /// just handed to it is taken up, and a chain read whole asks for the
+    /// parts before its head. Only the chains are read, not the view's tree.
     #[must_use]
     pub fn wanted_records(&self) -> Vec<ui_core::record::DocumentId> {
         // What the records ask for is what the view's last frame asked.
         self.settle();
+        let chains: std::collections::BTreeSet<ui_core::record::DocumentId> = self
+            .records
+            .open_records()
+            .into_iter()
+            .filter_map(|checkout| checkout.id.chain_part().map(|(chain, _)| chain))
+            .collect();
+        for chain in &chains {
+            let _ = self.frame().resource(&super::chain_resource_id(chain));
+        }
         self.records.wanted_records()
     }
 

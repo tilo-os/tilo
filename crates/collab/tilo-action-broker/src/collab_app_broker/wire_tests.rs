@@ -27,7 +27,7 @@ impl Workspace {
             "Wire",
         );
         for seed in members {
-            workspace.admit(principal(*seed), crate::test_support::Role::Editor);
+            workspace.admit(actor(*seed), crate::test_support::Role::Editor);
         }
         let route = CrdtRoute::record("so.tilo.notes", workspace.id().to_string(), "meeting-notes");
         let mut tree = WorkspaceTree::default();
@@ -133,7 +133,7 @@ fn device(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed.wrapping_add(100); 32])
 }
 
-fn principal(seed: u8) -> String {
+fn actor(seed: u8) -> String {
     person_id_for_root(
         SigningKey::from_bytes(&[seed; 32])
             .verifying_key()
@@ -262,7 +262,7 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                 panic!("the watcher receives the author's presence");
             };
             assert_eq!(delivered, subscription);
-            assert_eq!(member, collab_types::MemberId::person(principal(2)), "attributed");
+            assert_eq!(member, collab_types::MemberId::person(actor(2)), "attributed");
             assert_eq!(postcard::from_bytes::<PresenceKey>(&presence.key).unwrap(), key);
             assert_eq!(
                 presence.payload,
@@ -371,19 +371,13 @@ async fn a_signed_change_crosses_the_wire_to_the_channel_subscribers() {
             );
             let HostFrame::Event {
                 subscription: delivered,
-                event:
-                    Event::Op {
-                        op: bytes,
-                        from_user_id,
-                        ..
-                    },
+                event: Event::Op { op: bytes, .. },
             } = watcher.frame().await
             else {
                 panic!("the watcher receives the change");
             };
             assert_eq!(delivered, subscription);
             assert_eq!(postcard::from_bytes::<SignedOp>(&bytes).unwrap(), op);
-            assert!(!from_user_id.is_empty());
 
             let channel = watcher.channel;
             assert!(matches!(
@@ -758,7 +752,7 @@ async fn the_wire_client_calls_and_subscribes_against_the_host() {
             else {
                 panic!("the client routes the subscription's event");
             };
-            assert_eq!(member, collab_types::MemberId::person(principal(12)));
+            assert_eq!(member, collab_types::MemberId::person(actor(12)));
             assert!(
                 watcher
                     .call(Operation::Close { handle: Handle(99) })

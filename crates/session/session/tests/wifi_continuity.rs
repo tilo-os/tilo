@@ -24,7 +24,7 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
-use crate::common::held::{WORKSPACE, presentation, principal};
+use crate::common::held::{WORKSPACE, actor, presentation};
 
 /// What Settings is called in the workspace.
 const SETTINGS: &str = "so.tilo.settings";
@@ -79,7 +79,7 @@ fn person() -> Person {
 fn shell(person: &Person) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let mut workspace = Workspace::new(workspace, "Shell");
-    workspace.set_owner(principal(&person.cert.user_public_key));
+    workspace.set_owner(actor(&person.cert.user_public_key));
     Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),

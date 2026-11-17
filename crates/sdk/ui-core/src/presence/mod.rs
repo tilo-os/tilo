@@ -80,7 +80,7 @@ pub fn local_surface_pointer() -> PresenceKey {
 pub const COMPOSING_LINGER: crate::time::Duration = crate::time::Duration::from_secs(6);
 
 /// How long a "just typed" highlight lingers, its fade included: the
-/// standard trace of a collaborator's mark ([`crate::motion::Trace`]).
+/// standard trace of a member's mark ([`crate::motion::Trace`]).
 pub const TYPING_FADE: crate::time::Duration = crate::motion::Trace::LIFE;
 
 /// The highlight fades in this many steps, each a wake deadline
@@ -2973,7 +2973,7 @@ mod own_identity_tests {
             }
             // phase: another_person_is_still_painted
             // The control. A second *person* is a second participant, and the
-            // self-rule may not touch them — hiding a real collaborator is the
+            // self-rule may not touch them — hiding a real member is the
             // worse of the two failures by a distance.
             {
                 let mut ctx = mine();

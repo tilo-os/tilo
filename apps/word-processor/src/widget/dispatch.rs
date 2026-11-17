@@ -241,7 +241,7 @@ impl Editor {
         operation: crate::model::DocumentAction,
         author: Option<&str>,
     ) -> bool {
-        // A staged collaborator's verb is theirs in history.
+        // A staged member's verb is theirs in history.
         let _author = author.map(|author| {
             ui::invocation_scope::InvokerScope::enter(tilo_actions::ActionInvoker::person(author))
         });
@@ -274,7 +274,7 @@ impl Editor {
     }
 
     /// Persist only the fields of named styles that changed, so a stale whole-sheet snapshot
-    /// never overwrites a collaborator's style edit.
+    /// never overwrites a member's style edit.
     pub(super) fn persist_stylesheet_via_actions(&mut self, state: &mut ui::widget::Edits<'_>) {
         let before = self.inner.stylesheet(state);
         let after = self.sheet.clone();

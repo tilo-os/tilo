@@ -37,7 +37,7 @@ impl ChatApp {
 
     /// Follow the workspace's agents record: what each agent is called, by its bare id.
     ///
-    /// An agent is a collaborator of the workspace like a person is, and its
+    /// An agent is a member of the workspace like a person is, and its
     /// name is the workspace's answer, kept in its own record ([`WorkspaceAgents`]).
     /// Presence only names an agent while its device works here; the record
     /// names it always, so an author reads by its name whether or not it is

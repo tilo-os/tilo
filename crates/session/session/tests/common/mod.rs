@@ -41,8 +41,6 @@ use tilo_service::{Questions, Service as _, Started};
 use tilo_session::{ActionPlane, Options, Session};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
-use tilolang_tilo::runtime::Actor;
-use tilolang_tilo::runtime::ids::MemberId;
 
 /// The canvas, as assistive technology names it: the map the framed style draws its places
 /// on. What a test waits for to know the canvas is up, since nothing else stands on an empty one.
@@ -72,6 +70,16 @@ pub const WIDTH: i32 = 1280;
 pub const HEIGHT: i32 = 800;
 /// The person at the session.
 pub const PERSON: &str = "Pat";
+
+/// The agent `id`, as the one who acts.
+pub fn agent(id: &str) -> ui::tilo_actions::Actor {
+    ui::tilo_actions::MemberId::agent(id).into()
+}
+
+/// The person `id`, as the one who acts.
+pub fn as_person(id: &str) -> ui::tilo_actions::Actor {
+    ui::tilo_actions::MemberId::person(id).into()
+}
 /// The notes app, as a package names it.
 pub const NOTES: &str = "so.tilo.lang.notes";
 /// The mail app, as a package names it.
@@ -587,7 +595,7 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
 pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>) {
     let host = Host::new(
         &tilo_resource::Doc::new(),
-        Actor::Member(MemberId::person(person)),
+        tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
         || None,
     )
     .unwrap();
@@ -667,7 +675,7 @@ pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
 /// Who made the last step of the workspace's layout, once the workspace has the change that made
 /// it and it is `verb`'s: a layout's change is written off the loop, so the record holds it a look
 /// or more after the action.
-pub fn last_step(session: &mut Session, verb: &str) -> String {
+pub fn last_step(session: &mut Session, verb: &str) -> ui::tilo_actions::Actor {
     wait_for(
         session,
         "the layout's change to reach the workspace",

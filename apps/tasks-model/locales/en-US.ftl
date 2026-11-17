@@ -14,24 +14,9 @@ tasks-tracker-issues-noun = { $count ->
     [one] an issue
    *[other] issues
 }
-tasks-tracker-create = New issue
-tasks-tracker-rename = Rename issue
 tasks-tracker-create-area = New project or area
 tasks-tracker-rename-area = Rename project or area
 tasks-tracker-set-kind = Set project kind
 tasks-tracker-involve = Add someone to a project
 tasks-tracker-remove-person = Remove someone from a project
-tasks-tracker-move-under = Move issue
-tasks-tracker-assign = Assign issue
-tasks-tracker-add-label = Label issue
-tasks-tracker-place = Place issue on the board
-tasks-tracker-comment = Comment
-tasks-tracker-link = Link issue
-tasks-tracker-link-note = Link a note
-tasks-tracker-delete = Delete issue
-tasks-tracker-plan = Plan issue
-tasks-tracker-set-project = Move issue to a project
 tasks-tracker-delete-area = Delete project or area
-tasks-tracker-attach = Attach a file
-tasks-tracker-detach = Remove an attachment
-tasks-tracker-import = Import old tasks

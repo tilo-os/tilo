@@ -742,6 +742,65 @@ holds an earlier part when a reader scrolls back to it. Headless readers
 (bots, moderation, the Discord bridge, agents) read and page the chain through
 that resource instead of enumerating parts themselves.
 
+**A change costs its part, not its record.** Every holder of a record (the
+relay, each device, the page) loads, verifies, diffs and saves the record
+whole, so whatever grows without end in one record makes every change cost
+everything before it. Anything an app keeps that grows without end is a chain
+of bounded parts, and the record the app shows keeps only what stays small.
+What one change costs on any holder is then the cost of one part, whatever
+the workspace holds. The framework gives every chain the same pieces, so an
+app writes none of them:
+
+- **Where a write goes.** `Chained::part_for` names the part an action
+  changes (the one holding the item it names; for a new item the head, or the
+  next part once the head is full). `Chained::prepare` reads the app's record
+  and every held part where the action is invoked, and fills in or refuses
+  what spans parts (an issue's parent in another part, its place in the
+  order), so the verb itself reads only its part and replays the same
+  everywhere.
+- **Held whole or by the reader.** A chain whose views list all of it
+  (`Chained::HELD_WHOLE`: a tracker's issues) holds every part as soon as
+  it knows the head; one read back in time (a chat) holds the head and what
+  a reader scrolled to.
+- **Read as it changes.** `ViewCx::chain_value` follows the record and the
+  chain's parts the way `ViewCx::value` follows the record, and a part is a
+  record a view part is built over (`Chain::part_record` with
+  `ViewCx::record`), so an item's page binds its fields by path as before.
+- **Published, searched and undone per part.** The chain's publication and
+  search entries are built again only for the part that changed; its items
+  open where the window shows them; the window's Undo takes back the
+  person's last write into a part before the record's own history.
+- **Held where a host acts.** A host acting on a record for a member or an
+  agent hands the record it mounts the newest part of each of its chains and
+  every part the chain then asks for, from what the workspace holds, and
+  keeps each current with the changes after it.
+
+What one app record holds at the size of a small company's workspace (101 wiki
+pages, about 2,500 issues, a 19,513-file repository), and what a change costs
+there before it moves into parts:
+
+| App | What one record holds | Grows with | One change today |
+| --- | --- | --- | --- |
+| Tasks | (before) every issue with its body, thread, links and attachment references | issues | 6.7 ms to apply and a 711 ms load at 2,500 issues (311 KB saved, 2.6 MB with history), every holder |
+| Tasks | (now) projects and areas; issues in parts of at most 500 issues or 512 KiB of text | parts | one part's cost: the same bytes and record size at 10× the issues |
+| Notes | every page, its rich-text body and reactions | pages | 600 KB at 101 pages; whole record per change |
+| Files (folder) | every file and folder node of the workspace | files | 28 MB at 19,513 files; split per record in its own change |
+| Mail | every message's state, held bodies, drafts, outboxes; the person's copies | messages | grows with the mailbox |
+| Feeds | every article with its full text | articles | grows until its feed is removed |
+| Messages | every conversation with every message | messages | grows without bound |
+| Discord bridge | a mapping row per mirrored message | messages | grows without bound |
+| Calendar | every event with overrides and attendees | events | grows with the calendar |
+| Contacts, Snippets, Photos, Music | every item; Music playlist covers inline up to 256 KiB | items | grows with the library |
+| Chat | channels and people; messages in parts of 2,000 messages or 1 MiB | parts | one part |
+| Sheets, Slides, Word processor, Canvas | one record per file | the file | bounded by the document |
+| Desktop layout | strips and windows, and `effect_receipts` with no cap | receipts | grows with use |
+| Settings, Shortcuts, Activity | small | — | small |
+
+Binary content (attachments, images, file contents) is already a
+content-addressed blob that the record only names (`Bytes` above 1 KiB, the
+folder's iroh-blobs hashes), except Music's playlist covers and Contacts'
+portraits, which are inline data.
+
 ## What a unit and a workspace's keys cost
 
 Measured, not estimated: `key-group`'s `per_group` bench for a

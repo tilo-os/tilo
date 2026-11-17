@@ -679,8 +679,8 @@ mod folder_rows_tests {
     fn authors() -> AuthorDirectory {
         let person = hex::encode(person());
         let mut authors = AuthorDirectory::new();
-        authors.register_person(
-            &person,
+        authors.register_member(
+            &ui::tilo_actions::MemberId::person(person.clone()),
             ui::history_source::author_for_identity("Ada".to_owned(), &person),
         );
         authors.register_device(&hex::encode(device()), "Ada's laptop");

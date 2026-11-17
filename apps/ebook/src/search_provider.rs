@@ -376,7 +376,7 @@ impl BookSearch {
             } else {
                 entry.title.clone()
             };
-            // A collaborator's book is fetched before it opens.
+            // A member's book is fetched before it opens.
             let mut result =
                 SearchResult::new(BOOK_KIND, title.clone(), book_place_resource(&entry.id))
                     .with_icon(Icon::FileText);
@@ -647,13 +647,13 @@ impl BookSearch {
     }
 
     /// The library's entries this projection was built over: every book
-    /// the person or a collaborator has, on this device or not.
+    /// the person or a member has, on this device or not.
     pub(crate) fn registry(&self) -> &[LibraryEntry] {
         &self.registry
     }
 
     /// What opening the hit anchored at `id` runs: the reader opens the
-    /// book, chapter, annotation or match there; a collaborator's book not
+    /// book, chapter, annotation or match there; a member's book not
     /// on this device is fetched first. `None` once the hit is gone.
     pub(crate) fn opened(&self, id: &str) -> Option<crate::resource::BooksEffect> {
         use ui::tilo_resource::Effect as _;

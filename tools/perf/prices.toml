@@ -8,15 +8,15 @@
 # How a measurement becomes dollars, per provider:
 #
 #   capacity     = min(vCPU-seconds the VM sells per hour / CPU-seconds per
-#                      collaborator-hour,
-#                      (memory - the idle relay) / resident MiB per collaborator)
-#                  at `target_utilisation`: collaborators one VM carries at once
+#                      member-hour,
+#                      (memory - the idle relay) / resident MiB per member)
+#                  at `target_utilisation`: members one VM carries at once
 #   compute      = VM price per hour / capacity
-#   egress       = transport bytes per collaborator-hour beyond the VM's
+#   egress       = transport bytes per member-hour beyond the VM's
 #                  included traffic (spread over a VM-month at capacity)
 #                  x price per GB
-#   $ per collaborator-hour = compute + egress
-#   $ per active user-month = $ per collaborator-hour x active_hours_per_user_month
+#   $ per member-hour = compute + egress
+#   $ per active user-month = $ per member-hour x active_hours_per_user_month
 #
 # The VM is priced as if kept at the target utilisation around the clock;
 # peak-to-average provisioning and storage growth are not modelled.

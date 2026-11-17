@@ -1049,8 +1049,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// Run `then` on the UI thread with what `receiver` delivers, `None`
     /// when its sender went away unanswered. Nothing waits on a thread (a
     /// browser page has none to spare): the job looks each time the app
-    /// wakes, so the sender must wake it, as the host's services do.
-    fn wait_for<T: Send + 'static>(
+    /// wakes, so the sender must wake it, as the host's services do, or the
+    /// app must be drawing frames, as it does while a render it pumps runs.
+    pub fn wait_for<T: Send + 'static>(
         &mut self,
         receiver: Receiver<T>,
         then: impl FnOnce(&mut H, Option<T>, &mut Self) -> EffectAnswer + 'static,

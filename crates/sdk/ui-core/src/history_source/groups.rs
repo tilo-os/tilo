@@ -1,7 +1,7 @@
 //! Where a version's name lives: in the document, with the changes it names.
 //!
 //! A name that lived in the widget would vanish on close, and one beside the document would
-//! never reach a collaborator. So a name is written into the same CRDT as the content it
+//! never reach a member. So a name is written into the same CRDT as the content it
 //! describes — one record at the document root per named range, keyed by the range it covers:
 //!
 //! ```text
@@ -203,7 +203,7 @@ pub fn split_named_range(
 
 /// Merge named bands into one caller-resolved range. Every old record must
 /// exist before anything is changed, so a stale UI cannot partially merge a
-/// set that a collaborator has already edited.
+/// set that a member has already edited.
 pub fn merge_named_ranges(
     doc: &mut AutoCommit,
     record_ids: &[String],

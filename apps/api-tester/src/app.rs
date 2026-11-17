@@ -849,7 +849,7 @@ impl ApiTesterApp {
     fn replay_history(&mut self, index: usize) {
         if let Some(entry) = self.history.get(index).cloned() {
             // The verb the click runs: the entry's whole request comes back through the
-            // record, so a collaborator sees the builder change. The local copy saves a
+            // record, so a member sees the builder change. The local copy saves a
             // frame.
             self.request = if let Some(replay) = entry.replay.as_ref() {
                 replay.to_request()

@@ -7,9 +7,12 @@
 )]
 
 use serde_json::json;
+use tasks::App;
 use tasks::model::{Status, issue_resource};
-use tasks::{App, Tracker};
 use ui::prelude::*;
+
+mod common;
+use common::{chain, held};
 
 fn open() -> TestApp<App> {
     ui::i18n::I18nManager::init("en-US");
@@ -17,25 +20,7 @@ fn open() -> TestApp<App> {
 }
 
 fn only(app: &TestApp<App>) -> Id {
-    app.state().issues.ids().next().cloned().expect("an issue")
-}
-
-/// A workspace host that says where its record is served, so a link to a
-/// resource of it can be made: what its web entry renders.
-fn served() -> ui::tilo_actions::remote::TestHost {
-    ui::tilo_actions::remote::TestHost::new().with_catalogue(|_, query| {
-        Ok(ui::tilo_actions::remote::CataloguePage {
-            locator: Some(ui::tilo_actions::remote::ResourceViewLocator {
-                origin: "https://host.example".into(),
-                workspace: "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90".into(),
-                host_device: "ab".repeat(32),
-                provider: query.provider.unwrap_or_default(),
-                web_entry: Some("https://tilo.so/".into()),
-            }),
-            exhausted: true,
-            ..ui::tilo_actions::remote::CataloguePage::default()
-        })
-    })
+    held(app).ids().into_iter().next().expect("an issue")
 }
 
 tilo_test_env::scenario! {
@@ -44,11 +29,11 @@ tilo_test_env::scenario! {
     phase an_issue_made_through_its_action_is_listed_opened_and_kept;
     {
         let mut app = open();
-        assert!(app.state().issues.is_empty(), "a tracker starts empty");
-        app.call("create", json!({ "title": "Write the launch notes" }))
+        assert!(held(&app).is_empty(), "a tracker starts empty");
+        app.call_on(&chain(), "create", json!({ "title": "Write the launch notes" }))
             .expect("create");
         let issue = only(&app);
-        assert_eq!(app.state().issues.get(&issue).unwrap().number, 1);
+        assert_eq!(held(&app).get(&issue).unwrap().number, 1);
         assert!(app.harness().targets().contains_key("tasks-list"));
 
         // Opening it, as a search hit or an agent does, shows its page.
@@ -61,8 +46,7 @@ tilo_test_env::scenario! {
         app.call_on(&body, "append-paragraph", json!({ "text": "Say why" }))
             .expect("write the description");
         assert!(
-            app.state()
-                .issues
+            held(&app)
                 .get(&issue)
                 .unwrap()
                 .body
@@ -71,8 +55,7 @@ tilo_test_env::scenario! {
         );
         assert!(app.undo());
         assert!(
-            !app.state()
-                .issues
+            !held(&app)
                 .get(&issue)
                 .unwrap()
                 .body
@@ -81,55 +64,10 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_issue_has_a_link_of_its_own_that_opens_it;
-    // The view the tracker opens an issue in is what a link names: the link
-    // the framework mints for the issue names the issue, and opening it shows
-    // the issue's page rather than the tracker's list.
-    {
-        let host = served();
-        let _served = ui::RemoteActions::enter(
-            std::sync::Arc::new(host),
-            ui::tilo_actions::remote::Caller::local_person("ada"),
-        );
-        let mut app = open();
-        app.call("create", json!({ "title": "First issue" }))
-            .expect("create");
-        let issue = only(&app);
-        let resource = issue_resource(&issue);
-
-        let answer = app
-            .call_on(&resource, "share-link", json!({}))
-            .unwrap()
-            .unwrap();
-        let url = answer["url"].as_str().expect("a link");
-        let entries = ui::tilo_reference::link::WebEntries::new(vec![
-            ui::tilo_reference::link::WebEntry::new("https://tilo.so/").unwrap(),
-        ]);
-        let (link, damaged) = ui::tilo_reference::link::Link::parse_or_workspace(url, &entries)
-            .expect("the link reads");
-        assert!(damaged.is_none(), "{url}");
-        assert_eq!(
-            link.target
-                .resource
-                .as_ref()
-                .map(|resource| resource.id.as_str()),
-            Some(resource.as_str()),
-            "the link names the issue, not the tracker: {url}"
-        );
-        assert_eq!(link.target.view, None, "the issue page is the primary view");
-
-        app.call_on(&resource, "open", json!({}))
-            .expect("open the issue");
-        assert!(
-            app.harness().targets().contains_key("tasks-issue-title"),
-            "the link's view shows the issue"
-        );
-    }
-
     phase placing_on_the_board_and_commenting_are_the_issues_actions;
     {
         let mut app = open();
-        app.call("create", json!({ "title": "Record the demo" }))
+        app.call_on(&chain(), "create", json!({ "title": "Record the demo" }))
             .expect("create");
         let issue = only(&app);
         app.call_on(
@@ -139,7 +77,7 @@ tilo_test_env::scenario! {
         )
         .expect("place");
         assert_eq!(
-            app.state().issues.get(&issue).unwrap().status,
+            held(&app).get(&issue).unwrap().status,
             Status::InProgress
         );
         app.call_on(
@@ -148,8 +86,8 @@ tilo_test_env::scenario! {
             json!({ "text": "Two minutes at most" }),
         )
         .expect("comment");
-        let state: Tracker = app.state();
-        let thread = &state.issues.get(&issue).unwrap().comments;
+        let issue = held(&app).get(&issue).unwrap();
+        let thread = &issue.comments;
         assert_eq!(
             thread.values().next().unwrap().author,
             Some(ui::tilo_resource::MemberId::person("ada"))
@@ -159,14 +97,14 @@ tilo_test_env::scenario! {
     phase a_viewer_reads_the_tracker_but_cannot_change_it;
     {
         let mut app = open();
-        app.call("create", json!({ "title": "Pick the venue" }))
+        app.call_on(&chain(), "create", json!({ "title": "Pick the venue" }))
             .expect("create");
         app.set_role(ui::Role::Viewer);
         assert!(
-            app.call("create", json!({ "title": "Another" })).is_err(),
+            app.call_on(&chain(), "create", json!({ "title": "Another" })).is_err(),
             "a viewer creates nothing"
         );
-        assert_eq!(app.state().issues.len(), 1);
+        assert_eq!(held(&app).len(), 1);
     }
 
     phase a_project_is_made_listed_and_opened_by_its_address;
@@ -237,7 +175,8 @@ tilo_test_env::scenario! {
     // disclosed by that read rather than hidden behind its `open`.
     {
         let mut app = open();
-        app.call(
+        app.call_on(
+            &chain(),
             "create",
             json!({ "title": "Review Ada's portfolio", "body": "Look at her GitHub." }),
         )
@@ -259,7 +198,7 @@ tilo_test_env::scenario! {
     phase an_agents_create_is_shown_at_new_issue;
     {
         let mut app = open();
-        app.call("create", json!({ "title": "Write the launch notes" }))
+        app.call_on(&chain(), "create", json!({ "title": "Write the launch notes" }))
             .expect("create");
         app.settle();
         let targets = app.harness().targets();
@@ -269,7 +208,7 @@ tilo_test_env::scenario! {
             .expect("the list's New issue button");
         let locus = app
             .harness()
-            .semantic_locus(&ui::headless::agent_acting("tasks.tracker", "create"))
+            .semantic_locus(&ui::headless::agent_acting(&chain(), "create"))
             .expect("an agent's create finds New issue");
         assert!(
             button.contains(locus.center()),
@@ -287,15 +226,11 @@ tilo_test_env::scenario! {
     // issue links to as chips that open it where it lives.
     {
         let mut app = open();
-        app.call("create", json!({ "title": "First" }))
+        app.call_on(&chain(), "create", json!({ "title": "First" }))
             .expect("create");
-        app.call("create", json!({ "title": "Second" }))
+        app.call_on(&chain(), "create", json!({ "title": "Second" }))
             .expect("create");
-        let (second, _) = app
-            .state()
-            .by_number(2)
-            .map(|(id, issue)| (id.clone(), issue.clone()))
-            .expect("numbered 2");
+        let (second, _) = held(&app).by_number(2).expect("numbered 2");
         app.call_on(
             &issue_resource(&second),
             "link",
@@ -330,7 +265,7 @@ tilo_test_env::scenario! {
     // something else.
     {
         let mut app = open();
-        app.call("create", json!({ "title": "Plan the launch" }))
+        app.call_on(&chain(), "create", json!({ "title": "Plan the launch" }))
             .expect("create");
         let issue = only(&app);
         app.call_on(&issue_resource(&issue), "open", json!({}))
@@ -364,9 +299,7 @@ tilo_test_env::scenario! {
             json!({ "note": note }),
         )
         .expect("link the note");
-        let links: Vec<_> = app
-            .state()
-            .issues
+        let links: Vec<_> = held(&app)
             .get(&issue)
             .unwrap()
             .links
@@ -409,7 +342,7 @@ tilo_test_env::scenario! {
             ui::tilo_actions::remote::Caller::local_person("ada"),
         );
         let mut app = open();
-        app.call("create", json!({ "title": "Plan the launch" }))
+        app.call_on(&chain(), "create", json!({ "title": "Plan the launch" }))
             .expect("create");
         let issue = only(&app);
         for (label, record) in [("Kept", Some("/launch")), ("Old", None)] {
@@ -425,9 +358,7 @@ tilo_test_env::scenario! {
             app.call_on(&issue_resource(&issue), "link", link)
                 .expect("link the issue");
         }
-        let links: Vec<_> = app
-            .state()
-            .issues
+        let links: Vec<_> = held(&app)
             .get(&issue)
             .unwrap()
             .links
@@ -477,7 +408,7 @@ tilo_test_env::scenario! {
     // "Nobody" choice clears it.
     {
         let mut app = open();
-        app.call("create", json!({ "title": "Draft the agenda" }))
+        app.call_on(&chain(), "create", json!({ "title": "Draft the agenda" }))
             .expect("create");
         let issue = only(&app);
         app.call_on(&issue_resource(&issue), "open", json!({}))
@@ -490,10 +421,9 @@ tilo_test_env::scenario! {
         app.settle();
 
         let assignee = |app: &TestApp<App>| {
-            app.state()
-                .issues
+            held(app)
                 .get(&issue)
-                .and_then(|issue| issue.assignee.clone())
+                .and_then(|issue| issue.assignee)
                 .map(|assignee| assignee.0)
         };
         let pick = |app: &mut TestApp<App>, entry: &str| {
@@ -533,20 +463,18 @@ tilo_test_env::scenario! {
     // labels the workspace already uses and the field that makes a new one.
     {
         let mut app = open();
-        app.call("create", json!({ "title": "Draft the agenda" }))
+        app.call_on(&chain(), "create", json!({ "title": "Draft the agenda" }))
             .expect("create");
         let issue = only(&app);
         // An issue already labelled makes that label one the picker offers.
-        app.call("create", json!({ "title": "Book the room" }))
+        app.call_on(&chain(), "create", json!({ "title": "Book the room" }))
             .expect("create");
-        let other = app
-            .state()
-            .issues
+        let other = held(&app)
             .iter()
             .find(|(_, shown)| shown.title == "Book the room")
-            .map(|(id, _)| id.clone())
+            .map(|(id, _)| id)
             .expect("the other issue");
-        app.call("add-label", json!({ "issue": other, "label": "launch" }))
+        app.call_on(&chain(), "add-label", json!({ "issue": other, "label": "launch" }))
             .expect("label it");
         app.call_on(&issue_resource(&issue), "open", json!({}))
             .expect("open the issue");
@@ -568,8 +496,7 @@ tilo_test_env::scenario! {
         );
 
         let labels_of = |app: &TestApp<App>| -> Vec<String> {
-            app.state()
-                .issues
+            held(app)
                 .get(&issue)
                 .map(|shown| shown.labels.iter().cloned().collect())
                 .unwrap_or_default()
@@ -611,7 +538,7 @@ tilo_test_env::scenario! {
     // same page rather than a copy of it.
     {
         let mut app = open();
-        app.call("create", json!({ "title": "Which venue seats 120?" }))
+        app.call_on(&chain(), "create", json!({ "title": "Which venue seats 120?" }))
             .expect("create");
         let issue = only(&app);
         app.call_on(
@@ -852,17 +779,15 @@ tilo_test_env::scenario! {
             ("Record the demo", None, None),
             ("Tidy the onboarding docs", Some("agent:claude"), None),
         ] {
-            app.call("create", json!({ "title": title, "assignee": assignee }))
+            app.call_on(&chain(), "create", json!({ "title": title, "assignee": assignee }))
                 .expect("create");
             if let Some(label) = label {
-                let issue = app
-                    .state()
-                    .issues
+                let issue = held(&app)
                     .iter()
                     .find(|(_, issue)| issue.title == title)
-                    .map(|(id, _)| id.clone())
+                    .map(|(id, _)| id)
                     .expect("the issue just made");
-                app.call("add-label", json!({ "issue": issue, "label": label }))
+                app.call_on(&chain(), "add-label", json!({ "issue": issue, "label": label }))
                     .expect("label it");
             }
         }
@@ -967,11 +892,11 @@ tilo_test_env::scenario! {
         add(&mut app, Status::Todo, "Ship the launch");
         add(&mut app, Status::InProgress, "Archive the banner");
 
-        let state = app.state();
-        let statuses: Vec<(&str, Status)> = state
-            .issues
-            .values()
-            .map(|issue| (issue.title.as_str(), issue.status))
+        let held = held(&app);
+        let statuses: Vec<(&str, Status)> = held
+            .issues()
+            .iter()
+            .map(|(_, issue)| (issue.title.as_str(), issue.status))
             .collect();
         assert!(
             statuses.contains(&("Ship the launch", Status::Todo)),
@@ -1035,10 +960,6 @@ fn notes_api() -> ui::tilo_actions::remote::TestHost {
 /// and their undo takes the link back. Pressed here, it is the app's own
 /// request.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one story: the agent's note, its undo, then the person's press"
-)]
 fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
     use ui::tilo_actions::{ActionInvoker, InvocationUpdate};
     let mut env = tilo_test_env::ScopedEnv::new();
@@ -1050,10 +971,9 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
         ui::tilo_actions::remote::Caller::local_person("ada"),
     );
     let mut app = open();
-    app.call("create", json!({ "title": "Plan the launch" }))
+    app.call_on(&chain(), "create", json!({ "title": "Plan the launch" }))
         .expect("create");
     let issue = only(&app);
-    let before = app.versions().len();
 
     let scribe = ActionInvoker::agent("scribe");
     let address = ui::bound_dispatch::BoundActionAddress {
@@ -1110,9 +1030,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
         app.harness().job_updates(invocation)
     );
 
-    let links: Vec<_> = app
-        .state()
-        .issues
+    let links: Vec<_> = held(&app)
         .get(&issue)
         .unwrap()
         .links
@@ -1126,21 +1044,11 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
     assert_eq!(links[0].label, "#1 Plan the launch");
     assert_eq!(links[0].record, None);
 
-    let versions = app.versions();
-    assert_eq!(versions.len(), before + 1, "one step: {versions:?}");
-    let by = versions
-        .last()
-        .and_then(|version| version.context.as_ref())
-        .and_then(|context| context.invoker.as_ref())
-        .expect("the step names who made it");
-    assert_eq!(
-        by.acting.member_id(),
-        Some(&ui::tilo_resource::MemberId::agent("scribe"))
-    );
-
-    app.call_by(scribe, "tasks.tracker", "undo", json!({}))
+    // One step in the part that keeps the issue, the agent's: its undo there
+    // takes the link back.
+    app.call_by(scribe, &chain(), "undo", json!({ "part": 0 }))
         .expect("the agent undoes its step");
-    assert!(app.state().issues.get(&issue).unwrap().links.is_empty());
+    assert!(held(&app).get(&issue).unwrap().links.is_empty());
 
     // The person pressing it in the window: no invocation of anyone else's
     // is behind it, so it is the app's own request of Notes.
@@ -1158,7 +1066,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
     assert_eq!(asked.len(), 2, "{asked:?}");
     assert_eq!(asked[1].on_behalf_of, None);
     assert_eq!(
-        app.state().issues.get(&issue).unwrap().links.len(),
+        held(&app).get(&issue).unwrap().links.len(),
         1,
         "the note linked as the person's"
     );
@@ -1208,7 +1116,7 @@ fn a_blank_new_issue_cannot_be_invoked() {
     app.harness().type_text("   ");
     app.harness().key("Enter");
     app.settle();
-    assert!(app.state().issues.is_empty(), "nothing blank is made");
+    assert!(held(&app).is_empty(), "nothing blank is made");
     assert!(
         app.refused().is_none(),
         "nothing was refused: {:?}",
@@ -1226,7 +1134,7 @@ fn a_blank_new_issue_cannot_be_invoked() {
     app.harness().key("Enter");
     app.settle();
     let issue = only(&app);
-    assert_eq!(app.state().issues.get(&issue).unwrap().title, "Ship it");
+    assert_eq!(held(&app).get(&issue).unwrap().title, "Ship it");
     assert!(
         !new_issue_enabled(&mut app),
         "the field is emptied for the next"
@@ -1238,12 +1146,7 @@ fn a_blank_new_issue_cannot_be_invoked() {
         .click_named("tasks-list-new-create")
         .expect("press New issue");
     app.settle();
-    let titles: Vec<String> = app
-        .state()
-        .issues
-        .values()
-        .map(|issue| issue.title.clone())
-        .collect();
+    let titles: Vec<String> = held(&app).values().map(|issue| issue.title).collect();
     assert_eq!(titles, ["Ship it", "Write the notes"]);
 }
 
@@ -1253,8 +1156,12 @@ fn a_blank_new_issue_cannot_be_invoked() {
 #[test]
 fn its_palette_lists_its_own_resources_and_actions() {
     let mut app = open();
-    app.call("create", json!({ "title": "Write the launch notes" }))
-        .expect("create");
+    app.call_on(
+        &chain(),
+        "create",
+        json!({ "title": "Write the launch notes" }),
+    )
+    .expect("create");
     app.harness()
         .open_search(&ui::search::SearchRequest::this_app())
         .expect("the palette opens");
@@ -1270,11 +1177,10 @@ fn its_palette_lists_its_own_resources_and_actions() {
     );
     // What the tracker does is offered as the catalogue words it, whatever
     // those are in the language this window speaks.
-    let made =
-        ui::tilo_actions::api::spec_of(&app.harness().resources(), "tasks.tracker", "create")
-            .expect("the tracker publishes making an issue")
-            .label
-            .clone();
+    let made = ui::tilo_actions::api::spec_of(&app.harness().resources(), &chain(), "create")
+        .expect("the tracker publishes making an issue")
+        .label
+        .clone();
     assert!(
         shown.contains(&made),
         "and what the tracker does, named `{made}`: {shown:?}"

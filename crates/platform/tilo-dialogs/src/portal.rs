@@ -445,6 +445,9 @@ impl PickRequest {
         crate::current_picker().pick_contents(self)
     }
 
+    /// The SDK's save path only: an app saves through `EffectCx::choose_destination`,
+    /// whose job waits for the answer and tells the person when the chooser fails.
+    #[doc(hidden)]
     pub fn send_save_destination(self) -> DestinationChannel {
         crate::current_picker().save_destination(self)
     }

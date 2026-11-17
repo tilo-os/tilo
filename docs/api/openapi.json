@@ -2927,13 +2927,13 @@
         },
         "description": "What the person is asked before an action runs."
       },
-      "RunList": {
+      "InvocationList": {
         "type": "object",
         "properties": {
-          "runs": {
+          "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/RunInfo"
+              "$ref": "#/components/schemas/InvocationInfo"
             }
           },
           "total": {
@@ -2969,13 +2969,13 @@
           }
         },
         "required": [
-          "runs",
+          "items",
           "total",
           "waiting"
         ],
         "description": "`GET /v1/workspaces/{workspace}/runs`: a page of its runs in records the\nkey may read, newest first: of each run only what lies in those records,\nand the totals over them alone."
       },
-      "RunInfo": {
+      "InvocationInfo": {
         "type": "object",
         "properties": {
           "id": {
@@ -3000,7 +3000,7 @@
             "description": "The undo step its changes are kept under in each record's history\n(`step` of a version there): what tells it apart across the host's\nrestarts."
           },
           "by": {
-            "$ref": "#/components/schemas/RunBy"
+            "$ref": "#/components/schemas/InvocationBy"
           },
           "title": {
             "type": [
@@ -3062,7 +3062,7 @@
           "records": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/RunRecord"
+              "$ref": "#/components/schemas/InvocationChange"
             },
             "description": "The records it changed."
           },
@@ -3098,7 +3098,7 @@
         ],
         "description": "One run of a workspace, as the listing of its runs answers it."
       },
-      "RunBy": {
+      "InvocationBy": {
         "type": "object",
         "properties": {
           "name": {
@@ -3116,7 +3116,7 @@
         ],
         "description": "Who ran a run."
       },
-      "RunRecord": {
+      "InvocationChange": {
         "type": "object",
         "properties": {
           "app": {
@@ -23573,79 +23573,6 @@
         ],
         "description": ""
       },
-      "tasks.tracker.create.Arguments": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "parent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "body": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "status": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "oneOf": [
-                  {
-                    "const": "backlog",
-                    "type": "string"
-                  },
-                  {
-                    "const": "todo",
-                    "type": "string"
-                  },
-                  {
-                    "const": "in-progress",
-                    "type": "string"
-                  },
-                  {
-                    "const": "in-review",
-                    "type": "string"
-                  },
-                  {
-                    "const": "done",
-                    "type": "string"
-                  },
-                  {
-                    "const": "cancelled",
-                    "type": "string"
-                  }
-                ]
-              }
-            ]
-          },
-          "assignee": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "url": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "title"
-        ],
-        "description": ""
-      },
       "tasks.tracker.create-area.Arguments": {
         "type": "object",
         "properties": {
@@ -23676,24 +23603,6 @@
         },
         "required": [
           "name"
-        ],
-        "description": ""
-      },
-      "tasks.tracker.rename.Arguments": {
-        "type": "object",
-        "properties": {
-          "issue": {
-            "type": "string"
-          },
-          "title": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "issue",
-          "title"
         ],
         "description": ""
       },
@@ -23780,7 +23689,271 @@
         ],
         "description": ""
       },
-      "tasks.tracker.move-under.Arguments": {
+      "tasks.tracker.delete-area.Arguments": {
+        "type": "object",
+        "properties": {
+          "area": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "area"
+        ],
+        "description": ""
+      },
+      "tasks.tracker.new-project.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "tasks.issues.create.Arguments": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "oneOf": [
+                  {
+                    "const": "backlog",
+                    "type": "string"
+                  },
+                  {
+                    "const": "todo",
+                    "type": "string"
+                  },
+                  {
+                    "const": "in-progress",
+                    "type": "string"
+                  },
+                  {
+                    "const": "in-review",
+                    "type": "string"
+                  },
+                  {
+                    "const": "done",
+                    "type": "string"
+                  },
+                  {
+                    "const": "cancelled",
+                    "type": "string"
+                  }
+                ]
+              }
+            ]
+          },
+          "assignee": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priority": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "oneOf": [
+                  {
+                    "const": "none",
+                    "type": "string"
+                  },
+                  {
+                    "const": "urgent",
+                    "type": "string"
+                  },
+                  {
+                    "const": "high",
+                    "type": "string"
+                  },
+                  {
+                    "const": "medium",
+                    "type": "string"
+                  },
+                  {
+                    "const": "low",
+                    "type": "string"
+                  }
+                ]
+              }
+            ]
+          },
+          "estimate": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "due_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "origin": {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "type": "string"
+              },
+              "created_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "updated_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "author",
+              "source"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "rank": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "goal": {
+            "additionalProperties": false,
+            "properties": {
+              "app": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "resource": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "resource",
+              "app",
+              "kind",
+              "label"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "description": ""
+      },
+      "tasks.issues.start.Arguments": {
+        "type": "object",
+        "properties": {
+          "before": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "before"
+        ],
+        "description": ""
+      },
+      "tasks.issues.rename.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "title"
+        ],
+        "description": ""
+      },
+      "tasks.issues.move-under.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -23798,7 +23971,7 @@
         ],
         "description": ""
       },
-      "tasks.tracker.assign.Arguments": {
+      "tasks.issues.assign.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -23816,7 +23989,125 @@
         ],
         "description": ""
       },
-      "tasks.tracker.add-label.Arguments": {
+      "tasks.issues.set-project.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "goal": {
+            "additionalProperties": false,
+            "properties": {
+              "app": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "resource": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "resource",
+              "app",
+              "kind",
+              "label"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issue"
+        ],
+        "description": ""
+      },
+      "tasks.issues.attach.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "bytes": {
+            "oneOf": [
+              {
+                "items": {
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "content": true,
+                "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
+                "type": "string"
+              },
+              {
+                "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
+                "type": "string"
+              },
+              {
+                "properties": {
+                  "inline": {
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "media_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issue",
+          "name",
+          "bytes"
+        ],
+        "description": ""
+      },
+      "tasks.issues.detach.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "attachment": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "attachment"
+        ],
+        "description": ""
+      },
+      "tasks.issues.add-label.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -23834,7 +24125,7 @@
         ],
         "description": ""
       },
-      "tasks.tracker.place.Arguments": {
+      "tasks.issues.place.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -23873,6 +24164,12 @@
               "string",
               "null"
             ]
+          },
+          "rank": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -23881,7 +24178,7 @@
         ],
         "description": ""
       },
-      "tasks.tracker.comment.Arguments": {
+      "tasks.issues.comment.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -23891,6 +24188,55 @@
             "minLength": 1,
             "pattern": "\\S",
             "type": "string"
+          },
+          "origin": {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "type": "string"
+              },
+              "created_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "updated_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "author",
+              "source"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -23899,7 +24245,7 @@
         ],
         "description": ""
       },
-      "tasks.tracker.link.Arguments": {
+      "tasks.issues.link.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -23937,7 +24283,7 @@
         ],
         "description": ""
       },
-      "tasks.tracker.link-note.Arguments": {
+      "tasks.issues.link-note.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -23982,7 +24328,7 @@
         ],
         "description": ""
       },
-      "tasks.tracker.delete.Arguments": {
+      "tasks.issues.delete.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -23994,7 +24340,7 @@
         ],
         "description": ""
       },
-      "tasks.tracker.plan.Arguments": {
+      "tasks.issues.plan.Arguments": {
         "type": "object",
         "properties": {
           "issue": {
@@ -24028,7 +24374,38 @@
             ]
           },
           "priority": {
-            "maximum": 255,
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "oneOf": [
+                  {
+                    "const": "none",
+                    "type": "string"
+                  },
+                  {
+                    "const": "urgent",
+                    "type": "string"
+                  },
+                  {
+                    "const": "high",
+                    "type": "string"
+                  },
+                  {
+                    "const": "medium",
+                    "type": "string"
+                  },
+                  {
+                    "const": "low",
+                    "type": "string"
+                  }
+                ]
+              }
+            ]
+          },
+          "estimate": {
+            "maximum": 4294967295,
             "minimum": 0,
             "type": [
               "integer",
@@ -24045,12 +24422,6 @@
         "required": [
           "issue"
         ],
-        "description": ""
-      },
-      "tasks.tracker.new-project.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
         "description": ""
       },
       "terminal.session.run.Arguments": {
@@ -30896,20 +31267,8 @@
     {
       "app": "so.tilo.tasks",
       "resource": "tasks.tracker",
-      "action": "create",
-      "arguments": "#/components/schemas/tasks.tracker.create.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
       "action": "create-area",
       "arguments": "#/components/schemas/tasks.tracker.create-area.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
-      "action": "rename",
-      "arguments": "#/components/schemas/tasks.tracker.rename.Arguments"
     },
     {
       "app": "so.tilo.tasks",
@@ -30938,62 +31297,104 @@
     {
       "app": "so.tilo.tasks",
       "resource": "tasks.tracker",
-      "action": "move-under",
-      "arguments": "#/components/schemas/tasks.tracker.move-under.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
-      "action": "assign",
-      "arguments": "#/components/schemas/tasks.tracker.assign.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
-      "action": "add-label",
-      "arguments": "#/components/schemas/tasks.tracker.add-label.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
-      "action": "place",
-      "arguments": "#/components/schemas/tasks.tracker.place.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
-      "action": "comment",
-      "arguments": "#/components/schemas/tasks.tracker.comment.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
-      "action": "link",
-      "arguments": "#/components/schemas/tasks.tracker.link.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
-      "action": "link-note",
-      "arguments": "#/components/schemas/tasks.tracker.link-note.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
-      "action": "delete",
-      "arguments": "#/components/schemas/tasks.tracker.delete.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
-      "action": "plan",
-      "arguments": "#/components/schemas/tasks.tracker.plan.Arguments"
+      "action": "delete-area",
+      "arguments": "#/components/schemas/tasks.tracker.delete-area.Arguments"
     },
     {
       "app": "so.tilo.tasks",
       "resource": "tasks.tracker",
       "action": "new-project",
       "arguments": "#/components/schemas/tasks.tracker.new-project.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "create",
+      "arguments": "#/components/schemas/tasks.issues.create.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "start",
+      "arguments": "#/components/schemas/tasks.issues.start.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "rename",
+      "arguments": "#/components/schemas/tasks.issues.rename.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "move-under",
+      "arguments": "#/components/schemas/tasks.issues.move-under.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "assign",
+      "arguments": "#/components/schemas/tasks.issues.assign.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "set-project",
+      "arguments": "#/components/schemas/tasks.issues.set-project.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "attach",
+      "arguments": "#/components/schemas/tasks.issues.attach.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "detach",
+      "arguments": "#/components/schemas/tasks.issues.detach.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "add-label",
+      "arguments": "#/components/schemas/tasks.issues.add-label.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "place",
+      "arguments": "#/components/schemas/tasks.issues.place.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "comment",
+      "arguments": "#/components/schemas/tasks.issues.comment.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "link",
+      "arguments": "#/components/schemas/tasks.issues.link.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "link-note",
+      "arguments": "#/components/schemas/tasks.issues.link-note.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "delete",
+      "arguments": "#/components/schemas/tasks.issues.delete.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "plan",
+      "arguments": "#/components/schemas/tasks.issues.plan.Arguments"
     },
     {
       "app": "so.tilo.terminal",

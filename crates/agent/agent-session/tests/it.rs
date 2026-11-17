@@ -54,6 +54,8 @@ mod check_facts;
 mod empty_state_actions;
 #[path = "host_agents.rs"]
 mod host_agents;
+#[path = "issue_reads.rs"]
+mod issue_reads;
 #[path = "mail_for_agents.rs"]
 mod mail_for_agents;
 #[path = "messages_for_agents.rs"]

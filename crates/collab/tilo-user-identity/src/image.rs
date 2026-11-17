@@ -114,7 +114,7 @@ pub enum ImageEndorsementError {
     /// The dedicated image-signing grant is invalid.
     #[error("image-signing authorization is invalid: {0}")]
     SigningAuthorization(#[from] ImageSigningAuthorizationError),
-    /// The grant and device certificate identify different principals.
+    /// The grant and device certificate identify different actors.
     #[error("image-signing authorization does not match the device certificate")]
     AuthorizationMismatch,
     /// The supplied signing key is not the certified device key.

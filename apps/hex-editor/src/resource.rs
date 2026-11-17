@@ -450,7 +450,7 @@ mod tests {
             assert_eq!(state(&replica).bytes, [0xAB]);
         }
 
-        phase collaborators_editing_different_pages_merge;
+        phase members_editing_different_pages_merge;
         {
             let file = vec![0u8; 2 * PAGE];
             let mut ours = Replica::<HexEditor>::new();

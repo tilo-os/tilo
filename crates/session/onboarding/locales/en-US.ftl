@@ -2,7 +2,7 @@
 
 onboarding-intro-title = Set up your Tilo identity
 onboarding-intro-body = You get an identity that belongs to you, and this device gets its own key. Collaboration and invitations rely on it. Not every edit in apps is signed yet.
-onboarding-intro-point-collaboration = Collaborators see one stable identity for you, and it vouches for each of your devices.
+onboarding-intro-point-collaboration = Members see one stable identity for you, and it vouches for each of your devices.
 onboarding-intro-point-local = It is created on this computer. Nothing is uploaded and no server keeps a copy.
 onboarding-intro-point-not-account = It is not an account and has no password. There is nothing to sign in to.
 onboarding-choice-create = Create a new identity

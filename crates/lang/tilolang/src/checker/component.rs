@@ -1448,7 +1448,7 @@ pub(super) fn binding_types(ty: &Type) -> Vec<Ty> {
         ],
         Type::RichText => vec![Ty::RichText],
         // A person, or nobody: the field holds the identity, and may be cleared.
-        Type::Principal => vec![Ty::Actor, Ty::Option(Box::new(Ty::Actor))],
+        Type::Actor => vec![Ty::Actor, Ty::Option(Box::new(Ty::Actor))],
         _ => Vec::new(),
     }
 }
@@ -1470,7 +1470,7 @@ fn lang_type(ty: &Type) -> Ty {
         Type::Int => Ty::Int,
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
-        Type::Principal => Ty::Actor,
+        Type::Actor => Ty::Actor,
         Type::Time => Ty::Time,
         Type::RichText => Ty::RichText,
         Type::Option(inner) => Ty::Option(Box::new(lang_type(inner))),
@@ -1503,7 +1503,7 @@ fn fits(ty: &Type, found: &Ty) -> bool {
                 | (Type::Text, Ty::Text | Ty::Date | Ty::Time)
                 | (Type::Int, Ty::Int)
                 | (Type::Bool, Ty::Bool)
-                | (Type::Principal, Ty::Actor)
+                | (Type::Actor, Ty::Actor)
                 | (Type::Time, Ty::Time)
                 | (Type::RichText, Ty::RichText)
                 | (Type::Float, Ty::Float | Ty::Int)

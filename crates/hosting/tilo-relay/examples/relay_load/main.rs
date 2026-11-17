@@ -1,9 +1,9 @@
-//! What an active collaborator costs a relay: the hosting-cost load bench.
+//! What an active member costs a relay: the hosting-cost load bench.
 //!
 //! One relay runs in its own process, so its CPU time and memory are its
 //! own: this binary re-executes itself with `--serve`, which starts the
 //! production [`tilo_relay::Relay`] with authentication and the co-edit path
-//! as a daemon runs them. The parent then connects N collaborators in workspaces
+//! as a daemon runs them. The parent then connects N members in workspaces
 //! of four, each its own device certificate, iroh endpoint and
 //! `tilo-relay/7` session, and plays a fixed, deterministic minute of work
 //! for each of them, over and over:
@@ -19,13 +19,13 @@
 //! - **idle** for the rest of the minute.
 //!
 //! That is 1,800 edits and 7,200 pointer moves per active hour, the cost
-//! model's assumptions. Collaborators start their minute at
+//! model's assumptions. Members start their minute at
 //! staggered offsets, so the load is spread as people's would be.
 //!
 //! The first minute warms up; then each further minute is one sample window.
 //! Per window the parent asks the relay process for its CPU time, resident
 //! memory, egress counters and the bytes its iroh endpoint put on UDP, and
-//! divides by collaborators and hours. Fan-out latency is publish to receipt
+//! divides by members and hours. Fan-out latency is publish to receipt
 //! by each other member of the workspace; pointer and caret latency are the same
 //! for each pointer move and caret the relay forwarded (one it coalesced
 //! away under a later one is never received, and not counted). Store fsyncs per edit divides the file
@@ -33,13 +33,13 @@
 //! it committed; listed entries per edit divides the directory entries they
 //! listed to retain them the same way. Compaction's own CPU time and the
 //! document signatures it verified are reported beside them, per
-//! collaborator-hour and per edit.
+//! member-hour and per edit.
 //!
 //! Packets are counted where QUIC already counts them, on each
-//! collaborator's connection ([`Packets`]): the datagrams the collaborators
+//! member's connection ([`Packets`]): the datagrams the members
 //! sent (and of those, the ones carrying data) and the datagrams the relay
 //! sent them (and of those, the ones carrying only acknowledgements), per
-//! collaborator-hour. Bytes cannot see a change that sends the same bytes in
+//! member-hour. Bytes cannot see a change that sends the same bytes in
 //! more packets; these can.
 //!
 //! The samples go to `--out DIR/hosting-load.json` for
@@ -70,14 +70,14 @@ const WINDOW: Duration = Duration::from_secs(60);
 const SECONDS_PER_HOUR: f64 = 3_600.0;
 const MIB: f64 = 1_048_576.0;
 
-/// Measure what N collaborators cost one relay.
+/// Measure what N members cost one relay.
 #[derive(Parser, Debug)]
 #[command(name = "relay_load")]
 struct Args {
-    /// Simulated collaborators, each its own device and session.
+    /// Simulated members, each its own device and session.
     #[arg(long, default_value_t = 100)]
-    collaborators: usize,
-    /// Collaborators per workspace; the last workspace takes the remainder.
+    members: usize,
+    /// Members per workspace; the last workspace takes the remainder.
     #[arg(long, default_value_t = 4)]
     workspace_size: usize,
     /// Measured minutes after the one-minute warm-up; each is one sample.
@@ -88,7 +88,7 @@ struct Args {
     out: Option<PathBuf>,
     /// Confine the relay process to this many CPUs, as on a VM with that many
     /// vCPUs: its daemon runtime then starts that many workers (at most
-    /// four), and its blocking pool shares the same CPUs. The collaborators
+    /// four), and its blocking pool shares the same CPUs. The members
     /// run on the CPUs left over. Linux only; by default the relay may use
     /// every CPU.
     #[arg(long)]
@@ -102,7 +102,7 @@ struct Args {
 }
 
 fn main() -> ExitCode {
-    // Both processes run Automerge in isolated workers (the collaborators'
+    // Both processes run Automerge in isolated workers (the members'
     // `StatePeer`s, the relay's store), which re-execute this binary.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return ExitCode::from(code);
@@ -128,12 +128,12 @@ fn bench(args: &Args) -> anyhow::Result<()> {
         "--workspace-size must be at least 2"
     );
     anyhow::ensure!(
-        args.collaborators >= 2 && args.collaborators.checked_rem(args.workspace_size) != Some(1),
-        "--collaborators must fill workspaces of at least two"
+        args.members >= 2 && args.members.checked_rem(args.workspace_size) != Some(1),
+        "--members must fill workspaces of at least two"
     );
     anyhow::ensure!(args.minutes >= 1, "--minutes must be at least 1");
     // Split the CPUs before this process starts its runtime, so its workers
-    // count only the collaborators' share.
+    // count only the members' share.
     let relay_cpus = match args.relay_cpus {
         Some(count) => Some(relay_process::split_cpus(count)?),
         None => None,
@@ -145,7 +145,7 @@ fn bench(args: &Args) -> anyhow::Result<()> {
 }
 
 async fn run(args: &Args, relay_cpus: Option<&[usize]>) -> anyhow::Result<()> {
-    let fleet = Fleet::enrol(args.collaborators, args.workspace_size)?;
+    let fleet = Fleet::enrol(args.members, args.workspace_size)?;
     let state = tempfile::Builder::new()
         .prefix("tilo-relay-load-")
         .tempdir()
@@ -172,17 +172,17 @@ async fn measure(
     relay: &mut RelayProcess,
 ) -> anyhow::Result<Report> {
     let idle = relay.sample().await?;
-    let collaborators = fleet.connect(relay.addr(), relay.device()).await?;
+    let members = fleet.connect(relay.addr(), relay.device()).await?;
     anyhow::ensure!(
-        collaborators.len() == args.collaborators,
-        "{} collaborators connected, not {}",
-        collaborators.len(),
-        args.collaborators
+        members.len() == args.members,
+        "{} members connected, not {}",
+        members.len(),
+        args.members
     );
     let connected = relay.sample().await?;
     eprintln!(
-        "{} collaborators in {} workspaces connected; relay RSS {:.1} MiB idle, {:.1} MiB connected",
-        collaborators.len(),
+        "{} members in {} workspaces connected; relay RSS {:.1} MiB idle, {:.1} MiB connected",
+        members.len(),
         fleet.workspaces(),
         mib(idle.rss_bytes),
         mib(connected.rss_bytes),
@@ -192,11 +192,11 @@ async fn measure(
         .context("clock")?;
     let windows = usize::try_from(args.minutes)?;
     let end = at(start, WINDOW, windows.saturating_add(1))?;
-    let sessions: Vec<_> = collaborators
+    let sessions: Vec<_> = members
         .iter()
-        .map(|collaborator| collaborator.session.clone())
+        .map(|member| member.session.clone())
         .collect();
-    let tasks = workload::play(collaborators, start, end);
+    let tasks = workload::play(members, start, end);
 
     tokio::time::sleep_until(at(start, WINDOW, 1)?.into()).await;
     fleet.measuring.store(true, Ordering::SeqCst);
@@ -254,19 +254,19 @@ fn mib(bytes: u64) -> f64 {
     float(bytes) / MIB
 }
 
-/// The collaborators' QUIC connections to the relay, summed: the packets
+/// The members' QUIC connections to the relay, summed: the packets
 /// they sent it and it sent them. On the bench's loopback path nothing is
 /// lost, so what they received is what the relay sent. Read from each
 /// connection's own counters (`iroh::endpoint::Connection::stats`), which
 /// QUIC keeps anyway; nothing is logged or hooked per packet.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 struct Packets {
-    /// UDP datagrams the collaborators sent the relay.
+    /// UDP datagrams the members sent the relay.
     client: u64,
     /// Of those, the ones carrying stream data: one STREAM frame each, as a
     /// session has one stream and QUIC writes a stream once per packet.
     client_data: u64,
-    /// UDP datagrams the relay sent the collaborators.
+    /// UDP datagrams the relay sent the members.
     relay: u64,
     /// Of those, the ones carrying stream data or a PING (keep-alives, path
     /// MTU probes): the rest carry only acknowledgements.
@@ -281,7 +281,7 @@ impl Packets {
         sessions.iter().try_fold(Self::default(), |sum, session| {
             let stats = session
                 .transport_stats()
-                .context("a collaborator's session reports no transport counters")?;
+                .context("a member's session reports no transport counters")?;
             Ok(Self {
                 client: sum.client.saturating_add(stats.udp_tx.datagrams),
                 client_data: sum.client_data.saturating_add(stats.frame_tx.stream),
@@ -358,7 +358,7 @@ impl Window {
 
 /// Everything one run measured.
 struct Report {
-    collaborators: usize,
+    members: usize,
     workspaces: usize,
     workspace_size: usize,
     /// The CPUs the relay was confined to (`--relay-cpus`); none is all.
@@ -384,18 +384,18 @@ impl Report {
         let mut fanout_ms = fleet.take_latencies();
         anyhow::ensure!(
             !fanout_ms.is_empty(),
-            "no collaborator received another's edit while measuring; nothing was fanned out"
+            "no member received another's edit while measuring; nothing was fanned out"
         );
         fanout_ms.sort_by(f64::total_cmp);
         let (mut pointer_ms, mut caret_ms) = fleet.take_presence_latencies();
         anyhow::ensure!(
             !pointer_ms.is_empty() && !caret_ms.is_empty(),
-            "no collaborator received another's pointer move and caret while measuring"
+            "no member received another's pointer move and caret while measuring"
         );
         pointer_ms.sort_by(f64::total_cmp);
         caret_ms.sort_by(f64::total_cmp);
         Ok(Self {
-            collaborators: args.collaborators,
+            members: args.members,
             workspaces: fleet.workspaces(),
             workspace_size: args.workspace_size,
             relay_cpus: args.relay_cpus,
@@ -410,48 +410,48 @@ impl Report {
         })
     }
 
-    fn per_collaborator_hour(&self, value: impl Fn(&Window) -> f64) -> Vec<f64> {
-        let collaborators = float(u64::try_from(self.collaborators).unwrap_or(u64::MAX));
+    fn per_member_hour(&self, value: impl Fn(&Window) -> f64) -> Vec<f64> {
+        let members = float(u64::try_from(self.members).unwrap_or(u64::MAX));
         self.windows
             .iter()
-            .map(|window| value(window) / collaborators / window.hours)
+            .map(|window| value(window) / members / window.hours)
             .collect()
     }
 
     fn cpu_s(&self) -> Vec<f64> {
-        self.per_collaborator_hour(|window| window.cpu_s)
+        self.per_member_hour(|window| window.cpu_s)
     }
 
     fn transport_bytes(&self) -> Vec<f64> {
-        self.per_collaborator_hour(|window| float(window.transport_bytes))
+        self.per_member_hour(|window| float(window.transport_bytes))
     }
 
     fn app_bytes(&self) -> Vec<f64> {
-        self.per_collaborator_hour(|window| float(window.app_bytes))
+        self.per_member_hour(|window| float(window.app_bytes))
     }
 
     fn live_bytes(&self) -> Vec<f64> {
-        self.per_collaborator_hour(|window| float(window.live_bytes))
+        self.per_member_hour(|window| float(window.live_bytes))
     }
 
-    /// UDP datagrams the collaborators sent the relay.
+    /// UDP datagrams the members sent the relay.
     fn client_packets(&self) -> Vec<f64> {
-        self.per_collaborator_hour(|window| float(window.packets.client))
+        self.per_member_hour(|window| float(window.packets.client))
     }
 
     /// Client datagrams that carried stream data.
     fn client_data_packets(&self) -> Vec<f64> {
-        self.per_collaborator_hour(|window| float(window.packets.client_data))
+        self.per_member_hour(|window| float(window.packets.client_data))
     }
 
-    /// UDP datagrams the relay sent the collaborators.
+    /// UDP datagrams the relay sent the members.
     fn relay_datagrams(&self) -> Vec<f64> {
-        self.per_collaborator_hour(|window| float(window.packets.relay))
+        self.per_member_hour(|window| float(window.packets.relay))
     }
 
     /// Relay datagrams that carried only acknowledgements.
     fn ack_only_datagrams(&self) -> Vec<f64> {
-        self.per_collaborator_hour(|window| float(window.packets.relay_ack_only()))
+        self.per_member_hour(|window| float(window.packets.relay_ack_only()))
     }
 
     /// Store fsyncs per committed delta: what durability costs an edit.
@@ -473,9 +473,9 @@ impl Report {
             .collect()
     }
 
-    /// Compaction's thread CPU, in milliseconds per collaborator-hour.
+    /// Compaction's thread CPU, in milliseconds per member-hour.
     fn compaction_cpu_ms(&self) -> Vec<f64> {
-        self.per_collaborator_hour(|window| window.compaction_cpu_s * 1e3)
+        self.per_member_hour(|window| window.compaction_cpu_s * 1e3)
     }
 
     /// Document signatures compaction verified per committed delta.
@@ -487,12 +487,12 @@ impl Report {
             .collect()
     }
 
-    /// Resident memory each connected, active collaborator adds to the relay.
+    /// Resident memory each connected, active member adds to the relay.
     fn rss_mib(&self) -> Vec<f64> {
-        let collaborators = float(u64::try_from(self.collaborators).unwrap_or(u64::MAX));
+        let members = float(u64::try_from(self.members).unwrap_or(u64::MAX));
         self.windows
             .iter()
-            .map(|window| mib(window.rss_bytes.saturating_sub(self.idle_rss_bytes)) / collaborators)
+            .map(|window| mib(window.rss_bytes.saturating_sub(self.idle_rss_bytes)) / members)
             .collect()
     }
 
@@ -500,7 +500,7 @@ impl Report {
         let kpi =
             |unit: &str, samples: Vec<f64>| serde_json::json!({"unit": unit, "samples": samples});
         serde_json::json!({
-            "collaborators": self.collaborators,
+            "members": self.members,
             "workspaces": self.workspaces,
             "workspace_size": self.workspace_size,
             "relay_cpus": self.relay_cpus,
@@ -532,7 +532,7 @@ impl Report {
 
     fn summary_line(&self) -> String {
         format!(
-            "HOSTING_LOAD collaborators={} workspaces={} windows={} edits={} presence={} \
+            "HOSTING_LOAD members={} workspaces={} windows={} edits={} presence={} \
              undelivered_edits={} cpu_s_per_collab_hour_p50={:.3} rss_mib_per_collab_p50={:.3} \
              egress_mb_per_collab_hour_p50={:.3} frame_mb_per_collab_hour_p50={:.3} \
              live_frame_mb_per_collab_hour_p50={:.3} client_packets_per_collab_hour_p50={:.0} \
@@ -543,7 +543,7 @@ impl Report {
              store_fsyncs_per_edit_p50={:.3} store_listed_entries_per_edit_p50={:.3} \
              compaction_cpu_ms_per_collab_hour_p50={:.1} \
              compaction_signature_checks_per_edit_p50={:.3}",
-            self.collaborators,
+            self.members,
             self.workspaces,
             self.windows.len(),
             self.edits,

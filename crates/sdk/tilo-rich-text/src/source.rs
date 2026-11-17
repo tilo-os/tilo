@@ -49,7 +49,7 @@ pub trait RichTextSource {
     /// Returns the refusal; nothing is written.
     fn apply(&mut self, edits: &mut Edits<'_>, edit: &RichTextAction) -> Result<(), ActionError>;
 
-    /// The presence keys collaborators address paragraphs by.
+    /// The presence keys members address paragraphs by.
     fn presence_keys(&self) -> Option<PresenceKeyFn> {
         None
     }
@@ -294,7 +294,7 @@ impl FieldState {
 /// owning resource's action; that action's `apply` applies the edit under
 /// the field with [`RichTextAction::apply_under`]. So the owning resource's
 /// action is what history attributes, undo takes back, permissions check
-/// and a collaborator replays, and typing a word is one undo step, as in a
+/// and a member replays, and typing a word is one undo step, as in a
 /// rich-text resource.
 ///
 /// Without a dispatcher ([`view_only`](Self::view_only)) the field shows the
@@ -343,7 +343,7 @@ impl RichTextField {
         }
     }
 
-    /// Key collaborators' carets by paragraph with `key`.
+    /// Key members' carets by paragraph with `key`.
     #[must_use]
     pub fn with_presence(mut self, key: impl Fn(&str) -> PresenceKey + 'static) -> Self {
         self.presence = Some(Rc::new(key));

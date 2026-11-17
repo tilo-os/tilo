@@ -45,7 +45,7 @@ pub fn is_personal_cluster(root: &[u8; 32], cluster: &uuid::Uuid) -> bool {
 }
 
 /// The personal store's cluster of the person a
-/// [`Principal::Person`](crate::Principal) id names (the lowercase hex of
+/// [`Actor::Person`](crate::Actor) id names (the lowercase hex of
 /// their root public key); `None` for anything else.
 #[must_use]
 pub fn personal_cluster_of(person: &str) -> Option<uuid::Uuid> {

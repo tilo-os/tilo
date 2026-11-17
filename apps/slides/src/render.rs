@@ -437,7 +437,7 @@ pub fn shown_text_heights(deck: &crate::model::Deck) -> HashMap<String, f64> {
         .collect()
 }
 
-/// The key collaborators address a paragraph of a text box's words by
+/// The key members address a paragraph of a text box's words by
 /// (`block` is its document id): the one the shared editor publishes a caret
 /// under while the words are edited, so that caret shows wherever the words
 /// are drawn.

@@ -50,7 +50,7 @@ Each adapter reads what a benchmark already prints and emits records through
   shows an in-process app: its line with copies and a whole-pixel step
   becomes `render.framework_scroll.hosted_pixels.<size>` and
   `.hosted_whole_frames.<size>`. `FRAMEWORK-SCROLL-PEER` lines are the
-  window scrolled with a collaborator's pointer resting over the list:
+  window scrolled with a member's pointer resting over the list:
   `render.framework_scroll.peer_pixels.<size>` and `.peer_whole_frames.<size>`.
 - `framework-focus LOG...`: the `FRAMEWORK-FOCUS tasks=<n> add_ms=<a,...>
   recompute_ms=<b,...> native_ms=<c,...>` lines of the same example's `focus`
@@ -69,7 +69,7 @@ Each adapter reads what a benchmark already prints and emits records through
   raster timings (no GPU) fails.
 - `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
   (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
-  becomes `<kpi>.n<collaborators>`, one sample per measured minute (fan-out
+  becomes `<kpi>.n<members>`, one sample per measured minute (fan-out
   latency: one per delivered edit), and each provider in
   `tools/perf/prices.toml` adds `hosting.relay.cost_usd_per_collab_hour.<provider>`
   and `hosting.relay.cost_usd_per_user_month.<provider>`, priced per minute.
@@ -395,8 +395,8 @@ HOSTING_KPIS = {
 
 def collab_hour_usd(provider: dict[str, Any], prices: dict[str, Any], cpu_s: float, rss_mib: float,
                     egress_bytes: float, idle_rss_mib: float) -> tuple[float, float, str]:
-    """Dollars per active collaborator-hour on one provider's VM, with the
-    collaborators that VM carries and the resource that binds it."""
+    """Dollars per active member-hour on one provider's VM, with the
+    members that VM carries and the resource that binds it."""
     target = float(prices["target_utilisation"])
     hours = float(prices["hours_per_month"])
     by_cpu = float(provider["vcpus"]) * 3600.0 * target / cpu_s if cpu_s > 0 else math.inf
@@ -406,7 +406,7 @@ def collab_hour_usd(provider: dict[str, Any], prices: dict[str, Any], cpu_s: flo
     by_memory = free_mib / rss_mib if rss_mib > 0 else math.inf
     capacity, binding = (by_cpu, "cpu") if by_cpu <= by_memory else (by_memory, "memory")
     if not math.isfinite(capacity):
-        raise ValueError("the run measured neither CPU time nor memory per collaborator")
+        raise ValueError("the run measured neither CPU time nor memory per member")
     compute = float(provider["monthly_usd"]) / hours / capacity
     included_gb = float(provider["included_egress_gb_month"]) / (capacity * hours)
     billable_gb = max(0.0, egress_bytes / 1e9 - included_gb)
@@ -426,8 +426,8 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     same-job A/B lane (tools/perf/ab.py), which also reads an older bench: it
     records the known KPIs the report has and leaves out any it does not know.
     """
-    collaborators = int(report["collaborators"])
-    variant = f"n{collaborators}"
+    members = int(report["members"])
+    variant = f"n{members}"
     kpis = report.get("kpis", {})
     if require_all and set(kpis) != set(HOSTING_KPIS):
         raise ValueError(f"the bench reported {sorted(kpis)}, not {sorted(HOSTING_KPIS)}")
@@ -438,7 +438,7 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     for kpi, unit in present.items():
         if kpis[kpi]["unit"] != unit or not kpis[kpi]["samples"]:
             raise ValueError(f"{kpi}: expected samples in {unit}")
-    meta = {**env.get("meta", {}), "collaborators": str(collaborators),
+    meta = {**env.get("meta", {}), "members": str(members),
             "workspaces": str(report["workspaces"]),
             "workspace_size": str(report["workspace_size"]), "window_s": str(report["window_s"]),
             "edits": str(report["edits"]), "presence": str(report["presence"]),
@@ -456,10 +456,10 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     for name, provider in sorted(prices["provider"].items()):
         priced = [collab_hour_usd(provider, prices, *minute, idle) for minute in minutes]
         hourly = [usd for usd, _, _ in priced]
-        capacity = min(collaborators for _, collaborators, _ in priced)
+        capacity = min(members for _, members, _ in priced)
         bindings = sorted({binding for _, _, binding in priced})
         provider_meta = {**meta, "provider": provider["description"],
-                         "collaborators_per_vm": f"{capacity:.0f}", "binding": ",".join(bindings)}
+                         "members_per_vm": f"{capacity:.0f}", "binding": ",".join(bindings)}
         records.append(record.from_samples(f"hosting.relay.cost_usd_per_collab_hour.{name}.{variant}", "usd",
                                            hourly, meta=provider_meta, **base))
         monthly = [usd * float(prices["active_hours_per_user_month"]) for usd in hourly]
@@ -595,7 +595,7 @@ def main(argv: list[str] | None = None) -> int:
             for item in records:
                 if item.unit == "usd":
                     print(f"{item.kpi}: p50 ${item.p50:.6f}, max ${item.max:.6f} "
-                          f"({item.meta['collaborators_per_vm']} collaborators per VM, "
+                          f"({item.meta['members_per_vm']} members per VM, "
                           f"bound by {item.meta['binding']})", file=sys.stderr)
         elif args.command == "fs-gate":
             records = fs_gate([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)

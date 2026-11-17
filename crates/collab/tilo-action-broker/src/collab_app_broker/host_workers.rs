@@ -135,7 +135,7 @@ impl AppBrokerState {
 /// its own when the route is its app's. `worker` is minted when the launcher
 /// authenticated the connection, for the app id the launcher verified.
 ///
-/// A packaged app is the worker of its **own** route whichever principal joins
+/// A packaged app is the worker of its **own** route whichever actor joins
 /// it — the person posting in Chat, or the workspace's kept agent opening the
 /// very route its package declares. The launcher verified which app it
 /// released and for whom, the same durable admission a host-mounted worker's

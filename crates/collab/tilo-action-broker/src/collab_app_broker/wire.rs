@@ -701,7 +701,7 @@ impl JoinedChannel {
                     self.verified_identity
                         .agent_id
                         .is_none()
-                        .then(|| self.verified_identity.principal_id.clone()),
+                        .then(|| self.verified_identity.actor_key.clone()),
                 );
                 nearby_transfer_change(services, &context, after)
             }
@@ -762,7 +762,7 @@ impl JoinedChannel {
             self.verified_identity
                 .agent_id
                 .is_none()
-                .then(|| self.verified_identity.principal_id.clone()),
+                .then(|| self.verified_identity.actor_key.clone()),
         );
         delegate_nearby_transfer_command(&self.state.services, &context, claimed_app, bytes)
     }
@@ -818,7 +818,7 @@ impl JoinedChannel {
         let read = self.document_read_context().map_err(|_| refused())?;
         let context = crate::services::BrowserServiceSessionRequestContext::authenticated(
             self.connection_id,
-            self.verified_identity.principal_id.clone(),
+            self.verified_identity.actor_key.clone(),
             read,
         );
         delegate_browser_service_session_command(&self.state.services, &context, bytes)
@@ -1010,7 +1010,7 @@ impl JoinedChannel {
             }
             _ => None,
         };
-        let admitting_person = current.principal_id.clone();
+        let admitting_person = current.actor_key.clone();
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
@@ -2073,7 +2073,6 @@ impl WireConnection {
                         tokio::task::spawn_local(pump(feed, id, frames, |envelope: OpEnvelope| {
                             Some(Event::Op {
                                 op: envelope.op_bytes,
-                                from_user_id: envelope.from_user_id,
                                 admission: envelope.admission,
                             })
                         }))

@@ -646,7 +646,7 @@ impl ActionPlane {
             })?;
         let authority = authority.map_err(|error| refusal_of(&error))?;
         let certificate = certificate.ok_or(ActionHostError::NotPermitted)?;
-        // The device is its own principal when its person delegated it: an
+        // The device is its own actor when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
         let caller = match &authority.acting.by {
             Actor::Member(MemberId::Agent(agent)) => {

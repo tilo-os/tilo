@@ -5,7 +5,7 @@
 //! search — stored at a place inside its parent's document. Its edits are
 //! the parent's: the parent has an action that carries one child action and
 //! names where it applies (`EditBody { page, edit }`), so history, undo,
-//! permissions and replay stay the parent's, and a collaborator replays the
+//! permissions and replay stay the parent's, and a member replays the
 //! edit exactly as it was made.
 //!
 //! [`publish_child`] publishes such a child beneath its parent with every

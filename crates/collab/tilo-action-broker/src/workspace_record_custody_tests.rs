@@ -211,13 +211,13 @@ mod workspace_record_custody {
                     .authorize_certified_document(&route, &identity, &add)
                     .expect("someone the workspace lets change it changes it from any app");
 
-                let principal = person_id_for_root(workspace.cert.user_public_key);
+                let actor = person_id_for_root(workspace.cert.user_public_key);
                 {
                     let mut tree = workspace.membership.write();
                     let workspace = &mut tree.workspaces[0];
                     workspace.revoke_grants_matching(|grant| grant.id.0 == "changes-for-a-while");
                     workspace.set_owner("someone-else");
-                    workspace.admit(principal, crate::test_support::Role::Viewer);
+                    workspace.admit(actor, crate::test_support::Role::Viewer);
                 }
                 let viewer = workspace
                     .state

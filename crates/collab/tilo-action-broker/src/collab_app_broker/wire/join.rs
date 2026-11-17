@@ -103,7 +103,7 @@ impl AppConnection {
         // host-mounted worker's private descriptor carries. Decided here,
         // before the route is held, so a durable broker refuses an
         // unattested application instead of admitting it and withdrawing it.
-        // The app is the worker of its own route whichever principal joins it:
+        // The app is the worker of its own route whichever actor joins it:
         // a person posting in Chat, and the workspace's kept agent opening the
         // route its package declares, both speak for that app's records.
         // An app reading another app's record it declares it reads is no
@@ -193,7 +193,7 @@ impl AppConnection {
             }
             Some(MemberId::Agent(participant_handle)) => {
                 // Unlike a display handle, this names the exact workspace
-                // principal. Normalize as enrollment does, then validate
+                // actor. Normalize as enrollment does, then validate
                 // its byte bound; truncation can silently select another
                 // admitted Agent that shares the same display prefix.
                 let participant_handle = participant_handle.trim();
@@ -231,7 +231,7 @@ impl AppConnection {
             channel = %channel_id,
             peer_id,
             role = ?verified_identity.role,
-            principal = %verified_identity.principal_id,
+            actor = %verified_identity.actor_key,
             acting_as = ?verified_identity.agent_id,
             device = ?{
                 collab_types::Ed25519PublicKey::from_bytes(

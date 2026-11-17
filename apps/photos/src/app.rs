@@ -242,7 +242,7 @@ enum MetadataEditorSection {
 }
 
 /// The local selection shelf. Selection is intentionally not a CRDT value:
-/// collaborators should see the durable favourite/album result, never a
+/// members should see the durable favourite/album result, never a
 /// private cursor-like set that changes while somebody is deciding.
 const SELECTION_ALBUMS_PER_PAGE: usize = 6;
 

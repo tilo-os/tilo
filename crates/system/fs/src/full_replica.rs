@@ -683,7 +683,7 @@ mod tests {
         authority: &crate::workspace_authority::WorkspaceAuthority,
         workspace: uuid::Uuid,
         governor: &ed25519_dalek::SigningKey,
-        collaborator: crate::IdentityKey,
+        member: crate::IdentityKey,
     ) {
         use collab_types::{Access, CapOverride, Effect, Scope};
         authority
@@ -692,7 +692,7 @@ mod tests {
                     workspace,
                     1,
                     vec![CapOverride::new(
-                        tilo_action_policy::Grantee::person(hex::encode(collaborator)),
+                        tilo_action_policy::Grantee::person(hex::encode(member)),
                         Scope::FsPath("/".into()),
                         Effect::Grant,
                         Access::Read,
@@ -706,7 +706,7 @@ mod tests {
         assert!(
             authority
                 .handle()
-                .permits(&collaborator, "/shared", crate::Access::Read)
+                .permits(&member, "/shared", crate::Access::Read)
         );
         authority
             .apply(
@@ -723,7 +723,7 @@ mod tests {
         assert!(
             !authority
                 .handle()
-                .permits(&collaborator, "/shared", crate::Access::Read)
+                .permits(&member, "/shared", crate::Access::Read)
         );
     }
 
@@ -780,17 +780,17 @@ mod tests {
         );
 
         let governor = ed25519_dalek::SigningKey::from_bytes(&[0x71; 32]);
-        let collaborator: IdentityKey = [0x72; 32];
+        let member: IdentityKey = [0x72; 32];
         let workspace = uuid::Uuid::new_v4();
         let authority = crate::workspace_authority::WorkspaceAuthority::open(
             temp.path().join("authority.bin"),
             workspace,
             governor.verifying_key().to_bytes(),
-            collaborator,
+            member,
             Vec::new(),
         )
         .unwrap();
-        verify_targeted_revocation(&authority, workspace, &governor, collaborator);
+        verify_targeted_revocation(&authority, workspace, &governor, member);
 
         assert!(namespace.lock().unwrap().remove(file));
         tokio::time::timeout(

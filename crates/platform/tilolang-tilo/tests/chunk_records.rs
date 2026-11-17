@@ -104,9 +104,7 @@ impl Wire {
             })
             .unwrap_or_default();
         for inbox in ends {
-            inbox
-                .borrow_mut()
-                .push_back(delivered(route, from, &mutation)?);
+            inbox.borrow_mut().push_back(delivered(route, &mutation)?);
         }
         Ok(())
     }
@@ -183,11 +181,10 @@ impl PeerTransport for Routed {
     }
 }
 
-/// `mutation`, sent by `me` on `route`, as the signed document envelope the broker delivers to
-/// the route's other replicas.
+/// `mutation` sent on `route`, as the signed document envelope the broker delivers to the
+/// route's other replicas.
 fn delivered(
     route: &RouteSpec,
-    me: &str,
     mutation: &collab_types::DocumentMutation,
 ) -> Result<CollabEvent, String> {
     let record = route.record.as_deref().unwrap_or("");
@@ -204,7 +201,6 @@ fn delivered(
     envelope.signature = collab_types::Signature::from_bytes([0; 64]);
     Ok(CollabEvent::Document {
         envelope: Box::new(envelope),
-        from_user_id: me.to_owned(),
         decrypted_payload: None,
     })
 }

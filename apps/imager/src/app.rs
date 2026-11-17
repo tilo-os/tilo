@@ -3248,6 +3248,10 @@ impl ui::component_lifecycle::ComponentLifecycle for ImagerApp {
     }
 }
 impl Widget for ImagerApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {

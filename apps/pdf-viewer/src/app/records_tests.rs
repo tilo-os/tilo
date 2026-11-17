@@ -151,7 +151,7 @@ fn concurrent_markup_edits_converge_across_replicas() {
         app.invoke(delete_page_plan_action("source-2"))
             .expect("the owner deletes a page");
         apply(&mut other, highlight("late", "source-2", 200.0));
-        app.merge_peer(&mut other).expect("merge the collaborator");
+        app.merge_peer(&mut other).expect("merge the member");
         let doc = app.read_document(Clone::clone);
 
         assert!(ids(&doc).iter().all(|(id, _)| id != "late"));

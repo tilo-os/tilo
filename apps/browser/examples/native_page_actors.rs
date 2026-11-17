@@ -111,7 +111,7 @@ struct Started {
 }
 
 /// Start `effect` on the page for `invoker`, as the host does for an agent
-/// or a collaborator it admitted; nobody, for the person at the window.
+/// or a member it admitted; nobody, for the person at the window.
 fn start(
     app: &mut TestApp<BrowserShell>,
     invoker: Option<&ActionInvoker>,

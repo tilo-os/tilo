@@ -1537,7 +1537,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A collaborator's device at another protocol version reaches the shell as an ordinary banner
+/// A member's device at another protocol version reaches the shell as an ordinary banner
 /// naming it: the person reads what to update, not an operator's log line.
 #[test]
 fn a_device_on_another_version_is_named_on_the_shell() {

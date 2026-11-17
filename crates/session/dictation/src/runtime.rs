@@ -117,7 +117,7 @@ pub struct Runtime {
 }
 impl Runtime {
     /// Spawn only the immutable image worker. No paths, accounts or network
-    /// endpoints can be supplied by a collaborator or model.
+    /// endpoints can be supplied by a member or model.
     /// # Errors
     /// Rejects invalid languages or an unavailable actor thread.
     pub fn start(language: &str) -> Result<Self, RuntimeError> {

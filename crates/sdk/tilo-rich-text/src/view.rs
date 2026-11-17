@@ -114,7 +114,7 @@ impl RichTextView {
         self.draw_with_presence(scene, transform, text, theme, &PresenceCtx::empty());
     }
 
-    /// [`Self::draw`] with collaborators' carets and selections in the
+    /// [`Self::draw`] with members' carets and selections in the
     /// words, where `presence` places them by paragraph id: text shown,
     /// not edited, here while someone else edits it.
     pub fn draw_with_presence(

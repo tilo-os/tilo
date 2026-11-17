@@ -1,6 +1,6 @@
 //! Pure geometry for off-screen peer wayfinding ("mist").
 //!
-//! When a collaborator's pointer / viewport is outside the local visible
+//! When a member's pointer / viewport is outside the local visible
 //! area, we don't lose them — we paint a soft colored gradient band at the
 //! edge of the screen in the direction they went, so you can tell *where*
 //! a peer is even though their cursor isn't on your canvas. This module is

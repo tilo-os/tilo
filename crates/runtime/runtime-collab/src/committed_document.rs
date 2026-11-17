@@ -79,7 +79,7 @@ pub enum Request {
     OpenChanges {
         known_revision: [u8; 32],
     },
-    /// Original authenticated principal and exact channel route; no caller claims.
+    /// Original authenticated actor and exact channel route; no caller claims.
     ConnectionSnapshot,
     /// The caller reads no more on this channel: give up its place in the
     /// broker's byte budget queue (after a [`Reply::Busy`]), and the place
@@ -280,7 +280,7 @@ mod tests {
             assert_eq!(Request::decode(&[8]).unwrap(), Request::Leave);
         }
 
-        phase connection_snapshot_is_bounded_and_keeps_original_principal_and_route;
+        phase connection_snapshot_is_bounded_and_keeps_original_actor_and_route;
         {
             assert_eq!(Request::ConnectionSnapshot.encode().unwrap(), [7]);
             let snapshot = ConnectionSnapshot {

@@ -1536,7 +1536,7 @@ pub fn load_metadata_for_launch(path: &std::path::Path) -> Result<IdentityMetada
 ///
 /// The record still receives the same ownership, symlink, size, JSON and
 /// schema validation as [`load_from_path`]. Callers that authorize an identity
-/// must bind `group_public_key` to their independently validated principal.
+/// must bind `group_public_key` to their independently validated actor.
 ///
 /// # Errors
 ///
@@ -1589,7 +1589,7 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
 
 /// Serialize a public-only identity record for an enrolled member device.
 ///
-/// The result identifies the same person principal but carries no root
+/// The result identifies the same person actor but carries no root
 /// signing share. The device authenticates through its separately
 /// installed root-signed device certificate and signing broker.
 ///

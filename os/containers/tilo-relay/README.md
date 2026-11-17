@@ -42,7 +42,7 @@ properties, so restore rather than recreate them after a failure.
 The health check reports ready only when the relay is live and the full file
 replica has completed its current work.
 
-## Trust and collaborators
+## Trust and members
 
 The generated configuration uses `allow_matching_user`, so the owner's other
 certified devices connect automatically. Workspace authority travels signed by

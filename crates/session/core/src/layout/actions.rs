@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilo_actions::ResourceSpec;
+use tilo_actions::{Actor, MemberId, ResourceSpec};
 
 use super::{
     Ask, AskOrigin, Busy, CanvasRect, Find, Found, Layout, LayoutAction, Pointed, RECORD_RESOURCE,
@@ -80,7 +80,7 @@ impl LayoutActions {
     /// call.
     fn invoke_by(
         &self,
-        actor: Option<&str>,
+        actor: Option<&Actor>,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
@@ -103,10 +103,8 @@ impl LayoutActions {
             })?;
         // An action that names no one is the person's own input: theirs to take back, and never
         // made to wait for themselves.
-        let asked = match actor.filter(|actor| !actor.is_empty()) {
-            Some(actor) => actor.to_owned(),
-            None => self.person(),
-        };
+        let person = Actor::from(MemberId::person(self.person()));
+        let asked = actor.unwrap_or(&person).clone();
         // What a `place`, a `show` or an `open` names no view of stands as content, through the
         // view its app declares for a place of it, wherever it ends up standing: beside a turn it
         // was aimed at too.
@@ -125,7 +123,7 @@ impl LayoutActions {
         }
         // The person's own change is what their gesture is making; only anyone else's waits for
         // them to finish.
-        let busy = if asked == self.person() {
+        let busy = if asked == person {
             Busy::default()
         } else {
             (self.busy)()
@@ -195,7 +193,7 @@ impl LayoutActions {
     /// the place on a later pass, as the person's own step.
     fn find_and_place_found(
         &self,
-        asked: &str,
+        asked: &Actor,
         text: &str,
         view: &str,
         strip: Option<u64>,
@@ -240,7 +238,7 @@ impl LayoutActions {
     fn found_by_text(
         &self,
         action: &LayoutAction,
-        asked: &str,
+        asked: &Actor,
         busy: Busy,
     ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
         let LayoutAction::PlaceFound {
@@ -281,7 +279,7 @@ impl LayoutActions {
     fn opened(
         &self,
         action: &LayoutAction,
-        asked: &str,
+        asked: &Actor,
     ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
         let LayoutAction::Open {
             resource,
@@ -311,7 +309,7 @@ impl LayoutActions {
     fn retried(
         &self,
         action: &LayoutAction,
-        asked: &str,
+        asked: &Actor,
         busy: Busy,
     ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
         let LayoutAction::RetryQuery { place } = action else {
@@ -338,7 +336,7 @@ impl LayoutActions {
     /// As [`Self::invoke`].
     pub fn invoke_as(
         &self,
-        actor: &str,
+        actor: &Actor,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
@@ -468,7 +466,7 @@ impl crate::surfaces::Published for LayoutActions {
 
     fn invoke_as(
         &mut self,
-        actor: &str,
+        actor: &Actor,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
         _look: &mut crate::surfaces::Look<'_>,

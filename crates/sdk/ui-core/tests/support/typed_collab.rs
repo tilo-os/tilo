@@ -396,7 +396,6 @@ impl Connection {
                     while let Some(op) = rx.recv().await {
                         deliver(Event::Op {
                             op: op.bytes,
-                            from_user_id: op.author,
                             admission: OpAdmission::CleartextAdmitted,
                         });
                     }

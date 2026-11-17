@@ -53,7 +53,7 @@ mod tests {
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
         let workspace_id = tree.desktop.active;
-        // The collaborator's work in the workspace's layout: the windows it closed, one change
+        // The member's work in the workspace's layout: the windows it closed, one change
         // each. Windows opened are history, not news; a window closed is.
         if let Some(peer) = peer {
             tree.doc.set_actor(peer.clone());

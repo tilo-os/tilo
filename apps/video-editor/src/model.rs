@@ -1,7 +1,7 @@
 //! The editor's data model: media bin, tracks, clips, project.
 //!
 //! `#[derive(Model)]` stores the project in the record field by field, with media, tracks,
-//! clips and markers keyed by their own ids, so collaborators' edits merge per field. The
+//! clips and markers keyed by their own ids, so members' edits merge per field. The
 //! editing math (split, trim, move, ripple) lives here behind unit tests; the verbs
 //! ([`crate::resource`]) run it.
 

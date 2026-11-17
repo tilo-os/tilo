@@ -3505,6 +3505,10 @@ impl InstallerApp {
 }
 
 impl Widget for InstallerApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         self.dirty = true;
         let staged = self.published.borrow_mut().take_staged();

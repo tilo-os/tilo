@@ -4,7 +4,7 @@
 //! marks one at a time and paints them into its own [`LayerSim`], which it
 //! can composite to pixels at any point. Engines are deterministic: the same
 //! marks with the same seeds give the same pixels on every machine, so a
-//! painting syncs as marks and every collaborator simulates it locally.
+//! painting syncs as marks and every member simulates it locally.
 //!
 //! A [`Preset`] is plain data over an engine: its parameters, a suggested
 //! ground and a palette. Presets are what users share; engines are code.

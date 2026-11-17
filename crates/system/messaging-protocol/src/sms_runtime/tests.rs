@@ -318,7 +318,7 @@ const ANSWERED_BUDGET: Duration = Duration::from_secs(60);
 
 fn owner() -> Owner {
     Owner {
-        principal: "11".repeat(32),
+        actor: "11".repeat(32),
         device: "fixture-device".into(),
         service: Service::Sms,
         account: "fixture-sim".into(),
@@ -1328,7 +1328,7 @@ fn sms_messages_app(
     use messages::{MessagesEffect, MessagesShell};
     use tilo_contact_directory::ContactDirectory;
     let mut app = ui::framework::testing::TestApp::<MessagesShell>::for_person_with_lent(
-        &owner().principal,
+        &owner().actor,
         broker.client(),
     )
     .unwrap();

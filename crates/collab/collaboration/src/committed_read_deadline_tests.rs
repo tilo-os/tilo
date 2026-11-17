@@ -683,7 +683,7 @@ fn an_idle_native_reader_asks_the_broker_nothing_while_nothing_changes() {
     let ready = reader.ready();
     let connected = reader.manager.is_connected();
 
-    // Another collaborator's edit commits a new revision: the held wait
+    // Another member's edit commits a new revision: the held wait
     // ends and the reader takes it in, with no poll.
     reader.commit("edited elsewhere");
     reader.wake_waits();

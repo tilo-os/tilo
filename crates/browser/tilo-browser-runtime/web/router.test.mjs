@@ -171,7 +171,7 @@ test('windows others open and changes that keep the focus write nothing', () => 
   const window = fakeWindow(link.format({mode: 'desktop', target: chat}));
   startRouter({window, link, navigation, initial: {mode: 'desktop', target: chat}, show: async () => {}});
   window.writes.length = 0;
-  // A collaborator's agent opened a window on its own strip: focus stays.
+  // A member's agent opened a window on its own strip: focus stays.
   navigation.emit(shell([['1', 'so.tilo.chat'], ['9', 'so.tilo.notes']], '1'));
   // A remote write retitled the window.
   navigation.emit(shell([['1', 'so.tilo.chat'], ['9', 'so.tilo.notes']], '1'));

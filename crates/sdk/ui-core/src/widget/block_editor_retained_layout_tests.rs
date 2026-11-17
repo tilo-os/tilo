@@ -784,7 +784,7 @@ fn keystroke_work_does_not_grow_with_the_document() {
 }
 
 #[test]
-fn a_collaborators_paragraph_restacks_without_a_rebuild_and_repaints_the_blocks_below() {
+fn a_members_paragraph_restacks_without_a_rebuild_and_repaints_the_blocks_below() {
     let blocks = (0..6)
         .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary document line.")))
         .collect();
@@ -795,7 +795,7 @@ fn a_collaborators_paragraph_restacks_without_a_rebuild_and_repaints_the_blocks_
     let mut shown: Vec<BlockContent> = fixture.editor.blocks.iter().map(Block::content).collect();
     shown.insert(
         3,
-        BlockContent::paragraph("remote", "A collaborator's paragraph."),
+        BlockContent::paragraph("remote", "A member's paragraph."),
     );
     assert!(fixture.editor.present_blocks(&shown));
     assert!(
@@ -813,10 +813,7 @@ fn a_collaborators_paragraph_restacks_without_a_rebuild_and_repaints_the_blocks_
         .iter()
         .map(|block| block.line.get_rect())
         .collect();
-    assert_eq!(
-        fixture.editor.blocks[3].text(),
-        "A collaborator's paragraph."
-    );
+    assert_eq!(fixture.editor.blocks[3].text(), "A member's paragraph.");
     assert!(
         rows[3].height() > 0.0 && rows[3].y0 >= rows[2].y1 && rows[3].y1 <= rows[4].y0,
         "the paragraph stands between its neighbours: {rows:?}"

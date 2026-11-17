@@ -357,7 +357,7 @@ pub struct SlidesApp {
     editing_text: bool,
     editing_notes: bool,
     presentation: Presentation,
-    /// Local routing policy; never sync it: collaborators do not share
+    /// Local routing policy; never sync it: members do not share
     /// hardware.
     presentation_target: ui::fullscreen::FullscreenTarget,
 
@@ -2086,6 +2086,10 @@ impl AudiencePresentationProvider for SlidesApp {
 }
 
 impl Widget for SlidesApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.picture();
+    }
+
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::AudiencePresentationProvider,

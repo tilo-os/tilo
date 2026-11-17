@@ -70,7 +70,7 @@ tilo_test_env::scenario! {
                 .contains("Groceries")
         );
 
-        // A collaborator's change leaves a value the model cannot read.
+        // A member's change leaves a value the model cannot read.
         app.merge_peer_edit(|doc| {
             doc.put(ROOT, "pinned", "not a flag").unwrap();
         });

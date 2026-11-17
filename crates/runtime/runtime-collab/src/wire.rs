@@ -495,7 +495,6 @@ pub enum Event {
     /// [`SignedOp`], with who sent it and the channel's verdict on it.
     Op {
         op: Vec<u8>,
-        from_user_id: String,
         admission: OpAdmission,
     },
     /// Content of the channel's record: its bytes once `state` is

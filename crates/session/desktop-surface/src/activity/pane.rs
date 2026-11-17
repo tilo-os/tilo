@@ -71,15 +71,13 @@ fn seed_roster_colours(authors: &mut AuthorDirectory, tree: &tilo_desktop_model:
         if member.name.trim().is_empty() {
             continue;
         }
-        let id = member.id.key();
         let rgb = collab_types::presence::identity_rgb(member.colour);
-        authors.set_color_override(&id, rgb);
-        let handle = automerge::ActorId::from(id.as_bytes()).to_hex_string();
-        authors.register(
-            &handle,
+        authors.set_color_override(&member.id, rgb);
+        authors.register_member(
+            &member.id,
             ui::history_source::author_coloured(
                 participant_display_label(&member.name),
-                ui::history_source::short_id(&id),
+                ui::history_source::short_id(member.id.id()),
                 rgb,
             ),
         );
@@ -1640,7 +1638,12 @@ impl WorkspaceActivityPane {
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.effect_receipts.iter())
-            .map(|receipt| (receipt.invocation.0.to_string(), receipt.actor.key()))
+            .map(|receipt| {
+                (
+                    receipt.invocation.0.to_string(),
+                    hex::encode(receipt.actor.actor_bytes()),
+                )
+            })
             .collect::<HashMap<_, _>>();
         for entry in &mut entries {
             let Some(actor) = entry
@@ -1656,11 +1659,7 @@ impl WorkspaceActivityPane {
             else {
                 continue;
             };
-            entry.author = ui::history_source::author_coloured(
-                participant_display_label(actor),
-                ui::history_source::short_id(actor),
-                self.source.authors().colour_for(actor),
-            );
+            entry.author = self.source.authors().resolve(actor);
         }
         let represented_receipts = entries
             .iter()
@@ -1674,14 +1673,12 @@ impl WorkspaceActivityPane {
                 if represented_receipts.contains(&receipt.invocation.0.to_string()) {
                     continue;
                 }
-                let actor = receipt.actor.key();
                 entries.push(HistoryEntry {
                     id: HistoryEntryId::from_bytes(*receipt.invocation.0.as_bytes()),
-                    author: ui::history_source::author_coloured(
-                        participant_display_label(&actor),
-                        ui::history_source::short_id(&actor),
-                        self.source.authors().colour_for(&actor),
-                    ),
+                    author: self
+                        .source
+                        .authors()
+                        .resolve(&hex::encode(receipt.actor.actor_bytes())),
                     entry_kind: EntryKind::Details,
                     artifact_kind: ArtifactKind::Cluster,
                     timestamp: SystemTime::UNIX_EPOCH
@@ -1732,19 +1729,19 @@ impl WorkspaceActivityPane {
         if self.source.authors().is_registered(actor) {
             return;
         }
-        let principal = if let Some(local) = &self.explicit_local_user {
+        let member = if let Some(local) = &self.explicit_local_user {
             Some(local.clone())
         } else {
             self.host.local_author(self.source.authors_mut(), actor)
         };
         // The hue follows the person, as receipt rows' does: one person editing from this device
         // and acting through a receipt is one colour, not one per key.
-        if let Some(principal) = principal {
-            let rgb = self.source.authors().colour_for(&principal);
+        if let Some(member) = member {
+            let rgb = self.source.authors().colour_for(&member);
             self.source.authors_mut().register(
                 actor,
                 ui::history_source::author_coloured(
-                    principal,
+                    member,
                     ui::history_source::short_id(actor),
                     rgb,
                 ),

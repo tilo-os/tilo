@@ -339,18 +339,18 @@ impl ChatApp {
     }
 
     /// Whether this workspace has somebody besides the local participant. An
-    /// agent is still a collaborator (and should surface collaboration
+    /// agent is still a member (and should surface collaboration
     /// controls), but it is never counted or labelled as a person.
-    pub(crate) fn has_other_collaborator(&self) -> bool {
+    pub(crate) fn has_other_member(&self) -> bool {
         self.users.iter().any(|u| !self.is_me(&u.id))
     }
 
     /// The roster's public destination name. `People` is precise when every
-    /// entry is human; once an agent is present, `Collaborators` accurately
+    /// entry is human; once an agent is present, `Members` accurately
     /// covers both and the row itself keeps the agent visibly typed.
     pub(crate) fn roster_label(&self) -> &'static str {
         if self.users.iter().any(|u| u.is_agent) {
-            "Collaborators"
+            "Members"
         } else {
             "People"
         }

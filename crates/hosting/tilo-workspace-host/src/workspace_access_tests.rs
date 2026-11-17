@@ -184,10 +184,10 @@ fn workspace(root: &std::path::Path) -> WorkspaceRuntime {
     WorkspaceRuntime::open(root, id, false, Membership::default()).unwrap()
 }
 
-/// How a case puts its principal into the workspace and the relay.
+/// How a case puts its actor into the workspace and the relay.
 type Setup = Box<dyn Fn(&mut WorkspaceRuntime, &Relay)>;
 
-/// One principal: how the workspace and the relay know it, and the expected
+/// One actor: how the workspace and the relay know it, and the expected
 /// letters per mode (`Explicit`, `SameOwner`, `Governed`) over [`OPS`].
 struct Case {
     name: &'static str,
@@ -199,7 +199,7 @@ struct Case {
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "the matrix is one table: each row is a principal, each letter a plane"
+    reason = "the matrix is one table: each row is an actor, each letter a plane"
 )]
 fn decide_matrix() {
     let relay = Relay::new();

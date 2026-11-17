@@ -439,7 +439,7 @@ impl App {
                 })
             {
                 // Missing legacy provenance is private evidence only. Never
-                // relabel it with the principal of a new connection.
+                // relabel it with the actor of a new connection.
                 if pending.capture.custody.is_none()
                     || pending.capture.custody
                         != self
@@ -581,7 +581,7 @@ impl App {
         let entries = self.local_action_checkpoint_entries(route)?;
         for (checkpoint, receipt) in entries {
             // Neither private receipts nor pending intents may enter the new
-            // session until its authenticated destination and principal match.
+            // session until its authenticated destination and actor match.
             // Missing legacy/offline custody stays on disk for explicit resolution.
             if checkpoint.custody.is_none()
                 || checkpoint.custody != self.collaboration.manager.connection_snapshot(route)

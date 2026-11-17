@@ -23,7 +23,7 @@
 //! ```
 //!
 //! What a test then asserts on is the state behind the resource, which is
-//! what a collaborator sees: the record's document
+//! what a member sees: the record's document
 //! ([`RecordStore::read`](crate::record::RecordStore::read)) and the resources
 //! the app publishes back ([`HeadlessApp::resources`]). A click is still
 //! available ([`HeadlessApp::frame_mut`]) for the thing a click alone proves —

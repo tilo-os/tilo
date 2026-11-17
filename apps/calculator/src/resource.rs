@@ -230,7 +230,7 @@ impl ResourceApp for CalculatorShell {
     fn fixture(fixture: &mut Fixture<Calculator>) {
         if fixture.scenario() == Some("remote-cursor") {
             let (x, y) = REMOTE_POINTER;
-            fixture.collaborator(
+            fixture.member(
                 "Alice",
                 ResourceSelection::Pointer {
                     item: graph_row_id(GraphKind::Curve2d, &scenario_row_id(GraphKind::Curve2d, 0)),
@@ -268,7 +268,7 @@ fn scenario_row_id(kind: GraphKind, index: usize) -> Id {
     Id::from_raw(format!("{slug}-{}", index + 1))
 }
 
-/// The graph rows get fixed ids, so a collaborator's pointer finds its row.
+/// The graph rows get fixed ids, so a member's pointer finds its row.
 fn scenario_edits(model: &CalcModel) -> Vec<Invoke<Calculator>> {
     // Each calculation lands at the front: commit the oldest first.
     let history = model.history.iter().rev().map(|entry| {

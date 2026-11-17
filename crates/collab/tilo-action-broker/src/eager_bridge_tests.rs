@@ -51,7 +51,7 @@ mod eager_bridge_tests {
                     device_public_key: [0; 32],
                     capped: false,
                 },
-                principal_id: "fixture-owner".into(),
+                actor_key: "fixture-owner".into(),
                 display_handle: None,
                 role: CapRole::Editor,
                 agent_id: None,

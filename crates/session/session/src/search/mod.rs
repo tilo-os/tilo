@@ -502,7 +502,7 @@ impl SessionSearch {
         }
     }
 
-    /// Who is in the person's workspaces now, as their presence and the shell's collaborators say
+    /// Who is in the person's workspaces now, as their presence and the shell's members say
     /// it: the empty palette's first group.
     pub fn set_here(&self, workspaces: Vec<WorkspaceHere>) {
         if *self.here.borrow() == workspaces {

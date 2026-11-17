@@ -404,7 +404,7 @@ pub enum Type {
     Float,
     Bool,
     /// A participant: a person or an agent.
-    Principal,
+    Actor,
     /// A resource the component presents.
     Resource,
     /// A moment: a date and a time of day, as the language's `Time`.
@@ -454,7 +454,7 @@ impl Type {
             Self::Int => "Int".into(),
             Self::Float => "Float".into(),
             Self::Bool => "Bool".into(),
-            Self::Principal => "Actor".into(),
+            Self::Actor => "Actor".into(),
             Self::Resource => "a resource".into(),
             Self::Time => "Time".into(),
             Self::Icon => "Icon".into(),
@@ -481,7 +481,7 @@ pub enum Value {
     Float(f64),
     Bool(bool),
     /// A participant: their identity, and what the room calls them.
-    Principal {
+    Actor {
         identity: String,
         name: String,
     },
@@ -558,7 +558,7 @@ impl Value {
             Self::Int(_) => "Int",
             Self::Float(_) => "Float",
             Self::Bool(_) => "Bool",
-            Self::Principal { .. } => "Principal",
+            Self::Actor { .. } => "Actor",
             Self::Resource(_) => "a resource",
             Self::Icon(_) => "Icon",
             Self::Picture(_) => "a picture",

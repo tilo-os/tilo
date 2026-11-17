@@ -47,7 +47,7 @@ pub struct WriterPlace<'a> {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AuthorDirectory {
     by_actor: HashMap<String, HistoryAuthor>,
-    /// A person's own colour (`Collaborator::cursor_color`, local
+    /// A person's own colour (`Member::cursor_color`, local
     /// `avatar_color`). Wins over [`crate::presence::user_color`] for
     /// that identity, matching [`crate::presence::PresenceCtx::color_for`].
     color_overrides: HashMap<String, (u8, u8, u8)>,
@@ -61,7 +61,7 @@ pub struct AuthorDirectory {
     devices: HashMap<String, String>,
 }
 
-/// A delegated agent as history names it: its own principal, how it is
+/// A delegated agent as history names it: its own actor, how it is
 /// shown, and the person it acts for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryAgent {
@@ -70,8 +70,8 @@ pub struct HistoryAgent {
     pub label: String,
     /// Its cursor colour: history paints it as presence does.
     pub rgb: (u8, u8, u8),
-    /// The principal of the person it acts for, whose name the directory
-    /// resolves ([`AuthorDirectory::register_person`]).
+    /// The actor of the person it acts for, whose name the directory
+    /// resolves ([`AuthorDirectory::register_member`]).
     pub person: String,
 }
 
@@ -80,10 +80,10 @@ pub struct HistoryAgent {
 /// toolkit.
 pub use collab_types::history::RosterAgent;
 
-/// The directory key of a principal: the hex of its UTF-8, the actor id a
-/// process writing under that principal's handle has.
-fn principal_key(principal: &str) -> String {
-    hex::encode(principal.as_bytes())
+/// The directory key of an actor: the hex of its UTF-8, the actor id a
+/// process writing under that actor's handle has.
+fn actor_key(actor: &str) -> String {
+    hex::encode(actor.as_bytes())
 }
 
 impl AuthorDirectory {
@@ -120,7 +120,7 @@ impl AuthorDirectory {
             }
             match id {
                 MemberId::Person(key) => {
-                    directory.register_person(key, author_for_identity(name.to_owned(), key));
+                    directory.register_member(id, author_for_identity(name.to_owned(), key));
                     directory.register_device(key, name.to_owned());
                 }
                 MemberId::Agent(agent) | MemberId::Bot(agent) => {
@@ -149,11 +149,10 @@ impl AuthorDirectory {
         directory
     }
 
-    /// Bind a person's principal (the hex of their root key, or a handle)
-    /// to how they are named, so the changes they make and the changes made
-    /// on their behalf both name them.
-    pub fn register_person(&mut self, principal: &str, author: HistoryAuthor) {
-        self.register(&principal_key(principal), author);
+    /// Bind `member` to how they are named, so the changes they make and the
+    /// changes made on their behalf both name them.
+    pub fn register_member(&mut self, member: &tilo_actions::MemberId, author: HistoryAuthor) {
+        self.register(&hex::encode(member.actor_bytes()), author);
     }
 
     /// Bind a device's actor id to its name, so a hover that names the device
@@ -210,9 +209,9 @@ impl AuthorDirectory {
     /// them.
     pub fn register_roster_agent(&mut self, agent: &RosterAgent) {
         let person = hex::encode(agent.person);
-        if !self.by_actor.contains_key(&principal_key(&person)) {
-            self.register_person(
-                &person,
+        if !self.by_actor.contains_key(&actor_key(&person)) {
+            self.register_member(
+                &tilo_actions::MemberId::person(person.clone()),
                 author_for_identity(agent.person_name.clone(), &person),
             );
         }
@@ -233,7 +232,7 @@ impl AuthorDirectory {
     /// each under its own author's actor, and history alone names none of
     /// them. An agent mount's actor, and one whose author is among `agents`
     /// (the workspace's agent members), is shown as that agent; a person
-    /// `person` knows (by the principal they write as) is named and coloured
+    /// `person` knows (by the actor they write as) is named and coloured
     /// as presence shows them.
     pub fn register_noted_mounts(
         &mut self,
@@ -316,7 +315,7 @@ impl AuthorDirectory {
         {
             return Some(self.agent_author(&device, agent));
         }
-        let key = principal_key(&person);
+        let key = actor_key(&person);
         self.by_actor
             .contains_key(&key)
             .then(|| self.resolve_identity(&key))
@@ -382,7 +381,7 @@ impl AuthorDirectory {
             _ => attribution.label.clone(),
         };
         let author = self
-            .resolve_identity(&principal_key(&person_key))
+            .resolve_identity(&actor_key(&person_key))
             .with_attribution(
                 HistoryAttribution::new(acting)
                     .acting_for(person_key.clone(), self.person_name(&person_key))
@@ -395,18 +394,18 @@ impl AuthorDirectory {
         Some(author)
     }
 
-    /// The name the directory has for a person's principal, or the principal
+    /// The name the directory has for a person's actor, or the actor
     /// itself: a hover never prints a bare key where it knows no name.
-    fn person_name(&self, principal: &str) -> String {
+    fn person_name(&self, actor: &str) -> String {
         self.by_actor
-            .get(&principal_key(principal))
-            .map_or_else(|| principal.to_owned(), |author| author.name.clone())
+            .get(&actor_key(actor))
+            .map_or_else(|| actor.to_owned(), |author| author.name.clone())
     }
 
     /// The author a registered agent is: the agent, on behalf of its person,
     /// in the agent's own colour.
     fn agent_author(&self, actor_hex: &str, agent: &HistoryAgent) -> HistoryAuthor {
-        let person = self.resolve_identity(&principal_key(&agent.person)).name;
+        let person = self.resolve_identity(&actor_key(&agent.person)).name;
         let reader = self.reader_person();
         let mut author = author_coloured(agent.label.clone(), short_id(actor_hex), agent.rgb)
             .with_relation(AuthorRelation::Software)
@@ -437,7 +436,7 @@ impl AuthorDirectory {
         match actor_handle(key) {
             // An app's change reads as the app: its own name, with no fragment of its actor id
             // beside it, which would say nothing a person reads.
-            Some(handle) if is_app_principal(&handle) => {
+            Some(handle) if is_app_actor(&handle) => {
                 self.author_from_identity(participant_display_label(&handle), &handle, "")
             }
             Some(handle) => {
@@ -500,7 +499,7 @@ impl AuthorDirectory {
         ) {
             return self.agent_session_author(invoker, (agent, Some(session.as_str())), person);
         }
-        // A delegated agent writing as itself, under its own principal.
+        // A delegated agent writing as itself, under its own actor.
         if let Some(agent) = self.agents.get(&actor_hex.to_lowercase())
             && invoker.acting.member_id() == Some(&agent.agent)
         {
@@ -596,8 +595,8 @@ impl AuthorDirectory {
         (agent, session): (&str, Option<&str>),
         person: &str,
     ) -> HistoryAuthor {
-        let principal = hex::encode(person.as_bytes());
-        let name = self.resolve(&principal).name;
+        let actor = hex::encode(person.as_bytes());
+        let name = self.resolve(&actor).name;
         let writer = fs_protocol::AttributedWriter::Agent {
             agent: agent.to_owned(),
             session: session.map(str::to_owned),
@@ -609,7 +608,7 @@ impl AuthorDirectory {
             .unwrap_or_else(|| agent.to_owned());
         let reads = self.reader_person().as_deref() == Some(person);
         let mut author = self
-            .resolve(&principal)
+            .resolve(&actor)
             .with_relation(if reads {
                 AuthorRelation::Reader
             } else {
@@ -624,10 +623,11 @@ impl AuthorDirectory {
         author
     }
 
-    /// Seed or replace this identity's colour so history agrees with
+    /// Seed or replace `member`'s colour so history agrees with
     /// [`crate::presence::PresenceCtx::color_for`].
-    pub fn set_color_override(&mut self, identity: impl Into<String>, rgb: (u8, u8, u8)) {
-        self.color_overrides.insert(identity.into(), rgb);
+    pub fn set_color_override(&mut self, member: &tilo_actions::MemberId, rgb: (u8, u8, u8)) {
+        let identity = String::from_utf8_lossy(&member.actor_bytes()).into_owned();
+        self.color_overrides.insert(identity, rgb);
     }
 
     /// The colour history paints `identity` in: the person's own colour
@@ -760,44 +760,44 @@ pub fn read_as(member: &tilo_actions::MemberId) {
     THREAD_READER.with(|reader| *reader.borrow_mut() = Some(member.clone()));
 }
 
-/// Turn a durable collaboration principal into copy suitable for people-facing
+/// Turn a durable collaboration actor into copy suitable for people-facing
 /// history and audit UI.
 ///
-/// Agent principals deliberately remain stored and transported as
+/// Agent actors deliberately remain stored and transported as
 /// `agent:<id>`: the prefix is part of the authorization boundary. Rendering
 /// that wire identifier verbatim, however, makes the UI look unfinished and
 /// obscures the important fact that the actor was software. This projection
 /// removes only the protocol prefix and adds a persistent, readable kind
 /// label. An app reads as its own name in the person's language (`app:so.tilo.lang.today` is
 /// "Today"), never as its id. Human names and other identifiers pass through unchanged.
-pub fn participant_display_label(principal: &str) -> String {
-    match agent_principal_name(principal) {
+pub fn participant_display_label(actor: &str) -> String {
+    match agent_actor_name(actor) {
         Some(name) => agent_display_label(&name),
-        None => match app_principal(principal) {
+        None => match app_actor(actor) {
             Some(app) => app_name(app, crate::i18n::I18nManager::window_locale().as_str()),
-            None => principal.trim().to_string(),
+            None => actor.trim().to_string(),
         },
     }
 }
 
-/// The principal `id` names an app's own (`app:so.tilo.lang.today`).
-pub fn is_app_principal(id: &str) -> bool {
-    app_principal(id).is_some()
+/// The actor `id` names an app's own (`app:so.tilo.lang.today`).
+pub fn is_app_actor(id: &str) -> bool {
+    app_actor(id).is_some()
 }
 
-/// The app a principal id names, when it is an app's own.
-fn app_principal(id: &str) -> Option<&str> {
+/// The app an actor id names, when it is an app's own.
+fn app_actor(id: &str) -> Option<&str> {
     id.trim()
         .strip_prefix(APP_NAMESPACE)
         .map(str::trim)
         .filter(|app| !app.is_empty())
 }
 
-/// What the actor `principal` is called to the person reading, by what it is: a person by their
+/// What the actor `actor` is called to the person reading, by what it is: a person by their
 /// name, an app by its own name in their language, an agent by its name. Never an id, and never
 /// part of one: a participant nobody named is [`UNKNOWN_AUTHOR_NAME`].
-pub fn participant_name(principal: &str) -> String {
-    actor_name(principal, &CatalogueNames)
+pub fn participant_name(actor: &str) -> String {
+    actor_name(actor, &CatalogueNames)
 }
 
 /// The names the toolkit's words give: the session's names for the apps installed here, in the
@@ -810,11 +810,11 @@ impl ParticipantNames for CatalogueNames {
     }
 }
 
-/// [`participant_name`] for a principal that names software (`app:`, `agent:`, `bot:`,
-/// `shortcut:`), and nothing for an id that names no principal: what presence shows for someone
+/// [`participant_name`] for an actor that names software (`app:`, `agent:`, `bot:`,
+/// `shortcut:`), and nothing for an id that names no actor: what presence shows for someone
 /// it knows only an id of, until the roster names them.
-pub fn software_name(principal: &str) -> Option<String> {
-    let principal = principal.trim();
+pub fn software_name(actor: &str) -> Option<String> {
+    let actor = actor.trim();
     [
         APP_NAMESPACE,
         AGENT_NAMESPACE,
@@ -822,16 +822,16 @@ pub fn software_name(principal: &str) -> Option<String> {
         SHORTCUT_NAMESPACE,
     ]
     .iter()
-    .any(|namespace| principal.starts_with(namespace))
-    .then(|| participant_name(principal))
+    .any(|namespace| actor.starts_with(namespace))
+    .then(|| participant_name(actor))
 }
 
-/// The readable name of an `agent:<id>` principal, without the kind label:
+/// The readable name of an `agent:<id>` actor, without the kind label:
 /// the id, or the localized unknown-agent name when it is empty. `None` for
-/// any principal that is not an agent. For surfaces that already mark the
+/// any actor that is not an agent. For surfaces that already mark the
 /// actor as software, such as an agent badge.
-pub fn agent_principal_name(principal: &str) -> Option<String> {
-    let name = principal.trim().strip_prefix("agent:")?.trim();
+pub fn agent_actor_name(actor: &str) -> Option<String> {
+    let name = actor.trim().strip_prefix("agent:")?.trim();
     Some(if name.is_empty() {
         crate::i18n::widget_format("participant-unknown-agent", &[])
     } else {
@@ -927,7 +927,7 @@ mod noted_mount_tests {
         );
     }
 
-    /// A mount writes as its person's principal (a key, in a workspace): their
+    /// A mount writes as its person's actor (a key, in a workspace): their
     /// edits read by the name and colour presence shows them, not the key.
     #[test]
     fn a_person_presence_knows_reads_by_their_name_and_colour() {
@@ -1048,7 +1048,7 @@ mod tests {
             let mut ctx = PresenceCtx::default();
             ctx.set_color_override(MemberId::person("carol"), "#112233");
             let mut dir = AuthorDirectory::new();
-            dir.set_color_override("carol", (0x11, 0x22, 0x33));
+            dir.set_color_override(&MemberId::person("carol"), (0x11, 0x22, 0x33));
             let hex = automerge::ActorId::from("carol".as_bytes()).to_hex_string();
             assert_eq!(
                 dir.resolve(&hex).rgb(),
@@ -1079,7 +1079,7 @@ mod tests {
             assert_eq!(dir.resolve(&hex).name, "alice");
         }
 
-        phase agent_principals_are_presented_as_named_agents_not_wire_ids;
+        phase agent_actors_are_presented_as_named_agents_not_wire_ids;
         {
             assert_eq!(participant_display_label("agent:scribe"), "scribe · Agent");
             assert_eq!(
@@ -1106,12 +1106,12 @@ mod tests {
         // An app changing another app's record is named by its own name, and no fragment of its
         // actor id stands beside it: a person reads "Notes changed one note", not "app:so.t".
         {
-            let principal = "app:so.tilo.lang.notes";
-            assert_eq!(participant_display_label(principal), "Notes");
-            assert!(is_app_principal(principal));
-            assert!(!is_app_principal("agent:scribe"));
+            let app = "app:so.tilo.lang.notes";
+            assert_eq!(participant_display_label(app), "Notes");
+            assert!(is_app_actor(app));
+            assert!(!is_app_actor("agent:scribe"));
 
-            let actor = automerge::ActorId::from(principal.as_bytes());
+            let actor = automerge::ActorId::from(app.as_bytes());
             let resolved = AuthorDirectory::new().resolve(&actor.to_hex_string());
             assert_eq!(resolved.name, "Notes");
             assert_eq!(
@@ -1292,7 +1292,10 @@ mod tests {
         let device = hex::encode([7_u8; 32]);
         let person = "ada";
         let mut authors = AuthorDirectory::new();
-        authors.register_person(person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+        authors.register_member(
+            &tilo_actions::MemberId::person(person),
+            HistoryAuthor::new("Ada", 0.0, "ada00000"),
+        );
         authors.register_agent(
             &device,
             HistoryAgent {
@@ -1335,7 +1338,10 @@ mod tests {
     fn an_agent_without_a_session_reads_as_its_person_and_never_by_its_session_title() {
         let person = "ada";
         let mut authors = AuthorDirectory::new();
-        authors.register_person(person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+        authors.register_member(
+            &tilo_actions::MemberId::person(person),
+            HistoryAuthor::new("Ada", 0.0, "ada00000"),
+        );
         let invoker = tilo_actions::ActionInvoker::admitted(
             &tilo_actions::Acting::agent("claude").acting_for(tilo_actions::Acting::person(person)),
         )
@@ -1358,7 +1364,10 @@ mod tests {
     fn an_unknown_agents_session_title_is_not_its_name() {
         let person = "ada";
         let mut authors = AuthorDirectory::new();
-        authors.register_person(person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+        authors.register_member(
+            &tilo_actions::MemberId::person(person),
+            HistoryAuthor::new("Ada", 0.0, "ada00000"),
+        );
         let invoker = tilo_actions::ActionInvoker::admitted(
             &tilo_actions::Acting::agent("scribe")
                 .in_session("s1")

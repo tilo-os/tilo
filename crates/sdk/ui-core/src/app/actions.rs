@@ -1613,7 +1613,7 @@ impl App {
         {
             return Err(tilo_actions::ApiError::Unavailable {
                 code: "private_view".into(),
-                reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
+                reason: "A member cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
             });
         }
         // Every locally initiated external effect or asynchronous document job

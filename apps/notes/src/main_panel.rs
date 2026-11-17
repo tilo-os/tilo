@@ -1749,6 +1749,10 @@ impl Default for MainPanel {
 }
 
 impl Widget for MainPanel {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }

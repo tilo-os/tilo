@@ -565,6 +565,10 @@ impl Music {
 }
 
 impl Widget for Music {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     ui::provides!(
         dyn ui::widget::Continuable,
         dyn ui::widget::controls::ActionControls,

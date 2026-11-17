@@ -1255,7 +1255,7 @@ impl App {
         self.publish_owed_action_surface();
         #[cfg(test)]
         drop(publish_probe);
-        // Collaborators' marks over the widgets, for a host that shows the
+        // Members' marks over the widgets, for a host that shows the
         // app as a window of its own does ([`SurfaceDamage::painting_peers`]).
         let surface_rect = KurboRect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
         let mut peer_layer = damage.peers.take();
@@ -1445,7 +1445,7 @@ fn device_extent(extent: u32, scale: f64) -> u32 {
     (f64::from(extent) * scale).round().max(0.0) as u32
 }
 
-/// The collaborators' layer a surface paints over the widgets as a window
+/// The members' layer a surface paints over the widgets as a window
 /// of its own does ([`SurfaceDamage::painting_peers`]).
 #[derive(Default)]
 struct PeerLayer {
@@ -1453,7 +1453,7 @@ struct PeerLayer {
     bounds: crate::scene_parts::DrawBounds,
 }
 
-/// What the collaborators' layer did in one frame: its damage against the
+/// What the members' layer did in one frame: its damage against the
 /// frame before (`None` when it cannot be proven), and where it paints, on
 /// screen and now (`None` when that cannot be bounded), in scene pixels.
 struct PeerFrame {
@@ -1486,7 +1486,7 @@ pub struct SurfaceDamage {
     /// How many pixels of the host's target one pixel of the surface's
     /// scene is ([`Self::set_copy_scale`]).
     copy_scale: f64,
-    /// The collaborators' layer, when the surface paints it.
+    /// The members' layer, when the surface paints it.
     peers: Option<Box<PeerLayer>>,
     /// Whether the host repaints only each frame's damage from that
     /// frame's scene ([`Self::drawing_only_damage`]).
@@ -1539,7 +1539,7 @@ impl SurfaceDamage {
         self
     }
 
-    /// Paint collaborators' pointers, names and activity over the widgets,
+    /// Paint members' pointers, names and activity over the widgets,
     /// as a window of its own does, and damage only the marks that changed;
     /// a scroll beneath them still copies, repainting the marks where they
     /// are and where its copy took them. For a host that does not paint
@@ -1665,7 +1665,7 @@ impl SurfaceDamage {
             .map(|rect| Affine::scale(scale * unit).transform_rect_bbox(rect))
             .collect();
         // The tooltip paints over the widgets: a label that changes in
-        // place has no other damage. Nor do the collaborators' marks.
+        // place has no other damage. Nor do the members' marks.
         let peer_changed = peers
             .and_then(|peers| peers.changed.as_deref())
             .unwrap_or_default()
@@ -2190,12 +2190,12 @@ mod tests {
             app.invoke_resource_action(
                 ResourceInvocation::new(
                     &address("zoom-in"),
-                    &tilo_actions::Actor::Member(tilo_actions::MemberId::person("a-collaborator"))
+                    &tilo_actions::Actor::Member(tilo_actions::MemberId::person("a-member"))
                 )
                 .broker_admitted(true),
             )
             .is_err(),
-            "a collaborator never zooms someone else's window"
+            "a member never zooms someone else's window"
         );
         assert!((app.content_zoom() - before).abs() < f32::EPSILON);
     }

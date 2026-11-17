@@ -60,27 +60,27 @@ pub trait SetupHost: Send + Sync {
 }
 #[derive(Clone)]
 pub struct SetupClient {
-    principal: String,
+    actor: String,
     account: ServiceAccount,
     generation: u64,
     host: Arc<dyn SetupHost>,
 }
 impl SetupClient {
     pub fn new(
-        principal: String,
+        actor: String,
         account: ServiceAccount,
         generation: u64,
         host: Arc<dyn SetupHost>,
     ) -> Self {
         Self {
-            principal,
+            actor,
             account,
             generation,
             host,
         }
     }
-    pub fn principal(&self) -> &str {
-        &self.principal
+    pub fn actor(&self) -> &str {
+        &self.actor
     }
     pub fn account(&self) -> &ServiceAccount {
         &self.account

@@ -155,7 +155,7 @@ impl Dictation {
     ///
     /// # Errors
     /// [`DictationError::Busy`] while another dictation, or its transcript,
-    /// still owns the seat, and [`DictationError::SessionIdsExhausted`] once
+    /// still holds the microphone, and [`DictationError::SessionIdsExhausted`] once
     /// every identity has been used.
     pub fn begin(&mut self, now: Instant) -> Result<SessionId, DictationError> {
         if self.preparation.is_some()

@@ -448,7 +448,7 @@ pub struct PdfApp {
     sig_strokes: Vec<Vec<(f64, f64)>>,
     sig_stroke: Option<Vec<(f64, f64)>>,
     /// The person's own signature record: it follows them to their other devices and
-    /// never reaches a collaborator. Absent where the host keeps no person records.
+    /// never reaches a member. Absent where the host keeps no person records.
     signature: Option<ui::framework::PersonRecord<crate::signature::SignatureProfile>>,
     signature_revision: Option<u64>,
     sig_pad_rect: Rect,
@@ -3968,6 +3968,10 @@ include!("app_events.rs");
 include!("app_scroll_input.rs");
 
 impl Widget for PdfApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.picture();
+    }
+
     ui::provides!(
         dyn ui::widget::Findable,
         dyn ui::widget::controls::ActionControls

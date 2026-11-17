@@ -19,7 +19,7 @@ aarch64 = "aarch64"
 optional = ["app-files"]
 
 [resources]
-kinds = ["tasks.tracker", "tilo.rich-text"]
+kinds = ["tasks.tracker", "tilo.rich-text", "tasks.issues"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

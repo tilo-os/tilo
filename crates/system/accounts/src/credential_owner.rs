@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// Creating a deferred owner neither opens storage nor asks for a credential.
 #[derive(Clone)]
 pub struct CredentialOwner {
-    principal: String,
+    actor: String,
     device: String,
     broker: Arc<OnceLock<Arc<Mutex<CredentialBroker>>>>,
     open: Option<Arc<dyn Fn() -> SecretStore + Send + Sync>>,
@@ -32,7 +32,7 @@ impl CredentialOwner {
         use getrandom::{SysRng, rand_core::TryRng as _};
         use std::fmt::Write as _;
         use zeroize::{Zeroize as _, Zeroizing};
-        if scope.principal != self.principal || scope.device != self.device || !scope.valid() {
+        if scope.actor != self.actor || scope.device != self.device || !scope.valid() {
             return Err(BrokerError::Denied);
         }
         let origin = super::canonical_origin(origin)?;
@@ -70,13 +70,13 @@ impl CredentialOwner {
         })?
     }
     pub fn deferred(
-        principal: &str,
+        actor: &str,
         device: &str,
         open: impl Fn() -> SecretStore + Send + Sync + 'static,
     ) -> Result<Self, BrokerError> {
-        Self::validate(principal, device)?;
+        Self::validate(actor, device)?;
         Ok(Self {
-            principal: principal.into(),
+            actor: actor.into(),
             device: device.into(),
             broker: Arc::default(),
             open: Some(Arc::new(open)),
@@ -87,13 +87,13 @@ impl CredentialOwner {
     }
     /// Retain an already owned broker; no second vault snapshot is opened.
     pub fn from_broker(
-        principal: &str,
+        actor: &str,
         device: &str,
         broker: Arc<Mutex<CredentialBroker>>,
     ) -> Result<Self, BrokerError> {
-        Self::validate(principal, device)?;
+        Self::validate(actor, device)?;
         let owner = Self {
-            principal: principal.into(),
+            actor: actor.into(),
             device: device.into(),
             broker: Arc::default(),
             open: None,
@@ -104,8 +104,8 @@ impl CredentialOwner {
         owner.broker.set(broker).map_err(|_| BrokerError::Denied)?;
         Ok(owner)
     }
-    fn validate(principal: &str, device: &str) -> Result<(), BrokerError> {
-        if [principal, device].iter().any(|value| {
+    fn validate(actor: &str, device: &str) -> Result<(), BrokerError> {
+        if [actor, device].iter().any(|value| {
             value.is_empty()
                 || value.len() > 512
                 || value.chars().any(|c| c.is_control() || c.is_whitespace())
@@ -114,8 +114,8 @@ impl CredentialOwner {
         }
         Ok(())
     }
-    pub fn principal(&self) -> &str {
-        &self.principal
+    pub fn actor(&self) -> &str {
+        &self.actor
     }
     pub fn device(&self) -> &str {
         &self.device

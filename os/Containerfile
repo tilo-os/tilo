@@ -2541,7 +2541,7 @@ COPY --chmod=0755 \
 # Owner-enrolled Secure Boot. Tilo builds its own kernel, so the base image's
 # Fedora/Microsoft-signed chain cannot cover it; the machine generates its own
 # Platform Key instead, which is also what keeps a self-built image attestable
-# to a collaborator who trusts that key.
+# to a member who trusts that key.
 #
 # Generating and enrolling keys is a deliberate act the owner takes — nothing
 # here does it, and the image build must never do it. What IS enabled by default

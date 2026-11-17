@@ -93,7 +93,7 @@ pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> T
 /// subsequent calls splice only the diff.
 ///
 /// `put_object` only fails here if `obj` was concurrently deleted (or
-/// retyped) by another collaborator between the read and the write; there is
+/// retyped) by another member between the read and the write; there is
 /// no longer a place to put the text, so this reports the no-op edit rather
 /// than panicking.
 pub fn put_text_diffed<P: Into<Prop>>(

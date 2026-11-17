@@ -1,5 +1,5 @@
 //! A same-owner home host enrols its owner's devices into workspaces on demand,
-//! and nobody else's — not even a collaborator its handshake trusts because
+//! and nobody else's — not even a member its handshake trusts because
 //! another workspace's governance admits their root.
 
 #![allow(
@@ -21,7 +21,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use crate::common::{TestDevice, TestUser, client_endpoint};
 use tilo_relay::WorkspaceId;
 
-/// The collaborator's own workspace, governed natively on this host.
+/// The member's own workspace, governed natively on this host.
 const GOVERNED: WorkspaceId = WorkspaceId::from_u128(801);
 /// The owner's workspace, bound on demand by the owner's first subscribe.
 const OWNERS: WorkspaceId = WorkspaceId::from_u128(802);

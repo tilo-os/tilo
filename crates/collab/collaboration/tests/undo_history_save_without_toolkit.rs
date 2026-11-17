@@ -23,7 +23,7 @@ static HEAP: tilo_automerge::heap::ThreadCounting = tilo_automerge::heap::Thread
 const PACKAGE: &str = "dev.tilo.undo-without-toolkit";
 const WORKSPACE: &str = "workspace-1";
 
-/// The host's words: a person by their principal, a step by its purpose.
+/// The host's words: a person by their actor, a step by its purpose.
 struct Words;
 
 impl ResolveAuthor for Words {

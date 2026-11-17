@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use crate::node::{Binding, Event, Node, Principal, ResourceRef, Value};
+use crate::node::{Actor, Binding, Event, Node, ResourceRef, Value};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Arg {
@@ -72,7 +72,7 @@ pub struct ViewCx {
     view: String,
     events: RefCell<BTreeMap<(String, String), Effect>>,
     state: RefCell<BTreeMap<String, Value>>,
-    person: Principal,
+    person: Actor,
 }
 
 impl ViewCx {
@@ -80,7 +80,7 @@ impl ViewCx {
     pub fn new(
         resource: ResourceRef,
         view: impl Into<String>,
-        person: Principal,
+        person: Actor,
         state: BTreeMap<String, Value>,
     ) -> Self {
         Self {
@@ -103,7 +103,7 @@ impl ViewCx {
     }
 
     #[must_use]
-    pub fn person(&self) -> &Principal {
+    pub fn person(&self) -> &Actor {
         &self.person
     }
 
@@ -309,7 +309,7 @@ mod tests {
                 ty: "tube.Channel".to_owned(),
             },
             "page",
-            Principal {
+            Actor {
                 id: "Pat".to_owned(),
                 name: "Pat".to_owned(),
             },

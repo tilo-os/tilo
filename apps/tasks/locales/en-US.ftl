@@ -120,3 +120,28 @@ tasks-add-label = Labelled { $item } { $label }
 
 ## What the app is called in a window and in the launcher
 tasks-app-title = Tasks
+
+## The parts the issues are kept in
+
+tasks-issues = Issues
+# What one of the issues the parts keep is, for a line that says what is being
+# made.
+tasks-issues-issues-noun = { $count ->
+    [one] an issue
+   *[other] issues
+}
+tasks-issues-create = New issue
+tasks-issues-rename = Rename issue
+tasks-issues-move-under = Move issue
+tasks-issues-assign = Assign issue
+tasks-issues-add-label = Label issue
+tasks-issues-place = Place issue on the board
+tasks-issues-comment = Comment
+tasks-issues-link = Link issue
+tasks-issues-link-note = Link a note
+tasks-issues-delete = Delete issue
+tasks-issues-plan = Plan issue
+tasks-issues-set-project = Move issue to a project
+tasks-issues-attach = Attach a file
+tasks-issues-detach = Remove an attachment
+tasks-issues-start = Start numbering a part

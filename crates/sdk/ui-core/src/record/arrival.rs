@@ -56,6 +56,18 @@ impl RecordStore {
         self.wake_readers();
     }
 
+    /// Ask the workspace's hosts for `id`, a record a reader here knows they
+    /// hold (a part before a chain's head), whether or not this store reads
+    /// its records through them ([`Self::wanted_records`]): nothing waits on
+    /// it, and it opens like any record once it arrives.
+    pub fn want(&self, id: DocumentId) {
+        if let Ok(set) = self.0.try_borrow()
+            && !set.answered.borrow().contains_key(&id)
+        {
+            set.wanted.borrow_mut().insert(id);
+        }
+    }
+
     /// Whether the workspace's hosts answered for `id`
     /// ([`Self::note_workspace_answer`]) and nothing of it arrived since.
     #[must_use]

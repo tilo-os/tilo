@@ -63,72 +63,33 @@ impl PeerGovernance<'_> {
             })
             .collect())
     }
-    /// Current governed access derived from the admitted workspace document.
+    /// Current governed access, derived from the workspace's member set: its
+    /// members by their roots, and the devices of theirs it lists now.
+    ///
+    /// A person is a member by their root, whatever devices of theirs the
+    /// workspace lists now: a page's certificate lasts an hour and its row
+    /// goes with it, and a person whose last page expired, or whose browser
+    /// forgot the site, is still a member when they come back on a device
+    /// their root certifies anew.
     ///
     /// Each identity row is decoded and its certificate's signature verified
     /// once per document state: a page in a workspace of hundreds of people
     /// lists its member devices for every frame its channels take in.
     pub fn governed_access(self, now: SystemTime) -> Result<GovernedAccess, String> {
-        let hosts = self.workspace_hosts();
-        let doc = self
-            .peer
-            .core
-            .workspace_doc
-            .as_ref()
-            .ok_or("workspace governance missing")?;
-        let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
-        let certificates = doc.identity_certificates();
+        let people = self.governed_set(now)?;
         let mut member_devices = Vec::new();
         let mut member_user_roots = Vec::new();
-        for (key, identity) in doc.identities() {
-            let identity = identity.as_ref().map_err(err)?;
-            // An agent outside its delegation reads and writes nothing.
-            if identity
-                .delegate_acting(&self.peer.core.workspace, now_ns(now))
-                .is_err()
-            {
+        for (root, member) in &people {
+            if member.removed {
                 continue;
             }
-            let Some(cert) = certificates
-                .get(key)
-                .and_then(|cert| cert.current_typed(now_ns(now)).ok())
-            else {
-                continue;
-            };
-            if self.peer.core.revocations.refuses(cert) {
-                continue;
-            }
-            let person = hex::encode(cert.user_public_key);
-            if workspace_policy.active_role(&person).is_some() {
-                member_devices.push(cert.device_public_key);
-                member_user_roots.push(cert.user_public_key);
-            }
+            member_user_roots.push(*root);
+            member_devices.extend(member.devices.iter().copied());
         }
-        // A person is a member by their root, whatever devices of theirs the
-        // workspace lists now: a page's certificate lasts an hour and its row
-        // goes with it, and a person whose last page expired, or whose browser
-        // forgot the site, is still a member when they come back on a device
-        // their root certifies anew.
-        member_user_roots.extend(
-            workspace_policy
-                .owner
-                .iter()
-                .chain(workspace_policy.members.keys())
-                .filter(|person| workspace_policy.active_role(person).is_some())
-                .filter_map(|person| {
-                    let mut root = [0; 32];
-                    // A person the policy names by anything but a root key
-                    // has no root a device could be certified by.
-                    tilo_failure::ignored!(
-                        "no root key was named, so there is no one to admit by root",
-                        hex::decode_to_slice(person, &mut root).ok().map(|()| root)
-                    )
-                }),
-        );
         // A host the governance names holds the workspace: its device is let
         // in wherever the workspace is held, and its person, whose host holds
         // all of it already, is let reach the hosts holding it.
-        for hint in hosts {
+        for hint in self.workspace_hosts() {
             let cert = &hint.host;
             if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
                 && !self.peer.core.revocations.refuses(cert)
@@ -265,9 +226,11 @@ impl PeerGovernance<'_> {
         }
         Ok(said)
     }
-    /// Authority-authored member list: the workspace's rows and the devices
-    /// each member holds now. The structural owner is exposed separately by
-    /// [`PeerGovernance::owner_user_public_key`].
+    /// The workspace's members as its signed governance records them, and the
+    /// devices of theirs it lists now: every person its policy gives a role,
+    /// its owner among them, by their root, whether or not a device of theirs
+    /// has joined; and whoever it removed, kept so a change of theirs still
+    /// reads as theirs. It is the workspace's member set, named.
     pub fn governed_members(self, now: SystemTime) -> Result<MemberList, String> {
         let doc = self
             .peer
@@ -275,87 +238,31 @@ impl PeerGovernance<'_> {
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
-        let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
+        let people = self.governed_set(now)?;
         // Read once per document state ([`crate::cached_document`]), so
         // listing the people costs no decoding or signature check for a row
         // a change left as it was.
         let names = &doc.policy().names;
-        let certificates = doc.identity_certificates();
-        let mut rows: BTreeMap<[u8; 32], Member> = BTreeMap::new();
-        let mut devices: BTreeMap<MemberId, Vec<[u8; 32]>> = BTreeMap::new();
         // The name each person goes by here, which one of their own devices
         // says and no key of theirs does ([`Naming`]).
         let mut naming: BTreeMap<[u8; 32], Naming> = BTreeMap::new();
         for (id, identity) in doc.identities() {
             let identity = identity.as_ref().map_err(err)?;
-            let Some(receipt) = identity
-                .admission
-                .as_ref()
-                .or_else(|| identity.admissions.last())
-            else {
-                continue;
-            };
-            let root = identity.device_cert.user_public_key;
-            let person = hex::encode(root);
-            let role = workspace_policy.active_role(&person);
-            // Named once for the person, not once for each grant it is held
-            // against: every member's row asks this.
-            let administrator = role == Some(Role::Owner) || {
-                let id = administrator_grant_id(root);
-                workspace_policy.grants.iter().any(|grant| grant.id == id)
-            };
-            let active_role = role;
-            naming.entry(root).or_default().learn(
-                &identity.device_cert,
-                identity.delegate.is_none(),
-                names.get(id).map(String::as_str),
-            );
-            let row = rows.entry(root).or_insert_with(|| {
-                let mut row = Member::of_person(
-                    &Person::new(person.clone(), ""),
-                    Some(active_role.unwrap_or(receipt.role)),
+            naming
+                .entry(identity.device_cert.user_public_key)
+                .or_default()
+                .learn(
+                    &identity.device_cert,
+                    identity.delegate.is_none(),
+                    names.get(id).map(String::as_str),
                 );
-                row.removed = active_role.is_none();
-                row.administrator = administrator;
-                row
-            });
-            if let Some(role) = active_role {
-                row.role = Some(role);
-                row.removed = false;
-                let cert = &identity.device_cert;
-                if certificates
-                    .get(id)
-                    .is_some_and(|verified| verified.current_typed(now_ns(now)).is_ok())
-                    && !self.peer.core.revocations.refuses(cert)
-                {
-                    devices
-                        .entry(row.id.clone())
-                        .or_default()
-                        .push(cert.device_public_key);
-                }
-            }
         }
-        // A person is a member by their root, whatever devices of theirs the
-        // workspace lists ([`Self::governed_access`]): someone declared before
-        // any device of theirs arrived, or whose last page's row expired,
-        // holds their role all the same, so a key of theirs finds the
-        // workspace and enters it at that role.
-        for person in workspace_policy.members.keys() {
-            let mut root = [0; 32];
-            // A person named by anything but a root key has no root a device
-            // could be certified by.
-            if hex::decode_to_slice(person, &mut root).is_err() || rows.contains_key(&root) {
-                continue;
-            }
-            let Some(role) = workspace_policy.active_role(person) else {
-                continue;
-            };
-            let id = administrator_grant_id(root);
-            let mut row = Member::of_person(&Person::new(person.clone(), ""), Some(role));
-            row.administrator = workspace_policy.grants.iter().any(|grant| grant.id == id);
-            rows.insert(root, row);
-        }
-        for (root, row) in &mut rows {
+        let mut members = Vec::with_capacity(people.len());
+        let mut devices: BTreeMap<MemberId, Vec<[u8; 32]>> = BTreeMap::new();
+        for (root, held) in people {
+            let mut row = Member::of_person(&Person::new(hex::encode(root), ""), Some(held.role));
+            row.removed = held.removed;
+            row.administrator = held.administrator;
             // The name the person goes by here: the one the workspace keeps
             // under their root, which names them before any device of theirs
             // arrived and wherever they last renamed themselves, else the one
@@ -364,19 +271,116 @@ impl PeerGovernance<'_> {
                 .get(&hex::encode(root))
                 .filter(|name| !name.trim().is_empty())
                 .map(String::as_str);
-            if let Some(name) = kept.or_else(|| naming.get(root).and_then(Naming::name)) {
+            if let Some(name) = kept.or_else(|| naming.get(&root).and_then(Naming::name)) {
                 name.clone_into(&mut row.name);
             }
+            if !held.devices.is_empty() {
+                devices.insert(row.id.clone(), held.devices);
+            }
+            members.push(row);
         }
-        for keys in devices.values_mut() {
-            keys.sort_unstable();
-            keys.dedup();
-        }
-        Ok(MemberList {
-            members: rows.into_values().collect(),
-            devices,
-        })
+        Ok(MemberList { members, devices })
     }
+
+    /// The workspace's member set as its signed governance gives it, by the
+    /// root each person's devices are certified by: their part, whether the
+    /// workspace removed them, and the devices of theirs it lists now — the
+    /// one membership its member list ([`Self::governed_members`]) and its
+    /// access ([`Self::governed_access`]) are both read from.
+    fn governed_set(self, now: SystemTime) -> Result<BTreeMap<[u8; 32], GovernedMember>, String> {
+        let doc = self
+            .peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("workspace governance missing")?;
+        let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
+        let certificates = doc.identity_certificates();
+        let mut people: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
+        // A person is a member by their root, whatever devices of theirs the
+        // workspace has rows for: its owner from the workspace's beginning,
+        // and someone declared before any device of theirs arrived, or whose
+        // last page's row expired, holds their role all the same, so a key of
+        // theirs finds the workspace and enters it at that role.
+        for person in workspace_policy
+            .owner
+            .iter()
+            .chain(workspace_policy.members.keys())
+        {
+            let Some(role) = workspace_policy.active_role(person) else {
+                continue;
+            };
+            let mut root = [0; 32];
+            // A person named by anything but a root key has no root a device
+            // could be certified by.
+            if tilo_failure::ignored!(
+                "a person named by something other than a root key has no root, so no device of \
+                 theirs is admitted by one",
+                hex::decode_to_slice(person, &mut root).is_err()
+            ) {
+                continue;
+            }
+            let member = GovernedMember {
+                role,
+                // Its owner keeps the part they were given first, whatever
+                // else the policy says of the same person.
+                administrator: role == Role::Owner
+                    || workspace_policy
+                        .grants
+                        .iter()
+                        .any(|grant| grant.id == administrator_grant_id(root)),
+                removed: false,
+                devices: Vec::new(),
+            };
+            people.entry(root).or_insert(member);
+        }
+        for (id, identity) in doc.identities() {
+            let identity = identity.as_ref().map_err(err)?;
+            let root = identity.device_cert.user_public_key;
+            // A person the workspace removed keeps the part their admission
+            // gave them, so what they did here still reads as theirs.
+            if let Some(receipt) = identity
+                .admission
+                .as_ref()
+                .or_else(|| identity.admissions.last())
+                && let std::collections::btree_map::Entry::Vacant(held) = people.entry(root)
+            {
+                held.insert(GovernedMember {
+                    role: receipt.role,
+                    administrator: workspace_policy
+                        .grants
+                        .iter()
+                        .any(|grant| grant.id == administrator_grant_id(root)),
+                    removed: true,
+                    devices: Vec::new(),
+                });
+            }
+            let Some(member) = people.get_mut(&root).filter(|member| !member.removed) else {
+                continue;
+            };
+            // An agent outside its delegation reads and writes nothing.
+            if identity
+                .delegate_acting(&self.peer.core.workspace, now_ns(now))
+                .is_err()
+            {
+                continue;
+            }
+            let cert = &identity.device_cert;
+            if certificates
+                .get(id)
+                .is_some_and(|verified| verified.current_typed(now_ns(now)).is_ok())
+                && !self.peer.core.revocations.refuses(cert)
+            {
+                member.devices.push(cert.device_public_key);
+            }
+        }
+        for member in people.values_mut() {
+            member.devices.sort_unstable();
+            member.devices.dedup();
+        }
+        Ok(people)
+    }
+
     pub fn owner_user_public_key(self) -> [u8; 32] {
         self.peer.core.owner
     }
@@ -440,6 +444,15 @@ impl PeerGovernance<'_> {
             role => role,
         })
     }
+}
+
+/// One person a workspace has, as its signed governance records them: the part
+/// they hold, whether it removed them, and the devices of theirs it lists now.
+struct GovernedMember {
+    role: Role,
+    administrator: bool,
+    removed: bool,
+    devices: Vec<[u8; 32]>,
 }
 
 /// How one person is named in a workspace, from the identities of theirs it

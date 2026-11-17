@@ -245,8 +245,8 @@ impl People {
                         .as_deref()
                         .filter(|name| !name.trim().is_empty())
                         .unwrap_or(me);
-                    registry.register_person(
-                        me,
+                    registry.register_member(
+                        &MemberId::person(me),
                         ui_core::history_source::author_for_identity(name.to_owned(), me),
                     );
                     registry.set_reader(MemberId::person(me));
@@ -266,7 +266,7 @@ impl People {
     }
 
     /// People named as `names` gives them, for a capture whose fixture
-    /// places collaborators, or a test.
+    /// places members, or a test.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn named(me: Option<&MemberId>, names: &[(MemberId, &str)]) -> Self {

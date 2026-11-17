@@ -1182,7 +1182,7 @@ impl FinishedInvocations {
 }
 
 /// The shortest interval a schedule trigger may repeat at.
-pub const MIN_INTERVAL_SECONDS: u64 = 60;
+pub const MIN_INTERVAL_SECONDS: u64 = tilo_automation::schedule::MIN_INTERVAL_SECONDS;
 
 /// Why a trigger cannot be saved on a shortcut, when it cannot.
 pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {

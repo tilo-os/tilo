@@ -134,6 +134,10 @@ impl ui::widget::controls::ActionControls for PlayerApp {
 }
 
 impl Widget for PlayerApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     fn has_pending_visual_work(&self) -> bool {
         self.state.borrow().has_pending_visual_work()
     }
@@ -329,6 +333,10 @@ impl FullscreenProvider for PlayerHost {
 }
 
 impl Widget for PlayerHost {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.picture();
+    }
+
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

@@ -271,7 +271,7 @@ impl ResourceApp for ChatShell {
             // `send` lands, the action an agent's send runs too.
             .with_send_action(&cx.actions())
             // The workspace's agents, as its own record of them names them: an agent is a
-            // collaborator, and its name reads from the same record in every app of the workspace.
+            // member, and its name reads from the same record in every app of the workspace.
             .with_agents_record(
                 cx.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>(
                     ui::tilo_workspace_agent::OWNER,

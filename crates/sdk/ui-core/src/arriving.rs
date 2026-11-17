@@ -22,7 +22,7 @@ pub const NAME_SOURCE_AFTER: Duration = Duration::from_secs(2);
 pub enum Source {
     /// This device: its files, its workspaces, its store.
     Local,
-    /// Another device, the person or a collaborator's, by the name the person knows it by ("Laptop").
+    /// Another device, the person or a member's, by the name the person knows it by ("Laptop").
     Peer(Arc<str>),
     /// A host that serves the data ("eu1.tilo.sh").
     Host(Arc<str>),

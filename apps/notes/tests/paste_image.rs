@@ -286,12 +286,12 @@ fn pictures_pasted_in_a_row_with_typing_between_keep_their_order() {
     }
 }
 
-/// A picture a collaborator put in the note arrives after the note says it
+/// A picture a member put in the note arrives after the note says it
 /// is there. Until it does, the window sleeps: no timer looks for it. When
 /// its bytes reach the record's content store, the sync their arrival
 /// brings draws it, with no wait.
 #[test]
-fn a_collaborators_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() {
+fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() {
     // No caret in the editor: its blink is a timer of its own.
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
@@ -305,7 +305,7 @@ fn a_collaborators_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_bef
     let digest = blake3::hash(&picture).to_hex().to_string();
     let source = format!("asset:{digest}");
 
-    // The collaborator's device keeps the bytes; this one does not.
+    // The member's device keeps the bytes; this one does not.
     let theirs = ui::wake::WakeScope::new();
     ui::tilo_resource::content::register(&theirs.handle(), tilo_content::ContentStore::memory());
     app.merge_peer_edit(|doc| {

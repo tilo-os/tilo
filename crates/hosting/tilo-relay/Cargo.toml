@@ -135,6 +135,8 @@ zeroize.workspace = true
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true
+# A bot's calendar schedules fire on this host's wall clock.
+chrono = { workspace = true, default-features = true }
 
 # Runtime + config.
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
@@ -321,7 +323,7 @@ path = "tests/held_memory.rs"
 
 # Examples that carry unit tests build as test targets too, so `cargo test`
 # and the CI test jobs run those tests.
-# What an active collaborator costs a relay in CPU, memory and egress:
+# What an active member costs a relay in CPU, memory and egress:
 # the scheduled lane's `hosting` group (tools/ci/perf-scheduled.sh).
 # An example, not a binary, so relay images that build `--bins` leave it out.
 [[example]]

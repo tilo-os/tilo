@@ -282,17 +282,17 @@ pub fn granted_by_label(cap: &CapOverride, ws: &Workspace, local_user: &str) -> 
         MemberId::Person(id) | MemberId::Agent(id) if id == local_user => {
             t("workspace-settings-granted-by-you")
         }
-        MemberId::Person(id) => t_args(
+        MemberId::Person(_) => t_args(
             "workspace-settings-granted-by-person",
-            &[("id", member_name_or_short_id(ws, id).into())],
+            &[("id", member_name_or_short_id(ws, who).into())],
         ),
-        MemberId::Agent(id) => t_args(
+        MemberId::Agent(_) => t_args(
             "workspace-settings-granted-by-agent",
-            &[("id", member_name_or_short_id(ws, id).into())],
+            &[("id", member_name_or_short_id(ws, who).into())],
         ),
-        MemberId::Bot(id) => t_args(
+        MemberId::Bot(_) => t_args(
             "workspace-settings-granted-by-bot",
-            &[("id", member_name_or_short_id(ws, id).into())],
+            &[("id", member_name_or_short_id(ws, who).into())],
         ),
     })
 }
@@ -318,16 +318,19 @@ pub fn grant_given_by_label(
     if who.person_id() == Some(local_user) || who.agent_id() == Some(local_user) {
         return Some(t("workspace-settings-granted-by-you"));
     }
-    if let Some(id) = who.person_id() {
+    let tilo_action_policy::Grantee::Member(member) = who else {
+        return None;
+    };
+    if member.is_person() {
         return Some(t_args(
             "workspace-settings-granted-by-person",
-            &[("id", member_name_or_short_id(ws, id).into())],
+            &[("id", member_name_or_short_id(ws, member).into())],
         ));
     }
-    who.agent_id().map(|id| {
+    member.is_agent().then(|| {
         t_args(
             "workspace-settings-granted-by-agent",
-            &[("id", member_name_or_short_id(ws, id).into())],
+            &[("id", member_name_or_short_id(ws, member).into())],
         )
     })
 }
@@ -374,7 +377,8 @@ impl GrantSubject {
 
     pub fn display(&self, ws: &Workspace, local_user: &str, apps: &dyn AppDirectory) -> String {
         match self.kind {
-            SubjectKind::Member | SubjectKind::Agent => person_name(ws, local_user, &self.id),
+            SubjectKind::Member => person_name(ws, local_user, &MemberId::person(self.id.clone())),
+            SubjectKind::Agent => person_name(ws, local_user, &MemberId::agent(self.id.clone())),
             SubjectKind::App => app_display_name(apps, &self.id),
             // A role is listed as the phrase its section reads.
             SubjectKind::Role => self.id.clone(),
@@ -803,17 +807,16 @@ fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
 
 /// A member by name, numbered when another member here shares it
 /// ([`ui::presence::ParticipantLabels`]), or by a shortened id.
-fn member_name_or_short_id(ws: &Workspace, id: &str) -> String {
-    member_named(ws, id).map_or_else(|| short_id(id), |member| member.name.trim().to_owned())
+fn member_name_or_short_id(ws: &Workspace, id: &MemberId) -> String {
+    member_named(ws, id).map_or_else(|| short_id(id.id()), |member| member.name.trim().to_owned())
 }
 
 /// The member `id` names, when the workspace's roster holds one: a person by their root key, an
 /// agent or a bot by its key.
-fn member_named<'a>(ws: &'a Workspace, id: &str) -> Option<&'a Member> {
-    let wanted = MemberId::parse(id)?;
+fn member_named<'a>(ws: &'a Workspace, id: &MemberId) -> Option<&'a Member> {
     ws.members
         .iter()
-        .find(|member| member.id == wanted && !member.name.trim().is_empty())
+        .find(|member| member.id == *id && !member.name.trim().is_empty())
 }
 
 /// A member as the People pane names them: as the roster does, the viewer by their own name; only
@@ -823,7 +826,7 @@ pub fn member_row_name(
     names: &crate::people::PeopleNames,
     ws: &Workspace,
     local_user: &str,
-    id: &str,
+    id: &MemberId,
 ) -> String {
     names
         .get(id)
@@ -833,9 +836,9 @@ pub fn member_row_name(
 /// A person or agent as every workspace-settings pane names them: their member name, the
 /// viewer included; the viewer by the name this device knows them by when the workspace has none;
 /// else a shortened id.
-fn person_name(ws: &Workspace, local_user: &str, id: &str) -> String {
+fn person_name(ws: &Workspace, local_user: &str, id: &MemberId) -> String {
     let known = member_named(ws, id).is_some();
-    if id == local_user
+    if id.person_id() == Some(local_user)
         && !known
         && let Some(name) = ui::local_identity::bound()
             .map(|identity| identity.display_name.trim().to_owned())
@@ -1069,11 +1072,12 @@ mod members_tests {
                 .find(|row| row.id == "ada")
                 .map(|row| row.label.clone());
             assert_eq!(
-                Some(member_row_name(&names, &ws, &owner_key, "ada")),
+                Some(member_row_name(&names, &ws, &owner_key, &MemberId::person("ada"))),
                 roster_ada,
                 "the same name, cased the same, as the roster"
             );
-            let owner_name = member_row_name(&names, &ws, &owner_key, &owner_key);
+            let owner_name =
+                member_row_name(&names, &ws, &owner_key, &MemberId::person(owner_key.clone()));
             assert_eq!(Some(owner_name.clone()), own);
             assert_eq!(owner_name, "Robin", "the owner by their name");
             assert!(!owner_name.contains("fa48"), "never their key");

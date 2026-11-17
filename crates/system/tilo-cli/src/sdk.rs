@@ -479,7 +479,7 @@ impl Resolver<'_> {
             | FieldType::Date
             | FieldType::Time
             | FieldType::Identifier
-            | FieldType::Principal => Ty::Text,
+            | FieldType::Actor => Ty::Text,
             FieldType::Int => Ty::Int,
             FieldType::Float | FieldType::Duration => Ty::Number,
             FieldType::Bool => Ty::Bool,
@@ -1809,7 +1809,7 @@ mod tests {
             assert!(
                 ts.contains(
                     "export interface CreateArgs {\n  title: string;\n  parent?: string;\n  \
-                     body?: string;\n  status?: Status;\n"
+                     body?: string;\n"
                 ),
                 "{ts}"
             );

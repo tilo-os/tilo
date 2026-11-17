@@ -702,7 +702,7 @@ tilo_test_env::scenario! {
 
     phase a_rename_does_not_rewrite_labels_already_matching_the_new_title;
     // A link or embed may already carry the new title (for example after a
-    // collaborator edited it). Renaming must leave that body's CRDT untouched.
+    // member edited it). Renaming must leave that body's CRDT untouched.
     {
         let mut notebook = Replica::<Notebook>::new();
         let target = note(&mut notebook, "Old", None);

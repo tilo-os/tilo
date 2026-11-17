@@ -29,7 +29,7 @@ pub const FORMAT: VaultFormat = VaultFormat {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Owner {
-    pub principal: String,
+    pub actor: String,
     pub device: String,
     pub service: Service,
     pub account: String,
@@ -84,10 +84,10 @@ pub struct EncryptedJournal {
 }
 
 impl Owner {
-    pub(crate) fn valid_principal(&self) -> bool {
-        self.principal.len() == 64
+    pub(crate) fn valid_actor(&self) -> bool {
+        self.actor.len() == 64
             && self
-                .principal
+                .actor
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     }
@@ -134,7 +134,7 @@ impl EncryptedJournal {
     /// Refuses competing owners, unsafe files, wrong keys/authority, oversized
     /// state and persistence failures. No secret-store or network action occurs.
     pub fn open(root: &Path, owner: &Owner, key: VaultKey) -> Result<Self, JournalError> {
-        if !owner.valid_principal()
+        if !owner.valid_actor()
             || !crate::identifier(&owner.device)
             || !crate::identifier(&owner.account)
         {
@@ -457,7 +457,7 @@ mod tests {
             );
             for altered in [
                 Owner {
-                    principal: "22".repeat(32),
+                    actor: "22".repeat(32),
                     ..owner()
                 },
                 Owner {
@@ -485,7 +485,7 @@ mod tests {
             let mut journal = EncryptedJournal::open(root.path(), &owner(), key()).unwrap();
             journal.begin("op", &route(), b"private").unwrap();
             let mut legacy = serde_json::to_value(&journal.ledger).unwrap();
-            legacy["owner"].as_object_mut().unwrap().remove("principal");
+            legacy["owner"].as_object_mut().unwrap().remove("actor");
             drop(journal);
             let encoded = Zeroizing::new(serde_json::to_vec(&legacy).unwrap());
             let sealed = FORMAT.seal(&key(), &encoded).unwrap();
@@ -495,12 +495,12 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), sealed);
         }
 
-        phase malformed_principal_is_refused_before_creating_state;
+        phase malformed_actor_is_refused_before_creating_state;
         {
             let root = tempfile::tempdir().unwrap();
             let mut invalid = owner();
-            for principal in [String::new(), "Ada".to_owned(), "AA".repeat(32)] {
-                invalid.principal = principal;
+            for actor in [String::new(), "Ada".to_owned(), "AA".repeat(32)] {
+                invalid.actor = actor;
                 assert!(EncryptedJournal::open(root.path(), &invalid, key()).is_err());
                 assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
             }
@@ -623,7 +623,7 @@ mod tests {
 
     fn owner() -> Owner {
         Owner {
-            principal: "11".repeat(32),
+            actor: "11".repeat(32),
             device: "device-a".into(),
             service: Service::Signal,
             account: "account-a".into(),

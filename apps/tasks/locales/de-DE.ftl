@@ -123,3 +123,28 @@ tasks-add-label = { $item } mit { $label } versehen
 
 ## What the app is called in a window and in the launcher
 tasks-app-title = Aufgaben
+
+## The parts the issues are kept in
+
+tasks-issues = Aufgaben
+# What one of the issues the parts keep is, for a line that says what is being
+# made.
+tasks-issues-issues-noun = { $count ->
+    [one] eine Aufgabe
+   *[other] Aufgaben
+}
+tasks-issues-create = Neue Aufgabe
+tasks-issues-rename = Aufgabe umbenennen
+tasks-issues-move-under = Aufgabe verschieben
+tasks-issues-assign = Aufgabe zuweisen
+tasks-issues-add-label = Aufgabe mit Label versehen
+tasks-issues-place = Aufgabe aufs Board setzen
+tasks-issues-comment = Kommentieren
+tasks-issues-link = Aufgabe verknüpfen
+tasks-issues-link-note = Notiz verknüpfen
+tasks-issues-delete = Aufgabe löschen
+tasks-issues-plan = Aufgabe planen
+tasks-issues-set-project = Aufgabe in ein Projekt verschieben
+tasks-issues-attach = Datei anhängen
+tasks-issues-detach = Anhang entfernen
+tasks-issues-start = Nummerierung eines Teils beginnen

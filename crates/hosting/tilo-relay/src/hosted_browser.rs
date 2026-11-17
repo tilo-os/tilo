@@ -609,7 +609,7 @@ impl HostedBrowsers {
 
     /// The runtime this host serves on, when it runs: where what it follows between messages — an
     /// open that answers with the run it started — is polled.
-    fn runtime(&self) -> Option<tokio::runtime::Handle> {
+    pub(crate) fn runtime(&self) -> Option<tokio::runtime::Handle> {
         self.authority
             .lock_recover()
             .as_ref()
@@ -1266,30 +1266,30 @@ impl HostedBrowsers {
     }
 
     /// The UUID of the workspace this host carries as `workspace_id`, when it
-    /// serves one: what a page action and an session's device name it by.
+    /// serves one: what a page action and a session's device name it by.
     #[must_use]
+    pub async fn workspace_name(&self, workspace_id: WorkspaceId) -> Option<String> {
+        let workspaces = {
+            let authority = self.authority.lock_recover();
+            authority.as_ref()?.workspaces.clone()?
+        };
+        workspaces.workspace_identity(workspace_id).await
+    }
+
     /// [`Self::workspace_name`], asked again a few times with a growing
     /// wait while this host is not ready to name it yet (it is still starting,
     /// or the workspace is still being bound here): an open that comes a moment
-    /// early is placed, not refused. Blocks, so only off the runtime's threads,
-    /// as placing does.
-    pub fn ready_workspace_name(&self, workspace_id: WorkspaceId) -> Option<String> {
+    /// early is placed, not refused. Waits on the runtime, never on a thread,
+    /// so only a caller that can wait its own answer asks it.
+    #[must_use]
+    pub async fn ready_workspace_name(&self, workspace_id: WorkspaceId) -> Option<String> {
         for wait in NOT_READY_WAITS {
-            if let Some(name) = self.workspace_name(workspace_id) {
+            if let Some(name) = self.workspace_name(workspace_id).await {
                 return Some(name);
             }
-            std::thread::sleep(wait);
+            tokio::time::sleep(wait).await;
         }
-        self.workspace_name(workspace_id)
-    }
-
-    pub fn workspace_name(&self, workspace_id: WorkspaceId) -> Option<String> {
-        let (runtime, workspaces) = {
-            let authority = self.authority.lock_recover();
-            let authority = authority.as_ref()?;
-            (authority.runtime.clone(), authority.workspaces.clone()?)
-        };
-        waited_on_its_own_thread(&runtime, workspaces.workspace_identity(workspace_id)).flatten()
+        self.workspace_name(workspace_id).await
     }
 
     /// Place `workspace_id`'s Browser — the workspace whose UUID is
@@ -1661,9 +1661,10 @@ impl HostedBrowsers {
     }
 }
 
-/// `work`, run to its end on `runtime` from a thread of the runtime's own: placing happens on the
-/// thread that answered an open, or on a blocking one, and both carry the runtime's context,
-/// where waiting on it is refused. `None` when that thread panicked.
+/// `work`, run to its end on `runtime` from a thread of the runtime's own: a
+/// session's device is listed from the blocking thread that placed it, which
+/// carries the runtime's context, where waiting on the runtime is refused.
+/// `None` when that thread panicked.
 fn waited_on_its_own_thread<T: Send>(
     runtime: &tokio::runtime::Handle,
     work: impl Future<Output = T> + Send,
@@ -2071,7 +2072,7 @@ pub type ObserveInvocation = dyn Fn(&Caller, &tilo_actions::InvocationId) -> Opt
 /// says what record it made, so an agent's open still runs where its record
 /// is.
 #[must_use]
-pub fn placed(
+pub async fn placed(
     browsers: &Arc<HostedBrowsers>,
     workspace_id: WorkspaceId,
     invocation: tilo_actions::InvocationId,
@@ -2087,11 +2088,8 @@ pub fn placed(
                 invocation,
                 observe,
                 caller.clone(),
-                move |browsers, record| {
-                    let placed = browsers
-                        .ready_workspace_name(workspace_id)
-                        .ok_or_else(|| "this host serves no such workspace".to_owned())
-                        .and_then(|workspace| browsers.place(&workspace, workspace_id, record));
+                move |browsers, workspace, record| {
+                    let placed = browsers.place(&workspace, workspace_id, &record);
                     match placed {
                         Ok(_) => tracing::info!(
                             %workspace_id,
@@ -2117,7 +2115,7 @@ pub fn placed(
         );
         return message;
     };
-    place_record(browsers, workspace_id, invocation, &record, message)
+    place_record(browsers, workspace_id, invocation, &record, message).await
 }
 
 /// Whether `message` is the receipt of an invocation that runs on: its record is on its way with
@@ -2141,7 +2139,7 @@ fn when_record(
     invocation: tilo_actions::InvocationId,
     observe: Option<Arc<ObserveInvocation>>,
     caller: Caller,
-    place: impl FnOnce(&Arc<HostedBrowsers>, &str) + Send + 'static,
+    place: impl FnOnce(&Arc<HostedBrowsers>, String, String) + Send + 'static,
 ) {
     let (Some(observe), Some(runtime)) = (observe, browsers.runtime()) else {
         tracing::warn!(
@@ -2173,9 +2171,20 @@ fn when_record(
                             );
                             return;
                         };
-                        // Placing asks the workspace's VM host and waits for its session: never on
-                        // a runtime thread.
-                        let placed = tokio::task::spawn_blocking(move || place(&browsers, &record));
+                        // The host names the workspace once it is bound here, and placing
+                        // asks its VM host and waits for the session: the first waits on
+                        // the runtime, the second never on one of its threads.
+                        let Some(workspace) = browsers.ready_workspace_name(workspace_id).await
+                        else {
+                            tracing::warn!(
+                                %workspace_id,
+                                "this host serves no such workspace, so its window was not placed"
+                            );
+                            return;
+                        };
+                        let placed = tokio::task::spawn_blocking(move || {
+                            place(&browsers, workspace, record);
+                        });
                         if let Err(error) = placed.await {
                             tracing::warn!(%error, "placing a window that opened ended");
                         }
@@ -2200,17 +2209,25 @@ fn when_record(
 
 /// Place the workspace's Browser on `record`, the record `invocation`'s open made, or answer with
 /// the refusal in its place.
-fn place_record(
-    browsers: &HostedBrowsers,
+async fn place_record(
+    browsers: &Arc<HostedBrowsers>,
     workspace_id: WorkspaceId,
     invocation: tilo_actions::InvocationId,
     record: &str,
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
-    let placement = browsers
-        .ready_workspace_name(workspace_id)
-        .ok_or_else(|| "The workspace isn't ready yet. Open it again in a minute.".to_owned())
-        .and_then(|workspace| browsers.place(&workspace, workspace_id, record));
+    let Some(workspace) = browsers.ready_workspace_name(workspace_id).await else {
+        return refused(
+            invocation,
+            "The workspace isn't ready yet. Open it again in a minute.".to_owned(),
+        );
+    };
+    let placed = Arc::clone(browsers);
+    let record = record.to_owned();
+    let placement =
+        tokio::task::spawn_blocking(move || placed.place(&workspace, workspace_id, &record))
+            .await
+            .unwrap_or_else(|error| Err(format!("the placement ended: {error}")));
     match placement {
         Ok(_) => message,
         Err(reason) => {
@@ -2273,7 +2290,7 @@ pub fn opens_linux_app(request: &InvokeRequest) -> Option<Result<AppLaunch, Stri
 /// its place — the plans' own typed refusal when the account may not run
 /// Linux, so whoever opened it reads what would let it through.
 #[must_use]
-pub fn placed_linux_app(
+pub async fn placed_linux_app(
     browsers: &Arc<HostedBrowsers>,
     workspace_id: WorkspaceId,
     invocation: tilo_actions::InvocationId,
@@ -2291,15 +2308,8 @@ pub fn placed_linux_app(
                 invocation,
                 observe,
                 caller.clone(),
-                move |browsers, record| {
-                    let placed = browsers
-                        .ready_workspace_name(workspace_id)
-                        .ok_or_else(|| {
-                            AppRefusal::Words("this host serves no such workspace".to_owned())
-                        })
-                        .and_then(|workspace| {
-                            browsers.place_app(&workspace, workspace_id, record, &launch)
-                        });
+                move |browsers, workspace, record| {
+                    let placed = browsers.place_app(&workspace, workspace_id, &record, &launch);
                     match placed {
                         Ok(_) => tracing::info!(
                             %workspace_id,
@@ -2322,14 +2332,19 @@ pub fn placed_linux_app(
         }
         return message;
     };
-    let placement = browsers
-        .ready_workspace_name(workspace_id)
-        .ok_or_else(|| {
-            AppRefusal::Words(
-                "The workspace isn't ready yet. Open it again in a minute.".to_owned(),
-            )
-        })
-        .and_then(|workspace| browsers.place_app(&workspace, workspace_id, &record, launch));
+    let Some(workspace) = browsers.ready_workspace_name(workspace_id).await else {
+        return refused(
+            invocation,
+            "The app couldn't start. Try again in a minute.".to_owned(),
+        );
+    };
+    let placed = Arc::clone(browsers);
+    let launch = launch.clone();
+    let placement = tokio::task::spawn_blocking(move || {
+        placed.place_app(&workspace, workspace_id, &record, &launch)
+    })
+    .await
+    .unwrap_or_else(|error| Err(AppRefusal::Words(format!("the placement ended: {error}"))));
     match placement {
         Ok(_) => message,
         Err(AppRefusal::Refused(refusal)) => refused_by_plan(invocation, &refusal),

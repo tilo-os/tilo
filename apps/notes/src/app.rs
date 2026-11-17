@@ -399,7 +399,7 @@ pub struct NotesApp {
     shrunk_images: Arc<std::sync::Mutex<Vec<ShrunkImage>>>,
     canonical_asset_manifest: ui::tilo_resource::Map<ui::tilo_resource::Bytes>,
     /// Some referenced image's bytes are still on their way from a
-    /// collaborator's device: the record content arrival count when the
+    /// member's device: the record content arrival count when the
     /// notebook was last read for them. Read again once it has moved.
     canonical_assets_waiting: Option<u64>,
     /// The read of pictures the window does not hold yet, and the record
@@ -466,7 +466,7 @@ pub struct NotesApp {
     /// read from it, which reads only what the edit changed.
     live: Option<ui::framework::Live<crate::resource::Notebook>>,
     /// Local-only current tag browse/filter. It is deliberately not persisted
-    /// or replicated: collaborators may inspect different tag slices.
+    /// or replicated: members may inspect different tag slices.
     active_tag_filter: Option<TagId>,
     /// App-agnostic toolkit navigation history over Notes' local page route.
     /// The route itself remains presentation state; opening a note never
@@ -1018,7 +1018,7 @@ impl NotesApp {
 
     /// Metadata projection for the selected note header. The page/tag ids stay
     /// attached to their labels so the header can invoke a stable canonical
-    /// tag resource even after a collaborator renames a tag.
+    /// tag resource even after a member renames a tag.
     fn selected_tag_chips(&self) -> Vec<TagChip> {
         self.workspace
             .selected()
@@ -2262,7 +2262,7 @@ impl NotesApp {
     }
 
     /// Route a note-header tag activation through the durable resource
-    /// operation. It is intentionally a view operation (each collaborator may
+    /// operation. It is intentionally a view operation (each member may
     /// browse a different tag) but still validates the keyed tag record in the
     /// canonical document before selecting a collection.
     fn drain_tag_open(&mut self) {
@@ -2856,6 +2856,10 @@ fn making_action(address: &ui::tilo_actions::ActionAddress) -> Option<&'static s
 }
 
 impl Widget for NotesApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     ui::provides!(
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence,
@@ -4633,7 +4637,7 @@ mod tests {
             // Create the destination through the normal page action path, then
             // attach a real native link mark to an existing source block. This is
             // intentionally not a Markdown-parser test: incoming links must be
-            // derived from the same canonical mark data collaborators receive.
+            // derived from the same canonical mark data members receive.
             let target = PageId::new_v4();
             app.apply_action(
                 &mut Edits::lend(&mut state.doc),
@@ -4848,7 +4852,7 @@ mod tests {
             let original = app.workspace.bodies[&welcome][1].clone();
             let block = original.id.clone();
 
-            // A collaborator inserts an identical-text block before the target.
+            // A member inserts an identical-text block before the target.
             // Content and index cannot distinguish them; block identity can.
             let last = app.workspace.bodies[&welcome].last().unwrap().id.clone();
             crate::actions::edit_body_action(

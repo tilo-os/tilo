@@ -1,4 +1,4 @@
-//! An agent's card: one client ("Claude Code") as a collaborator, beside the person's work.
+//! An agent's card: one client ("Claude Code") as a member, beside the person's work.
 
 use ui::icons::Icon;
 use ui::prelude::*;

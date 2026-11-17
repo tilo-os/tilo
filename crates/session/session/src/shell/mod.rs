@@ -1301,7 +1301,7 @@ impl tilo_session_core::surfaces::Published for ShellChrome {
 
     fn invoke_as(
         &mut self,
-        actor: &str,
+        actor: &tilo_actions::Actor,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
@@ -1408,7 +1408,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
 
     fn invoke_as(
         &mut self,
-        actor: &str,
+        actor: &tilo_actions::Actor,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,

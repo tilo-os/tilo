@@ -4,7 +4,7 @@
 //! gesture; the write follows whenever the bytes are ready. On the web the
 //! destination is the browser's own Save dialog where it has one, else a
 //! download; elsewhere it is the path the host chooser answered. The app
-//! writes through [`SaveDestination::write`] either way, and can keep the
+//! writes through the SDK's save path either way, and can keep the
 //! destination to write there again on the next Save without asking.
 
 use std::path::{Path, PathBuf};
@@ -75,6 +75,9 @@ impl SaveDestination {
         }
     }
 
+    /// The SDK's save path only: an app writes through `EffectCx::write_destination`,
+    /// whose job waits for the write.
+    #[doc(hidden)]
     pub fn write(&self, bytes: Vec<u8>) -> SaveChannel {
         match &self.target {
             Target::Path(path) => write_path(path.clone(), bytes),

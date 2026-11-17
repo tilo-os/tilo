@@ -79,7 +79,7 @@ impl AsActor for Actor {
     }
 }
 
-/// One collaborator's machine: a copy of the workspace record and a host over it.
+/// One member's machine: a copy of the workspace record and a host over it.
 pub struct Replica {
     pub name: String,
     pub doc: AutoCommit,

@@ -397,7 +397,7 @@ impl Shared {
             let address =
                 tilo_actions::ActionAddress::new(tilo_session_core::layout::RESOURCE, "open");
             let run = self.published.invoke_as(
-                &invoker.acting.by.key(),
+                &invoker.acting.by,
                 &address,
                 &arguments,
                 &mut tilo_session_core::surfaces::Look::none(),

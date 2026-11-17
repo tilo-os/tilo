@@ -119,7 +119,7 @@ impl HostStepServices for SessionActions {
             .map(|turn| tilo_session_core::layout::turn_key(&turn.conversation, &turn.message))
             .unwrap_or_default();
         self.steps.invoke_step(
-            request.actor.member().key(),
+            request.actor.member().clone().into(),
             request.address.clone(),
             argument,
             beside,

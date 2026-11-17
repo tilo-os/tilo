@@ -542,7 +542,7 @@ pub struct FrameHarness {
     /// under the material as a live window does.
     backdrop: std::sync::Arc<crate::backdrop::BackdropFrame>,
     presence: Box<PresenceCtx>,
-    /// Presence changed through [`Self::update_presence`]: the next frame redraws the collaborator
+    /// Presence changed through [`Self::update_presence`]: the next frame redraws the member
     /// overlays without a synchronous relayout.
     presence_redraw: bool,
     /// The agents' action marks the last drawn frame painted, as the native [`App`](crate::app::App)
@@ -1847,6 +1847,13 @@ impl FrameHarness {
             .is_some_and(|history| history.captures_input())
         {
             return false;
+        }
+        // As the live host: a component with a history of its own (a text
+        // field, a window that also writes records beside its own) is offered
+        // the request first.
+        if crate::undo::handle_local_undo_request(self.root.as_mut(), request) {
+            self.relayout();
+            return true;
         }
         let author = self.author.clone();
         let done = if let Some(binding) = self
@@ -6756,7 +6763,7 @@ impl FrameHarness {
 
     /// [`Self::start_bound_job`] for `invoker` rather than the person at
     /// this device, as the host runs an invocation an agent or a
-    /// collaborator was admitted for: the operation and every edit it
+    /// member was admitted for: the operation and every edit it
     /// submits are theirs, and an edit needing more than the operation they
     /// were admitted for is refused, failing the operation.
     ///
@@ -7794,14 +7801,14 @@ impl FrameHarness {
         })
     }
 
-    /// The collaborator state the draw pass renders (remote carets, selections, names), for a live host
+    /// The member state the draw pass renders (remote carets, selections, names), for a live host
     /// applying peers' presence.
     pub fn presence_mut(&mut self) -> &mut PresenceCtx {
         self.invalidate_local();
         &mut self.presence
     }
 
-    /// Replace the host-projected collaborator state used by the real draw pass.
+    /// Replace the host-projected member state used by the real draw pass.
     /// Capture and integration hosts use this to exercise the same presence
     /// rendering that a live broker frame supplies, without a broker process.
     pub fn set_presence_context(&mut self, presence: PresenceCtx) {
@@ -7810,7 +7817,7 @@ impl FrameHarness {
         self.relayout();
     }
 
-    /// Mutate the collaborator presence read by the draw pass. When `update`
+    /// Mutate the member presence read by the draw pass. When `update`
     /// reports a change the next scheduled frame redraws; unlike
     /// [`Self::set_presence_context`] this never runs a synchronous relayout,
     /// so live remote carets cost one ordinary frame at display cadence.
@@ -7887,7 +7894,7 @@ impl FrameHarness {
         pointers
     }
 
-    /// Read-only view of the collaborator presence drawn by this harness.
+    /// Read-only view of the member presence drawn by this harness.
     pub fn presence(&self) -> &PresenceCtx {
         &self.presence
     }

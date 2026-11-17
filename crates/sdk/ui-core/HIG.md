@@ -943,7 +943,7 @@ toolkit change.
 Sections 1–8 govern **apps**. This section governs the **shell** — the surfaces
 the OS itself paints around and between apps: the top bar, window decorations
 and tab pills, the workspace disc, the strip indicator, quick settings, the
-command palette, and the collaborator invite/roster surfaces.
+command palette, and the member invite/roster surfaces.
 
 It exists because those surfaces drifted into separate design systems. Each was
 transliterated independently from its own mockup component, carrying that
@@ -1284,7 +1284,7 @@ glance. A resting readout's labels are ink too; a status hue is not a label.
 
 **Your colour** is the local person's presence colour — one of the twelve
 presence hues (`PresenceHue`), the colour their cursor has for
-collaborators. It is identity, not theme: stored as `identity.colour` or
+members. It is identity, not theme: stored as `identity.colour` or
 derived from the stable identity, never read by `Theme::configured`. The
 host that shows a window applies it with the workspace's temperature
 (`ui::WindowAppearance`, `Theme::in_window`): the shell resolves both and

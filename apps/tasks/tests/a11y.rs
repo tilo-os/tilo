@@ -15,6 +15,9 @@ use tasks::model::Status;
 use ui::accesskit::{Action as AkAction, NodeId, Role, Toggled};
 use ui::framework::testing::TestApp;
 
+mod common;
+use common::{chain, held};
+
 fn open() -> TestApp<App> {
     ui::i18n::I18nManager::init("en-US");
     TestApp::<App>::for_person("ada").expect("open")
@@ -41,8 +44,7 @@ fn id_of(app: &mut TestApp<App>, name: &str, role: Role) -> NodeId {
 }
 
 fn status_of(app: &TestApp<App>, title: &str) -> Status {
-    app.state()
-        .issues
+    held(app)
         .iter()
         .find(|(_, issue)| issue.title == title)
         .map(|(_, issue)| issue.status)
@@ -50,11 +52,7 @@ fn status_of(app: &TestApp<App>, title: &str) -> Status {
 }
 
 fn titles(app: &TestApp<App>) -> Vec<String> {
-    app.state()
-        .issues
-        .iter()
-        .map(|(_, issue)| issue.title.clone())
-        .collect()
+    held(app).iter().map(|(_, issue)| issue.title).collect()
 }
 
 fn open_menu(app: &mut TestApp<App>, row: &str) {
@@ -79,7 +77,7 @@ fn choose(app: &mut TestApp<App>, item: &str) {
 fn every_task_row_is_a_named_item_a_reader_opens_and_finishes() {
     let mut app = open();
     for title in ["Write the launch notes", "Book the room", "Ship it"] {
-        app.call("create", json!({ "title": title }))
+        app.call_on(&chain(), "create", json!({ "title": title }))
             .unwrap_or_else(|error| panic!("create {title}: {error:?}"));
     }
     app.settle();

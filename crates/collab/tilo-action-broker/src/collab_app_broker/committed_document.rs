@@ -657,7 +657,7 @@ impl JoinedChannel {
             let certificate = current
                 .certificate
                 .as_ref()
-                .ok_or("connection snapshot requires a certified principal")?;
+                .ok_or("connection snapshot requires a certified actor")?;
             let snapshot = runtime_collab::committed_document::ConnectionSnapshot {
                 root: certificate.user_public_key,
                 device: certificate.device_public_key,

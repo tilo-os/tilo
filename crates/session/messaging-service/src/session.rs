@@ -74,6 +74,6 @@ pub enum Event {
 pub type SessionLink = crate::link::Link<Call, Reply, Event>;
 
 /// What the compositor starts the service with.
-pub const PRINCIPAL_ARG: &str = "--principal";
+pub const ACTOR_ARG: &str = "--actor";
 pub const DEVICE_ARG: &str = "--device";
 pub const PROFILE_ARG: &str = "--profile";

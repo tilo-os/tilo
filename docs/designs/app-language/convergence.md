@@ -55,7 +55,7 @@ accepts its changes. Everything else holds a replica or a cache.
 ```
 type Workshop {
     seats: Int = 12
-    attendees: Set<Principal>
+    attendees: Set<Actor>
     invariant attendees.count <= seats "{title} is full"
 }
 ```
@@ -124,7 +124,7 @@ another action — its own package's or another one's — makes each call at the
 change of its own, and commits what it wrote itself after its calls:
 
 ```
-action book(w: Workshop, p: Principal, card: Card) {
+action book(w: Workshop, p: Actor, card: Card) {
     reserve(w, p)                  // the workspace: hosted, checks seats
     stripe.charge(card, w.price)   // runs once the reservation is final
     mail.send(confirmation(w, p))  // runs once the charge is final

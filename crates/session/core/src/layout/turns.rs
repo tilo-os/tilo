@@ -10,6 +10,7 @@
 use std::rc::Rc;
 
 use serde_json::Value as Json;
+use tilo_actions::Actor;
 
 use super::{Asked, Busy, Layout, LayoutAction, LayoutActions, locate};
 
@@ -128,7 +129,7 @@ pub(super) enum TurnRoom {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct AwaitedTurn {
     /// Who asked.
-    asked: String,
+    asked: Actor,
     /// The number the session's send goes by ([`Ask`]).
     sent: u64,
     /// The strip the caret was in, else the canvas.
@@ -153,7 +154,7 @@ impl Layout {
     /// the turn then stands where they asked ([`Self::stand_asked`]).
     pub(super) fn await_turn(
         &self,
-        asked: &str,
+        asked: &Actor,
         sent: u64,
         strip: Option<u64>,
         (at, size): ((i64, i64), Option<(i64, i64)>),
@@ -218,7 +219,7 @@ impl Layout {
         turn: &Asked,
         busy: Busy,
     ) -> Result<Option<u64>, String> {
-        let (asked, at) = (ask.asked.as_str(), ask.at);
+        let (asked, at) = (&ask.asked, ask.at);
         if let Some(held) = self.place_of(&turn.turn) {
             self.bring_forward(asked, held, busy)?;
             return Ok(Some(held));
@@ -291,7 +292,11 @@ impl Layout {
     ///
     /// # Errors
     /// The turn stands nowhere in the layout, or no conversation is known for it.
-    pub fn open_conversation_of(&mut self, asked: &str, turn: &str) -> Result<Option<u64>, String> {
+    pub fn open_conversation_of(
+        &mut self,
+        asked: &Actor,
+        turn: &str,
+    ) -> Result<Option<u64>, String> {
         let place = self
             .place_of(turn.trim())
             .ok_or_else(|| format!("the answer {turn} stands nowhere in the layout"))?;
@@ -430,7 +435,7 @@ impl LayoutActions {
     /// other step as it is.
     pub(super) fn kept_turn(
         &self,
-        asked: &str,
+        asked: &Actor,
         arguments: &serde_json::Map<String, Json>,
         action: &LayoutAction,
     ) -> Result<bool, tilo_actions::ApiError> {

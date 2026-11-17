@@ -15,7 +15,7 @@ pub enum TimelineAnchor {
 pub enum PhotosEffect {
     /// Open photograph: show it in this window. Which photograph a window
     /// shows is its own view state; opening one here changes nothing for a
-    /// collaborator.
+    /// member.
     #[effect(view, item = photos)]
     #[effect(label = "photos-a11y-open-photo")]
     View {

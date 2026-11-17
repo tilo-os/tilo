@@ -403,7 +403,7 @@ fn mount_people(
         tilo_session::people::Given {
             // The page's frames draw its layers in the frame's own scale.
             scale: 1.0,
-            seated: chrome.authorship.author.clone(),
+            device_person: chrome.authorship.author.clone(),
             // Each window's record, by its tab: the page's windows name no app beside it, which
             // the shell's tree says.
             notes: Rc::new(move || shared.shown_records()),

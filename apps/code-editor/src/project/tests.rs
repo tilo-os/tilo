@@ -382,7 +382,7 @@ tilo_test_env::scenario! {
         assert_eq!(asked, [("cargo test", pane)]);
     }
 
-    phase replacing_a_files_text_keeps_a_collaborators_typing;
+    phase replacing_a_files_text_keeps_a_members_typing;
     {
         let mut left = Replica::<Project>::new();
         let id = file(&mut left, "main.rs", None, "fn main() {}\n");

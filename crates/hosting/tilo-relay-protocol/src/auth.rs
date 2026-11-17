@@ -1011,14 +1011,14 @@ mod tests {
             assert_eq!(peer.device_public_key, expected.device_public_key);
         }
 
-        phase owner_devices_only_rejects_admitted_collaborator;
+        phase owner_devices_only_rejects_admitted_member;
         {
-            let (relay, laptop, collaborator, alice, _) = alice_relay_and_bob();
+            let (relay, laptop, member, alice, _) = alice_relay_and_bob();
             let revocations = RevocationList::new();
             let live = TrustPolicy::AllowList {
                 users: vec![
                     hex::encode(alice),
-                    hex::encode(collaborator.cert.user_public_key),
+                    hex::encode(member.cert.user_public_key),
                 ],
             };
             let begin = |trust, party: &Party| {
@@ -1031,19 +1031,19 @@ mod tests {
                     [5; 32],
                 )
             };
-            // The live policy admits the collaborator; the owner-only rules do not.
-            begin(HandshakeTrust::Live(&live), &collaborator).unwrap();
+            // The live policy admits the member; the owner-only rules do not.
+            begin(HandshakeTrust::Live(&live), &member).unwrap();
             for trust in [
                 HandshakeTrust::OwnerDevicesOnly,
                 HandshakeTrust::OwnerDeviceAdmitters,
             ] {
                 assert!(matches!(
-                    begin(trust, &collaborator).unwrap_err(),
+                    begin(trust, &member).unwrap_err(),
                     AuthError::PolicyReject
                 ));
                 begin(trust, &laptop).unwrap();
             }
-            begin(HandshakeTrust::AnyCertifiedDevice, &collaborator).unwrap();
+            begin(HandshakeTrust::AnyCertifiedDevice, &member).unwrap();
         }
 
         phase owner_device_admitters_requires_can_admit_devices;
@@ -1115,7 +1115,7 @@ mod tests {
 
         phase wrong_ack2_signature_rejected_in_finish;
         {
-            let (relay, laptop, collaborator, alice, _) = alice_relay_and_bob();
+            let (relay, laptop, member, alice, _) = alice_relay_and_bob();
             let start = || {
                 server_begin(
                     &identity(&relay, &alice),
@@ -1129,7 +1129,7 @@ mod tests {
                 .0
             };
             for ack2 in [
-                build_hello_ack2(&collaborator.sk, &[5; 32]),
+                build_hello_ack2(&member.sk, &[5; 32]),
                 build_hello_ack2(&laptop.sk, &[6; 32]),
                 {
                     let mut ack2 = build_hello_ack2(&laptop.sk, &[5; 32]);
@@ -1149,14 +1149,14 @@ mod tests {
 
         phase endpoint_bound_rejects_mismatched_remote;
         {
-            let (_, laptop, collaborator, alice, _) = alice_relay_and_bob();
+            let (_, laptop, member, alice, _) = alice_relay_and_bob();
             let revocations = RevocationList::new();
             let bind = |remote: &[u8; 32], trust| {
                 authenticate_endpoint_bound(&laptop.cert, remote, &alice, trust, &revocations, 1000)
             };
             assert!(matches!(
                 bind(
-                    &collaborator.cert.device_public_key,
+                    &member.cert.device_public_key,
                     HandshakeTrust::AnyCertifiedDevice
                 )
                 .unwrap_err(),
@@ -1170,8 +1170,8 @@ mod tests {
             assert_eq!(peer.device_public_key, laptop.cert.device_public_key);
             assert!(matches!(
                 authenticate_endpoint_bound(
-                    &collaborator.cert,
-                    &collaborator.cert.device_public_key,
+                    &member.cert,
+                    &member.cert.device_public_key,
                     &alice,
                     HandshakeTrust::OwnerDevicesOnly,
                     &revocations,
@@ -1212,13 +1212,13 @@ mod tests {
             DeviceCapabilities::primary(),
         );
         let (bob_root, bob) = UserIdentity::generate("Bob", 1);
-        let collaborator = enrol(
+        let member = enrol(
             &bob_root,
             bob.public_key,
             "bob-laptop",
             DeviceCapabilities::primary(),
         );
-        (relay, laptop, collaborator, alice.public_key, alice_root)
+        (relay, laptop, member, alice.public_key, alice_root)
     }
 
     fn identity<'a>(relay: &'a Party, own_user: &'a [u8; 32]) -> ServerIdentity<'a> {

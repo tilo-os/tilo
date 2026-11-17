@@ -934,7 +934,11 @@ impl Chained for ChatPart {
         }
     }
 
-    fn prepare(action: &mut Self::Action, chat: &Chat) -> Result<(), String> {
+    fn prepare(
+        action: &mut Self::Action,
+        chat: &Chat,
+        _parts: &[(u64, Rc<Self>)],
+    ) -> Result<(), String> {
         match &mut action.operation {
             ChatPartAction::Post(post) => {
                 let message = &mut post.message;

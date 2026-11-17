@@ -506,7 +506,7 @@ impl Store {
     }
 
     /// Run a transient database effect after re-resolving every target against the session:
-    /// a resource descriptor is a snapshot, and a collaborator may have removed or renamed
+    /// a resource descriptor is a snapshot, and a member may have removed or renamed
     /// the connection before the invocation arrives.
     fn focus_catalog(&mut self, connection_id: &str, schema: Option<&str>) -> Result<(), String> {
         let id = Uuid::parse_str(connection_id)
@@ -680,7 +680,7 @@ impl Store {
     }
 
     /// Replace the shared SQL buffer with `sql` as the smallest splice, so a
-    /// collaborator's concurrent typing survives. A view-only participant's buffer stays as
+    /// member's concurrent typing survives. A view-only participant's buffer stays as
     /// it is.
     fn replace_editor_sql(&self, sql: &str) {
         self.submit(Record::paths().sql.replace(sql));
@@ -1426,7 +1426,7 @@ mod editor_sql_tests {
     }
 
     #[test]
-    fn typing_replaces_the_selection_and_merges_with_a_collaborator() {
+    fn typing_replaces_the_selection_and_merges_with_a_member() {
         let mut app = workspace();
         app.harness()
             .perform_named("sql-editor", &A11yAction::SetValue("SELECT 1".into()))
@@ -1689,7 +1689,7 @@ mod tests {
         harness.root::<DbClientApp>().state()
     }
 
-    /// Put `sql` in the shared buffer, as a collaborator writing it does:
+    /// Put `sql` in the shared buffer, as a member writing it does:
     /// without the framework dispatcher the editor only shows the text.
     fn write_sql(harness: &mut FrameHarness, sql: &str) {
         ui::framework::testing::dispatcher::<Record>("so.tilo.db-client")
@@ -1892,7 +1892,7 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Without the framework dispatcher the editor only shows the shared
-        /// text: typing changes nothing, and a collaborator's edit shows.
+        /// text: typing changes nothing, and a member's edit shows.
         fn the_editor_shows_the_shared_sql;
 
         phase without_a_dispatcher_typing_changes_nothing;
@@ -1916,7 +1916,7 @@ mod tests {
             );
         }
 
-        phase sync_pulls_a_collaborators_sql_edit_into_the_editor;
+        phase sync_pulls_a_members_sql_edit_into_the_editor;
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
@@ -2155,10 +2155,10 @@ mod tests {
         assert!(app.state().connections.is_empty());
     }
 
-    /// A connection a collaborator added is listed but not opened: opening
+    /// A connection a member added is listed but not opened: opening
     /// it is this device's choice, with this device's password.
     #[test]
-    fn a_collaborators_connection_is_listed_without_being_opened() {
+    fn a_members_connection_is_listed_without_being_opened() {
         use ui::framework::testing::TestApp;
 
         let mut app = TestApp::<crate::resource::DbClientShell>::new().unwrap();
@@ -2173,7 +2173,7 @@ mod tests {
         assert!(inspection.contains("Team DB"), "{inspection}");
         assert!(
             !inspection.contains("Connecting to Team DB"),
-            "a collaborator's connection is not opened here: {inspection}"
+            "a member's connection is not opened here: {inspection}"
         );
     }
 

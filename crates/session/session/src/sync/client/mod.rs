@@ -2327,7 +2327,6 @@ impl PeerDocuments {
     /// Hand one app write to this device's apps on its route: another device's, or one the
     /// session wrote into the engine itself.
     pub(crate) fn deliver_write(&self, workspace: &str, write: tilo_peer_state::owner::AppWrite) {
-        let author = write.envelope.author.as_bytes().to_owned();
         let (app, record) = (write.app_id.clone(), write.record_id.clone());
         tilo_action_broker::collab_inbound::deliver(
             &self.channels,
@@ -2341,7 +2340,6 @@ impl PeerDocuments {
                 envelope: write.envelope,
                 own: write.own,
             },
-            |_| format!("peer@{}", hex::encode(author)),
         );
         // What search holds of the record is read again from what the peer wrote into it.
         if let Some(changes) = &self.changes {

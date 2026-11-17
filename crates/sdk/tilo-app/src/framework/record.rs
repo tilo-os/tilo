@@ -246,6 +246,11 @@ pub(crate) trait RecordApi {
     /// Increases whenever what the record holds changed, read now.
     fn revision(&self) -> u64;
     fn publish(&self) -> tilo_actions::ResourceSpec;
+    /// What search finds in the record beside the app's own: none unless the
+    /// record holds what the window's search lists (a chain's items).
+    fn search(&self) -> Vec<tilo_resource::SearchEntry> {
+        Vec::new()
+    }
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String>;
     /// [`Self::apply_encoded`], answering its invoker with what it made.
     fn apply_answering(

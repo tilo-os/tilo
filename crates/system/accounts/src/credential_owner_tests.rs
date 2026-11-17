@@ -26,14 +26,14 @@ fn profile_key_preparation_refuses_foreign_scope_before_open_and_local_fallback(
     let count = opened.clone();
     let root = std::env::temp_dir().join(format!("tilo-profile-key-{}", uuid::Uuid::new_v4()));
     let store_root = root.clone();
-    let principal = "11".repeat(32);
-    let owner = CredentialOwner::deferred(&principal, "test-device", move || {
+    let actor = "11".repeat(32);
+    let owner = CredentialOwner::deferred(&actor, "test-device", move || {
         count.fetch_add(1, Ordering::SeqCst);
         SecretStore::open_in(&store_root)
     })
     .unwrap();
     let mut scope = CredentialScope {
-        principal,
+        actor,
         device: "test-device".into(),
         service: "signal".into(),
         account: "fixture-alpha".into(),
@@ -80,7 +80,7 @@ pub(super) fn fixture() -> (
         origin: Some("https://messaging.test".into()),
     };
     let scope = CredentialScope {
-        principal: "11".repeat(32),
+        actor: "11".repeat(32),
         device: "test-device".into(),
         service: "signal".into(),
         account: "synthetic-alpha".into(),
@@ -112,7 +112,7 @@ fn scoped_permission_never_inherits_legacy_account_device_service_or_generation(
     for field in 0..5 {
         let mut other = scope.clone();
         match field {
-            0 => other.principal = "22".repeat(32),
+            0 => other.actor = "22".repeat(32),
             1 => other.device = "other-device".into(),
             2 => other.service = "whatsapp".into(),
             3 => other.account = "synthetic-beta".into(),
@@ -139,8 +139,7 @@ fn original_owner_revoke_is_exact_and_stale_permission_cannot_revoke_new_generat
             .unwrap();
     }
     let broker = Arc::new(Mutex::new(broker));
-    let owner =
-        CredentialOwner::from_broker(&alpha.principal, &alpha.device, broker.clone()).unwrap();
+    let owner = CredentialOwner::from_broker(&alpha.actor, &alpha.device, broker.clone()).unwrap();
     assert!(Arc::ptr_eq(&owner.broker().unwrap(), &broker));
     let grant = owner
         .grants()
@@ -246,8 +245,7 @@ fn scoped_durable_permission_survives_only_its_exact_frozen_resource() {
 fn proposal_creates_no_access_and_confirmed_session_decision_is_exact_and_one_use() {
     let (root, broker, request, scope) = fixture();
     let broker = Arc::new(Mutex::new(broker));
-    let owner =
-        CredentialOwner::from_broker(&scope.principal, &scope.device, broker.clone()).unwrap();
+    let owner = CredentialOwner::from_broker(&scope.actor, &scope.device, broker.clone()).unwrap();
     let wake_count = Arc::new(AtomicUsize::new(0));
     let wakes = wake_count.clone();
     let reentrant = owner.clone();
@@ -317,7 +315,7 @@ fn proposal_refuses_foreign_or_retired_admission_before_opening_custody() {
     let (root, broker, request, scope) = fixture();
     drop(broker);
     let custody = root.clone();
-    let owner = CredentialOwner::deferred(&scope.principal, &scope.device, move || {
+    let owner = CredentialOwner::deferred(&scope.actor, &scope.device, move || {
         opens.fetch_add(1, Ordering::SeqCst);
         SecretStore::open_in(&custody)
     })
@@ -344,8 +342,7 @@ fn proposal_refuses_foreign_or_retired_admission_before_opening_custody() {
 fn proposal_vault_edit_invalidates_review_and_never_grants_the_replacement_secret() {
     let (root, broker, request, scope) = fixture();
     let broker = Arc::new(Mutex::new(broker));
-    let owner =
-        CredentialOwner::from_broker(&scope.principal, &scope.device, broker.clone()).unwrap();
+    let owner = CredentialOwner::from_broker(&scope.actor, &scope.device, broker.clone()).unwrap();
     let id = owner
         .propose_scoped(request.clone(), scope, Arc::new(|| true))
         .unwrap();
@@ -377,8 +374,7 @@ fn proposal_retirement_during_decision_revokes_only_its_new_exact_permission() {
         .request_scoped(&request, &other, |_, _, _| AccessDecision::AllowForSession)
         .unwrap();
     let broker = Arc::new(Mutex::new(broker));
-    let owner =
-        CredentialOwner::from_broker(&scope.principal, &scope.device, broker.clone()).unwrap();
+    let owner = CredentialOwner::from_broker(&scope.actor, &scope.device, broker.clone()).unwrap();
     let checks = Arc::new(AtomicUsize::new(0));
     let authority = checks.clone();
     let id = owner
@@ -418,8 +414,7 @@ fn proposal_retirement_during_decision_revokes_only_its_new_exact_permission() {
 fn proposal_queue_is_bounded_and_denial_consumes_without_authorizing() {
     let (root, broker, request, scope) = fixture();
     let broker = Arc::new(Mutex::new(broker));
-    let owner =
-        CredentialOwner::from_broker(&scope.principal, &scope.device, broker.clone()).unwrap();
+    let owner = CredentialOwner::from_broker(&scope.actor, &scope.device, broker.clone()).unwrap();
     let mut ids = Vec::new();
     for generation in 1..=8 {
         let mut current = scope.clone();

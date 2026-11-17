@@ -98,7 +98,7 @@ pub const RESOURCE_KIND_ANNOTATION: &str = "resource_kind";
 pub const CHOICE_LABELS_ANNOTATION: &str = "choice_labels";
 
 /// Schema annotation naming which of a parameter's choices are people
-/// (identities, collaborators): a surface shows each with its avatar; see
+/// (identities, members): a surface shows each with its avatar; see
 /// [`ActionParam::choosing_people`].
 pub const PEOPLE_ANNOTATION: &str = "people";
 

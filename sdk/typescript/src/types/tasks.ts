@@ -22,7 +22,22 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tasks@7e65343905e59068";
+export const SURFACE = "so.tilo.tasks@12705021615f11a5";
+
+/** One of "project", "area". */
+export type Kind = "project" | "area";
+
+export interface Person {
+  name: string;
+  role: string;
+}
+
+export interface TrackerArea {
+  id: string;
+  name: string;
+  kind: Kind;
+  people: Person[];
+}
 
 export interface Area {
   resource: string;
@@ -31,8 +46,18 @@ export interface Area {
   label: string;
 }
 
+export interface Attachment {
+  name: string;
+  media_type: string | null;
+  bytes: unknown;
+  author: string | null;
+  author_name: string;
+  at_ms: number;
+}
+
 export interface Issue {
   number: number;
+  rank: string;
   title: string;
   body: string;
   status: Status;
@@ -43,14 +68,15 @@ export interface Issue {
   area: Area | null;
   due_ms: number | null;
   priority: number | null;
+  estimate: number | null;
+  attachments: Attachment[];
   comments: Message[];
   author: string | null;
+  author_name: string;
   created_ms: number;
+  origin: Origin | null;
   url: string | null;
 }
-
-/** One of "project", "area". */
-export type Kind = "project" | "area";
 
 export interface Link {
   label: string;
@@ -62,8 +88,10 @@ export interface Link {
 
 export interface Message {
   author: string | null;
+  author_name: string;
   by_agent: boolean;
   at_ms: number;
+  origin: Origin | null;
   text: string;
   kind: MessageKind;
   run: number;
@@ -75,41 +103,26 @@ export interface Message {
 /** One of "comment", "to_run", "from_run", "lookup", "step", "answer". */
 export type MessageKind = "comment" | "to_run" | "from_run" | "lookup" | "step" | "answer";
 
-export interface Person {
-  name: string;
-  role: string;
+export interface Origin {
+  author: string;
+  handle: string | null;
+  source: string;
+  url: string | null;
+  reference: string | null;
+  created_ms: number | null;
+  updated_ms: number | null;
 }
+
+/** One of "none", "urgent", "high", "medium", "low". */
+export type Priority = "none" | "urgent" | "high" | "medium" | "low";
 
 /** One of "backlog", "todo", "in_progress", "in_review", "done", "cancelled". */
 export type Status = "backlog" | "todo" | "in_progress" | "in_review" | "done" | "cancelled";
-
-export interface TrackerArea {
-  id: string;
-  name: string;
-  kind: Kind;
-  people: Person[];
-}
-
-/** The arguments of `create`. */
-export interface CreateArgs {
-  title: string;
-  parent?: string;
-  body?: string;
-  status?: Status;
-  assignee?: string;
-  url?: string;
-}
 
 /** The arguments of `create-area`. */
 export interface CreateAreaArgs {
   name: string;
   kind?: Kind;
-}
-
-/** The arguments of `rename`. */
-export interface RenameArgs {
-  issue: string;
-  title: string;
 }
 
 /** The arguments of `rename-area`. */
@@ -137,6 +150,40 @@ export interface RemovePersonArgs {
   person: string;
 }
 
+/** The arguments of `delete-area`. */
+export interface DeleteAreaArgs {
+  area: string;
+}
+
+/** The arguments of `create`. */
+export interface CreateArgs {
+  title: string;
+  parent?: string;
+  body?: string;
+  status?: unknown;
+  assignee?: string;
+  url?: string;
+  project?: string;
+  priority?: unknown;
+  estimate?: number;
+  due_ms?: number;
+  labels?: string[];
+  origin?: unknown;
+  rank?: string;
+  goal?: unknown;
+}
+
+/** The arguments of `start`. */
+export interface StartArgs {
+  before: number;
+}
+
+/** The arguments of `rename`. */
+export interface RenameArgs {
+  issue: string;
+  title: string;
+}
+
 /** The arguments of `move-under`. */
 export interface MoveUnderArgs {
   issue: string;
@@ -147,6 +194,27 @@ export interface MoveUnderArgs {
 export interface AssignArgs {
   issue: string;
   assignee?: string;
+}
+
+/** The arguments of `set-project`. */
+export interface SetProjectArgs {
+  issue: string;
+  project?: string;
+  goal?: Area;
+}
+
+/** The arguments of `attach`. */
+export interface AttachArgs {
+  issue: string;
+  name: string;
+  bytes: unknown;
+  media_type?: string;
+}
+
+/** The arguments of `detach`. */
+export interface DetachArgs {
+  issue: string;
+  attachment: string;
 }
 
 /** The arguments of `add-label`. */
@@ -160,12 +228,14 @@ export interface PlaceArgs {
   issue: string;
   status: Status;
   before?: string;
+  rank?: string;
 }
 
 /** The arguments of `comment`. */
 export interface CommentArgs {
   issue: string;
   text: string;
+  origin?: Origin;
 }
 
 /** The arguments of `link`. */
@@ -193,37 +263,20 @@ export interface DeleteArgs {
 export interface PlanArgs {
   issue: string;
   area?: Area;
-  priority?: number;
+  priority?: Priority;
+  estimate?: number;
   due_ms?: number;
 }
 
 /** Tasks — `tasks.tracker`. */
 export interface Tracker extends tilo.Resource {
-  issues: Issue[];
   areas: TrackerArea[];
-  readonly numbers: number;
-  create(args: {
-    title: string;
-    parent?: string;
-    body?: string;
-    status?: Status;
-    assignee?: string;
-    url?: string;
-  }): Promise<tilo.Run | void>;
-  /** Runs `create` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
-  createMany(items: CreateArgs[]): Promise<tilo.ActionAnswer[]>;
   createArea(args: {
     name: string;
     kind?: Kind;
   }): Promise<tilo.Run | void>;
   /** Runs `create-area` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   createAreaMany(items: CreateAreaArgs[]): Promise<tilo.ActionAnswer[]>;
-  rename(args: {
-    issue: string;
-    title: string;
-  }): Promise<tilo.Run | void>;
-  /** Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
-  renameMany(items: RenameArgs[]): Promise<tilo.ActionAnswer[]>;
   renameArea(args: {
     area: string;
     name: string;
@@ -249,6 +302,53 @@ export interface Tracker extends tilo.Resource {
   }): Promise<tilo.Run | void>;
   /** Runs `remove-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removePersonMany(items: RemovePersonArgs[]): Promise<tilo.ActionAnswer[]>;
+  deleteArea(args: {
+    area: string;
+  }): Promise<tilo.Run | void>;
+  /** Runs `delete-area` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  deleteAreaMany(items: DeleteAreaArgs[]): Promise<tilo.ActionAnswer[]>;
+  newProject(): Promise<void>;
+}
+
+/** The `tasks.tracker` kind at `path`. */
+export function tracker(ws: tilo.Workspace, path: string): Tracker {
+  return resourceProxy(ws, path, SURFACE) as unknown as Tracker;
+}
+
+/** Issues — `tasks.issues`. */
+export interface Issues extends tilo.Resource {
+  issues: Issue[];
+  readonly before: number;
+  readonly numbers: number;
+  create(args: {
+    title: string;
+    parent?: string;
+    body?: string;
+    status?: unknown;
+    assignee?: string;
+    url?: string;
+    project?: string;
+    priority?: unknown;
+    estimate?: number;
+    due_ms?: number;
+    labels?: string[];
+    origin?: unknown;
+    rank?: string;
+    goal?: unknown;
+  }): Promise<tilo.Run | void>;
+  /** Runs `create` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  createMany(items: CreateArgs[]): Promise<tilo.ActionAnswer[]>;
+  start(args: {
+    before: number;
+  }): Promise<tilo.Run | void>;
+  /** Runs `start` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  startMany(items: StartArgs[]): Promise<tilo.ActionAnswer[]>;
+  rename(args: {
+    issue: string;
+    title: string;
+  }): Promise<tilo.Run | void>;
+  /** Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  renameMany(items: RenameArgs[]): Promise<tilo.ActionAnswer[]>;
   moveUnder(args: {
     issue: string;
     parent?: string;
@@ -261,6 +361,27 @@ export interface Tracker extends tilo.Resource {
   }): Promise<tilo.Run | void>;
   /** Runs `assign` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   assignMany(items: AssignArgs[]): Promise<tilo.ActionAnswer[]>;
+  setProject(args: {
+    issue: string;
+    project?: string;
+    goal?: Area;
+  }): Promise<tilo.Run | void>;
+  /** Runs `set-project` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setProjectMany(items: SetProjectArgs[]): Promise<tilo.ActionAnswer[]>;
+  attach(args: {
+    issue: string;
+    name: string;
+    bytes: unknown;
+    media_type?: string;
+  }): Promise<tilo.Run | void>;
+  /** Runs `attach` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  attachMany(items: AttachArgs[]): Promise<tilo.ActionAnswer[]>;
+  detach(args: {
+    issue: string;
+    attachment: string;
+  }): Promise<tilo.Run | void>;
+  /** Runs `detach` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  detachMany(items: DetachArgs[]): Promise<tilo.ActionAnswer[]>;
   addLabel(args: {
     issue: string;
     label: string;
@@ -271,12 +392,14 @@ export interface Tracker extends tilo.Resource {
     issue: string;
     status: Status;
     before?: string;
+    rank?: string;
   }): Promise<tilo.Run | void>;
   /** Runs `place` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   placeMany(items: PlaceArgs[]): Promise<tilo.ActionAnswer[]>;
   comment(args: {
     issue: string;
     text: string;
+    origin?: Origin;
   }): Promise<tilo.Run | void>;
   /** Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   commentMany(items: CommentArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -304,16 +427,16 @@ export interface Tracker extends tilo.Resource {
   plan(args: {
     issue: string;
     area?: Area;
-    priority?: number;
+    priority?: Priority;
+    estimate?: number;
     due_ms?: number;
   }): Promise<tilo.Run | void>;
   /** Runs `plan` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   planMany(items: PlanArgs[]): Promise<tilo.ActionAnswer[]>;
-  newProject(): Promise<void>;
 }
 
-/** The `tasks.tracker` kind at `path`. */
-export function tracker(ws: tilo.Workspace, path: string): Tracker {
-  return resourceProxy(ws, path, SURFACE) as unknown as Tracker;
+/** The `tasks.issues` kind at `path`. */
+export function issues(ws: tilo.Workspace, path: string): Issues {
+  return resourceProxy(ws, path, SURFACE) as unknown as Issues;
 }
 

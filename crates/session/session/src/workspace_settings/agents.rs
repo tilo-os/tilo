@@ -18,7 +18,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use tilo_action_policy::{Standing, same_person};
+use tilo_action_policy::{MemberId, Standing, person_root, same_person};
 use tilo_app::framework::WorkspaceRecord;
 use tilo_app::tilo_workspace_agent::{
     OWNER, WorkspaceAgents as Record, workspace_agents as actions,
@@ -314,7 +314,12 @@ impl Agents {
         // choice.
         let offered = agent_access::agent_models(config, agent);
         let keeps = same_person(&kept.keeper, record.me().id());
-        let keeper = domain::member_row_name(names, workspace, record.me().id(), &kept.keeper);
+        let keeper = domain::member_row_name(
+            names,
+            workspace,
+            record.me().id(),
+            &MemberId::person(person_root(&kept.keeper)),
+        );
         let limit = limit_of(kept, keeps, &keeper);
         let note = if keeps {
             t("workspace-settings-agent-model-keeper-you")
@@ -800,7 +805,13 @@ fn keeper_line(
         "workspace-settings-agent-keeper",
         &[(
             "name",
-            domain::member_row_name(names, workspace, record.me().id(), keeper).into(),
+            domain::member_row_name(
+                names,
+                workspace,
+                record.me().id(),
+                &MemberId::person(person_root(keeper)),
+            )
+            .into(),
         )],
     )
 }

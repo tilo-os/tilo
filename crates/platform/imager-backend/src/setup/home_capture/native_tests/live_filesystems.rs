@@ -84,7 +84,7 @@ fn dataset(home: &Path) -> PathBuf {
         .unwrap();
     image.sync_all().unwrap();
     assert!(image.metadata().unwrap().blocks().checked_mul(512).unwrap() < LOGICAL / 16);
-    // Supported principal-neutral extended ACLs. Named principal mapping remains
+    // Supported actor-neutral extended ACLs. Named actor mapping remains
     // a separate unsupported contract; this fixture does not fabricate a map.
     set_acl(&data, "d:u::rwx,d:g::r-x,d:o::---");
     set_acl(&home.join("script"), "m::r--");

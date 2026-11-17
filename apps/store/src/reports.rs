@@ -4,7 +4,7 @@
 //! Everything else the Store shows — the catalogue, what is installed, the
 //! Flatpak remotes — is live device state its surface publishes as rows.
 //! A report's note is typed like any text field
-//! (`Reports::paths().reports.key(app).note`), merging with a collaborator
+//! (`Reports::paths().reports.key(app).note`), merging with a member
 //! typing in it; starting a report and recording the registry's case are
 //! the verbs.
 

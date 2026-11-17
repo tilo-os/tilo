@@ -24,18 +24,16 @@ pub trait MessagingRegistry: Send + Sync {
     ) -> Result<(), RegistrationError>;
 }
 struct Registry {
-    principal: String,
+    actor: String,
     current: RwLock<MessagingRouter>,
     services: Mutex<BTreeMap<ServiceAccount, MessagingClient>>,
     observers: Mutex<Vec<Weak<Observer>>>,
 }
 /// Start empty; no accounts, grants or resources are synthesized.
-pub fn messaging_registry(
-    principal: &str,
-) -> Result<Arc<dyn MessagingRegistry>, RegistrationError> {
+pub fn messaging_registry(actor: &str) -> Result<Arc<dyn MessagingRegistry>, RegistrationError> {
     Ok(Arc::new(Registry {
-        principal: principal.into(),
-        current: RwLock::new(MessagingRouter::new(principal, vec![])?),
+        actor: actor.into(),
+        current: RwLock::new(MessagingRouter::new(actor, vec![])?),
         services: Mutex::new(BTreeMap::new()),
         observers: Mutex::new(vec![]),
     }))
@@ -47,7 +45,7 @@ impl Registry {
 }
 impl MessagingRegistry for Registry {
     fn client(self: Arc<Self>) -> MessagingClient {
-        MessagingClient::new(self.principal.clone(), self)
+        MessagingClient::new(self.actor.clone(), self)
     }
     fn register(
         &self,
@@ -66,7 +64,7 @@ impl MessagingRegistry for Registry {
             .map(|(id, client)| (id.clone(), client.clone()))
             .collect();
         next.push((identity.clone(), client.clone()));
-        let router = MessagingRouter::new(&self.principal, next)?;
+        let router = MessagingRouter::new(&self.actor, next)?;
         let observed = self
             .observers
             .lock()
@@ -186,7 +184,7 @@ mod tests {
     }
     #[test]
     fn initially_empty_loan_receives_the_first_host_registration_and_history_wake() {
-        let registry = messaging_registry("principal").unwrap();
+        let registry = messaging_registry("actor").unwrap();
         let client = registry.clone().client();
         let identity = ServiceAccount::new("signal", "first");
         assert_eq!(
@@ -204,7 +202,7 @@ mod tests {
         let host = Arc::new(Host {
             changed: Mutex::new(None),
         });
-        let service = MessagingClient::new("principal", host.clone());
+        let service = MessagingClient::new("actor", host.clone());
         registry
             .register(identity.clone(), service.clone())
             .unwrap();
@@ -231,7 +229,7 @@ mod tests {
                 ServiceAccount::new("signal", "foreign"),
                 MessagingClient::new("other", host)
             ),
-            Err(RegistrationError::WrongPrincipal)
+            Err(RegistrationError::WrongActor)
         );
         assert_eq!(
             client.account_state(&ServiceAccount::new("signal", "foreign")),
@@ -241,14 +239,14 @@ mod tests {
     #[test]
     fn concurrent_first_account_publication_keeps_the_actual_history_subscription() {
         for _ in 0..64 {
-            let registry = messaging_registry("principal").unwrap();
+            let registry = messaging_registry("actor").unwrap();
             let host = Arc::new(Host {
                 changed: Mutex::new(None),
             });
             let identity = ServiceAccount::new("signal", "first");
             let start = Arc::new(std::sync::Barrier::new(2));
             let writer = registry.clone();
-            let service = MessagingClient::new("principal", host.clone());
+            let service = MessagingClient::new("actor", host.clone());
             let ready = start.clone();
             let registered = std::thread::spawn(move || {
                 ready.wait();

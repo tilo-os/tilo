@@ -42,7 +42,7 @@ AES-256.
 was not granted, other workspaces' data, key material, network egress, or persistence. Assume
 memory-safety bugs in every C/C++ dependency we ship.
 
-**A3 — Hostile collaborator.** A peer the user *did* invite. Wants to read beyond their grant,
+**A3 — Hostile member.** A peer the user *did* invite. Wants to read beyond their grant,
 write where they may only read, inject input into windows that aren't shared, keep access after
 removal, or forge authority over a shared space.
 
@@ -67,7 +67,7 @@ routing metadata and wants content.
 
 ### 2.3 Trust tiers
 
-| Tier | Principal | Posture | Boundary |
+| Tier | Actor | Posture | Boundary |
 |---|---|---|---|
 | T0 | kernel, compositor, filesystem daemon, portal broker | trusted, must be **verifiable** | signed UKI, sealed root, MAC, measured boot |
 | T1 | first-party apps | our code, assume bugs | sandbox + capability grants |
@@ -201,7 +201,7 @@ them alongside the retained Microsoft KEK (so firmware updates and signed option
 verifying), and sign the boot artifacts with the owner's key.
 
 This follows GrapheneOS's model in which attestation covers *whatever key the owner enrolled*,
-not a vendor key. A self-built image remains attestable to collaborators who choose to trust its
+not a vendor key. A self-built image remains attestable to members who choose to trust its
 key.
 
 ### 4.2 Unified Kernel Image
@@ -507,8 +507,8 @@ reading anything. The group key rotates on **every** membership change, includin
 
 ## 8. Attestation between people
 
-Attestation can prove a device to a vendor or to collaborators. Tilo uses the latter without a
-central service: **prove yourself to your collaborators.**
+Attestation can prove a device to a vendor or to members. Tilo uses the latter without a
+central service: **prove yourself to your members.**
 
 Before accepting remote input or buffer streaming, a peer may demand proof of what the other
 machine is running. The attestation key is bound to the peer's network identity, so the machine
@@ -526,7 +526,7 @@ Policy is tiered by what a peer is willing to prove:
 | Attested, pinned image, explicit grant | Inject input |
 
 **Verifiers pin what the owner enrolled, not what the distributor signs.** Self-built images remain
-attestable to collaborators who choose to trust their key.
+attestable to members who choose to trust their key.
 
 **"Unattested" is a first-class state, not a failure.** A machine with no TPM participates with
 fewer privileges. Unattested peers remain able to federate, so the TPM is optional.

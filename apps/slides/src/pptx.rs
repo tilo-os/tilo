@@ -964,7 +964,7 @@ const LAYOUT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationship
 const NOTES_MASTER: &str = r#"<?xml version="1.0" encoding="UTF-8"?><p:notesMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld name=""><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld><p:clrMap accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" bg1="lt1" bg2="lt2" folHlink="folHlink" hlink="hlink" tx1="dk1" tx2="dk2"/></p:notesMaster>"#;
 const NOTES_MASTER_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>"#;
 /// The presentation theme: the deck's own colours in its look, so the file
-/// shows the deck as every collaborator sees it. Slots: `lt1`/`lt2` the
+/// shows the deck as every member sees it. Slots: `lt1`/`lt2` the
 /// surfaces, `dk1`/`dk2` the inks on them, `accent1` the accent,
 /// `accent2`..`accent5` the status hues and `accent6` the deep tone.
 fn theme_xml(palette: &Palette) -> String {

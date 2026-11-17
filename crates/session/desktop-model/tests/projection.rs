@@ -146,7 +146,7 @@ fn shortcut(id: &str, name: &str) -> tilo_automation::SavedShortcut {
     )
 }
 
-/// Two collaborators saving different shortcuts at once both keep theirs,
+/// Two members saving different shortcuts at once both keep theirs,
 /// and a deletion reaches the peer that already held the shortcut.
 #[test]
 fn shortcuts_merge_by_id_and_deletions_replicate() {

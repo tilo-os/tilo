@@ -3,7 +3,7 @@
 //! own identity, so what one has selected never shapes another's view.
 //!
 //! Where a participant is, is said in the artwork's own terms: a range over
-//! its marks, in the order every collaborator holds them, so a peer's
+//! its marks, in the order every member holds them, so a peer's
 //! selection resolves on the other machine without coordinates.
 //!
 //! - **Keyed by [`ParticipantId`]**, which the host derives from the

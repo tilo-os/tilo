@@ -102,7 +102,7 @@ impl AppBrokerState {
             .cloned()
             .ok_or("agent certificate missing")?;
         self.admit_agent_join(&workspace, &cert.agent_id, &admitted)?;
-        let caller = Caller::local_person(admitted.principal_id.clone())
+        let caller = Caller::local_person(admitted.actor_key.clone())
             .in_workspace(workspace.clone())
             .delegated_to(cert.agent_id.clone())
             .in_new_execution()

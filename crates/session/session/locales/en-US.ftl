@@ -127,7 +127,7 @@ shell-not-shared-title-unnamed = A workspace with no name did not take your wind
 shell-not-shared-title-gone = A workspace this device is no longer in did not take your window layout
 shell-not-shared-body = It stays on this device: { $reason }.
 
-# A collaborator's device speaks another Tilo protocol version: the two work
+# A member's device speaks another Tilo protocol version: the two work
 # together again once one of them updates.
 version-mismatch-updating-title = { $device } runs a newer Tilo
 version-mismatch-updating-body = This device updates and restarts onto it once your screen has been locked for a while.

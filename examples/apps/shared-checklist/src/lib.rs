@@ -12,7 +12,7 @@
 //!   adds keep both items and an edit follows its item wherever it moves.
 //! - Each edit of a field and each verb is one undo step and one attributed
 //!   version. Undo takes back the local participant's own, not a
-//!   collaborator's.
+//!   member's.
 //!
 //! The next item's title is typed into a form: local to this window, never
 //! synced or undone, and submitted as one invocation of `add`.

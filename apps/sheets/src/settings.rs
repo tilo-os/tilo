@@ -8,7 +8,7 @@ use ui::tilo_resource::{self, Model};
 use tilo_locale::{Currency, DateStyle, Locale};
 use ui::clock::TimeStyle;
 
-/// Per-document locale overrides, stored in the workbook so collaborators share them; `None`
+/// Per-document locale overrides, stored in the workbook so members share them; `None`
 /// inherits the global default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Model)]
 pub struct DocSettings {

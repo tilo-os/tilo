@@ -264,7 +264,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         assert_eq!(
             *actions.callers.lock().unwrap(),
             [Caller::authenticated(user.user_pk, a.device_pubkey())],
-            "the plane sees the principal the relay authenticated, not the claimed sender"
+            "the plane sees the actor the relay authenticated, not the claimed sender"
         );
     }
 }

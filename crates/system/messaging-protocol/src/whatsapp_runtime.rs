@@ -295,7 +295,7 @@ mod tests {
             .unwrap()
             .into_parts();
         let owner = Owner {
-            principal: "11".repeat(32),
+            actor: "11".repeat(32),
             device: "device-a".into(),
             service: Service::Whatsapp,
             account: "tilo-account".into(),

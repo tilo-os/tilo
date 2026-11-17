@@ -1,5 +1,6 @@
-//! The `tasks.tracker` record: a workspace's issues, and the projects and
-//! areas above them.
+//! The `tasks.tracker` record, the projects and areas above a workspace's
+//! issues, and the issues themselves, which the Tasks app keeps in the
+//! `tasks.issues` parts beside it.
 //!
 //! An issue has a number, a title, a markdown body, a status, an assignee,
 //! labels, a parent (nested issues are sub-issues), links to other resources
@@ -27,24 +28,27 @@ mod tracker_area;
 pub use effect::{NOTE_KIND, NOTES, TasksEffect};
 pub use goal::Area;
 pub use issue::{
-    ASSIGNEE_FORMS, Attachment, Issue, Link, MAX_ESTIMATE, MAX_MESSAGE_CHARS, Message, MessageKind,
-    NewIssue, Priority, Status, agent_assignee, checked_assignee, outside_assignee,
-    person_assignee,
+    ASSIGNEE_FORMS, Attachment, Issue, Link, MAX_ATTACHMENT_NAME_CHARS, MAX_ESTIMATE,
+    MAX_MESSAGE_CHARS, MAX_TITLE_CHARS, Message, MessageKind, NewIssue, Priority, Status,
+    agent_assignee, checked_assignee, outside_assignee, person_assignee,
 };
 pub use record::{Tracker, tracker};
 pub use tracker_area::{Kind, Person, TrackerArea};
 
-/// The record kind issues live in.
+/// The kind of the tracker's own record, which keeps its projects and areas.
 pub const KIND: &str = "tasks.tracker";
+
+/// The kind of the parts the issues are kept in.
+pub const ISSUES_KIND: &str = "tasks.issues";
 
 /// The app that keeps the record.
 pub const APP_ID: &str = "so.tilo.tasks";
 
-/// The resource address of `issue` in the tracker, the one its reference
-/// chip, its search hit and its `open` name.
+/// The resource address of `issue`, the one its reference chip, its search
+/// hit and its `open` name, whichever part keeps it.
 #[must_use]
 pub fn issue_resource(issue: &tilo_resource::Id) -> String {
-    tilo_resource::items::item_resource_id_in(KIND, "issues", issue)
+    tilo_resource::items::item_resource_id_in(ISSUES_KIND, "issues", issue)
 }
 
 /// The resource address of the project or area `area`, as a task names it in
@@ -66,6 +70,3 @@ pub fn area_goal(area: &tilo_resource::Id, name: &str) -> Area {
         label: name.to_owned(),
     }
 }
-
-#[cfg(test)]
-mod tests;

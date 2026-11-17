@@ -1347,7 +1347,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
                 &tilo_actions::Actor::Member(tilo_actions::MemberId::person("guest"))
             )
             .is_ok(),
-            "a collaborator still reaches the shared effects"
+            "a member still reaches the shared effects"
         );
         let me = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
         assert!(invoke(&mut app, "copy-local-folder", &me).is_ok());

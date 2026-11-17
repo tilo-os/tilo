@@ -187,7 +187,7 @@ impl Harness {
         let mut stream = StdUnixStream::connect(&self.socket).unwrap();
         write_handoff(
             &mut stream,
-            &BlobPrincipal::App(BlobScope::new(workspace, app).unwrap()),
+            &BlobActor::App(BlobScope::new(workspace, app).unwrap()),
         )
         .unwrap();
         BlobClient::from_app_stream(stream).unwrap()
@@ -199,7 +199,7 @@ tilo_test_env::scenario! {
         clippy::too_many_lines,
         reason = "one scenario, one labelled phase per merged case"
     )]
-    fn blob_reads_are_confined_to_one_principal_and_scope;
+    fn blob_reads_are_confined_to_one_actor_and_scope;
 
     phase a_second_connection_of_the_same_scope_reads_what_the_first_put;
     {
@@ -275,21 +275,21 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase handoff_frames_fix_exactly_one_valid_principal;
+    phase handoff_frames_fix_exactly_one_valid_actor;
     {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let decode = |principal: &BlobPrincipal| {
+        let decode = |actor: &BlobActor| {
             let mut frame = Vec::new();
-            write_handoff(&mut frame, principal).unwrap();
+            write_handoff(&mut frame, actor).unwrap();
             runtime.block_on(read_handoff(&mut frame.as_slice()))
         };
-        let app = BlobPrincipal::App(BlobScope::new("workspace-1", "so.tilo.notes").unwrap());
+        let app = BlobActor::App(BlobScope::new("workspace-1", "so.tilo.notes").unwrap());
         assert_eq!(decode(&app).unwrap(), app);
         assert_eq!(
-            decode(&BlobPrincipal::Session).unwrap(),
-            BlobPrincipal::Session
+            decode(&BlobActor::Session).unwrap(),
+            BlobActor::Session
         );
 
         let raw = |json: &str| {
@@ -299,17 +299,17 @@ tilo_test_env::scenario! {
             runtime.block_on(read_handoff(&mut frame.as_slice()))
         };
         assert_eq!(
-            raw(r#"{"protocol":1,"principal":"app","workspace":"workspace-1","app_id":"so.tilo.notes"}"#)
+            raw(r#"{"protocol":1,"actor":"app","workspace":"workspace-1","app_id":"so.tilo.notes"}"#)
                 .unwrap(),
             app
         );
         for bad in [
-            r#"{"protocol":2,"principal":"session"}"#,
-            r#"{"protocol":1,"principal":"session","workspace":"r"}"#,
-            r#"{"protocol":1,"principal":"app","workspace":"..","app_id":"a"}"#,
-            r#"{"protocol":1,"principal":"app","workspace":"a/b","app_id":"a"}"#,
-            r#"{"protocol":1,"principal":"root"}"#,
-            r#"{"protocol":1,"principal":"session","extra":true}"#,
+            r#"{"protocol":2,"actor":"session"}"#,
+            r#"{"protocol":1,"actor":"session","workspace":"r"}"#,
+            r#"{"protocol":1,"actor":"app","workspace":"..","app_id":"a"}"#,
+            r#"{"protocol":1,"actor":"app","workspace":"a/b","app_id":"a"}"#,
+            r#"{"protocol":1,"actor":"root"}"#,
+            r#"{"protocol":1,"actor":"session","extra":true}"#,
         ] {
             assert!(raw(bad).is_err(), "{bad} must be refused");
         }
@@ -697,7 +697,7 @@ where
     let mut stream = StdUnixStream::connect(&harness.socket).unwrap();
     write_handoff(
         &mut stream,
-        &BlobPrincipal::App(BlobScope::new("workspace-1", "so.tilo.photos").unwrap()),
+        &BlobActor::App(BlobScope::new("workspace-1", "so.tilo.photos").unwrap()),
     )
     .unwrap();
     let connection = Connection::connect("test-raw-media", stream).unwrap();

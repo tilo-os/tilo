@@ -18,7 +18,7 @@
 # base image inherits does not cover it and cannot be made to. The answer is not
 # a Tilo vendor key — a vendor key means only images we sign are attestable, and
 # an image you built yourself would not be. Instead the machine generates its own
-# Platform Key and signs its own boot artefacts, and a collaborator who chooses
+# Platform Key and signs its own boot artefacts, and a member who chooses
 # to trust that key gets an attestable machine either way.
 #
 # ## The order that matters

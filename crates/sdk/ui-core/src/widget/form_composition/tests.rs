@@ -155,10 +155,7 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
     fn measured_long_labels_and_large_text_change_layout_without_breakpoints() {
         let theme = Theme::dark();
         let mut short = Field::new("Name", TextInput::local());
-        let mut long = Field::new(
-            "Full name as shown to all your collaborators",
-            TextInput::local(),
-        );
+        let mut long = Field::new("Full name as shown to all your members", TextInput::local());
         solve(&mut short, 400.0, &theme);
         solve(&mut long, 400.0, &theme);
         assert_eq!(
@@ -239,7 +236,7 @@ fn named<'a>(node: &'a InspectionNode, id: &str) -> &'a InspectionNode {
 }
 fn long_form() -> Form {
     Form::new().section(FormSection::new("Profile")
-            .field(Field::new("Full name as shown to your collaborators", TextInput::local().with_id("name"))
+            .field(Field::new("Full name as shown to your members", TextInput::local().with_id("name"))
                 .with_help("This name appears on your shared documents and team workspace."))
             .field(Field::new("Email address for account recovery", TextInput::local().with_id("email"))
                 .with_help("We use this address to help you sign in and send important account notifications.")
@@ -379,7 +376,7 @@ fn form_page_edges_and_resize_match_fresh_layout() {
         );
         assert_eq!(
             resized.focused_access_node().unwrap().name.as_deref(),
-            Some("Full name as shown to your collaborators")
+            Some("Full name as shown to your members")
         );
         assert_eq!(
             resized
@@ -389,7 +386,7 @@ fn form_page_edges_and_resize_match_fresh_layout() {
                 .map(|(_, name)| name.as_deref().unwrap_or(""))
                 .collect::<Vec<_>>(),
             [
-                "Full name as shown to your collaborators",
+                "Full name as shown to your members",
                 "Email address for account recovery",
                 "Send me occasional product updates and tips for working with my team.",
                 "Cancel",
@@ -903,9 +900,8 @@ fn untitled_sections_custom_fields_and_control_rows() {
 
 #[test]
 fn help_reads_under_the_label_beside_and_under_the_control_stacked() {
-    let field = || {
-        Field::new("Name", TextInput::local().with_id("name")).with_help("Shown to collaborators.")
-    };
+    let field =
+        || Field::new("Name", TextInput::local().with_id("name")).with_help("Shown to members.");
     let wide = FrameHarness::new_with_theme(
         crate::State::new(),
         Box::new(Form::new().section(FormSection::untitled().field(field()))),

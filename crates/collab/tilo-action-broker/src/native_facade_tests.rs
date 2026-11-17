@@ -126,7 +126,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
                 vec![
                     (
                         env.route.cluster_id.clone(),
-                        tilo_actions::MemberId::person(original.admitted.principal_id.clone())
+                        tilo_actions::MemberId::person(original.admitted.actor_key.clone())
                     );
                     2
                 ],
@@ -161,7 +161,7 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
                 .verify_action_caller(&env.route.cluster_id, &evidence)
                 .unwrap();
             assert!(!original.native_projection_verified);
-            let person = original.admitted.principal_id.clone();
+            let person = original.admitted.actor_key.clone();
             let projected = Caller::local_person(&person).in_workspace(&env.route.cluster_id);
             let origin = |caller, foreign_restriction| InvocationCaller::Certified {
                 caller: Box::new(caller),

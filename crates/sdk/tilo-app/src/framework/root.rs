@@ -261,7 +261,7 @@ fn open_spec() -> tilo_actions::ActionSpec {
 const ITEM_VIEW_LABEL: &str = "Item";
 
 /// `open` on one item resource: show that item, as its search hit would.
-fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
+pub(crate) fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
     let encoded = tilo_actions::EncodedAction::encode_operation(
         OPEN_TYPE,
         &serde_json::json!({ OPEN_ANCHOR: anchor }),
@@ -605,7 +605,7 @@ impl ResourceRoot {
     /// Stage a screenshot scenario's view state: every view's
     /// [`on_stage`](super::ViewCx::on_stage) callback runs now, and every
     /// hosted surface stages on its next sync.
-    /// Stage the views' state for `scenario`, and answer the collaborators
+    /// Stage the views' state for `scenario`, and answer the members
     /// the capture shows as the presence frames their windows would send.
     pub(crate) fn stage(
         &self,
@@ -613,7 +613,7 @@ impl ResourceRoot {
     ) -> Vec<(String, PresenceKey, PresencePayload)> {
         self.stages.run(scenario);
         self.run
-            .collaborators()
+            .members()
             .iter()
             .map(|(name, at)| {
                 let (key, payload) = at.presence_of(self.resource.kind, self.dispatch.app_id());
@@ -1150,7 +1150,7 @@ impl ResourceRoot {
     }
 
     /// Follow the document when it moved — a local action, a
-    /// collaborator's change, an undo or a restore — reading only what the
+    /// member's change, an undo or a restore — reading only what the
     /// change touched.
     ///
     /// Answers the document-owned head the bindings were refreshed from, for
@@ -1372,7 +1372,8 @@ thread_local! {
 /// and the entries its surfaces show.
 #[derive(PartialEq)]
 struct SearchState {
-    revision: (u64, u64),
+    /// The record's revision and loads, and the chains' revision.
+    revision: (u64, u64, u64),
     shown: Vec<SearchEntry>,
 }
 
@@ -1861,7 +1862,7 @@ impl RootModel for ResourceRoot {
             return Ok(Some(started));
         }
         // An effect reads the resource as the document stands, though no
-        // frame has run since a collaborator's change arrived.
+        // frame has run since a member's change arrived.
         if let Err(error) = self.typed.sync(doc) {
             tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
         }
@@ -1924,8 +1925,9 @@ impl ResourceRoot {
             shown.extend(surface.search_entries());
             queries.extend(surface.search_queries());
         });
+        let (revision, loads) = self.version();
         let state = SearchState {
-            revision: self.version(),
+            revision: (revision, loads, self.storage.chains_revision()),
             shown,
         };
         (state, queries)
@@ -1972,6 +1974,7 @@ impl ResourceRoot {
     /// its surfaces show.
     fn entries_of(&self, state: &SearchState) -> Vec<SearchEntry> {
         let mut entries = self.typed.search(&*self.typed.state());
+        entries.extend(self.storage.chains_search());
         entries.extend(state.shown.iter().cloned());
         entries
     }
@@ -2166,6 +2169,7 @@ impl RootSearch for ResourceRoot {
     /// contributes none.
     fn search_index_entries(&self) -> Vec<ui_core::search::index_publication::IndexEntry> {
         let mut entries = self.typed.search(&*self.typed.state());
+        entries.extend(self.storage.chains_search());
         self.surfaces(&mut |surface| {
             if surface.kept_in_search_index() {
                 entries.extend(surface.search_entries());

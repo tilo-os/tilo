@@ -62,7 +62,7 @@ pub struct PermissionPrompt {
     rect: Rect,
     pub app_id: String,
     pub capability_label: String,
-    /// Owners see the `Always` button enabled; invited collaborators see it
+    /// Owners see the `Always` button enabled; invited members see it
     /// dimmed and clicks through it are dropped.
     pub is_owner: bool,
     pub pending_choice: Option<PromptChoice>,

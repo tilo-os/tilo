@@ -5,7 +5,7 @@
 
 ## Defense in depth
 
-Security boundaries are selected by the principal they constrain: the verified
+Security boundaries are selected by the actor they constrain: the verified
 base system; first-party and third-party apps; untrusted peer-provided code; and
 a potentially curious hosted operator. No individual mechanism is sufficient.
 Boot verification, sandboxing, capability checks, authenticated identity,

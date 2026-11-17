@@ -6,7 +6,6 @@
 use ui::portal::{FileFilter, PickRequest};
 
 pub use ui::portal::{MultiChannel as ImportChannel, MultiOutcome as ImportOutcome};
-pub use ui::portal::{PortalChannel as ExportDestChannel, PortalOutcome as ExportDestOutcome};
 
 /// Both globs and MIME types, because portal backends differ in which they
 /// honour.
@@ -80,28 +79,16 @@ fn container_filter(ext: &str) -> FileFilter {
     }
 }
 
-/// The Save chooser for an export, on a worker thread. Under
-/// `landlock = "strict"` this round-trip is what earns the write: the grant
-/// follows the file the person picked.
+/// The Save chooser for an export. Under `landlock = "strict"` this round-trip
+/// is what earns the write: the grant follows the file the person picked.
 ///
 /// `suggested_name` seeds the filename field; `ext` also picks the type filter,
 /// so the dialog does not offer to save an H.264 stream as `.webm`.
-pub fn request_export_destination(suggested_name: &str, ext: &str) -> ExportDestChannel {
+pub fn export_request(suggested_name: &str, ext: &str) -> PickRequest {
     PickRequest::save("Export video", "Export", suggested_name)
         .thread_name("video-editor-export-dest")
         .filter(container_filter(ext))
         .all_files()
-        .send()
-}
-
-/// Where a render without a path is saved; its bytes are written there when the
-/// render finishes.
-pub fn request_export_save(suggested_name: &str, ext: &str) -> ui::portal::DestinationChannel {
-    PickRequest::save("Export video", "Export", suggested_name)
-        .thread_name("video-editor-export-save")
-        .filter(container_filter(ext))
-        .all_files()
-        .send_save_destination()
 }
 
 // ---------------------------------------------------------------------------
@@ -154,9 +141,7 @@ mod tests {
         phase export_and_import_dialogs_offer_formats_and_drain_cancellation;
         {
             {
-                let r = PickRequest::save("Export video", "Export", "Coastline_Doc_v3.mp4")
-                    .filter(container_filter("mp4"))
-                    .all_files();
+                let r = export_request("Coastline_Doc_v3.mp4", "mp4");
                 assert_eq!(r.title(), "Export video");
                 assert!(!r.is_multiple(), "an export writes exactly one file");
                 assert_eq!(
@@ -171,14 +156,6 @@ mod tests {
                 assert_eq!(container_filter("mp4").name(), "MP4 video");
                 assert_eq!(container_filter("mov").name(), "QuickTime video");
                 assert_eq!(container_filter("webm").name(), "WebM video");
-            }
-            {
-                let (services, recorder) = ui::host::HostServices::recording();
-                let rx = ui::host::scoped(&services, || {
-                    request_export_destination("Coastline_Doc_v3.mp4", "mp4")
-                });
-                assert_eq!(rx.try_recv(), Ok(ExportDestOutcome::Cancelled));
-                assert_eq!(recorder.pick_requests()[0].title(), "Export video");
             }
             {
                 let r = PickRequest::open_multiple("Import media", "Import")

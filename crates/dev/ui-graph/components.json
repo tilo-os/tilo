@@ -128,7 +128,7 @@
           "name": "who",
           "doc": "The person or agent it shows.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           },
           "positional": true
         },
@@ -765,14 +765,14 @@
           "name": "by",
           "doc": "Who made the newest change the person has not seen.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         },
         {
           "name": "by_all",
           "doc": "Everyone who made one of the changes the person has not seen, in the order they changed it (its newest change last), each once.",
           "type": {
-            "list": "principal"
+            "list": "actor"
           }
         },
         {
@@ -961,7 +961,7 @@
           "name": "author",
           "doc": "Who wrote it.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         },
         {
@@ -993,12 +993,12 @@
       "props": [
         {
           "name": "reactions",
-          "doc": "Who reacted, by emoji: the reactions as the message holds them (`Map<Text, Set<Principal>>`).",
+          "doc": "Who reacted, by emoji: the reactions as the message holds them (`Map<Text, Set<Actor>>`).",
           "type": {
             "map": {
               "key": "text",
               "value": {
-                "set": "principal"
+                "set": "actor"
               }
             }
           }
@@ -1017,7 +1017,7 @@
           "doc": "Who reacted with each of `emoji`, in the same order.",
           "type": {
             "list": {
-              "list": "principal"
+              "list": "actor"
             }
           }
         },
@@ -3568,7 +3568,7 @@
           "doc": "The people offered after \"Me\" and \"No one\": the workspace's members and agents.",
           "type": {
             "option": {
-              "list": "principal"
+              "list": "actor"
             }
           }
         },
@@ -3576,7 +3576,7 @@
           "name": "me",
           "doc": "The person the view is shown to: the list's \"Me\".",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         }
       ],
@@ -3584,7 +3584,7 @@
         {
           "name": "value",
           "doc": "The person's identity and the binding a pick writes (empty for nobody).",
-          "type": "principal",
+          "type": "actor",
           "merge": "register"
         }
       ],
@@ -3675,7 +3675,7 @@
           "name": "who",
           "doc": "Who it shows, in order: their faces, then a count for everyone past them.",
           "type": {
-            "list": "principal"
+            "list": "actor"
           }
         },
         {
@@ -3699,7 +3699,7 @@
           "name": "tone",
           "doc": "A person whose presence colour washes the chip's body: who the state it says is about.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         }
       ],
@@ -3750,7 +3750,7 @@
           "name": "who",
           "doc": "A person before the title, as an avatar: who did the work the row shows.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         },
         {
@@ -4343,14 +4343,14 @@
           "name": "speakers",
           "doc": "The people of the conversation it writes into, newest first, offered first in its `@` drawer; the view gives them from what the conversation has, and the drawer reads nothing else.",
           "type": {
-            "list": "principal"
+            "list": "actor"
           }
         },
         {
           "name": "people",
           "doc": "Who can read what it writes into: whom its `@` drawer offers; with no one, it offers the workspace's roster.",
           "type": {
-            "list": "principal"
+            "list": "actor"
           }
         }
       ],
@@ -4571,7 +4571,7 @@
           "name": "who",
           "doc": "A person before the name, as their avatar.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         },
         {
@@ -4624,7 +4624,7 @@
           "name": "who",
           "doc": "A person whose presence it says, in their colour, instead of a status.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         }
       ],
@@ -5183,7 +5183,7 @@
           "name": "changed_by",
           "doc": "Someone else changed the text and the person has not seen it yet: the field takes their colour. The host sets it, from what the field is bound to (task-legibility §3).",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         },
         {
@@ -6061,7 +6061,7 @@
           "name": "author",
           "doc": "Who made the change.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         },
         {
@@ -6271,7 +6271,7 @@
           "name": "who",
           "doc": "The person it names, shown as their avatar.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         }
       ],
@@ -7148,7 +7148,7 @@
           "name": "person",
           "doc": "The person the place shows, when it is one (a direct conversation): their avatar and presence ring in the icon's place.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         }
       ],
@@ -7375,7 +7375,7 @@
           "name": "who",
           "doc": "Who it is: a person or an agent.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           },
           "positional": true
         },
@@ -7614,9 +7614,9 @@
         },
         {
           "name": "presence",
-          "doc": "Who else is at the item now (a collaborator's or an agent's lens on it), shown on the row as a list row shows it ([`crate::widget::ListItemProps::presence`]).",
+          "doc": "Who else is at the item now (a member's or an agent's lens on it), shown on the row as a list row shows it ([`crate::widget::ListItemProps::presence`]).",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         },
         {
@@ -7720,16 +7720,16 @@
         },
         {
           "name": "presence",
-          "doc": "Who else is at the item now (a collaborator's or an agent's lens on it), shown on the row.",
+          "doc": "Who else is at the item now (a member's or an agent's lens on it), shown on the row.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         },
         {
           "name": "author",
           "doc": "Who wrote it, in a transcript: the list shows their avatar, their name and the time over each run of their consecutive messages, so the row holds only what they wrote.",
           "type": {
-            "option": "principal"
+            "option": "actor"
           }
         },
         {
@@ -7743,7 +7743,7 @@
           "name": "read_by",
           "doc": "Who else has read to it (`seen_by(c, m)`), in a transcript: their faces, small, once, on the line where their reading ends — each of them shows on no other line, and the author never beside their own words.",
           "type": {
-            "list": "principal"
+            "list": "actor"
           }
         },
         {

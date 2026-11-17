@@ -253,6 +253,10 @@ impl ui::widget::controls::ActionControls for PhotosApp {
 }
 
 impl Widget for PhotosApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
         dyn ui::content_zoom::ContentZoom,

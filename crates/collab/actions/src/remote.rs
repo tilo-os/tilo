@@ -561,7 +561,7 @@ pub struct InvocationState {
 }
 
 /// A caret or selection in a record, as the live plane's selection anchors
-/// (hex): every collaborator's editor resolves them against its own items.
+/// (hex): every member's editor resolves them against its own items.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActorPlace {
     pub anchor: String,
@@ -2479,7 +2479,7 @@ mod tests {
         assert_eq!(
             now(host.invoke(&mallory(), archive(id))),
             Err(ActionHostError::InvocationConflict),
-            "another principal cannot attach to someone else's invocation"
+            "another actor cannot attach to someone else's invocation"
         );
         assert_eq!(host.observe(&mallory(), &id), None);
         assert_eq!(

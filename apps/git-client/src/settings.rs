@@ -1,7 +1,7 @@
 //! The person's diff preferences: which layout they read diffs in, whether
 //! they are syntax-highlighted, whether whitespace shows and long lines wrap.
 //! They follow the person to every device as a personal settings section,
-//! never the shared document, so a collaborator's choice never changes how
+//! never the shared document, so a member's choice never changes how
 //! someone else reads a diff.
 
 use serde::{Deserialize, Serialize};

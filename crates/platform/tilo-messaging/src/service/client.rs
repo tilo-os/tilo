@@ -149,16 +149,16 @@ impl Connection {
         )
     }
 
-    pub fn principal(&self) -> String {
-        self.snapshot(|snapshot| snapshot.principal.clone())
+    pub fn actor(&self) -> String {
+        self.snapshot(|snapshot| snapshot.actor.clone())
     }
 
     pub fn enrollment(self: &Arc<Self>) -> EnrollmentClient {
-        EnrollmentClient::new(self.principal(), Arc::new(Enrollment(self.clone())))
+        EnrollmentClient::new(self.actor(), Arc::new(Enrollment(self.clone())))
     }
 
     pub fn messaging(self: &Arc<Self>) -> MessagingClient {
-        MessagingClient::new(self.principal(), Arc::new(Messaging(self.clone())))
+        MessagingClient::new(self.actor(), Arc::new(Messaging(self.clone())))
     }
 
     pub fn observe(
@@ -341,7 +341,7 @@ impl MessagingHost for Messaging {
             })
             .then(|| {
                 GroupClient::new(
-                    self.0.principal(),
+                    self.0.actor(),
                     account.clone(),
                     Arc::new(Groups(self.0.clone(), account.clone())),
                 )
@@ -358,7 +358,7 @@ impl MessagingHost for Messaging {
                 .map(|setup| setup.generation)
         })?;
         Some(SetupClient::new(
-            self.0.principal(),
+            self.0.actor(),
             account.clone(),
             generation,
             Arc::new(Setup(self.0.clone(), account.clone())),

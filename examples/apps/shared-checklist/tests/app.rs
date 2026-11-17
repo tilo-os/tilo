@@ -1,5 +1,5 @@
 //! Two replicas of one checklist, edited concurrently and then synced, as
-//! two collaborators' machines would be.
+//! two members' machines would be.
 
 use example_shared_checklist::{App, Checklist};
 use ui::a11y::Action;
@@ -136,7 +136,7 @@ fn history_is_attributed() {
     );
 }
 
-/// Undo takes back my last action, not the collaborator's that arrived
+/// Undo takes back my last action, not the member's that arrived
 /// after it.
 #[test]
 fn undo_takes_back_only_my_own_actions() {
@@ -148,7 +148,7 @@ fn undo_takes_back_only_my_own_actions() {
     app.merge_peer(grace.doc_mut()).expect("merge");
     app.harness()
         .expect(&SemanticExpectation::named("progress").name("0 of 1 done"))
-        .expect("the collaborator's item shows up");
+        .expect("the member's item shows up");
 
     assert!(app.undo());
     let state = app.state();

@@ -627,7 +627,7 @@ p99_tolerance = 1.5
 min_delta = 2.0
 source = "framework-scaling scroll shown in a host's scene, frames repainted whole in 120, 5,000 items (reported)"
 
-# The same window scrolled with a collaborator's pointer and name resting over
+# The same window scrolled with a member's pointer and name resting over
 # the list, painted over the widgets as a window paints them
 # (`FRAMEWORK-SCROLL-PEER`): the copies go on, and the mark repaints where it
 # is and where the copy took it. 109,168 px p50 of the 1280x800 window on an
@@ -640,7 +640,7 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10000.0
-source = "framework-scaling scroll beside a collaborator's pointer, pixels one copied scroll frame repaints, 5,000 items"
+source = "framework-scaling scroll beside a member's pointer, pixels one copied scroll frame repaints, 5,000 items"
 
 [kpi."render.framework_scroll.peer_whole_frames.5k"]
 unit = "count"
@@ -648,7 +648,7 @@ max = 0.0
 p50_tolerance = 1.5
 p99_tolerance = 1.5
 min_delta = 2.0
-source = "framework-scaling scroll beside a collaborator's pointer, frames repainted whole in 120, 5,000 items (reported)"
+source = "framework-scaling scroll beside a member's pointer, frames repainted whole in 120, 5,000 items (reported)"
 
 [kpi."render.framework_scroll.whole_frames.5k"]
 unit = "count"
@@ -1187,10 +1187,10 @@ min_delta = 2.0
 source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted frame during overview, focus and zoom interactions"
 
 # Relay hosting cost: crates/hosting/tilo-relay/examples/relay_load,
-# 100 collaborators in workspaces of four, ten measured minutes, one sample per
+# 100 members in workspaces of four, ten measured minutes, one sample per
 # minute; tools/perf/adapters.py hosting-load prices them with
 # tools/perf/prices.toml. The KPI target is at most $0.001 per
-# active collaborator-hour.
+# active member-hour.
 #
 # The enforced ceilings are about twice the first measurement (Perf /
 # scheduled run 90022 on `runner`): CPU 31.2 s, RSS 0.86 MiB, fan-out p50 13.8
@@ -1203,7 +1203,7 @@ source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted fra
 # (`relay_load --relay-cpus 2`, record meta `relay_cpus = "2"`), the priced
 # 2-vCPU VM's shape, where it had run on all of the runner's (four runtime
 # workers, meta `relay_cpus = "all"` or absent). A scratch profile on the same
-# commit (Perf / scheduled 97584) measured 13.9 s CPU per collaborator-hour at
+# commit (Perf / scheduled 97584) measured 13.9 s CPU per member-hour at
 # four workers and 12.4 s at two CPUs, fan-out p99 75.9 ms and 138.1 ms: fewer
 # idle workers woken to steal work, more queueing. The first two-CPU run
 # (Perf / scheduled on main, kpis=hosting, accept=all) starts the new
@@ -1217,7 +1217,7 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 3.0
-source = "relay_load: relay process CPU-seconds per active collaborator-hour"
+source = "relay_load: relay process CPU-seconds per active member-hour"
 
 [kpi."hosting.relay.rss_mib_per_collab.n100"]
 unit = "MiB"
@@ -1226,23 +1226,23 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.2
-source = "relay_load: relay resident memory per connected collaborator, above the idle relay"
+source = "relay_load: relay resident memory per connected member, above the idle relay"
 
 [kpi."hosting.relay.egress_bytes_per_collab_hour.n100"]
 unit = "bytes"
 p50 = 12700000.0
 enforce = true
-source = "relay_load: UDP bytes the relay's endpoint sent per active collaborator-hour"
+source = "relay_load: UDP bytes the relay's endpoint sent per active member-hour"
 
 [kpi."hosting.relay.frame_bytes_per_collab_hour.n100"]
 unit = "bytes"
 p50 = 10900000.0
 enforce = true
-source = "relay_load: framed bytes written to peer sessions per active collaborator-hour"
+source = "relay_load: framed bytes written to peer sessions per active member-hour"
 
 # Packets (the levers after bytes): a change that sends the same bytes in more
 # packets passes every byte budget, and costs egress, relay CPU and client
-# radio time all the same. Counted on the collaborators' QUIC connections
+# radio time all the same. Counted on the members' QUIC connections
 # (`Connection::stats`; loopback, so what they received is what the relay
 # sent). The relay's ACK-only datagrams answer client packets that carried
 # nothing to acknowledge back, so a client sending more packets shows twice.
@@ -1260,25 +1260,25 @@ source = "relay_load: framed bytes written to peer sessions per active collabora
 unit = "count"
 p50 = 27500.0
 enforce = true
-source = "relay_load: UDP datagrams the collaborators sent the relay per active collaborator-hour"
+source = "relay_load: UDP datagrams the members sent the relay per active member-hour"
 
 [kpi."hosting.relay.client_data_packets_per_collab_hour.n100"]
 unit = "count"
 p50 = 7150.0
 enforce = true
-source = "relay_load: collaborator datagrams carrying stream data per active collaborator-hour"
+source = "relay_load: member datagrams carrying stream data per active member-hour"
 
 [kpi."hosting.relay.datagrams_per_collab_hour.n100"]
 unit = "count"
 p50 = 30700.0
 enforce = true
-source = "relay_load: UDP datagrams the relay sent the collaborators per active collaborator-hour"
+source = "relay_load: UDP datagrams the relay sent the members per active member-hour"
 
 [kpi."hosting.relay.ack_only_datagrams_per_collab_hour.n100"]
 unit = "count"
 p50 = 9700.0
 enforce = true
-source = "relay_load: relay datagrams carrying only acknowledgements per active collaborator-hour"
+source = "relay_load: relay datagrams carrying only acknowledgements per active member-hour"
 
 [kpi."hosting.relay.fanout_ms.n100"]
 unit = "ms"
@@ -1343,7 +1343,7 @@ source = "relay_load: directory entries retention listed per committed delta (st
 
 # Compaction: each round verified every retained entry's document
 # signature 2-3 times, and every later round again, 23.47 per edit at p50
-# (max 45.6) and 2,115 ms of compaction CPU per collaborator-hour (Perf /
+# (max 45.6) and 2,115 ms of compaction CPU per member-hour (Perf /
 # scheduled run 92376). Verifying each entry's bytes once per process: 1.11
 # per edit (max 1.14) and 325 ms (run 92377). Checks per edit are nearly
 # deterministic, so their ceiling sits about 35 % above: a round verifying
@@ -1362,19 +1362,19 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 100.0
-source = "relay_load: compaction thread CPU per active collaborator-hour (compaction::cpu_ns)"
+source = "relay_load: compaction thread CPU per active member-hour (compaction::cpu_ns)"
 
 # Not met on AWS: egress at $0.09/GB is $0.00099 of the measured $0.00113.
 [kpi."hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100"]
 unit = "usd"
 p50 = 0.001
-source = "KPI: Relay cost per active collaborator-hour"
+source = "KPI: Relay cost per active member-hour"
 
 [kpi."hosting.relay.cost_usd_per_collab_hour.hetzner-cx22.n100"]
 unit = "usd"
 p50 = 0.001
 enforce = true
-source = "KPI: Relay cost per active collaborator-hour"
+source = "KPI: Relay cost per active member-hour"
 
 # Browser runtime (scripts/perf/browser_qualification.mjs): the release
 # desktop bundle (build.sh --bundle desktop, the bytes t's image-web-entry

@@ -56,14 +56,14 @@ pub struct ServiceSockets<'a> {
 /// app holds the descriptor. A host without the service leaves the app on
 /// its process-local store.
 fn connect_blobs(path: &Path, app_id: &str, workspace: &str) -> Option<UnixStream> {
-    use runtime_fs::blobs::{BlobPrincipal, BlobScope, write_handoff};
+    use runtime_fs::blobs::{BlobActor, BlobScope, write_handoff};
 
     let scope = BlobScope::new(workspace, app_id).ok()?;
     let mut stream = UnixStream::connect(path).ok()?;
     stream
         .set_write_timeout(Some(std::time::Duration::from_secs(5)))
         .ok()?;
-    write_handoff(&mut stream, &BlobPrincipal::App(scope)).ok()?;
+    write_handoff(&mut stream, &BlobActor::App(scope)).ok()?;
     stream.set_write_timeout(None).ok()?;
     Some(stream)
 }

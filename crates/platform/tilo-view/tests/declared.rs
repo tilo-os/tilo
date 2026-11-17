@@ -70,7 +70,7 @@ fn cx() -> ViewCx {
             ty: "test.channel".to_owned(),
         },
         "page",
-        tilo_view::Principal {
+        tilo_view::Actor {
             id: "Pat".to_owned(),
             name: "Pat".to_owned(),
         },

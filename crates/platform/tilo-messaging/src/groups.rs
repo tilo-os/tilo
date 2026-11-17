@@ -100,14 +100,14 @@ pub trait GroupHost: Send + Sync {
 }
 #[derive(Clone)]
 pub struct GroupClient {
-    principal: String,
+    actor: String,
     account: ServiceAccount,
     host: Arc<dyn GroupHost>,
 }
 impl GroupClient {
-    pub fn new(principal: String, account: ServiceAccount, host: Arc<dyn GroupHost>) -> Self {
+    pub fn new(actor: String, account: ServiceAccount, host: Arc<dyn GroupHost>) -> Self {
         Self {
-            principal,
+            actor,
             account,
             host,
         }
@@ -121,16 +121,16 @@ impl GroupClient {
                 .account
                 .chars()
                 .any(|c| c.is_whitespace() || c.is_control())
-            || self.principal.is_empty()
-            || self.principal.len() > 512
-            || self.principal.chars().any(char::is_control)
+            || self.actor.is_empty()
+            || self.actor.len() > 512
+            || self.actor.chars().any(char::is_control)
         {
             return Err(SendError::InvalidRequest);
         }
         Ok(())
     }
-    pub fn principal(&self) -> &str {
-        &self.principal
+    pub fn actor(&self) -> &str {
+        &self.actor
     }
     pub fn account(&self) -> &ServiceAccount {
         &self.account

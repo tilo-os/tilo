@@ -179,7 +179,7 @@ impl Store {
     }
 
     /// Revalidate against the current shared projection immediately before a
-    /// network attempt or deletion. A late collaborator edit changes neither
+    /// network attempt or deletion. A late member edit changes neither
     /// the target nor the document unexpectedly; the user must review it.
     pub(super) fn confirm_pending(&mut self) {
         let Some(pending) = self.pending_confirmation.take() else {

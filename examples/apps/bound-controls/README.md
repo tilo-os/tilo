@@ -8,7 +8,7 @@ for text, `cx.checkbox` for a boolean, `cx.control` for anything built from a
 control whose value is not the field's type (a `Dropdown` of names for an
 `Atom`). A bound control shows what the resource holds at its path and edits
 it there with each value the user commits, so it follows edits from
-collaborators, agents and undo with no code of its own, and disables itself
+members, agents and undo with no code of its own, and disables itself
 for a viewer.
 
 Read:

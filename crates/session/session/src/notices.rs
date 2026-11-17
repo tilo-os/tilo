@@ -1255,7 +1255,7 @@ mod tests {
         fn what_a_workspace_did_not_take_is_said_in_whole_words;
 
         phase a_device_on_another_version_is_named_and_told_what_to_do;
-        // A collaborator's device at another protocol version reaches the person as a calm notice
+        // A member's device at another protocol version reaches the person as a calm notice
         // naming the device and what to do about it; one this device only knows by its endpoint is
         // said plainly rather than spelled out. It waits until it is read.
         {

@@ -559,7 +559,7 @@ fn checked_permissions(
     values: HashMap<String, Vec<String>>,
 ) -> zbus::fdo::Result<BTreeMap<String, Vec<String>>> {
     if values.len() > MAX_ENTRIES {
-        return Err(invalid("too many permission principals"));
+        return Err(invalid("too many permission actors"));
     }
     values
         .into_iter()

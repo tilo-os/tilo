@@ -645,7 +645,7 @@ impl crate::Published for DesktopHost {
 
     fn invoke_as(
         &mut self,
-        actor: &str,
+        actor: &ui::tilo_actions::Actor,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut crate::Look<'_>,

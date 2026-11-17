@@ -139,7 +139,7 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();
         app.call("rename", json!({"title": "current"})).unwrap();
-        // A collaborator runs a newer build of the app and bumps the storage
+        // A member runs a newer build of the app and bumps the storage
         // version; its change syncs here.
         let mut peer = app.peer_document();
         peer.put(ROOT, VERSION_KEY, 9_u64).unwrap();
@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
         app.call("rename", json!({"title": "kept"})).unwrap();
         app.call("checkpoint", json!({"name": "before delete"}))
             .unwrap();
-        // A collaborator clears the title.
+        // A member clears the title.
         let mut peer = app.peer_document();
         peer.put(ROOT, "title", "").unwrap();
         peer.commit();

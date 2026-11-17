@@ -60,7 +60,7 @@ pub struct ChangeOrigin {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub principal: Option<String>,
+    pub actor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invoked_by: Option<InvokingAction>,
 }
@@ -89,14 +89,14 @@ impl ChangeOrigin {
     pub fn action(action: impl Into<String>) -> Self {
         Self {
             action: Some(action.into()),
-            principal: None,
+            actor: None,
             invoked_by: None,
         }
     }
 
     #[must_use]
-    pub fn by(mut self, principal: impl Into<String>) -> Self {
-        self.principal = Some(principal.into());
+    pub fn by(mut self, actor: impl Into<String>) -> Self {
+        self.actor = Some(actor.into());
         self
     }
 

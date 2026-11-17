@@ -2,7 +2,7 @@
 //!
 //! It is what `App::local_author` is built from, what every committed action is
 //! stamped with, and what `undo_for_author` matches on — the thing documented
-//! as stopping one collaborator reverting another's work. Matching on a value
+//! as stopping one member reverting another's work. Matching on a value
 //! two people share does not stop anything.
 //!
 //! These tests set the environment through `tilo_test_env`, which serialises

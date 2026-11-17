@@ -126,13 +126,25 @@ pub trait Chained: Resource {
     /// own record (who a mention names), and refuse what that record does
     /// not allow (a post to a channel it has not got). A part's action
     /// itself reads only its part, so it replays the same on every replica.
+    ///
+    /// `parts` are the parts this device holds, oldest first: what an
+    /// action checks across items of other parts reads them here (a task
+    /// placed before one kept in another part, a parent that must exist),
+    /// so the verb itself still reads only its own part.
     fn prepare(
         action: &mut Self::Action,
         base: &<Self::Base as Resource>::State,
+        parts: &[(u64, Rc<Self::State>)],
     ) -> Result<(), String> {
-        let _ = (action, base);
+        let _ = (action, base, parts);
         Ok(())
     }
+
+    /// Whether a window holds every part of the chain rather than its head
+    /// and what a reader scrolled back to: for a chain whose views list all
+    /// of it (a tracker's issues), where a part is a bound on what one
+    /// change costs, not on what a device holds.
+    const HELD_WHOLE: bool = false;
 
     /// What a part started after part `previous` (whose state is `part`)
     /// carries of the parts before it, written into it as it starts, before
@@ -206,6 +218,24 @@ pub(crate) struct WorkspaceRecords {
     pub(crate) app_title: &'static str,
 }
 
+/// The parts a window holds, oldest first, by their numbers.
+pub type Parts<P> = Rc<[(u64, Rc<<P as Resource>::State>)]>;
+
+/// What each held part published, by its number: the state and language it
+/// was built from, and the publication.
+type PartsPublished<P> =
+    BTreeMap<u64, (Rc<<P as Resource>::State>, u64, tilo_actions::ResourceSpec)>;
+
+/// What search found in each held part, by its number, with the state it was
+/// read from.
+type PartsSearched<P> = BTreeMap<
+    u64,
+    (
+        Rc<<P as Resource>::State>,
+        Rc<Vec<tilo_resource::SearchEntry>>,
+    ),
+>;
+
 /// The app's record as a part's [`Chained::prepare`] reads it.
 type Base<P> = Rc<dyn Fn() -> Rc<<<P as Chained>::Base as Resource>::State>>;
 
@@ -231,6 +261,20 @@ pub(crate) struct ChainState<P: Chained> {
     /// looked for a newer head and at the parts it waits for.
     looked: Cell<Option<u64>>,
     published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
+    /// What each held part published, with the state and language it was
+    /// built from ([`Self::part_published`]).
+    part_published: RefCell<PartsPublished<P>>,
+    /// The parts held, as view state that follows every change
+    /// ([`Chain::state`]), and the revision it was last written at.
+    state: ui_core::LocalState<Parts<P>>,
+    state_at: Cell<Option<u64>>,
+    /// The parts this window's person wrote into here, newest last: what
+    /// the window's Undo takes back first ([`Chain::undo_last`]), and the
+    /// parts it took back from, for Redo.
+    written: RefCell<Vec<u64>>,
+    undone: RefCell<Vec<u64>>,
+    /// What search found in each held part, with the state it was read from.
+    part_search: RefCell<PartsSearched<P>>,
     /// The person's record of the actions asked for while the part they
     /// change was on its way from the workspace ([`ChainState::apply_as`]),
     /// kept with the app's records: every window of the app shows them and
@@ -319,6 +363,12 @@ impl<P: Chained> ChainState<P> {
             revision: Cell::new(0),
             looked: Cell::new(None),
             published: RefCell::new(None),
+            part_published: RefCell::default(),
+            state: ui_core::LocalState::new(Rc::default()),
+            state_at: Cell::new(None),
+            written: RefCell::default(),
+            undone: RefCell::default(),
+            part_search: RefCell::default(),
             waiting_record: unsent_checkout(&workspace.me),
             unsent_looked: Cell::new(false),
             unwritten: RefCell::default(),
@@ -346,6 +396,15 @@ impl<P: Chained> ChainState<P> {
     /// The parts held, oldest first.
     pub(crate) fn parts(&self) -> Vec<(u64, Rc<P::State>)> {
         self.refresh();
+        self.parts
+            .borrow()
+            .iter()
+            .map(|(index, live)| (*index, live.get()))
+            .collect()
+    }
+
+    /// The parts held, oldest first, as they were last followed.
+    fn held(&self) -> Vec<(u64, Rc<P::State>)> {
         self.parts
             .borrow()
             .iter()
@@ -431,6 +490,9 @@ impl<P: Chained> ChainState<P> {
         for index in opened {
             moved |= self.follow(index).is_ok();
         }
+        if P::HELD_WHOLE {
+            self.hold_earlier();
+        }
         if self.due() {
             moved |= self.look();
             moved |= self.follow_waiting();
@@ -441,6 +503,10 @@ impl<P: Chained> ChainState<P> {
         }
         if moved {
             self.moved();
+        }
+        let revision = self.revision.get();
+        if self.state_at.replace(Some(revision)) != Some(revision) {
+            self.state.set(self.held().into());
         }
         moved
     }
@@ -498,7 +564,15 @@ impl<P: Chained> ChainState<P> {
         if self.unsent().is_empty() {
             match self.try_apply(action, invoker)? {
                 Write::Arriving => {}
-                Write::Done(index, created) => return Ok(Some((index, created))),
+                Write::Done(index, created) => {
+                    // Only what the window's person did themselves: an
+                    // agent's step is its own to take back.
+                    if invoker.acting.by.key() == ActionInvoker::member(self.workspace.me.clone()).acting.by.key() {
+                        self.written.borrow_mut().push(index);
+                        self.undone.borrow_mut().clear();
+                    }
+                    return Ok(Some((index, created)));
+                }
             }
         }
         let id = self.keep_unsent(action, invoker)?;
@@ -552,9 +626,11 @@ impl<P: Chained> ChainState<P> {
         let mut doc = ui_core::automerge::AutoCommit::new();
         P::initialize(&mut doc).ok()?;
         let base = (self.base)();
+        // As held, without a refresh: this is read while one runs.
+        let parts = self.held();
         for entry in unsent {
             let mut action = entry.action.clone();
-            if P::prepare(&mut action, &base).is_err() {
+            if P::prepare(&mut action, &base, &parts).is_err() {
                 continue;
             }
             let Ok(encoded) = tilo_resource::encode::<P>(&action) else {
@@ -898,6 +974,39 @@ impl<P: Chained> ChainState<P> {
         Ok(())
     }
 
+    /// Hold every part before the head that is neither held nor asked for:
+    /// a chain whose views list all of it ([`Chained::HELD_WHOLE`]).
+    fn hold_earlier(&self) {
+        let missing: Vec<u64> = {
+            let parts = self.parts.borrow();
+            let waiting = self.waiting.borrow();
+            let Some(&head) = parts.keys().next_back() else {
+                return;
+            };
+            (0..head)
+                .filter(|index| !parts.contains_key(index) && !waiting.contains_key(index))
+                .collect()
+        };
+        for index in missing {
+            // A part before the head was started before it, so it exists
+            // somewhere: one not on this device is asked for, never started
+            // here empty.
+            let checkout = self.checkout(index);
+            if !self.workspace.store.is_ready(&checkout.id)
+                && matches!(
+                    self.workspace.store.try_open_record(&checkout),
+                    Err(RecordOpenError::MissingRecord)
+                )
+            {
+                self.workspace.store.want(checkout.id);
+                continue;
+            }
+            if let Err(reason) = self.hold(index) {
+                tracing::warn!(kind = P::KIND, part = index, %reason, "earlier part not held");
+            }
+        }
+    }
+
     /// Where part `index`, asked for and not read here yet, stands; `None`
     /// once it is read (or was never asked for).
     pub(crate) fn waiting(&self, index: u64) -> Option<PartArrival> {
@@ -1032,10 +1141,12 @@ impl<P: Chained> ChainState<P> {
         }
         let mut action = action.clone();
         let base = (self.base)();
-        P::prepare(&mut action, &base).map_err(ActionError::Refused)?;
+        let parts = self.parts();
+        P::prepare(&mut action, &base, &parts).map_err(ActionError::Refused)?;
         let place = P::place(&action, &base);
         drop(base);
-        let index = P::part_for(&action, &self.parts()).map_err(ActionError::Refused)?;
+        let index = P::part_for(&action, &parts).map_err(ActionError::Refused)?;
+        drop(parts);
         if let Some(permissions) = &self.workspace.permissions {
             // Decided where the chain publishes the action, as the API
             // decides it: a grant on the app, the parts' kind or the verb
@@ -1219,17 +1330,17 @@ impl<P: Chained> ChainState<P> {
             return published.clone();
         }
         let parts = self.parts();
-        let head = parts
-            .last()
-            .map_or_else(|| Rc::clone(&self.empty), |(_, state)| Rc::clone(state));
-        let mut resource = tilo_resource::publish::<P>(&self.id, P::LABEL, &head);
+        let mut resource = match parts.last() {
+            Some((index, head)) => self.part_published(*index, head, revision.1),
+            None => tilo_resource::publish::<P>(&self.id, P::LABEL, &self.empty),
+        };
         let mut seen: std::collections::HashSet<tilo_actions::ResourceId> = resource
             .children
             .iter()
             .map(|child| child.id.clone())
             .collect();
-        for (_, state) in parts.iter().rev().skip(1) {
-            let earlier = tilo_resource::publish::<P>(&self.id, P::LABEL, state);
+        for (index, state) in parts.iter().rev().skip(1) {
+            let earlier = self.part_published(*index, state, revision.1);
             resource.children.extend(
                 earlier
                     .children
@@ -1237,6 +1348,10 @@ impl<P: Chained> ChainState<P> {
                     .filter(|child| seen.insert(child.id.clone())),
             );
         }
+        // Parts no longer held are forgotten with their publication.
+        self.part_published
+            .borrow_mut()
+            .retain(|index, _| parts.iter().any(|(held, _)| held == index));
         let mut published = route(resource, &self.id);
         // What the chain holds, read newest part first and paged, and each
         // item read from the part keeping it ([`Self::read`]): a device holds
@@ -1245,10 +1360,21 @@ impl<P: Chained> ChainState<P> {
         published.actions.push(read_spec::<P>(&self.id, None));
         for child in &mut published.children {
             let item = child.id.as_str().to_owned();
-            if tilo_resource::items::item_of_resource::<P>(&item).is_some()
-                && !child.actions.iter().any(|spec| spec.id == "read")
-            {
+            if tilo_resource::items::item_of_resource::<P>(&item).is_none() {
+                continue;
+            }
+            if !child.actions.iter().any(|spec| spec.id == "read") {
                 child.actions.push(read_spec::<P>(&self.id, Some(&item)));
+            }
+            // What an item holds as a resource of its own (a rich-text
+            // body) is read through the same read, from the part keeping it.
+            if let Some(table) = P::RECORD_TABLE {
+                offer_nested_reads::<P>(&mut child.children, table, &self.id);
+            }
+            // Shown where the app's window shows it, as its search hit
+            // opens it: the window's openers answer the item's address.
+            if !child.actions.iter().any(|spec| spec.id == "open") {
+                child.actions.push(super::root::item_open_spec(&item));
             }
         }
         let own: std::collections::HashSet<String> = published
@@ -1263,6 +1389,50 @@ impl<P: Chained> ChainState<P> {
                 .map(|spec| super::record::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)),
         );
         *self.published.borrow_mut() = Some((revision, published.clone()));
+        published
+    }
+
+    /// What search finds in every held part, each part's entries built
+    /// again only when that part changed: the chain's items, in the window's
+    /// search beside the app's own.
+    pub(crate) fn search(&self) -> Vec<tilo_resource::SearchEntry> {
+        let parts = self.parts();
+        let mut kept = self.part_search.borrow_mut();
+        kept.retain(|index, _| parts.iter().any(|(held, _)| held == index));
+        let mut entries = Vec::new();
+        for (index, state) in &parts {
+            let fresh = kept
+                .get(index)
+                .is_some_and(|(read, _)| Rc::ptr_eq(read, state));
+            if !fresh {
+                kept.insert(*index, (Rc::clone(state), Rc::new(P::search(state))));
+            }
+            if let Some((_, found)) = kept.get(index) {
+                entries.extend(found.iter().cloned());
+            }
+        }
+        entries
+    }
+
+    /// What part `index`, read as `state`, publishes: built again only when
+    /// the part changed since (or the language did), so a change to one
+    /// part costs that part's publication and not every part's.
+    fn part_published(
+        &self,
+        index: u64,
+        state: &Rc<P::State>,
+        language: u64,
+    ) -> tilo_actions::ResourceSpec {
+        if let Some((kept, at, published)) = self.part_published.borrow().get(&index)
+            && Rc::ptr_eq(kept, state)
+            && *at == language
+        {
+            return published.clone();
+        }
+        let published = tilo_resource::publish::<P>(&self.id, P::LABEL, state);
+        self.part_published
+            .borrow_mut()
+            .insert(index, (Rc::clone(state), language, published.clone()));
         published
     }
 
@@ -1387,6 +1557,24 @@ impl<P: Chained> ChainState<P> {
             "{item} is in a part of these {} this device does not hold",
             P::LABEL.to_lowercase()
         ))
+    }
+}
+
+/// Offer the chain's read on every resource under an item that its part's
+/// table reads (an item's rich-text body), bound to that resource.
+fn offer_nested_reads<P: Chained>(
+    children: &mut [tilo_actions::ResourceSpec],
+    table: &'static tilo_resource::table::ModelTable,
+    chain: &str,
+) {
+    for child in children {
+        let id = child.id.as_str().to_owned();
+        if tilo_resource::table::reads_item(table, P::KIND, &id)
+            && !child.actions.iter().any(|spec| spec.id == "read")
+        {
+            child.actions.push(read_spec::<P>(chain, Some(&id)));
+        }
+        offer_nested_reads::<P>(&mut child.children, table, chain);
     }
 }
 
@@ -1548,6 +1736,10 @@ impl<P: Chained> RecordApi for ChainState<P> {
         ChainState::publish(self)
     }
 
+    fn search(&self) -> Vec<tilo_resource::SearchEntry> {
+        ChainState::search(self)
+    }
+
     fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
         ChainState::read(self, payload)
     }
@@ -1618,6 +1810,54 @@ pub struct Chain<P: Chained> {
     dispatch: Dispatcher<P>,
 }
 
+/// A part of a chain as a record a view part is built over
+/// ([`Chain::part_record`]).
+pub struct PartRecord<P: Chained> {
+    chain: Rc<ChainState<P>>,
+    held: Rc<super::record::Held<P>>,
+}
+
+impl<P: Chained> super::record::sealed::Hold<P> for PartRecord<P> {
+    fn held(
+        &self,
+        _storage: super::record::sealed::Storage<'_>,
+    ) -> Option<Rc<super::record::Held<P>>> {
+        Some(Rc::clone(&self.held))
+    }
+
+    fn api(
+        &self,
+        _storage: super::record::sealed::Storage<'_>,
+    ) -> Option<super::record::sealed::Api> {
+        Some(super::record::sealed::Api(
+            Rc::clone(&self.chain) as Rc<dyn RecordApi>
+        ))
+    }
+}
+
+/// The chain as a record whose actions a view binds
+/// ([`ViewCx::record_actions`](super::ViewCx::record_actions)): its verbs and
+/// every held part's items, carried out on the part each names, whether or
+/// not a part is held yet (a first issue made in an empty tracker).
+impl<P: Chained> super::record::sealed::Hold<P> for Chain<P> {
+    fn held(
+        &self,
+        storage: super::record::sealed::Storage<'_>,
+    ) -> Option<Rc<super::record::Held<P>>> {
+        let head = self.head()?;
+        self.part_record(head)?.held(storage)
+    }
+
+    fn api(
+        &self,
+        _storage: super::record::sealed::Storage<'_>,
+    ) -> Option<super::record::sealed::Api> {
+        Some(super::record::sealed::Api(
+            Rc::clone(&self.state) as Rc<dyn RecordApi>
+        ))
+    }
+}
+
 impl<P: Chained> Clone for Chain<P> {
     fn clone(&self) -> Self {
         Self {
@@ -1643,6 +1883,51 @@ impl<P: Chained> Chain<P> {
     #[must_use]
     pub fn parts(&self) -> Vec<(u64, Rc<P::State>)> {
         self.state.parts()
+    }
+
+    /// The parts this window holds, oldest first, as view state that
+    /// follows every change of any of them: what a view that reads across
+    /// parts (a list of every item) follows, the way [`ViewCx::value`]
+    /// follows the app's own record.
+    ///
+    /// [`ViewCx::value`]: super::ViewCx::value
+    #[must_use]
+    pub fn state(&self) -> ui_core::LocalState<Parts<P>> {
+        let _ = self.state.refresh();
+        self.state.state.clone()
+    }
+
+    /// Part `index` as a record a part of the view is built over
+    /// ([`ViewCx::record`](super::ViewCx::record)): its controls bind the
+    /// part's paths (an item's title, its rich-text body), and what they
+    /// change is carried out through the chain, on the part that holds it,
+    /// as the person. `None` while the part is not held here.
+    #[must_use]
+    pub fn part_record(&self, index: u64) -> Option<PartRecord<P>> {
+        let live = self.state.parts.borrow().get(&index)?.clone();
+        let syncing = Rc::downgrade(&self.state);
+        let applying = Rc::downgrade(&self.state);
+        let held = super::record::Held::new(
+            self.state.id.clone(),
+            P::LABEL.to_owned(),
+            true,
+            live,
+            move |_| {
+                if let Some(state) = syncing.upgrade() {
+                    let _ = state.refresh();
+                }
+            },
+            move |action, invoker| {
+                let state = applying
+                    .upgrade()
+                    .ok_or_else(|| ActionError::Refused("the chain is closed".into()))?;
+                state.apply_as(action, invoker, &mut None).map(drop)
+            },
+        );
+        Some(PartRecord {
+            chain: Rc::clone(&self.state),
+            held: Rc::new(held),
+        })
     }
 
     /// The number of the chain's head: the newest part held. `None` while
@@ -1790,6 +2075,52 @@ impl<P: Chained> Chain<P> {
             }));
         }
         undone
+    }
+
+    /// Take back the person's newest step in the part they last wrote into
+    /// through this window, as the window's Undo does when that write is
+    /// newer than any of the app's own record. Whether there was one.
+    pub fn undo_last(&self) -> bool {
+        let Some(index) = self.state.written.borrow_mut().pop() else {
+            return false;
+        };
+        let undone = self.undo_in(index).is_ok();
+        if undone {
+            self.state.undone.borrow_mut().push(index);
+        }
+        undone
+    }
+
+    /// Bring back the step [`Self::undo_last`] took back last. Whether there
+    /// was one.
+    pub fn redo_last(&self) -> bool {
+        let Some(index) = self.state.undone.borrow_mut().pop() else {
+            return false;
+        };
+        let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
+        let edit = PartEdit {
+            part: index,
+            edit: super::history::HistoryEdit::Redo { steps: None },
+        };
+        let redone = self
+            .state
+            .apply_history(&edit, &ActionInvoker::member(me.clone()))
+            .is_ok();
+        if redone {
+            self.state.written.borrow_mut().push(index);
+        }
+        redone
+    }
+
+    /// Whether this window's person wrote into a part here that Undo would
+    /// take back ([`Self::undo_last`]), and one it took back that Redo would
+    /// bring back.
+    #[must_use]
+    pub fn undoable(&self) -> (bool, bool) {
+        (
+            !self.state.written.borrow().is_empty(),
+            !self.state.undone.borrow().is_empty(),
+        )
     }
 
     /// Apply what `invoke` names as `author` wrote it: a screenshot
@@ -1977,7 +2308,7 @@ pub(crate) fn dispatching<P: Chained>(
     make: impl FnOnce(Box<dyn Fn(&P::Action) -> Result<(), ActionError>>) -> Dispatcher<P>,
 ) -> Dispatcher<P> {
     let applying = Rc::downgrade(state);
-    let invoker = ActionInvoker::member(me.clone());
+    let me = me.clone();
     let told: Rc<std::cell::OnceCell<ui_core::LocalState<Option<super::dispatch::Refused>>>> =
         Rc::default();
     let telling = Rc::clone(&told);
@@ -2001,6 +2332,9 @@ pub(crate) fn dispatching<P: Chained>(
                 }));
             }
         });
+        // Whoever the invocation carried out here is for (an agent's call
+        // of an effect that writes here), else the window's person.
+        let invoker = super::record::acting(&me);
         state.apply_as(action, &invoker, &mut Some(later)).map(drop)
     }));
     let _ = told.set(dispatch.refused());

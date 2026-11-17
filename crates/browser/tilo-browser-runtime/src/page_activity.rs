@@ -144,7 +144,7 @@ impl tilo_session::activity::History for PageLayout {
     }
 }
 
-/// The name and colour presence shows for a person, by the principal they write as.
+/// The name and colour presence shows for a person, by the actor they write as.
 pub(super) fn person_of(
     here: &tilo_desktop::here::Here,
     people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,

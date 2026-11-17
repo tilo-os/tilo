@@ -1192,7 +1192,7 @@ mod native {
                         };
                         assert!(
                             error.contains(if protected {
-                                "Private ACL contains foreign principal"
+                                "Private ACL contains foreign actor"
                             } else {
                                 "Private DACL not protected"
                             }),

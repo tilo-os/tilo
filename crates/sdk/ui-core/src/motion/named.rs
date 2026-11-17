@@ -979,7 +979,7 @@ impl Follow {
     }
 }
 
-/// A mark a collaborator just left (the run a peer typed) going on its own: whole when made, it steps
+/// A mark a member just left (the run a peer typed) going on its own: whole when made, it steps
 /// down evenly over [`Self::LIFE`] in [`Self::STEPS`] steps, each step a wake deadline, so a typing
 /// window repaints a few times a second rather than at every refresh.
 pub struct Trace;

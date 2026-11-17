@@ -327,7 +327,7 @@ impl VideoEditorApp {
             let track = self.project.track(*tid);
             let name = track.map_or("?", |t| t.name.as_str());
             // Elided to its band, which ends a step short of the toggles: a
-            // lane a collaborator named "Voiceover" must not run under them.
+            // lane a member named "Voiceover" must not run under them.
             let name_style = theme.text(TextRole::Label).strong();
             let name = elide_at(name, head.name.width() as f32, &name_style, tr);
             let name_y = text_baseline(head.name, &name_style, tr);

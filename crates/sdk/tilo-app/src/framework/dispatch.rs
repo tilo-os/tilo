@@ -115,7 +115,7 @@ impl<R: Resource> Submit<R> for Edit<R> {
 ///
 /// A slider or a drag handle a surface draws itself applies each value it
 /// passes through with [`apply_now`](Self::apply_now), so the document — and
-/// every collaborator — follows the drag live. The resource declares that
+/// every member — follows the drag live. The resource declares that
 /// one value continues the one before it ([`Resource::coalesces`]: the same
 /// field of the same item), which makes the whole drag one step, and the
 /// surface calls [`settle`](Self::settle) when the pointer is let go, so the
@@ -855,7 +855,7 @@ impl DispatchCore {
     fn step_context(&self, context: ActionContext, step: bool, continues: bool) -> ActionContext {
         // History names the resource and who edited it even when the
         // surface's context does not: whoever the edit is applied for (an
-        // agent at its own caret, a collaborator a scenario stages), else
+        // agent at its own caret, a member a scenario stages), else
         // this window's person.
         let mut named = self.context();
         if let Some(invoker) = ui_core::invocation_scope::current_invoker()

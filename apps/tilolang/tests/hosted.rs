@@ -2174,7 +2174,7 @@ fn texts(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
     for value in node.props.values() {
         match value {
             tilo_ui_host::Value::Text(text) => out.push(text.clone()),
-            tilo_ui_host::Value::Principal(who) => out.push(who.name.clone()),
+            tilo_ui_host::Value::Actor(who) => out.push(who.name.clone()),
             _ => {}
         }
     }

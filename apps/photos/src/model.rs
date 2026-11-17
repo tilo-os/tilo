@@ -230,7 +230,7 @@ pub struct LibraryPhoto {
     /// Tags: freeform, durable search labels.
     pub tags: Set<String>,
     /// Capture time, as authored: keeping the original string avoids
-    /// silently changing a collaborator's timezone or precision.
+    /// silently changing a member's timezone or precision.
     pub captured_at: Option<String>,
     /// Place: an explicit location. Absence means no location was shared;
     /// it is not a failed lookup and never triggers a network request.
@@ -428,7 +428,7 @@ impl LibraryPhoto {
 /// A named collection of photographs by their stable ids, rather than path
 /// strings, so peers refer to the same content wherever it was staged. It
 /// shows them in the library's own browse order; filing and unfiling a
-/// photograph merges per photograph with a collaborator's.
+/// photograph merges per photograph with a member's.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = Album::valid)]
 pub struct Album {
@@ -527,7 +527,7 @@ impl PhotoLibrary {
             .map(|photo| photo.id.as_str())
     }
 
-    /// Insert exactly once, preserving the existing metadata if a collaborator
+    /// Insert exactly once, preserving the existing metadata if a member
     /// has already imported the same content.
     pub fn add_photo(&mut self, photo: LibraryPhoto) -> bool {
         if self.photo(&photo.id).is_some() {
@@ -762,11 +762,11 @@ pub fn content_hex(hash: &[u8; 32]) -> String {
 
 /// The bytes of the picture `open` names, from this machine's content store.
 ///
-/// Resolving the hash is what turns "a photograph a collaborator opened" into
+/// Resolving the hash is what turns "a photograph a member opened" into
 /// pixels here rather than into an empty canvas; a shared record never causes
 /// this device to probe another participant's filesystem.
 ///
-/// Missing bytes are not an error to report: content a collaborator imported
+/// Missing bytes are not an error to report: content a member imported
 /// may simply not have reached this device's store yet, so the honest answer
 /// now is no picture, and the moment after the bytes land there is one.
 ///
@@ -1017,7 +1017,7 @@ pub(crate) fn unique_strings(values: &[String]) -> bool {
 /// Date-only values deliberately remain date-only; local date-times remain
 /// local (there is no invented timezone); and offset date-times retain both
 /// their authored UTC offset and their fractional-second precision.  This is
-/// a validation boundary, not a display formatter, so a collaborator cannot
+/// a validation boundary, not a display formatter, so a member cannot
 /// turn an unknown local time into a different instant by merely opening it.
 pub fn canonical_capture_at(value: &str) -> bool {
     canonical_capture_at_value(value).as_deref() == Some(value)

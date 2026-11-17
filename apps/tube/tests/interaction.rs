@@ -930,12 +930,12 @@ fn a_worker_result_between_press_and_release_still_shares() {
 #[test]
 fn a_library_update_between_press_and_release_still_shares() {
     use ui::tilo_resource::Invoke;
-    for collaborator in [false, true] {
+    for member in [false, true] {
         let (mut app, _results, button) = hovering_copy_link();
         let rect = app.harness().targets()["watch_copy_link"];
         press(&mut app, winit::event::ElementState::Pressed);
         let liked = tube::resource::Library::like(WATCH_ID, true);
-        if collaborator {
+        if member {
             app.merge_peer_edit(|doc| liked.apply_local(doc).unwrap());
         } else {
             app.invoke(Invoke::edit(&liked).unwrap()).unwrap();
@@ -951,7 +951,7 @@ fn a_library_update_between_press_and_release_still_shares() {
         press(&mut app, winit::event::ElementState::Released);
         assert!(
             link_copied(&mut app),
-            "a press, library update, release sequence submits Share (collaborator: {collaborator})"
+            "a press, library update, release sequence submits Share (member: {member})"
         );
     }
 }

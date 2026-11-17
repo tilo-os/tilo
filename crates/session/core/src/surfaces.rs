@@ -93,7 +93,7 @@ pub trait Published {
     /// The surface's refusal: no such action, bad arguments, not allowed.
     fn invoke_as(
         &mut self,
-        _actor: &str,
+        _actor: &tilo_actions::Actor,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut Look<'_>,
@@ -396,7 +396,7 @@ impl Surfaces {
     /// No surface publishes it, or the surface refused.
     pub fn invoke_as(
         &self,
-        actor: &str,
+        actor: &tilo_actions::Actor,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut Look<'_>,

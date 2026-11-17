@@ -310,7 +310,7 @@ fn require_managed_service(manifest: &ManifestView) -> Result<(), String> {
 /// Labels supplied by a committed host owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManagedLaunchScope {
-    /// A retained collaborator process, independent of any queued task.
+    /// A retained member process, independent of any queued task.
     AgentSession,
     /// A process reserved for an existing owner-committed task run.
     Task { task: String, run: String },

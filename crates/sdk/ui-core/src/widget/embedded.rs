@@ -441,7 +441,7 @@ impl<W: Widget + 'static> Embedded<W> {
     }
 
     /// Where the person is in the child (a caret, a selection), for the owner to publish to
-    /// collaborators as its own ([`crate::presence::capability::PublishesPresence`]).
+    /// members as its own ([`crate::presence::capability::PublishesPresence`]).
     pub fn presence_payload(
         &self,
     ) -> Option<(

@@ -488,7 +488,7 @@ tilo_test_env::scenario! {
             )
             .due
             .is_empty(),
-            "a read-only collaborator still delivers a one-shot only once per device"
+            "a read-only member still delivers a one-shot only once per device"
         );
     }
 

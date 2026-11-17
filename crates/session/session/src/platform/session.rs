@@ -2363,7 +2363,7 @@ impl Session {
     /// may not run.
     pub fn invoke_with_actor(
         &mut self,
-        actor: &str,
+        actor: &tilo_actions::Actor,
         resource: &str,
         action: &str,
         arguments: &serde_json::Value,
@@ -2386,7 +2386,7 @@ impl Session {
     /// Why the action names nothing published, or why it could not be made.
     pub fn invoke_in_turn(
         &mut self,
-        actor: &str,
+        actor: &tilo_actions::Actor,
         (conversation, message): (&str, &str),
         resource: &str,
         action: &str,

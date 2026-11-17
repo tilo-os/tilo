@@ -1293,7 +1293,7 @@ fn answer_effects(cx: &ViewCx<FileExplorer>, state: &Rc<std::cell::RefCell<Files
     cx.effects(move |effect: FilesEffect, cx| -> EffectAnswer {
         let mut files = answer.borrow_mut();
         // Cloud accounts and transfer state belong to the local person, not
-        // to every collaborator allowed to edit the workspace's files.
+        // to every member allowed to edit the workspace's files.
         if host_person_only(&effect) && !ui::bound_dispatch::host_person_invocation_permitted() {
             return Err("Only the host's person may access their private cloud accounts".into());
         }

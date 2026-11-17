@@ -19,7 +19,7 @@
 //! proves only that one function agrees with itself, while the failure that happens is a
 //! publisher and a renderer keying a frame differently.
 //!
-//! The two editors share one record, as collaborators do: the second merges the first's
+//! The two editors share one record, as members do: the second merges the first's
 //! document, which is what a late joiner receives.
 
 use ui::offscreen::OffscreenRenderer;

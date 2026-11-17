@@ -336,7 +336,7 @@ impl PresenceCtx {
     ///
     /// A name chip normally hangs above the thing it names. On the top row of
     /// a clipped area there is nothing above to hang it in, so the chip is cut
-    /// in half by the clip — which is how a collaborator ends up labelled with
+    /// in half by the clip — which is how a member ends up labelled with
     /// the bottom two pixels of their name. When `bounds` leaves no workspace above,
     /// the chip drops inside the object's top edge instead.
     ///
@@ -2294,7 +2294,7 @@ mod tests {
         // phase: a_name_chip_with_no_workspace_above_it_comes_inside_the_object
         // On the top row of a surface that clips its contents there is no workspace
         // above an object for its name chip, and hanging one there anyway gets
-        // it sliced by the clip — a collaborator labelled with the bottom two
+        // it sliced by the clip — a member labelled with the bottom two
         // pixels of their name. The chip has to come inside instead.
         {
             let ctx = PresenceCtx::empty();

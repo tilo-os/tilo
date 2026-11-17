@@ -4,7 +4,7 @@
 //! the screenshot is staged into this device's private spool, offered to the device as a fabric
 //! action, and its bytes stream from that spool; the receiving device's person still decides where
 //! it lands there. A workspace save copies the screenshot into the workspace's `Screenshots` folder
-//! through the same engine every other copy takes, where the person's collaborators see it like
+//! through the same engine every other copy takes, where the person's members see it like
 //! anything else placed there. That copy reads and writes files - possibly over a remote workspace
 //! mount - so it happens on a worker of its own, never on the session's pass: the pass hands the
 //! worker the save and takes what became of it.

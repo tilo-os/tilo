@@ -12,7 +12,7 @@
 //! [`ResourceApp::fixture`](super::ResourceApp::fixture): typed values that
 //! stand in for live sources (a scan result, a fake backend, a fetched
 //! page), a scratch directory, blobs in the content store, versions of the
-//! resource written by other people at other times, and collaborators shown
+//! resource written by other people at other times, and members shown
 //! where they are in it. Views read the values with
 //! [`RecordEnv::fixture`](super::RecordEnv::fixture), surfaces with
 //! [`RecordEnv::fixture`](super::RecordEnv::fixture).
@@ -53,7 +53,7 @@ impl RunMode {
 #[derive(Default)]
 pub(crate) struct Fixtures {
     values: HashMap<TypeId, Rc<dyn Any>>,
-    collaborators: Vec<(String, ResourceSelection)>,
+    members: Vec<(String, ResourceSelection)>,
     content: Option<tilo_content::ContentStore>,
     /// Kept for as long as anything built from the capture is.
     _directory: Option<tempfile::TempDir>,
@@ -263,9 +263,9 @@ impl Run {
         self.fixtures.content.clone()
     }
 
-    /// The collaborators a capture shows, where they are in the resource.
-    pub(crate) fn collaborators(&self) -> &[(String, ResourceSelection)] {
-        &self.fixtures.collaborators
+    /// The members a capture shows, where they are in the resource.
+    pub(crate) fn members(&self) -> &[(String, ResourceSelection)] {
+        &self.fixtures.members
     }
 }
 
@@ -311,7 +311,7 @@ pub struct Fixture<R: Resource> {
     /// What the record starts with, written before the versions.
     start: Option<Start>,
     history: Vec<Version<R>>,
-    collaborators: Vec<(String, ResourceSelection)>,
+    members: Vec<(String, ResourceSelection)>,
     content: Option<tilo_content::ContentStore>,
     directory: Option<tempfile::TempDir>,
 }
@@ -331,7 +331,7 @@ impl<R: Resource> Fixture<R> {
             values: HashMap::new(),
             start: None,
             history: Vec::new(),
-            collaborators: Vec::new(),
+            members: Vec::new(),
             content,
             directory: None,
         }
@@ -449,11 +449,11 @@ impl<R: Resource> Fixture<R> {
         });
     }
 
-    /// A collaborator named `name`, shown where they are in the resource
+    /// A member named `name`, shown where they are in the resource
     /// (a selected item, a caret) the way their presence arrives in a
     /// shared window.
-    pub fn collaborator(&mut self, name: &str, at: ResourceSelection) {
-        self.collaborators.push((name.to_owned(), at));
+    pub fn member(&mut self, name: &str, at: ResourceSelection) {
+        self.members.push((name.to_owned(), at));
     }
 
     /// Write the record's start and the other people's versions into `doc`.
@@ -479,7 +479,7 @@ impl<R: Resource> Fixture<R> {
     pub(crate) fn into_run(self) -> Run {
         capture_run(Fixtures {
             values: self.values,
-            collaborators: self.collaborators,
+            members: self.members,
             content: self.content,
             _directory: self.directory,
         })
@@ -510,7 +510,7 @@ fn capture_run(fixtures: Fixtures) -> Run {
 }
 
 /// Apply one version as its author's change at its time: the envelope a
-/// collaborator's device would have sent, replayed as sync replays it.
+/// member's device would have sent, replayed as sync replays it.
 fn write_version<R: Resource>(
     doc: &mut Doc,
     registry: &tilo_actions::ActionRegistry,

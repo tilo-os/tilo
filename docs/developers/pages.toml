@@ -55,7 +55,7 @@ slug = "task-permissions"
 source = "docs/developers/tasks/permissions.md"
 section = "Quick tasks"
 nav = "Permissions and roles"
-description = "The offline tilo-app guide permissions workflow: live access, action requirements, revocation and agents as ordinary collaborators."
+description = "The offline tilo-app guide permissions workflow: live access, action requirements, revocation and agents as ordinary members."
 
 [[page]]
 slug = "task-network"

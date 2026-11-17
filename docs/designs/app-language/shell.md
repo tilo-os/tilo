@@ -97,7 +97,7 @@ an agent acting for them, and anything beyond them by editing the shell's views.
 |---|---|---|
 | Where an agent's work goes | where the person works · a space per task (canvas cluster, strip, desktop) · a space per agent | a space per task, and its result where they asked |
 | What opens | nothing (the task's log) · what it creates · everything it touches · follow its focus | what it creates, and its answer |
-| The agent shown as | a collaborator (presence, member list, mentions) · a tool (results only) · per agent | a collaborator |
+| The agent shown as | a member (presence, member list, mentions) · a tool (results only) · per agent | a member |
 | Marks on changes | off · agents' · everyone's | agents' |
 | Taking focus | whenever it brings something · when the person is idle · never | when idle |
 | Moving what the person placed | yes · not what they pinned · never | not what they pinned |

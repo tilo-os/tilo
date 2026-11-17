@@ -76,7 +76,12 @@ pub fn content(
             let (offers_role, offers_remove) = member_row_offers(owns, user, viewer);
             Person {
                 user: user.clone(),
-                name: member_row_name(names, ws, viewer, user),
+                name: member_row_name(
+                    names,
+                    ws,
+                    viewer,
+                    &tilo_action_policy::MemberId::person(user.clone()),
+                ),
                 you: user == viewer,
                 // An owner by role who does not own the workspace reads as Admin, and an Editor
                 // the workspace made an administrator as one: everyone sees who governs here.

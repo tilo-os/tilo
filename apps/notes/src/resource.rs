@@ -32,7 +32,7 @@ impl ResourceApp for NotesShell {
     /// closed, must show the pages already written there: with a record
     /// per window each new window started on an empty notebook, and the
     /// pages came back only by restoring the very window that wrote them.
-    /// A workspace is the unit of collaboration, so its collaborators share the
+    /// A workspace is the unit of collaboration, so its members share the
     /// notebook too. Notes from before this keep their per-window records;
     /// the workspace's notebook adopts them when it is created ([`Self::seed`]).
     const WORKSPACE_RECORD: bool = true;

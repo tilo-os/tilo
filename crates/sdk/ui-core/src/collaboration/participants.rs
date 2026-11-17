@@ -1,4 +1,4 @@
-//! Remote participants (agents, collaborators) that hold their own view of a
+//! Remote participants (agents, members) that hold their own view of a
 //! widget, and the retained topology collaboration sessions walk.
 //!
 //! Both are capabilities: a multi-participant widget provides

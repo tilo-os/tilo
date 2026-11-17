@@ -165,7 +165,7 @@ impl InvocationTrigger {
 pub struct InvocationRequest<'a> {
     pub shortcut: &'a Shortcut,
     pub invocation: InvocationId,
-    /// The authenticated principal who started the run; every step is
+    /// The authenticated actor who started the run; every step is
     /// invoked as them.
     pub caller: Caller,
     pub mode: InvocationMode,

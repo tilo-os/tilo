@@ -483,7 +483,7 @@ mod tests {
             assert_eq!(app.state().profile.timezone, "Europe/Berlin");
         }
 
-        phase a_collaborator_clearing_the_source_or_editing_any_field_is_shown;
+        phase a_member_clearing_the_source_or_editing_any_field_is_shown;
         {
             let mut app = customizing();
             app.merge_peer_edit(|doc| {

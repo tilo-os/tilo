@@ -53,10 +53,10 @@
 //! what a scroll keeps on screen (`ui::scroll_copy`): pixels repainted and
 //! copied per frame, frames repainted whole, CPU and GPU time per frame. The
 //! last frame must equal a full render, or the run fails. The window is
-//! also scrolled with a collaborator's pointer resting over the list,
+//! also scrolled with a member's pointer resting over the list,
 //! painted over the widgets as a window paints it, with and without copies.
 //! Each run also prints a `FRAMEWORK-SCROLL` line (`-PEER` with the
-//! collaborator, `-HOSTED` shown in a host's scene) for
+//! member, `-HOSTED` shown in a host's scene) for
 //! `tools/perf/adapters.py framework-scroll` (`render.framework_scroll.*`
 //! KPIs):
 //!
@@ -618,7 +618,7 @@ fn covered(rects: &[Rect], size: PhysicalSize<u32>) -> f64 {
     rows.iter().flatten().filter(|cell| **cell).count() as f64
 }
 
-/// Where a collaborator's pointer rests over the list, in logical pixels.
+/// Where a member's pointer rests over the list, in logical pixels.
 const PEER_AT: [f32; 2] = [420.0, 360.0];
 
 /// Scroll the live window down [`SCROLL_FRAMES`] frames of `step` logical
@@ -627,7 +627,7 @@ const PEER_AT: [f32; 2] = [420.0, 360.0];
 /// [`tilo_app::App::surface_frame_with_damage`]), and present each frame on
 /// an offscreen GPU target as a window does: only where it changed, after
 /// copying what a scroll keeps on screen when `copying`
-/// ([`tilo_app::scroll_copy`]). With `peer`, a collaborator's pointer rests
+/// ([`tilo_app::scroll_copy`]). With `peer`, a member's pointer rests
 /// over the list, painted over the widgets as a window paints it
 /// ([`tilo_app::app::SurfaceDamage::painting_peers`]).
 #[allow(
@@ -969,7 +969,7 @@ fn hosted_scrolling(tile: &mut tilo_app::app::EmbeddedApp, step: f64, copying: b
 enum Shown {
     /// In a window of its own.
     Window,
-    /// In a window of its own, a collaborator's pointer resting over it.
+    /// In a window of its own, a member's pointer resting over it.
     BesidePeer,
     /// In a region of a host's scene, as the shell shows an in-process app.
     Hosted,

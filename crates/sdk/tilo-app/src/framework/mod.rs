@@ -173,7 +173,7 @@
 //!   one step — a word typed, a slider dragged — until the surface
 //!   [settles](Dispatcher::settle) the gesture.
 //! * **Settings** — preferences that follow a person or stay on a device,
-//!   never seen by collaborators — are a typed
+//!   never seen by members — are a typed
 //!   [`SettingsSchema`](crate::storage::SettingsSchema) whose
 //!   [`Scope`](crate::storage::Scope) says how far they travel: `Personal`
 //!   roams across the person's own devices, `DeviceLocal` never leaves this
@@ -304,7 +304,7 @@
 //!   built: typed stand-ins for live sources that views and surfaces read
 //!   with [`RecordEnv::fixture`], scratch
 //!   files, content-store blobs, versions other people wrote at other times,
-//!   and collaborators shown where they are. The resource is staged with
+//!   and members shown where they are. The resource is staged with
 //!   actions ([`ResourceApp::scenario`]), and view state where it lives,
 //!   once the actions are laid out: [`ViewCx::on_stage`] for a view's local
 //!   state, `ResourceSurface::stage` for a custom surface's. What a person
@@ -391,7 +391,7 @@ pub use app::{
 pub use app::{definition_launch_spec, run};
 pub use attached::{AttachedView, OpenView};
 pub use bar_actions::{BarActions, BarCommands};
-pub use chain::{Chain, Chained, PartArrival};
+pub use chain::{Chain, Chained, PartArrival, PartRecord, Parts};
 pub use chain_list::{ChainList, ChainPager, ChainRow, Paged};
 pub use children::{ChildRecord, Children, Listed, child_resource_id};
 pub use controls::{ActionControl, Actions};

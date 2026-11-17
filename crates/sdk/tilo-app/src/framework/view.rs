@@ -538,7 +538,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// into a form ([`Self::form`]).
     ///
     /// A record's field shows its text as the document holds it, so who
-    /// wrote each run shows in their colour, a collaborator's edit lands
+    /// wrote each run shows in their colour, a member's edit lands
     /// under the caret as they make it, and an invocation writing there
     /// draws its writer's caret where the write ends. Each edit is a splice
     /// of it ([`Path::splice`]); the keystrokes of one word are one undo step.
@@ -651,6 +651,40 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let initial = self.follow(read, move |value| sink.set(value));
         state.set(initial);
         state
+    }
+
+    /// `read` of the record and of the parts of `chain` it keeps beside it,
+    /// as view state that follows every change of either: what a view that
+    /// reads across a chain's parts (a list of every issue) shows, the way
+    /// [`Self::value`] follows the record alone.
+    pub fn chain_value<P, V>(
+        &self,
+        chain: &super::Chain<P>,
+        read: impl Fn(&R::State, &super::Parts<P>) -> V + 'static,
+    ) -> LocalState<V>
+    where
+        P: super::Chained<Base = R>,
+        V: PartialEq + Clone + 'static,
+    {
+        let parts = chain.state();
+        let live = self.live.clone();
+        let initial = live.with(|state| parts.with(|parts| read(state, parts)));
+        let value = LocalState::new(initial);
+        let sink = value.clone();
+        let chain = chain.clone();
+        let followed = std::cell::Cell::new((parts.revision(), live.revision()));
+        self.storage.follow_with(self.alive.clone(), move || {
+            let parts = chain.state();
+            let now = (parts.revision(), live.revision());
+            if followed.replace(now) == now {
+                return;
+            }
+            let next = live.with(|state| parts.with(|parts| read(state, parts)));
+            if sink.with(|shown| *shown != next) {
+                sink.set(next);
+            }
+        });
+        value
     }
 
     /// A toolkit control bound to a verb: it shows `read` of the resource and

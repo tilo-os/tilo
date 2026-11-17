@@ -1318,15 +1318,7 @@ impl OpStream {
     /// The next change.
     pub async fn read(&self) -> Result<OpEvent, NotAvailable> {
         match self.0.event().await? {
-            Event::Op {
-                op,
-                from_user_id,
-                admission,
-            } => Ok(OpEvent {
-                op,
-                from_user_id,
-                admission,
-            }),
+            Event::Op { op, admission } => Ok(OpEvent { op, admission }),
             other => Err(unexpected_event(&other)),
         }
     }

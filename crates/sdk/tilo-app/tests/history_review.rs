@@ -93,7 +93,7 @@ tilo_test_env::scenario! {
         let ids: Vec<Id> = app.state().cards.ids().cloned().collect();
         app.call("reword", json!({"card": ids[0].as_str(), "text": "storm"}))
             .unwrap();
-        // A collaborator's interleaved work must survive selective restore.
+        // A member's interleaved work must survive selective restore.
         app.call_in_run("peer:run", "rename", json!({"title": "Peer's title"}))
             .unwrap();
         app.call_in_run(

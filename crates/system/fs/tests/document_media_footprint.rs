@@ -48,7 +48,7 @@ use fs::ContentStore;
 use fs::document_media::DocumentMedia;
 use fs::store::{BLOB_CACHE_BYTES, MAX_CACHED_BLOB};
 use runtime_fs::blobs::{
-    BlobBackend, BlobChunks, BlobClient, BlobError, BlobFuture, BlobPrincipal, BlobRef, BlobScope,
+    BlobActor, BlobBackend, BlobChunks, BlobClient, BlobError, BlobFuture, BlobRef, BlobScope,
     MAX_BLOB_BYTES, MAX_PUT_CHUNK, MAX_READ_CHUNK, ReadOutcome, write_handoff,
 };
 
@@ -276,7 +276,7 @@ async fn upload(socket: PathBuf, attachment: Arc<[u8]>) -> (BlobRef, Duration, u
     let started = Instant::now();
     let stored = tokio::task::spawn_blocking(move || {
         let mut stream = UnixStream::connect(&socket).unwrap();
-        write_handoff(&mut stream, &BlobPrincipal::App(photos())).unwrap();
+        write_handoff(&mut stream, &BlobActor::App(photos())).unwrap();
         let client = BlobClient::from_app_stream(stream).unwrap();
         client.put_reader(&mut &*attachment, "video/mp4")
     })

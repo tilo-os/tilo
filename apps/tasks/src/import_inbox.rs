@@ -9,17 +9,20 @@
 //! already holds is left as the person has it; an entry is removed once its issue is in.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use serde_json::Value;
 use ui::application::HostContext;
-use ui::tilo_resource::{Id, NonBlank, Origin, Replica};
+use ui::framework::Chain;
+use ui::tilo_resource::{Id, Invoke, NonBlank, Origin};
 
-use crate::model::{Status, Tracker, tracker};
+use crate::model::{Status, Tracker};
+use crate::part::{IssuePart, Issues, issue_part};
 
 const INBOX: &str = "personal-data-incoming/issues";
 const VERSION: u64 = 1;
 const MAX_ENTRY_BYTES: usize = 16 * 1024 * 1024;
-const ISSUE_KIND: &str = "tasks.tracker.issues";
+const ISSUE_KIND: &str = "tasks.issues.issues";
 
 pub(crate) fn import(context: &HostContext) -> Result<(), String> {
     let files = context.files();
@@ -61,7 +64,14 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
         return Ok(());
     }
     let author = context.author().clone();
-    context.migrate_record(move |doc| apply(doc, &entries, &author))?;
+    // The issues go into the parts beside the tracker, through their own
+    // verbs, as the window would carry them out.
+    let chain =
+        Chain::<IssuePart>::detached_in(context.records().clone(), crate::APP_ID, &author, || {
+            Rc::new(Tracker::default())
+        })
+        .ok_or_else(|| "the tracker's issues cannot be opened".to_owned())?;
+    apply(&chain, &entries)?;
     for name in names {
         let _ = tilo_files::blocking::remove(&data, &name);
     }
@@ -84,24 +94,25 @@ fn texts(value: &Value, name: &str) -> Vec<String> {
 }
 
 /// The tracker's issues by their source page.
-fn by_page(replica: &Replica<Tracker>) -> Result<BTreeMap<String, Id>, String> {
-    Ok(replica
-        .state()
-        .map_err(|error| error.to_string())?
-        .issues
+fn by_page(chain: &Chain<IssuePart>) -> BTreeMap<String, Id> {
+    let parts = chain.parts();
+    Issues::of(&parts)
         .iter()
         .filter_map(|(id, issue)| issue.url.clone().map(|url| (url, id.clone())))
-        .collect())
+        .collect()
+}
+
+/// Carry `invoke` out on the issues.
+fn invoke(chain: &Chain<IssuePart>, invoke: &Invoke<IssuePart>) -> Result<(), String> {
+    chain
+        .invoke(invoke)
+        .map(drop)
+        .map_err(|error| error.to_string())
 }
 
 /// Add the `entries` the tracker does not hold yet.
-pub(crate) fn apply(
-    doc: &mut automerge::AutoCommit,
-    entries: &[Value],
-    author: &ui::tilo_resource::MemberId,
-) -> Result<bool, String> {
-    let mut replica = Replica::<Tracker>::from_doc(doc.clone()).as_member(author.clone());
-    let held = by_page(&replica)?;
+pub(crate) fn apply(chain: &Chain<IssuePart>, entries: &[Value]) -> Result<bool, String> {
+    let held = by_page(chain);
     let fresh: Vec<&Value> = entries
         .iter()
         .filter(|entry| {
@@ -119,43 +130,41 @@ pub(crate) fn apply(
             continue;
         };
         let status = serde_json::from_value::<Status>(entry["status"].clone()).ok();
-        replica
-            .apply_confirmed(
-                Tracker::CREATE.with(crate::model::NewIssue {
-                    body: Some(text(entry, "body").trim().to_owned()),
-                    status,
-                    assignee: entry
-                        .get("assignee")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    url: Some(text(entry, "url").to_owned()),
-                    origin: origin(
-                        entry.get("author"),
-                        entry,
-                        text(entry, "url"),
-                        Some(text(entry, "identifier")),
-                        text(entry, "created_at"),
-                        text(entry, "updated_at"),
-                    ),
-                    ..crate::model::NewIssue::titled(title)
-                }),
-            )
-            .map_err(|error| error.to_string())?;
+        invoke(
+            chain,
+            &IssuePart::CREATE.with(crate::model::NewIssue {
+                body: Some(text(entry, "body").trim().to_owned()),
+                status,
+                assignee: entry
+                    .get("assignee")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                url: Some(text(entry, "url").to_owned()),
+                origin: origin(
+                    entry.get("author"),
+                    entry,
+                    text(entry, "url"),
+                    Some(text(entry, "identifier")),
+                    text(entry, "created_at"),
+                    text(entry, "updated_at"),
+                ),
+                ..crate::model::NewIssue::titled(title)
+            }),
+        )?;
     }
-    let issues = by_page(&replica)?;
+    let issues = by_page(chain);
     for entry in &fresh {
         if let Some(issue) = issues.get(text(entry, "url")) {
-            fill(&mut replica, entry, issue, &issues, entries)?;
+            fill(chain, entry, issue, &issues, entries)?;
         }
     }
-    *doc = replica.doc_mut().clone();
     Ok(true)
 }
 
 /// Give the new `issue` what `entry` holds beyond its fields: labels, thread, parent and the
 /// issues it relates to, found among `issues` by their source pages.
 fn fill(
-    replica: &mut Replica<Tracker>,
+    chain: &Chain<IssuePart>,
     entry: &Value,
     issue: &Id,
     issues: &BTreeMap<String, Id>,
@@ -163,12 +172,13 @@ fn fill(
 ) -> Result<(), String> {
     for label in texts(entry, "labels") {
         if let Some(label) = NonBlank::parse(&label) {
-            replica
-                .apply_confirmed(Tracker::ADD_LABEL.with(tracker::AddLabel {
+            invoke(
+                chain,
+                &IssuePart::ADD_LABEL.with(issue_part::AddLabel {
                     issue: issue.clone(),
                     label,
-                }))
-                .map_err(|error| error.to_string())?;
+                }),
+            )?;
         }
     }
     for comment in entry
@@ -186,8 +196,9 @@ fn fill(
             url => url,
         };
         if let Some(said) = NonBlank::parse(&said) {
-            replica
-                .apply_confirmed(Tracker::COMMENT.with(tracker::Comment {
+            invoke(
+                chain,
+                &IssuePart::COMMENT.with(issue_part::Comment {
                     issue: issue.clone(),
                     text: said,
                     origin: origin(
@@ -198,8 +209,8 @@ fn fill(
                         text(comment, "at"),
                         text(comment, "updated_at"),
                     ),
-                }))
-                .map_err(|error| error.to_string())?;
+                }),
+            )?;
         }
     }
     if let Some(parent) = entry
@@ -207,12 +218,13 @@ fn fill(
         .and_then(Value::as_str)
         .and_then(|page| issues.get(page))
     {
-        replica
-            .apply_confirmed(Tracker::MOVE_UNDER.with(tracker::MoveUnder {
+        invoke(
+            chain,
+            &IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
                 issue: issue.clone(),
                 parent: Some(parent.clone()),
-            }))
-            .map_err(|error| error.to_string())?;
+            }),
+        )?;
     }
     for page in texts(entry, "links") {
         let Some(related) = issues.get(&page) else {
@@ -231,16 +243,17 @@ fn fill(
                 || page.clone(),
                 |other| text(other, "identifier").to_owned(),
             );
-        replica
-            .apply_confirmed(Tracker::LINK.with(tracker::Link {
+        invoke(
+            chain,
+            &IssuePart::LINK.with(issue_part::Link {
                 issue: issue.clone(),
                 app,
                 kind: ISSUE_KIND.to_owned(),
                 resource,
                 label,
                 record: None,
-            }))
-            .map_err(|error| error.to_string())?;
+            }),
+        )?;
     }
     Ok(())
 }
@@ -338,20 +351,15 @@ mod tests {
                 }),
             ),
         ];
-        let mut replica = Replica::<Tracker>::new();
-        let mut doc = replica.doc_mut().clone();
-        assert!(
-            apply(
-                &mut doc,
-                &entries,
-                &ui::tilo_resource::MemberId::person("ada")
-            )
-            .unwrap()
-        );
-        let tracker = <Tracker as ui::tilo_resource::Resource>::read(&doc).unwrap();
+        let chain = Chain::<IssuePart>::detached(crate::APP_ID, &ui::tilo_resource::MemberId::person("ada"), || {
+            Rc::new(Tracker::default())
+        })
+        .unwrap();
+        assert!(apply(&chain, &entries).unwrap());
+        let parts = chain.parts();
+        let issues = Issues::of(&parts);
         let find = |identifier: &str| {
-            tracker
-                .issues
+            issues
                 .iter()
                 .find(|(_, issue)| {
                     issue.url.as_deref()
@@ -403,16 +411,8 @@ mod tests {
             [("ENG-2".to_owned(), crate::model::issue_resource(&second_id))]
         );
 
-        assert!(
-            !apply(
-                &mut doc,
-                &entries,
-                &ui::tilo_resource::MemberId::person("ada")
-            )
-            .unwrap(),
-            "nothing lands twice"
-        );
-        let again = <Tracker as ui::tilo_resource::Resource>::read(&doc).unwrap();
-        assert_eq!(again.issues.len(), 2);
+        assert!(!apply(&chain, &entries).unwrap(), "nothing lands twice");
+        let parts = chain.parts();
+        assert_eq!(Issues::of(&parts).len(), 2);
     }
 }

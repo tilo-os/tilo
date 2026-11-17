@@ -322,8 +322,8 @@ pub trait ContentBackend: Send + Sync {
     }
 
     /// Whether content stored here reaches beyond this device's own copy: the device content
-    /// store serves it to the app's other devices and collaborators. A document may then refer
-    /// to content by address alone; with a store that is not shared, a collaborator would be left
+    /// store serves it to the app's other devices and members. A document may then refer
+    /// to content by address alone; with a store that is not shared, a member would be left
     /// holding an address nothing can resolve.
     fn shared(&self) -> bool {
         false
@@ -790,7 +790,7 @@ impl ContentStore {
         self.backend.state(&address_of(reference))
     }
 
-    /// Whether content stored here reaches the app's other devices and collaborators; see
+    /// Whether content stored here reaches the app's other devices and members; see
     /// [`ContentBackend::shared`].
     pub fn shared(&self) -> bool {
         self.backend.shared()

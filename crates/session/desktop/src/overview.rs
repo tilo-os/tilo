@@ -98,7 +98,7 @@ impl Default for OverviewView {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspacePerson {
     pub id: UserId,
-    /// Display name if this session has met them, else the principal itself — at least the string
+    /// Display name if this session has met them, else the actor itself — at least the string
     /// you would revoke.
     pub name: String,
     pub role: CapRole,
@@ -229,7 +229,7 @@ impl WorkspaceCard {
     }
 }
 
-/// Falls back to the principal itself rather than a placeholder — a row labelled "Unknown" tells
+/// Falls back to the actor itself rather than a placeholder — a row labelled "Unknown" tells
 /// the reader nothing, while the raw subject is both true and the value a revoke would name.
 fn display_name(id: &UserId, ws: &Workspace, _tree: &Layout) -> String {
     let wanted = MemberId::person(id.clone());

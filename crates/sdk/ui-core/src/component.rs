@@ -387,12 +387,12 @@ impl Ord for Person {
 
 impl PropType for Person {
     fn ty() -> Type {
-        Type::Principal
+        Type::Actor
     }
 
     fn from_value(value: &Value) -> Result<Self, String> {
         match value {
-            Value::Principal { identity, name } => Ok(Self {
+            Value::Actor { identity, name } => Ok(Self {
                 hue: crate::tokens::PresenceHue::of_identity(identity),
                 identity: identity.clone(),
                 name: name.clone(),
@@ -709,7 +709,7 @@ pub struct Bound<T> {
     pub edits: Option<Intent>,
     /// What the bound value is called, for assistive technology: the field's name.
     pub name: String,
-    /// Where the bound value lives, for presence: collaborators at the same path see each other's
+    /// Where the bound value lives, for presence: members at the same path see each other's
     /// carets and selections in it.
     pub path: Vec<crate::presence::PathSegment>,
     /// What the value edits, as the identity anyone looks it up by: the kind of record, the one

@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 pub use tilo_render_protocol::patch::{
-    Binding, Event, Node, Offered, Picture, Principal, ResourceRef, Value,
+    Actor, Binding, Event, Node, Offered, Picture, ResourceRef, Value,
 };
 
 pub use tilo_render_protocol::patch;
@@ -109,7 +109,7 @@ fn shape(value: &Value) -> &'static str {
         Value::Opt(_) => "an option",
         Value::Case { .. } => "a case with fields",
         Value::Ref(_) => "a resource reference",
-        Value::Principal(_) => "a participant",
+        Value::Actor(_) => "a participant",
         Value::Rich(_) => "rich text",
         Value::Error(_) => "an error",
         Value::Map(_) => "a map",

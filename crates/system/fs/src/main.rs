@@ -522,7 +522,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 let mut stream = stream;
                 runtime_fs::blobs::write_handoff(
                     &mut stream,
-                    &runtime_fs::blobs::BlobPrincipal::Session,
+                    &runtime_fs::blobs::BlobActor::Session,
                 )?;
                 Ok(runtime_fs::blobs::BlobClient::from_session_stream(stream)?.refresh_public()?)
             })
@@ -865,7 +865,7 @@ fn bootstrap_peers(
 
 /// A daemon can serve either its own workspace or exactly one discovered remote workspace.
 /// Refuse ambiguous persisted state instead of combining record planes: records are signed
-/// against a workspace UUID, so an arbitrary ticket could make a collaborator read the wrong
+/// against a workspace UUID, so an arbitrary ticket could make a member read the wrong
 /// namespace.
 fn persisted_remote_workspace_ticket(cache_dir: Option<&Path>) -> Result<Option<Ticket>> {
     let Some(cache_dir) = cache_dir else {
@@ -2591,13 +2591,13 @@ mod tests {
                     "the shipped default must let the local session write its own workspace"
                 );
 
-                // The grant is the principal's, not the mount's — a mount not presenting `person:local` gets nothing, which narrows a peer-joined mount.
+                // The grant is the actor's, not the mount's — a mount not presenting `person:local` gets nothing, which narrows a peer-joined mount.
                 let outsider = CapabilityFile::load(&path, identity, Vec::new())
                     .expect("loads")
                     .handle();
                 assert!(
                     !outsider.permits(&identity, "/notes/today.md", Access::Read),
-                    "the shipped list must grant its named principal, not whoever mounts"
+                    "the shipped list must grant its named actor, not whoever mounts"
                 );
             }
         }
@@ -2643,7 +2643,7 @@ mod tests {
                     .handle();
                 assert!(
                     !outsider.permits(&identity, "/notes/today.md", Access::Read),
-                    "{} must grant only its named principal",
+                    "{} must grant only its named actor",
                     path.display()
                 );
             }

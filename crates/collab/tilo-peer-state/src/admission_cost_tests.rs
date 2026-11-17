@@ -327,7 +327,9 @@ fn newcomer_work(members: u32) -> crate::governance_work::GovernanceWork {
     let members = usize::try_from(members).unwrap();
     assert_eq!(access.member_devices.len(), members.saturating_add(2));
     let people = guest.governance().governed_members(now).unwrap();
-    assert_eq!(people.members.len(), members);
+    // The workspace's owner is one of its members, beside the `members` it
+    // admitted.
+    assert_eq!(people.members.len(), members.saturating_add(1));
     guest.governance().governed_standings(now).unwrap();
     assert!(matches!(guest.security_basis(), Some(Ok(_))));
     crate::governance_work::take()

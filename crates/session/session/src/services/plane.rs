@@ -99,13 +99,12 @@ impl Published for ServiceSurface {
     /// model makes is attributed to them, not to the person the service runs for.
     fn invoke_as(
         &mut self,
-        actor: &str,
+        actor: &tilo_actions::Actor,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ResourceOperationStart, ApiError> {
-        // An agent is named `agent:<id>` , as the MCP server names it.
-        let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(actor));
+        let invoker = tilo_actions::ActionInvoker::admitted(&actor.clone().into());
         match self.services.borrow_mut().invoke_by(
             &invoker,
             &address.resource,

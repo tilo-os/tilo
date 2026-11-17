@@ -1,5 +1,5 @@
 //! Taking in a remote edit costs the same however long the text's history,
-//! also when that history was written at scattered places by collaborators
+//! also when that history was written at scattered places by members
 //! typing at once (vendor/automerge/TILO-PATCH.md, "find an op by its id
 //! without searching the document").
 //!
@@ -36,7 +36,7 @@ fn type_at_random(doc: &mut AutoCommit, text: &ObjId, rng: &mut Rng, letters: us
     doc.splice_text(text, at, 0, &word).unwrap();
 }
 
-/// A document whose text `busy` two collaborators wrote in `changes` changes
+/// A document whose text `busy` two members wrote in `changes` changes
 /// of `letters` letters each, at random places, merging every 64 changes,
 /// and whose text `fresh` holds a few letters.
 fn scattered(changes: usize, letters: usize, rng: &mut Rng) -> (AutoCommit, ObjId, ObjId) {
@@ -67,8 +67,8 @@ fn median(mut samples: Vec<u64>) -> u64 {
 }
 
 /// The slabs of the op id column that searches for ops by id may decode
-/// for each letter of a third collaborator's change a replica takes in,
-/// typed at a random place of a text that two collaborators wrote in
+/// for each letter of a third member's change a replica takes in,
+/// typed at a random place of a text that two members wrote in
 /// `changes` changes of 16 letters at scattered places: how many more (by
 /// the median) a change typing [`PLACES`] letters at as many places searches
 /// than one typing a single letter, per added letter. Whatever every apply

@@ -54,8 +54,8 @@ pub struct Person {
     /// Their identity root, which their store and their own cluster derive
     /// from.
     pub root: [u8; 32],
-    /// The principal their records' standing is decided for.
-    pub principal: String,
+    /// The actor their records' standing is decided for.
+    pub actor: String,
 }
 
 impl Person {
@@ -64,7 +64,7 @@ impl Person {
     #[must_use]
     pub fn of(identity_id: String, root: [u8; 32]) -> Self {
         Self {
-            principal: person_id_for_root(root),
+            actor: person_id_for_root(root),
             identity_id,
             root,
         }
@@ -152,10 +152,10 @@ impl Links {
         channels: Arc<Mutex<BrokerChannels>>,
         fanout: Arc<FanoutState>,
     ) -> Self {
-        let principal = person.principal.clone();
+        let actor = person.actor.clone();
         Self {
             siblings: runtime.spawn(keep_links(endpoint, sync.clone(), person.clone())),
-            delivery: runtime.spawn(deliver(sync.clone(), principal, channels, fanout)),
+            delivery: runtime.spawn(deliver(sync.clone(), actor, channels, fanout)),
             keeping: runtime.spawn(keep_kept(sync, store_path(state))),
         }
     }
@@ -289,7 +289,6 @@ async fn deliver(
                 envelope: frame.envelope,
                 own: None,
             },
-            |_| person.clone(),
         );
         if delivered != collab_inbound::Delivery::Done {
             tracing::debug!(?delivered, "a write of the person's own was not taken");
@@ -379,7 +378,7 @@ mod tests {
                 collab_types::personal_cluster(&root_key).to_string()
             );
             assert_eq!(
-                Person::of(hex::encode(root_key), root_key).principal,
+                Person::of(hex::encode(root_key), root_key).actor,
                 person_id_for_root(root_key)
             );
         }

@@ -135,7 +135,7 @@ async fn native_profile_bootstrap_refuses_revocation_before_sdk_custody_or_netwo
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("sdk");
     let owner = crate::journal::Owner {
-        principal: "11".repeat(32),
+        actor: "11".repeat(32),
         device: "profile-device".into(),
         service: crate::Service::Whatsapp,
         account: "profile-account".into(),

@@ -161,14 +161,15 @@ impl SettingsService {
     /// device had an identity: what they change is theirs, and what was
     /// changed under one of those ids is theirs to take back.
     pub fn own_person(&mut self, person: &str, earlier: &[String]) {
+        let person = tilo_actions::MemberId::person(person);
         self.records = SettingsRecords::of_person_named(
             settings_sections::APP_ID,
             settings_sections::APP_TITLE,
-            person,
+            &person,
             earlier,
             &[settings_sections::declare],
         );
-        self.invoker = Some(ActionInvoker::person(person));
+        self.invoker = Some(ActionInvoker::member(person));
         self.published = self.build();
     }
 

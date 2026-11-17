@@ -27,7 +27,7 @@ passwords-request-details = { $app } möchte auf { $item } zugreifen.
     { $service }
     Konto { $account }
     Verknüpfung { $generation }
-    Person: { $principal }
+    Person: { $actor }
     Gerät: { $device }
 passwords-saved-item = { $item } gespeichert
 passwords-new-item = Neuer Eintrag

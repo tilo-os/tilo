@@ -720,7 +720,7 @@ impl Core {
     }
 
     /// Change the reading settings and persist them, so the change survives
-    /// restarts and converges with collaborators.
+    /// restarts and converges with members.
     pub(crate) fn bump_setting(
         &mut self,
         _edits: &mut ui::widget::Edits<'_>,
@@ -2527,7 +2527,7 @@ impl Core {
         self.store = store;
         self.arrive();
         // A feed shown on its own that is gone (unsubscribed here or by a
-        // collaborator) leaves the list on everything.
+        // member) leaves the list on everything.
         if matches!(&self.filter, Filter::Feed(id) if self.store.feed(id).is_none()) {
             self.set_filter(Filter::All);
         }

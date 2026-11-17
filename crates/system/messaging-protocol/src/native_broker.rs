@@ -69,7 +69,7 @@ impl NativeBroker {
         &self.owner
     }
     pub fn client(&self) -> MessagingClient {
-        MessagingClient::new(&self.owner.principal, Arc::new(self.clone()))
+        MessagingClient::new(&self.owner.actor, Arc::new(self.clone()))
     }
     fn authorized(&self, route: &Route) -> Result<Authorization, SendError> {
         self.authority.check_account_scope(&self.scope)?;

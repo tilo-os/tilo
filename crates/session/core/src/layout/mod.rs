@@ -14,8 +14,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
-use tilo_actions::ResourceSpec;
 use tilo_actions::remote::session_actions;
+use tilo_actions::{Actor, MemberId, ResourceSpec};
 use tilo_desktop_model::{
     FloatPlace, GroupId, Layout as Tree, LayoutKind, Strip, StripId, Tab, TabId, TileContent,
     WindowGroup, WindowWidth, Workspace, WorkspaceId,
@@ -441,7 +441,7 @@ type Pointed = ((i64, i64), Option<(i64, i64)>, Option<CanvasRect>);
 #[derive(Clone, Copy)]
 pub struct Found<'a> {
     /// The person the place is made as.
-    pub asked: &'a str,
+    pub asked: &'a Actor,
     /// The text they typed.
     pub text: &'a str,
     /// The resource's view, empty for its primary one.
@@ -688,7 +688,7 @@ pub trait Layouts {
     /// Take back (`redo` false) or bring back `person`'s last step of the layout.
     fn step(&self, person: &str, redo: bool) -> Stepped;
     /// The last step of the layout `person` can take back, as who made it and what it did.
-    fn last_step(&self, person: &str) -> Option<(String, String)>;
+    fn last_step(&self, person: &str) -> Option<(tilo_actions::Actor, String)>;
     /// Note that `asked` made `action` of the layout `before`, which made it `tree`, and that the
     /// windows in `shows` show the records they name: what the change the layout now makes is named
     /// by.
@@ -696,7 +696,7 @@ pub trait Layouts {
         &self,
         before: &Tree,
         tree: &Tree,
-        asked: &str,
+        asked: &Actor,
         action: &LayoutAction,
         shows: &[(TabId, String)],
     );
@@ -727,7 +727,7 @@ impl Layouts for LayoutDocument {
         }
     }
 
-    fn last_step(&self, person: &str) -> Option<(String, String)> {
+    fn last_step(&self, person: &str) -> Option<(tilo_actions::Actor, String)> {
         LayoutDocument::last_step(self, person)
     }
 
@@ -735,7 +735,7 @@ impl Layouts for LayoutDocument {
         &self,
         _before: &Tree,
         tree: &Tree,
-        asked: &str,
+        asked: &Actor,
         action: &LayoutAction,
         shows: &[(TabId, String)],
     ) {
@@ -769,7 +769,7 @@ pub struct Layout {
     catalog: Rc<RefCell<Catalog>>,
     /// Actions that arrived under a gesture or while the person typed: they run in order once it
     /// ends.
-    waiting: RefCell<VecDeque<(String, LayoutAction)>>,
+    waiting: RefCell<VecDeque<(Actor, LayoutAction)>>,
     /// Each turn asked on the canvas, by the message that asked it ([`turn_key`]): where the places
     /// an agent's step in it makes stand. A turn is the session's while it runs, never the
     /// record's: the record holds the places it made.
@@ -1094,7 +1094,7 @@ impl Layout {
     /// Returns the resource the place now shows, when it re-pointed, so a caller says so.
     fn answer_query(
         &mut self,
-        asked: &str,
+        asked: &Actor,
         place: u64,
         answer: Answer,
         busy: Busy,
@@ -1149,7 +1149,7 @@ impl Layout {
     /// `place` shows no query, or the platform can ask no app for its text.
     pub fn retry_query(
         &mut self,
-        _asked: &str,
+        _asked: &Actor,
         place: u64,
         ask_origin: AskOriginRef<'_>,
         _busy: Busy,
@@ -1195,7 +1195,7 @@ impl Layout {
         let Ok(place) = key.parse::<u64>() else {
             return;
         };
-        let asked = self.person.clone();
+        let asked = Actor::from(MemberId::person(self.person.clone()));
         self.answer_query(&asked, place, answer, busy);
     }
 
@@ -1246,7 +1246,7 @@ impl Layout {
     ///
     /// # Errors
     /// Why the place could not be activated at all.
-    fn bring_forward(&mut self, asked: &str, place: u64, busy: Busy) -> Result<(), String> {
+    fn bring_forward(&mut self, asked: &Actor, place: u64, busy: Busy) -> Result<(), String> {
         match self.ask(asked, LayoutAction::Activate { place }, busy) {
             Ok(_) => Ok(()),
             Err(why) if why == "that place is in front already" => Ok(()),
@@ -1267,7 +1267,7 @@ impl Layout {
     /// The layout has no workspace in front, or `resource` names nothing published.
     pub(crate) fn open_place(
         &mut self,
-        asked: &str,
+        asked: &Actor,
         resource: &str,
         view: &str,
         beside: &str,
@@ -1408,7 +1408,10 @@ impl Layout {
                 tree.active_workspace()?
                     .members
                     .iter()
-                    .find(|member| member.id.key() == self.person && !member.name.is_empty())
+                    .find(|member| {
+                        member.id.person_id() == Some(self.person.as_str())
+                            && !member.name.is_empty()
+                    })
                     .map(|member| member.name.clone())
             })
             .unwrap_or_else(|| self.person.clone())
@@ -1534,7 +1537,7 @@ impl Layout {
     /// waits ([`Self::waiting`]) and runs when they end. Returns whether it ran now.
     /// # Errors
     /// Why the action names something the layout does not hold.
-    pub fn ask(&mut self, asked: &str, action: LayoutAction, busy: Busy) -> Result<bool, String> {
+    pub fn ask(&mut self, asked: &Actor, action: LayoutAction, busy: Busy) -> Result<bool, String> {
         if busy.holds() {
             self.waiting
                 .borrow_mut()
@@ -1566,7 +1569,7 @@ impl Layout {
     /// The last step of the record's history, as who made it and what it did: what a history view
     /// names it by.
     #[must_use]
-    pub fn last_step(&self) -> Option<(String, String)> {
+    pub fn last_step(&self) -> Option<(tilo_actions::Actor, String)> {
         let person = self.person.clone();
         self.layouts.last_step(&person)
     }
@@ -1577,8 +1580,7 @@ impl Layout {
     /// # Errors
     /// Why the action names something the layout does not hold.
     pub fn ask_person(&mut self, action: &LayoutAction) -> Result<(), String> {
-        let person = self.person.clone();
-        self.write(&person, action)
+        self.write(&MemberId::person(self.person.clone()).into(), action)
     }
 
     /// Make each window the person floated or put back on the layout since the last call their own
@@ -1632,11 +1634,12 @@ impl Layout {
 
     /// Make `action` one change of the layout, attributed to `asked` as its undo step: what the
     /// layout is, made where the layout is.
-    fn write(&self, asked: &str, action: &LayoutAction) -> Result<(), String> {
+    fn write(&self, asked: &Actor, action: &LayoutAction) -> Result<(), String> {
         // An agent arranges the person's layout like the person does, except where they pinned
         // something: a pinned place is theirs to move (shell.md §5's default, "not what they
         // pinned").
-        let by_the_person = asked == self.person;
+        let by_the_person =
+            asked.member_id().and_then(MemberId::person_id) == Some(self.person.as_str());
         let catalog = self.catalog.clone();
         let before = self.handle.read(Clone::clone);
         let mut tree = before.clone();
@@ -1667,9 +1670,9 @@ impl Layout {
 
 /// What `action`, asked for by `asked`, is: who asked and what they did, as the change of the layout
 /// it makes names it.
-pub fn step_context(asked: &str, action: &LayoutAction) -> tilo_actions::ActionContext {
+pub fn step_context(asked: &Actor, action: &LayoutAction) -> tilo_actions::ActionContext {
     tilo_actions::ActionContext {
-        invoker: Some(tilo_actions::ActionInvoker::person(asked.to_owned())),
+        invoker: Some(tilo_actions::ActionInvoker::admitted(&asked.clone().into())),
         what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
             tilo_actions::ActionKey::new("so.tilo.session", "layout", verb(action)),
             std::iter::empty(),

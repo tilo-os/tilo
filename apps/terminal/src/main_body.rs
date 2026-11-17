@@ -401,7 +401,7 @@ pub struct TerminalWidget {
     /// Latched once any output arrived: the empty-state watermark shows only before that.
     ever_nonblank: bool,
 
-    /// Window title from OSC 0/2, in the record so collaborators see it.
+    /// Window title from OSC 0/2, in the record so members see it.
     title: String,
     links: HashMap<u16, String>,
     content: ContentStore,
@@ -2570,6 +2570,19 @@ impl Findable for TerminalWidget {
 }
 
 impl Widget for TerminalWidget {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        let theme = cx.theme().clone();
+        let style = theme.text(ui::tokens::TextRole::Code);
+        cx.element("pre");
+        let mut look = ui::composition::TextLook::new(
+            self.grid_text().trim_end().to_owned(),
+            &style,
+            Some(theme.tokens.colors.text_primary),
+        );
+        look.mono = true;
+        cx.text(look);
+    }
+
     ui::provides!(
         dyn Findable,
         dyn ui::AppWidget,

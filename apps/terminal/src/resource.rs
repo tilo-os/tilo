@@ -37,7 +37,7 @@ pub struct Terminal {
     pub relay_session: Option<Atom>,
     /// Pane
     ///
-    /// The pane collaborators' presence is scoped to; claimed by each
+    /// The pane members' presence is scoped to; claimed by each
     /// process that takes the session.
     #[model(readonly)]
     pub pane: Option<Atom>,

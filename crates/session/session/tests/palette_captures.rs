@@ -32,7 +32,7 @@ use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_session::apps::Apps;
 use tilo_session::{ActionPlane, AppActions, Launches, Options, Session};
 
-use crate::common::held::{Fixture, WORKSPACE, fixture, layout, presentation, principal};
+use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, presentation};
 use tilo_user_identity::DeviceCert;
 
 /// The app whose capture this is.
@@ -75,7 +75,7 @@ fn session(socket: &Path, fixture: &Fixture) -> (Session, Rc<Apps>) {
     let mut session = crate::common::headless(Options {
         collab: false,
         action_plane: ActionPlane::At(socket.to_path_buf()),
-        person: principal(&fixture.cert.user_public_key),
+        person: actor(&fixture.cert.user_public_key),
         launches,
         state: Some(fixture.state.clone()),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
@@ -84,7 +84,7 @@ fn session(socket: &Path, fixture: &Fixture) -> (Session, Rc<Apps>) {
     });
     session
         .handle()
-        .replace_tree(layout(WORKSPACE, &principal(&fixture.cert.user_public_key)));
+        .replace_tree(layout(WORKSPACE, &actor(&fixture.cert.user_public_key)));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }

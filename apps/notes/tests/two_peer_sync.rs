@@ -1,4 +1,4 @@
-//! Collaboration through the notebook record: a collaborator's edit reaches
+//! Collaboration through the notebook record: a member's edit reaches
 //! the open note, a duplicate carries its bodies with it, and the window
 //! tells others which note it shows.
 
@@ -23,7 +23,7 @@ fn presence_reports_the_open_note_as_the_tab() {
 
 #[test]
 fn peer_edits_and_duplicates_replicate_before_the_other_peer_opens_them() {
-    eprintln!("phase a_collaborators_text_edit_reaches_the_open_note");
+    eprintln!("phase a_members_text_edit_reaches_the_open_note");
     {
         let (mut app, page) = with_note("Shared", "Hello");
         app.merge_peer_edit(|doc| {
@@ -44,7 +44,7 @@ fn peer_edits_and_duplicates_replicate_before_the_other_peer_opens_them() {
         let shown = surface(&mut app, |notes| notes.editor_text_for_test());
         assert!(
             shown.contains("ZZZ-Hello"),
-            "the open note shows the collaborator's text, got: {shown:?}"
+            "the open note shows the member's text, got: {shown:?}"
         );
     }
 

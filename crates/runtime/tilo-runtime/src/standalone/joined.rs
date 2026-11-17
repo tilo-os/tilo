@@ -321,7 +321,7 @@ impl Joined {
             if view.continuity() != continuity || view.device() != &cert {
                 return Err("workspace identity changed while selecting the audience".into());
             }
-            let principal = view
+            let actor = view
                 .peer()
                 .permissions(cert.device_public_key, SystemTime::now())
                 .map_err(|error| error.to_string())?
@@ -335,16 +335,16 @@ impl Joined {
             let mut workspace = Workspace::new(workspace, String::new());
             tilo_peer_state::workspace::adopt_workspace(&mut workspace, document, &[]);
             workspace.sandbox = view.peer().governance().governed_sandbox()?;
-            Ok((workspace, principal))
+            Ok((workspace, actor))
         })
     }
 
-    /// Select only a workspace this exact profile principal and certified device
+    /// Select only a workspace this exact profile actor and certified device
     /// currently take part in. Reading authority never joins or requests keys.
     pub(super) fn action_workspace(&self, actor: &str, workspace: &str) -> Result<String, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("invalid MCP workspace")?;
-        let (_, principal) = self.current_workspace(workspace)?;
-        if actor != principal {
+        let (_, admitted) = self.current_workspace(workspace)?;
+        if actor != admitted {
             return Err(
                 "the selected profile actor is not this workspace's admitted identity".into(),
             );
@@ -516,7 +516,6 @@ impl Joined {
                 // route, and so does every held write it brought what that
                 // write waited for.
                 for write in input.app_writes(&report) {
-                    let author = write.envelope.author.as_bytes().to_owned();
                     collab_inbound::deliver(
                         &self.channels,
                         &self.fanout,
@@ -529,7 +528,6 @@ impl Joined {
                             envelope: write.envelope,
                             own: write.own,
                         },
-                        |_| format!("peer@{}", hex::encode(author)),
                     );
                 }
             }

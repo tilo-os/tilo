@@ -57,7 +57,7 @@ fn route() -> Route {
 }
 fn owner() -> Owner {
     Owner {
-        principal: "11".repeat(32),
+        actor: "11".repeat(32),
         device: "test-device".into(),
         service: Service::Signal,
         account: "fixture-signal".into(),

@@ -1307,7 +1307,7 @@ tilo_test_env::scenario! {
             .map(|id| Person {
                 id: id.into(),
                 user: None,
-                member: (id == "cc").then(|| "agent:cc".to_owned()),
+                member: (id == "cc").then(|| MemberId::agent("cc")),
                 label: id.into(),
                 devices: Vec::new(),
                 rgb: (1, 2, 3),
@@ -1355,7 +1355,7 @@ tilo_test_env::scenario! {
         let person = |status: Option<Line>| Person {
             id: "cc".into(),
             user: None,
-            member: Some("agent:cc".into()),
+            member: Some(MemberId::agent("cc")),
             label: "Claude Code".into(),
             devices: Vec::new(),
             rgb: (1, 2, 3),
@@ -1413,7 +1413,7 @@ tilo_test_env::scenario! {
         let people = vec![Person {
             id: "bot".into(),
             user: None,
-            member: Some("agent:scribe".into()),
+            member: Some(MemberId::agent("scribe")),
             label: "Scribe".into(),
             devices: Vec::new(),
             rgb: (1, 2, 3),

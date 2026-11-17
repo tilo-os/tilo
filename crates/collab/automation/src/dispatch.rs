@@ -19,7 +19,8 @@ pub mod queue;
 mod tests;
 
 pub use event::{
-    AppEvent, ConnectorEvent, Event, ItemRef, RecordEvent, app_event_object, event_of,
+    AppEvent, ConnectorEvent, Event, ItemRef, RecordEvent, ScheduleEvent, app_event_object,
+    event_of,
 };
 pub use matching::{
     Armed, Dispatched, Firer, Firing, Skipped, dispatch, edited_paths, field_matches, run_id,

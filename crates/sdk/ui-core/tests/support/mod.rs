@@ -138,7 +138,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
             CollabRequest::Document { mutation, .. } => {
                 let mutation = relay_mutation(mutation);
-                let event = document_event(&mutation, &from);
+                let event = document_event(&mutation);
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
             CollabRequest::Presence { key, payload } => {
@@ -155,7 +155,6 @@ pub fn pump(relay: &mut MemoryRelay) {
                 // enforcement — that's the shell collab_broker's job).
                 let event = CollabEvent::Document {
                     envelope,
-                    from_user_id: from.clone(),
                     decrypted_payload: None,
                 };
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
@@ -301,7 +300,7 @@ fn broadcast_to_others(
     }
 }
 
-fn document_event(mutation: &collab_types::DocumentMutation, from_user_id: &str) -> CollabEvent {
+fn document_event(mutation: &collab_types::DocumentMutation) -> CollabEvent {
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().expect("test document mutation encodes"),
         collab_types::ArtifactId::new(),
@@ -314,7 +313,6 @@ fn document_event(mutation: &collab_types::DocumentMutation, from_user_id: &str)
     envelope.signature = collab_types::Signature::from_bytes([0; 64]);
     CollabEvent::Document {
         envelope: Box::new(envelope),
-        from_user_id: from_user_id.to_owned(),
         decrypted_payload: None,
     }
 }

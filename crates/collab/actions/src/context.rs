@@ -178,7 +178,7 @@ pub enum ChangeKind {
     Housekeeping,
     /// Content that came from outside rather than from anyone's edit:
     /// articles a refresh fetched, a process's output, what a brand-new
-    /// record starts with from state that already existed. Collaborators
+    /// record starts with from state that already existed. Members
     /// see it like any content, but it is nobody's undo step, and workspace
     /// activity leaves it out.
     External,
@@ -1127,7 +1127,7 @@ impl ParticipantId {
     }
 
     /// One host-minted execution's private view. This key is subordinate to the
-    /// admitted principal and confers no authority. Hosts derive it from their
+    /// admitted actor and confers no authority. Hosts derive it from their
     /// execution lease, never a client-supplied run label or context.
     pub fn for_execution(execution: uuid::Uuid) -> Self {
         Self(format!("execution:{execution}"))

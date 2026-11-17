@@ -1,4 +1,4 @@
-use runtime_fs::blobs::{BlobClient, BlobPrincipal, MAX_READ_CHUNK, write_handoff};
+use runtime_fs::blobs::{BlobActor, BlobClient, MAX_READ_CHUNK, write_handoff};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use super::*;
@@ -266,7 +266,7 @@ const IMAGE: &[u8] = b"\x89PNG\r\n\x1a\n pixels put by one application";
 
 fn launcher_connection(socket: &Path, workspace: &str, app: &str) -> BlobClient {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
-    write_handoff(&mut stream, &BlobPrincipal::App(scope(workspace, app))).unwrap();
+    write_handoff(&mut stream, &BlobActor::App(scope(workspace, app))).unwrap();
     BlobClient::from_app_stream(stream).unwrap()
 }
 

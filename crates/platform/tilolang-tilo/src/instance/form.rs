@@ -291,7 +291,7 @@ impl Pending {
                 props.insert("label".to_owned(), ui::Value::text(&label));
                 return node("toggle", &field.key, props, None, Vec::new());
             }
-            FieldType::Named(_) | FieldType::Principal | FieldType::Resource(_) => {
+            FieldType::Named(_) | FieldType::Actor | FieldType::Resource(_) => {
                 parts.push(self.choice_node(host, names, field, text, optional));
             }
             FieldType::Date => {
@@ -449,7 +449,7 @@ impl Pending {
         );
         props.insert("selected".to_owned(), ui::Value::text(text));
         let placeholder = match inner(&field.field_type) {
-            FieldType::Principal => "Choose someone",
+            FieldType::Actor => "Choose someone",
             FieldType::Resource(_) => "Choose one",
             _ => "Choose",
         };
@@ -490,7 +490,7 @@ impl Pending {
                     }));
                 }
             }
-            FieldType::Principal => {
+            FieldType::Actor => {
                 // The workspace's members; the person at the window is one, also while the
                 // host has not told the runtime its membership.
                 let viewer = self.view.borrow().viewer().clone();
@@ -795,7 +795,7 @@ fn read(host: &Host, meta: &Meta, field: &Field, text: &str) -> Result<Value, St
             Some(secs) => Json::from(secs),
             None => return Err("Not a length of time".to_owned()),
         },
-        FieldType::Principal => {
+        FieldType::Actor => {
             let who = crate::runtime::ids::actor_of_text(trimmed)
                 .ok_or_else(|| "Not someone in the workspace".to_owned())?;
             crate::runtime::value::to_json(&Value::Actor(who))?

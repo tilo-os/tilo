@@ -197,7 +197,7 @@ impl TestHost {
                         values,
                         &settings_store::ChangeOrigin {
                             action,
-                            principal: None,
+                            actor: None,
                             invoked_by: None,
                         },
                     )

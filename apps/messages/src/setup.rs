@@ -39,11 +39,11 @@ impl SetupView {
     pub(crate) fn new(
         client: Option<MessagingClient>,
         first: Option<tilo_messaging::EnrollmentClient>,
-        principal: Option<&str>,
+        actor: Option<&str>,
     ) -> Self {
         Self {
             client,
-            first: crate::enrollment::EnrollmentView::new(first, principal),
+            first: crate::enrollment::EnrollmentView::new(first, actor),
             state: LocalState::new(Projection::default()),
             epoch: LocalState::new(0),
         }

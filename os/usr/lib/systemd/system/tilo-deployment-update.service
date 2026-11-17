@@ -7,7 +7,7 @@ After=local-fs.target network.target
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/tilo-deployment update --yes
-# Something needs the newer system now (an app build, a collaborator): apply
+# Something needs the newer system now (an app build, a member): apply
 # what can apply live before this returns, so the caller sees the result
 # (tilo-live-update.service).
 ExecStartPost=-/usr/bin/systemctl start tilo-live-update.service

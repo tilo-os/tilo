@@ -309,7 +309,7 @@ pub struct DraftData {
     #[serde(default)]
     pub calendar_ics: Option<String>,
     /// Portable content-addressed attachment references. This is structured metadata, not
-    /// a machine-local path, so collaborators can materialize the same bytes.
+    /// a machine-local path, so members can materialize the same bytes.
     #[serde(default)]
     pub attachments: Vec<DraftAttachment>,
 }

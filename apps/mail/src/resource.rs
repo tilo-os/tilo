@@ -1619,7 +1619,7 @@ pub(crate) fn live_extras(app: &crate::app::Mailroom) -> Vec<ui::framework::Live
 }
 
 /// Mail's preferences, which follow the person across their devices and are
-/// never seen by collaborators: the format a new message is written in and
+/// never seen by members: the format a new message is written in and
 /// the accounts whose folders the sidebar keeps folded.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MailPreferences {
@@ -2317,7 +2317,7 @@ mod tests {
             }
 
             // A change from any api — an agent's action, an undo, a
-            // collaborator's edit — is what the server has to be told, exactly
+            // member's edit — is what the server has to be told, exactly
             // as a click on the message is.
             phase every_api_reaches_the_server_through_the_document;
             {

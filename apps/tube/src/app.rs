@@ -1136,6 +1136,10 @@ impl Tube {
 }
 
 impl Widget for TubeApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

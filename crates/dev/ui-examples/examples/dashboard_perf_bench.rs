@@ -6,7 +6,7 @@
 //! cargo run -p ui-examples --release --example ui-perf -- dashboard_perf_bench
 //! ```
 //! `TILO_UI_DASH_ITERS` sets the iterations, `TILO_UI_DASH_WIDTH`/`TILO_UI_DASH_HEIGHT` the render
-//! target. `TILO_UI_DASH_PEER=1` adds a collaborator whose pointer moves on every event (drawn
+//! target. `TILO_UI_DASH_PEER=1` adds a member whose pointer moves on every event (drawn
 //! through the presence layer); `TILO_UI_DASH_PEER=full` repaints the window on every such frame
 //! instead, for comparison. `TILO_UI_DASH_VERIFY=1` runs a retained-damage pixel parity preflight
 //! against a persistent full-render reference instead of measuring. `TILO_UI_DASH_SAMPLES=<path>`
@@ -826,7 +826,7 @@ struct BenchState<'a> {
     damage_regions: &'a mut Vec<vello::kurbo::Rect>,
     canvas_w: u32,
     canvas_h: u32,
-    /// `TILO_UI_DASH_PEER=1`: a collaborator whose pointer moves on every
+    /// `TILO_UI_DASH_PEER=1`: a member whose pointer moves on every
     /// event, painted over the widgets the way an app window paints it.
     peer: Option<&'a mut PeerBench>,
     /// The time the tree reads while it handles events, lays out and draws.
@@ -878,13 +878,13 @@ impl FrameClock {
     }
 }
 
-/// A remote collaborator's pointer, drawn through the framework's presence
+/// A remote member's pointer, drawn through the framework's presence
 /// layer: each frame damages only where the pointer and its name were and
 /// are, never the whole window.
 struct PeerBench {
     presence: PresenceCtx,
     layer: tilo_ui::presence::PresenceLayer,
-    /// visible collaborator repainted the whole window, for comparison.
+    /// visible member repainted the whole window, for comparison.
     full_repaint: bool,
 }
 
@@ -1404,7 +1404,7 @@ fn dispatch_bench_event(
     positions: [(f64, f64); 5],
 ) {
     let [pa, pb, pc, pd, pe] = positions;
-    // A collaborator's pointer moves on every event.
+    // A member's pointer moves on every event.
     let (canvas_w, canvas_h) = (state.canvas_w, state.canvas_h);
     if let Some(peer) = state.peer.as_deref_mut() {
         peer.move_pointer(i, canvas_w, canvas_h);
@@ -2951,7 +2951,7 @@ pub fn run(_args: &[String]) {
     let mut peer = PeerBench::from_env();
     if let Some(peer) = peer.as_ref() {
         println!(
-            "peer: a collaborator's pointer moves on every event ({})",
+            "peer: a member's pointer moves on every event ({})",
             if peer.full_repaint {
                 "full repaint while visible, the rule before #3936"
             } else {

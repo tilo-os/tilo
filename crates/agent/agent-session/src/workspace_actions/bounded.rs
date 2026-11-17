@@ -55,7 +55,7 @@ pub(super) struct Bounded {
     /// The person, on the device the request came from: what the workspace's
     /// policy is asked about.
     pub(super) person_caller: Caller,
-    /// The person's policy principal id.
+    /// The person's policy actor id.
     pub(super) person: String,
     /// The agent acting for the person, by its agent id.
     pub(super) agent: Option<String>,
@@ -568,6 +568,7 @@ impl Worker {
                         app,
                         merged: Some(heads),
                         parts: HashMap::new(),
+                        foreign: std::collections::HashSet::new(),
                         used: clock,
                     },
                     standing: policy.standing,
@@ -581,6 +582,7 @@ impl Worker {
             .get_mut(&key)
             .ok_or_else(|| unavailable("the record did not mount".into()))?;
         held.held.used = clock;
+        super::catch_up::hold_parts(&holder, &mut held.held, state);
         if holder != *route && !held.held.parts.contains_key(route) {
             let (part, heads) = state.document(route).map_err(unavailable)?;
             held.held

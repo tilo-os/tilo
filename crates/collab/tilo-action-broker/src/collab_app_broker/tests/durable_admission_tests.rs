@@ -377,7 +377,7 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
                             &request.resource,
                             &request.action,
                             None,
-                            &caller.admitted.principal_id,
+                            &caller.admitted.actor_key,
                         )
                         .unwrap();
                     request.invocation =
@@ -411,7 +411,7 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
                             &request.resource,
                             &request.action,
                             None,
-                            &caller.admitted.principal_id,
+                            &caller.admitted.actor_key,
                         )
                         .map(|_| ())
                 } else {
@@ -569,10 +569,10 @@ async fn invocation_journal_real_effect_once_across_concurrent_duplicate_respons
                 fixture
                     .state
                     .invocation_statuses(&tilo_actions::MemberId::person(
-                        caller.admitted.principal_id.clone()
+                        caller.admitted.actor_key.clone()
                     ))
                     .is_empty(),
-                "legacy principal-only lookup cannot reveal certified terminal output"
+                "legacy actor-only lookup cannot reveal certified terminal output"
             );
             let mut changed = request.clone();
             changed.argument = Some(String::new());
@@ -696,7 +696,7 @@ tilo_test_env::scenario! {
         assert!(
             fixture
                 .state
-                .invocation_statuses(&tilo_actions::MemberId::person(caller.admitted.principal_id.clone()))
+                .invocation_statuses(&tilo_actions::MemberId::person(caller.admitted.actor_key.clone()))
                 .is_empty(),
             "legacy root-scoped queries must not disclose another device's private results"
         );
@@ -986,7 +986,7 @@ async fn invocation_journal_invalid_updates_never_persist_and_legacy_completion_
         assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == request.invocation));
 
         // The legacy numeric local caller still receives and completes its original handle.
-        let legacy = fixture.state.start_invocation(71, &request.resource, &request.action, None, &caller.admitted.principal_id).unwrap();
+        let legacy = fixture.state.start_invocation(71, &request.resource, &request.action, None, &caller.admitted.actor_key).unwrap();
         let delivered = fixture.invocation_rx.try_recv().unwrap();
         assert_eq!(delivered.invocation.0.as_u128(), u128::from(legacy.id));
         channel.complete_invocation(legacy.id, "", "").await.unwrap();
@@ -1192,7 +1192,7 @@ async fn invocation_journal_confirmation_uuid_and_lifecycle_remain_authoritative
                 .confirmation = tilo_actions::ConfirmationPolicy::Phrase {
                 phrase: "erase exactly".into(),
             };
-            let actor = &caller.admitted.principal_id;
+            let actor = &caller.admitted.actor_key;
             assert!(
                 fixture
                     .state

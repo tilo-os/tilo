@@ -45,7 +45,7 @@ fn marks(doc: &mut AutoCommit) -> ObjId {
 }
 
 /// A document whose `marks` map nobody's step created: undoing a first
-/// mark then removes the mark, not the map a collaborator also writes in.
+/// mark then removes the mark, not the map a member also writes in.
 fn document() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(ActorId::from(GENESIS));

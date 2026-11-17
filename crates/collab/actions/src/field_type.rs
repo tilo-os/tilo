@@ -30,7 +30,7 @@ pub enum FieldType {
     /// An account of some service, held as its URI (`mailto:jane@x.com`).
     Identifier,
     /// Who did something: a person or an agent.
-    Principal,
+    Actor,
     /// A reference to a resource of this kind; of any kind when empty.
     Resource(String),
     /// A record or enum declared in the surface's types.

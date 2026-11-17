@@ -68,7 +68,7 @@ impl CredentialOwner {
         scope: CredentialScope,
         admitted: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<String, BrokerError> {
-        if scope.principal != self.principal()
+        if scope.actor != self.actor()
             || scope.device != self.device()
             || !scope.valid()
             || !admitted()
@@ -270,7 +270,7 @@ mod tests {
         let (root, broker, request, scope) = super::super::owner_tests::fixture();
         let broker = Arc::new(Mutex::new(broker));
         let owner =
-            CredentialOwner::from_broker(&scope.principal, &scope.device, broker.clone()).unwrap();
+            CredentialOwner::from_broker(&scope.actor, &scope.device, broker.clone()).unwrap();
         let id = owner
             .propose_scoped(request, scope, Arc::new(|| true))
             .unwrap();

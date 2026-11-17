@@ -13,7 +13,7 @@ pub(crate) fn speaks(label: Option<&str>, text: &str) -> bool {
 
 pub(super) fn owner(service: crate::Service) -> Owner {
     Owner {
-        principal: "11".repeat(32),
+        actor: "11".repeat(32),
         device: "device".into(),
         service,
         account: "account".into(),
@@ -386,8 +386,7 @@ fn messages_actions_use_hosted_whatsapp_and_sms_and_keep_text_outside_shared_sta
         )
         .unwrap();
         let mut app =
-            TestApp::<MessagesShell>::for_person_with_lent(&owner.principal, broker.client())
-                .unwrap();
+            TestApp::<MessagesShell>::for_person_with_lent(&owner.actor, broker.client()).unwrap();
         project_account_metadata(&owner, &route, &mut app);
         let directory = app
             .shared_person::<tilo_contact_directory::ContactDirectory>()
@@ -453,8 +452,7 @@ pub(crate) fn project_account_metadata(
     app: &mut ui::framework::testing::TestApp<messages::MessagesShell>,
 ) {
     let mut settings =
-        ui::framework::testing::TestApp::<AccountOwnerFixture>::for_person(&owner.principal)
-            .unwrap();
+        ui::framework::testing::TestApp::<AccountOwnerFixture>::for_person(&owner.actor).unwrap();
     let metadata = settings
         .shared_person::<tilo_messaging::PersonAccounts>()
         .unwrap();

@@ -260,7 +260,7 @@ fn serve_kept<A: ResourceApp>(
             &kept,
             settings.clone(),
         );
-        harness.serve_provider(provider, records.served_for(author));
+        harness.serve_provider(provider, records.served_for(&MemberId::person(author)));
     }
 }
 
@@ -1302,7 +1302,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
-    /// [`Self::effect`] invoked by `actor` — an agent or a collaborator the
+    /// [`Self::effect`] invoked by `actor` — an agent or a member the
     /// host admitted for the effect — rather than the person at this
     /// device: what the effect submits is applied as theirs, and only as
     /// far as the effect they were admitted for allows.
@@ -1899,6 +1899,23 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(())
     }
 
+    /// The parts of the chain of `P` the app's store holds, oldest first,
+    /// each read as it is stored: what the app keeps beside its record.
+    pub fn chain_parts<P: super::Chained>(&self) -> Vec<(u64, std::rc::Rc<P::State>)> {
+        let chain = P::chain();
+        self.records
+            .held_parts(&chain)
+            .into_iter()
+            .filter_map(|index| {
+                let state = self
+                    .records
+                    .read(&chain.part(index), |doc| P::read(doc))?
+                    .ok()?;
+                Some((index, std::rc::Rc::new(state)))
+            })
+            .collect()
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "a test harness surfaces corruption loudly"
@@ -1925,13 +1942,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// A copy of the stored document written by another participant: a
-    /// collaborator's replica, for a test to edit and [`Self::merge_peer`]
+    /// member's replica, for a test to edit and [`Self::merge_peer`]
     /// back.
     pub fn peer_document(&self) -> tilo_resource::Doc {
         self.read_document(|doc| doc.clone().fork())
     }
 
-    /// Exchange edits with a collaborator's replica, as sync does both ways:
+    /// Exchange edits with a member's replica, as sync does both ways:
     /// the peer's edits arrive in the running app (and its views), and the
     /// app's edits arrive in `peer`.
     pub fn merge_peer(&mut self, peer: &mut tilo_resource::Doc) -> Result<(), String> {
@@ -2025,7 +2042,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         super::preview::render_past::<A>(past, A::shot_viewport(None))
     }
 
-    /// A collaborator's edit arriving: `edit` writes on their own replica of
+    /// A member's edit arriving: `edit` writes on their own replica of
     /// the record as it stands now, under their own actor, and the change is
     /// merged in as sync merges a peer's. It is not the local participant's
     /// action, so it never lands on their undo stack.

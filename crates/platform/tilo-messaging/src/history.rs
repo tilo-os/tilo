@@ -106,7 +106,7 @@ pub enum HistoryError {
 pub type HistoryFuture =
     Pin<Box<dyn Future<Output = Result<HistoryPage, HistoryError>> + Send + 'static>>;
 
-/// The host binds this object to the admitted principal and credential grant, and
+/// The host binds this object to the admitted actor and credential grant, and
 /// revalidates the grant, Contacts association and provider identity on every
 /// read. Apps never receive account stores, vault keys or adapter connections.
 pub trait HistoryHost: Send + Sync {
@@ -122,20 +122,20 @@ pub trait HistoryHost: Send + Sync {
 #[derive(Clone)]
 pub struct HistoryClient {
     host: Arc<dyn HistoryHost>,
-    principal: String,
+    actor: String,
 }
 
 impl HistoryClient {
-    pub fn new(principal: impl Into<String>, host: Arc<dyn HistoryHost>) -> Self {
+    pub fn new(actor: impl Into<String>, host: Arc<dyn HistoryHost>) -> Self {
         Self {
             host,
-            principal: principal.into(),
+            actor: actor.into(),
         }
     }
 
     /// The verified person root this host capability acts for, never a label.
-    pub fn principal(&self) -> &str {
-        &self.principal
+    pub fn actor(&self) -> &str {
+        &self.actor
     }
 
     pub fn observe(
@@ -149,9 +149,9 @@ impl HistoryClient {
         route: Route,
         cursor: Option<HistoryCursor>,
     ) -> Result<HistoryPage, HistoryError> {
-        if self.principal.trim().is_empty()
-            || self.principal.len() > 256
-            || self.principal.chars().any(char::is_control)
+        if self.actor.trim().is_empty()
+            || self.actor.len() > 256
+            || self.actor.chars().any(char::is_control)
         {
             return Err(HistoryError::InvalidRoute);
         }

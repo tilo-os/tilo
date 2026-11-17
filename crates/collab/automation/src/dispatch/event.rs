@@ -257,17 +257,29 @@ const EVENT_KIND_SUFFIX: &str = ".event";
 /// The character `<app id>` and `<event kind>` are separated by.
 const SEPARATOR: char = '.';
 
+/// A fire time of one of a program's schedules coming round.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleEvent {
+    /// The workspace whose host (or whose person's device) keeps the time.
+    pub workspace: String,
+    /// Index of the schedule among the program's triggers.
+    pub trigger: usize,
+    /// The fire time, ms since the epoch.
+    pub due_ms: i64,
+}
+
 /// Either kind of event.
 #[derive(Clone, Copy, Debug)]
 pub enum Event<'a> {
     Record(&'a RecordEvent),
     Connector(&'a ConnectorEvent),
     AppEvent(&'a AppEvent),
+    Schedule(&'a ScheduleEvent),
 }
 
 impl Event<'_> {
-    /// What identifies the event: the change hash, or `app/source/id` for
-    /// a connector event.
+    /// What identifies the event: the change hash, `app/source/id` for
+    /// a connector event, or the fire time of a schedule.
     #[must_use]
     pub fn identity(&self) -> String {
         match self {
@@ -279,6 +291,10 @@ impl Event<'_> {
                 let payload = serde_json::to_string(&event.payload).unwrap_or_default();
                 format!("app_event\0{}\0{}\0{payload}", event.app_id, event.kind)
             }
+            Self::Schedule(event) => format!(
+                "schedule\0{}\0{}\0{}",
+                event.workspace, event.trigger, event.due_ms
+            ),
         }
     }
 
@@ -299,13 +315,17 @@ impl Event<'_> {
                 "kind": event.kind,
                 "payload": Value::Object(event.payload.clone()),
             }),
+            Self::Schedule(event) => json!({
+                "due_ms": event.due_ms,
+                "at_ms": event.due_ms,
+            }),
         }
     }
 
     pub(super) const fn caused_by(&self) -> Option<&Cause> {
         match self {
             Self::Record(event) => event.caused_by.as_ref(),
-            Self::Connector(_) | Self::AppEvent(_) => None,
+            Self::Connector(_) | Self::AppEvent(_) | Self::Schedule(_) => None,
         }
     }
 }

@@ -1,6 +1,6 @@
 //! The person's accounts as a record of their own: the accounts they
 //! configured follow them to every device they sign in on, never to a
-//! collaborator.
+//! member.
 
 use std::collections::BTreeMap;
 use std::path::Path;

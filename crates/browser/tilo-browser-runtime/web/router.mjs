@@ -16,7 +16,7 @@
  * - replace to write the canonical form of a link the page was opened with,
  *   or a deeper address within the window in front (its record once it
  *   bound one, the view a link opened in it);
- * - never for anything else. Collaborators' and agents' windows open on
+ * - never for anything else. Members' and agents' windows open on
  *   their own strips, so they never move this person's focus or URL.
  * Back, Forward and a hand-edited fragment parse the URL and show its
  * target without writing history, once: the browser announces such a move

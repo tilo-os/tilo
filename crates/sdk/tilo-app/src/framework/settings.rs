@@ -20,7 +20,7 @@ use super::section::{SectionApi, SectionKind};
 ///
 /// Bind controls to [`Self::state`] and write with [`Self::set`]. Settings
 /// are not the document: they are not undone and never seen by
-/// collaborators.
+/// members.
 ///
 /// A section that is a resource model (`#[derive(Model)]` and an empty
 /// `#[resource]`) is also a record its views edit by path
@@ -386,6 +386,22 @@ impl ViewStorage {
             .as_ref()
             .map(super::person::PersonState::unavailable)
             .unwrap_or_default()
+    }
+
+    /// What search finds in the chains the views opened.
+    pub(crate) fn chains_search(&self) -> Vec<tilo_resource::SearchEntry> {
+        self.chains
+            .apis()
+            .iter()
+            .flat_map(|api| api.search())
+            .collect()
+    }
+
+    /// A revision that moves whenever a chain the views opened changed.
+    pub(crate) fn chains_revision(&self) -> u64 {
+        self.chains.apis().iter().fold(0u64, |revision, api| {
+            revision.wrapping_mul(31).wrapping_add(api.revision())
+        })
     }
 
     pub(crate) fn record_resources(&self) -> Vec<tilo_actions::ResourceSpec> {

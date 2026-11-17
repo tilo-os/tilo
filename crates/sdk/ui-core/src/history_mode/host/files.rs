@@ -893,8 +893,8 @@ mod tests {
         use fs_protocol::files::*;
         let (ada, ada_laptop, scribe, stranger) = ([1; 32], [2; 32], [3; 32], [4; 32]);
         let mut authors = AuthorDirectory::new();
-        authors.register_person(
-            &hex::encode(ada),
+        authors.register_member(
+            &tilo_actions::MemberId::person(hex::encode(ada)),
             crate::HistoryAuthor::new("Ada", 0.0, "ada00000"),
         );
         authors.register_agent(
@@ -1001,8 +1001,8 @@ mod tests {
             folder: Some("/Reports".into()),
             authors: {
                 let mut authors = AuthorDirectory::new();
-                authors.register_person(
-                    &hex::encode(ada),
+                authors.register_member(
+                    &tilo_actions::MemberId::person(hex::encode(ada)),
                     crate::HistoryAuthor::new("Ada", 0.0, "ada00000"),
                 );
                 authors.register_device(&hex::encode(ada_laptop), "Ada's laptop");
@@ -1131,8 +1131,8 @@ mod tests {
             folder: None,
             authors: {
                 let mut authors = crate::history_source::AuthorDirectory::new();
-                authors.register_person(
-                    &hex::encode(ada),
+                authors.register_member(
+                    &tilo_actions::MemberId::person(hex::encode(ada)),
                     crate::HistoryAuthor::new("Ada", 0.0, "ada00000"),
                 );
                 authors

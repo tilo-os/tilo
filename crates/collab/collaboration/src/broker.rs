@@ -2008,7 +2008,7 @@ fn broker_participant_kind(kind: &str) -> &str {
 
 struct SdkJoinIdentity {
     presentation: Vec<u8>,
-    /// Requested broker principal kind. The broker only accepts `agent`
+    /// Requested broker actor kind. The broker only accepts `agent`
     /// when the named agent is admitted and this certified user may operate
     /// it; ordinary applications always leave this as `person`.
     participant_kind: &'static str,
@@ -2856,7 +2856,7 @@ impl CollaborationManager {
     }
 
     /// Connect a headless participant as a first-class workspace agent.
-    /// Its friendly id is both the visible handle and the principal whose
+    /// Its friendly id is both the visible handle and the actor whose
     /// scoped capabilities the broker evaluates.
     ///
     /// # Errors
@@ -2882,7 +2882,7 @@ impl CollaborationManager {
 
     /// Explicit-socket counterpart to [`Self::for_agent_route`]. Production
     /// still requires a certified endpoint identity; this method merely
-    /// preserves the agent principal kind for diagnostic transports.
+    /// preserves the agent actor kind for diagnostic transports.
     ///
     /// # Errors
     ///
@@ -4792,7 +4792,6 @@ async fn spawn_op_stream(
                 let (author, seq) = (envelope.author, envelope.seq);
                 let arrived = Arrived {
                     envelope,
-                    from_user_id: event.from_user_id,
                     admission: event.admission,
                 };
                 let signed = match signed_document_event(arrived, &encryption) {
@@ -6890,7 +6889,6 @@ fn complete_document_event(
 ) -> Option<CollabEvent> {
     let CollabEvent::Document {
         envelope,
-        from_user_id,
         decrypted_payload,
     } = event
     else {
@@ -6900,7 +6898,6 @@ fn complete_document_event(
         DocumentReassembly::complete(reassembler, &envelope, decrypted_payload)?;
     Some(CollabEvent::Document {
         envelope,
-        from_user_id,
         decrypted_payload,
     })
 }

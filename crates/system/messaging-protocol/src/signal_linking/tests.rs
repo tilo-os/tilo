@@ -22,7 +22,7 @@ fn setup() -> (Arc<SignalLinking>, Arc<Grant>, UnixStream) {
         .unwrap();
     let grant = Arc::new(Grant(AtomicBool::new(true)));
     let owner = Owner {
-        principal: "11".repeat(32),
+        actor: "11".repeat(32),
         device: "synthetic-sdk-device".into(),
         service: crate::Service::Signal,
         account: "synthetic-account".into(),

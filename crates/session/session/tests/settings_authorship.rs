@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
             .find(|change| change["leaf"] == json!(FIELD))
             .expect("the change is in the settings document's history");
         assert_eq!(
-            change["principal"],
+            change["actor"],
             json!(person),
             "the person at the device made it, by the id their workspaces know them by"
         );
@@ -127,7 +127,7 @@ tilo_test_env::scenario! {
         assert!(
             undone.iter().any(
                 |change| change["action"] == json!("settings.appearance/undo")
-                    && change["principal"] == json!(person)
+                    && change["actor"] == json!(person)
             ),
             "the undo is the person's too: {undone:?}"
         );
@@ -172,7 +172,7 @@ tilo_test_env::scenario! {
         assert!(
             undone.iter().any(
                 |change| change["action"] == json!("settings.appearance/undo")
-                    && change["principal"] == json!(person)
+                    && change["actor"] == json!(person)
             ),
             "the undo is the person's: {undone:?}"
         );

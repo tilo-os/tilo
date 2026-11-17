@@ -247,7 +247,7 @@ tilo_test_env::scenario! {
             "the arranged order, not the items' own"
         );
 
-        // One collaborator moves `c` to the top and removes `a`, the other
+        // One member moves `c` to the top and removes `a`, the other
         // changes `a` and `c` and adds `d` at the end: the moved item keeps
         // its change, the removed one stays removed, and both merge alike.
         let mut other = timeline.fork();

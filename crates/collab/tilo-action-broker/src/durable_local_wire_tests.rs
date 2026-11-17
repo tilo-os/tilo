@@ -368,9 +368,9 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
 
 /// An application connection reaches another application's action only
 /// with the workspace's leave; an agent working in that application is
-/// its own principal and reaches it under its own grants.
+/// its own actor and reaches it under its own grants.
 #[tokio::test(flavor = "current_thread")]
-async fn an_application_reaches_another_applications_action_only_as_a_granted_principal() {
+async fn an_application_reaches_another_applications_action_only_as_a_granted_actor() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use crate::test_support::{Grants as _, KindSet};

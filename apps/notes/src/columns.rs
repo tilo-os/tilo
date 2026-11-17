@@ -68,6 +68,10 @@ pub(crate) struct ColumnSlot {
 }
 
 impl Widget for ColumnSlot {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

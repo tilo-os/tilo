@@ -198,9 +198,7 @@ fn concurrent_first_imports_share_the_initialized_collection_and_both_survive_me
         .unwrap()
         .as_array_mut()
         .unwrap()
-        .push(serde_json::json!(
-            "Independent collaborator comparison report."
-        ));
+        .push(serde_json::json!("Independent member comparison report."));
     let second = second.to_string();
     let first_id = crate::model::report_id(REPORT);
     let second_id = crate::model::report_id(&second);

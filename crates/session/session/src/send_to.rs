@@ -429,12 +429,10 @@ impl Shared {
             .perform(&workspace, target, &mut |own| {
                 let look = &mut tilo_session_core::surfaces::Look::none();
                 match agent {
-                    Some(by) => self.published.invoke_as(
-                        &by.acting.by.key(),
-                        &own.address,
-                        &own.arguments,
-                        look,
-                    ),
+                    Some(by) => {
+                        self.published
+                            .invoke_as(&by.acting.by, &own.address, &own.arguments, look)
+                    }
                     None => self.published.invoke(&own.address, &own.arguments, look),
                 }
                 .map(drop)

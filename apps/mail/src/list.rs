@@ -883,6 +883,51 @@ fn paint_failure_state(
 }
 
 impl Widget for MessageList {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        let theme = cx.theme().clone();
+        let style = theme.text(ui::tokens::TextRole::Body);
+        let shared = self.shared.clone();
+        let state = shared.borrow();
+        let rows = state.list_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let row_h = if self.row_h > 0.0 {
+            self.row_h
+        } else {
+            f64::from(theme.tokens.metrics.row_avatar)
+        };
+        let frame = RowFrame::new(self.rect, row_h, false, &theme);
+        let scroll = self.region.offset().y;
+        cx.element("ul");
+        for (index, (id, _)) in rows.iter().enumerate() {
+            let Some(text) = RowText::of(*id, &state) else {
+                continue;
+            };
+            let rect = frame.row(index, scroll);
+            if rect.y1 < self.rect.y0 || rect.y0 > self.rect.y1 {
+                continue;
+            }
+            let part = cx.part(&format!("row{index}"), "MessageRow", rect);
+            part.tag = Some("li");
+            part.own = Some(ui::composition::Own::Text(ui::composition::TextLook::new(
+                format!("{} — {}\n{}", text.sender, text.subject, text.when),
+                &style,
+                Some(theme.tokens.colors.text_primary),
+            )));
+            if state.selected == Some(*id) {
+                part.semantics = Some(
+                    ui::a11y::AccessNode::new(ui::a11y::Role::ListItem).with_state(
+                        ui::a11y::AccessState {
+                            selected: true,
+                            ..Default::default()
+                        },
+                    ),
+                );
+            }
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1382,5 +1427,27 @@ mod tests {
                 assert!(empty.title.chars().next().is_some_and(char::is_uppercase));
             }
         }
+    }
+
+    #[test]
+    fn the_message_list_composes_senders_and_subjects_as_text() {
+        let shared = MailState::shared(MailState::new_sample(crate::avatars::Avatars::new()));
+        let mut list = MessageList::new(shared);
+        list.rect = Rect::new(0.0, 0.0, 340.0, 760.0);
+        let composed = ui::composition::compose_alone(&list, &Theme::dark(), "list");
+        assert_eq!(composed.tag, Some("ul"), "the list is a list");
+        let rows: Vec<&str> = composed
+            .children
+            .iter()
+            .filter_map(|child| match &child.own {
+                Some(ui::composition::Own::Text(look)) => Some(look.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!rows.is_empty(), "the sample mailbox lists its messages");
+        assert!(
+            rows[0].contains(" — "),
+            "a row says its sender and its subject: {rows:?}"
+        );
     }
 }

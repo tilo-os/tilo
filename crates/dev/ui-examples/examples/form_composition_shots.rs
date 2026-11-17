@@ -246,7 +246,7 @@ fn settings_form() -> Form {
                 )),
         )
         .section(FormSection::untitled().field(Field::new(
-            "Device name shown to collaborators",
+            "Device name shown to members",
             TextInput::local().with_id("device"),
         )))
 }

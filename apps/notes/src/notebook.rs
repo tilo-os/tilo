@@ -1481,7 +1481,7 @@ pub fn content() -> tilo_content::ContentStore {
 
 /// The pictures of a notebook's `images` whose bytes are readable now from
 /// `content`, by the `asset:` source their bodies name them by. A picture a
-/// collaborator added may still be on its way from their device; it is
+/// member added may still be on its way from their device; it is
 /// absent until it arrives.
 #[must_use]
 pub fn image_snapshot(

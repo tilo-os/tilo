@@ -7,40 +7,6 @@ kind = "tasks.tracker"
 label = "Tasks"
 version = 1
 fields = [
-  { path = "issues", type = { collection = { named = "Issue" } }, stored = "collection", unit = true },
-  { path = "issues.*.number", type = "int", readonly = true },
-  { path = "issues.*.title", type = "text", label = true },
-  { path = "issues.*.body", type = "rich_text", ops = "sha256:fb8a205aa13d03f2" },
-  { path = "issues.*.status", type = { named = "Status" } },
-  { path = "issues.*.assignee", type = { option = "text" }, readonly = true },
-  { path = "issues.*.labels", type = { set = "text" } },
-  { path = "issues.*.parent", type = { option = "text" }, readonly = true },
-  { path = "issues.*.links", type = { collection = { named = "Link" } }, stored = "collection" },
-  { path = "issues.*.links.*.label", type = "text", label = true },
-  { path = "issues.*.links.*.app", type = "text" },
-  { path = "issues.*.links.*.kind", type = "text" },
-  { path = "issues.*.links.*.resource", type = "text" },
-  { path = "issues.*.links.*.record", type = { option = "text" } },
-  { path = "issues.*.area", type = { option = { named = "Area" } }, readonly = true, stored = "record" },
-  { path = "issues.*.area.resource", type = "text" },
-  { path = "issues.*.area.app", type = "text" },
-  { path = "issues.*.area.kind", type = "text" },
-  { path = "issues.*.area.label", type = "text" },
-  { path = "issues.*.due_ms", type = { option = "int" } },
-  { path = "issues.*.priority", type = { option = "int" } },
-  { path = "issues.*.comments", type = { collection = { named = "Message" } }, readonly = true, stored = "collection" },
-  { path = "issues.*.comments.*.author", type = { option = "principal" }, readonly = true },
-  { path = "issues.*.comments.*.by_agent", type = "bool", readonly = true },
-  { path = "issues.*.comments.*.at_ms", type = "int", readonly = true },
-  { path = "issues.*.comments.*.text", type = "text", readonly = true },
-  { path = "issues.*.comments.*.kind", type = { named = "MessageKind" }, readonly = true },
-  { path = "issues.*.comments.*.run", type = "int", readonly = true },
-  { path = "issues.*.comments.*.lookup", type = "text", readonly = true },
-  { path = "issues.*.comments.*.step", type = "text", readonly = true },
-  { path = "issues.*.comments.*.incorporated", type = "bool", readonly = true },
-  { path = "issues.*.author", type = { option = "principal" }, readonly = true },
-  { path = "issues.*.created_ms", type = "int", readonly = true },
-  { path = "issues.*.url", type = { option = "text" } },
   { path = "areas", type = { collection = { named = "TrackerArea" } }, stored = "collection", unit = true },
   { path = "areas.*.id", type = "text", readonly = true },
   { path = "areas.*.name", type = "text", label = true },
@@ -48,20 +14,6 @@ fields = [
   { path = "areas.*.people", type = { collection = { named = "Person" } }, stored = "collection" },
   { path = "areas.*.people.*.name", type = "text", label = true, readonly = true },
   { path = "areas.*.people.*.role", type = "text", readonly = true },
-  { path = "numbers", type = "int", readonly = true },
-]
-
-[[resources.verbs]]
-id = "create"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "title", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "body", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "status", type = { option = { named = "Status" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }] } },
-  { name = "assignee", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "url", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -71,16 +23,6 @@ writes = ["record", "areas.*"]
 params = [
   { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "kind", type = { option = { named = "Kind" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "project" }, { type = "string", const = "area" }] }] } },
-]
-
-[[resources.verbs]]
-id = "rename"
-field = "title"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "title", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -122,6 +64,151 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "delete-area"
+destructive = true
+kind = "undoable"
+writes = ["record", "areas.*"]
+params = [
+  { name = "area", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "new-project"
+kind = "read"
+
+[[resources.types]]
+name = "Kind"
+cases = [
+  { name = "project" },
+  { name = "area" },
+]
+
+[[resources.types]]
+name = "Person"
+fields = [
+  { name = "name", type = "text" },
+  { name = "role", type = "text" },
+]
+
+[[resources.types]]
+name = "TrackerArea"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "kind", type = { named = "Kind" } },
+  { name = "people", type = { collection = { named = "Person" } } },
+]
+
+[[resources]]
+kind = "tasks.issues"
+label = "Issues"
+version = 1
+fields = [
+  { path = "issues", type = { collection = { named = "Issue" } }, stored = "collection", unit = true },
+  { path = "issues.*.number", type = "int", readonly = true },
+  { path = "issues.*.rank", type = "text", readonly = true },
+  { path = "issues.*.title", type = "text", label = true },
+  { path = "issues.*.body", type = "rich_text", ops = "sha256:af85132cf4d3b5f4" },
+  { path = "issues.*.status", type = { named = "Status" } },
+  { path = "issues.*.assignee", type = { option = "text" }, readonly = true },
+  { path = "issues.*.labels", type = { set = "text" } },
+  { path = "issues.*.parent", type = { option = "text" }, readonly = true },
+  { path = "issues.*.links", type = { collection = { named = "Link" } }, stored = "collection" },
+  { path = "issues.*.links.*.label", type = "text", label = true },
+  { path = "issues.*.links.*.app", type = "text" },
+  { path = "issues.*.links.*.kind", type = "text" },
+  { path = "issues.*.links.*.resource", type = "text" },
+  { path = "issues.*.links.*.record", type = { option = "text" } },
+  { path = "issues.*.area", type = { option = { named = "Area" } }, readonly = true, stored = "record" },
+  { path = "issues.*.area.resource", type = "text" },
+  { path = "issues.*.area.app", type = "text" },
+  { path = "issues.*.area.kind", type = "text" },
+  { path = "issues.*.area.label", type = "text" },
+  { path = "issues.*.due_ms", type = { option = "int" } },
+  { path = "issues.*.priority", type = { option = "int" } },
+  { path = "issues.*.estimate", type = { option = "int" } },
+  { path = "issues.*.attachments", type = { collection = { named = "Attachment" } }, readonly = true, stored = "collection" },
+  { path = "issues.*.attachments.*.name", type = "text", label = true, readonly = true },
+  { path = "issues.*.attachments.*.media_type", type = { option = "text" }, readonly = true },
+  { path = "issues.*.attachments.*.bytes", type = "any", readonly = true },
+  { path = "issues.*.attachments.*.author", type = { option = "actor" }, readonly = true },
+  { path = "issues.*.attachments.*.author_name", type = "text", readonly = true },
+  { path = "issues.*.attachments.*.at_ms", type = "int", readonly = true },
+  { path = "issues.*.comments", type = { collection = { named = "Message" } }, readonly = true, stored = "collection" },
+  { path = "issues.*.comments.*.author", type = { option = "actor" }, readonly = true },
+  { path = "issues.*.comments.*.author_name", type = "text", readonly = true },
+  { path = "issues.*.comments.*.by_agent", type = "bool", readonly = true },
+  { path = "issues.*.comments.*.at_ms", type = "int", readonly = true },
+  { path = "issues.*.comments.*.origin", type = { option = { named = "Origin" } }, readonly = true, stored = "record" },
+  { path = "issues.*.comments.*.origin.author", type = "text" },
+  { path = "issues.*.comments.*.origin.handle", type = { option = "text" } },
+  { path = "issues.*.comments.*.origin.source", type = "text" },
+  { path = "issues.*.comments.*.origin.url", type = { option = "text" } },
+  { path = "issues.*.comments.*.origin.reference", type = { option = "text" } },
+  { path = "issues.*.comments.*.origin.created_ms", type = { option = "int" } },
+  { path = "issues.*.comments.*.origin.updated_ms", type = { option = "int" } },
+  { path = "issues.*.comments.*.text", type = "text", readonly = true },
+  { path = "issues.*.comments.*.kind", type = { named = "MessageKind" }, readonly = true },
+  { path = "issues.*.comments.*.run", type = "int", readonly = true },
+  { path = "issues.*.comments.*.lookup", type = "text", readonly = true },
+  { path = "issues.*.comments.*.step", type = "text", readonly = true },
+  { path = "issues.*.comments.*.incorporated", type = "bool", readonly = true },
+  { path = "issues.*.author", type = { option = "actor" }, readonly = true },
+  { path = "issues.*.author_name", type = "text", readonly = true },
+  { path = "issues.*.created_ms", type = "int", readonly = true },
+  { path = "issues.*.origin", type = { option = { named = "Origin" } }, readonly = true, stored = "record" },
+  { path = "issues.*.origin.author", type = "text" },
+  { path = "issues.*.origin.handle", type = { option = "text" } },
+  { path = "issues.*.origin.source", type = "text" },
+  { path = "issues.*.origin.url", type = { option = "text" } },
+  { path = "issues.*.origin.reference", type = { option = "text" } },
+  { path = "issues.*.origin.created_ms", type = { option = "int" } },
+  { path = "issues.*.origin.updated_ms", type = { option = "int" } },
+  { path = "issues.*.url", type = { option = "text" } },
+  { path = "before", type = "int", readonly = true },
+  { path = "numbers", type = "int", readonly = true },
+]
+
+[[resources.verbs]]
+id = "create"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "title", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "body", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "status", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }] } },
+  { name = "assignee", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "url", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "project", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "priority", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "none" }, { type = "string", const = "urgent" }, { type = "string", const = "high" }, { type = "string", const = "medium" }, { type = "string", const = "low" }] }] } },
+  { name = "estimate", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
+  { name = "due_ms", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
+  { name = "labels", type = { option = { list = "text" } }, required = false, schema = { type = ["array", "null"], items = { type = "string" } } },
+  { name = "origin", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { author = { type = "string" }, created_ms = { type = ["integer", "null"] }, handle = { type = ["string", "null"] }, reference = { type = ["string", "null"] }, source = { type = "string" }, updated_ms = { type = ["integer", "null"] }, url = { type = ["string", "null"] } }, required = ["author", "source"] } },
+  { name = "rank", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "goal", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { app = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, resource = { type = "string" } }, required = ["resource", "app", "kind", "label"] } },
+]
+
+[[resources.verbs]]
+id = "start"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "before", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "rename"
+field = "title"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "title", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+]
+
+[[resources.verbs]]
 id = "move-under"
 kind = "undoable"
 writes = ["record", "issues.*"]
@@ -137,6 +224,36 @@ writes = ["record", "issues.*"]
 params = [
   { name = "issue", type = "text", required = true, schema = { type = "string" } },
   { name = "assignee", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "set-project"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "project", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "goal", type = { option = { named = "Area" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { app = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, resource = { type = "string" } }, required = ["resource", "app", "kind", "label"] } },
+]
+
+[[resources.verbs]]
+id = "attach"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "bytes", required = true, schema = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] } },
+  { name = "media_type", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "detach"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", type = "text", required = true, schema = { type = "string" } },
+  { name = "attachment", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -156,6 +273,7 @@ params = [
   { name = "issue", type = "text", required = true, schema = { type = "string" } },
   { name = "status", type = { named = "Status" }, required = true, schema = { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] } },
   { name = "before", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "rank", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -166,6 +284,7 @@ writes = ["record", "issues.*"]
 params = [
   { name = "issue", type = "text", required = true, schema = { type = "string" } },
   { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "origin", type = { option = { named = "Origin" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { author = { type = "string" }, created_ms = { type = ["integer", "null"] }, handle = { type = ["string", "null"] }, reference = { type = ["string", "null"] }, source = { type = "string" }, updated_ms = { type = ["integer", "null"] }, url = { type = ["string", "null"] } }, required = ["author", "source"] } },
 ]
 
 [[resources.verbs]]
@@ -206,13 +325,10 @@ writes = ["record", "issues.*"]
 params = [
   { name = "issue", type = "text", required = true, schema = { type = "string" } },
   { name = "area", type = { option = { named = "Area" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { app = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, resource = { type = "string" } }, required = ["resource", "app", "kind", "label"] } },
-  { name = "priority", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 255, minimum = 0 } },
+  { name = "priority", type = { option = { named = "Priority" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "none" }, { type = "string", const = "urgent" }, { type = "string", const = "high" }, { type = "string", const = "medium" }, { type = "string", const = "low" }] }] } },
+  { name = "estimate", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
   { name = "due_ms", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
 ]
-
-[[resources.verbs]]
-id = "new-project"
-kind = "read"
 
 [[resources.types]]
 name = "Area"
@@ -224,9 +340,21 @@ fields = [
 ]
 
 [[resources.types]]
+name = "Attachment"
+fields = [
+  { name = "name", type = "text" },
+  { name = "media_type", type = { option = "text" } },
+  { name = "bytes", type = "any" },
+  { name = "author", type = { option = "actor" } },
+  { name = "author_name", type = "text" },
+  { name = "at_ms", type = "int" },
+]
+
+[[resources.types]]
 name = "Issue"
 fields = [
   { name = "number", type = "int" },
+  { name = "rank", type = "text" },
   { name = "title", type = "text" },
   { name = "body", type = "rich_text" },
   { name = "status", type = { named = "Status" } },
@@ -237,17 +365,14 @@ fields = [
   { name = "area", type = { option = { named = "Area" } } },
   { name = "due_ms", type = { option = "int" } },
   { name = "priority", type = { option = "int" } },
+  { name = "estimate", type = { option = "int" } },
+  { name = "attachments", type = { collection = { named = "Attachment" } } },
   { name = "comments", type = { collection = { named = "Message" } } },
-  { name = "author", type = { option = "principal" } },
+  { name = "author", type = { option = "actor" } },
+  { name = "author_name", type = "text" },
   { name = "created_ms", type = "int" },
+  { name = "origin", type = { option = { named = "Origin" } } },
   { name = "url", type = { option = "text" } },
-]
-
-[[resources.types]]
-name = "Kind"
-cases = [
-  { name = "project" },
-  { name = "area" },
 ]
 
 [[resources.types]]
@@ -263,9 +388,11 @@ fields = [
 [[resources.types]]
 name = "Message"
 fields = [
-  { name = "author", type = { option = "principal" } },
+  { name = "author", type = { option = "actor" } },
+  { name = "author_name", type = "text" },
   { name = "by_agent", type = "bool" },
   { name = "at_ms", type = "int" },
+  { name = "origin", type = { option = { named = "Origin" } } },
   { name = "text", type = "text" },
   { name = "kind", type = { named = "MessageKind" } },
   { name = "run", type = "int" },
@@ -286,10 +413,25 @@ cases = [
 ]
 
 [[resources.types]]
-name = "Person"
+name = "Origin"
 fields = [
-  { name = "name", type = "text" },
-  { name = "role", type = "text" },
+  { name = "author", type = "text" },
+  { name = "handle", type = { option = "text" } },
+  { name = "source", type = "text" },
+  { name = "url", type = { option = "text" } },
+  { name = "reference", type = { option = "text" } },
+  { name = "created_ms", type = { option = "int" } },
+  { name = "updated_ms", type = { option = "int" } },
+]
+
+[[resources.types]]
+name = "Priority"
+cases = [
+  { name = "none" },
+  { name = "urgent" },
+  { name = "high" },
+  { name = "medium" },
+  { name = "low" },
 ]
 
 [[resources.types]]
@@ -301,14 +443,5 @@ cases = [
   { name = "in_review" },
   { name = "done" },
   { name = "cancelled" },
-]
-
-[[resources.types]]
-name = "TrackerArea"
-fields = [
-  { name = "id", type = "text" },
-  { name = "name", type = "text" },
-  { name = "kind", type = { named = "Kind" } },
-  { name = "people", type = { collection = { named = "Person" } } },
 ]
 

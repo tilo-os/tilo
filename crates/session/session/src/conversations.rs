@@ -722,11 +722,10 @@ impl tilo_service::Service for TurnSummonses {
         // A turn's whole conversation, from its place's handle: opened beside the turn, as the
         // person's (or the invoker's) own arranging step.
         if action == CONVERSATION && resource.starts_with(TURNS) {
-            let actor = invoker.acting.by.key();
-            let asked = if actor.is_empty() {
-                self.conversations.person()
+            let asked = if invoker.acting.by.id().is_empty() {
+                tilo_actions::MemberId::person(self.conversations.person()).into()
             } else {
-                actor
+                invoker.acting.by.clone()
             };
             self.layout
                 .borrow_mut()

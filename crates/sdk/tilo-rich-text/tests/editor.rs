@@ -1,6 +1,6 @@
 //! The SDK rich-text editor in a framework app, driven the way a person
 //! drives it: typing into the real component runtime, record storage,
-//! permissions, per-author undo and a collaborator's replica.
+//! permissions, per-author undo and a member's replica.
 
 #![allow(
     clippy::unwrap_used,
@@ -288,7 +288,7 @@ fn a_role_taken_away_while_typing_stops_the_next_keystroke() {
 }
 
 #[test]
-fn a_collaborator_typing_in_the_same_paragraph_converges_and_keeps_my_caret() {
+fn a_member_typing_in_the_same_paragraph_converges_and_keeps_my_caret() {
     let mut app = open();
     app.harness().type_text("world");
     let mut peer = app.peer_document();
@@ -297,7 +297,7 @@ fn a_collaborator_typing_in_the_same_paragraph_converges_and_keeps_my_caret() {
         &tilo_doc::model::open(&peer, &ui::automerge::ROOT).unwrap(),
     )[0]
     .clone();
-    // While I keep typing, the collaborator types at the start.
+    // While I keep typing, the member types at the start.
     RichTextAction::SpliceText {
         region: tilo_document::action::RegionKind::Body,
         block,
@@ -323,7 +323,7 @@ fn a_collaborator_typing_in_the_same_paragraph_converges_and_keeps_my_caret() {
 }
 
 #[test]
-fn a_collaborators_new_paragraph_appears_without_moving_me() {
+fn a_members_new_paragraph_appears_without_moving_me() {
     let mut app = open();
     app.harness().type_text("draft");
     let mut peer = app.peer_document();

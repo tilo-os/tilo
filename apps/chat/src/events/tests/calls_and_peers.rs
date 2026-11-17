@@ -766,7 +766,7 @@ fn someone_alone_in_a_workspace_can_still_unmute_and_leave_the_call() {
     // A fresh workspace: nobody else has written, so Chat knows no one else.
     let me = app.me.id.clone();
     app.users.retain(|user| user.id == me);
-    assert!(!app.has_other_collaborator());
+    assert!(!app.has_other_member());
     render_frame(&mut app, 1280.0, 720.0);
     let ids: Vec<String> = ui::window_toolbar::declared()
         .map(|toolbar| {

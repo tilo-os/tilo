@@ -82,7 +82,7 @@ impl std::fmt::Display for RemoteError {
 }
 
 /// A source of items that are not local: a streaming catalogue, a store, a
-/// collaborator's library. It keeps its own index; nothing of it is
+/// member's library. It keeps its own index; nothing of it is
 /// downloaded to be searched.
 pub trait RemoteSource: Send + Sync + 'static {
     /// A stable id, for its cache and its section.
@@ -93,7 +93,7 @@ pub trait RemoteSource: Send + Sync + 'static {
 
     /// Where its answers come from, as its section's placeholder names it
     /// while one is on the way: a host serving the catalogue by default; a
-    /// collaborator's library is a peer.
+    /// member's library is a peer.
     fn origin(&self) -> Source {
         Source::host(self.label())
     }

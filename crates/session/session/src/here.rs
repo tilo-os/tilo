@@ -55,7 +55,10 @@ impl Shared {
                             .iter()
                             .find(|here| here.member == member.id);
                         PersonHere {
-                            id: here.map_or_else(|| member.id.key(), |here| here.device.clone()),
+                            id: here.map_or_else(
+                                || member.id.id().to_owned(),
+                                |here| here.device.clone(),
+                            ),
                             name: member.name.clone(),
                             colour: collab_types::presence::identity_rgb(member.colour),
                             agent: !member.id.is_person(),

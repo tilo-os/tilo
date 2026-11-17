@@ -315,7 +315,7 @@ pub(crate) struct GitClientState {
     diffs: DiffMap,
     graph_layout: GraphLayout,
 
-    /// Framework-owned action dispatch: opening a repository and recording what collaborators see
+    /// Framework-owned action dispatch: opening a repository and recording what members see
     /// of it, as do the effects the controls ask the host for.
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::GitClient>>,
     bar: ui::framework::BarCommands<window_bar::BarCommand>,
@@ -631,6 +631,10 @@ pub(crate) fn window(cx: &ViewCx<crate::resource::GitClient>, mut window: GitCli
 }
 
 impl Widget for GitClientApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.picture();
+    }
+
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {

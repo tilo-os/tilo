@@ -148,7 +148,7 @@ pub struct TrackMark {
     /// hairline long on the track).
     pub len: f64,
     /// What the mark means: `Tone::Neutral` for a search hit, a status
-    /// tone for a diagnostic, a presence tone for a collaborator.
+    /// tone for a diagnostic, a presence tone for a member.
     pub tone: crate::widget::Tone,
 }
 

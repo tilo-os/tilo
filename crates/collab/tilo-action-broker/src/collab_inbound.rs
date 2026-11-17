@@ -69,22 +69,19 @@ pub enum Delivery {
 }
 
 /// Validate `document` and, when admitted, record it and fan it to the local
-/// apps on its route as said by `from_user_id`, the participant the host
-/// names for its author. A refused op is audited, never fanned.
+/// apps on its route. A refused op is audited, never fanned.
 pub fn deliver(
     channels: &Arc<Mutex<BrokerChannels>>,
     fanout: &FanoutState,
     document: RemoteDocument,
-    from_user_id: impl FnOnce(&CrdtRoute) -> String,
 ) -> Delivery {
-    deliver_at(channels, fanout, document, from_user_id, tilo_clock::wall())
+    deliver_at(channels, fanout, document, tilo_clock::wall())
 }
 
 fn deliver_at(
     channels: &Arc<Mutex<BrokerChannels>>,
     fanout: &FanoutState,
     document: RemoteDocument,
-    from_user_id: impl FnOnce(&CrdtRoute) -> String,
     now: SystemTime,
 ) -> Delivery {
     let artifact = document.envelope.artifact;
@@ -136,7 +133,7 @@ fn deliver_at(
     };
     match (payload, validation) {
         (Ok(_), Ok(())) => {
-            accept(channels, fanout, document.envelope, &route, from_user_id);
+            accept(channels, fanout, document.envelope, &route);
             Delivery::Done
         }
         (_, Err(ValidationError::OpAlreadyRedacted { target })) => {
@@ -149,7 +146,7 @@ fn deliver_at(
             // A host replay of an op this broker already admitted, for a
             // local app that joined after it arrived: deliver it again, byte
             // for byte; the app's CRDT drops what it holds.
-            fan_out(fanout, document.envelope, &route, from_user_id);
+            fan_out(fanout, document.envelope, &route);
             Delivery::Done
         }
         (_, Err(reason)) => refuse(channels, document, reason, now),
@@ -200,7 +197,6 @@ fn accept(
     fanout: &FanoutState,
     envelope: SignedOp,
     route: &CrdtRoute,
-    from_user_id: impl FnOnce(&CrdtRoute) -> String,
 ) {
     let artifact = envelope.artifact;
     let mut first_of_the_record = false;
@@ -227,7 +223,7 @@ fn accept(
     if envelope.kind == OpKind::Redaction {
         apply_redaction_from_envelope(&envelope, artifact, channels);
     }
-    fan_out(fanout, envelope, route, from_user_id);
+    fan_out(fanout, envelope, route);
     if first_of_the_record {
         announce_record(fanout, route);
     }
@@ -244,15 +240,9 @@ fn validated_before(channels: &Arc<Mutex<BrokerChannels>>, envelope: &SignedOp) 
 }
 
 /// Show a validated peer document to the local apps on its route.
-fn fan_out(
-    fanout: &FanoutState,
-    envelope: SignedOp,
-    route: &CrdtRoute,
-    from_user_id: impl FnOnce(&CrdtRoute) -> String,
-) {
+fn fan_out(fanout: &FanoutState, envelope: SignedOp, route: &CrdtRoute) {
     let event = CollabEvent::Document {
         envelope: Box::new(envelope),
-        from_user_id: from_user_id(route),
         decrypted_payload: None,
     };
     // An unaddressed route is dropped rather than shown to every app.
@@ -421,29 +411,22 @@ mod tests {
             let count = || delivered.load(std::sync::atomic::Ordering::SeqCst);
             let first = op("first");
             assert_eq!(
-                deliver(&channels, &fanout, document(first.clone(), false), |_| {
-                    "peer".into()
-                }),
+                deliver(&channels, &fanout, document(first.clone(), false)),
                 Delivery::Done
             );
             assert_eq!(count(), 1);
             assert_eq!(
-                deliver(&channels, &fanout, document(first.clone(), false), |_| {
-                    "peer".into()
-                }),
+                deliver(&channels, &fanout, document(first.clone(), false)),
                 Delivery::Done
             );
             assert_eq!(count(), 1, "a live repeat is not delivered again");
             assert_eq!(
-                deliver(&channels, &fanout, document(first, true), |_| {
-                    "peer".into()
-                }),
+                deliver(&channels, &fanout, document(first, true)),
                 Delivery::Done
             );
             assert_eq!(count(), 2, "the host's replay reaches the late app");
             assert_eq!(
-                deliver(&channels, &fanout, document(op("second"), true), |_| "peer"
-                    .into()),
+                deliver(&channels, &fanout, document(op("second"), true)),
                 Delivery::Done
             );
             drop(fanout);
@@ -525,7 +508,6 @@ mod tests {
                         envelope: envelope.clone(),
                         own: None,
                     },
-                    |_| "writer".into(),
                 )
             })
             .collect();
@@ -602,7 +584,6 @@ mod tests {
                     envelope,
                     own: None,
                 },
-                |_| "writer".into(),
             );
             delivered.load(std::sync::atomic::Ordering::SeqCst) > before
         };
@@ -681,7 +662,6 @@ mod tests {
                     envelope,
                     own: None,
                 },
-                |_| "peer".into(),
             )
         };
         assert_eq!(take(&part, write(&part, 1, "hello")), Delivery::Done);

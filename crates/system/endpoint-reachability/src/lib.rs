@@ -35,7 +35,7 @@ use iroh::{Endpoint, EndpointAddr, RelayConfig, RelayMap};
 use tilo_lock::MutexRecover as _;
 
 /// How long the relays stay up after the last thing that needed them: a
-/// collaborator who steps away and comes back within it, or an invite
+/// member who steps away and comes back within it, or an invite
 /// composer opened twice, does not pay for a new net report and home relay.
 pub const REST_AFTER: Duration = Duration::from_secs(5 * 60);
 

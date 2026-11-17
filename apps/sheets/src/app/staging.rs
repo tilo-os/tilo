@@ -50,8 +50,7 @@ impl SheetsApp {
                 self.status = "Excel import failed: the workbook is password protected".into();
             }
             Some("conflict") => {
-                self.status =
-                    "Budget was updated by a collaborator; showing the latest value".into();
+                self.status = "Budget was updated by a member; showing the latest value".into();
             }
             Some("reducedmotion") => {
                 self.set_motion_reduced(true);

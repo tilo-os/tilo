@@ -47,7 +47,7 @@ impl TerminalView {
 
     /// Open the window bar's search on the scrollback. This does not
     /// publish the query, the result positions, or a command to
-    /// collaborators or agents: scrollback may contain credentials and find
+    /// members or agents: scrollback may contain credentials and find
     /// is only a viewport aid.
     pub fn open_find() {
         ui::window_toolbar::open_search(SearchOpening::Find);

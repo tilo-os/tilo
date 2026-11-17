@@ -681,7 +681,7 @@ tilo_test_env::scenario! {
                 &remote.kind
             ));
 
-            // Simulate a collaborator's workspace-index snapshot arriving before this
+            // Simulate a member's workspace-index snapshot arriving before this
             // process starts. Learning it must not manufacture a record document.
             let mut local_workspace = AutoCommit::new();
             local_workspace

@@ -123,7 +123,6 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     /// digest, with `envelope` set to the final segment.
     Document {
         envelope: Box<SignedOp>,
-        from_user_id: String,
         /// Endpoint-verified typed mutation bytes when they differ from
         /// `envelope.payload`: MLS plaintext, or a mutation reassembled from
         /// segments. `None` for single-frame cleartext envelopes (read

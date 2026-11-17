@@ -98,9 +98,9 @@ type Splice<R> = Box<
 ///
 /// So typing is permission-checked (a viewer's keystrokes change nothing and
 /// the control shows the stored text again), attributed, undone a word at a
-/// time, and merges with a collaborator typing in the same text character
+/// time, and merges with a member typing in the same text character
 /// by character. The control reads the text object `locate` finds on every
-/// sync; a collaborator's edit, an undo or a restore shows as it lands.
+/// sync; a member's edit, an undo or a restore shows as it lands.
 /// Without a dispatcher ([`view_only`](Self::view_only)) it shows the text
 /// and every edit is taken back.
 pub struct TextControl<W: EditsText, R: Resource = PlainText> {
@@ -176,7 +176,7 @@ pub(crate) fn edit_at<R>(path: &Path<R, String>, edit: TextEdit) -> tilo_resourc
 }
 
 /// `input` showing the record's text field at `path` as the document holds
-/// it ([`TextInput::bound_at`]): who wrote each run, a collaborator's edit
+/// it ([`TextInput::bound_at`]): who wrote each run, a member's edit
 /// under the caret, the carets of people editing the same field, and what an
 /// invocation writes there, named as its text anchor names it — the field
 /// (`title`) in the item that holds it (an issue's id; empty for the

@@ -177,7 +177,7 @@ db-search-current-result = Current query result
 db-search-transaction = Transaction
 db-search-query-history = Local query history
 db-search-query-entry = Query { $number }: { $summary }
-db-search-local-only = Local only. Never shared with collaborators.
+db-search-local-only = Local only. Never shared with members.
 db-search-saved-query = Collaborative saved query
 
 ## Actions

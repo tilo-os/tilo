@@ -2652,7 +2652,7 @@ pub(crate) fn execute_resource_operation(
     if spec.kind == tilo_actions::OperationKind::View
         && !crate::invocation_scope::view_operation_permitted(actor, local_author, &spec.contract)
     {
-        return Err(tilo_actions::ApiError::Unavailable { code: "private_view".into(), reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into() });
+        return Err(tilo_actions::ApiError::Unavailable { code: "private_view".into(), reason: "A member cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into() });
     }
     let mut context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
     if let Some(ambient) = ambient {
@@ -3081,7 +3081,7 @@ pub(crate) fn invoke_resource_action(
                     {
                         return Err(tilo_actions::ApiError::Unavailable {
                             code: "private_view".into(),
-                            reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
+                            reason: "A member cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
                         }.into());
                     }
                     if let Some(scope) = scope {

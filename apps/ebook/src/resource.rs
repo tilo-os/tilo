@@ -1325,12 +1325,12 @@ pub enum BooksEffect {
     /// Share with workspace
     ///
     /// Puts this device's copy of the book in the shared workspace, so
-    /// collaborators can open it.
+    /// members can open it.
     #[effect(row, job, cancellable, idempotent)]
     Share { book: String },
     /// Download and open
     ///
-    /// Fetches a book a collaborator shared from the workspace and opens it.
+    /// Fetches a book a member shared from the workspace and opens it.
     #[effect(row, job, cancellable, idempotent)]
     Download { book: String },
 }

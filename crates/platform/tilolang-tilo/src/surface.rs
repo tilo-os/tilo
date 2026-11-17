@@ -94,7 +94,7 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
         Ty::Time => FieldType::Time,
         Ty::Duration => FieldType::Duration,
         Ty::Identifier => FieldType::Identifier,
-        Ty::Actor => FieldType::Principal,
+        Ty::Actor => FieldType::Actor,
         Ty::Record(key) => FieldType::Resource(record_kind(key)),
         Ty::Union(keys) => FieldType::Union(
             keys.iter()

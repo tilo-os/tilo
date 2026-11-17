@@ -1,5 +1,5 @@
 //! How this person likes Chat laid out, on every device of theirs and never
-//! seen by collaborators: which channel categories they folded away.
+//! seen by members: which channel categories they folded away.
 
 use std::collections::BTreeSet;
 

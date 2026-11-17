@@ -53,7 +53,6 @@ pub(super) fn signed_document_event(
             Ok(SignedDocument {
                 event: CollabEvent::Document {
                     envelope: Box::new(envelope),
-                    from_user_id: arrived.from_user_id,
                     decrypted_payload,
                 },
                 commit,

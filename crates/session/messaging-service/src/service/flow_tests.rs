@@ -70,17 +70,17 @@ fn rig() -> Rig {
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
-    let principal = hex::encode(certificate.user_public_key);
+    let actor = hex::encode(certificate.user_public_key);
     let custody = Custody::with_host(
         tilo_identity_host::custody::HostIdentity::kept(certificate, device),
-        &principal,
+        &actor,
         "device",
     )
     .unwrap();
     custody.session(true, 1);
     let vault_dir = tempfile::tempdir().unwrap();
     let store = vault_dir.path().to_owned();
-    let vault = accounts::CredentialOwner::deferred(&principal, "device", move || {
+    let vault = accounts::CredentialOwner::deferred(&actor, "device", move || {
         accounts::SecretStore::open_in(&store)
     })
     .unwrap();

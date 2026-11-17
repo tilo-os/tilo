@@ -198,7 +198,7 @@ impl EncryptedSignalProfile {
         authority: Arc<dyn AccountAuthority>,
     ) -> Result<Self, ProfileError> {
         check(&authority)?;
-        if !owner.valid_principal()
+        if !owner.valid_actor()
             || owner.service != Service::Signal
             || !crate::identifier(&owner.device)
             || !crate::identifier(&owner.account)

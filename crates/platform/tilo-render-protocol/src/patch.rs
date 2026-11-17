@@ -144,7 +144,7 @@ impl ResourceRef {
 
 /// A participant: their identity, and what the room calls them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Principal {
+pub struct Actor {
     pub id: String,
     pub name: String,
 }
@@ -169,7 +169,7 @@ pub enum Value {
         fields: Vec<(String, Value)>,
     },
     Ref(ResourceRef),
-    Principal(Principal),
+    Actor(Actor),
     /// Rich text, with how each reference in it reads for the person reading it.
     Rich(rich::RichText),
     /// What a failed or refused part of a view shows.
@@ -991,7 +991,7 @@ mod tests {
     #[test]
     fn maps_offered_actions_and_list_splices_round_trip_and_apply() {
         let who = |id: &str| {
-            Value::Principal(Principal {
+            Value::Actor(Actor {
                 id: id.to_owned(),
                 name: id.to_owned(),
             })

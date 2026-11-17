@@ -171,11 +171,11 @@ pub fn split_cpus(count: usize) -> anyhow::Result<Vec<usize>> {
     let mut cpus = affinity::get()?;
     anyhow::ensure!(
         count >= 1 && count < cpus.len(),
-        "--relay-cpus {count} must leave the collaborators at least one of the {} CPUs",
+        "--relay-cpus {count} must leave the members at least one of the {} CPUs",
         cpus.len()
     );
-    let collaborators = cpus.split_off(count);
-    affinity::set(&collaborators)?;
+    let members = cpus.split_off(count);
+    affinity::set(&members)?;
     Ok(cpus)
 }
 

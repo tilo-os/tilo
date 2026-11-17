@@ -1324,11 +1324,11 @@ fn an_agent_typing_into_a_password_field_signs_a_visitors_page_in() {
 }
 
 /// An agent the action API admitted, by its id.
-fn agent(principal: &str) -> ActionInvoker {
-    ActionInvoker::admitted(&ui::tilo_actions::Acting::agent(principal))
+fn agent(actor: &str) -> ActionInvoker {
+    ActionInvoker::admitted(&ui::tilo_actions::Acting::agent(actor))
 }
 
-/// The engine is told who asks: the principal the action API admitted the
+/// The engine is told who asks: the actor the action API admitted the
 /// invocation for, and nobody for an invocation without one.
 #[test]
 fn the_admitted_invoker_is_who_asks_the_engine() {
@@ -1340,7 +1340,7 @@ fn the_admitted_invoker_is_who_asks_the_engine() {
     // unnamed actor, as every caller was before a tab had several.
     let own = start_as(&mut widget, None, "read-page", &serde_json::json!({})).unwrap();
     succeeded(settled(&mut widget, &doc, &root, own));
-    // An agent acting for a person asks under its own principal, never the
+    // An agent acting for a person asks under its own actor, never the
     // person's: what it did is set down as its own.
     let for_ada = ActionInvoker::agent("task-7").acting_for("person:ada");
     let click = start_as(
@@ -1351,7 +1351,7 @@ fn the_admitted_invoker_is_who_asks_the_engine() {
     )
     .unwrap();
     succeeded(settled(&mut widget, &doc, &root, click));
-    // A principal longer than the engine takes is shortened the same way
+    // An actor longer than the engine takes is shortened the same way
     // every time, so one actor keeps one name.
     let long = agent(&"x".repeat(120));
     for _ in 0..2 {
@@ -1364,7 +1364,7 @@ fn the_admitted_invoker_is_who_asks_the_engine() {
         .unwrap();
         succeeded(settled(&mut widget, &doc, &root, read));
     }
-    // An invoker with no principal is nobody, not an actor called "".
+    // An invoker with no actor is nobody, not an actor called "".
     let nameless = ActionInvoker::person("");
     let read = start_as(
         &mut widget,
@@ -1387,7 +1387,7 @@ fn the_admitted_invoker_is_who_asks_the_engine() {
     let shortened = asks[3]
         .0
         .clone()
-        .expect("a long principal still names its actor");
+        .expect("a long actor still names its actor");
     assert_eq!(shortened.encode_utf16().count(), 64);
     assert!(shortened.starts_with("agent:xxxx"), "{shortened}");
     assert_eq!(asks[4].0.as_ref(), Some(&shortened));

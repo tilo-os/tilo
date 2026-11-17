@@ -510,16 +510,16 @@ mod tests {
     use super::super::fixture::FixtureChrome;
     use super::*;
     use crate::topbar::t_args;
+    use collab_types::MemberId;
     use tilo_desktop_model::{Layout, Member, Workspace, WorkspaceId};
 
-    /// As a stored row spells them: `agent:cc` is an agent, a bare key a person.
-    fn shell(people: &[(&str, &str)]) -> Layout {
+    fn shell(people: &[(MemberId, &str)]) -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
-        workspace.members_here(people.iter().map(|(key, name)| {
-            let id = collab_types::MemberId::parse(key)
-                .unwrap_or_else(|| collab_types::MemberId::person(*key));
-            Member::named(id, *name)
-        }));
+        workspace.members_here(
+            people
+                .iter()
+                .map(|(id, name)| Member::named(id.clone(), *name)),
+        );
         // The device a member is here through is what a face is pressed by.
         for (here, member) in workspace.present.iter_mut().zip(&workspace.members) {
             here.device.clone_from(&member.id.id().to_owned());
@@ -562,7 +562,7 @@ mod tests {
         // The invite button stays beside the faces once people arrive, and a press on it invites: one
         // step, never the list first.
         {
-            for people in [&[][..], &[("ada", "Ada Lovelace")][..]] {
+            for people in [&[][..], &[(MemberId::person("ada"), "Ada Lovelace")][..]] {
                 let tree = shell(people);
                 let (mut bar, chrome) = bar_over(&tree, true);
                 let invite = bar.invite_rect();
@@ -591,7 +591,7 @@ mod tests {
         // The faces are who is here: each opens the panel at its person, so no second people
         // button stands beside them, and the panel opens from the faces.
         {
-            let tree = shell(&[("ada", "Ada Lovelace")]);
+            let tree = shell(&[(MemberId::person("ada"), "Ada Lovelace")]);
             let (mut bar, chrome) = bar_over(&tree, true);
             assert!(
                 bar.people_button_rect().is_zero_area(),
@@ -624,7 +624,7 @@ mod tests {
         // This person appears once on their bar: their avatar at the far right, never also among
         // the faces, however the host lists them; and it is drawn as the faces are, at their size.
         {
-            let tree = shell(&[("ada", "Ada Lovelace"), ("me-root", "Jo Doe")]);
+            let tree = shell(&[(MemberId::person("ada"), "Ada Lovelace"), (MemberId::person("me-root"), "Jo Doe")]);
             let chrome = FixtureChrome::new(tree.clone());
             chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
                 name: "Jo Doe".into(),
@@ -654,7 +654,7 @@ mod tests {
         // of which opens that person, and it is a control of its own — so a reader presses the face
         // where a person does, never the bar behind it.
         {
-            let tree = shell(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
+            let tree = shell(&[(MemberId::person("ada"), "Ada Lovelace"), (MemberId::person("bo"), "Bo Brave")]);
             let (bar, _chrome) = bar_over(&tree, true);
             let faces = bar.face_accessibility();
             assert_eq!(faces.len(), 2, "one node per face");
@@ -683,7 +683,7 @@ mod tests {
         // On a laptop-wide bar a wave still says who waved, in words, beside the faces: the notice
         // yields to the clock, not to the whole lane kept for an activity.
         {
-            let tree = shell(&[("gd", "Gentle Dolphin")]);
+            let tree = shell(&[(MemberId::person("gd"), "Gentle Dolphin")]);
             let (mut bar, chrome) = bar_over(&tree, true);
             super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
             let quiet = bar.people_left_x;
@@ -716,7 +716,10 @@ mod tests {
     /// A press on someone's face opens who is here at them; the badge opens everyone.
     #[test]
     fn a_face_opens_that_person() {
-        let tree = shell(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
+        let tree = shell(&[
+            (MemberId::person("ada"), "Ada Lovelace"),
+            (MemberId::person("bo"), "Bo Brave"),
+        ]);
         let (mut bar, chrome) = bar_over(&tree, true);
         let bo = bar.face_rects[1];
         assert!(press(&mut bar, bo.center()));
@@ -728,9 +731,9 @@ mod tests {
         let crowd: Vec<(String, String)> = (0..6)
             .map(|i| (format!("p{i}"), format!("Person {i}")))
             .collect();
-        let crowd: Vec<(&str, &str)> = crowd
+        let crowd: Vec<(MemberId, &str)> = crowd
             .iter()
-            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .map(|(a, b)| (MemberId::person(a), b.as_str()))
             .collect();
         let (mut bar, chrome) = bar_over(&shell(&crowd), true);
         assert!(bar.face_overflow() > 0, "crowded: a +N badge");
@@ -762,7 +765,10 @@ mod tests {
     }
 
     fn agent_and_person() -> Layout {
-        shell(&[("ada", "Ada Lovelace"), ("agent:cc", "Claude Code")])
+        shell(&[
+            (MemberId::person("ada"), "Ada Lovelace"),
+            (MemberId::agent("cc"), "Claude Code"),
+        ])
     }
 
     /// What the bar tells a reader its faces are, in the order drawn. A face is a control of its
@@ -832,7 +838,7 @@ mod tests {
         // whose view this is stands in the middle lane, the people button, the workspace's name and
         // the faces keep their room either side of it, and Stop stands in the banner at every width.
         {
-            let mut tree = shell(&[("ada", "Ada Lovelace"), ("agent:cc", "Claude Code")]);
+            let mut tree = shell(&[(MemberId::person("ada"), "Ada Lovelace"), (MemberId::agent("cc"), "Claude Code")]);
             tree.workspaces[0].present[1].followed = true;
             let theme = Theme::default();
             for width in [390.0f32, 360.0] {
@@ -943,7 +949,7 @@ mod tests {
             let mut tree = shell(
                 &crowd
                     .iter()
-                    .map(|(a, b)| (a.as_str(), b.as_str()))
+                    .map(|(a, b)| (MemberId::person(a), b.as_str()))
                     .collect::<Vec<_>>(),
             );
             tree.workspaces[0].present[4].followed = true;
@@ -969,7 +975,7 @@ mod tests {
         // A count arriving on the bell, or growing, never moves a face: the pointer already on its way
         // to someone still lands on them, on the web and on the desktop alike, from nothing unread on.
         {
-            let tree = shell(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
+            let tree = shell(&[(MemberId::person("ada"), "Ada Lovelace"), (MemberId::person("bo"), "Bo Brave")]);
             for web in [true, false] {
                 let (mut bar, chrome) = bar_over(&tree, true);
                 chrome.borrow_mut().notifications_only = web;
@@ -1053,7 +1059,7 @@ mod tests {
             );
 
             // Alone, an agent that comes back is the one face, with no count.
-            let alone = shell(&[("agent:cc", "Claude Code")]);
+            let alone = shell(&[(MemberId::agent("cc"), "Claude Code")]);
             let (bar, _chrome) = phone_bar(&alone, width);
             assert!(
                 bar.face_rect("cc").is_some(),

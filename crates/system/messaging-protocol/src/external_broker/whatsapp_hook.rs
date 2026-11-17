@@ -18,7 +18,7 @@ impl WhatsappInboxHook {
     /// Refuses malformed or non-WhatsApp account ownership.
     pub fn new(owner: Owner) -> Result<Self, SendError> {
         if owner.service != crate::Service::Whatsapp
-            || !owner.valid_principal()
+            || !owner.valid_actor()
             || !crate::identifier(&owner.device)
             || !crate::identifier(&owner.account)
             || owner.linking_generation == 0

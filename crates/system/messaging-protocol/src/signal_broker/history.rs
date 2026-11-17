@@ -103,7 +103,7 @@ pub struct History {
 impl History {
     /// Open private ciphertext under existing host-owned custody; never reset.
     pub fn open(root: &Path, owner: &Owner, key: VaultKey) -> Result<Self, SendError> {
-        if !owner.valid_principal()
+        if !owner.valid_actor()
             || !matches!(
                 owner.service,
                 crate::Service::Tilo

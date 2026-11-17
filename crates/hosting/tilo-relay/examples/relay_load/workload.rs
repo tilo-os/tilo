@@ -1,6 +1,6 @@
-//! The simulated collaborators and the minute of work each one repeats.
+//! The simulated members and the minute of work each one repeats.
 //!
-//! Everything a collaborator publishes takes the production path and the
+//! Everything a member publishes takes the production path and the
 //! production encoding: edits are Automerge changes signed and admitted by a
 //! `StatePeer`, classified by the host retention rule and published as
 //! retained deltas; presence is the shell's own `NeighbourMsg`, wrapped by
@@ -37,7 +37,7 @@ const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "tab:0000000000000001";
 /// Characters in the document before anyone types (~10 kB).
 const DOCUMENT_CHARS: usize = 10_000;
-/// What collaborators type, character by character, over and over.
+/// What members type, character by character, over and over.
 const TEXT: &str = "Collaboration lives below applications rather than inside them, so it \
                     has to work in the ebook reader, the file manager and the terminal. ";
 /// Every this many keystrokes is a backspace.
@@ -51,7 +51,7 @@ const POINTER_START: Duration = Duration::from_secs(8);
 const POINTER_MOVES_PER_MINUTE: u32 = 120;
 const POINTER_GAP: Duration = Duration::from_millis(33);
 const MINUTE: Duration = Duration::from_secs(60);
-/// Spreads the collaborators' minutes over the minute.
+/// Spreads the members' minutes over the minute.
 const STAGGER_MS: u64 = 7_919;
 /// How long the last edits get to arrive before the sessions close.
 const GRACE: Duration = Duration::from_secs(5);
@@ -107,7 +107,7 @@ struct PendingPresence {
     remaining: usize,
 }
 
-/// Every workspace and collaborator of a run, and what they observed.
+/// Every workspace and member of a run, and what they observed.
 pub struct Fleet {
     user_public_key: [u8; 32],
     relay: Device,
@@ -124,9 +124,9 @@ pub struct Fleet {
 }
 
 impl Fleet {
-    /// Mint a user, the relay's device and `collaborators` devices in workspaces
+    /// Mint a user, the relay's device and `members` devices in workspaces
     /// of `workspace_size`, and seed each workspace's document.
-    pub fn enrol(collaborators: usize, workspace_size: usize) -> anyhow::Result<Arc<Self>> {
+    pub fn enrol(members: usize, workspace_size: usize) -> anyhow::Result<Arc<Self>> {
         let (user_sk, user) = UserIdentity::generate("Hosting cost bench", 1);
         let enrol = |label: String, capabilities: DeviceCapabilities| -> anyhow::Result<Device> {
             let (sk, device) = DeviceIdentity::generate(label, 100);
@@ -146,10 +146,8 @@ impl Fleet {
         let relay = enrol("relay".into(), DeviceCapabilities::member())?;
         let mut workspaces = Vec::new();
         let mut enrolled = 0;
-        while enrolled < collaborators {
-            let size = workspace_size
-                .min(collaborators.saturating_sub(enrolled))
-                .max(2);
+        while enrolled < members {
+            let size = workspace_size.min(members.saturating_sub(enrolled)).max(2);
             let index = workspaces.len();
             let members = (0..size)
                 .map(|member| {
@@ -158,7 +156,7 @@ impl Fleet {
                     } else {
                         DeviceCapabilities::member()
                     };
-                    enrol(format!("collaborator {index}.{member}"), capabilities)
+                    enrol(format!("member {index}.{member}"), capabilities)
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             enrolled = enrolled.saturating_add(size);
@@ -203,20 +201,20 @@ impl Fleet {
         }
     }
 
-    /// Dial the relay as every collaborator and wait until each is
+    /// Dial the relay as every member and wait until each is
     /// subscribed; each session's receiver then runs until it closes.
     pub async fn connect(
         self: &Arc<Self>,
         relay: &EndpointAddr,
         relay_device: [u8; 32],
-    ) -> anyhow::Result<Vec<Collaborator>> {
+    ) -> anyhow::Result<Vec<Member>> {
         let mut seats = Vec::new();
         for (workspace_index, workspace) in self.workspaces.iter().enumerate() {
             for member in 0..workspace.members.len() {
                 seats.push((workspace_index, member));
             }
         }
-        let mut collaborators = Vec::with_capacity(seats.len());
+        let mut members = Vec::with_capacity(seats.len());
         for batch in seats.chunks(DIAL_BATCH) {
             let dials: Vec<_> = batch
                 .iter()
@@ -229,13 +227,13 @@ impl Fleet {
                 })
                 .collect();
             for dial in dials {
-                collaborators.push(dial.await??);
+                members.push(dial.await??);
             }
         }
-        for (index, collaborator) in collaborators.iter_mut().enumerate() {
-            collaborator.index = index;
+        for (index, member) in members.iter_mut().enumerate() {
+            member.index = index;
         }
-        Ok(collaborators)
+        Ok(members)
     }
 
     async fn join(
@@ -244,7 +242,7 @@ impl Fleet {
         member: usize,
         relay: EndpointAddr,
         relay_device: [u8; 32],
-    ) -> anyhow::Result<Collaborator> {
+    ) -> anyhow::Result<Member> {
         let (workspace_id, cert, sk) = {
             let workspace = self.workspaces.get(workspace_index).context("workspace")?;
             let device = workspace.members.get(member).context("member")?;
@@ -281,7 +279,7 @@ impl Fleet {
         tokio::spawn(receive(self.clone(), session.clone()));
         let workspace = self.workspaces.get(workspace_index).context("workspace")?;
         let device = workspace.members.get(member).context("member")?;
-        Collaborator::new(self.clone(), workspace, device, session)
+        Member::new(self.clone(), workspace, device, session)
     }
 
     /// Note an edit about to be published to `recipients` other members.
@@ -441,9 +439,9 @@ async fn receive(fleet: Arc<Fleet>, session: Arc<RelayCoeditSession>) {
     }
 }
 
-/// One connected collaborator: a device, its replica of the workspace and its
+/// One connected member: a device, its replica of the workspace and its
 /// session.
-pub struct Collaborator {
+pub struct Member {
     pub index: usize,
     pub session: Arc<RelayCoeditSession>,
     fleet: Arc<Fleet>,
@@ -461,7 +459,7 @@ pub struct Collaborator {
     pointer_key: String,
 }
 
-impl Collaborator {
+impl Member {
     fn new(
         fleet: Arc<Fleet>,
         workspace: &Workspace,
@@ -595,21 +593,21 @@ impl Collaborator {
     }
 }
 
-/// Run every collaborator's minute from `start` until `end`; each task ends
+/// Run every member's minute from `start` until `end`; each task ends
 /// a grace period after `end`, when the last edits had time to arrive.
 pub fn play(
-    collaborators: Vec<Collaborator>,
+    members: Vec<Member>,
     start: Instant,
     end: Instant,
 ) -> Vec<JoinHandle<anyhow::Result<()>>> {
-    collaborators
+    members
         .into_iter()
-        .map(|collaborator| tokio::spawn(act(collaborator, start, end)))
+        .map(|member| tokio::spawn(act(member, start, end)))
         .collect()
 }
 
-async fn act(mut collaborator: Collaborator, start: Instant, end: Instant) -> anyhow::Result<()> {
-    let offset = u64::try_from(collaborator.index)?
+async fn act(mut member: Member, start: Instant, end: Instant) -> anyhow::Result<()> {
+    let offset = u64::try_from(member.index)?
         .wrapping_mul(STAGGER_MS)
         .checked_rem(60_000)
         .unwrap_or(0);
@@ -623,7 +621,7 @@ async fn act(mut collaborator: Collaborator, start: Instant, end: Instant) -> an
                 break 'run;
             }
             tokio::time::sleep_until(due.into()).await;
-            collaborator.type_one()?;
+            member.type_one()?;
         }
         for step in 0..POINTER_MOVES_PER_MINUTE {
             let due = later(later(minute, POINTER_START, 1)?, POINTER_GAP, step)?;
@@ -631,7 +629,7 @@ async fn act(mut collaborator: Collaborator, start: Instant, end: Instant) -> an
                 break 'run;
             }
             tokio::time::sleep_until(due.into()).await;
-            collaborator.point(step)?;
+            member.point(step)?;
         }
         minute = minute.checked_add(MINUTE).context("clock")?;
     }

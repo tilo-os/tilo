@@ -130,7 +130,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
         "an address the tree never published must be refused, not attempted",
     );
 
-    // The change reaches the editor as a collaborator's does.
+    // The change reaches the editor as a member's does.
     let (DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes)) =
         changes.expect("the agent's change");
     let mut peer = app.peer_document();

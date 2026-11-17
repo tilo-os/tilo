@@ -62,14 +62,14 @@ fn open(engine: &Arc<TestEngine>) -> App {
 }
 
 /// An agent the action API admitted, by its id.
-fn agent(principal: &str) -> ActionInvoker {
-    ActionInvoker::admitted(&Acting::agent(principal))
+fn agent(actor: &str) -> ActionInvoker {
+    ActionInvoker::admitted(&Acting::agent(actor))
 }
 
-/// An agent the action API admitted to act for Ada, by its principal: what
+/// An agent the action API admitted to act for Ada, by its actor: what
 /// the API of a record of Ada's own takes actions from, beside Ada.
-fn agent_for_ada(principal: &str) -> ActionInvoker {
-    ActionInvoker::admitted(&Acting::agent(principal)).acting_for(ada())
+fn agent_for_ada(actor: &str) -> ActionInvoker {
+    ActionInvoker::admitted(&Acting::agent(actor)).acting_for(ada())
 }
 
 /// Ada's laptop, another of her devices, as the MCP server of the device
@@ -81,8 +81,8 @@ fn laptop() -> InvokerDevice {
 /// An agent the action API admitted that works from `device`, another of
 /// Ada's devices: what the host says of an agent whose connection its agent
 /// api verified to come from there.
-fn agent_on(principal: &str, device: &InvokerDevice) -> ActionInvoker {
-    agent(principal).from_device(Some(device.clone()))
+fn agent_on(actor: &str, device: &InvokerDevice) -> ActionInvoker {
+    agent(actor).from_device(Some(device.clone()))
 }
 
 /// What a call through the API comes to when nothing answers it in time.
@@ -443,7 +443,7 @@ fn named_in(entries: &Value) -> Vec<(String, Option<String>, Option<String>)> {
 /// device of hers that names itself nothing, one on the device that runs
 /// the page. The record names, beside each actor, the device the API
 /// verified it came from, and none for the one here, whatever the engine
-/// lists. An actor's name stays the principal the API admitted, so two
+/// lists. An actor's name stays the actor the API admitted, so two
 /// agents of one device are two actors and one agent is the same actor
 /// across its actions. The record's read, the review of the page's fields
 /// and the record's history say the same.
@@ -1339,7 +1339,7 @@ fn an_action_is_written_only_as_the_actor_who_did_it() {
     let by_long = |seq: u64| {
         let mut entry = clicked(seq);
         entry["actor"] = PageActor::of(&ui::tilo_actions::MemberId::agent(&long).into())
-            .expect("a long principal names an actor")
+            .expect("a long actor names an actor")
             .as_str()
             .into();
         entry
@@ -1357,7 +1357,7 @@ fn an_action_is_written_only_as_the_actor_who_did_it() {
     assert!(record.with(|state| state.actions.is_empty()));
 
     // The agent that acted is who its action is written as, under the name
-    // the engine keeps it by: its principal, shortened when the engine takes
+    // the engine keeps it by: its actor, shortened when the engine takes
     // no longer one.
     set_down(&record, Some(&agent("ada")), "tab-a", clicked(1)).unwrap();
     set_down(&record, Some(&agent(&long)), "tab-b", by_long(1)).unwrap();

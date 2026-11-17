@@ -347,7 +347,7 @@ fn cached_apply_is_replay_identical() {
     let mut rng = Lcg(29);
     // `live` acts with the record kept from action to action; `cold`
     // replays each of its actions with nothing kept; `remote` is a
-    // collaborator whose changes, actions and raw writes alike, both take in.
+    // member whose changes, actions and raw writes alike, both take in.
     let mut live = seeded(12);
     let mut cold = live.fork();
     let mut remote = live.fork();

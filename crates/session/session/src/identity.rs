@@ -139,7 +139,7 @@ pub fn install() {
 /// Who this device acts for in `workspace` : the identity its registry presents there, else the
 /// person sitting at it.
 pub(crate) fn person_in(workspace: &str, person: &str) -> String {
-    tilo_identity_host::registry::selected_principal_id_prompt(workspace)
+    tilo_identity_host::registry::selected_actor_id_prompt(workspace)
         .ok()
         .flatten()
         .unwrap_or_else(|| person.to_owned())

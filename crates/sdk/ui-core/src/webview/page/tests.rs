@@ -912,7 +912,7 @@ tilo_test_env::scenario! {
         assert!(decode_result(&anonymous).is_none());
     }
 
-    phase an_actor_is_the_admitted_principal_within_the_engines_bound;
+    phase an_actor_is_the_admitted_actor_within_the_engines_bound;
     // Several actors work in one tab: a request says who asks, the tab's
     // record and its fields are requests like any other, and an answer says
     // where its action stands and what the others did.
@@ -934,7 +934,7 @@ tilo_test_env::scenario! {
         assert_eq!(PageActor::actor_of(short.as_str()), None, "{short}");
         let longest = "p".repeat(MAX_ACTOR_UNITS);
         assert_eq!(PageActor::named(&longest).unwrap().as_str(), longest);
-        // A longer principal is shortened the same way every time, and
+        // A longer actor is shortened the same way every time, and
         // two that begin alike still get two names.
         let ada = format!("agent:{}:ada", "x".repeat(80));
         let ben = format!("agent:{}:ben", "x".repeat(80));

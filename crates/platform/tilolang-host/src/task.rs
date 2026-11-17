@@ -885,6 +885,9 @@ mod tests {
         /// The resources that answer a read of themselves, by the id the directory lists them
         /// as; every other resource is read by the record, which takes it as its `item`.
         reading: &'static [&'static str],
+        /// The resource of the kind `.1` the rows are listed under, beside the record (a
+        /// tracker's issues, in the parts of a chain); `None` for rows under the record itself.
+        beside: Option<(&'static str, &'static str)>,
         rows: Vec<Json>,
         items: Vec<(&'static str, Json)>,
     }
@@ -904,6 +907,14 @@ mod tests {
                 let rows = match listing["resource"].as_str() {
                     Some("") => vec![record_row(self.record, self.record)],
                     Some(resource) if resource == format!("bound:{}", self.record) => {
+                        match self.beside {
+                            Some((id, kind)) => {
+                                vec![json!({"id": id, "kind": kind, "key": id, "name": kind})]
+                            }
+                            None => self.rows.clone(),
+                        }
+                    }
+                    Some(resource) if self.beside.is_some_and(|(id, _)| id == resource) => {
                         self.rows.clone()
                     }
                     other => panic!("{} lists nothing under {other:?}", self.app),
@@ -921,11 +932,10 @@ mod tests {
             // A resource that reads itself is read by its own id; every other by the record the
             // app publishes it as, which takes the resource's key as its `item`.
             let key = if let Some(key) = call["arguments"]["item"].as_str() {
-                assert_eq!(
-                    call["resource"],
-                    format!("bound:{}", self.record),
-                    "{message:#}"
-                );
+                let under = self
+                    .beside
+                    .map_or_else(|| format!("bound:{}", self.record), |(id, _)| id.to_owned());
+                assert_eq!(call["resource"], under, "{message:#}");
                 key
             } else {
                 let id = call["resource"].as_str().unwrap_or_default();
@@ -986,10 +996,11 @@ mod tests {
                 Reads {
                     app: "so.tilo.tasks",
                     record: "tasks.tracker",
-                    reading: &["bound:tasks.tracker/issues/one"],
-                    rows: vec![row("tasks.tracker/issues/one", "Ship the reads")],
+                    reading: &["bound:tasks.issues/issues/one"],
+                    beside: Some(("chain:issues", "tasks.issues")),
+                    rows: vec![row("tasks.issues/issues/one", "Ship the reads")],
                     items: vec![(
-                        "tasks.tracker/issues/one",
+                        "tasks.issues/issues/one",
                         json!({
                             "number": 7,
                             "title": "Ship the reads",
@@ -1016,26 +1027,29 @@ mod tests {
             );
             closed(&api);
             let calls = calls.join().expect("the API");
-            // The app listed its directory and what its record published holds; reading the
-            // resource the program asked about, it listed the directory again to address that
-            // resource, asked whether it reads itself, and read through its own `read`, once.
+            // The app listed its directory, what its record published holds and the issues kept
+            // beside it; reading the resource the program asked about, it listed them again to
+            // address that resource, asked whether it reads itself, and read through its own
+            // `read`, once.
             assert_eq!(
                 calls,
                 [
                     json!({"children": {"app": "so.tilo.tasks", "resource": ""}}),
                     json!({"children": {"app": "so.tilo.tasks", "resource": "bound:tasks.tracker"}}),
+                    json!({"children": {"app": "so.tilo.tasks", "resource": "chain:issues"}}),
                     json!({"children": {"app": "so.tilo.tasks", "resource": ""}}),
                     json!({"children": {"app": "so.tilo.tasks", "resource": "bound:tasks.tracker"}}),
+                    json!({"children": {"app": "so.tilo.tasks", "resource": "chain:issues"}}),
                     json!({
                         "reads": {
                             "app": "so.tilo.tasks",
-                            "resource": "bound:tasks.tracker/issues/one",
+                            "resource": "bound:tasks.issues/issues/one",
                         },
                     }),
                     json!({
                         "invoke": {
                             "app": "so.tilo.tasks",
-                            "resource": "bound:tasks.tracker/issues/one",
+                            "resource": "bound:tasks.issues/issues/one",
                             "action": "read",
                             "arguments": {"item": null, "version": null},
                         },
@@ -1054,20 +1068,21 @@ mod tests {
                     app: "so.tilo.tasks",
                     record: "tasks.tracker",
                     reading: &[
-                        "bound:tasks.tracker/issues/one",
-                        "bound:tasks.tracker/issues/two",
+                        "bound:tasks.issues/issues/one",
+                        "bound:tasks.issues/issues/two",
                     ],
+                    beside: Some(("chain:issues", "tasks.issues")),
                     rows: vec![
-                        row("tasks.tracker/issues/one", "Ship the reads"),
-                        row("tasks.tracker/issues/two", "Review Ada's portfolio"),
+                        row("tasks.issues/issues/one", "Ship the reads"),
+                        row("tasks.issues/issues/two", "Review Ada's portfolio"),
                     ],
                     items: vec![
                         (
-                            "tasks.tracker/issues/one",
+                            "tasks.issues/issues/one",
                             json!({"title": "Ship the reads", "assignee": "person:ada"}),
                         ),
                         (
-                            "tasks.tracker/issues/two",
+                            "tasks.issues/issues/two",
                             json!({"title": "Review Ada's portfolio", "assignee": "person:bob"}),
                         ),
                     ],
@@ -1083,9 +1098,10 @@ mod tests {
             assert_eq!(answer["output"], json!(["Ship the reads"]), "{answer:#}");
             closed(&api);
             let calls = calls.join().expect("the API");
-            // Its directory and its record's resources; the two the predicate reads, each by its
-            // own `read`; and the one the program prints, addressed again.
-            assert_eq!(calls.len(), 10, "{calls:#?}");
+            // Its directory, its record's resources and the issues beside it; the two the
+            // predicate reads, each by its own `read`; and the one the program prints, addressed
+            // again.
+            assert_eq!(calls.len(), 13, "{calls:#?}");
         }
 
         phase a_program_reads_a_native_apps_channels;
@@ -1098,6 +1114,7 @@ mod tests {
                     app: "so.tilo.chat",
                     record: "chat.workspace",
                     reading: &[],
+                    beside: None,
                     rows: vec![
                         row("chat.workspace/channels/general", "general"),
                         row("chat.workspace/channels/design", "design"),
@@ -1140,7 +1157,11 @@ mod tests {
                 if let Some(listing) = message.get("children") {
                     let rows = match listing["resource"].as_str() {
                         Some("") => vec![record_row("tasks.tracker", "Tasks")],
-                        _ => vec![row("tasks.tracker/issues/one", "Ship it")],
+                        Some("bound:tasks.tracker") => vec![json!({
+                            "id": "chain:issues", "kind": "tasks.issues",
+                            "key": "chain:issues", "name": "Issues",
+                        })],
+                        _ => vec![row("tasks.issues/issues/one", "Ship it")],
                     };
                     return json!({"ok": {"rows": rows}});
                 }
@@ -1152,7 +1173,7 @@ mod tests {
             let answer = ran(&task, "for i in find(tasks.Issue) {\n    print(i.title)\n}");
             closed(&api);
             let calls = calls.join().expect("the API");
-            assert_eq!(calls.len(), 6, "{calls:#?}");
+            assert_eq!(calls.len(), 8, "{calls:#?}");
             assert_eq!(answer["state"], "failed", "{answer:#}");
             let why = answer["detail"].as_str().unwrap_or_default();
             assert!(
@@ -1213,7 +1234,7 @@ mod tests {
             let calls = answering(api, 2, r#"{"ok": {}}"#);
             let answer = ran(
                 &task,
-                "chat.rename_channel(chat.workspace, \"general\", \"town\")\ntasks.create(tasks.tracker, \"Ship it\")",
+                "chat.rename_channel(chat.workspace, \"general\", \"town\")\ntasks.create_area(tasks.tracker, \"Launch\")",
             );
             let calls = calls.join().expect("the API");
             assert_eq!(answer["state"], "done", "{answer:#}");
@@ -1229,15 +1250,8 @@ mod tests {
                     json!({
                         "app": "so.tilo.tasks",
                         "resource": "tasks.tracker",
-                        "action": "create",
-                        "arguments": {
-                            "title": "Ship it",
-                            "parent": null,
-                            "body": null,
-                            "status": null,
-                            "assignee": null,
-                            "url": null,
-                        },
+                        "action": "create-area",
+                        "arguments": {"name": "Launch", "kind": null},
                     }),
                 ]
             );

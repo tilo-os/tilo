@@ -2,7 +2,7 @@
 //! kind of event and turns it into [`Firing`]s for the shortcuts armed on this device; the session
 //! starts each run through the action broker, which checks again that the shortcut still exists and
 //! that its saver may still run it. Only shortcuts saved by the person this device acts for in
-//! their workspace are armed ([`armed`]), so a collaborator's shortcut never fires on someone
+//! their workspace are armed ([`armed`]), so a member's shortcut never fires on someone
 //! else's behalf. A shortcut reaches every device of its saver: they rank themselves for each fire
 //! time or record change by a hash, the first runs it at once and records a [`ScheduleClaim`] that
 //! syncs like the shortcut, and each other waits [`CLAIM_GRACE`] per rank, so an asleep device is
@@ -14,8 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{
-    DateTime, Datelike as _, Duration as ChronoDuration, FixedOffset, Local, NaiveDate, NaiveTime,
-    Offset as _, TimeZone as _, Utc,
+    DateTime, Duration as ChronoDuration, FixedOffset, Local, Offset as _, TimeZone as _, Utc,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -30,9 +29,9 @@ use tilo_automation::{
 };
 
 /// A fire time this far in the past counts as missed rather than on time.
-pub const MISSED_AFTER: ChronoDuration = ChronoDuration::seconds(90);
+pub const MISSED_AFTER: ChronoDuration = tilo_automation::schedule::MISSED_AFTER;
 
-pub use tilo_action_broker::automation::{MIN_INTERVAL_SECONDS, readable_folder, validate_trigger};
+pub use tilo_action_broker::automation::{readable_folder, validate_trigger};
 
 /// How long each device waits, per device ranked before it, for a fire time to be claimed before it
 /// takes it.
@@ -817,7 +816,7 @@ impl TriggerSource for ScheduleTriggers {
                     Some(due) => 'due: {
                         let Some(wait) = turn(&key, armed, index, due, context.devices) else {
                             // Another of the person's devices took it.
-                            break 'due next_fire_time(schedule, now, clock);
+                            break 'due next_fire(schedule, now, clock);
                         };
                         let Some(start) = due.checked_add_signed(wait) else {
                             continue 'triggers;
@@ -841,9 +840,9 @@ impl TriggerSource for ScheduleTriggers {
                                 }),
                             });
                         }
-                        next_fire_time(schedule, now, clock)
+                        next_fire(schedule, now, clock)
                     }
-                    None => next_fire_time(schedule, now, clock),
+                    None => next_fire(schedule, now, clock),
                 };
                 let Some(next) = next else {
                     continue;
@@ -942,57 +941,13 @@ fn scheduled_run(key: &str, due: DateTime<Utc>) -> InvocationId {
     InvocationId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
 }
 
-/// The first fire time of `schedule` strictly after `now` . An interval counts from the Unix epoch,
-/// so every device computes the same fire times whenever it armed the schedule.
-#[must_use]
-pub fn next_fire_time(
+/// The first fire time of `schedule` strictly after `now`, in the wall-clock time `clock` reads.
+pub(crate) fn next_fire(
     schedule: &Schedule,
     now: DateTime<Utc>,
     clock: &dyn Clock,
 ) -> Option<DateTime<Utc>> {
-    match schedule {
-        Schedule::Interval { seconds } => {
-            let period = i64::try_from((*seconds).max(MIN_INTERVAL_SECONDS)).ok()?;
-            let periods = now.timestamp().div_euclid(period).checked_add(1)?;
-            DateTime::from_timestamp(period.checked_mul(periods)?, 0)
-        }
-        Schedule::Calendar { at, weekdays } => {
-            let time = NaiveTime::from_hms_opt(u32::from(at.hour), u32::from(at.minute), 0)?;
-            let today = now.with_timezone(&clock.offset_at(now)).date_naive();
-            (0..=8_i64)
-                .filter_map(|day| today.checked_add_signed(ChronoDuration::days(day)))
-                .filter(|date| weekdays.is_empty() || weekdays.contains(&weekday_of(*date)))
-                .filter_map(|date| local_instant(date, time, clock))
-                .find(|candidate| *candidate > now)
-        }
-    }
-}
-
-fn local_instant(date: NaiveDate, time: NaiveTime, clock: &dyn Clock) -> Option<DateTime<Utc>> {
-    let naive = date.and_time(time);
-    // Read the offset at a first guess of the instant, so a change of offset between now and then
-    // (daylight saving) is taken into account.
-    let first_offset = clock.offset_at(naive.and_utc()).local_minus_utc();
-    let guess = naive
-        .and_utc()
-        .checked_sub_signed(ChronoDuration::seconds(i64::from(first_offset)))?;
-    let offset = clock.offset_at(guess);
-    offset
-        .from_local_datetime(&naive)
-        .single()
-        .map(|local| local.with_timezone(&Utc))
-}
-
-fn weekday_of(date: NaiveDate) -> Weekday {
-    match date.weekday() {
-        chrono::Weekday::Mon => Weekday::Monday,
-        chrono::Weekday::Tue => Weekday::Tuesday,
-        chrono::Weekday::Wed => Weekday::Wednesday,
-        chrono::Weekday::Thu => Weekday::Thursday,
-        chrono::Weekday::Fri => Weekday::Friday,
-        chrono::Weekday::Sat => Weekday::Saturday,
-        chrono::Weekday::Sun => Weekday::Sunday,
-    }
+    tilo_automation::schedule::next_fire_time(schedule, now, &|at| clock.offset_at(at))
 }
 
 /// A record firing this device holds back while devices ranked before it get their turn.
@@ -1368,7 +1323,7 @@ mod tests {
                 weekdays: vec![Weekday::Monday, Weekday::Friday],
             };
             assert_eq!(
-                next_fire_time(&weekday_mornings, clock.now(), &clock),
+                next_fire(&weekday_mornings, clock.now(), &clock),
                 Some(at("2026-09-28T07:30:00Z")),
                 "Friday 09:30 local has passed, so Monday's is next"
             );
@@ -1380,7 +1335,7 @@ mod tests {
                 weekdays: Vec::new(),
             };
             assert_eq!(
-                next_fire_time(&daily_evening, clock.now(), &clock),
+                next_fire(&daily_evening, clock.now(), &clock),
                 Some(at("2026-09-25T16:00:00Z"))
             );
         }
@@ -1390,11 +1345,11 @@ mod tests {
             let clock = utc_clock("2026-09-25T10:00:00Z");
             let hourly = Schedule::Interval { seconds: 3600 };
             assert_eq!(
-                next_fire_time(&hourly, clock.now(), clock.as_ref()),
+                next_fire(&hourly, clock.now(), clock.as_ref()),
                 Some(at("2026-09-25T11:00:00Z"))
             );
             assert_eq!(
-                next_fire_time(&hourly, at("2026-09-25T09:30:12Z"), clock.as_ref()),
+                next_fire(&hourly, at("2026-09-25T09:30:12Z"), clock.as_ref()),
                 Some(at("2026-09-25T10:00:00Z")),
                 "armed half way through a period, it still fires on the hour"
             );

@@ -25,7 +25,7 @@ use crate::widget::{
 #[derive(Component, Default)]
 #[component(name = "Reactions", role = "Toolbar")]
 pub struct ReactionsProps {
-    /// Who reacted, by emoji: the reactions as the message holds them (`Map<Text, Set<Principal>>`).
+    /// Who reacted, by emoji: the reactions as the message holds them (`Map<Text, Set<Actor>>`).
     pub reactions: BTreeMap<String, BTreeSet<Person>>,
     /// The emoji reacted with, in the order they were first used: the older form, with `by`, read while
     /// `reactions` is not given.

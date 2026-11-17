@@ -387,7 +387,7 @@ tilo_test_env::scenario! {
         let contrast = entry("high_contrast");
         assert_eq!(contrast["after"], true);
         assert_eq!(contrast["action"], "appearance/high_contrast");
-        assert!(contrast["principal"].is_null(), "{contrast}");
+        assert!(contrast["actor"].is_null(), "{contrast}");
         assert!(entry("text_scale")["action"].is_null());
     }
 }

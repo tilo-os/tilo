@@ -870,7 +870,7 @@ impl<P: Provider> Flow<P> {
                 continue;
             }
             let owner = Owner {
-                principal: service.custody.principal().into(),
+                actor: service.custody.actor().into(),
                 device: service.custody.device().into(),
                 service: P::SERVICE,
                 account: id,

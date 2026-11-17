@@ -5,7 +5,7 @@
 //!   on number 0's server) but only while this endpoint has a home relay,
 //!   the same condition that wakes the relays. A record handed over while
 //!   they rest waits, and goes out with the first relay. Peers are resolved
-//!   on number 0's DNS either way: that asks for a collaborator's key, never
+//!   on number 0's DNS either way: that asks for a member's key, never
 //!   this device's.
 //! * [`Watchonly`] — an endpoint that publishes nothing and still resolves,
 //!   so what its owner opened by key (an invite, a room, another of their own

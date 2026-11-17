@@ -25,8 +25,6 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::notices::NOTICE_TAGS;
 use tilolang_tilo::records_service::RecordService;
-use tilolang_tilo::runtime::Actor;
-use tilolang_tilo::runtime::ids::MemberId;
 
 use crate::platform::notice::Toolkit;
 
@@ -87,7 +85,7 @@ pub fn seeded_from_env(person: &str) -> Result<Vec<RecordService>, String> {
 pub fn session_document(person: &str) -> Result<RecordService, String> {
     let host = Host::new(
         &tilo_resource::Doc::new(),
-        Actor::Member(MemberId::person(person)),
+        tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
         || None,
     )
     .map_err(|e| e.to_string())?;
@@ -100,7 +98,7 @@ pub fn session_document(person: &str) -> Result<RecordService, String> {
 fn seeded_app(person: &str, app: &InstalledApp) -> Result<RecordService, String> {
     let host = Host::new(
         &tilo_resource::Doc::new(),
-        Actor::Member(MemberId::person(person)),
+        tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
         || None,
     )
     .map_err(|e| e.to_string())?;
@@ -118,7 +116,7 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<RecordService, String>
     if let Some(scenario) = package.meta.scenarios.first() {
         host.runtime()
             .invoke_action(
-                &Actor::Member(MemberId::person(person)),
+                &tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
                 (scenario.action.as_str(), vec![]),
             )
             .map_err(|error| format!("{name} {:?}: {error}", scenario.name))?;

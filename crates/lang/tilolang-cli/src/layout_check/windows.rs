@@ -288,7 +288,7 @@ fn staged_changes(staged: &mut stage::Staged) -> Vec<(String, String, String)> {
     for (key, row) in &rows {
         for mark in nodes_of(row, "ui.ChangeMark") {
             let identity = match mark.props.get("by") {
-                Some(tilo_render_protocol::patch::Value::Principal(who)) => who.id.clone(),
+                Some(tilo_render_protocol::patch::Value::Actor(who)) => who.id.clone(),
                 other => panic!("a marked row names who changed it: {other:?}"),
             };
             let said = match mark.props.get("said") {
@@ -1749,7 +1749,7 @@ fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
     assert!(
         matches!(
             window.props.get("by"),
-            Some(tilo_render_protocol::patch::Value::Principal(_))
+            Some(tilo_render_protocol::patch::Value::Actor(_))
         ),
         "the page names who changed it: {window:?}"
     );
@@ -2391,7 +2391,7 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
         .filter(|face| {
             matches!(
                 face.props.get("who"),
-                Some(tilo_render_protocol::patch::Value::Principal(_))
+                Some(tilo_render_protocol::patch::Value::Actor(_))
             )
         })
         .count();

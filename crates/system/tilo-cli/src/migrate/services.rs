@@ -37,14 +37,14 @@ const ADD_ACCOUNT: &str = "mail/mail.mailbox#add-account";
 
 const IMPORT_MARKDOWN: &str = "notes/notes.notebook#import-markdown";
 const MOVE_NOTE: &str = "notes/notes.notebook#move-note";
-const CREATE_ISSUE: &str = "tasks/tasks.tracker#create";
+const CREATE_ISSUE: &str = "tasks/tasks.issues#create";
 const CREATE_AREA: &str = "tasks/tasks.tracker#create-area";
-const SET_PROJECT: &str = "tasks/tasks.tracker#set-project";
-const COMMENT: &str = "tasks/tasks.tracker#comment";
-const MOVE_UNDER: &str = "tasks/tasks.tracker#move-under";
-const LINK: &str = "tasks/tasks.tracker#link";
+const SET_PROJECT: &str = "tasks/tasks.issues#set-project";
+const COMMENT: &str = "tasks/tasks.issues#comment";
+const MOVE_UNDER: &str = "tasks/tasks.issues#move-under";
+const LINK: &str = "tasks/tasks.issues#link";
 /// How Tasks names the kind of an issue a link points at.
-const ISSUE_KIND: &str = "tasks.tracker.issues";
+const ISSUE_KIND: &str = "tasks.issues.issues";
 const TASKS_APP: &str = "so.tilo.tasks";
 
 fn kind(source: &str) -> Result<ServiceKind> {
@@ -527,7 +527,7 @@ impl Landing<'_, '_> {
                 "issue": issue,
                 "app": TASKS_APP,
                 "kind": ISSUE_KIND,
-                "resource": format!("tasks.tracker/issues/{related}"),
+                "resource": format!("tasks.issues/issues/{related}"),
                 "label": label.trim(),
                 "record": null,
             }),
@@ -808,7 +808,7 @@ fn millis(at: &str) -> Option<i64> {
         .map(|at| at.timestamp_millis())
 }
 
-/// The id Tasks answered for the issue it made: `-> tasks.tracker/issues/<id>`.
+/// The id Tasks answered for the issue it made: `-> tasks.issues/issues/<id>`.
 fn created_id(answer: &str) -> Option<String> {
     if let Some((_, after)) = answer
         .split_once("/issues/")
@@ -865,7 +865,7 @@ mod tests {
         assert_eq!(created_id(&format!("ok created {id}")).as_deref(), Some(id));
         assert_eq!(created_id("ok"), None);
         assert_eq!(
-            created_id("ok\n-> tasks.tracker/issues/f4055b9d9830a78c21b8\nlink: http://x")
+            created_id("ok\n-> tasks.issues/issues/f4055b9d9830a78c21b8\nlink: http://x")
                 .as_deref(),
             Some("f4055b9d9830a78c21b8")
         );

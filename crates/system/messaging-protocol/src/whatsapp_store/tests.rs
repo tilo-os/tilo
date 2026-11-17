@@ -5,7 +5,7 @@ use whatsapp_rust::wacore::store::traits::{
 
 fn owner() -> Owner {
     Owner {
-        principal: "11".repeat(32),
+        actor: "11".repeat(32),
         device: "fixture-device".into(),
         service: Service::Whatsapp,
         account: "fixture-account".into(),
@@ -329,7 +329,7 @@ async fn competing_owner_wrong_key_and_corrupt_frames_fail_closed() {
     let path = dir.path().join("state.enc");
     let original = std::fs::read(&path).unwrap();
     let mut persona = owner();
-    persona.principal = "22".repeat(32);
+    persona.actor = "22".repeat(32);
     assert!(EncryptedBackend::open_with_key(dir.path(), persona, fixture_key()).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), original);
     let mut other = owner();

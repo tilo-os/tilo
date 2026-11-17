@@ -82,7 +82,7 @@ impl AppFiles {
 }
 
 /// Where an app's typed settings live and how far they travel. Settings follow a person
-/// or a device, never a workspace's members; they are never visible to collaborators.
+/// or a device, never a workspace's members; they are never visible to members.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     Personal,

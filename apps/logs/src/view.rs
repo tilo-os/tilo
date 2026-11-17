@@ -442,6 +442,10 @@ impl Filterable for JournalPane {
 }
 
 impl Widget for JournalPane {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     ui::provides!(dyn Filterable);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

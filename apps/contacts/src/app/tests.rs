@@ -1115,7 +1115,7 @@ fn saves_persist_and_refusals_never_claim_success() {
             .unwrap();
         app.begin_edit(contact.clone(), false);
         set_title(&app, "Unsaved draft");
-        // A collaborator deletes the record while it is being edited.
+        // A member deletes the record while it is being edited.
         app.app
             .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
         app.settle();

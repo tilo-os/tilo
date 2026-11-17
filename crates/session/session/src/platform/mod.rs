@@ -77,7 +77,7 @@ pub mod notice;
 /// What a role reads of the workspaces' records, and what changed in them.
 pub mod records;
 
-/// Who a principal is, as presence shows them, and the actors this host's own mounts write as.
+/// Who an actor is, as presence shows them, and the actors this host's own mounts write as.
 pub mod authors;
 
 /// A store a role keeps its records and its own view in: the desktop's profile, shared with the

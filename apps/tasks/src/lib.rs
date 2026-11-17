@@ -1,8 +1,10 @@
 //! Tasks: the workspace's issues, on a list and a board.
 //!
-//! The tracker is the app's record of the workspace ([`model`]): nested
-//! issues with a markdown description, a status, an assignee, labels, links
-//! and a thread. The list nests sub-issues under their parent; the board has
+//! The tracker is the app's record of the workspace ([`model`]): the
+//! projects and areas above its issues. The issues — nested, each with a
+//! markdown description, a status, an assignee, labels, links and a thread —
+//! are kept in numbered parts beside it ([`part`]), so a change to one costs
+//! its part whatever the tracker holds. The list nests sub-issues under their parent; the board has
 //! a lane per status, and dragging a card is one `place` action; the issue
 //! page edits the description in the shared block editor and holds the
 //! thread. An issue assigned to an agent is that agent's: it works on the
@@ -33,6 +35,7 @@ mod issue;
 mod list;
 pub mod locales;
 mod note;
+pub mod part;
 mod program_step;
 mod project;
 #[cfg(feature = "samples")]
@@ -44,13 +47,81 @@ pub(crate) use filter::Filter;
 
 pub use tasks_model as model;
 
-use ui::framework::{EffectCx, Effected};
+use std::rc::Rc;
+
+use ui::framework::{Actions, Chain, EffectCx, Effected, Parts};
 use ui::prelude::*;
 use ui::widget::{NavItem, NavSection};
 
 pub use model::Tracker;
 pub use model::{NOTES, TasksEffect};
 use model::{Status, area_resource};
+pub use part::{IssuePart, Issues};
+
+/// What the window reads: the tracker's projects and the parts its issues
+/// are kept in, as they stand.
+#[derive(Clone, Default)]
+pub(crate) struct Tasks {
+    pub(crate) tracker: Rc<Tracker>,
+    pub(crate) parts: Parts<IssuePart>,
+}
+
+impl PartialEq for Tasks {
+    fn eq(&self, other: &Self) -> bool {
+        self.tracker == other.tracker && Rc::ptr_eq(&self.parts, &other.parts)
+    }
+}
+
+impl Tasks {
+    /// Every issue the parts keep, read as one tracker.
+    pub(crate) fn issues(&self) -> Issues<'_> {
+        Issues::of(&self.parts)
+    }
+}
+
+/// The window's hold on the issues: what it reads of them, and the chain
+/// their actions are carried out through. Shared by every part of the view.
+#[derive(Clone)]
+pub(crate) struct Window {
+    pub(crate) tasks: LocalState<Tasks>,
+    pub(crate) chain: Option<Chain<IssuePart>>,
+    /// The chain's published actions, for the controls bound to them.
+    pub(crate) actions: Option<Actions<IssuePart>>,
+}
+
+impl Window {
+    fn of(cx: &ViewCx<Tracker>) -> Self {
+        let chain = cx.chain::<IssuePart>();
+        let tasks = match &chain {
+            Some(chain) => {
+                cx.chain_value(chain, |tracker: &Tracker, parts: &Parts<IssuePart>| Tasks {
+                    tracker: Rc::new(tracker.clone()),
+                    parts: Rc::clone(parts),
+                })
+            }
+            // A past version shows the tracker's projects and no issues:
+            // the parts are not part of the record it shows.
+            None => cx.value(|tracker: &Tracker| Tasks {
+                tracker: Rc::new(tracker.clone()),
+                parts: Parts::<IssuePart>::default(),
+            }),
+        };
+        let actions = chain.as_ref().and_then(|chain| cx.record_actions(chain));
+        Self {
+            tasks,
+            chain,
+            actions,
+        }
+    }
+
+    /// Carry `invoke` out on the issues, as the person: a refusal is told
+    /// where the window tells its person what was refused.
+    pub(crate) fn submit(&self, invoke: ui::tilo_resource::Invoke<IssuePart>) {
+        if let Some(chain) = &self.chain {
+            chain.dispatcher().submit(invoke);
+        }
+    }
+}
 
 /// What the window shows when no issue is open.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -135,6 +206,11 @@ impl ResourceApp for App {
         Some(&crate::locales::CATALOG)
     }
 
+    /// The issues, kept in parts beside the tracker.
+    fn records(records: &mut ui::framework::Records<'_>) {
+        records.chain::<IssuePart>();
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1240, 780)
     }
@@ -149,15 +225,12 @@ impl ResourceApp for App {
         sample::SCENARIOS
     }
 
-    /// A capture cannot make six issues and label them: the scenario stages
-    /// the tracker it reached as the record's start, and its views after.
+    /// A scenario's issues, made as the window opens, and its views after.
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut ui::framework::Fixture<Tracker>) {
         match fixture.scenario() {
-            Some("migrated" | "migrated-issue") => {
-                fixture.start(sample::migrated(fixture.person().id()));
-            }
-            Some(_) => fixture.start(sample::tracker(fixture.person().id())),
+            Some("migrated" | "migrated-issue") => fixture.provide(sample::Scene::Migrated),
+            Some(_) => fixture.provide(sample::Scene::Launch),
             None => {}
         }
     }
@@ -172,31 +245,45 @@ impl ResourceApp for App {
             asking,
             named,
         };
-        let addresses = router(cx, &nav);
-        tracker_window(cx, &nav, &addresses)
+        let window = Window::of(cx);
+        #[cfg(feature = "samples")]
+        if let (Some(scene), Some(chain), Some(me)) =
+            (
+                cx.fixture::<sample::Scene>(),
+                &window.chain,
+                cx.me().and_then(ui::tilo_resource::MemberId::person_id),
+            )
+        {
+            sample::fill(*scene, chain, me);
+        }
+        router(cx, &nav, &window);
+        tracker_window(cx, &nav, &window)
     }
 }
 
 /// The window over the whole tracker: the sidebar, the list, the board and
 /// the issue pages.
-fn tracker_window(cx: &ViewCx<Tracker>, nav: &Nav, addresses: &LocalState<Tracker>) -> Element {
-    let sidebar = sidebar(cx, nav, addresses);
+fn tracker_window(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element {
+    let sidebar = sidebar(cx, nav, &window.tasks);
     let content_nav = nav.clone();
+    let shown = window.clone();
     let content = cx.switch(&nav.open, move |cx, open| {
         if let Some(issue) = open {
-            return issue::page(cx, issue.clone(), &content_nav);
+            return issue::page(cx, issue.clone(), &content_nav, &shown);
         }
         let nav = content_nav.clone();
+        let window = shown.clone();
         cx.switch(&content_nav.project, move |cx, project| {
             if let Some(project) = project {
-                return project::page(cx, project.clone());
+                return project::page(cx, project.clone(), &window);
             }
             let nav = nav.clone();
             let content_nav = nav.clone();
+            let window = window.clone();
             cx.switch(&content_nav.place, move |cx, place| match place {
-                Place::List => list::view(cx, &nav),
-                Place::Board => board::view(cx, &nav),
-                Place::Thread => thread::view(cx, &nav),
+                Place::List => list::view(cx, &nav, &window),
+                Place::Board => board::view(cx, &nav, &window),
+                Place::Thread => thread::view(cx, &nav, &window),
             })
         })
     });
@@ -235,23 +322,21 @@ fn tracker_window(cx: &ViewCx<Tracker>, nav: &Nav, addresses: &LocalState<Tracke
         shell,
         cx.toolbar(),
         nav.clone(),
-        addresses.clone(),
+        window.tasks.clone(),
+        window.chain.clone(),
         Box::new(dialog),
     ))
 }
 
 /// The sidebar's rows: what narrows the tracker, and the labels it carries.
-fn sidebar_sections(
-    tracker: &Tracker,
-    me: Option<&ui::tilo_resource::MemberId>,
-) -> Vec<NavSection> {
+fn sidebar_sections(tasks: &Tasks, me: Option<&ui::tilo_resource::MemberId>) -> Vec<NavSection> {
+    let issues = tasks.issues();
     let filters = Filter::ALL
         .into_iter()
         .map(|filter| {
-            let count = tracker
-                .issues
-                .values()
-                .filter(|issue| filter.matches(issue, me))
+            let count = issues
+                .iter()
+                .filter(|(_, issue)| filter.matches(issue, me))
                 .count();
             NavItem::new(filter.key(), filter.title())
                 .icon(filter.icon())
@@ -260,14 +345,13 @@ fn sidebar_sections(
         })
         .collect();
     let mut sections = vec![NavSection::untitled("filters", filters)];
-    let labels: Vec<NavItem> = filter::labels(tracker)
+    let labels: Vec<NavItem> = filter::labels(&issues)
         .into_iter()
         .map(|label| {
             let filter = Filter::Label(label.clone());
-            let count = tracker
-                .issues
-                .values()
-                .filter(|issue| issue.labels.iter().any(|carried| *carried == label))
+            let count = issues
+                .iter()
+                .filter(|(_, issue)| issue.labels.iter().any(|carried| *carried == label))
                 .count();
             NavItem::new(filter.key(), label)
                 .icon(ui::icons::Icon::Tag)
@@ -278,11 +362,12 @@ fn sidebar_sections(
     if !labels.is_empty() {
         sections.push(NavSection::untitled("labels", labels));
     }
-    let projects: Vec<NavItem> = tracker
+    let projects: Vec<NavItem> = tasks
+        .tracker
         .areas
         .values()
         .map(|area| {
-            let held = tracker.in_area(&area.id).count();
+            let held = issues.in_area(&area.id).count();
             NavItem::new(area_resource(&area.id), area.name.clone())
                 .icon(match area.kind {
                     model::Kind::Project => ui::icons::Icon::Folder,
@@ -301,34 +386,29 @@ fn sidebar_sections(
 
 /// A row to create an issue: its title, then Enter or the button. `status`
 /// is where it starts, when the row stands in a lane of the board.
-pub(crate) fn new_issue(
-    cx: &ViewCx<Tracker>,
+pub(crate) fn new_issue<R: ui::tilo_resource::Resource>(
+    cx: &ViewCx<R>,
+    window: &Window,
     parent: Option<Id>,
     status: Option<Status>,
     id: &str,
 ) -> Element {
+    let Some(actions) = &window.actions else {
+        return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
+    };
     let draft = cx.local(String::new());
     let create_under_parent = parent.is_some();
     // The issue is made from what the field parses to: nothing while it is
     // blank, so the button is disabled and Enter does nothing until there is
     // a title.
-    let create = Tracker::CREATE.try_map(move |title: String| {
+    let create = IssuePart::CREATE.try_map(move |title: String| {
         Some(crate::model::NewIssue {
-            title: ui::tilo_resource::NonBlank::parse(&title)?,
             parent: parent.clone(),
-            body: None,
             status,
-            assignee: None,
-            url: None,
-            project: None,
-            priority: None,
-            estimate: None,
-            due_ms: None,
-            labels: None,
-            origin: None,
+            ..crate::model::NewIssue::titled(ui::tilo_resource::NonBlank::parse(&title)?)
         })
     });
-    let title = cx.actions().submit_draft(
+    let title = actions.submit_draft(
         TextInput::from_state(&draft)
             .with_id(&format!("{id}-title"))
             .with_placeholder(if create_under_parent {
@@ -339,7 +419,7 @@ pub(crate) fn new_issue(
         &draft,
         create.clone(),
     );
-    let button = cx.actions().bind_draft(
+    let button = actions.bind_draft(
         Button::new(&format!("{id}-create"), "tasks-new-issue").with_icon(ui::icons::Icon::Plus),
         &draft,
         create,
@@ -375,16 +455,21 @@ ui::dev_reload_entry!(App);
 
 /// The window's addresses: an issue a row opens, a reference it resolves
 /// (`#12`), a project by the resource it is published under, and the
-/// scenario a capture stages. Returns the tracker as the window reads it.
-fn router(cx: &ViewCx<Tracker>, nav: &Nav) -> LocalState<Tracker> {
+/// scenario a capture stages.
+fn router(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) {
     let opener = nav.clone();
     cx.on_open_item(move |issue| {
         opener.open(issue);
         Ok(())
     });
-    let staged = cx.value(Tracker::clone);
-    let (numbered, opener) = (staged.clone(), nav.clone());
+    let (numbered, opener) = (window.tasks.clone(), nav.clone());
     cx.on_open(move |anchor: &str| {
+        // An issue, by the address its part publishes it under.
+        if let Some((_, issue)) = ui::tilo_resource::items::item_of_resource::<IssuePart>(anchor) {
+            opener.project.set(None);
+            opener.open(&issue);
+            return Ok::<(), Refusal>(());
+        }
         if let Some(area) = area_of_anchor(anchor) {
             opener.project.set(Some(area));
             opener.open.set(None);
@@ -392,22 +477,24 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav) -> LocalState<Tracker> {
         }
         let number = model::search::number(anchor)
             .ok_or_else(|| Refusal::new(format!("`{anchor}` names no issue")))?;
-        let tracker = numbered.get();
-        let (issue, _) = tracker
+        let tasks = numbered.get();
+        let issue = tasks
+            .issues()
             .by_number(number)
+            .map(|(issue, _)| issue.clone())
             .ok_or_else(|| Refusal::new(format!("There is no issue {anchor}")))?;
         opener.project.set(None);
-        opener.open(issue);
+        opener.open(&issue);
         Ok::<(), Refusal>(())
     });
     #[cfg(feature = "samples")]
     {
-        let stage = nav.clone();
-        let staged_for_stage = staged.clone();
-        cx.on_stage(move |scenario| sample::stage(scenario, &stage, &staged_for_stage.get()));
+        let (stage, staged) = (nav.clone(), window.tasks.clone());
+        cx.on_stage(move |scenario| sample::stage(scenario, &stage, &staged.get()));
     }
     let asking = nav.asking.clone();
     let open = nav.clone();
+    let noting = window.clone();
     cx.effects(move |effect: TasksEffect, cx: &mut EffectCx<Tracker>| {
         // The "New project" effect is the sidebar's own button, the palette's
         // entry and an agent's call alike: the form it asks for is what this
@@ -432,23 +519,22 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav) -> LocalState<Tracker> {
                 open.open.set(None);
                 Ok(Effected::done())
             }
-            effect @ TasksEffect::WriteNote { .. } => note::handle(effect, cx),
+            effect @ TasksEffect::WriteNote { .. } => note::handle(effect, cx, &noting),
         }
     });
-    staged
 }
 
 /// The sidebar: what narrows the tracker, the labels in use, and the
 /// projects and areas the work goes towards. It is built again as the
 /// tracker gains issues, labels or projects.
-fn sidebar(cx: &ViewCx<Tracker>, nav: &Nav, tracker: &LocalState<Tracker>) -> Element {
+fn sidebar(cx: &ViewCx<Tracker>, nav: &Nav, tasks: &LocalState<Tasks>) -> Element {
     let chosen = nav.clone();
     let selection = nav.filter.clone();
     let me = cx.me().cloned();
-    cx.switch(tracker, move |_cx, tracker| {
+    cx.switch(tasks, move |_cx, tasks| {
         let chosen = chosen.clone();
         Box::new(
-            ui::widget::NavList::new(sidebar_sections(tracker, me.as_ref()))
+            ui::widget::NavList::new(sidebar_sections(tasks, me.as_ref()))
                 // Named for what it narrows, not the app: the sidebar's
                 // heading and the window's tab already say "Tasks".
                 .with_accessible_name(tr("tasks-filters"))

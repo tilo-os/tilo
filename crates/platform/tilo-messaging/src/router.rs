@@ -38,7 +38,7 @@ impl ServiceAccount {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegistrationError {
     InvalidIdentity,
-    WrongPrincipal,
+    WrongActor,
     DuplicateAccount,
 }
 
@@ -46,16 +46,15 @@ pub enum RegistrationError {
 /// and a mounted window keeps exactly its admitted capabilities.
 #[derive(Clone)]
 pub struct MessagingRouter {
-    principal: String,
+    actor: String,
     services: BTreeMap<ServiceAccount, MessagingClient>,
 }
 impl MessagingRouter {
     pub fn new(
-        principal: &str,
+        actor: &str,
         services: Vec<(ServiceAccount, MessagingClient)>,
     ) -> Result<Self, RegistrationError> {
-        if principal.is_empty() || principal.len() > 512 || principal.chars().any(char::is_control)
-        {
+        if actor.is_empty() || actor.len() > 512 || actor.chars().any(char::is_control) {
             return Err(RegistrationError::InvalidIdentity);
         }
         let mut registered = BTreeMap::new();
@@ -63,20 +62,20 @@ impl MessagingRouter {
             if !identity.valid() {
                 return Err(RegistrationError::InvalidIdentity);
             }
-            if client.principal() != principal {
-                return Err(RegistrationError::WrongPrincipal);
+            if client.actor() != actor {
+                return Err(RegistrationError::WrongActor);
             }
             if registered.insert(identity, client).is_some() {
                 return Err(RegistrationError::DuplicateAccount);
             }
         }
         Ok(Self {
-            principal: principal.into(),
+            actor: actor.into(),
             services: registered,
         })
     }
     pub fn client(&self) -> MessagingClient {
-        MessagingClient::new(&self.principal, Arc::new(self.clone()))
+        MessagingClient::new(&self.actor, Arc::new(self.clone()))
     }
 }
 impl MessagingHost for MessagingRouter {
@@ -196,9 +195,9 @@ mod tests {
             revision: "revision".into(),
         }
     }
-    fn client(principal: &str, service: &str, account: &str, calls: &Calls) -> MessagingClient {
+    fn client(actor: &str, service: &str, account: &str, calls: &Calls) -> MessagingClient {
         MessagingClient::new(
-            principal,
+            actor,
             Arc::new(Host {
                 calls: calls.clone(),
                 identity: ServiceAccount::new(service, account),
@@ -290,7 +289,7 @@ mod tests {
                 "owner",
                 vec![(id, client("other", "signal", "personal", &calls))]
             ),
-            Err(RegistrationError::WrongPrincipal)
+            Err(RegistrationError::WrongActor)
         ));
         assert!(calls.lock().expect("fixture calls lock").is_empty());
     }
