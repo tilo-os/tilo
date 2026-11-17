@@ -16,6 +16,7 @@ pub enum MemberId {
 }
 
 impl MemberId {
+    #[track_caller]
     #[must_use]
     pub fn person(id: impl Into<PersonId>) -> Self {
         Self::Person(id.into())
@@ -357,6 +358,7 @@ impl Acting {
         }
     }
 
+    #[track_caller]
     #[must_use]
     pub fn person(id: impl Into<PersonId>) -> Self {
         Self::member(MemberId::person(id))

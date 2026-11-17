@@ -25,6 +25,7 @@ pub struct Member {
 }
 
 impl Member {
+    #[track_caller]
     #[must_use]
     pub fn person(id: impl Into<tilo_actions::policy::PersonId>, role: Role) -> Self {
         Self {

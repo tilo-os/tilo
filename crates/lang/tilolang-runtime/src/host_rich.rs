@@ -61,9 +61,10 @@ impl Core {
                         r.references()
                             .into_iter()
                             .filter_map(|r| match r {
-                                Reference::Person(id) => {
-                                    Some(Value::Actor(Actor::Member(MemberId::person(id))))
-                                }
+                                // A mention names a member by their key: a person's bare
+                                // root key or an agent's `agent:<id>`.
+                                Reference::Person(key) => MemberId::parse(&key)
+                                    .map(|who| Value::Actor(Actor::Member(who))),
                                 Reference::Resource(_) => None,
                             })
                             .collect(),

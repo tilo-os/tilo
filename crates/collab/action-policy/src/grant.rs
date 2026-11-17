@@ -188,6 +188,7 @@ impl Grantee {
         Self::Member(member)
     }
 
+    #[track_caller]
     #[must_use]
     pub fn person(id: impl Into<crate::PersonId>) -> Self {
         Self::Member(crate::MemberId::person(id))

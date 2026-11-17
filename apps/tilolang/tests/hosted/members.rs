@@ -6,19 +6,20 @@ use crate::interaction::{composer, send_button};
 use tilolang_host::testing::Bus;
 use ui::headless::FrameHarness;
 use ui::permissions::policy::{self, Grantee, Role};
+use ui::tilo_actions::MemberId;
 
 const INTERACTION: &str = "so.tilo.lang.interaction";
 
 /// Ada at a window of the conversation the `interaction` package stages, in a workspace whose
-/// member list names `people` (id, name); `policy` makes the workspace's policy, given its id.
+/// member list names `people` (member, name); `policy` makes the workspace's policy, given its id.
 fn in_a_conversation(
-    people: &[(&str, &str)],
+    people: &[(MemberId, &str)],
     policy: impl FnOnce(&str) -> Option<policy::WorkspacePolicy>,
 ) -> Session {
     let bus = Rc::new(Bus::default());
-    bus.member("ada", "Ada");
+    bus.member(MemberId::person("ada"), "Ada");
     for (id, name) in people {
-        bus.member(id, name);
+        bus.member(id.clone(), name);
     }
     let route = RouteSpec::app(INTERACTION, uuid::Uuid::new_v4());
     let workspace = route.cluster_id.to_string();
@@ -113,10 +114,10 @@ fn the_composers_drawer_offers_the_members_of_the_conversation_by_the_names_the_
     // on the member list the broker hands out, but the policy holds no role of hers.
     let mut session = in_a_conversation(
         &[
-            ("u_mia", "Mia"),
-            ("u_leo", "Leo"),
-            ("u_zoe", "Zoe"),
-            ("agent:planner", "Planner"),
+            (MemberId::person("u_mia"), "Mia"),
+            (MemberId::person("u_leo"), "Leo"),
+            (MemberId::person("u_zoe"), "Zoe"),
+            (MemberId::agent("planner"), "Planner"),
         ],
         |workspace| {
             let mut policy = policy::WorkspacePolicy::new(workspace, "ada");
@@ -178,7 +179,13 @@ fn the_composers_drawer_offers_the_members_of_the_conversation_by_the_names_the_
 #[test]
 fn the_composers_drawer_offers_the_workspaces_people_and_writes_a_mention_that_is_sent() {
     let _settled = ui::motion::testing::settled();
-    let mut session = in_a_conversation(&[("u_mia", "Mia"), ("u_leo", "Leo")], |_| None);
+    let mut session = in_a_conversation(
+        &[
+            (MemberId::person("u_mia"), "Mia"),
+            (MemberId::person("u_leo"), "Leo"),
+        ],
+        |_| None,
+    );
     type_in_composer(&mut session, "thanks @");
     let people = drawer_rows(session.window.harness());
     assert!(

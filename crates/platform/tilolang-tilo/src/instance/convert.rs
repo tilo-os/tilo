@@ -137,12 +137,16 @@ pub fn inline_view(
 ) -> tilo_render_protocol::patch::rich::InlineView {
     use crate::runtime::Store as _;
     use tilo_render_protocol::patch::rich::InlineView;
-    if let Some(person) = reference.as_person() {
+    if let Some(key) = reference.as_person() {
+        // A mention names a member by their key: a person's bare root key or an agent's
+        // `agent:<id>`. A key naming nobody reads as nobody known.
+        let who = crate::runtime::ids::MemberId::parse(key);
         return InlineView::Person {
-            identity: person.to_owned(),
-            name: names.name(&Actor::Member(crate::runtime::ids::MemberId::person(
-                person,
-            ))),
+            identity: key.to_owned(),
+            name: who.map_or_else(
+                || collaboration::history_source::authors::UNKNOWN_AUTHOR_NAME.to_owned(),
+                |who| names.name(&Actor::Member(who)),
+            ),
         };
     }
     let Some(mut target) = referenced_resource(host, reference) else {

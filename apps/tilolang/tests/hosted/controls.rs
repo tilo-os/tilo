@@ -231,28 +231,26 @@ impl super::Session {
         identity: &str,
         arguments: &serde_json::Value,
     ) -> ui::tilo_actions::InvocationUpdate {
-        self.invoke_as("ada", identity, arguments)
+        self.invoke_as(
+            &ui::tilo_actions::MemberId::person("ada").into(),
+            identity,
+            arguments,
+        )
     }
 
-    /// [`Self::invoke_doing`] as `actor` runs it: what another person's press writes in the
-    /// workspace, which the window's own person has not seen.
+    /// [`Self::invoke_doing`] as `actor` runs it: what another person's press or an agent's call
+    /// writes in the workspace, which the window's own person has not seen.
     pub(super) fn invoke_as(
         &mut self,
-        actor: &str,
+        actor: &ui::tilo_actions::Actor,
         identity: &str,
         arguments: &serde_json::Value,
     ) -> ui::tilo_actions::InvocationUpdate {
         let doing = ui::tilo_actions::ActionAddress::parse(identity)
             .unwrap_or_else(|| panic!("{identity} names a resource and an action"));
         let arguments = format!("{}{arguments}", ui::tilo_actions::ARGUMENTS_JSON_PREFIX);
-        self.deliver(
-            &ui::tilo_actions::MemberId::person(actor).into(),
-            doing.resource,
-            doing.action,
-            Some(arguments),
-            None,
-        )
-        .unwrap_or_else(|| panic!("the action API answered nothing of {identity}"))
+        self.deliver(actor, doing.resource, doing.action, Some(arguments), None)
+            .unwrap_or_else(|| panic!("the action API answered nothing of {identity}"))
     }
 
     /// What the window's control called `name` says it does: the identity every caller names it
@@ -311,7 +309,11 @@ fn an_agents_invocation_in_a_window_is_written_once_as_its_change() {
     let new_note = session.identity_named("New note");
     let held = super::record(&session);
     let written = super::store(&session).stats().written_once;
-    let answered = session.invoke_as("agent-task:7", &new_note, &serde_json::json!({}));
+    let answered = session.invoke_as(
+        &ui::tilo_actions::MemberId::agent("task:7").into(),
+        &new_note,
+        &serde_json::json!({}),
+    );
     assert!(
         matches!(
             answered,
@@ -335,7 +337,7 @@ fn an_agents_invocation_in_a_window_is_written_once_as_its_change() {
         for change in doc.get_changes(&from) {
             assert_eq!(
                 change.actor_id().to_bytes(),
-                b"agent-task:7",
+                b"agent:task:7",
                 "the change is the agent's"
             );
         }

@@ -88,18 +88,21 @@ impl PersonId {
 }
 
 impl From<String> for PersonId {
+    #[track_caller]
     fn from(id: String) -> Self {
         Self::expect(id)
     }
 }
 
 impl From<&str> for PersonId {
+    #[track_caller]
     fn from(id: &str) -> Self {
         Self::expect(id)
     }
 }
 
 impl From<&String> for PersonId {
+    #[track_caller]
     fn from(id: &String) -> Self {
         Self::expect(id)
     }

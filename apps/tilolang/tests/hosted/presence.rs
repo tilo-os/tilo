@@ -38,8 +38,8 @@ fn composer(session: &mut Session) -> (f64, f64) {
 /// conversation #design, which Ada made.
 fn ada_and_bo_in_design() -> (Session, Session) {
     let bus = Rc::new(Bus::default());
-    bus.member("ada", "Ada");
-    bus.member("bo", "Bo");
+    bus.member(ui::tilo_actions::MemberId::person("ada"), "Ada");
+    bus.member(ui::tilo_actions::MemberId::person("bo"), "Bo");
     let route = RouteSpec::app(CHAT, uuid::Uuid::new_v4());
     let mut ada = Session::on_bus(
         &bus,
