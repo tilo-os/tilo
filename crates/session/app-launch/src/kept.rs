@@ -775,6 +775,7 @@ mod tests {
     use super::*;
     use crate::plan::{Kind, Planned};
     use crate::spawner::{Event, Spawner, Teardown};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// Not a test: the keeper process the others start, as `tilo-app-keeper` would run.
     #[test]
@@ -887,7 +888,7 @@ mod tests {
                 .arg("--launch")
                 .arg(launch.encode())
                 .args(["--", "/bin/sh", "-c", "exec sleep 1000"])
-                .spawn()
+                .spawn_locked()
                 .expect("the service starts its keeper")
         }
 
