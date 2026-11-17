@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use fs_protocol::files::TreeChunk;
 use fs_protocol::tree::{
-    FILES_APP, FilesTree, Tree, TreeChunks, chunk_document_id, listed_chunks, document_id,
+    FILES_APP, FilesTree, Tree, TreeChunks, chunk_document_id, document_id, listed_chunks,
 };
 use ui_core::automerge::AutoCommit;
 use ui_core::history_mode::folder::{FolderHistorySource, FolderVersions};
