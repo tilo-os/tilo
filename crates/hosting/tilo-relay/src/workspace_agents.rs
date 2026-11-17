@@ -61,6 +61,7 @@ use crate::workspaces::person_model::{Interaction, ModelRefusal, PersonModel, Sp
 
 mod going;
 mod summary;
+mod vault_uses;
 
 /// What a turn's reply says when the turn goes on with what its person wrote next.
 const WENT_ON: &str = "I am going on with what you wrote next, and answer below.";
@@ -97,12 +98,28 @@ const WRITE_WAIT: Duration = Duration::from_secs(30);
 pub struct WorkspaceActionHost {
     actions: WorkspaceActions,
     workspace: WorkspaceId,
+    /// What the turn this host serves uses of its person's vault by
+    /// reference, when it serves a turn: the host's own to answer, listed
+    /// and taken beside the workspace's records.
+    uses: Option<Arc<vault_uses::TurnUses>>,
 }
 
 impl WorkspaceActionHost {
     #[must_use]
     pub const fn new(actions: WorkspaceActions, workspace: WorkspaceId) -> Self {
-        Self { actions, workspace }
+        Self {
+            actions,
+            workspace,
+            uses: None,
+        }
+    }
+
+    /// This host, answering also for what one turn uses of its person's
+    /// vault.
+    #[must_use]
+    fn serving(mut self, uses: Arc<vault_uses::TurnUses>) -> Self {
+        self.uses = Some(uses);
+        self
     }
 
     fn serve(&self, caller: &Caller, message: RemoteActionMessage) -> Pending<RemoteActionMessage> {
@@ -129,6 +146,16 @@ impl ActionHost for WorkspaceActionHost {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        if let Some(page) = self.uses.as_ref().and_then(|uses| uses.page(&query)) {
+            return Pending::ready(Ok(page));
+        }
+        // A listing of everything names the uses' providers beside the records'.
+        let offered = self
+            .uses
+            .as_ref()
+            .filter(|_| query.provider.is_none())
+            .map(|uses| uses.providers())
+            .unwrap_or_default();
         self.serve(
             caller,
             RemoteActionMessage::CatalogueRequest {
@@ -136,8 +163,11 @@ impl ActionHost for WorkspaceActionHost {
                 query,
             },
         )
-        .map(|answer| match answer {
-            RemoteActionMessage::CatalogueResponse { result, .. } => result,
+        .map(move |answer| match answer {
+            RemoteActionMessage::CatalogueResponse { result, .. } => result.map(|mut page| {
+                page.providers.extend(offered);
+                page
+            }),
             _ => Err(unavailable()),
         })
     }
@@ -147,6 +177,11 @@ impl ActionHost for WorkspaceActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Some(uses) = &self.uses
+            && vault_uses::TurnUses::takes(&request.target)
+        {
+            return uses.invoke(caller, request);
+        }
         self.serve(caller, RemoteActionMessage::Invoke(request))
             .map(|answer| match answer {
                 RemoteActionMessage::Receipt(receipt) => Ok(receipt),
@@ -155,7 +190,12 @@ impl ActionHost for WorkspaceActionHost {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.actions.observe(caller, id)
+        // A use of the vault is the host's own invocation: how it ended is
+        // kept with the turn that took it.
+        self.uses
+            .as_ref()
+            .and_then(|uses| uses.observed(id))
+            .or_else(|| self.actions.observe(caller, id))
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
@@ -299,6 +339,9 @@ impl HostAgents {
     /// # Errors
     /// The workspace's records could not be read.
     pub async fn look(&self, workspace: &str) -> Result<(), String> {
+        // What a person answered about a use of their vault is carried out
+        // whether or not anything asks an agent now.
+        self.settle_uses(workspace).await;
         self.look_past(workspace, None).await
     }
 
@@ -645,12 +688,24 @@ impl HostAgents {
         turn: &Turn,
         going: &going::Going,
     ) -> (Ask, Result<(), String>) {
-        let standing = match self.standing(workspace, turn).await {
+        let mut standing = match self.standing(workspace, turn).await {
             Ok(standing) => standing,
             Err(error) => return (turn.ask.clone(), Err(error)),
         };
         let mut turn = turn.clone();
         let mut reply = standing.reply(&turn);
+        // The turn's tools reach what its person's vault lets it use by
+        // reference, through the host's own entry.
+        let uses = vault_uses::TurnUses::for_turn(
+            self,
+            (workspace, standing.workspace_id),
+            &turn,
+            &reply.caller,
+            standing.host.clone(),
+        )
+        .await;
+        standing.host = standing.host.clone().serving(uses);
+        reply.host = standing.host.clone();
         if self.left_begun(workspace, &turn).await {
             // Its steps may have changed things already, and nothing says which: starting over
             // would do them twice. It ends here, and asking again is the person's to do.
