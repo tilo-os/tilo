@@ -41,7 +41,7 @@ use tilo_relay_session::workspaces::{
     PersonalWorkspace, WorkspaceHostAddress,
 };
 use tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
-use tilo_user_identity::{DeviceCert, verify_device_cert};
+use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert};
 
 use super::Workspaces;
 
@@ -125,8 +125,16 @@ impl PersonalLists {
     }
 
     /// Keep `list` as `device`'s person's, replacing the workspaces kept and
-    /// adding the devices it carries.
-    fn keep(&self, device: &DeviceCert, mut list: PersonalList, now: u64) -> Result<(), String> {
+    /// adding the devices it carries. `revoked` is what was taken back: a
+    /// device it refuses reads by no name any more, here and wherever a key
+    /// is added or named.
+    fn keep(
+        &self,
+        device: &DeviceCert,
+        mut list: PersonalList,
+        now: u64,
+        revoked: &RevocationList,
+    ) -> Result<(), String> {
         list.check()?;
         let person = device.user_public_key;
         let carried: Vec<DeviceCert> = list.devices.drain(..).map(|one| one.cert).collect();
@@ -135,16 +143,27 @@ impl PersonalLists {
         kept.by = hex::encode(device.device_public_key);
         kept.at_ns = now;
         kept.list = list;
-        add(&mut kept.devices, &mut kept.names, &person, carried);
+        add(
+            &mut kept.devices,
+            &mut kept.names,
+            &person,
+            carried,
+            revoked,
+        );
         self.write(&person, &kept)
     }
 
     /// Add `certs`, keys `person`'s root certified, to their record, keeping
     /// whatever else it holds.
-    fn add_devices(&self, person: &[u8; 32], certs: Vec<DeviceCert>) -> Result<(), String> {
+    fn add_devices(
+        &self,
+        person: &[u8; 32],
+        certs: Vec<DeviceCert>,
+        revoked: &RevocationList,
+    ) -> Result<(), String> {
         let _writing = self.lock();
         let mut kept = self.read(person).unwrap_or_default();
-        if !add(&mut kept.devices, &mut kept.names, person, certs) {
+        if !add(&mut kept.devices, &mut kept.names, person, certs, revoked) {
             return Ok(());
         }
         self.write(person, &kept)
@@ -154,7 +173,12 @@ impl PersonalLists {
     /// browser's: each certificate their root signed for a device of theirs
     /// is added, and the browser's keys are the ones of them their record
     /// holds, replacing what it named before.
-    fn keep_browser(&self, person: &[u8; 32], browser: PersonalBrowser) -> Result<(), String> {
+    fn keep_browser(
+        &self,
+        person: &[u8; 32],
+        browser: PersonalBrowser,
+        revoked: &RevocationList,
+    ) -> Result<(), String> {
         if !PersonalBrowser::is_id(&browser.id) {
             return Err("a browser is named by 32 lowercase hex characters".to_owned());
         }
@@ -168,7 +192,13 @@ impl PersonalLists {
             .collect();
         let _writing = self.lock();
         let mut kept = self.read(person).unwrap_or_default();
-        let added = add(&mut kept.devices, &mut kept.names, person, certs.clone());
+        let added = add(
+            &mut kept.devices,
+            &mut kept.names,
+            person,
+            certs.clone(),
+            revoked,
+        );
         // Only keys the record holds, which `add` verified as the person's.
         let mut keys: Vec<String> = Vec::new();
         for cert in &certs {
@@ -208,8 +238,15 @@ impl PersonalLists {
 
     /// Name `key`, a device of `person`'s, `name`: what their lists read it by
     /// from now on. A name another of their devices reads by is refused, so a
-    /// list never shows two devices alike.
-    fn name_device(&self, person: &[u8; 32], key: &str, name: &str) -> Result<(), String> {
+    /// list never shows two devices alike; a device that was taken back
+    /// reads by none.
+    fn name_device(
+        &self,
+        person: &[u8; 32],
+        key: &str,
+        name: &str,
+        revoked: &RevocationList,
+    ) -> Result<(), String> {
         let name = name.trim();
         if name.is_empty()
             || name.len() > MAX_CERTIFICATION_LABEL_BYTES
@@ -231,6 +268,7 @@ impl PersonalLists {
         let taken = kept.devices.iter().any(|known| {
             let other = hex::encode(known.device_public_key);
             other != key
+                && !revoked.refuses(known)
                 && kept
                     .names
                     .get(&other)
@@ -352,7 +390,13 @@ impl PersonalLists {
     /// added to their record when it is not there yet (`add` checks that their
     /// root signed it), so a computer set up with `tilo login` on any host of
     /// theirs is listed with the agent it runs.
-    fn note_agent(&self, person: &[u8; 32], cert: &DeviceCert, name: &str) {
+    fn note_agent(
+        &self,
+        person: &[u8; 32],
+        cert: &DeviceCert,
+        name: &str,
+        revoked: &RevocationList,
+    ) {
         let _writing = self.lock();
         let mut kept = self.read(person).unwrap_or_default();
         add(
@@ -360,6 +404,7 @@ impl PersonalLists {
             &mut kept.names,
             person,
             vec![cert.clone()],
+            revoked,
         );
         let key = hex::encode(cert.device_public_key);
         if kept.agents.get(&key) == Some(&name.to_owned()) {
@@ -378,12 +423,15 @@ impl PersonalLists {
 /// A key that enrolls under a name another of the person's devices already
 /// reads by is kept under the next free number (`Claude Code on laptop`,
 /// `Claude Code on laptop 2`), so two computers set up in the same way still
-/// read apart; a name the person gave the key themselves stays theirs.
+/// read apart; a name the person gave the key themselves stays theirs. A
+/// device that was taken back (`revoked` refuses it) reads by no name any
+/// more: the next device may take the name it had.
 fn add(
     devices: &mut Vec<DeviceCert>,
     names: &mut BTreeMap<String, String>,
     person: &[u8; 32],
     certs: Vec<DeviceCert>,
+    revoked: &RevocationList,
 ) -> bool {
     let mut added = false;
     for cert in certs {
@@ -418,6 +466,7 @@ fn add(
             devices.iter().any(|known| {
                 let other = hex::encode(known.device_public_key);
                 other != key
+                    && !revoked.refuses(known)
                     && names
                         .get(&other)
                         .map_or(known.device_label.as_str(), String::as_str)
@@ -576,7 +625,7 @@ impl Workspaces {
         let count = list.workspaces.len();
         self.inner
             .personal
-            .keep(device, list, tilo_clock::unix_now_ns())?;
+            .keep(device, list, tilo_clock::unix_now_ns(), &self.revocations())?;
         // Every other device of theirs reads the list it kept.
         self.personal_changed();
         Ok(count)
@@ -595,7 +644,7 @@ impl Workspaces {
         }
         self.inner
             .personal
-            .name_device(&device.user_public_key, key, name)?;
+            .name_device(&device.user_public_key, key, name, &self.revocations())?;
         // What every list of theirs shows the device as.
         self.personal_changed();
         Ok(())
@@ -728,10 +777,10 @@ impl Workspaces {
         if device.capabilities.agent.is_some() || device.capabilities.stand_in {
             return;
         }
-        if let Err(error) = self
-            .inner
-            .personal
-            .keep_browser(&device.user_public_key, browser)
+        if let Err(error) =
+            self.inner
+                .personal
+                .keep_browser(&device.user_public_key, browser, &self.revocations())
         {
             tracing::debug!(%error, "a page's browser is not in the person's record");
         }
@@ -751,10 +800,11 @@ impl Workspaces {
             .iter()
             .any(|known| known.device_public_key == cert.device_public_key);
         if !held {
-            let added = self
-                .inner
-                .personal
-                .add_devices(&cert.user_public_key, vec![cert.clone()]);
+            let added = self.inner.personal.add_devices(
+                &cert.user_public_key,
+                vec![cert.clone()],
+                &self.revocations(),
+            );
             match added {
                 Ok(()) => self.personal_changed(),
                 Err(error) => {
@@ -769,11 +819,12 @@ impl Workspaces {
         if label.is_empty() || cert.capabilities.agent.is_some() || cert.capabilities.stand_in {
             return;
         }
-        match self
-            .inner
-            .personal
-            .name_device(&cert.user_public_key, &key, label)
-        {
+        match self.inner.personal.name_device(
+            &cert.user_public_key,
+            &key,
+            label,
+            &self.revocations(),
+        ) {
             Ok(()) => self.personal_changed(),
             Err(error) => {
                 tracing::warn!(%error, "a device the host named is not named in the person's record");
@@ -830,7 +881,7 @@ impl Workspaces {
     ) {
         self.inner
             .personal
-            .note_agent(&cert.user_public_key, cert, name);
+            .note_agent(&cert.user_public_key, cert, name, &self.revocations());
         if cert.user_public_key == self.inner.host.cert.user_public_key
             && cert.device_public_key != self.inner.host.cert.device_public_key
         {
@@ -891,6 +942,7 @@ mod tests {
     fn two_computers_enrolled_under_one_name_read_apart_and_the_person_names_them() {
         let dir = tempfile::tempdir().unwrap();
         let lists = PersonalLists::new(dir.path());
+        let none = RevocationList::new();
         let root = SigningKey::from_bytes(&rand::random());
         let person = root.verifying_key().to_bytes();
         let desktop = key_of(&root, "studio");
@@ -908,8 +960,10 @@ mod tests {
             }],
             ..PersonalList::default()
         };
-        lists.keep(&desktop, list, 1).unwrap();
-        lists.add_devices(&person, vec![second.clone()]).unwrap();
+        lists.keep(&desktop, list, 1, &none).unwrap();
+        lists
+            .add_devices(&person, vec![second.clone()], &none)
+            .unwrap();
 
         assert_eq!(
             name_of(&lists, &person, &first).as_deref(),
@@ -928,6 +982,7 @@ mod tests {
                 &person,
                 &hex::encode(second.device_public_key),
                 "Build server",
+                &none,
             )
             .unwrap();
         assert_eq!(
@@ -947,22 +1002,88 @@ mod tests {
                 .name_device(
                     &person,
                     &hex::encode(second.device_public_key),
-                    "Claude Code on laptop"
+                    "Claude Code on laptop",
+                    &none
                 )
                 .is_err(),
             "two devices never read alike"
         );
         assert!(
             lists
-                .name_device(&person, &"00".repeat(32), "Nowhere")
+                .name_device(&person, &"00".repeat(32), "Nowhere", &none)
                 .is_err(),
             "only a device of the person's is named"
         );
         assert!(
             lists
-                .name_device(&person, &hex::encode(second.device_public_key), "  ")
+                .name_device(&person, &hex::encode(second.device_public_key), "  ", &none)
                 .is_err(),
             "a device needs a name"
+        );
+    }
+
+    #[test]
+    fn a_name_a_device_that_was_taken_back_read_by_is_free_for_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let lists = PersonalLists::new(dir.path());
+        let mut revoked = RevocationList::new();
+        let root = SigningKey::from_bytes(&rand::random());
+        let person = root.verifying_key().to_bytes();
+        let first = key_of(&root, "Chrome on Mac");
+        let second = key_of(&root, "Chrome on Mac");
+        lists
+            .add_devices(&person, vec![first.clone(), second.clone()], &revoked)
+            .unwrap();
+        assert_eq!(
+            name_of(&lists, &person, &second).as_deref(),
+            Some("Chrome on Mac 2")
+        );
+
+        // The person takes the second browser back.
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: person,
+            revoked_device_public_key: second.device_public_key,
+            revoked_at_ns: tilo_clock::unix_now_ns(),
+            reason: tilo_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        revoked.insert(entry).unwrap();
+
+        // The next browser pairs under the lowest free number, the one the
+        // removed browser read by. It was then named a second time on top of
+        // that, "Chrome on Mac 2 2", and the one after "Chrome on Mac 2 3".
+        let third = key_of(&root, "Chrome on Mac 2");
+        lists
+            .add_devices(&person, vec![third.clone()], &revoked)
+            .unwrap();
+        assert_eq!(
+            name_of(&lists, &person, &third).as_deref(),
+            Some("Chrome on Mac 2"),
+            "a device is named once"
+        );
+        // The name it was given as it paired is kept as its name.
+        lists
+            .name_device(
+                &person,
+                &hex::encode(third.device_public_key),
+                "Chrome on Mac 2",
+                &revoked,
+            )
+            .unwrap();
+        // One more browser of the same kind takes the lowest free number.
+        let fourth = key_of(&root, "Chrome on Mac");
+        lists
+            .add_devices(&person, vec![fourth.clone()], &revoked)
+            .unwrap();
+        assert_eq!(
+            name_of(&lists, &person, &fourth).as_deref(),
+            Some("Chrome on Mac 3")
+        );
+        assert_eq!(
+            name_of(&lists, &person, &first).as_deref(),
+            Some("Chrome on Mac"),
+            "the first keeps the name it enrolled with"
         );
     }
 }
