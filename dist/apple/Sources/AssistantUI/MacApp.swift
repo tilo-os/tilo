@@ -1,8 +1,10 @@
 #if os(macOS)
 import AppKit
+import AssistantClosed
 import AssistantCore
 import Observation
 import SwiftUI
+import UserNotifications
 
 /// Tilo Assistant on the Mac: one window as drawn, its menus and keys, and an item in the menu
 /// bar that keeps it running when the window is closed, so it can still tell the person.
@@ -31,17 +33,22 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
     private var statusItem: NSStatusItem?
     private var teller: Teller?
     private var askedFor: Person.ID?
+    /// What the build says of being told while the app is closed; nil in a build without the push right.
+    private let closed: ClosedBuild?
 
     /// `engine` and `live` are the source's own: a view it needs to stand in the window to do its
     /// work, and the view that draws a live Tilo thing. `window` makes the window; a check hands
-    /// in one that is never put on a screen.
+    /// in one that is never put on a screen. `closed` is what the build says of being told while
+    /// the app is closed: the bundle's own word, and nothing in a build without the push right.
     public init(source: any AssistantSource, engine: AnyView? = nil, live: (@MainActor (LiveThing) -> AnyView)? = nil,
+                closed: ClosedBuild? = ClosedBuild(info: Bundle.main.infoDictionary),
                 window: @escaping @MainActor (NSRect, NSWindow.StyleMask) -> NSWindow = { frame, style in
                     NSWindow(contentRect: frame, styleMask: style, backing: .buffered, defer: true)
                 }) {
         model = AssistantModel(source: source)
         self.engine = engine
         self.live = live
+        self.closed = closed
         makeWindow = window
     }
 
@@ -147,8 +154,26 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         teller?.setBadge(waiting)
         if let person, askedFor != person.id, let teller {
             askedFor = person.id
-            Task { await teller.ask() }
+            let hasPush = closed != nil
+            Task {
+                // Apple's service is asked for an address only in a build that has the push right.
+                if await teller.ask(), hasPush { NSApp.registerForRemoteNotifications() }
+            }
         }
+    }
+
+    /// Apple's address for this Mac goes to the person's Tilo, which tells them while the app is closed.
+    public func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        guard let closed else { return }
+        let source = model.source
+        let address = PushAddress(use: .notices, token: deviceToken, service: closed.service, app: Bundle.main.bundleIdentifier ?? "")
+        Task { await source.register(address) }
+    }
+
+    /// A push that shows nothing: a thing the person was told of waits no more, and its notice is taken away.
+    public func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
+        guard let push = ClosedPush(userInfo), push.isGone else { return }
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [push.name])
     }
 
     // MARK: The menus

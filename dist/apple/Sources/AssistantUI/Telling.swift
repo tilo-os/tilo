@@ -26,7 +26,7 @@ public final class Teller: NSObject {
         model.offered = { [weak self] item, chat in self?.bring(item, in: chat) }
         model.settled = { [weak self] item, _ in
             // Answered here or on another device: nothing is left to answer under the notification.
-            if !item.waits { self?.withdraw(item.id) }
+            if !item.waits { self?.withdraw(item) }
         }
     }
 
@@ -52,7 +52,7 @@ public final class Teller: NSObject {
     /// A notice the person put away is not brought back.
     public func bring(_ item: Item, in chat: Chat) {
         guard let notice = NoticePlan.notice(for: item, in: chat), notice.interrupts else { return }
-        let request = Teller.request(item.id)
+        let request = Teller.request(item)
         center.getDeliveredNotifications { [weak self] delivered in
             guard delivered.contains(where: { $0.request.identifier == request }) else { return }
             DispatchQueue.main.async {
@@ -83,11 +83,11 @@ public final class Teller: NSObject {
             register(content.categoryIdentifier, answer: answer.title)
         }
         content.userInfo = fields
-        center.add(UNNotificationRequest(identifier: Teller.request(item.id), content: content, trigger: nil),
+        center.add(UNNotificationRequest(identifier: Teller.request(item), content: content, trigger: nil),
                    withCompletionHandler: nil)
     }
 
-    public func withdraw(_ item: Item.ID) {
+    public func withdraw(_ item: Item) {
         center.removeDeliveredNotifications(withIdentifiers: [Teller.request(item)])
     }
 
@@ -125,7 +125,10 @@ public final class Teller: NSObject {
         }
     }
 
-    private static func request(_ item: Item.ID) -> String { "assistant-\(item.value)" }
+    /// The name the system keeps a piece's notice under. Where a push may tell of the piece
+    /// while the app is closed, it is the name the push gives it: the two are then one notice,
+    /// each takes the other's place, and nothing is shown twice.
+    static func request(_ item: Item) -> String { item.toldAs ?? "assistant-\(item.id.value)" }
 
     static func name(_ chat: Chat) -> String {
         switch chat {
@@ -150,6 +153,12 @@ extension Teller: UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        // A push that comes while the app is in front shows nothing: the app tells of the same
+        // thing itself, under the same name, unless the person is looking at it.
+        if notification.request.trigger is UNPushNotificationTrigger {
+            completionHandler([])
+            return
+        }
         // What did not interrupt is listed and nothing more.
         let listed = notification.request.content.interruptionLevel == .passive
         completionHandler(listed ? [.list] : [.banner, .list, .sound])

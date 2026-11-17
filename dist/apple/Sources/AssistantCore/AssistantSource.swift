@@ -151,10 +151,14 @@ public protocol AssistantSource: Sendable {
     /// An address Apple's service gave this device. The person's host sends to it when the app
     /// does not run: a notification, the start of a live activity, or news for one that runs.
     func register(_ address: PushAddress) async
+
+    /// The person's Tilo is to send to this device no more: it forgets the address it was handed.
+    func unregister() async
 }
 
 extension AssistantSource {
     public func register(_ address: PushAddress) async {}
+    public func unregister() async {}
 
     /// A source that keeps no replies apart from the conversation has none to show.
     public func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item] { [] }
@@ -261,10 +265,20 @@ public struct Secret: Sendable, CustomStringConvertible, CustomDebugStringConver
 public struct PushAddress: Equatable, Sendable {
     public var use: Use
     public var token: Data
+    /// Which of Apple's two services gave the address.
+    public var service: Service
+    /// The app the address reaches: its bundle identifier.
+    public var app: String
 
-    public init(use: Use, token: Data) {
+    public init(use: Use, token: Data, service: Service = .production, app: String = "") {
         self.use = use
         self.token = token
+        self.service = service
+        self.app = app
+    }
+
+    public enum Service: String, Equatable, Sendable {
+        case development, production
     }
 
     public enum Use: Equatable, Sendable {

@@ -75,6 +75,9 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case offeredBy = "offered-by", allow, deny
     case sinceLeft = "since-left", sinceWaits = "since-waits", sinceDidAlone = "since-did-alone"
     case sinceCameIn = "since-came-in", sinceMore = "since-more"
+    // What a push says in the open while the app is closed. The person's Tilo names it by this
+    // key, and the system reads it from the bundle, so it takes no value.
+    case toldWaits = "TOLD_WAITS"
 
     public var english: String {
         switch self {
@@ -272,6 +275,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .offeredBy: "{name} offers this"
         case .allow: "Allow"
         case .deny: "Deny"
+        case .toldWaits: "Something from your assistant waits for you"
         case .sinceLeft: "Since you left"
         case .sinceWaits: "Waits for you"
         case .sinceDidAlone: "Done without asking"

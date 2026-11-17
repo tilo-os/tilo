@@ -340,6 +340,14 @@ final class LookTests: XCTestCase {
         XCTAssertNil(Teller.chat(nil))
     }
 
+    func testAPiecesNoticeIsKeptUnderTheNameAPushGivesItWhereItHasOne() {
+        var item = Item(id: .init("m-1"), at: Date(timeIntervalSince1970: 0), .reminder("Stretch"))
+        XCTAssertEqual(Teller.request(item), "assistant-m-1")
+        // Told of while the app is closed, the push and the app's own notice are one notice.
+        item.toldAs = "rf-qsLfA_59buuS5z2pKfA"
+        XCTAssertEqual(Teller.request(item), "rf-qsLfA_59buuS5z2pKfA")
+    }
+
     func testALiveActivitysPressLeadsToWhatItWasAbout() throws {
         let model = AssistantModel(source: Drawing.source())
         LiveLink.open(try XCTUnwrap(LiveLink.url(for: "sub-agent-usage-drop")), in: model)

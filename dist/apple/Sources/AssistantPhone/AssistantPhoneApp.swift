@@ -1,8 +1,10 @@
 #if os(iOS)
+import AssistantClosed
 import AssistantCore
 import AssistantUI
 import SwiftUI
 import UIKit
+import UserNotifications
 
 /// Tilo Assistant on the iPhone: the same views arranged for a phone, the system's
 /// notifications with their answers, and live activities.
@@ -34,7 +36,8 @@ struct AssistantPhoneApp: App {
                         UIApplication.shared.applicationState == .active && model.place == .chat(chat)
                     }
                     guard model.person != nil else { return }
-                    if await teller.ask() { UIApplication.shared.registerForRemoteNotifications() }
+                    // Apple's service is asked for an address only in a build that has the push right.
+                    if await teller.ask(), Source.closed != nil { UIApplication.shared.registerForRemoteNotifications() }
                 }
                 .onChange(of: model.waiting) { teller.setBadge(model.waiting) }
                 .onChange(of: model.tasks) { activities.bring() }
@@ -52,8 +55,17 @@ final class PhoneDelegate: NSObject, UIApplicationDelegate {
 
     /// Apple's address for this phone goes to the person's host, which tells them while the app is closed.
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        guard let source else { return }
-        Task { await source.register(PushAddress(use: .notices, token: deviceToken)) }
+        guard let source, let closed = Source.closed else { return }
+        let address = PushAddress(use: .notices, token: deviceToken, service: closed.service, app: Bundle.main.bundleIdentifier ?? "")
+        Task { await source.register(address) }
+    }
+
+    /// A push that shows nothing: a thing the person was told of waits no more, and its notice is taken away.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        guard let push = ClosedPush(userInfo), push.isGone else { return completionHandler(.noData) }
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [push.name])
+        completionHandler(.newData)
     }
 }
 /// Where the program begins: asked with `--check` it says what it can tell of itself and

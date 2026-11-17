@@ -125,6 +125,10 @@ public struct Item: Identifiable, Equatable, Sendable {
     /// How often the person's Tilo told them of this again because it insists. A piece whose
     /// count went up is told once more.
     public var raised: Int
+    /// The name a push gives this piece on this device, where the person's Tilo told them of it
+    /// and the device may be told while the app is closed. The system keeps the piece's notice
+    /// under it, so a push for the same piece takes that notice's place.
+    public var toldAs: String?
 
     public init(id: ID, at: Date, _ content: Content, task: TaskLine? = nil, isImportant: Bool = false,
                 keptQuiet: String? = nil, notice: String? = nil, offers: [Offer] = [], raised: Int = 0) {

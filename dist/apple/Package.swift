@@ -31,9 +31,12 @@ let package = Package(
         // The values the window shows and the interface they come through. No view.
         .target(name: "AssistantCore"),
         // The views, shared by the Mac and the iPhone app. Dictation is the shell's.
-        .target(name: "AssistantUI", dependencies: ["AssistantCore", "ShellWeb"]),
-        .executableTarget(name: "AssistantMac", dependencies: ["AssistantCore", "AssistantUI", "AssistantTilo", "TiloLive", "ShellCore"]),
-        .executableTarget(name: "AssistantPhone", dependencies: ["AssistantCore", "AssistantUI", "AssistantTilo", "ShellCore"]),
+        .target(name: "AssistantUI", dependencies: ["AssistantCore", "AssistantClosed", "ShellWeb"]),
+        // Being told while the app is closed: the device's own key, what it opens and names,
+        // where it is kept, and what a push says. No view, and nothing of Tilo's page.
+        .target(name: "AssistantClosed", dependencies: ["AssistantCore"]),
+        .executableTarget(name: "AssistantMac", dependencies: ["AssistantCore", "AssistantClosed", "AssistantUI", "AssistantTilo", "TiloLive", "ShellCore"]),
+        .executableTarget(name: "AssistantPhone", dependencies: ["AssistantCore", "AssistantClosed", "AssistantUI", "AssistantTilo", "ShellCore"]),
         // The iPhone's live activity: a widget extension, which starts as the share extension does.
         .executableTarget(
             name: "AssistantWidgets",
@@ -44,6 +47,7 @@ let package = Package(
         // that is told while it is closed carries it (build.sh, TILO_APPLE_PUSH).
         .executableTarget(
             name: "AssistantNotice",
+            dependencies: ["AssistantClosed"],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
         ),
         // The content of the window's drawing, for tests and pictures. No app links it.
@@ -63,8 +67,9 @@ let package = Package(
         .executableTarget(name: "TiloLivePhoneProbe", dependencies: ["ShellCore", "TiloLive"]),
         // The assistant's data interface on Tilo itself: the app as its person's device,
         // through the engine. The one thing the apps name as their source.
-        .target(name: "AssistantTilo", dependencies: ["AssistantCore", "ShellCore", "TiloLive"]),
-        .testTarget(name: "TiloLiveTests", dependencies: ["ShellCore", "TiloLive", "AssistantCore", "AssistantTilo"]),
+        .target(name: "AssistantTilo", dependencies: ["AssistantCore", "AssistantClosed", "ShellCore", "TiloLive"]),
+        .testTarget(name: "TiloLiveTests", dependencies: ["ShellCore", "TiloLive", "AssistantCore", "AssistantClosed", "AssistantTilo"]),
+        .testTarget(name: "AssistantClosedTests", dependencies: ["AssistantClosed", "AssistantCore"]),
     ],
     swiftLanguageModes: [.v6]
 )

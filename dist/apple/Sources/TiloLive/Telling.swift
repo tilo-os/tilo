@@ -142,4 +142,21 @@ extension TiloEngine {
         return ToldSince(left: Date(timeIntervalSince1970: left / 1000), waits: things("waits"), didAlone: things("didAlone"),
                          cameIn: things("cameIn"))
     }
+
+    /// Hand the person's server the address Apple's service gave this device for the app, and
+    /// the device's own key: the public half their server seals what a push says for, and the
+    /// secret it names a thing by. Their server keeps one address a device and pushes to it
+    /// only while no device of the person is looking. The token and both halves of the key go
+    /// in hex, as their server takes them; its answer holds none of them.
+    public func registerAddress(token: Data, service: String, app: String, p256dh: String, auth: String) async throws {
+        try await ask(.telling, "register", of: "addresses", [
+            "token": .string(token.map { String(format: "%02x", $0) }.joined()), "environment": .string(service),
+            "topic": .string(app), "key": .object(["p256dh": .string(p256dh), "auth": .string(auth)]),
+        ])
+    }
+
+    /// Have the person's server forget this device's address: it pushes to it no more.
+    public func unregisterAddress() async throws {
+        try await ask(.telling, "unregister", of: "addresses")
+    }
 }

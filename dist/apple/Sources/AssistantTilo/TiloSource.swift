@@ -1,3 +1,4 @@
+import AssistantClosed
 import AssistantCore
 import Foundation
 import ShellCore
@@ -118,6 +119,14 @@ public final class TiloSource: AssistantSource {
     private let setups = Told<Setup>(.unknown)
     private var choices: [ModelChoice] = []
     private var listening: [Task<Void, Never>] = []
+    /// Where the device's key for being told while the app is closed is kept. Nil in a build
+    /// without the push right: such a build hands its person's server no address and keeps no key.
+    private let closedKeys: (any ClosedKeyStore)?
+    private var closedKey: ClosedKey?
+    /// The address Apple's service gave this device at this launch, and whether the person's
+    /// server has it. An address that comes before the device is in waits until it is.
+    private var address: PushAddress?
+    private var addressHanded = false
 
     /// - Parameters:
     ///   - store: the name of the store the device's key is kept in, the same at every launch.
@@ -126,15 +135,20 @@ public final class TiloSource: AssistantSource {
     ///   - defaults: where the app keeps the workspace it was paired into and the person's name.
     ///   - deviceName: what this device is called where its person lets it in and lists their
     ///     devices.
+    ///   - closedKeys: where the device's key for being told while the app is closed is kept,
+    ///     in a build that has the push right; nil in any other, which is then told nothing
+    ///     while it is closed and asks nothing for it.
     public convenience init(settings: ShellSettings, store: UUID, mainChat: MainChat = .assistant, livesInOwn: Bool = true,
-                            defaults: UserDefaults = .standard, deviceName: String = "") {
+                            defaults: UserDefaults = .standard, deviceName: String = "", closedKeys: (any ClosedKeyStore)? = nil) {
         self.init(engine: TiloEngine(settings: settings, store: .kept(store), deviceName: deviceName), mainChat: mainChat,
-                  livesInOwn: livesInOwn, defaults: defaults, deviceName: deviceName)
+                  livesInOwn: livesInOwn, defaults: defaults, deviceName: deviceName, closedKeys: closedKeys)
     }
 
     /// On an engine that is there already: for a check that keeps nothing.
-    init(engine: TiloEngine, mainChat: MainChat, livesInOwn: Bool, defaults: UserDefaults, deviceName: String = "") {
+    init(engine: TiloEngine, mainChat: MainChat, livesInOwn: Bool, defaults: UserDefaults, deviceName: String = "",
+         closedKeys: (any ClosedKeyStore)? = nil) {
         self.engine = engine
+        self.closedKeys = closedKeys
         self.deviceName = deviceName
         stage = LiveStage(engine: engine)
         self.mainChat = mainChat
@@ -143,6 +157,8 @@ public final class TiloSource: AssistantSource {
         if let kept = defaults.array(forKey: TiloSource.personKey) as? [String], kept.count == 3 {
             person = Person(id: .init(kept[0]), name: kept[1], workspace: kept[2])
             me = kept[0]
+            // The key this device handed its person's server at an earlier launch.
+            closedKey = closedKeys?.read()
         }
         sessions.set(sessionNow)
         let engine = engine
@@ -173,6 +189,9 @@ public final class TiloSource: AssistantSource {
     public nonisolated func reach() -> AsyncStream<Reach> { reaches.stream() }
 
     public func pair(with link: PairingLink) async throws {
+        // A sign-in begins. Whatever key this device still keeps is not the next person's: a
+        // new one is made when their server is handed this device's address.
+        forgetClosedKey()
         do {
             soughtOwn = false
             try engine.pair(with: link.url)
@@ -191,6 +210,10 @@ public final class TiloSource: AssistantSource {
     /// in its store until the app removes the store: the page has no way yet to forget its
     /// device, and a store in use cannot be removed.
     public func signOut() async {
+        // Their server pushes to this device no more, and the key that opened its pushes goes:
+        // whoever signs in here next is handed nothing of this person's.
+        if person != nil { await unregister() }
+        forgetClosedKey()
         defaults.removeObject(forKey: TiloSource.routeKey)
         defaults.removeObject(forKey: TiloSource.personKey)
         person = nil
@@ -306,6 +329,7 @@ public final class TiloSource: AssistantSource {
         toldWanted = true
         toldRefused = false
         followTold()
+        await handAddress()
     }
 
     /// What the page keeps of its own membership, for a page that hands a native app nothing:
@@ -814,6 +838,7 @@ public final class TiloSource: AssistantSource {
             item.isImportant = told.isImportant
             // Why it did not notify, what is offered under its notice, how often it was raised again.
             TiloSource.mark(&item, as: told)
+            item.toldAs = closedKey?.name(of: told.id)
             shown[told.id] = item.id
             if !item.offers.isEmpty { offered[item.id] = told }
             if told.reaches, !told.isSettled { waiting[item.id] = told.id }
@@ -826,6 +851,58 @@ public final class TiloSource: AssistantSource {
             saySince()
         }
         return made
+    }
+
+    // MARK: Told while the app is closed
+
+    /// Apple's service gave this device an address: the person's server is handed it, with the
+    /// device's own key, at every launch and whenever the system gives a new one. Only an
+    /// address for notifications is handed over, and only in a build that has the push right.
+    public func register(_ address: PushAddress) async {
+        guard closedKeys != nil, address.use == .notices else { return }
+        self.address = address
+        addressHanded = false
+        await handAddress()
+    }
+
+    /// The person's server forgets this device's address, where it was handed one.
+    public func unregister() async {
+        address = nil
+        addressHanded = false
+        guard closedKeys != nil else { return }
+        try? await engine.unregisterAddress()
+    }
+
+    /// Hand the person's server the address with the device's key, once the device is in. The
+    /// key is the one this device keeps since its person signed in, or a new one where it
+    /// keeps none; a key that could not be kept is handed to nobody, because nothing could
+    /// open what is sealed for it later.
+    private func handAddress() async {
+        guard let closedKeys, let address, !addressHanded, person != nil, case .open = engine.state else { return }
+        var key = closedKey ?? closedKeys.read()
+        if key == nil {
+            let made = ClosedKey.made()
+            guard (try? closedKeys.keep(made)) != nil else { return }
+            key = made
+        }
+        guard let key else { return }
+        closedKey = key
+        let handed = key.handedOver
+        do {
+            try await engine.registerAddress(token: address.token, service: address.service.rawValue, app: address.app,
+                                             p256dh: handed.p256dh, auth: handed.auth)
+            addressHanded = true
+            // The pieces already told now carry the names a push gives them.
+            await look()
+        } catch {
+            // Asked again when the device is in anew.
+        }
+    }
+
+    private func forgetClosedKey() {
+        closedKeys?.forget()
+        closedKey = nil
+        addressHanded = false
     }
 
     /// The person saw this piece on this device. Where their server told them of it, the

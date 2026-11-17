@@ -1,4 +1,5 @@
 #if os(macOS)
+import AssistantClosed
 import AssistantCore
 @testable import AssistantTilo
 import ShellCore
@@ -23,12 +24,13 @@ final class TiloSourceTests: XCTestCase {
     private var supervisions: [Supervision] = []
     private var listening: [Task<Void, Never>] = []
 
-    private func start(_ mainChat: TiloSource.MainChat = .conversation(id: "c_chat", name: "chat"), livesInOwn: Bool = false) async throws {
+    private func start(_ mainChat: TiloSource.MainChat = .conversation(id: "c_chat", name: "chat"), livesInOwn: Bool = false,
+                       closedKeys: (any ClosedKeyStore)? = nil) async throws {
         suite = "so.tilo.assistant.tests.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suite)
         let engine = TiloEngine(settings: try ShellSettings(site: Self.site), store: .keepsNothing)
         engine.loads = { [weak self] in self?.asked.append($0) }
-        source = TiloSource(engine: engine, mainChat: mainChat, livesInOwn: livesInOwn, defaults: defaults)
+        source = TiloSource(engine: engine, mainChat: mainChat, livesInOwn: livesInOwn, defaults: defaults, closedKeys: closedKeys)
         let source = source!
         listening = [
             Task { for await session in source.session() { self.sessions.append(session) } },
@@ -85,6 +87,9 @@ final class TiloSourceTests: XCTestCase {
       // ask that waits is held until the log moves, for `window.holds` milliseconds at most.
       window.told = [];
       window.acknowledged = [];
+      // What a device handed her server to be reached while its app is closed, and how often one took that back.
+      window.registered = [];
+      window.unregistered = 0;
       // A message in her conversation with the assistant.
       window.direct = message => window.post({channel: DIRECT, ...message});
       window.tell = thing => { window.told = window.told.filter(one => one.id !== thing.id).concat([thing]); window.logMoved?.(); };
@@ -144,6 +149,8 @@ final class TiloSourceTests: XCTestCase {
             // What she was told while she was away, where she was (`window.since`).
             case 'tilo.telling since-you-left':
               return done(window.since ?? {cameIn: [], didAlone: [], waits: []});
+            case 'tilo.telling register': window.registered.push(argument); return done({addresses: []});
+            case 'tilo.telling unregister': window.unregistered += 1; return done({addresses: []});
             case 'tilo.models add-preset': {
               const made = {id: argument.preset, name: argument.preset === 'anthropic' ? 'Anthropic' : argument.preset, protocol: argument.preset,
                 endpoint: 'https://api.' + argument.preset + '.example', configured: false, models: []};
@@ -1213,6 +1220,96 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertNil(defaults.string(forKey: "TiloLiveRoute"))
         XCTAssertNil(defaults.array(forKey: "TiloLivePerson"))
         XCTAssertTrue(held.isEmpty)
+    }
+
+    // MARK: Told while the app is closed
+
+    /// An address as Apple's service would give one. It is made up, as is everything here.
+    private static let madeUpAddress = PushAddress(use: .notices, token: Data(repeating: 0xab, count: 32), service: .development,
+                                                   app: "so.tilo.assistant")
+
+    /// What her server was handed, said so that no token and no key stands in a test's words.
+    private func handedOver() async throws -> String {
+        try await page("""
+            return JSON.stringify(window.registered.map(one => [one.token === 'ab'.repeat(32), one.environment, one.topic,
+              one.key.p256dh.length, one.key.p256dh.slice(0, 2), one.key.auth.length]))
+            """)
+    }
+
+    func testABuildWithoutThePushRightHandsHerServerNoAddressAndAsksItNothing() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter(device: true)
+        await source.register(Self.madeUpAddress)
+        await source.unregister()
+        let asked = try await page("return JSON.stringify([window.registered.length, window.unregistered])")
+        XCTAssertEqual(asked, "[0,0]")
+    }
+
+    func testADeviceHandsHerServerItsAddressWithAKeyOfItsOwnAndAPieceCarriesTheNameAPushGivesIt() async throws {
+        let keys = MemoryClosedKeys()
+        try await start(.agent(id: "assistant", name: "Assistant"), closedKeys: keys)
+        try await enter(device: true, "window.byKind = true; window.holds = 60000")
+        XCTAssertNil(keys.read(), "a key was made before any address came")
+        await source.register(Self.madeUpAddress)
+        let handed = try await handedOver()
+        XCTAssertEqual(handed, #"[[true,"development","so.tilo.assistant",130,"04",32]]"#)
+        // The key her server seals for is the one this device keeps, and no other.
+        let kept = try XCTUnwrap(keys.read())
+        let halves = try await page("return JSON.stringify([window.registered[0].key.p256dh, window.registered[0].key.auth])")
+        XCTAssertTrue(halves == #"["\#(kept.handedOver.p256dh)","\#(kept.handedOver.auth)"]"#, "her server was handed another key than the one kept")
+        // Only an address for notifications is handed over.
+        await source.register(PushAddress(use: .activityStart, token: Data(repeating: 0xcd, count: 32)))
+        // At the next launch the system gives the address again: handed over again, with the same key.
+        await source.register(Self.madeUpAddress)
+        let again = try await page("return JSON.stringify([window.registered.length, window.registered[1].key.p256dh === window.registered[0].key.p256dh])")
+        XCTAssertEqual(again, "[2,true]")
+        XCTAssertEqual(keys.kept, 1)
+
+        // A thing her server tells her of: its piece carries the name a push gives it on this device.
+        _ = try await page("""
+            direct({id: 'm_ask_1', author: {agent: 'e-9'}, text: 'Remind me to stretch. (for the assistant)',
+              cause: {kind: 'reminder', label: 'Stretch', key: 'k-1', person: {person: ADA}}});
+            direct({id: 'm_reply_1', author: {agent: 'assistant'}, text: 'Time to stretch.', parent: 'm_ask_1'});
+            return 'said'
+            """)
+        try await until("the answer stands under the reminder's line") { self.held.last?.task?.title == "Stretch" }
+        XCTAssertNil(held.last?.toldAs)
+        _ = try await page(Self.told(1, "reminder", about: "m_ask_1", title: "Stretch") + "; return 'told'")
+        let name = kept.name(of: "turn:ws-1:m_ask_1:0")
+        try await until("the piece carries the name a push gives it") { self.held.last?.toldAs == name }
+
+        await source.unregister()
+        let forgotten = try await page("return String(window.unregistered)")
+        XCTAssertEqual(forgotten, "1")
+    }
+
+    func testAnAddressThatComesBeforeTheDeviceIsInWaitsUntilItIs() async throws {
+        let keys = MemoryClosedKeys()
+        try await start(.agent(id: "assistant", name: "Assistant"), closedKeys: keys)
+        await source.register(Self.madeUpAddress)
+        XCTAssertNil(keys.read())
+        try await enter(device: true)
+        try await until("her server has the address") { (try? await self.handedOver()) == #"[[true,"development","so.tilo.assistant",130,"04",32]]"# }
+        XCTAssertEqual(keys.kept, 1)
+    }
+
+    func testTheKeyGoesAtSignOutAndAKeyLeftBehindIsNotTheNextPersons() async throws {
+        let keys = MemoryClosedKeys()
+        try await start(.agent(id: "assistant", name: "Assistant"), closedKeys: keys)
+        try await enter(device: true)
+        await source.register(Self.madeUpAddress)
+        XCTAssertNotNil(keys.read())
+        await source.signOut()
+        XCTAssertNil(keys.read(), "the key outlived its person's sign-out")
+        // A key some earlier build left in the store is gone the moment a sign-in begins, whatever
+        // comes of the sign-in: this link leads into another site and pairs nothing.
+        try keys.keep(ClosedKey.made())
+        let link = try XCTUnwrap(PairingLink(in: "https://elsewhere.example/#/join/made-up"))
+        do {
+            try await source.pair(with: link)
+            XCTFail("a link into another site paired")
+        } catch {}
+        XCTAssertNil(keys.read(), "a key left behind met the next sign-in")
     }
 }
 #endif
