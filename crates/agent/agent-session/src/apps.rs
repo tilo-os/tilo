@@ -941,8 +941,11 @@ impl Replica {
             // A chain the app keeps beside the record publishes its parts'
             // document actions routed to the part they change: document
             // operations all the same.
+            // So does what the app keeps for its whole workspace, carried out on that
+            // document ([`Self::kept_for_workspace`]).
             tilo_actions::OperationKind::Effect
-                if in_chains.contains(descriptor.address.resource.as_str()) =>
+                if in_chains.contains(descriptor.address.resource.as_str())
+                    || self.kept_for_workspace(descriptor) =>
             {
                 true
             }
@@ -951,8 +954,26 @@ impl Replica {
                     || (self.offers_reads() && descriptor.contract.kind == policy::ActionKind::Read)
                     || (self.runs_effects && offered_to_agents(descriptor))
             }
-            tilo_actions::OperationKind::View => self.runs_views && offered_to_agents(descriptor),
+            // The read of what the app keeps for its whole workspace moves no window: the
+            // server's own person, who has no window of it there either, is offered it too.
+            tilo_actions::OperationKind::View => {
+                (self.runs_views || self.kept_for_workspace(descriptor))
+                    && offered_to_agents(descriptor)
+            }
         }
+    }
+
+    /// Whether `descriptor` is of what the app keeps for its whole workspace beside this
+    /// document ([`collab_types::WORKSPACE_DOCUMENTS`]: Chat's of the workspace's agents and
+    /// emoji): that document's own resource, which its kind names, or an item of it.
+    fn kept_for_workspace(&self, descriptor: &ActionDescriptor) -> bool {
+        let resource = descriptor.address.resource.as_str();
+        collab_types::WORKSPACE_DOCUMENTS.iter().any(|kept| {
+            kept.app == self.app_id
+                && resource
+                    .strip_prefix(kept.kind)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
     }
 
     /// For an agent or the host acting for its person, whether the
@@ -975,7 +996,9 @@ impl Replica {
             return Ok(false);
         };
         if descriptor.kind == tilo_actions::OperationKind::Document
-            || (descriptor.kind == tilo_actions::OperationKind::View && !self.runs_views)
+            || (descriptor.kind == tilo_actions::OperationKind::View
+                && !self.runs_views
+                && !self.kept_for_workspace(&descriptor))
         {
             return Ok(false);
         }

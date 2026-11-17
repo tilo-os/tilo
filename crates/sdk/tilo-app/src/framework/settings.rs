@@ -385,6 +385,7 @@ impl ViewStorage {
             .unwrap_or_default();
         apis.extend(self.section_apis.borrow().iter().cloned());
         apis.extend(self.chains.apis());
+        apis.extend(self.workspace_apis());
         apis.iter()
             .map(|api| (api.id().to_owned(), api.revision()))
             .collect()
@@ -471,6 +472,7 @@ impl ViewStorage {
             .unwrap_or_default();
         resources.extend(self.section_apis.borrow().iter().map(|api| api.publish()));
         resources.extend(self.chains.apis().iter().map(|api| api.publish()));
+        resources.extend(self.workspace_apis().iter().map(|api| api.publish()));
         let kept_by = self.kept_by.borrow();
         if !kept_by.is_empty() {
             for resource in &mut resources {
@@ -570,9 +572,27 @@ impl ViewStorage {
             .map(super::person::PersonState::apis)
             .unwrap_or_default();
         apis.extend(self.section_apis.borrow().iter().cloned());
+        apis.extend(self.workspace_apis());
         let kept_by = self.kept_by.borrow();
         apis.retain(|api| !kept_by.contains_key(api.id()));
         apis
+    }
+
+    /// Open what was on its way from the workspace when it was asked for and has arrived
+    /// since ([`super::workspace::WorkspaceState::open_arrived`]): whether anything opened.
+    pub(crate) fn open_arrived(&self) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.open_arrived())
+    }
+
+    /// What the app keeps for its whole workspace beside its own resource, as the API reaches
+    /// it: offered by the keeping app's window alone, and decided by the workspace's grants.
+    fn workspace_apis(&self) -> Vec<Rc<dyn ResourceApi>> {
+        self.workspace
+            .as_ref()
+            .map(|workspace| workspace.apis())
+            .unwrap_or_default()
     }
 
     /// The settings section `T` held as a record, opened on first use: with

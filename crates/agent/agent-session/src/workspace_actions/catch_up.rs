@@ -1,6 +1,6 @@
 //! A mounted record kept current: what the workspace holds of it merged in,
 //! only the changes after the heads it merged last.
-use super::{DocumentRoute, Mounted, WorkspaceState, reads};
+use super::{DocumentRoute, Mounted, Worker, WorkspaceId, WorkspaceState, reads};
 
 /// Merge into `mounted` what `state` holds of its record and its parts that
 /// changed since it merged them last.
@@ -168,5 +168,80 @@ fn hold(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
             tracing::debug!(%error, part = %route.document, "workspace actions: a part is not held here");
             mounted.foreign.insert(route.clone());
         }
+    }
+}
+
+/// The routes of what `holder`'s app keeps for its whole workspace beside its own document
+/// ([`collab_types::WORKSPACE_DOCUMENTS`]: Chat's of the workspace's agents and emoji) that
+/// `mounted` was told nothing of yet. Empty for every app that keeps none, which is nearly
+/// all of them, and for a holder already told.
+pub(super) fn kept_untold(holder: &DocumentRoute, mounted: Option<&Mounted>) -> Vec<DocumentRoute> {
+    collab_types::WORKSPACE_DOCUMENTS
+        .iter()
+        .filter(|kept| kept.app == holder.app_id)
+        .map(|kept| DocumentRoute {
+            app_id: holder.app_id.clone(),
+            cluster_id: holder.cluster_id.clone(),
+            document: collab_types::workspace_document_id(kept.kind),
+        })
+        .filter(|route| {
+            mounted.is_none_or(|mounted| {
+                !mounted.parts.contains_key(route) && !mounted.foreign.contains(route)
+            })
+        })
+        .collect()
+}
+
+/// Tell `mounted` of each of `kept`, with whether the workspace holds it: one it holds is
+/// handed over whole, as a chain's part is, and kept current from then on; of one it holds
+/// none of, the app is told so, and founds it when something is first written into it.
+/// Until one of the two the app opens none of them, so nothing is founded beside a
+/// document the workspace already has. What the workspace comes to hold later of one it
+/// held none of is merged whole by [`catch_up`].
+///
+/// Without this a document mounted with no window open held nothing an app keeps for its
+/// whole workspace: a caller reaching the workspace through this service could neither
+/// read nor change the workspace's agents, though the app declares both.
+pub(super) fn tell_kept(
+    mounted: &mut Mounted,
+    state: &WorkspaceState,
+    kept: Vec<(DocumentRoute, bool)>,
+) {
+    for (route, held) in kept {
+        if held {
+            hold(&route, mounted, state);
+            continue;
+        }
+        let Ok(id) = reads::document_id(&route.document) else {
+            continue;
+        };
+        match mounted
+            .app
+            .workspace_answered(&id, ui::resource::WorkspaceAnswer::HoldsNone)
+        {
+            Ok(()) => {
+                mounted.parts.insert(route, None);
+            }
+            Err(error) => {
+                tracing::debug!(%error, document = %route.document, "workspace actions: an app was not told the workspace holds none of what it keeps for it");
+            }
+        }
+    }
+}
+
+impl Worker {
+    /// Whether the workspace holds each of `routes`, as far as it answered. One still on
+    /// its way, or in a workspace this service has not joined, is left out: its holder is
+    /// told of it the next time it is used.
+    pub(super) fn kept_held(&mut self, routes: Vec<DocumentRoute>) -> Vec<(DocumentRoute, bool)> {
+        routes
+            .into_iter()
+            .filter_map(|route| {
+                let workspace = WorkspaceId::parse(&route.cluster_id)?;
+                self.held_or_owed(workspace, &route)
+                    .ok()
+                    .map(|held| (route, held))
+            })
+            .collect()
     }
 }
