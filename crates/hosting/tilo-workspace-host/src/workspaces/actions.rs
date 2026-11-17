@@ -1386,6 +1386,10 @@ impl Workspaces {
                 self.person_telling_invoke(workspace_id, caller, certificate, request)
                     .await
             }
+            // What the agents on this server learned about the person: theirs to read
+            // and to change, and no agent's. A turn keeps a fact through its own tools.
+            #[cfg(not(target_arch = "wasm32"))]
+            (LEARNED, _) => self.person_learned_invoke(workspace_id, caller, certificate, request),
             (host_account::PROVIDER, _)
                 if request.target == host_account::target(host_account::ACCOUNT) =>
             {
@@ -2634,8 +2638,12 @@ fn mcp_value(workspaces: &Workspaces) -> Value {
     serde_json::to_value(workspaces.inner.mcp_server.server()).unwrap_or(Value::Null)
 }
 
+/// The provider of what this server's agents learned about the person who asks
+/// ([`super::person_learned`]).
+pub(super) const LEARNED: &str = "tilo.learned";
+
 /// The providers a server that governs workspaces answers itself.
-const PROVIDERS: [&str; 9] = [
+const PROVIDERS: [&str; 10] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
     mcp_server::PROVIDER,
@@ -2651,6 +2659,8 @@ const PROVIDERS: [&str; 9] = [
     person_asking::PROVIDER,
     // The services the person connected by their address.
     person_connections::PROVIDER,
+    // What the agents on this server learned about the person.
+    LEARNED,
 ];
 
 /// What a server that governs workspaces answers remote actions addressed to it
@@ -2822,6 +2832,8 @@ impl AppActionServer for GovernedServer {
     }
 }
 
+#[cfg(test)]
+mod person_learned_tests;
 #[cfg(test)]
 mod person_model_tests;
 #[cfg(test)]

@@ -99,6 +99,10 @@ tilo-mail-session = { path = "../../platform/mail-session" }
 # list of models, asked with the key the vault keeps, through the client the
 # fetch proxy guards its own requests with.
 tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"] }
+# What the agents on this server learned about a person: the type the list
+# is kept as, and the verbs that change it.
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent" }
 
 [dev-dependencies]
 # A dispatcher that answers as an app's own host: what a device's action service asks

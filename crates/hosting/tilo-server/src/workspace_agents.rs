@@ -67,6 +67,7 @@ use turn_provider::TurnProvider;
 mod answers;
 mod asks;
 mod going;
+mod learned;
 mod mail;
 mod sub_agents;
 mod summary;
@@ -764,12 +765,17 @@ impl HostAgents {
                 let (request, _) = chat::summons::request(message);
                 // What came before it in the conversation, as every turn is told it: the
                 // same on a host as on the device that would answer it.
-                // What was learned about the person is their own record. A turn a host
-                // answers is not told it yet: nothing here reads a member's own record.
+                // What was learned about the person on their devices is their own record,
+                // which nothing here reads. What this server keeps of what its own agents
+                // learned is told to a turn that is the keeper's own, in their own
+                // conversation with the agent ([`learned`]), and to no other.
+                let asked_by = (summons.person.as_str(), &summons.conversation);
+                let known =
+                    learned::learned_for(&self.workspaces, workspace, agent, asked_by).await;
                 let told = chat::recall::told(
                     &chat,
                     &part,
-                    None,
+                    known.as_ref(),
                     &summons.conversation,
                     &summons.message,
                     &ui::permissions::MemberId::agent(&summons.agent),
@@ -1022,6 +1028,7 @@ impl HostAgents {
                 going.stop_flag(),
             )
             .await;
+        let keeping = learned::Keeping::of(&self.workspaces, workspace, &turn);
         let (outcome, cost) = match (asked, limit) {
             (_, Some(limit)) if spent_before >= limit => (
                 Outcome::Stopped(format!(
@@ -1033,7 +1040,8 @@ impl HostAgents {
             (Err(why), _) => (Outcome::Failed(why), 0),
             (Ok(model), _) => {
                 let budget = limit.map(|limit| limit.saturating_sub(spent_before));
-                work(model, &scope, &mut turn, budget, &mut reply, going).await
+                let keeping = keeping.as_ref();
+                work(model, &scope, &mut turn, budget, &mut reply, going, keeping).await
             }
         };
         if cost > 0 {
@@ -1724,6 +1732,7 @@ async fn work(
     budget: Option<u64>,
     reply: &mut Reply,
     going: &going::Going,
+    keeping: Option<&learned::Keeping>,
 ) -> (Outcome, u64) {
     let Some(turns) = tokio::task::spawn_blocking(move || model())
         .await
@@ -1744,7 +1753,7 @@ async fn work(
         Err(error) => return (Outcome::Failed(error.to_string()), 0),
     };
     let mut tools = match tool_definitions(&server).await {
-        Ok(tools) => tools,
+        Ok(tools) => learned::with_tools(tools, keeping),
         Err(error) => return (Outcome::Failed(error), 0),
     };
     // A turn in a conversation may answer with a view it writes.
@@ -1810,7 +1819,7 @@ async fn work(
             tracing::info!(agent = %turn.agent.id.0, round, cost, said = words.len(), "an agent on the workspace's server answered");
             return (Outcome::Answered(words), cost);
         }
-        let Some(results) = run_calls(&server, calls, reply, going).await else {
+        let Some(results) = run_calls(&server, calls, reply, going, keeping).await else {
             return (Outcome::Cancelled, cost);
         };
         messages.push(results);
@@ -1914,11 +1923,13 @@ fn words_of(response: &ModelResponse) -> String {
 /// Run the tools a model turn called, telling the person what the agent does: the message that
 /// answers the model with what each did. `None` when its person stopped the turn: no tool is
 /// begun after a stop.
+/// `keeping` is what a turn that is its keeper's own keeps of what it learns ([`learned`]).
 async fn run_calls(
     server: &McpServer<WorkspaceActionProvider>,
     calls: Vec<tilo_model_gateway::host_backend::protocol::ToolCall>,
     reply: &Reply,
     going: &going::Going,
+    keeping: Option<&learned::Keeping>,
 ) -> Option<Message> {
     let mut results = Vec::new();
     for call in calls {
@@ -1926,10 +1937,15 @@ async fn run_calls(
             return None;
         }
         reply.doing(&call.name).await;
+        // What the turn keeps about its keeper is carried out here; every other
+        // tool is the agent tools'.
         let (content, is_error) = if call.name == ANSWER_WITH_VIEW {
             Box::pin(reply.view(&call.input)).await
         } else {
-            call_tool(server, &call.name, call.input.clone()).await
+            match learned::call(keeping, &call.name, &call.input).await {
+                Some(answered) => answered,
+                None => call_tool(server, &call.name, call.input.clone()).await,
+            }
         };
         if is_error {
             let said: String = content.chars().take(LOGGED_CHARS).collect();
@@ -1995,7 +2011,11 @@ fn instructions(turn: &Turn) -> String {
     } else {
         ""
     };
-    format!("{every}{view}{}{told}", sub_agents::told(turn))
+    format!(
+        "{every}{view}{}{}{told}",
+        learned::told_how(turn),
+        sub_agents::told(turn)
+    )
 }
 
 /// The tools the turn's server offers, as the model is told them.

@@ -218,8 +218,10 @@ fn never_asked(asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
 /// surface, as tilo.sh's server does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
-    use tilo_server::workspaces::person_model::ProviderProtocol;
-    use tilo_server::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
+    use tilo_server::workspaces::person_model::{
+        ProviderProtocol,
+        scripted::{Linking, Reply, ScriptedProvider},
+    };
 
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
@@ -625,6 +627,11 @@ pub(super) async fn conversation_part(
     })
 }
 
+/// What Chat's `post` takes to say `text` in `conversation`.
+fn saying(conversation: &Id, text: &str) -> serde_json::Value {
+    serde_json::json!({"channel": conversation.as_str(), "text": text})
+}
+
 /// The person writes `text` to the agent in their conversation with it, through the server's action
 /// service, as their page does. The message's id.
 pub(super) async fn write_to_agent(
@@ -648,7 +655,7 @@ pub(super) async fn write_to_agent(
         document: String::new(),
     };
     let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
-    let arguments = serde_json::json!({"channel": conversation.as_str(), "text": text});
+    let arguments = saying(&conversation, text);
     tilo_server::workspace_agents::invoke_named(
         &service,
         &caller,
@@ -1373,6 +1380,10 @@ mod search;
 #[path = "hosted_agent_asks.rs"]
 mod asks;
 
+/// What a turn answered on the workspace's server knows about its agent's keeper, and keeps
+/// for them.
+#[path = "hosted_learning.rs"]
+mod learning;
 /// A turn that answers with a view it wrote.
 #[path = "hosted_agent_views.rs"]
 mod views;
