@@ -211,6 +211,31 @@ fn moved(moment: Option<Time>, from: Option<Date>, to: Option<Date>) -> Option<T
     }
 }
 
+/// Sets the time of day a task is due at: the day it is on stays, and a task with no day is due
+/// on the day the moment names. A reminder that was set for the old moment moves with it, as a
+/// day moved by `schedule` keeps its time of day: a task due Wednesday at six, reminded at six,
+/// made seven is due at seven and reminded then.
+action set_time(t: Task, at: Option<Time>) uses time (
+    label: "Set time",
+    icon: .clock,
+    group: "Due",
+) {
+    let when: Option<Time> = if let m = at {
+        if let d = t.due { .some(m + (d - m.day())) } else { .some(m) }
+    } else { .none }
+    if let old = t.at {
+        if t.remind == .some(old) {
+            t.remind = when
+        }
+    }
+    t.at = when
+    if t.due == .none {
+        if let w = when {
+            t.due = w.day()
+        }
+    }
+}
+
 /// Clears the day a task is due by: it waits in the inbox, undated.
 action due_clear(t: Task) (label: "No date", group: "Due") {
     require t.due != .none "It has no date"

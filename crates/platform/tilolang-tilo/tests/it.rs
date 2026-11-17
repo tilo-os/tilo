@@ -69,6 +69,7 @@ mod task;
 mod task_api;
 mod tasks;
 mod tasks_places;
+mod tasks_time;
 mod tasks_today;
 mod triggers;
 #[cfg(feature = "document")]

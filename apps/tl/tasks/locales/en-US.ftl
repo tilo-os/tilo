@@ -167,6 +167,11 @@ d-jqhwyztw = Pick date
 
 d-jqhwyztw-due = Due
 
+d-dewj7mzg = Set time
+    .doc = Sets the time of day a task is due at: the day it is on stays, and a task with no day is due on the day the moment names.
+
+d-dewj7mzg-at = At
+
 d-x5xnqddo = No date
     .doc = Clears the day a task is due by: it waits in the inbox, undated.
     .w-it-has-no-date = It has no date

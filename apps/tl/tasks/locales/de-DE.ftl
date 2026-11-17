@@ -144,9 +144,15 @@ d-tg5yjcju = Nächste Woche
 d-jqhwyztw = Tag wählen
     .doc = Macht eine Aufgabe an einem Tag fällig, den die Person wählt.
 
+d-dewj7mzg = Uhrzeit setzen
+    .doc = Setzt die Uhrzeit, zu der eine Aufgabe fällig ist: der Tag, an dem sie steht, bleibt, und eine Aufgabe ohne Tag ist an dem Tag fällig, den der Zeitpunkt nennt.
+
+d-dewj7mzg-at = Um
+
 d-x5xnqddo = Kein Datum
     .doc = Nimmt den Tag, bis zu dem eine Aufgabe fällig ist, wieder weg: sie wartet undatiert im Eingang.
     .w-it-has-no-date = Sie hat kein Datum
+
 
 d-3qq23ybf = Erinnern
     .doc = Setzt den Zeitpunkt, an den wer eine Aufgabe erledigt, an sie erinnert wird.

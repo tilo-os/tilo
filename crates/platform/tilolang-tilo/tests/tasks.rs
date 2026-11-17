@@ -2352,6 +2352,9 @@ fn spec_commands() -> Vec<&'static str> {
         "Tomorrow",
         "Next week",
         "Pick date…",
+        // It asks for the time of day it is due at: the form it opens asks, so the command says
+        // it has a question, and it stands with the commands that say when a task is due.
+        "Set time…",
         "No date",
         // It sets the moment the person is told of the task, once — the form it opens asks
         // when, so the command says it has a question — and clears it. They stand with the
