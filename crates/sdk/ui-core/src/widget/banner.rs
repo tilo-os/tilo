@@ -82,10 +82,20 @@ fn caption_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption)
 }
 
-/// The ground a banner stands on: a raised well in the content.
-fn well(theme: &Theme) -> Color {
-    theme.tokens.colors.surfaces.raised
+/// The ground a banner stands on: a raised well in the content, washed with its kind's colour
+/// so a warning or an error reads as one before a word of it is read. A neutral notice keeps
+/// the plain well.
+fn well(theme: &Theme, kind: BannerKind) -> Color {
+    let raised = theme.tokens.colors.surfaces.raised;
+    match kind {
+        BannerKind::Neutral => raised,
+        _ => crate::tokens::colors::mix8(kind.color(theme), raised, 1.0 - WELL_WASH),
+    }
 }
+
+/// How much of its kind's colour a banner's well takes: enough to tell a warning from a
+/// notice at a glance, little enough that the ink on it stays the theme's own.
+const WELL_WASH: f32 = 0.1;
 
 /// Input to [`Banner::paint`].
 #[derive(Clone, Debug)]
@@ -360,10 +370,10 @@ fn geometry_with(
     }
 }
 
-fn paint_well(ctx: &mut PaintCtx<'_>, rect: Rect) {
+fn paint_well(ctx: &mut PaintCtx<'_>, rect: Rect, kind: BannerKind) {
     let theme = ctx.theme;
     let radius = f64::from(theme.tokens.radii.control);
-    let well = well(theme);
+    let well = well(theme, kind);
     ctx.fill_round(rect, radius, well);
     ctx.stroke_round(rect, radius, crate::surface::edge_on(well), 1.0);
 }
@@ -390,7 +400,7 @@ fn paint_body(ctx: &mut PaintCtx<'_>, content: &BannerContent<'_>, place: BodyPl
     let (kind, icon, title) = (content.kind, content.icon, content.title);
     let message = content.message.as_deref();
     let theme = ctx.theme;
-    let on_well = theme.on_ground(well(theme));
+    let on_well = theme.on_ground(well(theme, kind));
     icon.draw(ctx.scene, ctx.transform, icon_rect, kind.icon_ink(&on_well));
     if let Some(source) = content.source_line() {
         ctx.text(
@@ -438,7 +448,7 @@ fn paint_banner(
     let shift = |r: Rect| r + origin;
     g.icon = shift(g.icon);
     g.text += origin;
-    paint_well(ctx, rect);
+    paint_well(ctx, rect, content.kind);
     paint_body(
         ctx,
         content,
@@ -450,7 +460,7 @@ fn paint_banner(
             title_h: g.title_h,
         },
     );
-    let on_well = theme.on_ground(well(&theme));
+    let on_well = theme.on_ground(well(&theme, content.kind));
     let mut hit = BannerHit {
         rect,
         ..BannerHit::default()
@@ -690,7 +700,7 @@ impl Widget for BannerBody {
             return;
         }
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
-        paint_well(&mut ctx, self.rect);
+        paint_well(&mut ctx, self.rect, self.notice.kind);
         let g = self.geometry(ctx.text, theme, self.rect.width());
         let dy = ((self.rect.height() - g.height) / 2.0).max(0.0);
         let origin = self.rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
@@ -1149,7 +1159,7 @@ impl Banner {
     ) {
         self.body
             .draw_child(scene, transform, text, theme, presence);
-        let on_well = theme.on_ground(well(theme));
+        let on_well = theme.on_ground(well(theme, self.body.notice.kind));
         for button in self.buttons_mut() {
             button.draw_child(scene, transform, text, &on_well, presence);
         }

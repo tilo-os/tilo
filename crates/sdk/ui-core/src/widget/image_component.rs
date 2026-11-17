@@ -41,7 +41,8 @@ impl Described for Image {
             pictures,
         } = props;
         let pictures = pictures.unwrap_or_else(crate::pictures::Pictures::window);
-        let mut image = Self::from_picture(pictures, super::PictureSource { src });
+        let mut image =
+            Self::from_picture(pictures, super::PictureSource { src }).placed_in_content();
         if let Some(alt) = alt {
             image = image.with_alt(alt);
         }

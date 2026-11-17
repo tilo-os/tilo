@@ -117,6 +117,9 @@ pub struct Image {
     fill_parent: bool,
     icon_size: Option<super::IconSize>,
     corner_radius: Option<f32>,
+    /// A picture an app placed in its content (`ui.Image`): its corners are the theme's item
+    /// radius, and a box of another shape it is fitted into shows as a quiet tile around it.
+    content_picture: bool,
     layout_scale: f32,
 }
 
@@ -136,6 +139,7 @@ impl Image {
             fill_parent: false,
             icon_size: None,
             corner_radius: None,
+            content_picture: false,
             layout_scale: 1.0,
         }
     }
@@ -158,6 +162,7 @@ impl Image {
             fill_parent: false,
             icon_size: None,
             corner_radius: None,
+            content_picture: false,
             layout_scale: 1.0,
         }
     }
@@ -220,6 +225,7 @@ impl Image {
             fill_parent: false,
             icon_size: None,
             corner_radius: None,
+            content_picture: false,
             layout_scale: 1.0,
         })
     }
@@ -238,6 +244,7 @@ impl Image {
             fill_parent: false,
             icon_size: None,
             corner_radius: None,
+            content_picture: false,
             layout_scale: 1.0,
         }
     }
@@ -338,6 +345,14 @@ impl Image {
     #[must_use]
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = Some(radius.max(0.0));
+        self
+    }
+
+    /// Show it as a picture placed in content: the theme's item corners, and the box it is
+    /// fitted into as a quiet tile where the picture leaves it bare.
+    #[must_use]
+    pub(crate) fn placed_in_content(mut self) -> Self {
+        self.content_picture = true;
         self
     }
 
@@ -504,9 +519,11 @@ impl Image {
             }
         };
 
+        // The corners are the picture's: a contained one rounds where it is painted, not at the
+        // edge of the box around it.
         let clip = self
             .corner_radius
-            .map(|radius| RoundedRect::from_rect(self.rect, f64::from(radius)));
+            .map(|radius| RoundedRect::from_rect(fill_rect, f64::from(radius)));
         let needs_clip = matches!(self.fit, ImageFit::Cover) || clip.is_some();
         match &clip {
             Some(rounded) => scene.push_layer(
@@ -685,6 +702,19 @@ impl Widget for Image {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        if self.content_picture {
+            let radius = theme.tokens.radii.item;
+            self.corner_radius = Some(radius);
+            if self.fit == ImageFit::Contain && self.cached.is_some() {
+                crate::surface::card(
+                    scene,
+                    transform,
+                    self.rect,
+                    f64::from(radius),
+                    theme.tokens.colors.surfaces.raised,
+                );
+            }
+        }
         self.paint(scene, transform, theme.tokens.colors.semantic.danger);
     }
 

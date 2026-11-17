@@ -1192,9 +1192,11 @@ impl Widget for MediaCard {
             creator.image = Some(image);
             self.dirty = true;
         }
+        // A picture that carries its own bytes in its address is here on the card's first
+        // frame, as a `ui.Image` of it is; any other waits for its store.
         if self.loaded.is_none()
             && let MediaSource::Url { store, url } = &self.source
-            && let Some(image) = store.get(url)
+            && let Some(image) = store.get(url).or_else(|| crate::pictures::carried(url))
         {
             self.loaded = Some(image);
             self.dirty = true;

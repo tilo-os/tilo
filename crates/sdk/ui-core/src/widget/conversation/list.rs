@@ -333,13 +333,15 @@ struct Painted {
 /// The bubble and ink for a line on `theme`.
 ///
 /// The other person's words sit on the raised tier — an object inside the
-/// content ground. Yours sit on a wash of your own colour, strengthened until
-/// body ink reads on it, so "mine" is the same mark here as your caret and your
-/// selection elsewhere; the ink is measured, never assumed.
+/// content ground. Yours sit on your own colour itself, solid, so "mine" is the
+/// same mark here as your caret and your selection elsewhere and reads at a
+/// glance from across the column. It carries the accent's ink, as a primary
+/// button does, deepened until that ink reads on it; the ink is measured, never
+/// assumed.
 #[must_use]
 pub fn bubble_colors(theme: &Theme, role: ConversationRole) -> (Color, Color) {
+    use crate::a11y::contrast_ratio;
     let colors = &theme.tokens.colors;
-    let ground = colors.surfaces.content;
     match role {
         ConversationRole::Incoming => {
             let fill = colors.surfaces.raised;
@@ -349,19 +351,21 @@ pub fn bubble_colors(theme: &Theme, role: ConversationRole) -> (Color, Color) {
             )
         }
         ConversationRole::Outgoing => {
+            let ink = colors.intent.on_accent;
+            let away = if contrast_ratio(ink, Color::BLACK) >= contrast_ratio(ink, Color::WHITE) {
+                Color::BLACK
+            } else {
+                Color::WHITE
+            };
             let own = colors.intent.you;
-            let mut fill = mix8(own, ground, 0.16);
+            let mut fill = own;
             for step in 1..=12_u8 {
-                if crate::a11y::contrast_ratio(colors.text_primary, fill) >= BODY_TEXT_MIN_CONTRAST
-                {
+                if contrast_ratio(ink, fill) >= BODY_TEXT_MIN_CONTRAST {
                     break;
                 }
-                fill = mix8(own, ground, 0.16 + f32::from(step) / 20.0);
+                fill = mix8(own, away, f32::from(step) / 20.0);
             }
-            (
-                fill,
-                colors.ink_on(fill, colors.text_primary, BODY_TEXT_MIN_CONTRAST),
-            )
+            (fill, colors.ink_on(fill, ink, BODY_TEXT_MIN_CONTRAST))
         }
     }
 }

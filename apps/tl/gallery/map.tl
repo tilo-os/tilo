@@ -25,11 +25,14 @@ view places(p: Places) {
                     ui.Button("Close", icon: .x, icon_only: true, role: .plain)
                 }
                 body: {
-                    ui.Text(
-                        "A resource's view on the canvas: no frame, its handle on hover.",
-                        role: .caption,
-                        secondary: true,
-                    )
+                    stack(gap: .related, padding: .section) {
+                        ui.Text("Groceries", role: .heading)
+                        ui.Text(
+                            "A resource's view on the canvas: no frame, its handle on hover.",
+                            role: .caption,
+                            secondary: true,
+                        )
+                    }
                 }
             }
         }
@@ -39,11 +42,13 @@ view places(p: Places) {
                     ui.Button("Close", icon: .x, icon_only: true, role: .bar)
                 }
                 body: {
-                    ui.Text(
-                        "A window on the shell: its bar, its controls, what it shows.",
-                        role: .caption,
-                        secondary: true,
-                    )
+                    stack(gap: .related, padding: .section) {
+                        ui.Text(
+                            "A window on the shell: its bar, its controls, what it shows.",
+                            role: .caption,
+                            secondary: true,
+                        )
+                    }
                 }
             }
         }

@@ -59,7 +59,10 @@ default view data for Data
 view data(d: Data) {
     state last: Text = ""
     std.page(d) {
-        ui.Section("Table") {
+        part(
+            "Data table",
+            "A collection's rows in columns: sort by a column, select a row, open it.",
+        ) {
             ui.DataTable(name: "Files") {
                 columns: {
                     ui.DataTableColumn("Name", sortable: true, width: .flex)
@@ -79,33 +82,45 @@ view data(d: Data) {
                 on activate(x: Row): open(x)
             }
         }
-        ui.Section("Tree") {
-            ui.TreeView(name: "Project", fill: false, hide_root: true) {
-                for f in d.files {
-                    ui.TreeViewNode(f, f.title, parent: f.parent, branch: f.folder) {
-                        row: {
-                            ui.TreeViewRow(
-                                icon: if f.folder { .folder } else { .file_text },
-                                trailing: if not f.folder { "{f.size} B" },
-                            )
+        part(
+            "Tree view",
+            "Nested things, as a sidebar holds a project's folders; a folder opens in place.",
+        ) {
+            // A tree stands as a sidebar does, so what a row says at its end stays beside it.
+            row {
+                stack(max: 22rem, fill) {
+                    ui.TreeView(name: "Project", fill: false, hide_root: true) {
+                        for f in d.files {
+                            ui.TreeViewNode(f, f.title, parent: f.parent, branch: f.folder) {
+                                row: {
+                                    ui.TreeViewRow(
+                                        icon: if f.folder { .folder } else { .file_text },
+                                        trailing: if not f.folder { "{f.size} B" },
+                                    )
+                                }
+                            }
                         }
+                        on select(x: Node): open(x, front: false)
+                        on activate(x: Node): open(x)
                     }
                 }
-                on select(x: Node): open(x, front: false)
-                on activate(x: Node): open(x)
             }
         }
-        ui.Section("Conversation") {
-            // The divider a view that draws a conversation's own rows marks a day with; the
-            // list below places the same one over each day it shows.
-            ui.SectionDivider("Jun 30")
+        part(
+            "Conversation",
+            "Each line on its own side, a run of one person's under their name once, a divider where the day changes.",
+        ) {
             ui.ConversationList(name: "Conversation with Ada") {
                 for m in d.messages {
-                    ui.ConversationEntry(m, m.body, author: m.from, time: m.at, outgoing: m.mine)
+                    if m.mine {
+                        ui.ConversationEntry(m, m.body, time: m.at, outgoing: true, delivery: .read)
+                    } else {
+                        ui.ConversationEntry(m, m.body, author: m.from, time: m.at)
+                    }
                 }
             }
         }
-        ui.Section("Cards") {
+        part("Card grid", "Collections as cards in columns, as many as the width holds.") {
             ui.CardGrid(name: "Collections") {
                 for c in d.cards {
                     ui.CardGridCard(c, title: c.title, count: c.count) {
@@ -115,7 +130,10 @@ view data(d: Data) {
                 }
             }
         }
-        ui.Section("History") {
+        part(
+            "Activity timeline",
+            "What happened to a document, newest first, each change open to revert.",
+        ) {
             ui.ActivityTimeline(newest_first: true) {
                 for c in d.changes {
                     ui.ActivityEntry(c, c.summary, time: c.at, kind: .details)
@@ -137,12 +155,15 @@ scenario "data" {
     let project = d.files.insert(Node(title: "Project", folder: true))
     let src = d.files.insert(Node(title: "src", parent: project, folder: true, size: 0))
     d.files.insert(Node(title: "main.rs", parent: src, folder: false, size: 880))
+    d.files.insert(Node(title: "board.rs", parent: src, folder: false, size: 2416))
+    let docs = d.files.insert(Node(title: "docs", parent: project, folder: true, size: 0))
+    d.files.insert(Node(title: "release-notes.md", parent: docs, folder: false, size: 1204))
     d.messages.insert(
         Message(
             title: "a",
             from: "Ada",
-            body: "Are we ready to ship?",
-            at: 2026-06-30T08:40Z,
+            body: "Are we ready to ship the release tomorrow?",
+            at: 2026-06-29T16:05Z,
             mine: false,
         ),
     )
@@ -150,19 +171,31 @@ scenario "data" {
         Message(
             title: "b",
             from: "Sam",
-            body: "The build is green.",
-            at: 2026-06-30T08:42Z,
+            body: "The build is green. One screenshot is left for the docs.",
+            at: 2026-06-29T16:07Z,
             mine: true,
         ),
     )
     d.messages.insert(
         Message(
             title: "c",
+            from: "Sam",
+            body: "I'll finish it first thing.",
+            at: 2026-06-29T16:07Z,
+            mine: true,
+        ),
+    )
+    d.messages.insert(
+        Message(
+            title: "d",
             from: "Ada",
-            body: "Then let us go.",
+            body: "Screenshots are in. Then let us go.",
             at: 2026-06-30T08:44Z,
             mine: false,
         ),
+    )
+    d.messages.insert(
+        Message(title: "e", from: "Sam", body: "Shipping now.", at: 2026-06-30T08:46Z, mine: true),
     )
     d.cards.insert(Card(title: "Design", count: 12))
     d.cards.insert(Card(title: "Engineering", count: 34))

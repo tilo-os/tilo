@@ -12,50 +12,89 @@ default view feedback for Feedback
 view feedback(f: Feedback) {
     state last: Text = ""
     std.page(f) {
-        ui.Toolbar {
-            ui.ToolbarButton("Bold", icon: .pencil, toggled: true) {
-                on press: set(last, "Bold")
-            }
-            ui.ToolbarButton("Flag", icon: .flag, dot: true) {
-                on press: set(last, "Flag")
-            }
-            ui.ToolbarSeparator()
-            ui.ToolbarButton("Pin", icon: .pin) {
-                on press: set(last, "Pin")
-            }
-            ui.ToolbarSpacer()
-            ui.ToolbarButton("Share", icon: .upload) {
-                on press: set(last, "Share")
-            }
-        }
-        ui.Breadcrumb(root_icon: .folder) {
-            ui.BreadcrumbSegment("Projects") {
-                on activate: set(last, "Projects")
-            }
-            ui.BreadcrumbSegment("Release") {
-                on activate: set(last, "Release")
-            }
-        }
-        ui.ObjectHeader("Release 4.2", caption: "Ships Friday", who: f.owner)
-        ui.Banner(
-            "Sync paused",
-            message: "Files sync again when you are online.",
-            kind: .warning,
-            action: "Retry",
+        part(
+            "Toolbar",
+            "A run of tools: one on, one with news, a separator and a share at the end.",
         ) {
-            on act: set(last, "Retry")
+            ui.Toolbar {
+                ui.ToolbarButton("Bold", icon: .pencil, toggled: true) {
+                    on press: set(last, "Bold")
+                }
+                ui.ToolbarButton("Flag", icon: .flag, dot: true) {
+                    on press: set(last, "Flag")
+                }
+                ui.ToolbarSeparator()
+                ui.ToolbarButton("Pin", icon: .pin) {
+                    on press: set(last, "Pin")
+                }
+                ui.ToolbarSpacer()
+                ui.ToolbarButton("Share", icon: .upload) {
+                    on press: set(last, "Share")
+                }
+            }
         }
-        ui.Section("Status") {
-            row(gap: .related, wrap: true) {
+        part(
+            "Breadcrumb and header",
+            "Where a thing stands, then the thing: its name, a line and who has it.",
+        ) {
+            ui.Breadcrumb(root_icon: .folder) {
+                ui.BreadcrumbSegment("Projects") {
+                    on activate: set(last, "Projects")
+                }
+                ui.BreadcrumbSegment("Release") {
+                    on activate: set(last, "Release")
+                }
+            }
+            ui.ObjectHeader("Release 4.2", caption: "Ships Friday", who: f.owner)
+        }
+        part(
+            "Banner",
+            "Something the person should know about the whole page, by its kind, with what to do.",
+        ) {
+            ui.Banner(
+                "Sync paused",
+                message: "Files sync again when you are online.",
+                kind: .warning,
+                action: "Retry",
+            ) {
+                on act: set(last, "Retry")
+            }
+            ui.Banner(
+                "Release 4.2 is out",
+                message: "Everyone on the team has the new board.",
+                kind: .success,
+            )
+            ui.Banner(
+                "The export failed",
+                message: "The disk is full. Free 2 GB and try again.",
+                kind: .error,
+                action: "Try again",
+                secondary_action: "Details",
+            ) {
+                on act: set(last, "Try again")
+                on secondary_act: set(last, "Details")
+            }
+        }
+        part(
+            "Badge and status",
+            "Small marks that say how something is: a label, a count, a dot, a tone.",
+        ) {
+            row(gap: .related, wrap: true, align: .center) {
                 ui.Badge("Beta")
                 ui.Badge(count: 12)
                 ui.Badge(dot: true)
                 ui.Badge("Done", tone: .success)
+                ui.Badge("Late", tone: .danger)
                 ui.Icon(.circle_check, tone: .success)
                 ui.SignalMeter(.good)
                 ui.Spinner("Syncing")
             }
             ui.StatusLine("Syncing 3 files", status: .active, who: f.owner)
+        }
+        part(
+            "Text stack and facts",
+            "A thing's name over what it is and when, and its facts in a line.",
+        ) {
             ui.TextStack(
                 "Quarterly report",
                 secondary: "Shared with the team",
@@ -67,17 +106,21 @@ view feedback(f: Feedback) {
                 ui.Fact("3 comments")
             }
         }
-        ui.Section("Progress") {
+        part("Progress", "How far a task is, or that it runs when nobody knows how long.") {
             ui.ProgressBar(0.62, label: "Uploading")
             ui.ProgressBar(label: "Preparing")
             progress(0.25)
-            row(gap: .related, wrap: true) {
+            row(gap: .group, wrap: true, align: .center) {
                 ui.ProgressRing(0.4, readout: "40%")
                 ui.ProgressRing(0.9, tone: .warning, size: .small)
+                ui.ProgressRing(1.0, tone: .success, size: .small)
             }
-            ui.BarGauge(0.81, label: "Disk", readout: "81 of 100 GB", warning: 0.75, danger: 0.9)
         }
-        ui.Section("Numbers") {
+        part("Bar gauge", "A level against its limit, turning to a warning and a danger near it.") {
+            ui.BarGauge(0.81, label: "Disk", readout: "81 of 100 GB", warning: 0.75, danger: 0.9)
+            ui.BarGauge(0.32, label: "Memory", readout: "5 of 16 GB", warning: 0.75, danger: 0.9)
+        }
+        part("Stat tile and sparkline", "A number and how it moves, at a glance.") {
             ui.StatGroup {
                 ui.StatTile("Open", "24", change: "+3", trend: .up)
                 ui.StatTile("Closed", "112", unit: "this month", samples: [3.0, 5.0, 4.0, 8.0, 6.0])
@@ -121,7 +164,7 @@ view feedback(f: Feedback) {
                 height: 120.0,
             )
         }
-        ui.Section("Details") {
+        part("Disclosure", "Rows that open in place to show what is under them.") {
             ui.DisclosureRow("Build log", secondary: "Finished in 4 minutes", icon: .list) {
                 ui.Text("Compiled 312 crates.")
                 ui.Text("All tests passed.", role: .caption, secondary: true)
@@ -130,14 +173,20 @@ view feedback(f: Feedback) {
                 ui.Text("Older activity is kept for 30 days.", role: .caption, secondary: true)
             }
         }
-        ui.Section("Keys and loading") {
+        part("Keys", "The keys that do something here, as a person presses them.") {
             ui.InputHint(["Ctrl", "K"])
             ui.KeyHints {
                 ui.KeyHint(["Enter"], "Open")
                 ui.KeyHint(["Esc"], "Close")
             }
+        }
+        part("Skeleton", "The shape of what is still loading, so nothing jumps when it arrives.") {
             ui.Skeleton(.row, leading: .avatar)
             ui.Skeleton(.text, lines: 3)
+            row(gap: .related) {
+                ui.Skeleton(.media, aspect: .wide)
+                ui.Skeleton(.chip)
+            }
         }
     }
 }

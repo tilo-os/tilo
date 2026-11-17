@@ -34,8 +34,6 @@ type Backlog {
 type Release {
     title: Text
     items: Collection<Item>
-    /// Who leads the release: at each of its tabs.
-    lead: Option<Actor>
 }
 
 /// The gallery: a window of each group. A group's file adds its type here and a row to the
@@ -62,38 +60,99 @@ default view backlog_list for Backlog
 
 default view release_board for Release
 
-/// The gallery's window: each group, opening in a window of its own.
+/// The gallery's window: the toolkit's families, each opening in a window of its own, with what
+/// it holds under its name.
 view gallery(g: Gallery) {
     std.page(g) {
-        ui.Section("Groups") {
+        ui.Section("Everyday parts") {
             for x in g.basics {
-                ui.ListRow(x.title, item: x, icon: .layout_grid)
-            }
-            for x in g.backlogs {
-                ui.ListRow(x.title, item: x, icon: .list)
-            }
-            for x in g.releases {
-                ui.ListRow(x.title, item: x, icon: .layout_grid)
-            }
-            for x in g.feedback {
-                ui.ListRow(x.title, item: x, icon: .eye)
-            }
-            for x in g.data {
-                ui.ListRow(x.title, item: x, icon: .table)
+                ui.ListRow(
+                    x.title,
+                    secondary: "Type, buttons, chips, cards and empty states",
+                    item: x,
+                    icon: .layout_grid,
+                )
             }
             for x in g.controls {
-                ui.ListRow(x.title, item: x, icon: .settings)
+                ui.ListRow(
+                    x.title,
+                    secondary: "Fields, toggles, sliders and pickers",
+                    item: x,
+                    icon: .settings,
+                )
             }
-            for x in g.media {
-                ui.ListRow(x.title, item: x, icon: .image)
-            }
-            for x in g.places {
-                ui.ListRow(x.title, item: x, icon: .map_pin)
-            }
-            for x in g.chrome {
-                ui.ListRow(x.title, item: x, icon: .monitor)
+            for x in g.feedback {
+                ui.ListRow(
+                    x.title,
+                    secondary: "Banners, badges, progress and numbers",
+                    item: x,
+                    icon: .eye,
+                )
             }
         }
+        ui.Section("Collections") {
+            for x in g.backlogs {
+                ui.ListRow(
+                    x.title,
+                    secondary: "Rows with menus, swipes and reactions",
+                    item: x,
+                    icon: .list,
+                )
+            }
+            for x in g.releases {
+                ui.ListRow(
+                    x.title,
+                    secondary: "A board, a lane per stage",
+                    item: x,
+                    icon: .layout_grid,
+                )
+            }
+            for x in g.data {
+                ui.ListRow(
+                    x.title,
+                    secondary: "Tables, trees, conversations and history",
+                    item: x,
+                    icon: .table,
+                )
+            }
+        }
+        ui.Section("Media and places") {
+            for x in g.media {
+                ui.ListRow(
+                    x.title,
+                    secondary: "Photos, players, codes and surfaces",
+                    item: x,
+                    icon: .image,
+                )
+            }
+            for x in g.places {
+                ui.ListRow(
+                    x.title,
+                    secondary: "A canvas that pans and zooms",
+                    item: x,
+                    icon: .map_pin,
+                )
+            }
+        }
+        ui.Section("The shell") {
+            for x in g.chrome {
+                ui.ListRow(
+                    x.title,
+                    secondary: "Bars, docks, tabs and dragging",
+                    item: x,
+                    icon: .monitor,
+                )
+            }
+        }
+    }
+}
+
+/// A component as the gallery shows it: its name, one line of what it is for, and the component
+/// in its variants and states, side by side.
+template view part(name: Text, about: Text, content: View) {
+    ui.Section(name) {
+        ui.Text(about, role: .caption, secondary: true)
+        content
     }
 }
 
@@ -142,10 +201,12 @@ view basics(b: Basics) {
 
 /// Text, buttons, chips, a card of facts, an empty state and a page of a stack.
 view parts(b: Basics, last: State<Text>) {
-    ui.Section("Text and buttons") {
+    part("Text", "The type scale: a title, body text at the reading measure, a caption.") {
         ui.Text("Release planning", role: .large_title)
         ui.Text("Body text says what a thing is, at the reading measure.")
         ui.Time(b.updated, role: .caption, secondary: true)
+    }
+    part("Button", "What a press does, by its role: the one primary, the usual, the destructive.") {
         row(gap: .related, wrap: true) {
             ui.Button("Save", icon: .check, role: .primary) {
                 on press: set(last, "Save")
@@ -156,33 +217,41 @@ view parts(b: Basics, last: State<Text>) {
             ui.Button("Delete", icon: .trash, role: .destructive) {
                 on press: set(last, "Delete")
             }
+            ui.Button("Archived", icon: .archive, enabled: false)
         }
-        row(gap: .related, wrap: true) {
+    }
+    part("Chip and avatar", "A tag a thing carries, and who looks after it.") {
+        row(gap: .related, wrap: true, align: .center) {
             ui.Chip("Design", icon: .tag)
-            ui.Chip("Due Friday", icon: .calendar)
+            ui.Chip("Due Friday", icon: .calendar, tone: .warning)
+            ui.Chip("Shipped", icon: .check, tone: .success, selected: true)
             ui.Avatar(b.owner, name: "Ada Lovelace")
+            ui.Avatar(name: "Grace Hopper", square: true)
         }
+    }
+    part("Text input", "One line a person types, kept in the field it is bound to.") {
         ui.TextInput(bind: b.note, placeholder: "A note for the team")
     }
-    ui.Card(title: "This week", count: 3) {
-        ui.PropertyList {
-            ui.Property("Owner", "Ada Lovelace")
-            ui.Property("Due", "Friday")
-            ui.Property("Stage", "Review")
+    part("Card", "A summary of one thing on a surface of its own, here with its facts.") {
+        ui.Card(title: "This week", count: 3) {
+            ui.PropertyList {
+                ui.Property("Owner", "Ada Lovelace")
+                ui.Property("Due", "Friday")
+                ui.Property("Stage", "Review")
+            }
         }
     }
-    ui.EmptyState(
-        "No archived items",
-        message: "Archive an item to put it aside.",
-        icon: .archive,
-        inline: true,
-    )
-    ui.Section("A page of a stack") {
+    part("Empty state", "What a place says while it holds nothing, and how to fill it.") {
+        ui.EmptyState(
+            "No archived items",
+            message: "Archive an item to put it aside.",
+            icon: .archive,
+            inline: true,
+        )
+    }
+    part("A page of a stack", "A section opened in a page of its own, one level deep.") {
         ui.PageSlide(level: 1) {
-            ui.Text(
-                "A section opened in its own page of the panel, one level deep.",
-                role: .caption,
-            )
+            ui.Text("Opened from the panel, with the way back above it.", role: .caption)
         }
     }
 }
@@ -250,17 +319,9 @@ view item_row(x: Item) {
     }
 }
 
-/// The release's window: its items as tabs, as a frame holds them, over a lane per stage, each
-/// card an item.
+/// The release's window: a lane per stage, each card an item.
 view release_board(r: Release) {
     std.page(r, canvas: true) {
-        ui.TabStrip(r.items.first(), focused: true) {
-            for x in r.items {
-                ui.TabItem(x, title: x.title, icon: .file_text, modified: x.stage == "Doing") {
-                    ui.TabFace(r.lead, name: "Ada Lovelace")
-                }
-            }
-        }
         ui.Scroll(across: true) {
             ui.Board(name: "Release") {
                 for stage in ["To do", "Doing", "Done"] {
@@ -278,9 +339,9 @@ view release_board(r: Release) {
     }
 }
 
-/// An item on the release's board as its row: its title, and the stage it is in.
+/// An item on the release's board as its row: its title; the lane it stands in says its stage.
 view board_item_row(x: Item) {
-    row(x.title, secondary: x.stage)
+    row(x.title)
 }
 
 /// The basics, looked after by the person looking.
@@ -307,7 +368,7 @@ scenario "a backlog" {
 /// The same release on a board.
 scenario "a release board" {
     let g = root Gallery
-    let r = g.releases.insert(Release(title: "Release", lead: invoker))
+    let r = g.releases.insert(Release(title: "Release"))
     r.items.insert(Item(title: "Write the release notes", notes: RichText(""), stage: "To do"))
     r.items.insert(Item(title: "Translate the onboarding", notes: RichText(""), stage: "To do"))
     r.items.insert(Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"))

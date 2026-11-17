@@ -251,9 +251,11 @@ impl ListRowFace<'_> {
                 .paint(ctx.scene, ctx.transform, ctx.text, theme);
             }
             if let (Some((value, size)), right) = (self.value, geo.value_right) {
-                let style = match size {
-                    RowValue::Body => &m.value_body,
-                    RowValue::Title => &m.value_title,
+                // A body value says something of the row (a size, a count, a time), so it reads
+                // a step under the name it belongs to; a title value is the row's main figure.
+                let (style, ink) = match size {
+                    RowValue::Body => (&m.value_body, theme.text_dim),
+                    RowValue::Title => (&m.value_title, theme.text_primary),
                 };
                 // The value's room was reserved where the row laid out its
                 // columns: one that does not fit elides there, never widening
@@ -267,7 +269,7 @@ impl ListRowFace<'_> {
                     ctx.text(
                         &shown,
                         style,
-                        theme.text_primary,
+                        ink,
                         Point::new(right - f64::from(w), facts_cy - f64::from(h) / 2.0),
                         None,
                     );

@@ -97,7 +97,7 @@ impl Pictures {
 
 /// The picture a `data:` address carries, decoded here and kept for the next frame: `None` for any
 /// other address, which only its store loads.
-fn carried(url: &str) -> Option<PenikoImage> {
+pub(crate) fn carried(url: &str) -> Option<PenikoImage> {
     thread_local! {
         static LAST: std::cell::RefCell<Option<(String, PenikoImage)>> =
             const { std::cell::RefCell::new(None) };
