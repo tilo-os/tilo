@@ -840,6 +840,8 @@ impl ChatApp {
 }
 
 #[cfg(test)]
+mod agent_conversation_tests;
+#[cfg(test)]
 mod tests;
 
 // A long thread publishes thousands of actions (each message offers its

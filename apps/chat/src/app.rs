@@ -1287,6 +1287,14 @@ impl ChatApp {
                 "chat-channel-composer-placeholder",
                 &[("channel", row.name.as_str().into())],
             ),
+            // A direct conversation the window does not list yet: one with an agent, before
+            // its first message.
+            None if crate::record::Chat::is_direct(&ui::tilo_resource::Id::from_raw(
+                channel.to_owned(),
+            )) =>
+            {
+                crate::i18n::t("chat-person-chat-placeholder")
+            }
             None => String::new(),
         }
     }
@@ -1314,6 +1322,20 @@ impl ChatApp {
             || crate::record::Chat::direct_members(&ui::tilo_resource::Id::from_raw(id.to_owned()))
                 .is_some()
     }
+
+    /// Whether the open conversation is one a message can be written to: a channel the window
+    /// lists, or a direct one this person is in. A direct conversation exists by naming its
+    /// members, and the one with an agent is listed only once it holds a message
+    /// ([`crate::projection`]), so an agent's conversation opened before anything was said in
+    /// it has to take that first message.
+    pub(crate) fn takes_messages(&self) -> bool {
+        self.channel(&self.active_channel).is_some()
+            || crate::record::Chat::direct_members(&ui::tilo_resource::Id::from_raw(
+                self.active_channel.clone(),
+            ))
+            .is_some_and(|members| members.contains(&self.me.id))
+    }
+
     pub(crate) fn message(&self, id: &str) -> Option<&Message> {
         self.messages.iter().find(|m| m.id == id)
     }
@@ -1322,9 +1344,16 @@ impl ChatApp {
     /// workspace's channels do, and a direct conversation shows every answer
     /// where it was written instead, among the messages around it.
     pub(crate) fn keeps_threads(&self) -> bool {
-        !self
-            .channel(&self.active_channel)
-            .is_some_and(|conversation| conversation.direct)
+        let direct = self.channel(&self.active_channel).map_or_else(
+            // A direct conversation is one by its id, listed or not yet.
+            || {
+                crate::record::Chat::is_direct(&ui::tilo_resource::Id::from_raw(
+                    self.active_channel.clone(),
+                ))
+            },
+            |conversation| conversation.direct,
+        );
+        !direct
     }
 
     /// The workspace's channels, ordered. Archived channels are hidden from the
