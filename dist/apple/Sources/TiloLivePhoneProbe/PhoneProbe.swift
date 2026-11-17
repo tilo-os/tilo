@@ -92,7 +92,7 @@ final class PhoneProbe: ObservableObject {
         }
     }
 
-    private func stood(_ state: TiloEngine.Standing) async {
+    private func stood(_ state: TiloEngine.State) async {
         let seconds = JSON.number((Date().timeIntervalSince(began) * 10).rounded() / 10)
         switch state {
         case .away: break

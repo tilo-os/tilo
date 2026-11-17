@@ -157,9 +157,9 @@ final class EngineTests: XCTestCase {
         // Loaded once more, a moment later: a page before it may still have held its storage.
         try await until("the page is loaded again") { asked == 2 }
         XCTAssertEqual(engine.lastStop, "Couldn\u{2019}t open Tilo. It stopped while joining.")
-        XCTAssertEqual(engine.standing, .arriving("load"))
+        XCTAssertEqual(engine.state, .arriving("load"))
         // That load says nothing. The page's own sentence is said, and nothing is loaded a third time.
-        try await until("the stop is said") { self.engine.standing == .failed("Couldn\u{2019}t open Tilo. It stopped while joining.") }
+        try await until("the stop is said") { self.engine.state == .failed("Couldn\u{2019}t open Tilo. It stopped while joining.") }
         XCTAssertEqual(asked, 2)
     }
 
@@ -172,9 +172,9 @@ final class EngineTests: XCTestCase {
         try await until("the page is loaded again") { asked == 2 }
         // The second load gets in.
         try await run("document.getElementById('status').textContent = ''; location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
-        try await until("the engine is in") { self.engine.standing == .open(route: "/w/ws-1/so.tilo.chat") }
+        try await until("the engine is in") { self.engine.state == .open(route: "/w/ws-1/so.tilo.chat") }
         try await Task.sleep(for: .milliseconds(700))
-        XCTAssertEqual(engine.standing, .open(route: "/w/ws-1/so.tilo.chat"))
+        XCTAssertEqual(engine.state, .open(route: "/w/ws-1/so.tilo.chat"))
     }
 
     func testAPageThatCannotDrawIsSaidInItsOwnWordsAndIsNotLoadedAgain() async throws {
@@ -183,12 +183,12 @@ final class EngineTests: XCTestCase {
         try engine.open(route: "/w/ws-1")
         let words = "Tilo draws with WebGPU. This browser has it, but offered this page no graphics adapter."
         try await run("cannotDraw('\(words)')")
-        try await until("the page's own sentence is said") { self.engine.standing == .failed(words) }
+        try await until("the page's own sentence is said") { self.engine.state == .failed(words) }
         // Longer than the moment after which a page that stopped is loaded once more.
         try await Task.sleep(for: .seconds(2.2))
         XCTAssertEqual(asked, 1)
         XCTAssertNil(engine.lastStop)
-        XCTAssertEqual(engine.standing, .failed(words))
+        XCTAssertEqual(engine.state, .failed(words))
     }
 
     func testNothingIsAskedOfAPageThatIsNotIn() async throws {

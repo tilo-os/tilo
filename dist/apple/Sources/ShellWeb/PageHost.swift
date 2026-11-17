@@ -182,7 +182,7 @@ public final class PageHost: NSObject {
     /// Say `words` on the entry page, under the ways in the shell offers there: why a link the
     /// person brought was not followed. `false` where the entry page shows no such offer, and the
     /// words are the app's to say.
-    public func say(refused words: String) async -> Bool {
+    public func say(onEntryPage words: String) async -> Bool {
         let answer = try? await view.callAsyncJavaScript(
             "return Boolean(globalThis.__tiloShell?.refused(words))",
             arguments: ["words": words], in: nil, contentWorld: .page)

@@ -169,7 +169,7 @@ private struct AgentRow: View {
             .contentShape(RoundedRectangle(cornerRadius: Measure.rowRadius))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel([agent.title, agent.role, wording.standing(agent)].filter { !$0.isEmpty }.joined(separator: ", "))
+        .accessibilityLabel([agent.title, agent.role, wording.state(agent)].filter { !$0.isEmpty }.joined(separator: ", "))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .contextMenu {
             if agent.state == .working || agent.state == .needsYou {

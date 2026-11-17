@@ -82,7 +82,7 @@ public final class TiloEngine: NSObject {
     private(set) var refusedFrames = 0
 
     private let ear = Ear()
-    private var stateListeners: [UUID: AsyncStream<Standing>.Continuation] = [:]
+    private var stateListeners: [UUID: AsyncStream<State>.Continuation] = [:]
     private var changeListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
     /// Whoever waits for the page's next word of a change, once.
     private var changeWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
@@ -169,7 +169,7 @@ public final class TiloEngine: NSObject {
     }
 
     /// Where the device stands, from now on. The first value is where it stands now.
-    public func states() -> AsyncStream<Standing> {
+    public func states() -> AsyncStream<State> {
         let (stream, continuation) = AsyncStream.makeStream(of: State.self, bufferingPolicy: .bufferingNewest(32))
         let id = UUID()
         stateListeners[id] = continuation
@@ -369,7 +369,7 @@ public final class TiloEngine: NSObject {
             let waiting = changeWaiters
             changeWaiters.removeAll()
             for waiter in waiting.values { waiter.resume(returning: true) }
-        case "standing":
+        case "state":
             stand(entry: said["entry"] as? String ?? "", arrival: said["arrival"] as? String ?? "",
                   code: said["code"] as? String ?? "", status: said["status"] as? String ?? "",
                   route: said["route"] as? String ?? "", mounted: said["mounted"] as? Bool ?? false)
