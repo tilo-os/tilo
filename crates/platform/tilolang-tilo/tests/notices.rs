@@ -60,7 +60,7 @@ const WORKSPACE: &str = "workspace";
 /// An app that keeps each person's resources in their own document, and tells them about one of
 /// them: what a notice from it names to open is that person's own document, not the workspace's.
 const OWN: (&str, &str) = (
-    r#"app so.tilo.test.own "Own documents" (documents: .own)
+    r#"app so.tilo.test.own "Own documents" (resources: .own)
 
 type Note {
     text: Text
@@ -631,7 +631,7 @@ fn what_a_notice_opens_resolves_from_another_device() {
 #[test]
 fn a_notice_from_an_app_with_its_own_documents_opens_the_persons_own() {
     // A person with a root identity (the hex of their user key) keeps their own document of an
-    // app declaring `documents: .own`; a notice about what they keep there names that document, so
+    // app declaring `resources: .own`; a notice about what they keep there names that document, so
     // it opens on any device of theirs.
     let person = "ab".repeat(32);
     let mut own = Replica::new(&person, AutoCommit::new(), &[OWN]).0;

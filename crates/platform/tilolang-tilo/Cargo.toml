@@ -52,7 +52,7 @@ collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 # The workspace document's on-disk copy and its writer, and who wrote a step (`instance::document`).
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional = true }
 durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }
-# Each member's own document of a package declaring `documents: .own` (`member_document_of`).
+# Each member's own document of a package declaring `resources: .own` (`member_document_of`).
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The platform's history sentences, which the host's history verbs speak in.
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }

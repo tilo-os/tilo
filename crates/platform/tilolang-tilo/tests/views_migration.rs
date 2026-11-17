@@ -1,5 +1,5 @@
 //! Views kept its answers in the workspace's document, one `kept` for everyone; it now keeps each
-//! person's views in their own document (`documents: .own`). A person's own document, opened for the
+//! person's views in their own document (`resources: .own`). A person's own document, opened for the
 //! first time on a device that holds the workspace's document of Views, starts as that document
 //! (`collaboration::document::save::open_stored_adopting`): every answer they saw, kept ones kept,
 //! under the ids it had, drawn as the view it was. The workspace's document is left as it was.

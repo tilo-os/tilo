@@ -56,7 +56,7 @@ struct State {
     kinds: HashMap<String, String>,
     /// The actors the API admitted as software acting for a person, with that person.
     agents: HashMap<Actor, Option<String>>,
-    /// The packages whose documents are each member's own (`documents: .own`), by app id.
+    /// The packages whose documents are each member's own (`resources: .own`), by app id.
     own: HashSet<String>,
     /// The hosts each app's package declares its `uses web` requests may reach, as installed.
     web: HashMap<String, Vec<String>>,

@@ -82,7 +82,7 @@ pub fn own_document(meta: &tilolang::PackageMeta, person: &str) -> Option<String
 }
 
 /// `person`'s own document of the app `app` in the workspace, of the app's package kind
-/// (`tl.<app>`), which a package declaring `documents: .own` keeps each member's own; `None` for a
+/// (`tl.<app>`), which a package declaring `resources: .own` keeps each member's own; `None` for a
 /// person without a root identity.
 #[must_use]
 pub fn member_document_of(app: &str, person: &str) -> Option<String> {
@@ -90,7 +90,7 @@ pub fn member_document_of(app: &str, person: &str) -> Option<String> {
         .map(|own| own.document_id())
 }
 
-/// Whether the app `app`'s manifest declares its documents each member's own (`documents: .own`),
+/// Whether the app `app`'s manifest declares its documents each member's own (`resources: .own`),
 /// as the build carries it or the package's surface marks it.
 #[must_use]
 pub fn keeps_own_resources(app: &str) -> bool {
@@ -98,7 +98,7 @@ pub fn keeps_own_resources(app: &str) -> bool {
 }
 
 /// Whether `person` reaches what the document `document` of the app `app` holds: in an app whose
-/// manifest declares its documents each member's own (`documents: .own`), only the person's own
+/// manifest declares its documents each member's own (`resources: .own`), only the person's own
 /// document ([`member_document_of`]), whatever their role in the workspace, as every api decides it;
 /// in any other app, whatever the workspace policy decides. An agent reaches it as the person it
 /// acts for; an invoker acting for nobody reaches no one's own document.
