@@ -1075,3 +1075,5 @@ mod told_tests;
 mod turn_use_tests;
 #[cfg(test)]
 mod vault_tests;
+#[cfg(test)]
+mod web_call_tests;

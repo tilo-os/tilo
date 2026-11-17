@@ -48,6 +48,10 @@ const MAX_PLACE_BYTES: usize = 2_048;
 /// The shortest seed a code generator is given: 80 bits in base32.
 const MIN_SEED_CHARS: usize = 16;
 
+mod key_in;
+
+pub use key_in::{KeyIn, MIN_SENT_KEY_BYTES};
+
 /// What kind of thing an item is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -392,6 +396,10 @@ struct Sealed {
     places: BTreeSet<Place>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     username: String,
+    /// How a key rides in a request to its service, where it is no bearer
+    /// token ([`KeyIn`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    sent_in: String,
     secret: String,
     added_unix: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -466,6 +474,7 @@ impl Sealed {
             kind: item.kind,
             places,
             username,
+            sent_in: String::new(),
             secret,
             added_unix: unix_now(),
             last_used_unix: None,
@@ -616,6 +625,21 @@ impl VaultItems {
         Ok(sealed.facts(id))
     }
 
+    /// [`Self::add`] for a key that says where it rides in a request to its
+    /// service ([`KeyIn`]). Only a key says so.
+    pub fn add_key(&mut self, item: NewItem, sent_in: &KeyIn) -> Result<ItemFacts, ItemError> {
+        if item.kind != ItemKind::Key {
+            return Err(ItemError::Invalid(
+                "Only a key says how it is sent with a request",
+            ));
+        }
+        let mut sealed = Sealed::checked(item)?;
+        sealed.sent_in = sent_in.kept();
+        let id = ItemId::new();
+        self.write(&id, &sealed)?;
+        Ok(sealed.facts(id))
+    }
+
     /// Forget the item `id` names, answering whether one was kept.
     pub fn remove(&mut self, id: &ItemId) -> Result<bool, ItemError> {
         let key = Self::key(id);
@@ -675,6 +699,24 @@ impl VaultItems {
     pub fn uses(&self, id: &ItemId) -> Result<Vec<UseRecord>, ItemError> {
         let mut sealed = self.sealed(id)?;
         Ok(std::mem::take(&mut sealed.uses))
+    }
+
+    /// Where the key `id` names rides in a request to its service: a bearer
+    /// token unless it said otherwise when it was kept. Nothing is handed
+    /// out and nothing is written down. Refused for an item that is no key,
+    /// and for a key too short to be sent with a request an agent wrote
+    /// ([`MIN_SENT_KEY_BYTES`]).
+    pub fn key_in(&self, id: &ItemId) -> Result<KeyIn, ItemError> {
+        let sealed = self.sealed(id)?;
+        if sealed.kind != ItemKind::Key {
+            return Err(ItemError::WrongKind);
+        }
+        if sealed.secret.len() < MIN_SENT_KEY_BYTES {
+            return Err(ItemError::Invalid(
+                "That key is too short to be sent with a request and kept out of its answer",
+            ));
+        }
+        KeyIn::parse(&sealed.sent_in).map_err(|_| ItemError::Damaged)
     }
 
     /// Whether the item `id` names could be used as `kind` at every one of

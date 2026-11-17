@@ -74,6 +74,8 @@ use tilo_lock::MutexRecover as _;
 
 use super::{WorkspaceId, Workspaces};
 
+mod web_call;
+
 /// A person's mail as such a turn reaches it: after [`Workspaces::keepers_turn`], their own
 /// word on which agent of theirs may use which account ([`Workspaces::mail_for_turn`]).
 pub use super::person_settings::turn_mail::{AskedSend, SEND_CARRIER, TurnMail};
@@ -197,12 +199,22 @@ impl OpenAsk {
             address: tilo_actions::ActionAddress::new(self.resource.clone(), self.action.clone()),
         }
     }
+
+    /// Whether its person's "Always" may stand for what is asked. It may
+    /// not for a web call, which is asked about each time: whoever puts the
+    /// question offers that answer only where this says so.
+    #[must_use]
+    pub fn takes_always(&self) -> bool {
+        self.target() != person_vault::call_target()
+    }
 }
 
 /// What uses of a vault item by reference keep on this server: what proves a
 /// sign-in at its server before an account is kept, and the asks that wait
 /// for their person's answer, read from the server's disk once.
 pub(super) struct Uses {
+    /// The web calls people allowed once and that were not made yet.
+    calls: web_call::AllowedOnce,
     pub(super) prover: std::sync::RwLock<std::sync::Arc<dyn tilo_account_probe::AccountTester>>,
     asks: Mutex<Option<Vec<OpenAsk>>>,
 }
@@ -210,6 +222,7 @@ pub(super) struct Uses {
 impl Default for Uses {
     fn default() -> Self {
         Self {
+            calls: web_call::AllowedOnce::default(),
             prover: std::sync::RwLock::new(std::sync::Arc::new(
                 tilo_account_probe::LiveAccountTester,
             )),
@@ -238,6 +251,8 @@ enum Use {
     Mail(AddMailWithItem),
     /// A provider's key kept from an item.
     Key(SetKeyFromItem),
+    /// A web call made with a key.
+    Call(web_call::WebCall),
 }
 
 impl Use {
@@ -262,6 +277,11 @@ impl Use {
             (person_models::PROVIDER, person_models::SET_KEY_FROM_ITEM) => {
                 serde_json::from_value(arguments).map(Self::Key).map_err(|_| {
                     invalid("a key to keep names its provider and the vault item that is the key")
+                })
+            }
+            (person_vault::PROVIDER, person_vault::WEB_CALL) => {
+                serde_json::from_value(arguments).map(Self::Call).map_err(|_| {
+                    invalid("a web call names its address and the vault item that is its key")
                 })
             }
             _ => Err(UnknownAction),
@@ -303,6 +323,7 @@ impl Use {
                     vec![endpoint],
                 ))
             }
+            Self::Call(call) => web_call::wanted(call),
         }
     }
 
@@ -311,7 +332,34 @@ impl Use {
         match self {
             Self::Mail(adding) => adding.reason.trim(),
             Self::Key(setting) => setting.reason.trim(),
+            Self::Call(call) => call.reason.trim(),
         }
+    }
+
+    /// Whether its person's "Always" may stand for it: not for a call,
+    /// whose request the agent writes anew each time.
+    const fn takes_leave(&self) -> bool {
+        !matches!(self, Self::Call(_))
+    }
+
+    /// What else it would be refused for when it is carried out, with the
+    /// vault under `root`: said before anyone is asked about it.
+    fn sendable(&self, workspaces: &Workspaces, root: &Path) -> Result<(), String> {
+        match self {
+            Self::Call(call) => web_call::sendable(call, workspaces.call_reach(), root),
+            Self::Mail(_) | Self::Key(_) => Ok(()),
+        }
+    }
+
+    /// Whether its person allowed `using` this very use once, where their
+    /// allow carries nothing out by itself: it is spent by being found.
+    fn allowed_once(
+        &self,
+        uses: &Uses,
+        using: &KeepersTurn,
+        arguments: &Map<String, Value>,
+    ) -> bool {
+        matches!(self, Self::Call(_)) && uses.calls.spend(using, arguments)
     }
 
     /// Carry it out for `by` with what the vault under `root` keeps: the
@@ -339,6 +387,7 @@ impl Use {
                 let kept = super::person_vault::key_from_item(root, &setting, by)?;
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
+            Self::Call(call) => web_call::send(workspaces.call_reach(), root, call, by).await,
         }
     }
 }
@@ -537,6 +586,28 @@ impl Workspaces {
         offered
     }
 
+    /// The calls that send what a vault item keeps out with a request of
+    /// the agent's own making, which `turn` is offered as a catalogue lists
+    /// them: each one it would not be refused before the vault is opened.
+    /// They are listed apart from [`Self::uses_offered`]: no "Always"
+    /// stands for one.
+    pub async fn calls_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
+        let mut offered = Vec::new();
+        for row in person_vault::call_rows() {
+            let Some(action) = &row.action else {
+                continue;
+            };
+            let target = RemoteActionTarget {
+                provider: row.provider.clone(),
+                address: action.address.clone(),
+            };
+            if self.turn_uses_for(turn, &target).await.is_ok() {
+                offered.push(row);
+            }
+        }
+        offered
+    }
+
     /// Take the use by reference `request` asks for, for `turn`.
     ///
     /// Carried out at once where the item keeps a leave for this
@@ -574,7 +645,8 @@ impl Workspaces {
                 .and_then(|_| items.stands(&item, &places, &using.agent, &word))
                 .map_err(|error| refused(error.to_string()))?
         };
-        if stands {
+        wanted.sendable(self, &root).map_err(refused)?;
+        if stands || wanted.allowed_once(&self.inner.vault_uses, &using, &arguments) {
             return wanted
                 .carry_out(self, &root, &using.name)
                 .await
@@ -625,7 +697,7 @@ impl Workspaces {
                 "Too many questions already wait for this person's answer",
             ));
         }
-        let Some(described) = person_vault::use_of(&request.target) else {
+        let Some(described) = person_vault::described_use(&request.target) else {
             return Err(UnknownAction);
         };
         let asked_at_ns = tilo_clock::unix_now_ns();
@@ -808,7 +880,7 @@ impl Workspaces {
             return Ok(None);
         }
         let wanted = Use::read(&target, &kept.arguments)?;
-        if answer == UseAnswer::Always {
+        if answer == UseAnswer::Always && wanted.takes_leave() {
             let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
             let mut items =
                 VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
@@ -824,6 +896,12 @@ impl Workspaces {
                     )
                 })
                 .map_err(|error| refused(error.to_string()))?;
+        }
+        if matches!(wanted, Use::Call(_)) {
+            // What a call answers goes to whoever made it, so nothing is
+            // sent now: that agent's same call goes through, once.
+            self.inner.vault_uses.calls.allow(&using, &kept.arguments);
+            return Ok(Some(json!({"allowed": "once"})));
         }
         wanted
             .carry_out(self, &root, &using.name)

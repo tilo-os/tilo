@@ -190,6 +190,11 @@ pub struct AddItem {
     /// The name it signs in with, when it has one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub username: String,
+    /// Where a key rides in a request to its service, when not as a bearer
+    /// token: `basic`, `header:<name>`, `header:<name>:<word before the
+    /// key>` or `query:<name>`. Only a key says so.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sent_in: String,
     pub secret: String,
 }
 
@@ -469,6 +474,204 @@ pub fn use_of(target: &RemoteActionTarget) -> Option<crate::ActionDescriptor> {
 #[must_use]
 pub fn use_word(target: &RemoteActionTarget) -> String {
     format!("{}/{}", target.provider, target.address.action)
+}
+
+/// A web request made with a key the vault keeps, by reference
+/// ([`WebCall`]): the server adds the key on the way out and answers what
+/// the service answered, the key struck out of it.
+pub const WEB_CALL: &str = "web-call";
+
+/// What [`WEB_CALL`] names: the request, and the item that is its key. The
+/// key goes where its item says its service takes it, never where the
+/// request says.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebCall {
+    /// The address to call, at the service the key belongs to.
+    pub url: String,
+    /// `GET` when left out.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub method: String,
+    /// Headers to send besides the key.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// What to send, as text.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
+    /// The key, by its reference.
+    pub key: ItemRef,
+    /// Why whoever asks says it needs the call; empty when it gave none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// Where [`WEB_CALL`] is addressed.
+#[must_use]
+pub fn call_target() -> RemoteActionTarget {
+    target(WEB_CALL)
+}
+
+/// The actions that send what an item keeps out with a request of the
+/// agent's own making, as a catalogue offers them to an agent acting for
+/// the person: a web call with a key. They stand apart from [`use_rows`]
+/// because no "Always" stands for them: what such a request does is the
+/// agent's to choose each time, so its person is shown each one.
+#[must_use]
+pub fn call_rows() -> Vec<CatalogueRow> {
+    use crate::{ActionParam, ParamType};
+    vec![use_row(
+        (PROVIDER, RESOURCE, "Vault"),
+        (WEB_CALL, "Call a service with a key from the vault"),
+        format!(
+            "Make a web request to a service that takes a key, with a key your person's vault \
+             keeps: for a service that has no connection of its own. The server adds the key \
+             on the way out, where the item says its service takes it (as a bearer token \
+             unless it says otherwise), and only to the service the item belongs to: `url` \
+             must be at that service's web address, over https. You never hold the key, and \
+             it is struck from what you are answered: the status, the headers and the body. \
+             To get the key, ask with Chat's `ask`, kind `secret`, detail `{{kind: \"key\", \
+             belongsTo: [\"<the service's web address, such as https://api.example.com>\"], \
+             sentIn}}`, where `sentIn` says how the service takes its key when not as a bearer \
+             token: `basic`, `header:<name>` such as `header:X-Api-Key`, or `query:<name>`. \
+             Your person types it into a protected field, and the answer `filled` carries a \
+             `reference` in its detail. Pass that reference as `key`. {CALL_ASKED_FIRST}"
+        ),
+        vec![
+            ActionParam::required("url", ParamType::Text, "The address to call."),
+            ActionParam::optional(
+                "method",
+                ParamType::Text,
+                "GET, HEAD, POST, PUT, PATCH or DELETE; GET when left out.",
+            ),
+            ActionParam::optional(
+                "headers",
+                ParamType::Object,
+                "Headers to send besides the key, by name. Not the one the key rides in, and \
+                 none that signs the request in.",
+            ),
+            ActionParam::optional("body", ParamType::Text, "What to send, as text."),
+            item_param("key", REFERENCE),
+            ActionParam::optional("reason", ParamType::Text, REASON),
+        ],
+    )]
+}
+
+/// What every call that sends an item's secret out says of being asked
+/// first.
+const CALL_ASKED_FIRST: &str = "When you work with nobody watching, your person is asked first \
+     in the conversation whether you may make this call, and nothing is sent: tell them it \
+     waits for their answer. Once they allowed it, make the same call again with the same \
+     arguments: it is sent once. Each call is asked about anew.";
+
+/// The use by reference `target` names, as [`use_rows`] or [`call_rows`]
+/// offers it; `None` for every other action.
+#[must_use]
+pub fn described_use(target: &RemoteActionTarget) -> Option<crate::ActionDescriptor> {
+    use_of(target).or_else(|| {
+        call_rows().into_iter().find_map(|row| {
+            let action = row.action?;
+            (row.provider == target.provider && action.address == target.address).then_some(action)
+        })
+    })
+}
+
+#[cfg(test)]
+mod call_tests {
+    use super::*;
+
+    /// A web call takes its key by reference and never as text, says how
+    /// the reference is come by, and is listed apart from the uses an
+    /// "Always" may stand for.
+    #[test]
+    fn a_web_call_takes_its_key_by_reference_and_is_listed_apart() {
+        let rows = call_rows();
+        assert_eq!(rows.len(), 1);
+        let target = call_target();
+        assert_eq!(use_word(&target), "tilo.vault/web-call");
+        let action = rows[0].action.clone().expect("the row is an action");
+        assert_eq!(rows[0].provider, PROVIDER);
+        assert_eq!(action.address, target.address);
+        assert_eq!(action.contract.kind, crate::ActionKind::Outside);
+        assert_eq!(
+            action
+                .params
+                .iter()
+                .filter(|param| takes_item(param))
+                .count(),
+            1
+        );
+        assert!(
+            action
+                .params
+                .iter()
+                .all(|param| param.ty != crate::ParamType::Secret),
+            "no parameter takes a secret's text"
+        );
+        let described = action.description.unwrap_or_default();
+        for said in [
+            "kind `secret`",
+            "sentIn",
+            "`reference`",
+            "asked first",
+            "struck",
+        ] {
+            assert!(described.contains(said), "{said}: {described}");
+        }
+        assert_eq!(
+            described_use(&target).map(|found| found.address),
+            Some(target.address.clone())
+        );
+        assert!(use_of(&target).is_none(), "no Always stands for a call");
+        assert!(
+            use_rows()
+                .iter()
+                .all(|row| described_use(&RemoteActionTarget {
+                    provider: row.provider.clone(),
+                    address: row.action.as_ref().unwrap().address.clone(),
+                })
+                .is_some()),
+            "the uses are described as before"
+        );
+        assert!(described_use(&super::target(LIST)).is_none());
+    }
+
+    /// A call's arguments read as typed, and nothing unknown rides along.
+    #[test]
+    fn a_calls_arguments_are_typed() {
+        let reference = format!("vault.item:{}", "0".repeat(32));
+        let call: WebCall = serde_json::from_value(serde_json::json!({
+            "url": "https://api.example.test/v1/balance",
+            "key": reference,
+        }))
+        .unwrap();
+        assert!(call.method.is_empty() && call.headers.is_empty() && call.body.is_empty());
+        let whole: WebCall = serde_json::from_value(serde_json::json!({
+            "url": "https://api.example.test/v1/notes",
+            "method": "POST",
+            "headers": {"Content-Type": "application/json"},
+            "body": "{}",
+            "key": reference,
+            "reason": "To file the note.",
+        }))
+        .unwrap();
+        assert_eq!(whole.headers["Content-Type"], "application/json");
+        for wrong in [
+            serde_json::json!({"url": "https://api.example.test", "key": "a key typed out"}),
+            serde_json::json!({"url": "https://api.example.test", "key": reference, "secret": "x"}),
+            serde_json::json!({"key": reference}),
+        ] {
+            assert!(serde_json::from_value::<WebCall>(wrong).is_err());
+        }
+        let adding: AddItem = serde_json::from_value(serde_json::json!({
+            "kind": "key",
+            "belongsTo": ["https://api.example.test"],
+            "sentIn": "header:X-Api-Key",
+            "secret": "made-up-key-0123456789",
+        }))
+        .unwrap();
+        assert_eq!(adding.sent_in, "header:X-Api-Key");
+        assert!(!format!("{adding:?}").contains("made-up-key"));
+    }
 }
 
 #[cfg(test)]

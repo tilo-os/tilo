@@ -212,6 +212,7 @@ fn add(root: &Path, adding: AddItem) -> Result<ItemView, vault_items::ItemError>
         kind,
         belongs_to,
         username,
+        sent_in,
         secret,
     } = adding;
     let places = belongs_to
@@ -225,7 +226,14 @@ fn add(root: &Path, adding: AddItem) -> Result<ItemView, vault_items::ItemError>
         ItemKind::SshKey => vault_items::ItemKind::SshKey,
         ItemKind::Value => vault_items::ItemKind::Value,
     };
-    let kept = VaultItems::open_in(root)?.add(NewItem::new(kind, places, username, secret))?;
+    let item = NewItem::new(kind, places, username, secret);
+    let mut items = VaultItems::open_in(root)?;
+    let kept = if sent_in.trim().is_empty() {
+        items.add(item)?
+    } else {
+        // Only a key says where it rides in a request to its service.
+        items.add_key(item, &vault_items::KeyIn::parse(&sent_in)?)?
+    };
     view(kept)
 }
 
