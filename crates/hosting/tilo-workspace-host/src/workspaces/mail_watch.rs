@@ -442,8 +442,8 @@ pub(crate) mod testing {
     use std::sync::{Arc, Mutex};
 
     use tilo_actions::remote::person_accounts::{
-        FetchMail, FetchedMail, FetchedMessage, FoundMail, MarkMail, ReadMail, SearchMail,
-        SendMail, SentMail,
+        FetchMail, FetchedMail, FetchedMessage, FoundFolder, FoundMail, MarkMail, ReadMail,
+        SearchMail, SendMail, SentMail,
     };
     use tilo_mail_session::{Attachment, InboxHeard, InboxSeen, MailSession, Watching};
 
@@ -457,14 +457,40 @@ pub(crate) mod testing {
         pub(crate) stopped: Arc<AtomicBool>,
     }
 
-    /// Servers that only watch: every watch the host starts is kept, so a
-    /// test tells what arrives, and no request is answered.
+    /// Servers a test stands in for: every watch the host starts is kept, so
+    /// a test tells what arrives. A request is answered only by the ones
+    /// [`Watched::answering`] makes, which keep what they were asked.
     #[derive(Default)]
     pub(crate) struct Watched {
         pub(crate) watches: Mutex<Vec<Started>>,
+        answers: bool,
+        asked: Mutex<Vec<String>>,
     }
 
     impl Watched {
+        /// Servers that answer every request with one message, and keep
+        /// what they were asked.
+        pub(crate) fn answering() -> Self {
+            Self {
+                answers: true,
+                ..Self::default()
+            }
+        }
+
+        /// What the servers were asked, oldest first.
+        pub(crate) fn asked(&self) -> Vec<String> {
+            self.asked.lock().unwrap().clone()
+        }
+
+        /// Keep `asked`, when these servers answer at all.
+        fn ask(&self, asked: String) -> Result<(), String> {
+            if !self.answers {
+                return Err(UNASKED.into());
+            }
+            self.asked.lock().unwrap().push(asked);
+            Ok(())
+        }
+
         /// The watches that still run, as (account, where they started).
         pub(crate) fn running(&self) -> Vec<(String, Option<InboxSeen>)> {
             self.watches
@@ -496,60 +522,92 @@ pub(crate) mod testing {
     impl MailSession for Watched {
         fn fetch(
             &self,
-            _: &accounts::Account,
+            account: &accounts::Account,
             _: &accounts::Secret,
-            _: &FetchMail,
+            asking: &FetchMail,
         ) -> Result<FetchedMail, String> {
-            Err(UNASKED.into())
+            self.ask(format!("fetch {} {}", account.id, asking.folder))?;
+            Ok(FetchedMail {
+                account: asking.account.clone(),
+                folder: asking.folder.clone(),
+                uid_validity: 7,
+                newest_uid: 4,
+                messages: vec![told(4, "bo@example.test", "Lunch", "Friday at one?")],
+                ..FetchedMail::default()
+            })
         }
 
         fn read(
             &self,
-            _: &accounts::Account,
+            account: &accounts::Account,
             _: &accounts::Secret,
-            _: &ReadMail,
+            reading: &ReadMail,
         ) -> Result<FetchedMessage, String> {
-            Err(UNASKED.into())
+            self.ask(format!(
+                "read {} {} {}",
+                account.id, reading.folder, reading.uid
+            ))?;
+            Ok(told(
+                reading.uid,
+                "bo@example.test",
+                "Lunch",
+                "Friday at one?",
+            ))
         }
 
         fn search(
             &self,
-            _: &accounts::Account,
+            account: &accounts::Account,
             _: &accounts::Secret,
-            _: &SearchMail,
+            searching: &SearchMail,
         ) -> Result<FoundMail, String> {
-            Err(UNASKED.into())
+            let text = searching.text.as_deref().unwrap_or_default();
+            self.ask(format!("search {} {text}", account.id))?;
+            Ok(FoundMail {
+                folders: vec![FoundFolder {
+                    folder: "inbox".into(),
+                    uid_validity: 7,
+                    messages: vec![told(4, "bo@example.test", "Lunch", "Friday at one?")],
+                }],
+            })
         }
 
         fn save_draft(
             &self,
-            _: &accounts::Account,
+            account: &accounts::Account,
             _: &accounts::Secret,
-            _: &SendMail,
+            message: &SendMail,
             _: &[Attachment],
             _: Option<&str>,
         ) -> Result<(), String> {
-            Err(UNASKED.into())
+            self.ask(format!(
+                "draft {} to {}: {}",
+                account.id, message.to, message.subject
+            ))
         }
 
         fn send(
             &self,
-            _: &accounts::Account,
+            account: &accounts::Account,
             _: &accounts::Secret,
-            _: &SendMail,
+            message: &SendMail,
             _: &[Attachment],
             _: Option<&str>,
         ) -> Result<SentMail, String> {
-            Err(UNASKED.into())
+            self.ask(format!(
+                "send {} to {}: {}",
+                account.id, message.to, message.subject
+            ))?;
+            Ok(SentMail::default())
         }
 
         fn mark(
             &self,
-            _: &accounts::Account,
+            account: &accounts::Account,
             _: &accounts::Secret,
             _: &MarkMail,
         ) -> Result<(), String> {
-            Err(UNASKED.into())
+            self.ask(format!("mark {}", account.id))
         }
 
         fn watch(
