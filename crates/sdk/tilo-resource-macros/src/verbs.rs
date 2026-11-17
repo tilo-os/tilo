@@ -1339,8 +1339,11 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 "a `local` action queues nothing itself: it takes no `&mut Outbox`",
             ));
         }
-        // Decided by its arguments: declared as the least it is.
-        let by_arguments = queues && verb.options.local_if.is_some();
+        // Decided by its arguments: declared as the least it is. A resource
+        // that queues nothing itself (a chain's part, whose outside work is
+        // derived from what it holds) still has verbs whose kind their
+        // arguments decide, so this does not wait on its own queue.
+        let by_arguments = verb.options.local_if.is_some();
         let action_kind = if queues && !local {
             quote!(Outside)
         } else {
