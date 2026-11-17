@@ -76,6 +76,7 @@ mod live_share;
 mod live_share_panel;
 mod local_voice;
 pub mod mention;
+pub mod message_view;
 pub mod messages;
 pub mod model;
 mod moderation;
@@ -119,6 +120,8 @@ mod cause_tests;
 mod component_tests;
 #[cfg(test)]
 mod live_share_tests;
+#[cfg(test)]
+mod message_view_tests;
 #[cfg(all(test, unix))]
 mod native_models_tests;
 #[cfg(all(test, not(target_family = "wasm")))]

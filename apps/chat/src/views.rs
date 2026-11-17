@@ -140,6 +140,10 @@ pub struct Message {
     /// stand: a reminder or an event by its name. `None` on a message somebody wrote.
     #[serde(default)]
     pub cause: Option<String>,
+    /// The line that says it carries a view, and of which apps: this page does not draw one.
+    /// `None` on a message that carries none.
+    #[serde(default)]
+    pub view: Option<String>,
     /// Retrying this reply asks the agent again: it failed, it is the reply the agent would
     /// write now (no newer reply has replaced it), and nobody has asked again yet.
     #[serde(default)]
@@ -231,6 +235,7 @@ impl Message {
             work: None,
             question: None,
             cause: None,
+            view: None,
             retry: false,
             retry_summons: None,
             attempts: 0,
@@ -442,18 +447,7 @@ impl Channel {
                             }),
                         })
                 }),
-                reactions: row
-                    .reactions
-                    .iter()
-                    .map(|group| Reaction {
-                        emoji: group.emoji.clone(),
-                        who: group
-                            .reactors
-                            .iter()
-                            .map(|reactor| reactor.by.clone())
-                            .collect(),
-                    })
-                    .collect(),
+                reactions: reactions_of(row),
                 attachments: row.attachments.iter().map(Attachment::of).collect(),
                 pinned: row.pinned,
                 work: row.work.as_ref().map(work_of),
@@ -461,6 +455,7 @@ impl Channel {
                     question::shown_to(asked, me, rows.get(index + 1..).unwrap_or_default())
                 }),
                 cause: row.cause.as_ref().and_then(crate::cause::line),
+                view: row.view.as_ref().map(crate::message_view::line),
                 // Retry is offered on the reply a person may ask again — the current attempt's,
                 // which failed — and it names the message that reply answered.
                 retry: retryable(rows, row),
@@ -539,6 +534,21 @@ impl Channel {
             name,
         });
     }
+}
+
+/// Who reacted to `row` with which emoji: each emoji once, in the order they were first used.
+fn reactions_of(row: &crate::model::Message) -> Vec<Reaction> {
+    row.reactions
+        .iter()
+        .map(|group| Reaction {
+            emoji: group.emoji.clone(),
+            who: group
+                .reactors
+                .iter()
+                .map(|reactor| reactor.by.clone())
+                .collect(),
+        })
+        .collect()
 }
 
 /// An agent's resource of its work on a reply, as the page shows it: where the work is, and what
@@ -1048,6 +1058,15 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
     if let Some(shown) = &message.question {
         body.push(question::card(c, message, shown, cx));
     }
+    if let Some(line) = &message.view {
+        // The page shows the message's words, and says that a view came with them.
+        body.push(
+            ui::TextBuilder::new(&cx.key(format!("view-{}", message.id)), line)
+                .role(ui::TextRole::Caption)
+                .secondary(true)
+                .into(),
+        );
+    }
     if let Some(work) = &message.work
         && work.failed()
     {
@@ -1523,6 +1542,7 @@ mod tests {
             share: None,
             question: None,
             cause: None,
+            view: None,
             attempts: 0,
             sending: false,
         }
@@ -2490,6 +2510,7 @@ mod tests {
                 share: None,
                 question: None,
                 cause: None,
+                view: None,
                 attempts: 0,
                 sending: false,
             });

@@ -318,6 +318,66 @@ fn retiring_keeps_the_agent_and_happens_once() {
     assert!(refused.to_string().contains("already"), "{refused}");
 }
 
+/// What an agent may do is bounded, and an agent is retired, by its keeper in person: by no
+/// other member, and by no agent, the agent itself and its keeper's other agents included.
+#[test]
+fn only_the_keeper_in_person_bounds_an_agent_and_retires_it() {
+    let mut agents = as_person(ADA);
+    agents.apply(make("Claude")).unwrap();
+    let agent = agents.state().unwrap().agents[0].id.0.clone();
+    let narrowed = || {
+        set_bound(
+            &agent,
+            vec![Bound {
+                node: "workspace:ws/app:so.tilo.notes".to_owned(),
+                kinds: vec!["undoable".to_owned()],
+                answer: "deny".to_owned(),
+            }],
+        )
+    };
+    agents.apply(narrowed()).unwrap();
+    let kept = agents.state().unwrap();
+    assert_eq!(kept.agents[0].bound.len(), 1);
+    let attempts = || {
+        [
+            ("narrow it further", narrowed()),
+            ("take its bound off", set_bound(&agent, Vec::new())),
+            ("retire it", retire(&agent)),
+        ]
+    };
+
+    // Another member does neither, whatever they may edit here.
+    for (what, attempt) in attempts() {
+        let mut grace = agents.fork().as_author(GRACE);
+        let refused = grace.apply(attempt).unwrap_err();
+        assert!(refused.to_string().contains("keeper"), "{what}: {refused}");
+        assert_eq!(grace.state().unwrap(), kept, "{what} changed nothing");
+    }
+    // Nor does an agent: the agent itself acting for its keeper, another agent of its
+    // keeper's, and an agent that acts for somebody else.
+    for (acting, person) in [(agent.as_str(), ADA), ("another", ADA), ("another", GRACE)] {
+        for (what, attempt) in attempts() {
+            let mut by_agent = agents.fork().as_agent_for(acting, person);
+            let refused = by_agent.apply(attempt).unwrap_err();
+            assert!(
+                refused.to_string().contains("keeper"),
+                "{acting} for {person}, {what}: {refused}"
+            );
+            assert_eq!(
+                by_agent.state().unwrap(),
+                kept,
+                "{acting} for {person}: {what} changed nothing"
+            );
+        }
+    }
+
+    // Its keeper, themselves, does both.
+    agents.apply(set_bound(&agent, Vec::new())).unwrap();
+    assert!(agents.state().unwrap().agents[0].bound.is_empty());
+    agents.apply(retire(&agent)).unwrap();
+    assert_eq!(agents.state().unwrap().agents[0].state, AgentState::Retired);
+}
+
 #[test]
 fn an_agent_is_found_by_its_name_with_the_reference_that_opens_it() {
     let mut record = as_person(ADA);
@@ -382,6 +442,8 @@ fn a_workspace_keeps_at_most_its_limit() {
 fn stored_agents_read_back_as_they_were() {
     let mut record = as_person(GRACE);
     record.apply(restore("claude-code", GRACE)).unwrap();
+    // Its keeper retires it: nobody else does.
+    record.apply(retire("claude-code")).unwrap();
     let mut record = record.as_author(ADA);
     record.apply(make("Reviewer")).unwrap();
     let state = record.state().unwrap();
@@ -410,7 +472,7 @@ fn stored_agents_read_back_as_they_were() {
             }],
         ))
         .unwrap();
-    record.apply(retire(&kept_by_grace)).unwrap();
+    assert_eq!(kept_by_grace, "claude-code", "the agent its keeper retired");
     let before = record.state().unwrap();
     let loaded = Replica::<WorkspaceAgents>::load(&record.save()).unwrap();
     let after = loaded.state().unwrap();

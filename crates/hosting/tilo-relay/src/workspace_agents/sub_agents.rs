@@ -26,10 +26,10 @@
 use std::collections::BTreeMap;
 
 use chat::chat::{Chat, Message, reply_id_at};
-use serde_json::{Map, json};
-use tilo_actions::remote::Caller;
+use serde_json::{Map, Value, json};
+use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_resource::Id;
+use tilo_resource::{Id, Resource as _};
 use tilo_workspace_agent::{Agent, Stands, WorkspaceAgents, sub};
 use ui::permissions::MemberId;
 
@@ -49,6 +49,8 @@ const START: &str = "sub-agent";
 /// The kind of the cause that wakes an agent with its person's answer to a question the agent
 /// asked: the work it asked within goes on.
 const ANSWER: &str = "answer";
+/// Chat's name for the argument that says which conversation a message goes to.
+const TO: &str = "channel";
 /// The most of a sub-agent's answer its starter is told, in characters: the rest is in the
 /// sub-agent's conversation.
 const TOLD_CHARS: usize = 2_000;
@@ -178,6 +180,82 @@ pub(super) fn worked_here(agent: &Agent) -> bool {
         .sub
         .as_ref()
         .is_none_or(|sub| sub.runs == sub::RUNS_ON_HOST)
+}
+
+/// Where a sub-agent's turn writes in Chat, and whom its words may name there.
+#[derive(Clone)]
+pub(super) struct Own {
+    /// Its own conversation.
+    conversation: String,
+    /// The members Chat binds a name in a message to. None when Chat could not be read: then
+    /// its turn is taken no words, since nothing says whom they would name.
+    members: Option<Vec<chat::chat::Person>>,
+}
+
+impl Own {
+    /// Whether `text` names nobody Chat would bind a mention to.
+    fn names_nobody(&self, text: &str) -> bool {
+        self.members
+            .as_ref()
+            .is_some_and(|members| chat::mention::resolve(text, members).is_empty())
+    }
+}
+
+/// Whether an argument says nothing: left out as null, or an empty list or object.
+fn says_nothing(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(items) => items.is_empty(),
+        Value::Object(fields) => fields.is_empty(),
+        _ => false,
+    }
+}
+
+/// Whether the server's action service takes `request` from `caller` while it serves a turn
+/// of the sub-agent that writes in `own`.
+///
+/// What is no call of a turn (the server's own writes for a sub-agent) and what goes to another
+/// app than Chat is not decided here. Of Chat, a sub-agent's turn is let three actions by its
+/// rules ([`sub::OWN_WRITES`]), and a rule cannot say which conversation a message is in. So
+/// its answer is taken only for the message its turn answers; a question to its person and its
+/// words while it works only in its own conversation, as plain words: under no other message,
+/// with nothing attached, and naming nobody, so that nothing it writes asks another agent or
+/// reaches a member outside its conversation. Anything else of Chat's is refused here as well.
+pub(super) fn admits(own: &Own, caller: &Caller, request: &InvokeRequest) -> bool {
+    let Some(turn) = caller.turn() else {
+        return true;
+    };
+    let chat = format!("{}:{CHAT}:", tilo_agent_session::RESOURCE_PROVIDER);
+    let target = &request.target;
+    if !target.provider.starts_with(&chat) {
+        return true;
+    }
+    let [answer, question, words] = sub::OWN_WRITES;
+    let action = target.address.action.as_str();
+    if action == answer {
+        let answered = format!("{}/messages/{}", chat::parts::ChatPart::KIND, turn.message);
+        return target.address.resource == answered;
+    }
+    let InvokeArgument::Json(given) = &request.argument else {
+        return false;
+    };
+    let said = |name: &str| given.get(name).and_then(Value::as_str);
+    // Nothing but what `kept` lists is said: so no message it would stand under, nothing
+    // attached, nobody named beside its words.
+    let only = |kept: &[&str]| {
+        given
+            .iter()
+            .all(|(name, value)| kept.contains(&name.as_str()) || says_nothing(value))
+    };
+    let plain = said(TO) == Some(own.conversation.as_str())
+        && said("text").is_some_and(|text| own.names_nobody(text));
+    if action == question {
+        plain && only(&[TO, "text", "answers", "kind", "detail"])
+    } else if action == words {
+        plain && only(&[TO, "text"])
+    } else {
+        false
+    }
 }
 
 /// The agent whose day `turn`'s model calls are counted on.
@@ -467,6 +545,22 @@ impl HostAgents {
             .read::<WorkspaceAgents>(workspace, CHAT, &document)
             .await?;
         Ok(Team::of(roster, worked))
+    }
+
+    /// Where `turn`'s agent writes in Chat when it is a sub-agent: none for an agent a person
+    /// made, whose turns are not kept to one conversation.
+    pub(super) async fn own_of(&self, workspace: &str, turn: &Turn) -> Option<Own> {
+        let sub = turn.agent.sub.as_ref()?;
+        let members = self
+            .read::<Chat>(workspace, CHAT, "")
+            .await
+            .ok()
+            .flatten()
+            .map(|chat| chat.members());
+        Some(Own {
+            conversation: sub.conversation.clone(),
+            members,
+        })
     }
 
     /// The person `person` as their own device is admitted in `workspace`, and the server's
@@ -839,7 +933,7 @@ async fn ask_agent(
     };
     let mut arguments = Map::new();
     arguments.insert("text".into(), json!(text));
-    arguments.insert("channel".into(), json!(conversation));
+    arguments.insert(TO.into(), json!(conversation));
     arguments.insert(
         "cause".into(),
         json!({"kind": kind, "label": label, "key": key}),

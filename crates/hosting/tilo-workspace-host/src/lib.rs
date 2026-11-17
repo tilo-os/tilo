@@ -19,6 +19,10 @@ pub mod attach;
 #[doc(hidden)]
 pub mod authority_epoch;
 pub mod compaction;
+// The services a person connected by their address: a server calls out
+// for them, which a page cannot.
+#[cfg(not(target_arch = "wasm32"))]
+mod connections;
 #[doc(hidden)]
 pub mod environment;
 #[doc(hidden)]

@@ -66,6 +66,7 @@ __all__ = [
     "Choice",
     "ClipAttr",
     "ClipBlock",
+    "Earlier",
     "MarkSpan",
     "MarkValue",
     "Mention",
@@ -86,6 +87,7 @@ __all__ = [
     "StepUpdate",
     "Stopped",
     "Transition",
+    "View",
     "WindowShare",
     "Withdrawn",
     "Work",
@@ -155,6 +157,9 @@ __all__ = [
     "SettleQuestionArgs",
     "AskAgentArgs",
     "StopAgentArgs",
+    "PostViewArgs",
+    "AnswerWithViewArgs",
+    "RewriteViewArgs",
     "CarryCountsArgs",
     "StreamOutputArgs",
     "StartDraftArgs",
@@ -420,6 +425,12 @@ class ClipBlock(TypedDict):
     align: str | None
     attrs: dict[str, ClipAttr]
 
+class Earlier(TypedDict):
+    version: int
+    source: str
+    reads: list[str]
+    at: int
+
 class MarkSpan(TypedDict):
     start: int
     end: int
@@ -458,6 +469,7 @@ class Message(TypedDict):
     question: Question | None
     cause: Cause | None
     stopped: Stopped | None
+    view: View | None
     attempts: int
 
 class NewMessage(TypedDict):
@@ -555,6 +567,13 @@ class Stopped(TypedDict):
 class Transition(TypedDict):
     state: AgentWorkState
     since: int
+
+class View(TypedDict):
+    source: str
+    reads: list[str]
+    version: int
+    at: int
+    earlier: list[Earlier]
 
 class WindowShare(TypedDict):
     access: ShareAccess
@@ -992,6 +1011,30 @@ StopAgentArgs = TypedDict("StopAgentArgs", {
 })
 """The arguments of `stop-agent`."""
 
+PostViewArgs = TypedDict("PostViewArgs", {
+    "channel": "str",
+    "text": "str",
+    "source": "str",
+    "reads": "list[str]",
+    "parent": NotRequired["str | None"],
+})
+"""The arguments of `post-view`."""
+
+AnswerWithViewArgs = TypedDict("AnswerWithViewArgs", {
+    "message": "str",
+    "source": "str",
+    "reads": "list[str]",
+    "say": NotRequired["str | None"],
+})
+"""The arguments of `answer-with-view`."""
+
+RewriteViewArgs = TypedDict("RewriteViewArgs", {
+    "message": "str",
+    "source": "str",
+    "reads": "list[str]",
+})
+"""The arguments of `rewrite-view`."""
+
 CarryCountsArgs = TypedDict("CarryCountsArgs", {
     "earlier": "dict[str, dict[str, int]]",
 })
@@ -1166,7 +1209,7 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@6153f8681353c3cd"
+    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1520,7 +1563,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@6153f8681353c3cd"
+    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1878,6 +1921,61 @@ class Messages(Resource):
         """Runs `stop-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stop-agent", items)
 
+    def post_view(self,
+        *,
+        channel: str,
+        text: str,
+        source: str,
+        reads: list[str],
+        parent: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["channel"] = channel
+        args["text"] = text
+        args["source"] = source
+        args["reads"] = reads
+        if parent is not None:
+            args["parent"] = parent
+        return self.action("post-view", **args)
+
+    def post_view_many(self, items: list[PostViewArgs]) -> list[dict[str, Any]]:
+        """Runs `post-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("post-view", items)
+
+    def answer_with_view(self,
+        *,
+        message: str,
+        source: str,
+        reads: list[str],
+        say: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["message"] = message
+        args["source"] = source
+        args["reads"] = reads
+        if say is not None:
+            args["say"] = say
+        return self.action("answer-with-view", **args)
+
+    def answer_with_view_many(self, items: list[AnswerWithViewArgs]) -> list[dict[str, Any]]:
+        """Runs `answer-with-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("answer-with-view", items)
+
+    def rewrite_view(self,
+        *,
+        message: str,
+        source: str,
+        reads: list[str],
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("rewrite-view", message=message, source=source, reads=reads)
+
+    def rewrite_view_many(self, items: list[RewriteViewArgs]) -> list[dict[str, Any]]:
+        """Runs `rewrite-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rewrite-view", items)
+
     def carry_counts(self, *, earlier: dict[str, dict[str, int]]) -> None:
         """Runs the app's action."""
         return self.action("carry-counts", earlier=earlier)
@@ -1908,12 +2006,12 @@ class Messages(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"post", "post_many", "post_file", "post_file_many", "share_resource", "share_resource_many", "share_window", "share_window_many", "stop_sharing", "stop_sharing_many", "set_share_access", "set_share_access_many", "share_open", "share_open_many", "deliver_message", "deliver_message_many", "edit_message", "edit_message_many", "delete_message", "delete_message_many", "remove_message", "remove_message_many", "pin", "pin_many", "retry", "retry_many", "record_work", "record_work_many", "ask", "ask_many", "answer_question", "answer_question_many", "withdraw_question", "withdraw_question_many", "settle_question", "settle_question_many", "ask_agent", "ask_agent_many", "stop_agent", "stop_agent_many", "carry_counts", "carry_counts_many", "stream_output", "stream_output_many"})
+    __actions__ = frozenset({"post", "post_many", "post_file", "post_file_many", "share_resource", "share_resource_many", "share_window", "share_window_many", "stop_sharing", "stop_sharing_many", "set_share_access", "set_share_access_many", "share_open", "share_open_many", "deliver_message", "deliver_message_many", "edit_message", "edit_message_many", "delete_message", "delete_message_many", "remove_message", "remove_message_many", "pin", "pin_many", "retry", "retry_many", "record_work", "record_work_many", "ask", "ask_many", "answer_question", "answer_question_many", "withdraw_question", "withdraw_question_many", "settle_question", "settle_question_many", "ask_agent", "ask_agent_many", "stop_agent", "stop_agent_many", "post_view", "post_view_many", "answer_with_view", "answer_with_view_many", "rewrite_view", "rewrite_view_many", "carry_counts", "carry_counts_many", "stream_output", "stream_output_many"})
 
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@6153f8681353c3cd"
+    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> None:
@@ -1931,7 +2029,7 @@ class Drafts(Resource):
 
 class Learned(Resource):
     """What your agents learned — `chat.learned`."""
-    __surface__ = "so.tilo.chat@6153f8681353c3cd"
+    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
     @property
     def facts(self) -> list[Entry[Fact]]:
         """Read only."""
@@ -1982,7 +2080,7 @@ class Learned(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@6153f8681353c3cd"
+    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -2020,7 +2118,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@6153f8681353c3cd"
+    __surface__ = "so.tilo.chat@38c6b58b5e923b5b"
     agents: list[Entry[Agent]]
 
     def create_agent(self,

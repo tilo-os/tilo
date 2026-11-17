@@ -220,7 +220,7 @@ fn only_an_agent_starts_one_and_only_for_the_person_who_keeps_it() {
         .apply(start("Research", "Find the deck"))
         .unwrap_err();
     assert!(refused.to_string().contains("works here"), "{refused}");
-    let mut retired = record.fork();
+    let mut retired = record.fork().as_author(ADA);
     retired
         .apply(
             WorkspaceAgents::RETIRE_AGENT.with(workspace_agents::RetireAgent { agent: id(MAIN) }),
@@ -638,9 +638,13 @@ fn a_sub_agent_changes_nothing_of_the_workspaces_agents_but_its_own_team() {
             "{what} changed nothing"
         );
     }
-    // The agent a person keeps still does what an editor's agent does here.
+    // Nor does the agent that started it take a bound off: what an agent may do is its keeper's
+    // to say, in person.
     let mut main = record.fork().as_agent_for(MAIN, ADA);
-    main.apply(unbound).unwrap();
+    let refused = main.apply(unbound.clone()).unwrap_err();
+    assert!(refused.to_string().contains("keeper"), "{refused}");
+    let mut ada = main.fork().as_author(ADA);
+    ada.apply(unbound).unwrap();
 }
 
 /// What the policy answers an agent's turn that carries `rules`, for `kind` at `node`.
@@ -650,6 +654,165 @@ fn decided(agent: &str, rules: &[Rule], node: &TreePath, kind: ActionKind) -> An
     Party::new(vec![Grantee::agent(agent)], &grants)
         .decide(node, kind, &cx)
         .answer
+}
+
+/// Chat's actions on its messages that a sub-agent's turn is refused wherever they aim.
+const REFUSED_OF_MESSAGES: [&str; 19] = [
+    "post-file",
+    "share-resource",
+    "share-window",
+    "stop-sharing",
+    "set-share-access",
+    "share-open",
+    "deliver-message",
+    "edit-message",
+    "delete-message",
+    "remove-message",
+    "pin",
+    "retry",
+    "answer-question",
+    "withdraw-question",
+    "settle-question",
+    "ask-agent",
+    "stop-agent",
+    "carry-counts",
+    "stream-output",
+];
+
+/// The actions on the workspace's agents a sub-agent's turn keeps, and some it is refused.
+const KEPT_OF_AGENTS: [&str; 4] = [
+    "start-sub-agent",
+    "note-sub-agent",
+    "stop-sub-agent",
+    "sub-agent-stands",
+];
+const REFUSED_OF_AGENTS: [&str; 9] = [
+    "create-agent",
+    "rename-agent",
+    "set-agent-model",
+    "set-agent-instruction",
+    "set-agent-bound",
+    "retire-agent",
+    "set-sub-agent-limits",
+    // Said of a sub-agent by whatever works it, on the list, and by no tool of its turn.
+    "sub-agent-produced",
+    "sub-agent-coding",
+];
+
+/// What the policy answers `agent`'s turn that carries `rules` for Chat's actions that write:
+/// refused, but its answer, a question to its person and its words while it works, and what
+/// steers its own team. Whoever serves its turn takes those in its own conversation alone.
+fn writes_only_its_own(agent: &str, rules: &[Rule]) {
+    let chat = TreePath::workspace(WORKSPACE).app(OWNER);
+    let thread = chat.clone().kind("chat.messages");
+    let roster = chat.clone().kind(super::KIND);
+    let elsewhere = chat.clone().kind("chat.workspace");
+    assert_eq!(
+        decided(agent, rules, &chat, ActionKind::Outside),
+        Answer::Deny,
+        "nothing of Chat's reaches outside for {agent}"
+    );
+    for node in [&thread, &roster, &elsewhere] {
+        assert_eq!(
+            decided(agent, rules, node, ActionKind::Outside),
+            Answer::Deny,
+            "{agent} reaches nothing outside from {node}"
+        );
+        // An action nothing names is not its to call: one added later is refused as well.
+        let later = node.clone().resource("any").action("an-action-added-later");
+        assert_eq!(
+            decided(agent, rules, &later, ActionKind::Undoable),
+            Answer::Deny,
+            "{agent} is refused an action nobody named under {node}"
+        );
+    }
+    // What a kept action changes is saved field by field, under no action: that is written,
+    // and never read.
+    for node in [&thread, &elsewhere] {
+        let field = node.clone().resource("any").field("text");
+        assert_eq!(
+            decided(agent, rules, &field, ActionKind::Undoable),
+            Answer::Allow,
+            "what a kept action changes at {field} is saved"
+        );
+        assert_eq!(
+            decided(agent, rules, &field, ActionKind::Read),
+            Answer::Deny,
+            "{agent} reads nothing at {field}"
+        );
+    }
+    // An action is decided under its kind, and one on a single message or agent under the kind
+    // of that collection: where the always-on machine and a device ask, both are asked here.
+    let one_message = chat.kind("chat.messages.messages");
+    let of = |action: &str| {
+        [
+            thread.clone().resource("chain").action(action),
+            one_message
+                .clone()
+                .resource("chat.messages/messages/m1")
+                .action(action),
+        ]
+    };
+    for refused in REFUSED_OF_MESSAGES {
+        for node in of(refused) {
+            assert_eq!(
+                decided(agent, rules, &node, ActionKind::Undoable),
+                Answer::Deny,
+                "{agent} is refused {refused} at {node}"
+            );
+        }
+    }
+    for own in crate::sub::OWN_WRITES {
+        for node in of(own) {
+            assert_eq!(
+                decided(agent, rules, &node, ActionKind::Undoable),
+                Answer::Allow,
+                "{own} is {agent}'s own to write at {node}"
+            );
+            assert_eq!(
+                decided(agent, rules, &node, ActionKind::Read),
+                Answer::Deny,
+                "and nothing of it is its to read"
+            );
+        }
+    }
+    keeps_only_its_team(agent, rules);
+}
+
+/// What the policy answers `agent`'s turn that carries `rules` for the actions on the
+/// workspace's agents: it keeps what steers its own team, which the list itself guards, and is
+/// refused the others.
+fn keeps_only_its_team(agent: &str, rules: &[Rule]) {
+    let chat = TreePath::workspace(WORKSPACE).app(OWNER);
+    let roster = chat.clone().kind(super::KIND);
+    let one_agent = chat.kind(format!("{}.agents", super::KIND));
+    let of_agents = |action: &str| {
+        [
+            roster.clone().resource("agents").action(action),
+            one_agent
+                .clone()
+                .resource("chat.agent/agents/a1")
+                .action(action),
+        ]
+    };
+    for own in KEPT_OF_AGENTS {
+        for node in of_agents(own) {
+            assert_eq!(
+                decided(agent, rules, &node, ActionKind::Undoable),
+                Answer::Allow,
+                "{agent} keeps {own} for its own team at {node}"
+            );
+        }
+    }
+    for refused in REFUSED_OF_AGENTS {
+        for node in of_agents(refused) {
+            assert_eq!(
+                decided(agent, rules, &node, ActionKind::Undoable),
+                Answer::Deny,
+                "{agent} is refused {refused} at {node}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -685,16 +848,12 @@ fn a_sub_agents_turn_reads_nothing_chat_keeps_whatever_its_bound_says() {
             Answer::Allow,
             "the rule is about Chat, not about its work"
         );
-        assert_eq!(
-            decided(agent, &rules, &thread, ActionKind::Undoable),
-            Answer::Allow,
-            "its answer is written in its own conversation"
-        );
+        writes_only_its_own(agent, &rules);
     }
 
-    // A bound set on it, by the agent that started it or by its person, adds to the rule and
+    // A bound its person sets on it adds to the rule and
     // never replaces it: one written for Chat alone, which would be the more specific, loses
-    // its say over reads; what it narrows elsewhere stands.
+    // its say there; what it narrows elsewhere stands.
     let allow_thread = Bound {
         node: thread.to_string(),
         kinds: vec!["read".to_owned(), "undoable".to_owned()],
@@ -705,15 +864,15 @@ fn a_sub_agents_turn_reads_nothing_chat_keeps_whatever_its_bound_says() {
         kinds: vec!["undoable".to_owned()],
         answer: "deny".to_owned(),
     };
-    let mut main = record.fork().as_agent_for(MAIN, ADA);
-    main.apply(
+    let mut ada = record.fork().as_author(ADA);
+    ada.apply(
         WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
             agent: id("lead"),
             bound: vec![allow_thread, no_notes],
         }),
     )
     .unwrap();
-    let state = main.state().unwrap();
+    let state = ada.state().unwrap();
     let rules = state.get(&id("lead")).unwrap().turn_rules(WORKSPACE);
     assert_eq!(
         decided("lead", &rules, &thread, ActionKind::Read),
@@ -723,20 +882,22 @@ fn a_sub_agents_turn_reads_nothing_chat_keeps_whatever_its_bound_says() {
         decided("lead", &rules, &chat, ActionKind::Read),
         Answer::Deny
     );
+    // A bound that allows Chat's writes allows a sub-agent none beyond its own.
+    writes_only_its_own("lead", &rules);
     assert_eq!(
         decided("lead", &rules, &notes, ActionKind::Undoable),
         Answer::Deny,
         "what its bound narrows elsewhere holds"
     );
     // And a bound taken off again leaves the rule where it was.
-    main.apply(
+    ada.apply(
         WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
             agent: id("lead"),
             bound: Vec::new(),
         }),
     )
     .unwrap();
-    let state = main.state().unwrap();
+    let state = ada.state().unwrap();
     let lead = state.get(&id("lead")).unwrap();
     assert!(lead.bound.is_empty() && lead.is_sub());
     let rules = lead.turn_rules(WORKSPACE);

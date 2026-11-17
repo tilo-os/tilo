@@ -280,7 +280,7 @@ pub(crate) struct Greeted {
 /// Connect to the keeper in `dir`, greet it, and read what it holds, waiting at most `answer`
 /// for each of its replies.
 pub(crate) fn greet(dir: &Path, answer: Duration) -> Result<Greeted, Refused> {
-    let control = match UnixStream::connect(dir.join("control")) {
+    let control = match tilo_files::native::socket::connect(&dir.join("control")) {
         Ok(control) => control,
         Err(error)
             if matches!(
@@ -411,7 +411,7 @@ pub(crate) fn pidfd(pid: u32) -> Option<OwnedFd> {
 /// End the keeper `keeper` and everything in its cgroup: a leftover from a run that did not end
 /// in a restart. A keeper outside an app's cgroup is asked to end, and its app ends with it.
 pub(crate) fn end_leftover(dir: &Path) {
-    if let Ok(control) = UnixStream::connect(dir.join("control"))
+    if let Ok(control) = tilo_files::native::socket::connect(&dir.join("control"))
         && let Ok(keeper) = peer_pid(&control)
     {
         tracing::info!(dir = %dir.display(), keeper, "a kept app left from before ends");
@@ -473,7 +473,7 @@ pub(crate) fn wait_for_control(dir: &Path, launcher: &OwnedFd) -> bool {
     }
     loop {
         // A socket is bound before it listens: one that refuses yet is waited for again.
-        if UnixStream::connect(&control).is_ok() {
+        if tilo_files::native::socket::connect(&control).is_ok() {
             return true;
         }
         let mut fds = [
@@ -498,7 +498,7 @@ pub(crate) fn wait_for_control(dir: &Path, launcher: &OwnedFd) -> bool {
             return false;
         }
         if fds[1].revents != 0 {
-            return UnixStream::connect(&control).is_ok();
+            return tilo_files::native::socket::connect(&control).is_ok();
         }
         if fds[0].revents != 0 {
             let mut events = [0u8; 4096];

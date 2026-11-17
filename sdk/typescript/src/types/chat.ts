@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@6153f8681353c3cd";
+export const SURFACE = "so.tilo.chat@38c6b58b5e923b5b";
 
 export interface Category {
   name: string;
@@ -301,6 +301,13 @@ export interface ClipBlock {
   attrs: Record<string, ClipAttr>;
 }
 
+export interface Earlier {
+  version: number;
+  source: string;
+  reads: string[];
+  at: number;
+}
+
 export interface MarkSpan {
   start: number;
   end: number;
@@ -341,6 +348,7 @@ export interface Message {
   question: Question | null;
   cause: Cause | null;
   stopped: Stopped | null;
+  view: View | null;
   attempts: number;
 }
 
@@ -454,6 +462,14 @@ export interface Stopped {
 export interface Transition {
   state: AgentWorkState;
   since: number;
+}
+
+export interface View {
+  source: string;
+  reads: string[];
+  version: number;
+  at: number;
+  earlier: Earlier[];
 }
 
 export interface WindowShare {
@@ -910,6 +926,30 @@ export interface AskAgentArgs {
 /** The arguments of `stop-agent`. */
 export interface StopAgentArgs {
   message: string;
+}
+
+/** The arguments of `post-view`. */
+export interface PostViewArgs {
+  channel: string;
+  text: string;
+  source: string;
+  reads: string[];
+  parent?: string;
+}
+
+/** The arguments of `answer-with-view`. */
+export interface AnswerWithViewArgs {
+  message: string;
+  source: string;
+  reads: string[];
+  say?: string;
+}
+
+/** The arguments of `rewrite-view`. */
+export interface RewriteViewArgs {
+  message: string;
+  source: string;
+  reads: string[];
 }
 
 /** The arguments of `carry-counts`. */
@@ -1413,6 +1453,30 @@ export interface Messages extends tilo.Resource {
   }): Promise<void>;
   /** Runs `stop-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stopAgentMany(items: StopAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  postView(args: {
+    channel: string;
+    text: string;
+    source: string;
+    reads: string[];
+    parent?: string;
+  }): Promise<void>;
+  /** Runs `post-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  postViewMany(items: PostViewArgs[]): Promise<tilo.ActionAnswer[]>;
+  answerWithView(args: {
+    message: string;
+    source: string;
+    reads: string[];
+    say?: string;
+  }): Promise<void>;
+  /** Runs `answer-with-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  answerWithViewMany(items: AnswerWithViewArgs[]): Promise<tilo.ActionAnswer[]>;
+  rewriteView(args: {
+    message: string;
+    source: string;
+    reads: string[];
+  }): Promise<void>;
+  /** Runs `rewrite-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rewriteViewMany(items: RewriteViewArgs[]): Promise<tilo.ActionAnswer[]>;
   carryCounts(args: {
     earlier: Record<string, Record<string, number>>;
   }): Promise<void>;
@@ -1430,7 +1494,7 @@ export interface Messages extends tilo.Resource {
 
 /** The actions `Messages` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGES_ACTIONS = ["post", "postMany", "postFile", "postFileMany", "shareResource", "shareResourceMany", "shareWindow", "shareWindowMany", "stopSharing", "stopSharingMany", "setShareAccess", "setShareAccessMany", "shareOpen", "shareOpenMany", "deliverMessage", "deliverMessageMany", "editMessage", "editMessageMany", "deleteMessage", "deleteMessageMany", "removeMessage", "removeMessageMany", "pin", "pinMany", "retry", "retryMany", "recordWork", "recordWorkMany", "ask", "askMany", "answerQuestion", "answerQuestionMany", "withdrawQuestion", "withdrawQuestionMany", "settleQuestion", "settleQuestionMany", "askAgent", "askAgentMany", "stopAgent", "stopAgentMany", "carryCounts", "carryCountsMany", "streamOutput", "streamOutputMany"] as const;
+export const MESSAGES_ACTIONS = ["post", "postMany", "postFile", "postFileMany", "shareResource", "shareResourceMany", "shareWindow", "shareWindowMany", "stopSharing", "stopSharingMany", "setShareAccess", "setShareAccessMany", "shareOpen", "shareOpenMany", "deliverMessage", "deliverMessageMany", "editMessage", "editMessageMany", "deleteMessage", "deleteMessageMany", "removeMessage", "removeMessageMany", "pin", "pinMany", "retry", "retryMany", "recordWork", "recordWorkMany", "ask", "askMany", "answerQuestion", "answerQuestionMany", "withdrawQuestion", "withdrawQuestionMany", "settleQuestion", "settleQuestionMany", "askAgent", "askAgentMany", "stopAgent", "stopAgentMany", "postView", "postViewMany", "answerWithView", "answerWithViewMany", "rewriteView", "rewriteViewMany", "carryCounts", "carryCountsMany", "streamOutput", "streamOutputMany"] as const;
 
 /** The `chat.messages` kind at `path`. */
 export function messages(ws: tilo.Workspace, path: string): Messages {

@@ -108,6 +108,35 @@ fn reads(path: &str) -> ModelResponse {
     )
 }
 
+/// A model turn that invokes what `path` names with `args`, as the agent tools name it: the
+/// call numbered `step` of its turn.
+fn does(step: usize, path: &str, args: &serde_json::Value) -> ModelResponse {
+    answer(
+        vec![Content::ToolCall(ToolCall {
+            id: format!("do-{step}"),
+            name: "tilo_do".into(),
+            input: serde_json::json!({"path": path, "args": args}),
+            extra_content: None,
+        })],
+        StopReason::ToolCalls,
+        1_000,
+    )
+}
+
+/// What the tools answered in `request`, in the order asked: each answer's words, and whether
+/// it was a failure.
+fn tool_answers(request: &ModelRequest) -> Vec<(String, bool)> {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|content| match content {
+            Content::ToolResult(result) => Some((result.content.clone(), result.is_error)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The workspace's list of its agents, as the workspace keeps it.
 async fn roster(workspaces: &Workspaces, workspace: &str) -> WorkspaceAgents {
     let document = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
@@ -895,5 +924,407 @@ async fn its_person_asks_for_a_sub_agent_and_the_server_starts_it() {
         1,
         "what an agent asks starts none"
     );
+    page.peer.close();
+}
+
+/// The actions `R` offers that write, by their ids, as the resource itself states them.
+fn writes_of<R: ui::tilo_resource::Resource>() -> Vec<String> {
+    R::surface()
+        .verbs
+        .into_iter()
+        .filter(|verb| verb.kind != tilo_actions::policy::ActionKind::Read)
+        .map(|verb| verb.id)
+        .collect()
+}
+
+/// Chat's other actions that write, on what the workspace's chat and its messages do not hold:
+/// a draft, what was learned, and the workspace's emoji.
+const REFUSED_BESIDE: [&str; 7] = [
+    "start-draft",
+    "learn",
+    "correct",
+    "forget",
+    "add-emoji",
+    "remove-emoji",
+    "remove-any-emoji",
+];
+
+/// What marks a planned call as a read of the path after it, where every other is an action.
+const READ: &str = "read ";
+
+/// Whether the tools answered a call with a refusal: the action is not offered to the caller,
+/// or the caller may not invoke it.
+fn refused_in_words(answer: &str) -> bool {
+    ["has no action", "no such action", "may not invoke"]
+        .iter()
+        .any(|said| answer.contains(said))
+}
+
+/// A sub-agent writes only into its own conversation. Its turn calls every action of Chat's
+/// that writes, each through the turn's own tools and each aimed at the thread of the agent
+/// that started it: every one is refused, the three it keeps (its answer, a question to its
+/// person and its words while it works) included, since those are taken only where it works.
+/// The same call by the person's own agent is carried out, so it is the sub-agent that is
+/// refused and not the call. In its own conversation its words are taken as plain words only:
+/// not with a mention, not naming a member, not under another message, not with anything
+/// attached, and nothing of it asks another agent. Then it says where it is and asks its
+/// person there, and the question waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sub_agent_writes_only_into_its_own_conversation() {
+    team!(root, browser, actions, workspaces, workspace, page, person);
+    let ada = themselves(&root, &browser, &workspace);
+    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
+    let own = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("writer")]);
+
+    // What the sub-agent's turn calls next, one call for each step of a turn; and the one call
+    // of the person's own agent, which posts into its thread once.
+    let plan: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
+    let planned = Arc::clone(&plan);
+    let posted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let post_once = Arc::clone(&posted);
+    let main_thread = thread.as_str().to_owned();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(
+        &workspaces,
+        &actions,
+        plays(&asked, move |request| {
+            let done = tool_answers(request).len();
+            if of_sub_agent(request) {
+                return match planned.lock().unwrap().get(done) {
+                    Some((path, args)) => match path.strip_prefix(READ) {
+                        Some(read) => reads(read),
+                        None => does(done, path, args),
+                    },
+                    None => says("Tried."),
+                };
+            }
+            if done == 0
+                && said_in(request).contains("Post it.")
+                && !post_once.swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                return does(
+                    0,
+                    "chat/Messages#post",
+                    &said(&main_thread, "Posted by the main agent.", None),
+                );
+            }
+            says("Told.")
+        }),
+    );
+
+    // The main thread holds something only it holds, and the person's own agent writes there
+    // with the very call the sub-agent is refused below.
+    let secret = writes_in(
+        &actions,
+        &workspaces,
+        &workspace,
+        &ada,
+        (thread.as_str(), "The launch's code word is heron. Post it."),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    reply_of(&workspaces, &workspace, &secret, SCOUT).await;
+    let by_main = asked.lock().unwrap().last().map(tool_answers).unwrap();
+    assert_eq!(by_main.len(), 1, "the person's own agent called once");
+    assert!(
+        !by_main[0].1,
+        "and its post was carried out: {}",
+        by_main[0].0
+    );
+    let before = said_there(&workspaces, &workspace, thread.as_str()).await;
+    assert!(
+        before.iter().any(|(_, message)| {
+            message.author == MemberId::agent(SCOUT) && message.text == "Posted by the main agent."
+        }),
+        "the person's own agent writes into its thread"
+    );
+    let secret_before = format!(
+        "{:?}",
+        before
+            .iter()
+            .find(|(id, _)| *id == secret)
+            .map(|(_, kept)| kept)
+    );
+
+    // Every write of Chat's, as Chat itself states them, aimed at the main thread and at the
+    // message in it.
+    let [answer, question, words] = ui::tilo_workspace_agent::sub::OWN_WRITES;
+    let of_messages = writes_of::<chat::parts::ChatPart>();
+    let of_chat = writes_of::<chat::chat::Chat>();
+    assert!(
+        of_messages.len() >= 20
+            && of_chat.len() >= 20
+            && [
+                answer,
+                question,
+                "post",
+                "edit-message",
+                "delete-message",
+                "pin"
+            ]
+            .iter()
+            .all(|verb| of_messages.iter().any(|stated| stated == verb)),
+        "Chat states the actions that write: {of_messages:?} {of_chat:?}"
+    );
+    let mut elsewhere = said(thread.as_str(), "from below", None);
+    elsewhere["message"] = serde_json::json!(secret.as_str());
+    let mut attempts: Vec<(String, String, serde_json::Value)> = Vec::new();
+    for verb in of_messages
+        .iter()
+        .filter(|verb| *verb != answer && *verb != question && *verb != words)
+    {
+        attempts.push((
+            verb.clone(),
+            format!("chat/Messages#{verb}"),
+            elsewhere.clone(),
+        ));
+    }
+    // The three it keeps are its own only where it works.
+    attempts.push((
+        question.to_owned(),
+        format!("chat/Messages#{question}"),
+        said(thread.as_str(), "May I write here?", None),
+    ));
+    attempts.push((
+        answer.to_owned(),
+        format!("chat/Messages#{answer}"),
+        serde_json::json!({
+            "message": secret.as_str(),
+            "work": {"state": "taken"},
+            "say": "from below",
+        }),
+    ));
+    attempts.push((
+        words.to_owned(),
+        format!("chat/Messages#{words}"),
+        said(thread.as_str(), "from below", None),
+    ));
+    for verb in &of_chat {
+        attempts.push((verb.clone(), format!("chat#{verb}"), elsewhere.clone()));
+    }
+    for verb in REFUSED_BESIDE {
+        attempts.push((verb.to_owned(), format!("chat#{verb}"), elsewhere.clone()));
+    }
+
+    // And once its starter was told how its job ended, which the server writes for it under
+    // no rule of a turn, its next turn still reads nothing: the first call after its job.
+    attempts.insert(
+        12,
+        (
+            "read".to_owned(),
+            format!("{READ}chat/Messages"),
+            serde_json::Value::Null,
+        ),
+    );
+
+    // A turn takes a bounded number of steps, so the calls are spread over several turns: its
+    // job first, then each time its person writes to it.
+    for (turn, calls) in attempts.chunks(12).enumerate() {
+        *plan.lock().unwrap() = calls
+            .iter()
+            .map(|(_, path, args)| (path.clone(), args.clone()))
+            .collect();
+        let asked_with = if turn == 0 {
+            starts(
+                &workspaces,
+                &workspace,
+                &person,
+                ("Writer", "Tidy the notes."),
+            )
+            .await;
+            agents.look(&workspace).await.unwrap();
+            caused(&workspaces, &workspace, (own.as_str(), "job"), 1).await[0]
+                .0
+                .clone()
+        } else {
+            writes_in(
+                &actions,
+                &workspaces,
+                &workspace,
+                &ada,
+                (own.as_str(), &format!("Go on, part {turn}.")),
+            )
+            .await
+        };
+        agents.look(&workspace).await.unwrap();
+        let answered = reply_of(&workspaces, &workspace, &asked_with, "writer").await;
+        assert_eq!(answered.text, "Tried.", "its answer is its own to write");
+        assert_eq!(*conversation_id(&answered), own);
+        let answers = asked
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|request| of_sub_agent(request))
+            .map(tool_answers)
+            .unwrap();
+        assert_eq!(
+            answers.len(),
+            calls.len(),
+            "every call of the turn was answered"
+        );
+        for ((verb, path, _), (words, failed)) in calls.iter().zip(&answers) {
+            if path.starts_with(READ) {
+                assert!(
+                    words.contains("chat/Messages has no read action") && !words.contains("heron"),
+                    "after its starter was told, its read is still not offered: {words}"
+                );
+                continue;
+            }
+            assert!(
+                *failed && refused_in_words(words),
+                "{verb} ({path}) is refused to a sub-agent: {words}"
+            );
+        }
+    }
+
+    // Nothing it called changed the main thread: the messages there are the ones that were
+    // there, the one it aimed at is as it was, and the only message of its own is the news the
+    // server wrote for it when its job ended.
+    agents.look(&workspace).await.unwrap();
+    let after = said_there(&workspaces, &workspace, thread.as_str()).await;
+    for (id, message) in &after {
+        let was_there = before.iter().any(|(held, _)| held == id);
+        let news = message
+            .cause
+            .as_ref()
+            .is_some_and(|cause| cause.kind.0 == "news");
+        let reply_to_news = message.author == MemberId::agent(SCOUT);
+        assert!(
+            was_there || news || reply_to_news,
+            "nothing a sub-agent called is in the main thread: {message:?}"
+        );
+        assert!(
+            message.author != MemberId::agent("writer") || news,
+            "a sub-agent wrote into the main thread: {message:?}"
+        );
+        assert!(!message.text.contains("from below"), "{message:?}");
+    }
+    assert_eq!(
+        format!(
+            "{:?}",
+            after
+                .iter()
+                .find(|(id, _)| *id == secret)
+                .map(|(_, kept)| kept)
+        ),
+        secret_before,
+        "the message it aimed at is as it was"
+    );
+
+    // In its own conversation its words are plain words: each of these is refused there too.
+    let with = |name: &str, value: serde_json::Value| {
+        let mut posted = said(own.as_str(), "Look at this.", None);
+        posted[name] = value;
+        posted
+    };
+    let mut asked_under = said(own.as_str(), "May I?", None);
+    asked_under["parent"] = serde_json::json!(secret.as_str());
+    let kept_out: Vec<(&str, String, serde_json::Value)> = vec![
+        (
+            "a mention",
+            format!("chat/Messages#{words}"),
+            with(
+                "mentions",
+                serde_json::json!([{"start": 0, "len": 4, "name": "Scout", "is_agent": true}]),
+            ),
+        ),
+        (
+            "a member named in its words",
+            format!("chat/Messages#{words}"),
+            said(own.as_str(), "@Ada look at this.", None),
+        ),
+        (
+            "a message it would stand under",
+            format!("chat/Messages#{words}"),
+            with("parent", serde_json::json!(secret.as_str())),
+        ),
+        (
+            "something attached",
+            format!("chat/Messages#{words}"),
+            with("attachments", serde_json::json!([{"kind": "file"}])),
+        ),
+        (
+            "a cause that asks another agent",
+            "chat/Messages#ask-agent".to_owned(),
+            said(
+                own.as_str(),
+                "Do more.",
+                Some(serde_json::json!({"kind": "news", "label": "More", "key": "more-1"})),
+            ),
+        ),
+        (
+            "a question under another message",
+            format!("chat/Messages#{question}"),
+            asked_under,
+        ),
+    ];
+    let mut asked_own = said(own.as_str(), "Shall I also tidy the drafts?", None);
+    asked_own["answers"] =
+        serde_json::json!([{"id": "yes", "label": "Yes"}, {"id": "no", "label": "No"}]);
+    let taken = [
+        (
+            format!("chat/Messages#{words}"),
+            said(own.as_str(), "Half done: the notes are sorted.", None),
+        ),
+        (format!("chat/Messages#{question}"), asked_own),
+    ];
+    *plan.lock().unwrap() = kept_out
+        .iter()
+        .map(|(_, path, args)| (path.clone(), args.clone()))
+        .chain(taken.iter().cloned())
+        .collect();
+    let last = writes_in(
+        &actions,
+        &workspaces,
+        &workspace,
+        &ada,
+        (own.as_str(), "Anything you need from me?"),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    reply_of(&workspaces, &workspace, &last, "writer").await;
+    let in_own = asked
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|request| of_sub_agent(request))
+        .map(tool_answers)
+        .unwrap();
+    assert_eq!(in_own.len(), kept_out.len() + taken.len());
+    for ((what, path, _), (said, failed)) in kept_out.iter().zip(&in_own) {
+        assert!(
+            *failed && refused_in_words(said),
+            "{what} ({path}) is refused in its own conversation too: {said}"
+        );
+    }
+    for ((path, _), (said, failed)) in taken.iter().zip(&in_own[kept_out.len()..]) {
+        assert!(!*failed, "{path} is taken where it works: {said}");
+    }
+    let there = said_there(&workspaces, &workspace, own.as_str()).await;
+    let by_it = |text: &str| {
+        there
+            .iter()
+            .find(|(_, message)| {
+                message.author == MemberId::agent("writer") && message.text == text
+            })
+            .map(|(_, message)| message)
+    };
+    assert!(
+        by_it("Half done: the notes are sorted.").is_some(),
+        "its words stand in its own conversation"
+    );
+    for refused in ["Look at this.", "@Ada look at this.", "Do more.", "May I?"] {
+        assert!(by_it(refused).is_none(), "{refused:?} was never written");
+    }
+    assert!(
+        by_it("Shall I also tidy the drafts?").is_some_and(|message| message
+            .question
+            .as_ref()
+            .is_some_and(chat::question::Question::waiting)),
+        "its question waits in its own conversation"
+    );
+    stands_as(&workspaces, &workspace, "writer", Stands::NeedsPerson).await;
     page.peer.close();
 }

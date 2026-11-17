@@ -28,7 +28,7 @@ use std::fmt;
 
 use collab_types::MemberId;
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::{ActionKind, Answer, KindSet, Rule, TreePath};
+use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
 use tilo_resource::{ActionCx, Atom, Id, JsonSchema, Model, Refusal};
 
 use crate::{Agent, AgentState, OWNER, WorkspaceAgents};
@@ -79,37 +79,77 @@ pub const DEFAULT_KIND: &str = "subtask";
 /// Where a sub-agent works that the workspace's host works itself, with its own loop.
 pub const RUNS_ON_HOST: &str = "host";
 
-/// The rules that keep a sub-agent from reading upward in `workspace`: no read of anything
-/// Chat keeps there. It is more specific than the workspace-wide allow every agent's turn
-/// starts from, so it holds whatever else the turn carries.
+/// The kind of Chat's messages, as its actions are decided under it.
+const MESSAGES: &str = "chat.messages";
+
+/// What a sub-agent's turn writes in Chat, and nothing else of Chat's: its answer to what it
+/// was asked, a question to its person, and its words while it works. Whoever serves its turn
+/// takes each only in its own conversation, since a rule's path cannot say which conversation
+/// a message is in.
+pub const OWN_WRITES: [&str; 3] = ["record-work", "ask", "post"];
+
+/// The actions on the workspace's agents a sub-agent's turn keeps: those of its own team. The
+/// list itself guards them, and refuses a sub-agent every other
+/// ([`WorkspaceAgents::not_by_sub_agent`]).
+///
+/// What else is said of a sub-agent on its own item, what it made and how its harness works,
+/// is written by whatever works it, on the list as the sub-agent, and by no tool of its turn.
+const OWN_TEAM: [&str; 4] = [
+    "start-sub-agent",
+    "note-sub-agent",
+    "stop-sub-agent",
+    "sub-agent-stands",
+];
+
+/// The rules that keep a sub-agent from reading upward in `workspace`, and from writing
+/// there: no read of anything Chat keeps, and no action of Chat's but its [`OWN_WRITES`] and
+/// what steers its own team. The refusal is more specific than the workspace-wide allow every
+/// agent's turn starts from, so it holds whatever else the turn carries.
 #[must_use]
 pub fn one_way(workspace: &str) -> Vec<Rule> {
-    vec![Rule::new(
-        TreePath::workspace(workspace).app(OWNER),
-        KindSet::READ,
-        Answer::Deny,
-    )]
+    let chat = TreePath::workspace(workspace).app(OWNER);
+    let mut rules = vec![
+        // It reads nothing Chat keeps, and nothing of Chat's reaches outside for it.
+        Rule::new(
+            chat.clone(),
+            KindSet::READ.union(KindSet::OUTSIDE),
+            Answer::Deny,
+        ),
+        // No action of Chat's is its to call, one added later included: the kept ones are
+        // named below. What a kept action changes is saved field by field, under no action,
+        // so those writes stay with what every agent's turn starts from.
+        Rule::new(
+            chat.clone().rest().any(Level::Action),
+            KindSet::ALL,
+            Answer::Deny,
+        ),
+    ];
+    for (kind, items, kept) in [
+        (MESSAGES, "messages", &OWN_WRITES[..]),
+        (crate::KIND, "agents", &OWN_TEAM[..]),
+    ] {
+        // An action on one item of a collection is decided under the collection's own kind,
+        // which is the kind and the collection's field: both are named.
+        for held in [kind.to_owned(), format!("{kind}.{items}")] {
+            rules.extend(kept.iter().map(|action| {
+                Rule::new(
+                    chat.clone().kind(held.clone()).rest().action(*action),
+                    KindSet::UNDOABLE,
+                    Answer::Allow,
+                )
+            }));
+        }
+    }
+    rules
 }
 
-/// Make `rules`, what a sub-agent's record bounds it to, keep the one-way rule in `workspace`:
-/// a rule written for Chat alone would be more specific than [`one_way`] and so could allow a
-/// read under it, so such a rule loses its say over reads; then the rule itself is added. What
-/// the bound narrows anywhere else stands as it is.
+/// Make `rules`, what a sub-agent's item bounds it to, keep the one-way rule in `workspace`:
+/// a rule written for Chat alone would be more specific than [`one_way`] and so could allow
+/// under it, so only what such a rule refuses stands; then the rule itself is added. What the
+/// bound narrows anywhere else stands as it is.
 pub(crate) fn keep_one_way(rules: &mut Vec<Rule>, workspace: &str) {
     let chat = TreePath::workspace(workspace).app(OWNER);
-    rules.retain_mut(|rule| {
-        if rule.answer != Answer::Deny
-            && rule.kinds.contains(ActionKind::Read)
-            && chat.covers(&rule.node)
-        {
-            rule.kinds = rule
-                .kinds
-                .iter()
-                .filter(|kind| *kind != ActionKind::Read)
-                .fold(KindSet::NONE, KindSet::with);
-        }
-        !rule.kinds.is_empty()
-    });
+    rules.retain(|rule| rule.answer == Answer::Deny || !chat.covers(&rule.node));
     rules.extend(one_way(workspace));
 }
 

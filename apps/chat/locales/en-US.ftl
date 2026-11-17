@@ -477,10 +477,15 @@ chat-messages-withdraw-question = Withdraw a question
 chat-messages-settle-question = Say what came of an answer
 chat-messages-ask-agent = Ask an agent
 chat-messages-stop-agent = Stop an agent’s work
+chat-messages-post-view = Post a view
+chat-messages-answer-with-view = Answer with a view
+chat-messages-rewrite-view = Write a view again
 # What started a turn nobody typed, named where an author’s name would stand.
 chat-cause-reminder = Reminder: { $label }
 chat-cause-event = Event: { $label }
 chat-cause-news = News: { $label }
+chat-view-attached = A view is attached
+chat-view-attached-of = A view of { $apps } is attached
 # The question a message asks one person: what an action that asks first would
 # do, its answers, and how it stands once it no longer waits.
 chat-question-on = On “{ $resource }”

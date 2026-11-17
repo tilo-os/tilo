@@ -86,7 +86,7 @@ fn every_task_row_is_a_named_item_a_reader_opens_and_finishes() {
     // status, the state of its box, and the actions a press on it and a
     // right click make.
     for (number, title) in [(1, "Write the launch notes"), (2, "Book the room")] {
-        let name = format!("#{number}  {title}");
+        let name = format!("#{number} {title}");
         let row = named(&mut app, &name, Role::TreeItem);
         assert!(
             row.supports_action(AkAction::Click),
@@ -109,7 +109,7 @@ fn every_task_row_is_a_named_item_a_reader_opens_and_finishes() {
     }
 
     // Ticking a row's box finishes the issue without moving it.
-    let row_id = id_of(&mut app, "#1  Write the launch notes", Role::TreeItem);
+    let row_id = id_of(&mut app, "#1 Write the launch notes", Role::TreeItem);
     app.harness()
         .perform_a11y_action(row_id, &ui::a11y::Action::ToggleCheck)
         .expect("the box toggles");
@@ -120,7 +120,7 @@ fn every_task_row_is_a_named_item_a_reader_opens_and_finishes() {
         ["Write the launch notes", "Book the room", "Ship it"],
         "finishing an issue keeps its place"
     );
-    let row = named(&mut app, "#1  Write the launch notes", Role::TreeItem);
+    let row = named(&mut app, "#1 Write the launch notes", Role::TreeItem);
     assert_eq!(row.toggled(), Some(Toggled::True), "the row reads done");
     assert!(
         row.description().is_some_and(|said| said.contains("Done")),
@@ -130,15 +130,15 @@ fn every_task_row_is_a_named_item_a_reader_opens_and_finishes() {
 
     // The row's menu offers opening the issue and finishing it, and
     // reopening it once it is done.
-    open_menu(&mut app, "#2  Book the room");
+    open_menu(&mut app, "#2 Book the room");
     choose(&mut app, "Complete");
     assert_eq!(status_of(&app, "Book the room"), Status::Done);
-    open_menu(&mut app, "#2  Book the room");
+    open_menu(&mut app, "#2 Book the room");
     choose(&mut app, "Reopen");
     assert_eq!(status_of(&app, "Book the room"), Status::Todo);
 
     // The menu's first item is the row's own open: the issue's page.
-    open_menu(&mut app, "#3  Ship it");
+    open_menu(&mut app, "#3 Ship it");
     choose(&mut app, "Open issue");
     assert!(
         app.harness().targets().contains_key("tasks-issue-title"),

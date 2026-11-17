@@ -491,6 +491,13 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
         asked[0].tools.iter().any(|tool| tool.name == "tilo_ls"),
         "it acts through the agent tools"
     );
+    assert!(
+        asked[0]
+            .tools
+            .iter()
+            .all(|tool| tool.name != "answer_with_view"),
+        "an issue's answer is a comment: its turn is offered no view to answer with"
+    );
     let looked = format!("{:?}", asked[1].messages.last());
     assert!(
         !looked.contains("is_error: true"),
@@ -1228,6 +1235,14 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
     page.peer.close();
 }
 
+/// What a turn finds by words in what its workspace holds.
+#[path = "hosted_search.rs"]
+mod search;
+
 /// What starts a turn besides its person's typing, and what reaches a turn that is going.
 #[path = "hosted_agent_asks.rs"]
 mod asks;
+
+/// A turn that answers with a view it wrote.
+#[path = "hosted_agent_views.rs"]
+mod views;

@@ -1,6 +1,6 @@
-//! Callers the host acts for within bounds: a person the workspace admits who
-//! is not the host's own, and an agent acting for any person, the host's own
-//! included (`tilo mcp` on a computer `tilo login` made a device of theirs).
+//! Callers this service acts for within bounds: a person the workspace admits
+//! who is not the one its device belongs to, and an agent acting for any person,
+//! that one included (`tilo mcp` on a computer `tilo login` made a device of theirs).
 //!
 //! Such a caller's record actions run in a confined replica of their own,
 //! opened as them ([`crate::ReplicaActor::Member`]): the person's access as
@@ -26,7 +26,7 @@
 use super::{
     ActionHostError, Arc, Caller, ConfinedReplica, Confirmation, DocumentMutation, DocumentRoute,
     HashMap, HashSet, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome, Seed, Worker,
-    WorkspaceState, reads,
+    WorkspaceId, WorkspaceState, reads,
 };
 use tilo_actions::InvocationUpdate;
 use tilo_actions::api::ActionAddress;
@@ -34,7 +34,6 @@ use tilo_actions::remote::{
     ActorPlace, ConfirmationQuestion, ConfirmationReply, InvocationReceipt, InvocationState,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::WorkspaceId;
 use tilo_relay_protocol::live::LiveAnchor;
 use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 
@@ -74,6 +73,10 @@ pub(super) type BoundedKey = (
 pub(super) struct BoundedReplica {
     pub(super) held: Mounted,
     access: policy::MemberAccess,
+    /// The grants its caller carried. An agent's turn and what is written for that agent outside
+    /// a turn are one person and one agent under different rules: each acts on a replica opened
+    /// under its own, never on the other's.
+    granted: Vec<policy::Grant>,
     sandbox: Vec<collab_types::caps::CapOverride>,
     unix_time: u64,
 }
@@ -555,6 +558,32 @@ impl Worker {
                 .is_some_and(|link| link.admits(workspace_id, &who.person_caller))
     }
 
+    /// What `who` may do with the resource at `route`, as their listing's replica of it is
+    /// opened: the person's access as the workspace's policy gives it now, held to what bounds
+    /// an agent acting for them. `None` where the workspace does not let that person read it.
+    pub(super) fn permissions_at(
+        &self,
+        workspace_id: WorkspaceId,
+        who: &Bounded,
+        route: &DocumentRoute,
+    ) -> Option<ui::permissions::PermissionContext> {
+        let policy = self.policy_at(workspace_id, who, route).ok()?;
+        bounded_permissions(&policy, who).ok()
+    }
+
+    /// What `who` may do across the workspace `cluster`, with no one resource named
+    /// ([`Self::permissions_at`]): what its files are decided by. `None` for a person the
+    /// workspace does not admit.
+    pub(super) fn permissions_across(
+        &self,
+        workspace_id: WorkspaceId,
+        who: &Bounded,
+        cluster: &str,
+    ) -> Option<ui::permissions::PermissionContext> {
+        let policy = self.policy_for(workspace_id, who, cluster, None).ok()?;
+        bounded_permissions(&policy, who).ok()
+    }
+
     /// `who`'s replica of the record at `route` (a part: of the record it is
     /// held beside), opened as them on their access now, or the one held
     /// for them while that access is unchanged.
@@ -579,10 +608,12 @@ impl Worker {
         }
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
-        let same = self
-            .bounded
-            .get(&key)
-            .is_some_and(|held| held.access == policy.access && held.sandbox == policy.sandbox);
+        let granted = who.caller.granted(&policy.workspace);
+        let same = self.bounded.get(&key).is_some_and(|held| {
+            held.access == policy.access
+                && held.sandbox == policy.sandbox
+                && held.granted == granted
+        });
         let mut current = same
             && self.bounded.get(&key).is_some_and(|held| {
                 policy.unix_time.saturating_sub(held.unix_time) < ACCESS_FRESHNESS_SECS
@@ -635,6 +666,7 @@ impl Worker {
                         used: clock,
                     },
                     access: policy.access,
+                    granted,
                     sandbox: policy.sandbox,
                     unix_time: policy.unix_time,
                 },

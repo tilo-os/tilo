@@ -322,6 +322,22 @@ impl reqwest::dns::Resolve for CheckedResolver {
     }
 }
 
+/// Whether `error` is a [`guarded_client`]'s refusal to dial a name, because
+/// one of the addresses it resolved to is off the public internet: the
+/// request was not sent. A caller that tells its person why a service was
+/// not reached reads this where the proxy reads its own refusal.
+#[must_use]
+pub fn refused_address(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut source = Some(error);
+    while let Some(cause) = source {
+        if cause.is::<BlockedAddress>() {
+            return true;
+        }
+        source = cause.source();
+    }
+    false
+}
+
 /// A client that reaches only what `destinations` lets it: it follows no
 /// redirect, takes no proxy from the environment, and dials the addresses
 /// `lookup` answered once every one of them was checked.
@@ -341,7 +357,7 @@ fn guarded(destinations: Destinations, lookup: Lookup) -> reqwest::ClientBuilder
         }))
 }
 
-/// A client for a host's own request to an address a person named (a model
+/// A client for a server's own request to an address a person named (a model
 /// provider's endpoint), made as the proxy makes its requests: no redirect
 /// followed, no proxy taken from the environment, and under
 /// [`Destinations::Public`] only public addresses dialled, checked at the
