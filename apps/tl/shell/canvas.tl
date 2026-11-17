@@ -100,36 +100,79 @@ view canvas(a: Layout, name: Text, framed: Bool, lists: Bool) {
                     pointed.at(2) ?? 0,
                     (seen.at(0) ?? 0) + (seen.at(2) ?? 0) - (pointed.at(0) ?? 0),
                 ),
-                height: caret_line(),
+                height: composer_height(),
             ) {
-                ui.TextInput(
-                    bind: typed,
-                    placeholder: "Find or ask",
-                    autofocus: true,
-                    caret: true,
-                ) {
-                    on submit: session
-                        .place_found(
-                            text: typed,
-                            view: .none,
-                            strip: .none,
-                            x: pointed.at(0) ?? 0,
-                            y: pointed.at(1) ?? 0,
-                            width: pointed.at(2) ?? 0,
-                            height: pointed.at(3) ?? 0,
-                            seen_x: seen.at(0) ?? 0,
-                            seen_y: seen.at(1) ?? 0,
-                            seen_width: seen.at(2) ?? 0,
-                            seen_height: seen.at(3) ?? 0,
-                        )
-                        .then(set(typed, ""))
-                        .then(set(pointed, []))
-                        .then(asked_on_canvas(shell))
-                    on cancel: set(typed, "").then(set(pointed, []))
-                }
+                composer(typed, pointed, seen)
             }
         }
     }
+}
+
+/// The composer a click or a rectangle opens where the person pointed: one quiet card holding the
+/// line they type what they want on, the caret already in it, and a send that does what Enter
+/// does. Escape takes it away; once sent it goes, and the turn stands where it was.
+view composer(typed: State<Text>, pointed: State<List<Int>>, seen: State<List<Int>>) {
+    ui.Card {
+        row {
+            ui.TextInput(
+                bind: typed,
+                placeholder: "Ask or find anything",
+                autofocus: true,
+                caret: true,
+                fill,
+            ) {
+                on submit: session
+                    .place_found(
+                        text: typed,
+                        view: .none,
+                        strip: .none,
+                        x: pointed.at(0) ?? 0,
+                        y: pointed.at(1) ?? 0,
+                        width: pointed.at(2) ?? 0,
+                        height: pointed.at(3) ?? 0,
+                        seen_x: seen.at(0) ?? 0,
+                        seen_y: seen.at(1) ?? 0,
+                        seen_width: seen.at(2) ?? 0,
+                        seen_height: seen.at(3) ?? 0,
+                    )
+                    .then(set(typed, ""))
+                    .then(set(pointed, []))
+                    .then(asked_on_canvas(shell))
+                on cancel: set(typed, "").then(set(pointed, []))
+            }
+            ui.Button(
+                "Send",
+                icon: .send,
+                icon_only: true,
+                role: .primary,
+                size: .small,
+                enabled: typed != "",
+            ) {
+                on press: session
+                    .place_found(
+                        text: typed,
+                        view: .none,
+                        strip: .none,
+                        x: pointed.at(0) ?? 0,
+                        y: pointed.at(1) ?? 0,
+                        width: pointed.at(2) ?? 0,
+                        height: pointed.at(3) ?? 0,
+                        seen_x: seen.at(0) ?? 0,
+                        seen_y: seen.at(1) ?? 0,
+                        seen_width: seen.at(2) ?? 0,
+                        seen_height: seen.at(3) ?? 0,
+                    )
+                    .then(set(typed, ""))
+                    .then(set(pointed, []))
+                    .then(asked_on_canvas(shell))
+            }
+        }
+    }
+}
+
+/// How tall the composer stands, in canvas pixels: its one line and the card around it.
+fn composer_height() -> Int {
+    56
 }
 
 /// Whether the place `p` of the strip `s` hugs what it holds up to its box rather than filling

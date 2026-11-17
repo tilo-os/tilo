@@ -523,6 +523,13 @@ d-2e7aappl-key = Key
 
 d-2e7aappl-size = Size
 
+d-ce3pp2or = Drew place
+    .doc = Keeps how tall the hugging place `key` is drawn now, `size` carrying its height in canvas pixels as the map lays it out: the free area under it on the canvas is what the person sees there (canvas.md §1, §7), though the place could grow into it.
+
+d-ce3pp2or-key = Key
+
+d-ce3pp2or-size = Size
+
 d-nljxfsom = Move it here
     .doc = Puts a resource dropped on the canvas where it was let go.
 
@@ -876,7 +883,8 @@ d-moh3hzne = Bell
 d-s7yqm7cb = Canvas
     .w-click-anywhere-and-say-what-you = Click anywhere and say what you want
     .w-caret = Caret
-    .w-find-or-ask = Find or ask
+    .w-ask-or-find-anything = Ask or find anything
+    .w-send = Send
 
 d-kzhftbrb = Canvas place
 

@@ -515,7 +515,8 @@ d-gapwwnqc = Stil zeigen~present
 d-s7yqm7cb = Fläche
     .w-click-anywhere-and-say-what-you = Klicke irgendwo hin und sag, was du willst
     .w-caret = Schreibmarke
-    .w-find-or-ask = Finden oder fragen
+    .w-ask-or-find-anything = Frag oder finde etwas
+    .w-send = Senden
 
 d-kzhftbrb = Platz auf der Fläche
 
@@ -1219,3 +1220,10 @@ d-dah75qd2 = Kein Rahmen in Ruhe; die Kanten zeigen, was die Person braucht
 
 d-zsqlezfj = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen
     .doc = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen.
+
+d-ce3pp2or = Gezeichneter Platz
+    .doc = Hält fest, wie hoch der Platz `key`, der sich seinem Inhalt anpasst, jetzt gezeichnet ist; `size` trägt seine Höhe in Pixeln der Fläche, wie die Karte sie anlegt: die freie Fläche darunter ist, was die Person dort sieht (canvas.md §1, §7), auch wenn der Platz in sie wachsen könnte.
+
+d-ce3pp2or-key = Schlüssel
+
+d-ce3pp2or-size = Größe
