@@ -14,7 +14,11 @@
 #   - a variable the stack hands a service whose image does not set it stops
 #     the start, instead of being left out without a word;
 #   - the web entry's image sets the two folders its start hands it, so it is
-#     still told both.
+#     still told both;
+#   - stack.sh keys, which judges a stack that is up, fails when the server did
+#     not say where it keeps people's keys, when it says they are in the state,
+#     when a key lies there, or when a sealed store has no key apart, and tells
+#     a stack on which nobody sealed anything from one whose keys it saw.
 #
 # usage: test-native-env.sh
 set -euo pipefail
@@ -123,8 +127,43 @@ for pair in "XDG_DATA_HOME=$work/web/data" "XDG_CONFIG_HOME=$work/web/config"; d
   grep -Fqx "$pair" "$work/web.env" 2>/dev/null || fault "the web entry was not told $pair"
 done
 
+# -- stack.sh keys ------------------------------------------------------------
+
+# A state as a stack that is up leaves it: the server's log, and under the
+# server's state one person's sealed store. What the server says, and where
+# that person's key lies, is set for each case.
+log=$state/logs/server.log
+person=lounge/server/server/workspaces/people/0f1e2d3c/accounts/vault
+apart_line="2026-01-01T00:00:00.000000Z  INFO tilo_server::people_keys: the keys of people's sealed stores are kept apart from the state folder keys=$people_keys state=$state/server/lounge/server/server"
+state_line="2026-01-01T00:00:00.000000Z  WARN tilo_server::people_keys: the keys of people's sealed stores are kept in the state folder, each beside what it opens, so a copy of the state opens them: TILO_PEOPLE_KEYS names no folder state=$state/server/lounge/server/server"
+# judged WANT WHAT [SAID]: keys_apart ends as WANT (0 or 1), and what it says
+# holds SAID.
+judged() {
+  local want=$1 what=$2 said=${3:-} status=0
+  keys_apart > "$work/keys.said" 2>&1 || status=$?
+  [[ $status == "$want" ]] || fault "stack.sh keys answered $status, not $want, for $what: $(cat "$work/keys.said")"
+  [[ -z $said ]] || grep -Fq -- "$said" "$work/keys.said" \
+    || fault "stack.sh keys did not say '$said' for $what: $(cat "$work/keys.said")"
+}
+rm -rf "${people_keys:?}" "$state/server/lounge"
+: > "$log"
+judged 1 'a server that said nothing of where it keeps the keys' 'did not say'
+printf '%s\n' "$state_line" > "$log"
+judged 1 'a server that says it keeps the keys in its state' 'does not keep'
+printf '%s\n' "$state_line" "$apart_line" > "$log"
+judged 0 'a server that says so since its last start, with nothing sealed yet' 'nobody has sealed anything'
+mkdir -p "$state/server/$person" "$people_keys/0f1e2d3c/accounts/vault"
+: > "$state/server/$person/vault.enc"
+judged 1 'a sealed store with no key under the folder for the keys' 'only 0 keys'
+: > "$state/server/$person/vault.key"
+judged 1 'a key that lies in the state' "$person/vault.key"
+mv "$state/server/$person/vault.key" "$people_keys/0f1e2d3c/accounts/vault/vault.key"
+judged 0 'a sealed store whose key lies apart' '1 sealed stores in it, 1 keys under'
+printf '%s\n' "$apart_line" "$state_line" > "$log"
+judged 1 'a server that kept the keys apart before and now says it does not' 'does not keep'
+
 if ((faults)); then
   echo "FAIL: $faults things stack.sh tells the services it starts did not hold" >&2
   exit 1
 fi
-echo "ok: the server stack.sh starts is told the folder for people's keys ($people_keys, outside $state), a variable its image does not set stops the start, and the web entry's image sets what it is handed"
+echo "ok: the server stack.sh starts is told the folder for people's keys ($people_keys, outside $state), a variable its image does not set stops the start, the web entry's image sets what it is handed, and stack.sh keys tells a stack that keeps people's keys apart from one that does not"

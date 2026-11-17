@@ -56,6 +56,9 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          the build server
   stack.sh mail          the mail the entry sent (wait-list confirmations,
                          invitations), with the links in each
+  stack.sh keys          whether the keys of people's sealed stores are kept
+                         apart from the state: what the server says in its
+                         log, and where the files lie
   stack.sh owner --here [--name NAME]
                          the Lounge's first owner and a key for them, no
                          browser: a person whose root the stack keeps in its
@@ -1986,6 +1989,48 @@ down() {
   fi
 }
 
+# keys_apart: whether the stack that is up keeps the keys of people's sealed
+# stores apart from its state, by what its server says in its log and by where
+# the files lie. It fails, saying what it found, when the server did not say
+# where it keeps them or says it keeps them in the state, when a person's key
+# lies in the state, or when a sealed store there has no key under the keys'
+# folder. On a stack where nobody has sealed anything yet it says that too:
+# where a key would lie was then not seen.
+keys_apart() {
+  local log=$state/logs/server.log said found keys sealed apart
+  said=$(sed -E 's/\x1b\[[0-9;]*m//g' "$log" 2>/dev/null \
+    | grep -F "the keys of people's sealed stores are kept" | tail -1) || true
+  if [[ -z $said ]]; then
+    say "the server did not say where it keeps the keys of people's sealed stores ($log holds no such line)"
+    return 1
+  fi
+  if [[ $said != *'are kept apart from the state folder'* ]]; then
+    say "the server does not keep the keys of people's sealed stores apart from its state; it says: ${said#*the keys of }"
+    return 1
+  fi
+  found=$(find "$state/server" -path '*/workspaces/people/*' \( -name vault.key -o -name vault.enc \)) || {
+    say "the state under $state/server could not be read whole, so where people's keys lie was not seen"
+    return 1
+  }
+  keys=$(grep -c '/vault\.key$' <<<"$found" || true)
+  sealed=$(grep -c '/vault\.enc$' <<<"$found" || true)
+  if ((keys > 0)); then
+    say "$keys keys of people's sealed stores lie in the state, each beside what it opens:"
+    grep '/vault\.key$' <<<"$found" >&2
+    return 1
+  fi
+  apart=$(find "$people_keys" -name vault.key 2>/dev/null | wc -l)
+  if ((apart < sealed)); then
+    say "$sealed sealed stores of people lie in the state, and only $((apart)) keys under $people_keys"
+    return 1
+  fi
+  if ((sealed > 0)); then
+    printf '%s\n' "people's keys are kept apart from the state: $sealed sealed stores in it, $((apart)) keys under $people_keys, no key in the state"
+  else
+    printf '%s\n' "the server says it keeps people's keys apart from the state; nobody has sealed anything on this stack yet, so no key was seen where it lies"
+  fi
+}
+
 status() {
   local svc url
   printf '%-9s %-8s %s\n' service state address
@@ -2288,6 +2333,7 @@ if remote_here && [[ $cmd != up ]]; then
     logs)
       if [[ ${1:-} == remote ]]; then cat "$state/logs/remote.log"; else remote_cmd logs "$@"; fi ;;
     mail) remote_cmd mail ;;
+    keys) remote_cmd keys ;;
     browser) browser "$@" ;;
     check)
       die 'the end-to-end check drives a browser on the machine and reads the state of the stack it checks: run it against a stack here with TILO_SH_REMOTE=0 stack.sh check' ;;
@@ -2304,6 +2350,7 @@ case $cmd in
   restart) restart "$@" ;;
   logs) [[ -n ${1:-} ]] || die 'logs NAME: server, tls, api, web, discord, releases, mail, bundle'; cat "$state/logs/$1.log" ;;
   mail) list_mail ;;
+  keys) keys_apart ;;
   owner) declare_owner "$@" ;;
   invite) invite_link "$@" ;;
   tilo) owner_tilo "$@" ;;

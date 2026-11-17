@@ -308,6 +308,11 @@ bring_up=$(cat "$state/bring-up-seconds")
 tilo=$(find_tilo)
 echo "the tilo command: $tilo"
 
+# The stack that came up keeps the keys of people's sealed stores apart from
+# its state, or what the people of the steps below seal would lie beside its
+# key (stack.sh keys).
+keys_apart || fail "the stack does not keep people's keys apart from its state"
+
 if runs_any 1 2 3 4 5 6 8 9 10 11 12 13 14 15 16 17 18; then
   startup_identity
 fi
@@ -671,6 +676,9 @@ if runs_step 7; then
 fi
 
 passkey_round
+
+# And where the keys lie, now that the steps' people have been here.
+keys_apart || fail "a person's key lies in the stack's state, or a sealed store has no key apart from it"
 
 python3 - "$report" "$bring_up" "$visa_seconds" "${TILO_SH_SEED:-0}" "${entries[@]}" <<'EOF'
 import json, os, statistics, sys
