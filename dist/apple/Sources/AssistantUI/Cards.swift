@@ -53,7 +53,6 @@ struct SecretCard: View {
     /// Dots to stand in the field for a picture of it filled. Nothing a person types comes this way.
     var pictured = ""
     @Environment(AssistantModel.self) private var model
-    @Environment(\.coversSecrets) private var covered
     @State private var typed = ""
     @State private var saving = false
 
@@ -62,36 +61,7 @@ struct SecretCard: View {
         CardBox(name: request.name, note: AssistantWords.keptInVault.said) {
             switch request.state {
             case .waiting:
-                HStack(spacing: 10) {
-                    Glyph(.lock).foregroundStyle(Token.ink3)
-                    SecureField("", text: $typed)
-                        .textFieldStyle(.plain)
-                        .font(.tiloMono(14))
-                        .foregroundStyle(Token.ink2)
-                        .autocorrectionDisabled()
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .onSubmit(save)
-                        .accessibilityLabel(AssistantWords.secretField.said(["name": request.name]))
-                        .accessibilityHidden(covered)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(Token.content, in: RoundedRectangle(cornerRadius: 9))
-                .overlay {
-                    // Out of sight while the app is not in front: not how long it is, not a dot of it.
-                    if covered {
-                        HStack(spacing: 10) {
-                            Glyph(.lock).foregroundStyle(Token.ink3)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 12)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Token.content, in: RoundedRectangle(cornerRadius: 9))
-                        .accessibilityHidden(true)
-                    }
-                }
+                ProtectedField(typed: $typed, label: AssistantWords.secretField.said(["name": request.name]), submit: save)
                 Flow(spacing: 8, lineSpacing: 8) {
                     Button(AssistantWords.save.said, action: save)
                         .buttonStyle(BoxButtonStyle(isMain: true))
@@ -124,6 +94,169 @@ struct SecretCard: View {
         Task {
             _ = await model.keep(secret, for: request.id)
             saving = false
+        }
+    }
+}
+
+/// The system's protected field behind its lock: the one field of the app that a secret is typed
+/// into, for the card that asks for a secret and for the one that links a provider. What is
+/// typed lives in the card's own state until its button hands it on, and it is out of sight
+/// while the app is not in front.
+struct ProtectedField: View {
+    @Binding var typed: String
+    /// What the field is for, as it is read out.
+    let label: String
+    let submit: () -> Void
+    @Environment(\.coversSecrets) private var covered
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Glyph(.lock).foregroundStyle(Token.ink3)
+            SecureField("", text: $typed)
+                .textFieldStyle(.plain)
+                .font(.tiloMono(14))
+                .foregroundStyle(Token.ink2)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .onSubmit(submit)
+                .accessibilityLabel(label)
+                .accessibilityHidden(covered)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Token.content, in: RoundedRectangle(cornerRadius: 9))
+        .overlay {
+            // Out of sight while the app is not in front: not how long it is, not a dot of it.
+            if covered {
+                HStack(spacing: 10) {
+                    Glyph(.lock).foregroundStyle(Token.ink3)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Token.content, in: RoundedRectangle(cornerRadius: 9))
+                .accessibilityHidden(true)
+            }
+        }
+    }
+}
+
+/// What stands between the person and their assistant's first answer, said in the main chat
+/// where that answer would stand: the assistant being set up, why it could not be, the provider
+/// to link, the model to choose.
+struct SetupStep: View {
+    @Environment(AssistantModel.self) private var model
+    /// The models that can be chosen since a provider was linked here: the choice stays in the
+    /// conversation until the person made it, or went on writing.
+    @State private var offered: [ModelChoice] = []
+
+    var body: some View {
+        Group {
+            switch model.setup {
+            case .findingAssistant:
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text(AssistantWords.findingAssistant.said).font(.body14).foregroundStyle(Token.ink2)
+                }
+                .padding(.leading, 14)
+                .accessibilityElement(children: .combine)
+            case .noAssistant(let why):
+                Bubble { MarkdownText(text: why) }
+                Button(AssistantWords.tryAgain.said) { model.makeAssistant() }.buttonStyle(BoxButtonStyle(isMain: true))
+            case .needsProvider(let providers):
+                ProviderCard(providers: providers) { offered = $0 }
+            case .needsModel(let models):
+                ModelCard(models: models)
+            case .unknown, .ready:
+                if !offered.isEmpty { ModelCard(models: offered) }
+            }
+        }
+        .onChange(of: model.conversation(.main).items.count) { offered = [] }
+    }
+}
+
+/// The provider step: no provider is linked, so the main chat says so and offers the step. The
+/// person picks a provider and types a key of their own into the protected field, the same one
+/// a secret is typed into. What is typed lives in this view alone until the button hands it to
+/// their vault; the app has no other field for a key.
+struct ProviderCard: View {
+    let providers: [ProviderChoice]
+    /// Called with the models that can be chosen once the provider is linked.
+    let linked: ([ModelChoice]) -> Void
+    @Environment(AssistantModel.self) private var model
+    @State private var picked: ProviderChoice.ID?
+    @State private var typed = ""
+    @State private var linking = false
+
+    var body: some View {
+        Bubble { MarkdownText(text: AssistantWords.needsProvider.said) }
+        if let provider = providers.first(where: { $0.id == picked }) ?? providers.first {
+            CardBox(name: provider.name, note: AssistantWords.keptInVault.said) {
+                if providers.count > 1 {
+                    Flow(spacing: 8, lineSpacing: 8) {
+                        ForEach(providers) { choice in
+                            Button(choice.name) {
+                                // A key typed for one provider is not handed to another.
+                                if choice.id != provider.id { typed = "" }
+                                picked = choice.id
+                            }
+                            .buttonStyle(BoxButtonStyle())
+                            .opacity(choice.id == provider.id ? 1 : 0.6)
+                            .accessibilityAddTraits(choice.id == provider.id ? .isSelected : [])
+                        }
+                    }
+                }
+                ProtectedField(typed: $typed, label: AssistantWords.providerKey.said(["name": provider.name])) { link(provider) }
+                Button(AssistantWords.linkProvider.said(["name": provider.name])) { link(provider) }
+                    .buttonStyle(BoxButtonStyle(isMain: true))
+                    .disabled(typed.isEmpty || linking)
+                Fine(words: AssistantWords.secretFine.said)
+            }
+            .onDisappear { typed = "" }
+        }
+    }
+
+    private func link(_ provider: ProviderChoice) {
+        guard !typed.isEmpty, !linking else { return }
+        // The field is emptied before the key leaves: it is held in one place at a time.
+        let key = Secret(typed)
+        typed = ""
+        linking = true
+        Task {
+            if await model.link(provider.id, key: key) { linked(model.models) }
+            linking = false
+        }
+    }
+}
+
+/// The models a linked provider offers, for the person to choose the one the main chat answers
+/// on. They are the ones the person's server listed; nothing here names a model.
+struct ModelCard: View {
+    let models: [ModelChoice]
+    @Environment(AssistantModel.self) private var model
+    @State private var chosen: ModelChoice?
+
+    var body: some View {
+        Bubble { MarkdownText(text: AssistantWords.needsModel.said) }
+        CardBox(name: AssistantWords.model.said, note: chosen?.provider ?? models.first?.provider ?? "") {
+            if let chosen { Settled(words: AssistantWords.answersOn.said(["model": chosen.name])) }
+            Menu {
+                ForEach(models) { choice in
+                    Button(choice.name) {
+                        chosen = choice
+                        model.choose(choice.id)
+                    }
+                }
+            } label: {
+                Text((chosen == nil ? AssistantWords.chooseModel : AssistantWords.change).said)
+                    .font(.tilo(14, .medium)).foregroundStyle(Token.asst)
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
     }
 }

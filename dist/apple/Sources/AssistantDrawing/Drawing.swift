@@ -186,6 +186,18 @@ public enum Drawing {
          ModelChoice(id: "google/gemini-3-pro", name: "Gemini 3 Pro", provider: "Google")]
     }
 
+    // MARK: The first run
+
+    /// What Tilo's page asks before a device is paired, as it says it for its own server.
+    public static let pairingAsk = PairingAsk(
+        heading: "Add this device?",
+        said: ["You are adding this device to Xaver E’s devices. If that is not you, stop.",
+               "The server that adds it is this site’s own, tilo.example.",
+               "Whoever made this link approves it on a device of theirs. From then on this device acts as them, and what you do here is theirs."],
+        go: "Add this device", stop: "Stop")
+
+    public static let providers = [ProviderChoice(id: "anthropic", name: "Anthropic"), ProviderChoice(id: "gemini", name: "Google Gemini")]
+
     // MARK: Pieces of the conversation
 
     public static var secretPiece: [Item] {

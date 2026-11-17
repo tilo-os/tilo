@@ -88,6 +88,23 @@ public enum EngineScript {
       const root = document.documentElement;
       let mount;
       let said = '';
+      // What the page asks before it pairs a device (web/entry-page.mjs, `pairingAgree`): a card
+      // of its own that says whose device this becomes, which server adds it and what follows,
+      // with its two ways on. The app shows its person these sentences; nothing here answers.
+      const whoseCard = () => {
+        const card = document.querySelector('.tilo-entry-card[data-card="pair-whose"]');
+        const buttons = card ? [...card.querySelectorAll('button')] : [];
+        const go = buttons.find(button => button.classList.contains('tilo-entry-primary'));
+        const stop = buttons.find(button => button !== go);
+        return go && stop ? {card, go, stop} : null;
+      };
+      const asking = () => {
+        const found = whoseCard();
+        if (!found) return null;
+        const words = element => (element?.textContent ?? '').trim().slice(0, 600);
+        return {heading: words(found.card.querySelector('h2')), go: words(found.go), stop: words(found.stop),
+          said: [...found.card.querySelectorAll('p')].map(words).filter(Boolean).slice(0, 8)};
+      };
       const state = () => {
         const data = root.dataset;
         const now = {
@@ -95,7 +112,7 @@ public enum EngineScript {
           // A page that cannot draw empties its status line and says why in a card.
           status: ((document.getElementById('status')?.textContent ?? '')
             || (data.entry === 'unsupported' ? document.querySelector('.tilo-entry-card[data-card="renderer"] p')?.textContent ?? '' : '')).slice(0, 400),
-          route: location.pathname + location.hash.split('?')[0], mounted: Boolean(mount),
+          route: location.pathname + location.hash.split('?')[0], mounted: Boolean(mount), ask: asking(),
         };
         const text = JSON.stringify(now);
         if (text === said) return;
@@ -240,6 +257,7 @@ public enum EngineScript {
       // the person's providers. It stands here, in no function a page's script could print.
       const pass = %PASS%;
       const providers = new Set(%PROVIDERS%);
+      const agentActions = new Set(['read', 'create-agent', 'set-agent-on-host']);
       const holds = given => {
         if (typeof given !== 'string' || !pass || given.length !== pass.length) return false;
         let differs = 0;
@@ -298,6 +316,32 @@ public enum EngineScript {
           try {
             const own = await device.ownWorkspace();
             return JSON.stringify({ok: {id: own?.id ?? null, name: own?.name ?? null, origin: own?.origin ?? null}});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
+        // The person's answer to what the page asks before it pairs, handed on as a press of
+        // the page's own button. Only the app's own code reaches this, with the engine's
+        // pass, and the app calls it only from its person's press.
+        pairing(given, goOn) {
+          const found = holds(given) ? whoseCard() : null;
+          if (!found) return false;
+          (goOn === true ? found.go : found.stop).click();
+          return true;
+        },
+        // The agents the workspace keeps (Chat's `chat.agent`), asked of the workspace's server
+        // as the person on this device: their read, one agent's read, and the two actions that
+        // make a person's assistant. Nothing else of Chat's document is asked this way.
+        async agents(given, action, argument, item) {
+          const named = item === null || item === undefined || (typeof item === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(item));
+          if (!holds(given) || !agentActions.has(action) || !named || (item && action !== 'read')) return unknown('chat.agent', action);
+          if (!device) return noDevice();
+          // Chat's own document of the workspace, as the page that shows it names it.
+          const shown = mount?.state?.()?.record;
+          const provider = `record:so.tilo.chat:${typeof shown === 'string' && shown ? shown : '@tilo:package-primary'}`;
+          try {
+            const answer = await device.invoke({provider, address: {resource: item ? `chat.agent/agents/${item}` : 'chat.agent', action}},
+              argument && Object.keys(argument).length ? argument : null);
+            return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
+              error: answer?.error ?? null}, '')});
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
         actions(resource, id) {

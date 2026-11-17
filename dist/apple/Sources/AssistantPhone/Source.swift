@@ -21,9 +21,6 @@ enum Source {
     /// agents yet. Without it the main chat is the person's conversation with their assistant.
     static let mainChatKey = "TiloMainChat"
 
-    /// The key of one agent whose conversation with the person is the main chat, by its id: for
-    /// a site whose page does not say which agents its workspace keeps.
-    static let agentKey = "TiloAssistantAgent"
     /// What this device is called where its person lets it in and lists their devices.
     static var deviceName: String {
         #if canImport(UIKit)
@@ -43,9 +40,8 @@ enum Source {
             return made
         }()
         let chat = defaults.string(forKey: mainChatKey).flatMap { $0.isEmpty ? nil : $0 }
-        let agent = defaults.string(forKey: agentKey).flatMap { $0.isEmpty ? nil : $0 }
-        let mainChat: TiloSource.MainChat = chat.map { .conversation(id: $0, name: $0) }
-            ?? agent.map { .agent(id: $0, name: "Assistant") } ?? .assistant
+        // Without one the app finds its person's assistant by itself, and makes it where they keep none.
+        let mainChat: TiloSource.MainChat = chat.map { .conversation(id: $0, name: $0) } ?? .assistant
         return TiloSource(settings: settings, store: store, mainChat: mainChat, deviceName: deviceName)
     }()
 

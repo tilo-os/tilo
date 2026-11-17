@@ -125,6 +125,22 @@ final class EngineTests: XCTestCase {
           }
         },
       }));
+      // As the page that asks before it pairs (entry-page.mjs, pairingAgree): a card of its own
+      // that says whose device this becomes, which server adds it and what follows, with its
+      // two buttons. What a press did is kept, so a test sees who pressed.
+      window.askWhose = (whose, server) => {
+        const card = document.createElement('div'); card.className = 'tilo-entry-card tilo-pair'; card.dataset.card = 'pair-whose';
+        const heading = document.createElement('h2'); heading.textContent = 'Add this device?';
+        const line = (text, name) => { const said = document.createElement('p'); said.textContent = text; if (name) said.className = name; return said; };
+        const actions = document.createElement('div'); actions.className = 'tilo-entry-actions';
+        const go = document.createElement('button'); go.type = 'button'; go.className = 'tilo-entry-primary'; go.textContent = 'Add this device';
+        const stop = document.createElement('button'); stop.type = 'button'; stop.textContent = 'Stop';
+        go.addEventListener('click', () => { card.remove(); window.agreed = true; });
+        stop.addEventListener('click', () => { card.remove(); window.agreed = false; });
+        actions.append(go, stop);
+        card.append(heading, line(whose, 'tilo-pair-whose'), line(server, 'tilo-pair-whose'), line('From then on this device acts as them.'), actions);
+        document.body.append(card);
+      };
       // A page that says itself when something it shows changed.
       window.told = [];
       window.offerChanges = () => { globalThis.tiloChanges = {listen: listener => { window.told.push(listener); return () => { window.told = []; }; }}; };
@@ -715,6 +731,91 @@ final class EngineTests: XCTestCase {
         // The address itself, and three more tries.
         XCTAssertEqual(asked, 4)
         XCTAssertFalse(stood.contains { if case .open = $0 { true } else { false } })
+    }
+
+    // MARK: What the page asks before it pairs, and the workspace's agents
+
+    /// What a script in the page answers, as text.
+    private func said(_ script: String, _ arguments: [String: Any] = [:]) async throws -> String {
+        try await engine.view.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: .page) as? String ?? ""
+    }
+
+    func testWhatThePageAsksBeforeItPairsIsToldInItsOwnWordsAndOnlyAnAnswerPressesItsButton() async throws {
+        let whose = "You are adding this device to the devices of whoever made this link. If you did not make it yourself, stop."
+        let server = "This device would join another server, own.example, which is not this site’s own."
+        _ = try await said("askWhose(whose, server); return ''", ["whose": whose, "server": server])
+        try await until("the page's question is told") { if case .asking = self.engine.state { true } else { false } }
+        guard case .asking(let ask) = engine.state else { return XCTFail("the engine does not stand at the page's question") }
+        XCTAssertEqual(ask, TiloEngine.PairingAsk(heading: "Add this device?",
+                                                  said: [whose, server, "From then on this device acts as them."],
+                                                  go: "Add this device", stop: "Stop"))
+        // Nothing answers by itself: the card stands for as long as nobody presses.
+        try await Task.sleep(for: .milliseconds(400))
+        let untouched = try await said("return String(window.agreed)")
+        XCTAssertEqual(untouched, "undefined")
+        XCTAssertEqual(engine.state, .asking(ask))
+        // Without the engine's pass no script answers through the engine's entry.
+        let refused = try await said("return String(globalThis.__tiloLive.pairing('', true)) + ' ' + String(window.agreed)")
+        XCTAssertEqual(refused, "false undefined")
+        // The person's yes is a press of the page's own button, after which the page goes on.
+        let pressed = await engine.answerPairing(goOn: true)
+        XCTAssertTrue(pressed)
+        let agreed = try await said("return String(window.agreed)")
+        XCTAssertEqual(agreed, "true")
+        try await run("pairing('135790')")
+        try await until("the code to compare is told") { self.engine.state == .pairing(code: "135790") }
+        // Nothing is left to answer, and nothing is pressed.
+        let late = await engine.answerPairing(goOn: true)
+        XCTAssertFalse(late)
+    }
+
+    func testStoppingPressesThePagesOwnStop() async throws {
+        _ = try await said("askWhose('Whose it becomes.', 'Which server adds it.'); return ''")
+        try await until("the page's question is told") { if case .asking = self.engine.state { true } else { false } }
+        let pressed = await engine.answerPairing(goOn: false)
+        XCTAssertTrue(pressed)
+        let agreed = try await said("return String(window.agreed)")
+        XCTAssertEqual(agreed, "false")
+        try await until("the question is gone") { if case .asking = self.engine.state { false } else { true } }
+    }
+
+    func testTheWorkspacesAgentsAreAskedOfItsServerAsThePersonAndNothingElseOfChatsDocumentIs() async throws {
+        try await enterAsADevice()
+        // This server offers none of it. Its own refusal comes back, and it was asked as the
+        // person, under Chat's own document of the workspace.
+        do {
+            try await engine.askAgents("read")
+            XCTFail("a server that offers no agents answered")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .refused(code: "unknown_action", reason: "No such action is offered"))
+        }
+        _ = try? await engine.askAgents("read", agent: "scout")
+        // The document is named as the page that shows it names it.
+        try await run("globalThis.tiloMount.state = () => ({record: 'uuid:1f0e'})")
+        _ = try? await engine.askAgents("create-agent", ["name": "Assistant"])
+        let targets = try await said("return JSON.stringify(window.asked.map(one => [one.target.provider, one.target.address.resource, one.target.address.action, one.argument]))")
+        // Chat's own document of the workspace, as its server names what it offers of one.
+        let chat = "record:so.tilo.chat:"
+        XCTAssertEqual(JSON(text: targets), [
+            [.string(chat + "@tilo:package-primary"), "chat.agent", "read", .null],
+            [.string(chat + "@tilo:package-primary"), "chat.agent/agents/scout", "read", .null],
+            [.string(chat + "uuid:1f0e"), "chat.agent", "create-agent", ["name": "Assistant"]],
+        ])
+        // Any other action, an action on one agent, a name that is none, and a script without
+        // the engine's pass: the server is not asked at all.
+        let cases: [(String, String?)] = [("retire-agent", nil), ("create-agent", "scout"), ("read", "../chat.workspace")]
+        for (action, agent) in cases {
+            do {
+                try await engine.askAgents(action, agent: agent)
+                XCTFail("\(action) was asked of the server")
+            } catch let problem as TiloEngine.Problem {
+                XCTAssertEqual(problem, .refused(code: "unknown_action", reason: "no action addressed by (chat.agent, \(action))"))
+            }
+        }
+        let bare = try await said("return await globalThis.__tiloLive.agents('', 'read', null, null)")
+        XCTAssertTrue(bare.contains("unknown_action"), bare)
+        let count = try await said("return String(window.asked.length)")
+        XCTAssertEqual(count, "3")
     }
 
     private func run(_ script: String) async throws {

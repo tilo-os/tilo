@@ -179,3 +179,31 @@ extension TiloEngine {
         try await invoke("stop-agent", on: resource, ["message": .string(message.name)])
     }
 }
+
+extension TiloEngine {
+    /// Ask the workspace's server about the agents the workspace keeps (Chat's `chat.agent`), as
+    /// the person on this device: `read`, `create-agent` or `set-agent-on-host`, and with
+    /// `agent` the read of that one agent. The server knows what the workspace keeps also where
+    /// this page does not hold it yet, so its answer is what says that a person keeps no
+    /// assistant. Nothing else of Chat's document is asked this way: the page's own mount
+    /// publishes the rest.
+    ///
+    /// - Throws: `Problem.refused` with the server's own code and sentence; `unavailable` for a
+    ///   page that hands a native app no way to its workspace's server, `unknown_action` for a
+    ///   server that offers no such thing.
+    @discardableResult
+    public func askAgents(_ action: String, _ arguments: [String: JSON] = [:], agent: String? = nil) async throws -> JSON {
+        let answer = try await ask("return globalThis.__tiloLive.agents(given, action, argument, item)",
+                                   ["given": pass, "action": action, "argument": JSON.object(arguments).any,
+                                    "item": agent.map { $0 as Any } ?? NSNull()])
+        switch answer["state"]?.string {
+        case "succeeded":
+            return answer["value"] ?? .null
+        case "failed":
+            throw Problem.refused(code: answer["error"]?["code"]?.string ?? "failed",
+                                  reason: answer["error"]?["message"]?.string ?? "")
+        default:
+            throw Problem.noAnswer
+        }
+    }
+}

@@ -13,7 +13,7 @@ import WebKit
 /// model the window's views read and call, and nothing on screen. It is never the app in front
 /// and has no icon in the Dock.
 ///
-///   AssistantMac --drive --site ORIGIN --store UUID [--main-chat CONVERSATION | --assistant AGENT]
+///   AssistantMac --drive --site ORIGIN --store UUID [--main-chat CONVERSATION]
 ///                [--device-name NAME] [--code-file FILE]
 ///   AssistantMac --drive --store UUID --forget
 ///
@@ -21,10 +21,14 @@ import WebKit
 /// main chat as the model holds it, what the model says did not go through. Steps arrive on
 /// standard input, one JSON object a line:
 ///   {"do": "pair", "file": "…"}                      a file that holds a pairing link
+///   {"do": "add-device"}   {"do": "stop-pairing"}    as the two buttons under what Tilo asks before it pairs
+///   {"do": "make-assistant"}                         as Try again does where the assistant could not be made
+///   {"do": "choose", "model": "…"}                    as the main chat's choice of a model
 ///   {"do": "send", "text": "…"}                      as the message field sends
 ///   {"do": "answer", "question": "…", "choice": "…"}  as a question's button answers
 ///   {"do": "keep", "request": "…", "file": "…"}       as the protected field keeps what was typed
-///   {"do": "link", "preset": "…", "file": "…", "model": "…"}   a provider's key from the protected field
+///   {"do": "link", "preset": "…", "file": "…"}       as the provider step's protected field links a provider;
+///                                                    with "model" the provider's default model is set as well
 ///   {"do": "event", "name": "…", "when": "…", "instruction": "…"}   something that comes at a time
 ///   {"do": "stop"}                                    stop the answer that is being written
 ///   {"do": "models"}   {"do": "state"}   {"do": "quit"}
@@ -86,8 +90,8 @@ final class AssistantDrive {
         }
         guard let site = argument("--site"), let settings = try? ShellSettings(site: site) else { stop("--site names a Tilo site") }
         guard let defaults = UserDefaults(suiteName: suite(store)) else { stop("no place to keep what the app keeps") }
-        let chat: TiloSource.MainChat = argument("--main-chat").map { .conversation(id: $0, name: $0) }
-            ?? argument("--assistant").map { .agent(id: $0, name: "Assistant") } ?? .assistant
+        // Without a conversation the app finds its person's assistant by itself, and makes it where they keep none.
+        let chat: TiloSource.MainChat = argument("--main-chat").map { .conversation(id: $0, name: $0) } ?? .assistant
         let source = TiloSource(settings: settings, store: store, mainChat: chat, defaults: defaults,
                                 deviceName: argument("--device-name") ?? "")
         let drive = AssistantDrive(source: source, codeFile: argument("--code-file"))
@@ -119,6 +123,7 @@ final class AssistantDrive {
         switch state {
         case .away: break
         case .arriving(let step): AssistantDrive.say(["state": "arriving", "step": .string(step), "s": seconds])
+        case .asking(let ask): AssistantDrive.say(["state": "asking", "said": .number(Double(ask.said.count)), "s": seconds])
         case .pairing(let code):
             if let codeFile {
                 FileManager.default.createFile(atPath: codeFile, contents: Data(code.utf8), attributes: [.posixPermissions: 0o600])
@@ -155,6 +160,9 @@ final class AssistantDrive {
         switch model.session {
         case nil: break
         case .signedOut: once("session", ["is": "signedOut"])
+        case .asked(let ask):
+            once("session", ["is": "asked", "heading": .string(ask.heading), "said": .array(ask.said.map(JSON.string)),
+                             "go": .string(ask.go), "stop": .string(ask.stop)])
         case .pairing: once("session", ["is": "pairing"])
         case .confirming(let code): once("session", ["is": "confirming", "code": .string(code)])
         case .signedIn(let person):
@@ -162,6 +170,14 @@ final class AssistantDrive {
                              "person": .string(String(person.id.value.prefix(6)))])
         }
         once("reach", .string(model.reach == .reachable ? "reachable" : "unreachable"))
+        switch model.setup {
+        case .unknown: once("setup", ["is": "unknown"])
+        case .findingAssistant: once("setup", ["is": "findingAssistant"])
+        case .noAssistant(let why): once("setup", ["is": "noAssistant", "why": .string(why)])
+        case .needsProvider(let providers): once("setup", ["is": "needsProvider", "providers": .array(providers.map { .string($0.id.value) })])
+        case .needsModel(let models): once("setup", ["is": "needsModel", "models": .number(Double(models.count))])
+        case .ready: once("setup", ["is": "ready"])
+        }
         let conversation = model.conversation(.main)
         once("conversation", ["loaded": .bool(conversation.isLoaded), "pieces": .number(Double(conversation.items.count))])
         once("answering", .bool(conversation.isAnswering))
@@ -267,8 +283,18 @@ final class AssistantDrive {
                 AssistantDrive.say(["error": "link takes preset and a file that holds what was typed"])
                 return
             }
+            guard let chosen = step["model"]?.string else {
+                // As the provider step does: the key from the protected field, through the window's model.
+                let taken = await model.link(.init(preset), key: Secret(typed))
+                if taken {
+                    AssistantDrive.say(["linked": ["models": .number(Double(model.models.count))]])
+                } else {
+                    AssistantDrive.say(["linked": false, "why": .string(model.problem ?? "")])
+                }
+                return
+            }
             do {
-                let offered = try await source.link(provider: preset, key: Secret(typed), model: step["model"]?.string)
+                let offered = try await source.link(provider: preset, key: Secret(typed), model: chosen)
                 AssistantDrive.say(["linked": ["models": .number(Double(offered.count))]])
             } catch SourceProblem.refused(let why) {
                 AssistantDrive.say(["linked": false, "why": .string(why)])
@@ -288,6 +314,17 @@ final class AssistantDrive {
             } catch {
                 AssistantDrive.say(["setUp": false, "why": "unreachable"])
             }
+        case "add-device", "stop-pairing":
+            // The person's own press under what Tilo asked: whoever drives this program is its person.
+            model.answerPairing(goOn: what == "add-device")
+            AssistantDrive.say(["asked": .string(what)])
+        case "make-assistant":
+            model.makeAssistant()
+            AssistantDrive.say(["asked": "make-assistant"])
+        case "choose":
+            guard let chosen = step["model"]?.string else { AssistantDrive.say(["error": "choose takes model"]); return }
+            model.choose(.init(chosen))
+            AssistantDrive.say(["asked": "choose"])
         case "stop":
             model.stopAnswering(in: .main)
             AssistantDrive.say(["asked": "stop"])

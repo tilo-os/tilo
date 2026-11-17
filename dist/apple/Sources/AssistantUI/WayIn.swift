@@ -26,7 +26,9 @@ public struct WayIn: View {
                         .frame(maxWidth: 420)
                 }
             }
-            if model.session == .pairing {
+            if case .asked(let ask) = model.session {
+                PairingAskView(ask: ask)
+            } else if model.session == .pairing {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
                     Text(AssistantWords.pairing.said).font(.body14).foregroundStyle(Token.ink2)
@@ -42,6 +44,11 @@ public struct WayIn: View {
                         .accessibilityLabel(code.filter { !$0.isWhitespace }.map(String.init).joined(separator: " "))
                     Text(AssistantWords.compareCode.said).font(.body14).foregroundStyle(Token.ink2)
                         .multilineTextAlignment(.center).frame(maxWidth: 420)
+                    // What Tilo said before it asked, once more while the other device decides.
+                    ForEach(model.pairingSaid, id: \.self) { sentence in
+                        Text(sentence).font(.small125).foregroundStyle(Token.ink3)
+                            .multilineTextAlignment(.center).frame(maxWidth: 420)
+                    }
                 }
                 .padding(.top, 6)
             } else {
@@ -82,8 +89,12 @@ public struct WayIn: View {
         #endif
     }
 
+    /// While Tilo asks, or a code is compared, that is what the window is about.
     private var comparing: Bool {
-        if case .confirming = model.session { true } else { false }
+        switch model.session {
+        case .asked, .confirming: true
+        default: false
+        }
     }
 
     /// A phone scans or pastes; a Mac pastes.
@@ -118,6 +129,39 @@ private struct WayButton: ButtonStyle {
             .background(isMain ? Token.ink : Token.raised, in: RoundedRectangle(cornerRadius: 11))
             .opacity(configuration.isPressed ? 0.7 : 1)
             .contentShape(RoundedRectangle(cornerRadius: 11))
+    }
+}
+
+/// What Tilo asks before this device is paired, in Tilo's own sentences: whose devices it would
+/// join, which server adds it, and what follows. The two buttons are Tilo's two ways on, under
+/// Tilo's own words for them. Nothing goes on until the person presses one, and a stray Return
+/// stops.
+private struct PairingAskView: View {
+    let ask: PairingAsk
+    @Environment(AssistantModel.self) private var model
+
+    var body: some View {
+        VStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(ask.heading).font(.tilo(16, .semibold)).foregroundStyle(Token.ink)
+                    .accessibilityAddTraits(.isHeader)
+                ForEach(Array(ask.said.enumerated()), id: \.offset) { place, sentence in
+                    // Whose devices and which server come first, and are what the person decides on.
+                    Text(sentence).font(place < 2 ? Font.tilo(14, .medium) : Font.body14)
+                        .foregroundStyle(place < 2 ? Token.ink : Token.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 18).padding(.vertical, 14)
+            .frame(maxWidth: 480, alignment: .leading)
+            .background(Token.raised, in: RoundedRectangle(cornerRadius: Measure.cardRadius))
+            Flow(spacing: 10, lineSpacing: 10) {
+                Button(ask.go) { model.answerPairing(goOn: true) }.buttonStyle(WayButton(isMain: true))
+                Button(ask.stop) { model.answerPairing(goOn: false) }.buttonStyle(WayButton())
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(.top, 6)
     }
 }
 

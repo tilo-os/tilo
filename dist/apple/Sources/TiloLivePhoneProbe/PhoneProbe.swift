@@ -103,6 +103,9 @@ final class PhoneProbe: ObservableObject {
             PhoneProbe.say(.object(line))
             // Its page is still the one that stopped, for a moment: what that page says of itself.
             if step == "load", engine?.lastStop != nil { await details() }
+        case .asking(let ask):
+            // The page asks before it pairs, and this probe has nobody to press: it says so and waits.
+            PhoneProbe.say(["asking": .string(ask.heading), "said": .array(ask.said.map(JSON.string)), "s": seconds])
         case .pairing(let code):
             keep(code, as: "code")
             PhoneProbe.say(["standing": "pairing", "s": seconds])

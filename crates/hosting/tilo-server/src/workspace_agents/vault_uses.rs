@@ -334,6 +334,32 @@ fn question_about<'a>(
     })
 }
 
+/// Whether the question about `ask` stands as this server asked it: one
+/// message carries the ask, and it was never edited. An agent may edit a
+/// message it wrote and may ask questions of its own, and neither is what its
+/// person was asked.
+fn as_asked(parts: &[(String, chat::parts::ChatPart)], ask: &OpenAsk) -> bool {
+    let (agent, person) = (
+        MemberId::agent(ask.agent.clone()),
+        MemberId::person(ask.person.clone()),
+    );
+    let mut carrying = parts
+        .iter()
+        .flat_map(|(_, part)| part.messages.iter())
+        .filter(|(_, message)| {
+            message.author == agent
+                && message.question.as_ref().is_some_and(|question| {
+                    question.kind.0 == chat::question::ACTION
+                        && question.person == person
+                        && question.kept().as_ref() == Some(&ask.detail)
+                })
+        });
+    matches!(
+        (carrying.next(), carrying.next()),
+        (Some((_, message)), None) if !message.edited && message.history.is_empty()
+    )
+}
+
 /// Say on the question `message` in the part `document` what came of its
 /// answer.
 async fn settle(
@@ -377,6 +403,9 @@ struct AnsweredAsk {
     /// The question's detail as the workspace's document holds it: what its
     /// person was shown when they answered.
     shown: Value,
+    /// Whether their yes was given to a question that no longer stands as
+    /// this server asked it: it is carried out as a no and ends as not done.
+    changed: bool,
 }
 
 impl HostAgents {
@@ -412,6 +441,7 @@ impl HostAgents {
                 message: message.clone(),
                 answer,
                 shown: shown.clone(),
+                changed: false,
             };
             let answer = match question.state() {
                 Waiting if !ask.interrupted => continue,
@@ -439,7 +469,16 @@ impl HostAgents {
                 self.workspaces.use_not_asked(&ask);
                 continue;
             };
-            let (this, agent, carrying) = (self.clone(), agent.clone(), answered(answer));
+            // A yes to a question that was edited, or that stands beside another
+            // carrying the same ask, was not given to what this server asked: it
+            // is carried out as a no, so nothing is used and nothing stands.
+            let changed = answer != UseAnswer::No && !as_asked(&parts, &ask);
+            let answer = if changed { UseAnswer::No } else { answer };
+            let carrying = AnsweredAsk {
+                changed,
+                ..answered(answer)
+            };
+            let (this, agent) = (self.clone(), agent.clone());
             let workspace = workspace.to_owned();
             tokio::spawn(async move {
                 this.carry_out_use((&workspace, workspace_id), &agent, carrying)
@@ -514,6 +553,7 @@ impl HostAgents {
             message,
             answer,
             shown,
+            changed,
         } = answered;
         let Some((turn, outside)) = self.asker(workspace, workspace_id, &ask, agent).await else {
             // Its person is admitted here on no device any more.
@@ -550,6 +590,10 @@ impl HostAgents {
             .carry_out_use(&hosted, &claimed, &shown, answer)
             .await;
         let (outcome, told) = match carried {
+            _ if changed => (
+                chat::question::FAILED,
+                Some(super::asks::NOT_AS_ASKED.to_owned()),
+            ),
             Ok(Some(_)) => (chat::question::DONE, None),
             Ok(None) => (chat::question::DROPPED, None),
             Err(error) => (chat::question::FAILED, Some(error.to_string())),

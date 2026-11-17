@@ -20,6 +20,12 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         public var pairsAs: Person?
         /// The code a pairing shows for the person to compare, when it shows one.
         public var pairingCode: String?
+        /// What is asked before a pairing, when something is: it goes on once the person answered.
+        public var pairingAsk: PairingAsk?
+        /// What stands between the person and a first answer.
+        public var setup: Setup = .ready
+        /// The models a provider offers once it is linked.
+        public var offered: [ModelChoice] = []
 
         public init() {}
     }
@@ -36,6 +42,11 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private let pairsAs: Person?
     private let taskReplies: [AssistantTask.ID: [Item]]
     private let pairingCode: String?
+    private let pairingAsk: PairingAsk?
+    private let setupNow: Broadcast<Setup>
+    private let offered: [ModelChoice]
+    private var linked: [ModelChoice] = []
+    private var keys: [ProviderChoice.ID: Secret] = [:]
     private var feeds: [Chat: Feed]
     private var vault: [SecretRequest.ID: Secret] = [:]
     private var files: [Attachment.ID: URL] = [:]
@@ -52,6 +63,9 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         pairsAs = content.pairsAs
         taskReplies = content.replies
         pairingCode = content.pairingCode
+        pairingAsk = content.pairingAsk
+        setupNow = Broadcast(content.setup)
+        offered = content.offered
         var feeds: [Chat: Feed] = [.main: Feed(content.main)]
         for agent in content.subAgents {
             feeds[.subAgent(agent.id)] = Feed(content.subAgentChats[agent.id] ?? [])
@@ -90,6 +104,15 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         lock.withLock { vault[request] }
     }
 
+    /// The key the vault holds for a provider. The only way a linked key is ever seen again.
+    public func key(for provider: ProviderChoice.ID) -> Secret? {
+        lock.withLock { keys[provider] }
+    }
+
+    public func set(_ setup: Setup) {
+        setupNow.set(setup)
+    }
+
     /// Everything a conversation holds now.
     public func items(in chat: Chat = .main) -> [Item] {
         feed(chat)?.all ?? []
@@ -101,10 +124,49 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     public func reach() -> AsyncStream<Reach> { reachNow.stream() }
 
     public func pair(with link: PairingLink) async throws {
-        guard let person = pairsAs, reachNow.current == .reachable else { throw SourceProblem.unreachable }
+        guard pairsAs != nil, reachNow.current == .reachable else { throw SourceProblem.unreachable }
+        // Where something is asked first, the pairing goes on once the person answered.
+        if let pairingAsk {
+            sessionNow.set(.asked(pairingAsk))
+            return
+        }
+        letIn()
+    }
+
+    public func answerPairing(goOn: Bool) async {
+        guard case .asked = sessionNow.current else { return }
+        if goOn { letIn() } else { sessionNow.set(.signedOut) }
+    }
+
+    private func letIn() {
+        guard let person = pairsAs else { return }
         sessionNow.set(.pairing)
         if let pairingCode { sessionNow.set(.confirming(code: pairingCode)) }
         sessionNow.set(.signedIn(person))
+    }
+
+    // MARK: The first run
+
+    public func setup() -> AsyncStream<Setup> { setupNow.stream() }
+
+    public func makeAssistant() async throws {
+        try signedIn()
+        if case .noAssistant = setupNow.current { setupNow.set(.ready) }
+    }
+
+    public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {
+        try signedIn()
+        guard !key.isEmpty else { throw SourceProblem.refused("Nothing was typed.") }
+        guard case .needsProvider(let choices) = setupNow.current, choices.contains(where: { $0.id == provider }) else {
+            throw SourceProblem.refused("This provider cannot be linked.")
+        }
+        let all = lock.withLock {
+            keys[provider] = key
+            linked = offered
+            return modelChoices + linked
+        }
+        setupNow.set(offered.isEmpty ? .ready : .needsModel(offered))
+        return all
     }
 
     public func signOut() async {
@@ -275,16 +337,18 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
 
     public func models() async throws -> [ModelChoice] {
         try signedIn()
-        return modelChoices
+        return lock.withLock { modelChoices + linked }
     }
 
     public func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {
         try signedIn()
-        guard let chosen = modelChoices.first(where: { $0.id == model }) else {
+        guard let chosen = lock.withLock({ modelChoices + linked }).first(where: { $0.id == model }) else {
             throw SourceProblem.refused("This model is not one of yours.")
         }
         // The view names the main chat's model: the one that answers.
-        if work == .request { supervisionNow.change { $0.model = chosen.name } }
+        guard work == .request else { return }
+        supervisionNow.change { $0.model = chosen.name }
+        if case .needsModel = setupNow.current { setupNow.set(.ready) }
     }
 
     public func forget(_ learned: Supervision.Learned.ID) async throws {

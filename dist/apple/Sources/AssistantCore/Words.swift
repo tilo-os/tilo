@@ -23,6 +23,9 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case youChose = "you-chose", answering, earlier
     case nothingYet = "nothing-yet", nothingYetBody = "nothing-yet-body"
     case liveThing = "live-thing", attachment
+    // The first run, in the main chat.
+    case findingAssistant = "finding-assistant", needsProvider = "needs-provider", providerKey = "provider-key"
+    case linkProvider = "link-provider", needsModel = "needs-model", chooseModel = "choose-model", answersOn = "answers-on"
     // A sub-agent's window.
     case startedByMain = "started-by-main", startedByYou = "started-by-you", cannotReadMain = "cannot-read-main"
     case jobFromMain = "job-from-main", mainWhileWorking = "main-while-working", stop
@@ -112,6 +115,13 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .nothingYetBody: "Write to your assistant below."
         case .liveThing: "Live view"
         case .attachment: "Attachment"
+        case .findingAssistant: "Setting up your assistant"
+        case .needsProvider: "No model provider is linked yet, so your assistant cannot answer. Choose a provider and type your own key for it below."
+        case .providerKey: "Your key for {name}"
+        case .linkProvider: "Link {name}"
+        case .needsModel: "A provider is linked. Choose the model your assistant answers on."
+        case .chooseModel: "Choose a model"
+        case .answersOn: "Your assistant answers on {model}"
         case .startedByMain: "started {time} by the main agent"
         case .startedByYou: "started {time} by you"
         case .cannotReadMain: "it cannot read the main chat"
@@ -180,7 +190,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .model: "Model"
         case .modelNote: "From your Tilo providers · sub-agents may use a smaller one"
         case .noModel: "No model yet"
-        case .noModelNote: "Link a provider in Tilo, then choose a model here"
+        case .noModelNote: "Link a provider in the main chat, then choose a model here"
         case .change: "Change"
         case .messagesToday: "Messages today"
         case .tokensToday: "Tokens today"

@@ -27,8 +27,27 @@ public protocol AssistantSource: Sendable {
     /// signed in: scanned as a code, or pasted. `session()` says how it goes on.
     func pair(with link: PairingLink) async throws
 
+    /// Answer what Tilo asked before pairing (`Session.asked`): go on, or stop. Only the
+    /// person's own press calls this; nothing answers for them.
+    func answerPairing(goOn: Bool) async
+
     /// Forget this device's place in the person's Tilo.
     func signOut() async
+
+    // MARK: The first run
+
+    /// What stands between the person and their assistant's first answer. A source finds the
+    /// person's assistant by itself when the device gets in, and makes it where they keep none.
+    func setup() -> AsyncStream<Setup>
+
+    /// Find the person's assistant once more, and make it where they keep none: what the
+    /// source does by itself, for the person to ask again after it did not go through.
+    func makeAssistant() async throws
+
+    /// Link a provider with the key the person typed into the protected field, and answer the
+    /// models that can be chosen then. The key goes to the person's vault and nowhere else: not
+    /// into the conversation, not to a model, not into a log.
+    func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice]
 
     // MARK: A conversation
 
@@ -125,6 +144,15 @@ extension AssistantSource {
     /// A source that keeps no replies apart from the conversation has none to show.
     public func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item] { [] }
     public func stopAnswering(in chat: Chat) async throws {}
+
+    // A source with no first run of its own asks nothing before it pairs, has nothing in the
+    // way of an answer and links no provider.
+    public func answerPairing(goOn: Bool) async {}
+    public func setup() -> AsyncStream<Setup> { AsyncStream { $0.yield(.ready) } }
+    public func makeAssistant() async throws {}
+    public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {
+        throw SourceProblem.refused("No provider can be linked here")
+    }
 }
 
 /// How a conversation changed.
