@@ -255,7 +255,7 @@ impl Sync {
                 self.take(event);
             }
             if !self.paused.load(std::sync::atomic::Ordering::Relaxed) {
-                self.pull_paced();
+                self.pull_paced().await;
                 self.push();
                 self.content.reask(&self.link);
             }
@@ -265,7 +265,7 @@ impl Sync {
                 moved = changes.changed() => if moved.is_err() { return },
                 _ = keep.tick() => if self.keeping.due(Instant::now()) {
                     let started = Instant::now();
-                    self.keep();
+                    self.keep().await;
                     self.keeping.ran(started, Instant::now());
                 },
                 () = tokio::time::sleep(LOOK_AGAIN) => {}
@@ -310,7 +310,7 @@ impl Sync {
     /// [`Self::pull`], paced while the session holds writes of this device's that its replica
     /// has not taken in: a read then overlays them on the whole record, so it costs the whole
     /// tree each time, and all it can bring is another device's change, which waits a moment.
-    fn pull_paced(&mut self) {
+    async fn pull_paced(&mut self) {
         let holding = self
             .link
             .engine()
@@ -318,18 +318,20 @@ impl Sync {
             .lock()
             .contains_key(&self.route);
         if !holding {
-            self.pull();
+            self.pull().await;
             return;
         }
         let now = Instant::now();
         if self.pulling.due(now) {
-            self.pull();
+            self.pull().await;
             self.pulling.ran(now, Instant::now());
         }
     }
 
-    /// Merge what the record holds that this namespace has not merged yet.
-    fn pull(&mut self) {
+    /// Merge what the record holds that this namespace has not merged yet. The merge runs
+    /// away from the runtime's workers: a tree's first merge walks every node it brings, and a
+    /// worker inside it stops answering agents, mounts and stops for as long as it takes.
+    async fn pull(&mut self) {
         let engine = self.link.engine();
         let workspace = self.workspace.to_string();
         let reading = engine.record_update(
@@ -362,20 +364,27 @@ impl Sync {
                 return;
             }
         };
-        let resolution = {
-            let mut namespace = self.namespace.lock_recover();
-            let merged = match &mutation {
+        let namespace = Arc::clone(&self.namespace);
+        let resolution = match tokio::task::spawn_blocking(move || {
+            let mut namespace = namespace.lock_recover();
+            match &mutation {
                 DocumentMutation::Snapshot(bytes) => {
                     namespace.adopt_or_merge_remote_and_resolve(bytes)
                 }
                 DocumentMutation::Incremental(bytes) => namespace.apply_remote_and_resolve(bytes),
-            };
-            match merged {
-                Ok(resolution) => resolution,
-                Err(error) => {
-                    tracing::warn!(%error, "the workspace's tree does not merge here");
-                    return;
-                }
+            }
+            .map_err(|error| error.to_string())
+        })
+        .await
+        {
+            Ok(Ok(resolution)) => resolution,
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "the workspace's tree does not merge here");
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the workspace's tree merge could not run");
+                return;
             }
         };
         self.unread = None;
@@ -503,8 +512,35 @@ impl Sync {
         }
     }
 
-    /// Keep the namespace on disk, so a restart starts where this one was.
-    fn keep(&mut self) {
+    /// Keep the namespace on disk, so a restart starts where this one was. Saving walks the
+    /// whole tree, so it runs away from the runtime's workers like a merge does.
+    async fn keep(&mut self) {
+        let namespace = Arc::clone(&self.namespace);
+        let kept = self.kept.clone();
+        let kept_heads = self.kept_heads.clone();
+        let written = tokio::task::spawn_blocking(move || {
+            let (heads, bytes) = {
+                let mut namespace = namespace.lock_recover();
+                let heads = namespace.heads();
+                if heads == kept_heads {
+                    return Ok(None);
+                }
+                (heads, namespace.save())
+            };
+            tilo_files::native::atomic::write_with_mode(&kept, &bytes, 0o600)?;
+            Ok::<_, std::io::Error>(Some(heads))
+        })
+        .await;
+        match written {
+            Ok(Ok(Some(heads))) => self.kept_heads = heads,
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "the workspace's tree is not kept on disk"),
+            Err(error) => tracing::warn!(%error, "keeping the workspace's tree could not run"),
+        }
+    }
+
+    /// [`Self::keep`], on this thread: where the sync stops there is no runtime to run it on.
+    fn keep_now(&mut self) {
         let (heads, bytes) = {
             let mut namespace = self.namespace.lock_recover();
             let heads = namespace.heads();
@@ -567,7 +603,7 @@ fn record_heads(heads: &[[u8; 32]]) -> Vec<automerge::ChangeHash> {
 
 impl Drop for Sync {
     fn drop(&mut self) {
-        self.keep();
+        self.keep_now();
     }
 }
 

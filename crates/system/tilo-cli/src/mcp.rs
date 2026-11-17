@@ -123,6 +123,32 @@ pub(crate) struct Shared<E> {
     /// The person and workspace every run acts for, from the login.
     device: Result<Device, String>,
     session: tokio::sync::Mutex<Option<Arc<Session>>>,
+    /// The one entry attempt in flight, and what the last one answered. Never held across
+    /// [`Enter::enter`]: a call would then queue behind every retry the background sync makes,
+    /// each up to [`ENTERING`], and calls that came while the host refused this computer took
+    /// as long as the retries happened to last.
+    entry: tokio::sync::Mutex<Entry>,
+    /// Counts finished attempts, so a call that waits for one hears that it ended.
+    attempts: tokio::sync::watch::Sender<u64>,
+}
+
+#[derive(Default)]
+struct Entry {
+    /// Why the last attempt could not enter, until one does.
+    failed: Option<String>,
+    /// Whether an attempt is in flight.
+    running: bool,
+}
+
+/// Which call is asking for the session: a connection's own call, which may wait for the one
+/// attempt already under way, or the background sync's retry, which never waits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ask {
+    /// An agent's call: it waits for the attempt that was already started when it asked, so a
+    /// holder that is still entering serves it rather than refusing it.
+    Agent,
+    /// The background retry: it starts an attempt when none runs and otherwise leaves it be.
+    Sync,
 }
 
 impl<E: Enter> Shared<E> {
@@ -131,6 +157,8 @@ impl<E: Enter> Shared<E> {
             enter,
             device,
             session: tokio::sync::Mutex::new(None),
+            entry: tokio::sync::Mutex::new(Entry::default()),
+            attempts: tokio::sync::watch::channel(0).0,
         }
     }
 
@@ -139,19 +167,80 @@ impl<E: Enter> Shared<E> {
     /// session the person stopped, for a connection that starts after they
     /// did. A session that ended otherwise (the host stopped admitting it,
     /// and it waits to be asked again) is entered anew in its place.
-    async fn session(&self, fresh: bool) -> Result<Arc<Session>, String> {
-        let mut held = self.session.lock().await;
-        if let Some(session) = held.as_ref() {
-            if kept(session.device.is_live(), session.stopped().is_some(), fresh) {
-                return Ok(Arc::clone(session));
-            }
-            // Its connection goes before another under the same key dials.
-            session.device.close();
+    ///
+    /// A call never queues behind entry retries: once an attempt failed, every call answers why
+    /// at once, from what the device holds of the workspace, and the next attempt is the
+    /// background sync's. Only the first attempt, and one a call finds already under way, are
+    /// waited for.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the attempt is claimed under the same lock that reads the last failure, so two \
+                  calls never both start one"
+    )]
+    async fn session(&self, fresh: bool, ask: Ask) -> Result<Arc<Session>, String> {
+        if let Some(session) = self.held(fresh).await {
+            return Ok(session);
         }
-        let session = self.enter.enter().await?;
-        *held = Some(Arc::clone(&session));
-        drop(held);
-        Ok(session)
+        let mut entry = self.entry.lock().await;
+        if let Some(why) = entry.failed.clone()
+            && ask == Ask::Agent
+        {
+            return Err(not_in(&why));
+        }
+        let mut ended = self.attempts.subscribe();
+        // The count is read under the same lock that says whether an attempt runs, so the wait
+        // below cannot miss the attempt's end.
+        ended.borrow_and_update();
+        if entry.running {
+            if ask == Ask::Sync {
+                return Err(not_in("entering the workspace"));
+            }
+            drop(entry);
+            let _ = ended.changed().await;
+            if let Some(session) = self.held(fresh).await {
+                return Ok(session);
+            }
+            let entry = self.entry.lock().await;
+            return Err(not_in(
+                entry
+                    .failed
+                    .as_deref()
+                    .unwrap_or("the session ended before it served"),
+            ));
+        }
+        entry.running = true;
+        drop(entry);
+        let entered = self.enter.enter().await;
+        let mut entry = self.entry.lock().await;
+        entry.running = false;
+        match entered {
+            Ok(session) => {
+                entry.failed = None;
+                *self.session.lock().await = Some(Arc::clone(&session));
+                self.attempts
+                    .send_modify(|ended| *ended = ended.wrapping_add(1));
+                Ok(session)
+            }
+            Err(why) => {
+                entry.failed = Some(why.clone());
+                self.attempts
+                    .send_modify(|ended| *ended = ended.wrapping_add(1));
+                Err(why)
+            }
+        }
+    }
+
+    /// The session this device holds, while it `kept`s serving for `fresh`.
+    async fn held(&self, fresh: bool) -> Option<Arc<Session>> {
+        let mut held = self.session.lock().await;
+        let session = held.as_ref()?;
+        if kept(session.device.is_live(), session.stopped().is_some(), fresh) {
+            return Some(Arc::clone(session));
+        }
+        // Its connection goes before another under the same key dials.
+        session.device.close();
+        *held = None;
+        None
     }
 
     /// Leave the workspace as the last connection ends: the agent says it
@@ -180,6 +269,15 @@ fn kept(live: bool, stopped: bool, fresh: bool) -> bool {
         return !fresh;
     }
     live
+}
+
+/// Why a call answers nothing while this computer is not in the workspace: the reason, and that
+/// the background sync keeps trying, so the agent asks again rather than dropping its tools.
+fn not_in(why: &str) -> String {
+    format!(
+        "This computer isn't in the workspace right now ({why}). Tilo keeps trying in the \
+         background; try again in a minute."
+    )
 }
 
 /// One agent connection: its own run over the device's session.
@@ -229,7 +327,7 @@ impl<E: Enter> Connection<E> {
             return Ok((Arc::clone(served), session));
         }
         // Only a connection that starts enters again in place of a session the person stopped.
-        let session = self.shared.session(held.is_none()).await?;
+        let session = self.shared.session(held.is_none(), Ask::Agent).await?;
         let device = self.shared.device.as_ref().map_err(Clone::clone)?;
         let served = Arc::new(open(&session, device, &self.run)?);
         *held = Some(Arc::clone(&served));
@@ -322,14 +420,54 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
         let home = tilo_paths::home().ok_or_else(|| anyhow::anyhow!("HOME is missing"))?;
         return held::hold(&place.map_err(anyhow::Error::msg)?, shared(device), home);
     }
-    match place.and_then(|place| held::reach(&place).map(|stream| (stream, place))) {
+    let reached = place
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|place| held::reach(place).map(|stream| (stream, place.clone())));
+    match reached {
         Ok((stream, place)) => held::relay(stream, &place),
         Err(why) => {
-            // The agent keeps its tools: this connection holds a session of
-            // its own, which another `tilo mcp` of this device would cut off.
-            eprintln!("tilo mcp: {why} This agent's connection works on its own until then.");
-            held::alone(&shared(device))
+            // This connection starts no session of its own. The device has one live connection,
+            // its holder's: a session here would bind the device's endpoint too, take the
+            // holder's place at the relay and then be taken by the holder's, so neither serves
+            // and every call fails with "another endpoint connected with the same endpoint id".
+            // The holder is started again in the background; every call says why until it is.
+            eprintln!(
+                "tilo mcp: {why} This connection waits for the device's holder, which is started \
+                 again in the background; it holds no session of its own."
+            );
+            if let Ok(place) = place {
+                std::thread::spawn(move || {
+                    loop {
+                        let _ = held::ensure(&place);
+                        if held::connect(&place).is_some() {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_secs(3));
+                    }
+                });
+            }
+            held::alone(&unreached(&why, &device))
         }
+    }
+}
+
+/// A connection with no holder to reach: it holds no session, so every call says why, while
+/// the background starts the device's one holder again.
+fn unreached(why: &str, device: &Result<(SigningKey, Device), String>) -> Arc<Shared<NoSession>> {
+    let login = device
+        .as_ref()
+        .map(|(_, device)| device.clone())
+        .map_err(Clone::clone);
+    Arc::new(Shared::new(NoSession(not_in(why)), login))
+}
+
+/// An entry that never enters: this connection has no session by design.
+struct NoSession(String);
+
+impl Enter for NoSession {
+    async fn enter(&self) -> Result<Arc<Session>, String> {
+        Err(self.0.clone())
     }
 }
 
@@ -483,10 +621,111 @@ mod tests {
         connection_saying(NOT_LOGGED_IN)
     }
 
-    async fn ask(connection: &Connection<LoggedIn>, line: &str) -> Option<Value> {
+    async fn ask<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Value> {
         answer(connection, line)
             .await
             .map(|answer| serde_json::from_str(&answer).unwrap())
+    }
+
+    /// A device whose entry the host refuses, each attempt taking `taking`: how many attempts
+    /// were started, and the reason every one ended with.
+    struct SlowEntry {
+        attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        taking: Duration,
+    }
+
+    impl Enter for std::sync::Arc<SlowEntry> {
+        async fn enter(&self) -> Result<Arc<Session>, String> {
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(self.taking).await;
+            Err("the host refused this computer's entry".to_owned())
+        }
+    }
+
+    /// A connection that reached no holder holds no session of its own — the device has one
+    /// live connection — and every call answers why while the holder is started again.
+    #[tokio::test]
+    async fn a_connection_that_reached_no_holder_answers_why_and_holds_no_session() {
+        let connection = Connection::new(unreached(
+            "Tilo's background sync isn't answering on this computer.",
+            &Err("unused".into()),
+        ));
+        let called = ask(
+            &connection,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tilo_ls"}}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(called["result"]["isError"], true);
+        let said = called["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(said.contains("keeps trying in the background"), "{said}");
+    }
+
+    /// Two agents on a computer whose host refuses its entry: the first call may wait for the
+    /// attempt under way, and every call after it answers at once with why, instead of queueing
+    /// behind the background sync's retries and taking as long as they happen to last.
+    #[tokio::test]
+    async fn an_agents_call_never_queues_behind_entry_retries() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = std::sync::Arc::new(AtomicUsize::new(0));
+        let enter = std::sync::Arc::new(SlowEntry {
+            attempts: std::sync::Arc::clone(&attempts),
+            taking: Duration::from_millis(300),
+        });
+        let shared = std::sync::Arc::new(Shared::new(
+            std::sync::Arc::clone(&enter),
+            Err("unused".into()),
+        ));
+        // The holder enters as it starts: a call arriving now waits for that attempt, so a host
+        // that answers serves it.
+        let starting = tokio::spawn({
+            let shared = std::sync::Arc::clone(&shared);
+            async move { shared.session(false, Ask::Sync).await.map(drop) }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let said = shared
+            .session(true, Ask::Agent)
+            .await
+            .err()
+            .expect("the entry refused this computer");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "one attempt, not one per caller"
+        );
+        assert!(
+            said.contains("the host refused this computer's entry"),
+            "{said}"
+        );
+        assert!(starting.await.unwrap().is_err());
+        // A retry runs; the next agent's call does not wait for it.
+        let retrying = tokio::spawn({
+            let shared = std::sync::Arc::clone(&shared);
+            async move { shared.session(false, Ask::Sync).await.map(drop) }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let started = std::time::Instant::now();
+        let said = shared
+            .session(true, Ask::Agent)
+            .await
+            .err()
+            .expect("the entry refused this computer");
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "an agent's call waited {} ms behind a retry",
+            started.elapsed().as_millis()
+        );
+        assert!(
+            said.contains("This computer isn't in the workspace right now"),
+            "{said}"
+        );
+        assert!(said.contains("keeps trying in the background"), "{said}");
+        assert!(retrying.await.unwrap().map(drop).is_err());
+        // Nor does it start one of its own: the retries are the background sync's.
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(shared.session(true, Ask::Agent).await.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[test]

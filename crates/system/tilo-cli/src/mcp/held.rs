@@ -26,16 +26,33 @@ use super::{Connection, Enter, Shared, answer};
 /// How long a connection waits for a holder to listen.
 const REACHING: Duration = Duration::from_secs(10);
 /// How long a holder starting waits for one that is leaving to let go.
-const TAKING_OVER: Duration = Duration::from_secs(5);
+const TAKING_OVER: Duration = Duration::from_secs(20);
 /// How often a connection looks for a holder that has not started listening.
 const POLL: Duration = Duration::from_millis(50);
+/// How long a holder's process waits for its runtime's threads once it ended. A step that walks
+/// a whole folder tree runs on its thread to its end and cannot be interrupted; a stop leaves it
+/// behind rather than hanging until it finishes.
+const SHUTDOWN: Duration = Duration::from_secs(3);
+/// How long a stop waits for the folders to unmount: one whose mount thread is inside a step on
+/// the tree is cleared when the next holder shows it.
+const UNMOUNTING: Duration = Duration::from_secs(5);
+/// How often a holder looks whether the login it serves is still the one under its device
+/// directory: a login made again makes another device, and the holder it replaced steps down so
+/// one computer runs one holder.
+const LOGIN_LOOK: Duration = Duration::from_secs(3);
 
 /// Where one device's holder listens, the lock that keeps it one, and its log.
 #[derive(Clone)]
 pub(crate) struct Place {
     socket: PathBuf,
+    /// One per device directory, not per key: a computer has one holder, and a login made again
+    /// under a new key waits for the holder of the old one to step down instead of running
+    /// beside it. Two live endpoints under one device's keys take each other's place at the
+    /// relay over and over, and neither serves.
     lock: PathBuf,
     log: PathBuf,
+    /// The first bytes of the device key the listener serves, as its socket and log are named.
+    key: [u8; 8],
 }
 
 impl Place {
@@ -50,11 +67,28 @@ impl Place {
 
     /// The holder of `key`'s device under `dir`, listening in `sockets`.
     fn at(sockets: &Path, dir: &Path, key: &[u8; 32]) -> Self {
-        let name = format!("session-{}", hex::encode(&key[..8]));
+        let mut first = [0; 8];
+        first.copy_from_slice(&key[..8]);
+        let name = format!("session-{}", hex::encode(first));
         Self {
             socket: sockets.join(format!("{name}.sock")),
-            lock: dir.join(format!("{name}.lock")),
+            lock: dir.join("holder.lock"),
             log: dir.join(format!("{name}.log")),
+            key: first,
+        }
+    }
+
+    /// Whether the login under this device's directory is still `key`'s: a login made again
+    /// makes another device, and the holder of the one it replaced ends so that one computer
+    /// keeps one holder and one live connection.
+    fn serves_current_login(&self) -> bool {
+        let Some(dir) = self.lock.parent() else {
+            return true;
+        };
+        match crate::login::load(dir) {
+            Ok(Some((key, _))) => key.verifying_key().to_bytes()[..8] == self.key,
+            // A login mid-write reads as none; the next look answers for it.
+            _ => true,
         }
     }
 }
@@ -193,13 +227,15 @@ pub(crate) fn alone<E: Enter>(shared: &Arc<Shared<E>>) -> Result<ExitCode> {
         // Enter the workspace while the agent starts, not at its first call.
         let entering = Arc::clone(shared);
         tokio::spawn(async move {
-            let _ = entering.session(false).await;
+            let _ = entering.session(false, super::Ask::Sync).await;
         });
         converse(Arc::clone(shared), tokio::io::stdin(), tokio::io::stdout()).await;
         // The connection ended (its input closed): the agent leaves the
         // workspace now, while its session can still say so.
         shared.leaving().await;
     });
+    // As for the holder: a step on a folder's tree is left behind, not waited for.
+    runtime.shutdown_timeout(SHUTDOWN);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -282,7 +318,12 @@ fn hold_for<E: Enter>(
         return Ok(ExitCode::SUCCESS);
     };
     let runtime = bridge_runtime()?;
-    runtime.block_on(serve_held(place, shared, holding))?;
+    let served = runtime.block_on(serve_held(place, shared, holding));
+    // A step that walks a whole folder tree — a merge of a tree record, a save of one — runs on
+    // its thread to its end and cannot be interrupted. The process ends now instead of waiting
+    // for it: the socket is gone and the folders were unmounted (or given up on) above.
+    runtime.shutdown_timeout(SHUTDOWN);
+    served?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -329,7 +370,7 @@ async fn serve_held<E: Enter>(
             // Enter the workspace while the first agent starts, not at its first call.
             let entering = Arc::clone(&shared);
             tokio::spawn(async move {
-                let _ = entering.session(false).await;
+                let _ = entering.session(false, super::Ask::Sync).await;
             });
             Some(linger)
         }
@@ -339,6 +380,10 @@ async fn serve_held<E: Enter>(
         }
     };
     let mut ended = ending()?;
+    let mut login = tokio::time::interval(LOGIN_LOOK);
+    // Whether the login this holder serves was replaced: a holder on its way out then unmounts
+    // nothing, since the holder of the new login shows the folders again.
+    let mut replaced = false;
     let (count, mut live) = tokio::sync::watch::channel(0_usize);
     let count = Arc::new(count);
     loop {
@@ -354,11 +399,29 @@ async fn serve_held<E: Enter>(
                 });
             }
             () = idle(&mut live, linger) => break,
+            _ = login.tick() => if !place.serves_current_login() {
+                tracing::info!(
+                    "this computer logged in again; the holder of the new login takes over"
+                );
+                replaced = true;
+                break;
+            },
             _ = ended.recv() => break,
         }
     }
-    if let Some(peer) = PEER.get() {
-        peer.close().await;
+    if let Some(peer) = PEER.get()
+        && !replaced
+    {
+        // Unmounting waits for the mount's thread, which may be inside a step on the folder's
+        // tree; a stop does not wait for that step to end.
+        if tokio::time::timeout(UNMOUNTING, peer.close())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "a folder did not unmount in time; the mounts are cleared when next shown"
+            );
+        }
     }
     // No connection is left to cut off: the next one starts a holder anew.
     let _ = std::fs::remove_file(&place.socket);
@@ -369,22 +432,45 @@ async fn serve_held<E: Enter>(
 
 /// What ends a holder from outside: the user service stopping it, or a
 /// person's Ctrl-C.
+///
+/// The signals are waited for on a thread of their own, with a runtime of its own: the holder's
+/// two workers may both be inside a step that walks a whole folder tree, and a stop that waited
+/// for a free worker was heard only once that step ended.
 fn ending() -> Result<tokio::sync::mpsc::UnboundedReceiver<()>> {
     use tokio::signal::unix::{SignalKind, signal};
     let (said, ended) = tokio::sync::mpsc::unbounded_channel();
-    for kind in [
-        SignalKind::terminate(),
-        SignalKind::interrupt(),
-        SignalKind::hangup(),
-    ] {
-        let mut signal = signal(kind)?;
-        let said = said.clone();
-        tokio::spawn(async move {
-            if signal.recv().await.is_some() {
-                let _ = said.send(());
-            }
-        });
-    }
+    std::thread::Builder::new()
+        .name("tilo-signals".to_owned())
+        .spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            runtime.block_on(async move {
+                let (signalled, mut heard) = tokio::sync::mpsc::channel(1);
+                for kind in [
+                    SignalKind::terminate(),
+                    SignalKind::interrupt(),
+                    SignalKind::hangup(),
+                ] {
+                    let Ok(mut signal) = signal(kind) else {
+                        continue;
+                    };
+                    let signalled = signalled.clone();
+                    tokio::spawn(async move {
+                        if signal.recv().await.is_some() {
+                            let _ = signalled.send(()).await;
+                        }
+                    });
+                }
+                drop(signalled);
+                if heard.recv().await.is_some() {
+                    let _ = said.send(());
+                }
+            });
+        })?;
     Ok(ended)
 }
 
@@ -421,7 +507,7 @@ async fn keep_peer<E: Enter>(shared: Arc<Shared<E>>, home: PathBuf, state: PathB
     let mut personal: Option<tilo_session_client::Events> = None;
     let woken = Arc::new(tokio::sync::Notify::new());
     loop {
-        match shared.session(false).await {
+        match shared.session(false, super::Ask::Sync).await {
             Ok(session) => {
                 *NOT_IN
                     .lock()
@@ -680,6 +766,50 @@ mod tests {
     use std::io::{BufRead as _, Write as _};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// A holder whose workers are both inside a step that walks a whole folder tree still ends
+    /// when it is stopped: the steps are left behind rather than waited for, which is what a
+    /// stop (the user service's, or `tilo folders stop`) hangs on otherwise.
+    #[test]
+    fn a_stop_does_not_wait_for_a_worker_inside_a_step() {
+        let runtime = bridge_runtime().unwrap();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        for _ in 0..BRIDGE_THREADS {
+            let done = std::sync::Arc::clone(&done);
+            runtime.spawn(async move {
+                // A step on a folder's tree: it does not yield until it is done.
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let started = Instant::now();
+        runtime.shutdown_timeout(SHUTDOWN);
+        let waited = started.elapsed();
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            waited < SHUTDOWN.saturating_mul(2),
+            "the runtime waited {} ms for a step to end",
+            waited.as_millis()
+        );
+    }
+
+    /// A computer's login made again makes another device, with a holder of its own place at the
+    /// relay; one computer still runs one holder, so the two never hold a second endpoint under
+    /// a device key at the same time.
+    #[test]
+    fn a_device_directory_has_one_holder_however_its_login_changed() {
+        let dir = Path::new("/state/tilo/device");
+        let first = Place::at(dir, dir, &[1; 32]);
+        let second = Place::at(dir, dir, &[2; 32]);
+        assert_eq!(first.lock, second.lock, "one holder per device directory");
+        assert_ne!(
+            first.socket, second.socket,
+            "each login's connections reach its own holder"
+        );
+        assert_ne!(first.log, second.log);
+    }
+
     #[test]
     fn only_reads_are_asked_again_by_themselves() {
         assert!(a_read(
@@ -753,15 +883,19 @@ mod tests {
         while counting.0.load(Ordering::SeqCst) == 0 {
             std::thread::sleep(POLL);
         }
-        let entered_at_start = counting.0.load(Ordering::SeqCst);
         let said = [initialize(&mut first), initialize(&mut second)];
-        // Each answer is the same holder's: its count went on from one to the next.
+        // Both connections are the same holder's, and it asks the device to enter once: a call
+        // never waits on an entry retry, so both hear why at once.
+        assert_eq!(said[0], said[1]);
+        assert!(
+            said[0].contains("Tilo keeps trying in the background"),
+            "{}",
+            said[0]
+        );
         assert_eq!(
-            said,
-            [
-                format!("asked {}", entered_at_start + 1),
-                format!("asked {}", entered_at_start + 2)
-            ]
+            counting.0.load(Ordering::SeqCst),
+            1,
+            "the device is asked to enter once, not once per connection"
         );
         // A second holder (another agent's `tilo mcp` starting one at the same moment) finds
         // the device held and ends, leaving the first listening.
@@ -773,10 +907,8 @@ mod tests {
         );
         assert!(second_holder.is_ok());
         let mut third = UnixStream::connect(&place.socket).unwrap();
-        assert_eq!(
-            initialize(&mut third),
-            format!("asked {}", entered_at_start + 3)
-        );
+        assert_eq!(initialize(&mut third), said[0]);
+        assert_eq!(counting.0.load(Ordering::SeqCst), 1);
         drop((first, second, third));
         holding.join().unwrap();
         assert!(
