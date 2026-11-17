@@ -335,8 +335,11 @@ export function createIdentityActions({
     // Someone who arrived by an invitation and never set up Tilo of their
     // own is asked that first, now that they used the workspace: the setup
     // gives them their own workspace with their agent in it, and keeps them.
+    // It is about them, not about what they are doing, so it is asked from
+    // their avatar (`source: 'identity'`), never as a banner over the note or
+    // message they are in the middle of.
     if (showAgentSetup && setupDue()) {
-      offer({...CONNECT_AGENT, title: 'Set up with your agent'}, 'Want a workspace of your own?',
+      offer({...CONNECT_AGENT, source: 'identity', title: 'Set up with your agent'}, 'Want a workspace of your own?',
         `Paste one line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, with your agent in a workspace of your own. Any time later: ${searchChord}, “${CONNECT_AGENT.title}”.`,
         'setup');
       return;
