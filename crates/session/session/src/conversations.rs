@@ -1331,25 +1331,52 @@ mod tests {
                 .contains(runtime_collab::INSTRUCTION_LEARNED)
         );
         assert_eq!(request.agent_instruction, None);
-        // What was learned about a person is theirs: a turn somebody else asked is told none of
-        // it, also on the device that holds the record.
-        let theirs = turns(
-            "w1",
-            &chat,
-            &head,
-            "someone-else",
-            &chat::projection::AgentNames::new(),
-            &std::collections::HashMap::new(),
-            Some(&known),
+    }
+
+    /// What was learned about a person is theirs: the device that holds their record tells it to
+    /// a turn they asked, and to no turn somebody else asked.
+    #[test]
+    fn only_a_turn_its_person_asked_is_told_what_was_learned_about_them() {
+        use tilo_app::tilo_workspace_agent::learned::{Learned, learned};
+        let mut record = tilo_resource::Replica::<Learned>::new().as_agent_for(AGENT, ME);
+        record
+            .apply(Learned::LEARN.with(learned::Learn {
+                text: tilo_resource::NonBlank::parse("Prefers short answers.").unwrap(),
+                source: tilo_resource::NonBlank::parse("They said so").unwrap(),
+            }))
+            .unwrap();
+        let known = record.state().unwrap();
+        let chat = workspace();
+        let mut head = chat::parts::ChatPart::default();
+        head.messages.push(
+            Id::from_raw("ask".to_owned()),
+            message(MemberId::person(ME), "what do you know about me?", 100),
         );
+        // The same message, read on the device of the person who wrote it and on another's.
+        let told_on_the_device_of = |person: &str| {
+            let read = turns(
+                "w1",
+                &chat,
+                &head,
+                person,
+                &chat::projection::AgentNames::new(),
+                &std::collections::HashMap::new(),
+                Some(&known),
+            );
+            let [(turn, _)] = read.as_slice() else {
+                panic!("one turn, not {} of them", read.len());
+            };
+            turn.request.instruction.clone()
+        };
+        let theirs = told_on_the_device_of(ME);
         assert!(
-            !theirs[0]
-                .0
-                .request
-                .instruction
-                .contains(runtime_collab::INSTRUCTION_LEARNED),
-            "{}",
-            theirs[0].0.request.instruction
+            theirs.contains(runtime_collab::INSTRUCTION_LEARNED),
+            "{theirs}"
+        );
+        let another = told_on_the_device_of("someone-else");
+        assert!(
+            !another.contains(runtime_collab::INSTRUCTION_LEARNED),
+            "{another}"
         );
     }
 
