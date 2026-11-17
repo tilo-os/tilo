@@ -227,7 +227,10 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     if (node.ground) {
       const {fill, edge, radius} = node.ground;
       if (fill) css += `background:${rgba(fill)};`;
-      if (edge) css += `box-shadow:inset 0 0 0 1px ${rgba(edge)};`;
+      // A window or a panel casts its shadow on what it floats over.
+      const shadows = node.floats ? [FLOATING_SHADOW] : [];
+      if (edge) shadows.push(`inset 0 0 0 1px ${rgba(edge)}`);
+      if (shadows.length) css += `box-shadow:${shadows.join(',')};`;
       if (radius) css += `border-radius:${radius}px;`;
     }
     if (node.own?.kind === 'text') {
@@ -683,10 +686,11 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
           write(quiet, 'text', control.placeholder);
           runs.push(quiet);
         }
-        const chevron = elementFor(`${key}:chevron`, 'span', next);
-        write(chevron, 'css', 'flex:none;margin-left:auto;color:var(--tilo-text-dim,#6e6e73);');
-        write(chevron, 'text', '▾');
-        runs.push(chevron);
+        if (control.chevron) {
+          const chevron = glyph(`${key}:chevron`, control.chevron, next);
+          chevron.style.marginLeft = 'auto';
+          runs.push(chevron);
+        }
         place(button, runs);
         const parts = [button];
         if (control.open && control.options.length) {
@@ -889,9 +893,17 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
 // How the rendered composition looks beyond what each widget declares: the
 // document's blocks, the caret, the page's own selection. Colours and sizes
 // come from the theme's variables the runtime publishes on the layer.
-export const VIEW_CSS = `
+export // The lift a window or a panel stands at over the shell.
+const FLOATING_SHADOW = '0 1px 3px rgba(0,0,0,.08),0 10px 28px rgba(0,0,0,.12)';
+
+const VIEW_CSS = `
 /* Every size the composition gives is the layout's, which counts padding in. */
 .tilo-view,.tilo-view *{box-sizing:border-box;}
+/* A row's or a place's controls show while the pointer is over it or focus is in it, as painted. */
+.tilo-view [data-hover-controls]:not(:hover):not(:focus-within) [data-widget=HoverToolbarFace]{opacity:0;pointer-events:none;}
+.tilo-view [data-widget=HoverToolbarFace]{transition:opacity .12s ease;}
+/* A scroller's bar is a thin quiet thumb, not the platform's arrows and trough. */
+.tilo-view{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 35%,transparent) transparent;}
 .tilo-view{font-family:var(--tilo-faces,"Tilo Sans",system-ui,sans-serif);color:var(--tilo-text,#1d1d1f);--tilo-mono:ui-monospace,"SF Mono",Menlo,monospace;font-synthesis:none;-webkit-font-smoothing:antialiased;}
 .tilo-view button{all:unset;box-sizing:border-box;display:block;cursor:default;}
 .tilo-link{color:var(--tilo-accent,#2f6fed);text-decoration:underline;text-underline-offset:2px;cursor:pointer;}
@@ -911,7 +923,10 @@ export const VIEW_CSS = `
 .tilo-view input[role=switch]{width:36px;height:22px;border-radius:11px;place-content:center start;padding:0 3px;}
 .tilo-view input[role=switch]::after{content:"";width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .18s ease;}
 .tilo-view input[role=switch]:checked::after{width:16px;height:16px;border:0;transform:translateX(14px);}
-.tilo-view input:disabled{opacity:.5;cursor:default;}
+.tilo-view input:disabled{cursor:default;}
+/* A box or switch the person cannot change is grey where it would be the accent, as painted. */
+.tilo-view input[type=checkbox]:disabled:checked,.tilo-view input[type=radio]:disabled:checked,.tilo-view input[type=checkbox]:disabled:indeterminate{background:color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 60%,transparent);}
+.tilo-view input[type=checkbox]:disabled:not(:checked),.tilo-view input[type=radio]:disabled:not(:checked){opacity:.5;}
 .tilo-view input[type=checkbox]:focus-visible,.tilo-view input[type=radio]:focus-visible,.tilo-view input[type=range]:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:2px;}
 .tilo-view input[type=range]{flex:1;min-width:0;margin:0;accent-color:var(--tilo-accent,#2f6fed);cursor:pointer;}
 /* Entries, choosers and strips of choices on the raised well the canvas paints them on. */

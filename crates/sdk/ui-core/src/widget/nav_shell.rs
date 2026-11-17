@@ -2781,6 +2781,29 @@ impl Widget for NavShell {
         if g.inspector == InspectorPlacement::Docked {
             cx.surface(g.inspector_column, "inspector");
         }
+        // The hairlines it paints under each header row and beside the overview.
+        for column in [Column::Overview, Column::Content, Column::Inspector] {
+            let header = g.header(column);
+            if header == Rect::ZERO || g.floating(column) {
+                continue;
+            }
+            let rule =
+                crate::chrome::HeaderRowFace::in_row(header, self.inputs.borrow().metrics.row).rule;
+            if let Some(rule) = crate::surface::separator_rect(rule.x0, rule.x1, rule.y0, 0.0) {
+                cx.surface(rule, "border");
+            }
+        }
+        let lead = if g.overview_column.width() > 0.0 {
+            g.overview_column
+        } else {
+            g.rail
+        };
+        if g.side_by_side && lead.width() > 0.0 && g.content_column.width() > 0.0 {
+            cx.surface(
+                Rect::new(lead.x1 - 1.0, g.content_column.y0, lead.x1, lead.y1),
+                "border",
+            );
+        }
         cx.children();
     }
 

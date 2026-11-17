@@ -381,3 +381,19 @@ test('a flex item keeps the margin its layout node gives it, and a slot centres 
   assert.match(cell, /line-height:28px;/);
   assert.match(cell, /text-align:end;/);
 });
+
+test('a window floats over the shell on its ground, edge and shadow; a ground alone casts none', () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  const ground = {fill: [255, 255, 255, 255], edge: [200, 200, 200, 255], radius: 14};
+  show(presenter, widget('Map[0]', [0, 0, 800, 600], {children: [
+    widget('Map[0]/WindowFrame[0]', [40, 40, 300, 200], {ground, floats: true}),
+    widget('Map[0]/Card[0]', [400, 40, 200, 100], {ground}),
+  ]}));
+  const window = byPath(layer, 'Map[0]/WindowFrame[0]').style.cssText;
+  assert.match(window, /box-shadow:0 1px 3px rgba\(0,0,0,.08\),0 10px 28px rgba\(0,0,0,.12\),inset 0 0 0 1px rgba\(200,200,200/);
+  assert.match(window, /border-radius:14px;/);
+  const card = byPath(layer, 'Map[0]/Card[0]').style.cssText;
+  assert.match(card, /box-shadow:inset 0 0 0 1px/);
+  assert.doesNotMatch(card, /28px/);
+});

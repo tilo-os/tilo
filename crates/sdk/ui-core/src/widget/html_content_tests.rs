@@ -157,8 +157,20 @@ fn a_breadcrumb_composes_as_a_path_with_the_current_page_marked() {
     assert_eq!(tagged(root, "nav").len(), 1, "a navigation: {root:?}");
     assert_eq!(tagged(root, "ol").len(), 1, "a list: {root:?}");
     let items = tagged(root, "li");
-    let labels: Vec<String> = items.iter().filter_map(|node| words(node)).collect();
+    let labels: Vec<String> = items
+        .iter()
+        .filter_map(|item| item.children.iter().find_map(words))
+        .collect();
     assert_eq!(labels, ["home", "docs", "readme.md"]);
+    let chevrons = items
+        .iter()
+        .filter(|item| {
+            item.children
+                .iter()
+                .any(|part| part.path.ends_with("#chevron"))
+        })
+        .count();
+    assert_eq!(chevrons, 2, "a chevron between each two places, as painted");
     assert_eq!(
         attribute(items[2], "aria-current"),
         Some("page"),
@@ -266,4 +278,35 @@ fn a_divider_is_a_rule_and_a_skeleton_has_nothing_to_read() {
     assert_eq!(rule.tag, Some("hr"), "a rule: {rule:?}");
     let composition = composed(Box::new(crate::widget::Skeleton::text(2)), (300, 40));
     assert_eq!(attribute(shown(&composition), "aria-hidden"), Some("true"));
+}
+
+/// A window's surface is its ground on a page, floating over what is under it; a raised one
+/// is a ground alone.
+#[test]
+fn a_surface_composes_as_its_ground_and_a_window_floats() {
+    use crate::widget::{Surface, SurfaceLevel};
+    let window = Surface::new(
+        SurfaceLevel::Window,
+        Box::new(crate::widget::Text::new("Inbox")),
+    );
+    let composition = composed(Box::new(window), (300, 200));
+    let surface = |root: &Composed| -> Composed {
+        nodes(root)
+            .into_iter()
+            .find(|node| node.widget == "Surface")
+            .cloned()
+            .expect("the surface's element")
+    };
+    let window = surface(&composition.root);
+    let ground = window.ground.as_ref().expect("the window's ground");
+    assert!(ground.fill.is_some() && ground.edge.is_some() && ground.radius > 0.0);
+    assert!(window.floats, "a window floats: {window:?}");
+    let raised = Surface::new(
+        SurfaceLevel::Raised,
+        Box::new(crate::widget::Text::new("Tag")),
+    );
+    let composition = composed(Box::new(raised), (300, 200));
+    let raised = surface(&composition.root);
+    assert!(raised.ground.is_some());
+    assert!(!raised.floats, "a raised surface casts no shadow");
 }

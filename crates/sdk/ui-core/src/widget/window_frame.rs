@@ -612,6 +612,22 @@ impl Decorator for WindowFrame {
     /// composer or the canvas itself by its own bar (`shell.md` §8.1, "Dropping on the
     /// composer"). The tabs, the controls and the app's own header buttons take their presses
     /// first: only what the content did not take is the bar's.
+    /// What the window holds, on the window's own ground, floating over the shell; the one in
+    /// front wears the focused edge.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        self.layers.html(cx);
+        let theme = cx.theme();
+        let node = cx.node();
+        SurfaceLevel::Window.compose(theme, self.rect, node);
+        if self.focused
+            && let Some(ground) = node.ground.as_mut()
+        {
+            ground.edge = Some(crate::composition::rgba8(
+                theme.tokens.colors.window_edge_focused(),
+            ));
+        }
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.carries.is_none() {
             self.layers.handle_event(event, ctx);

@@ -518,7 +518,7 @@ impl Widget for Breadcrumb {
                     (icon_side, icon_side),
                 );
                 item.icon("root", at, icon, ink);
-                words_x += self.root_width(&theme);
+                words_x += self.root_width(theme);
             }
             if matches!(origin, Some(None)) {
                 let at = Rect::from_center_size(

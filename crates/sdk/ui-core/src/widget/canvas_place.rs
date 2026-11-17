@@ -217,6 +217,13 @@ impl Decorator for PlaceGround {
         )
     }
 
+    /// Its view, on the window surface it is painted on.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        self.column.html(cx);
+        let theme = cx.theme();
+        SurfaceLevel::Window.compose(theme, self.column.get_rect(), cx.node());
+    }
+
     fn child_clip_rect(&self) -> Option<Rect> {
         let rect = self.column.get_rect();
         (rect.width() > 0.0).then_some(rect)

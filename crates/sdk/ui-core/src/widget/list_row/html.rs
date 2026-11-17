@@ -8,7 +8,7 @@ use vello::peniko::Color;
 use super::paint::TextFrame;
 use super::{ListRowFace, RowLeading, RowMetrics, RowValue};
 use crate::a11y::AccessNode;
-use crate::composition::{CheckStyle, Control, Face, HtmlCx, TextLook};
+use crate::composition::{CheckStyle, Control, HtmlCx, TextLook};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::BadgeFace;

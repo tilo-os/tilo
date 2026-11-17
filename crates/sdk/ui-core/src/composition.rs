@@ -176,6 +176,9 @@ pub enum Control {
         caption: Option<TextLook>,
         #[serde(skip_serializing_if = "Option::is_none")]
         icon: Option<Glyph>,
+        /// The mark at its end that says it opens.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        chevron: Option<Glyph>,
     },
     /// Choices shown together, each its own button: a tab bar, a segmented strip, a menu.
     Choices {
@@ -719,6 +722,9 @@ pub struct Composed {
     /// The ground its element is filled with, under its words and children.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ground: Option<Ground>,
+    /// It floats over what is under it, as a window or a panel does: its ground casts a shadow.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub floats: bool,
     /// Attributes its element carries beyond what its role gives it: an `<img>`'s `src` and
     /// `alt`, a `<time>`'s `datetime`, a `<progress>`'s value.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -756,6 +762,7 @@ impl Composed {
             scroll: None,
             semantics: None,
             ground: None,
+            floats: false,
             attrs: Vec::new(),
             own: None,
             focusable: false,

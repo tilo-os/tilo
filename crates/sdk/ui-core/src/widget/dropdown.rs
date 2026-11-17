@@ -1120,6 +1120,12 @@ impl Widget for Dropdown {
         } else {
             Vec::new()
         };
+        let chevron = crate::composition::glyph(
+            crate::icons::Icon::ChevronDown,
+            f64::from(cx.theme().tokens.metrics.icon_sm),
+            colors.text_dim,
+            false,
+        );
         cx.control(Control::Select {
             current,
             placeholder: self.placeholder.clone(),
@@ -1127,6 +1133,7 @@ impl Widget for Dropdown {
             open: self.open,
             caption,
             icon,
+            chevron,
         });
     }
 
