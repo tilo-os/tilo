@@ -27,6 +27,8 @@ pub mod app_files;
 mod appended;
 #[cfg(feature = "agents")]
 mod applications;
+#[cfg(any(feature = "agents", feature = "web"))]
+mod authored;
 mod authority;
 mod bootstrap;
 mod branch;
@@ -1037,7 +1039,7 @@ struct WorkspacesInner {
     directory: listing::Directory,
     /// Whether the records its workspaces hold in the clear are sealed: only once
     /// the host's operator decided it (the relay's `reseal`).
-    #[cfg(feature = "agents")]
+    #[cfg(any(feature = "agents", feature = "web"))]
     resealing: std::sync::atomic::AtomicBool,
     /// The workspaces this host serves for the device of its person that governs
     /// them ([`crate::hosted`]).
@@ -1293,7 +1295,7 @@ impl Workspaces {
                 session_carriers: session_carry::SessionCarriers::default(),
                 unbuildable_windows: std::sync::Mutex::default(),
                 directory: listing::Directory::default(),
-                #[cfg(feature = "agents")]
+                #[cfg(any(feature = "agents", feature = "web"))]
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
                 host,

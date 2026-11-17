@@ -51,7 +51,6 @@ impl DocumentKeys {
     }
 
     /// Seal content of the record under the channel's current epoch.
-    #[cfg(feature = "agents")]
     fn seal(
         &self,
         retention: ContentRetention,
@@ -384,7 +383,6 @@ pub(crate) async fn unsent_writes(
 /// page that joins later, whose host replays nothing the workspace's
 /// governance already covers — reads the record from it, where a change
 /// alone would wait forever for a base that never comes.
-#[cfg(feature = "agents")]
 pub(super) fn publish_changes(
     candidate: &mut StatePeer,
     keys: Option<&DocumentKeys>,
@@ -440,7 +438,6 @@ pub(super) fn publish_changes(
 /// # Errors
 ///
 /// The write could not be sealed, signed or admitted.
-#[cfg(feature = "agents")]
 pub(super) fn refound(
     candidate: &mut StatePeer,
     keys: Option<&DocumentKeys>,
@@ -477,7 +474,6 @@ pub(super) fn refound(
 /// Start `record` of `app` in `candidate` as the workspace's host, signed with
 /// `key` and sealed with `keys`: the checkpoint every record is born from,
 /// which holds nothing, then `changes`, what the record starts with.
-#[cfg(feature = "agents")]
 pub(super) fn start_sealed(
     candidate: &mut StatePeer,
     keys: &DocumentKeys,
@@ -665,7 +661,6 @@ impl Workspaces {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    #[cfg(feature = "agents")]
     fn resealing(&self) -> bool {
         self.inner
             .resealing
@@ -845,7 +840,6 @@ impl Workspaces {
     /// # Errors
     ///
     /// As [`GovernedWorkspace::document_keys`], or the channel cannot be opened.
-    #[cfg(feature = "agents")]
     pub(super) async fn sealing_keys(
         &self,
         workspace: &GovernedWorkspace,

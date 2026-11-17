@@ -63,7 +63,7 @@ impl GovernedWorkspace {
 
     /// Take in a change the governor made to `(app, record)` itself, when it
     /// is the shared desktop the workspace's writes are decided against.
-    #[cfg(feature = "agents")]
+    #[cfg(any(feature = "agents", feature = "web"))]
     pub(super) fn absorb_desktop(
         &mut self,
         (app, record): (&str, &str),
