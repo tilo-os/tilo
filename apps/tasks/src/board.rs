@@ -74,7 +74,7 @@ fn lanes(
             Some(Box::new(header) as Element),
             cards,
             Some(crate::new_issue(
-                cx,
+                &|| cx.local(String::new()),
                 window,
                 None,
                 Some(status),

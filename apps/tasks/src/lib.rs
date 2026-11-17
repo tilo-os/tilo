@@ -384,9 +384,10 @@ fn sidebar_sections(tasks: &Tasks, me: Option<&ui::tilo_resource::MemberId>) -> 
 }
 
 /// A row to create an issue: its title, then Enter or the button. `status`
-/// is where it starts, when the row stands in a lane of the board.
-pub(crate) fn new_issue<R: ui::tilo_resource::Resource>(
-    cx: &ViewCx<R>,
+/// is where it starts, when the row stands in a lane of the board; `local`
+/// makes the title's draft.
+pub(crate) fn new_issue(
+    local: &dyn Fn() -> ui::LocalState<String>,
     window: &Window,
     parent: Option<Id>,
     status: Option<Status>,
@@ -395,7 +396,7 @@ pub(crate) fn new_issue<R: ui::tilo_resource::Resource>(
     let Some(actions) = &window.actions else {
         return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
     };
-    let draft = cx.local(String::new());
+    let draft = local();
     let create_under_parent = parent.is_some();
     // The issue is made from what the field parses to: nothing while it is
     // blank, so the button is disabled and Enter does nothing until there is
