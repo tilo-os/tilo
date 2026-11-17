@@ -1902,7 +1902,7 @@ async fn work(
     // A turn in a conversation may answer with a view it writes.
     tools.extend(view_tool(turn));
     let mut messages = vec![
-        Message::text(Role::System, instructions(turn)),
+        Message::text(Role::System, instructions(turn, &scope.workspace)),
         Message::text(Role::User, turn.request.clone()),
     ];
     let mut cost = 0u64;
@@ -2123,8 +2123,9 @@ fn later(wait: Duration) -> Instant {
 
 /// What the agent is told before every ask: what every agent a host runs is told, and after it
 /// what its keeper told it about how to work for them ([`Agent::told`]), when they told it
-/// anything.
-fn instructions(turn: &Turn) -> String {
+/// anything. What it is told about its keeper's skills is said where it may read them in
+/// `workspace`.
+fn instructions(turn: &Turn, workspace: &str) -> String {
     let told = turn.agent.told().map_or_else(String::new, |told| {
         format!(
             "\n\nWhat the person who keeps you told you about how to work for them. It holds \
@@ -2157,7 +2158,7 @@ fn instructions(turn: &Turn) -> String {
     format!(
         "{every}{view}{}{}{}{told}",
         learned::told_how(turn),
-        skills::told_how(turn),
+        skills::told_how(turn, workspace),
         sub_agents::told(turn)
     )
 }

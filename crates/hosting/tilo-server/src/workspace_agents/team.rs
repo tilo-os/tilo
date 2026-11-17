@@ -111,7 +111,8 @@ struct TurnTeam {
     /// The turn's agent, as the list held it when the turn began.
     agent: Agent,
     /// The keeper whose skills the turn hands to a sub-agent it starts ([`super::skills`]):
-    /// none unless the turn is told those skills itself.
+    /// none unless the turn is told those skills itself, which what its keeper bounds the
+    /// agent to decides too.
     skilled: Option<[u8; 32]>,
     /// What the turn is offered: nothing for a turn that is not its keeper's own.
     offered: Vec<CatalogueRow>,
@@ -137,7 +138,7 @@ impl TurnTeam {
             workspace: scope.workspace.clone(),
             workspace_id: scope.workspace_id,
             agent: turn.agent.clone(),
-            skilled: super::learned::keeps(turn),
+            skilled: super::skills::keeps(turn, &scope.workspace),
             offered: Vec::new(),
         };
         let caller = scope.reply(turn).caller;
@@ -418,7 +419,10 @@ impl TurnTeam {
         if new.coding.is_some() {
             return Err(super::skills::NOT_TO_CODING.to_owned());
         }
-        super::skills::for_sub_agent(&self.workspaces, &self.workspace, keeper, named)
+        // What its keeper bounds the agent to holds for the one skill it names as well: this
+        // is where a bound refuses a skill to be handed on, before anything is kept of it.
+        let whose = (&self.agent, keeper);
+        super::skills::for_sub_agent(&self.workspaces, &self.workspace, whose, named)
             .await
             .map(Some)
     }
