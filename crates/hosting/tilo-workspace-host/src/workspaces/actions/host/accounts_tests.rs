@@ -23,7 +23,7 @@ use super::super::tests::{caller, settled};
 use crate::workspaces::tests::{governor, test_host};
 
 /// A device of the person `root`.
-fn key_of(root: &SigningKey, label: &str) -> DeviceCert {
+pub(super) fn key_of(root: &SigningKey, label: &str) -> DeviceCert {
     let key = SigningKey::from_bytes(&rand::random());
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -40,7 +40,7 @@ fn key_of(root: &SigningKey, label: &str) -> DeviceCert {
 }
 
 /// A request of one of the accounts actions, with `argument` when it has one.
-fn asking(action: &str, argument: Value) -> InvokeRequest {
+pub(super) fn asking(action: &str, argument: Value) -> InvokeRequest {
     let argument = match argument {
         Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
         _ => InvokeArgument::None,
