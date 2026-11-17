@@ -1,5 +1,6 @@
-//! The host's own words: the one name it gives rather than a person, in the
-//! language of the person it founds the workspace for.
+//! The host's own words, in the language of the person they are for: the one
+//! name it gives rather than a person, and why a person's model gave no
+//! answer.
 
 use tilo_history::{Catalogue, FluentArgs, Messages as _};
 
@@ -17,6 +18,12 @@ const TRANSLATIONS: &[(&str, &str)] = &[("de-DE", include_str!("../locales/de-DE
 /// The founder's language, read once: the name is stored with the workspace,
 /// and every member reads it as it was given.
 pub(crate) fn workspace_name(language: Option<&str>) -> String {
+    message(language, NAME, &FluentArgs::new())
+}
+
+/// The message `key` of this host's catalogue with `args`, in `language` (a
+/// BCP 47 tag; the source language for one this host has no catalogue of).
+pub(crate) fn message(language: Option<&str>, key: &str, args: &FluentArgs<'_>) -> String {
     let shipped: Vec<&str> = std::iter::once(SOURCE.0)
         .chain(TRANSLATIONS.iter().map(|(tag, _)| *tag))
         .collect();
@@ -33,8 +40,8 @@ pub(crate) fn workspace_name(language: Option<&str>) -> String {
     }
     let catalogue = Catalogue::new(chosen.0, &sources);
     catalogue
-        .format(NAME, &FluentArgs::new())
-        .unwrap_or_else(|| NAME.to_owned())
+        .format(key, args)
+        .unwrap_or_else(|| key.to_owned())
 }
 
 #[cfg(test)]

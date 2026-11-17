@@ -235,7 +235,7 @@ fn provider_argument(request: &InvokeRequest) -> Result<String, ActionHostError>
 }
 
 /// The person's own vault, every sign-in and key of theirs sealed in it.
-fn credentials(root: &Path) -> Result<accounts::AccountCredentials, String> {
+pub(super) fn credentials(root: &Path) -> Result<accounts::AccountCredentials, String> {
     accounts::AccountCredentials::open_in(root)
 }
 
@@ -691,12 +691,12 @@ fn view_of(
 }
 
 /// The person's own model configuration.
-fn provider_config(root: &Path) -> agent_provider_config::ProviderConfig {
+pub(super) fn provider_config(root: &Path) -> agent_provider_config::ProviderConfig {
     let store = settings_store::profile(root);
     agent_provider_config::ProviderConfig::load_in(&*store)
 }
 
-fn save_provider_config(
+pub(super) fn save_provider_config(
     root: &Path,
     config: &agent_provider_config::ProviderConfig,
 ) -> Result<(), String> {
@@ -705,7 +705,7 @@ fn save_provider_config(
 }
 
 /// The vault id a provider's key is kept under, apart from every account's.
-fn key_id(provider: &str) -> accounts::AccountId {
+pub(super) fn key_id(provider: &str) -> accounts::AccountId {
     accounts::AccountId::from(format!("provider:{provider}"))
 }
 
@@ -741,7 +741,7 @@ fn add_provider(root: &Path, adding: &person_models::AddProvider) -> Result<Prov
     Ok(view)
 }
 
-fn set_key(root: &Path, setting: SetKey) -> Result<ProviderView, String> {
+pub(super) fn set_key(root: &Path, setting: SetKey) -> Result<ProviderView, String> {
     if setting.key.trim().is_empty() {
         return Err("An API key cannot be empty".into());
     }
