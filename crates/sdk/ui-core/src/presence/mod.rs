@@ -1569,6 +1569,7 @@ impl PresenceCtx {
             is_self: self.is_own_identity(user),
             removed: false,
             administrator: false,
+            grants: 0,
         }
     }
 

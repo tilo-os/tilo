@@ -77,3 +77,35 @@ fn a_removed_member_loses_the_list_and_the_access() {
     );
     assert!(!access.member_devices.contains(&guest.device_public_key));
 }
+
+#[test]
+fn a_members_row_counts_the_permissions_given_beyond_their_role() {
+    let (mut peer, authority, _, owner_cert, now) = crate::admission_tests::seeded();
+    let root = SigningKey::from_bytes(&[72; 32]).verifying_key().to_bytes();
+    peer.governance_mut()
+        .declare_member(root, Role::Editor, false, Some("Rosa"), &authority, now)
+        .unwrap();
+    assert_eq!(member(&peer, root, now).unwrap().grants, 0);
+    let workspace = peer.workspace_id().to_owned();
+    let invite = tilo_action_policy::Grant::new(
+        "invite:rosa",
+        tilo_action_policy::Grantee::person(hex::encode(root)),
+        tilo_action_policy::roles::governance_action(
+            &workspace,
+            tilo_action_policy::roles::governance::INVITE,
+        ),
+        tilo_action_policy::KindSet::OUTSIDE,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(hex::encode(owner_cert.user_public_key)),
+    );
+    peer.governance_mut()
+        .put_governed_grants(&[invite], &authority, now)
+        .unwrap();
+    // Being an administrator is their role's to say, not one more permission.
+    peer.governance_mut()
+        .set_member_administrator(root, None, &authority, now)
+        .unwrap();
+    let listed = member(&peer, root, now).unwrap();
+    assert!(listed.administrator);
+    assert_eq!(listed.grants, 1, "the one permission beyond their role");
+}

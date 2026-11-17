@@ -190,8 +190,7 @@ impl PageWorkspaceSettings {
                     owns: role == Role::Owner,
                     administrator: member.administrator,
                     role,
-                    // The host answers roles, not the permissions beyond them.
-                    grants: 0,
+                    grants: usize::try_from(member.grants).unwrap_or(usize::MAX),
                     user,
                 })
             })

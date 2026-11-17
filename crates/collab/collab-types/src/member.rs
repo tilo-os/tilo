@@ -91,6 +91,10 @@ pub struct Member {
     /// ([`crate::role::Role::Owner`] is the owner's alone).
     #[serde(default)]
     pub administrator: bool,
+    /// How many permissions the workspace gives them beyond their role
+    /// ([`tilo_action_policy::WorkspacePolicy::extra_grants`]).
+    #[serde(default)]
+    pub grants: u32,
 }
 
 impl Member {
@@ -118,6 +122,7 @@ impl Member {
             is_self: false,
             removed: false,
             administrator: false,
+            grants: 0,
         }
     }
 
@@ -139,6 +144,7 @@ impl Member {
             is_self: false,
             removed: false,
             administrator: false,
+            grants: 0,
         }
     }
 
