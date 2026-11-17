@@ -11,8 +11,9 @@ const OWNER: &str = "owner";
 const MALLORY: &str = "mallory";
 const ADA: &str = "ada";
 const HELPER: &str = "helper-mod";
-/// The moderation agent, as the workspace policy names its members.
-const AGENT_PARTY: &str = "agent:moderation";
+/// Whom the moderation agent's governance is held to: the server enforces it
+/// as a Moderator's own.
+const AGENT_PARTY: &str = "moderator";
 
 /// A board people add cards to and delete them from: enough history to
 /// moderate.
