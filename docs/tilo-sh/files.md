@@ -79,6 +79,7 @@ the reference:
 | To | Action |
 | :--- | :--- |
 | Put a file in the workspace's folder | `files#open` with `content`, `name`, and `dir` for a folder |
+| Put a folder of files in it, in one change | `files#open` with `files`: a list of `content`, `name` and `dir` (or a `tilo.content:` reference to one), up to 50 000 |
 | Open a PDF in PDF Viewer | `pdf-viewer#import-pdf-content` with `content` and `name` |
 | Read a document in Writer | `word-processor#read-content` with `content` and `name` |
 | Put a picture in a note | Notes' `keep-image`, or `place-image` with a page |

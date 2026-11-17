@@ -267,6 +267,104 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_folder_put_is_one_run_and_one_write_per_chunk() {
+    const FILES: usize = 1200;
+    const INLINE: usize = 600;
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo.sh", DeviceCapabilities::member());
+    let computer = enrol(&root, "uploading agent", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
+        &root,
+        &host,
+        state.path(),
+        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+    )
+    .await;
+    let agent = Browser::open(&hosted, &computer, &host).await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let server = McpServer::new(
+        SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
+        WORKSPACE.into(),
+        person,
+    )
+    .with_surface(Surface::Agent);
+
+    // A folder large enough to fill more than one chunk of the tree, put in
+    // an open whose list a small part of it carries beside the file's own
+    // path, and then the rest as content of its own: every file goes in before
+    // anything is written.
+    let mut entries = Vec::with_capacity(FILES);
+    let mut names = Vec::with_capacity(FILES);
+    for index in 0..FILES {
+        let bytes = format!("file {index}\n").into_bytes();
+        let content = content_in(&put(&server, &bytes).await);
+        let name = format!("f{index}.txt");
+        names.push(name.clone());
+        entries.push(json!({"content": content, "name": name, "dir": "repo/src"}));
+    }
+    let inline = entries.split_off(INLINE);
+    let said = tool(
+        &server,
+        "tilo_do",
+        json!({"path": "files#open", "args": {"files": entries}}),
+    )
+    .await;
+    let list = content_in(&put(&server, &serde_json::to_vec(&inline).unwrap()).await);
+    tool(
+        &server,
+        "tilo_do",
+        json!({"path": "files#open", "args": {"files": list}}),
+    )
+    .await;
+
+    let tree = tree_when(&hosted, WORKSPACE, |tree| {
+        file_at(tree, "repo/src", &format!("f{}.txt", FILES - 1)).is_some()
+    })
+    .await;
+    for name in &names {
+        assert!(
+            file_at(&tree, "repo/src", name).is_some(),
+            "{name} is in the folder: {said}"
+        );
+    }
+
+    // The records the folder changed each carry one change, not one per file:
+    // the tree's own record and its chunks.
+    let workspaces = hosted.relay.workspaces().unwrap();
+    let index = workspaces
+        .resource_document(WORKSPACE, FILES_APP, &tree_document())
+        .await
+        .unwrap()
+        .expect("the host keeps the tree's own record");
+    let mut index = automerge::AutoCommit::load(&index).expect("the tree's own record reads");
+    let chunks = fs_protocol::tree::listed_chunks(&index);
+    assert!(chunks.len() > 1, "the folder fills more than one chunk");
+    let mut changes = index.get_changes(&[]).len();
+    for chunk in &chunks {
+        let record = workspaces
+            .resource_document(
+                WORKSPACE,
+                FILES_APP,
+                &fs_protocol::tree::chunk_document_id(*chunk),
+            )
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("the host keeps chunk {chunk} of the tree"));
+        changes += automerge::AutoCommit::load(&record)
+            .expect("a chunk of the tree reads")
+            .get_changes(&[])
+            .len();
+    }
+    assert!(
+        changes.saturating_mul(10) < FILES,
+        "the folder is a change per record per open ({} changes over {} records), not one per file",
+        changes,
+        chunks.len() + 1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_resumed_upload_of_a_large_file_lands_once_and_whole() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "tilo.sh", DeviceCapabilities::member());

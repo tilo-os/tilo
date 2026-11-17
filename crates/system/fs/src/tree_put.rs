@@ -51,6 +51,39 @@ fn hash_of(hex: &str) -> Option<Hash> {
     hash_from_hex(hex)
 }
 
+/// A file [`Namespace::put_files`] puts into the tree.
+pub struct FileToPut<'a> {
+    /// The folder it goes into, `""` for the tree's root.
+    pub to: &'a str,
+    /// The name it takes there.
+    pub name: &'a str,
+    /// The hash of its content, one the tree names files by.
+    pub hash: &'a str,
+    /// Its length in bytes.
+    pub size: u64,
+    /// When it was written, as the tree keeps times.
+    pub mtime: u64,
+}
+
+/// What [`Namespace::put_files`] put: the files, and the changes that put them.
+pub struct PutFiles {
+    /// What each record of the tree changed: the chunks the files are in, the
+    /// chunks of any folders made on the way, and the tree's own record when a
+    /// new chunk was started.
+    pub writes: Vec<crate::namespace::ResourceWrite>,
+    /// The files, in the order they were put.
+    pub files: Vec<PlacedFile>,
+}
+
+/// One file [`Namespace::put_files`] put.
+pub struct PlacedFile {
+    /// Where it is, as a path from the tree's root (`docs/2026/plan.md`).
+    pub path: String,
+    /// Whether a file of that name was there and took the new content, rather
+    /// than a node being made for it.
+    pub replaced: bool,
+}
+
 impl Namespace {
     /// Where each document of the tree is before a change: what
     /// [`Self::document_writes`] answers the change against.
@@ -76,11 +109,60 @@ impl Namespace {
         size: u64,
         mtime: u64,
     ) -> Result<Placed, String> {
+        let mut put = self.put_files(&[FileToPut {
+            to,
+            name,
+            hash,
+            size,
+            mtime,
+        }])?;
+        let placed = put
+            .files
+            .pop()
+            .ok_or_else(|| refused("the file was not put"))?;
+        Ok(Placed {
+            writes: put.writes,
+            path: placed.path,
+            replaced: placed.replaced,
+        })
+    }
+
+    /// Put `files` into the tree as one change: every write a record takes is
+    /// made once for the whole set, not once for each file, so a folder of
+    /// them costs its chunks rather than its files.
+    ///
+    /// Nothing is committed when any file is refused: the caller's namespace
+    /// keeps whatever it made in memory, and a caller that does not take the
+    /// writes discards it.
+    ///
+    /// # Errors
+    /// What [`Self::put_file`] refuses, for any of the files.
+    pub fn put_files(&mut self, files: &[FileToPut<'_>]) -> Result<PutFiles, String> {
+        let before = self.before_change();
+        let mut placed = Vec::with_capacity(files.len());
+        for file in files {
+            placed.push(self.place(file)?);
+        }
+        Ok(PutFiles {
+            writes: self.document_writes(&before),
+            files: placed,
+        })
+    }
+
+    /// Put one file into the tree, without the changes: [`Self::put_files`]
+    /// takes them once for all of them.
+    fn place(&mut self, file: &FileToPut<'_>) -> Result<PlacedFile, String> {
+        let FileToPut {
+            to,
+            name,
+            hash,
+            size,
+            mtime,
+        } = *file;
         if !plain(name) {
             return Err(refused(format!("{name:?} is no file's name")));
         }
         let hash = hash_of(hash).ok_or_else(|| refused("the content's hash is not one"))?;
-        let before = self.before_change();
         let mut parent = ROOT_INO;
         for folder in to.split('/').filter(|folder| !folder.is_empty()) {
             if !plain(folder) {
@@ -114,16 +196,11 @@ impl Namespace {
                 false
             }
         };
-        let writes = self.document_writes(&before);
         let path = match to.trim_matches('/') {
             "" => name.to_owned(),
             folder => format!("{folder}/{name}"),
         };
-        Ok(Placed {
-            writes,
-            path,
-            replaced,
-        })
+        Ok(PlacedFile { path, replaced })
     }
 }
 
@@ -222,5 +299,38 @@ mod tests {
                 .is_err(),
             "a file is not a folder to put one in"
         );
+    }
+
+    #[test]
+    fn many_files_are_one_change_of_the_records_that_hold_them() {
+        let mut namespace = Namespace::new("host").unwrap();
+        let content = hash(8);
+        let names: Vec<String> = (0..40).map(|index| format!("f{index}.txt")).collect();
+        let files: Vec<FileToPut<'_>> = names
+            .iter()
+            .map(|name| FileToPut {
+                to: "repo/src",
+                name,
+                hash: &content,
+                size: 3,
+                mtime: 10,
+            })
+            .collect();
+        let put = namespace.put_files(&files).unwrap();
+        assert_eq!(put.files.len(), 40, "every file is placed");
+        assert_eq!(
+            put.writes.len(),
+            2,
+            "one change of the chunk that holds them all, and of the tree's own record that names it, not one per file"
+        );
+        let chunks: std::collections::BTreeSet<_> =
+            put.writes.iter().map(|write| write.chunk).collect();
+        assert_eq!(chunks.len(), put.writes.len(), "each record changes once");
+        let mut read = applied(&namespace.save(), &[], "member");
+        for name in &names {
+            let (_, read_hash, size) = at(&mut read, &["repo", "src", name]).expect("the file");
+            assert_eq!(read_hash, hash_of(&content).unwrap());
+            assert_eq!(size, 3);
+        }
     }
 }
