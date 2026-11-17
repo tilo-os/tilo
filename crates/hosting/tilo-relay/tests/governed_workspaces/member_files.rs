@@ -85,7 +85,7 @@ impl Workspace {
         let asks = self.keeper.asks(
             &[Referenced {
                 hash: blake3::hash(file).to_hex().to_string(),
-                member: hex::encode(self.bob.user_pk),
+                member: tilo_resource::MemberId::person(hex::encode(self.bob.user_pk)),
                 size: Some(u64::try_from(file.len()).unwrap()),
             }],
             tilo_clock::unix_now_ms(),
@@ -216,7 +216,7 @@ async fn a_visitors_file_as_large_as_the_host_keeps_reaches_it() {
         .take(usize::try_from(limits.file_bytes).unwrap())
         .collect();
     let hash = blake3::hash(&file).to_hex().to_string();
-    let bob_id = hex::encode(workspace.bob.user_pk);
+    let bob_id = tilo_resource::MemberId::person(hex::encode(workspace.bob.user_pk));
     let session = session(
         &workspace.relay,
         &workspace.phone,
@@ -263,7 +263,7 @@ async fn a_piece_lost_on_the_way_is_asked_for_again_within_a_second() {
         .take(usize::try_from(limits.file_bytes).unwrap())
         .collect();
     let hash = blake3::hash(&file).to_hex().to_string();
-    let bob_id = hex::encode(workspace.bob.user_pk);
+    let bob_id = tilo_resource::MemberId::person(hex::encode(workspace.bob.user_pk));
     let session = session(
         &workspace.relay,
         &workspace.phone,
@@ -377,7 +377,7 @@ async fn a_sealed_attachment_is_ciphertext_on_the_host_and_its_readers_open_it()
     let mut ask = workspace.keeper.asks(
         &[Referenced {
             hash: address.clone(),
-            member: hex::encode(workspace.bob.user_pk),
+            member: tilo_resource::MemberId::person(hex::encode(workspace.bob.user_pk)),
             size: Some(u64::try_from(sealed.len()).unwrap()),
         }],
         tilo_clock::unix_now_ms(),

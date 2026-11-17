@@ -96,12 +96,12 @@ impl ChatApp {
                 let name = self.user_name(&person.id);
                 let mut face = ListRowFace::new(&display)
                     .leading(RowLeading::Avatar(
-                        AvatarFace::new(&name, &person.id)
+                        AvatarFace::new(&name, person.id.id())
                             .presence(self.identity_colour(&person.id))
                             .status(avatar_status(person.status)),
                     ))
                     .enabled(*present || !person.is_agent)
-                    .selected(self.revealed_person.as_deref() == Some(person.id.as_str()));
+                    .selected(self.revealed_person.as_ref() == Some(&person.id));
                 if !status.is_empty() {
                     face = face.secondary(&status);
                 }
@@ -119,7 +119,7 @@ impl ChatApp {
                         row,
                         Hit::ShowPerson {
                             person: person.id.clone(),
-                            place: format!("member:{}", person.id),
+                            place: format!("member:{}", crate::record::member_slot(&person.id)),
                         },
                     );
                 }
@@ -175,7 +175,8 @@ impl ChatApp {
                 .secondary(&m.text)
                 .two_line_secondary()
                 .leading(RowLeading::Avatar(
-                    AvatarFace::new(&name, &m.author).presence(self.identity_colour(&m.author)),
+                    AvatarFace::new(&name, m.author.id())
+                        .presence(self.identity_colour(&m.author)),
                 ));
             let row_h = face.height(ctx.text, theme);
             let row = Rect::new(body.x0 + inset, y, body.x1 - inset, y + row_h);

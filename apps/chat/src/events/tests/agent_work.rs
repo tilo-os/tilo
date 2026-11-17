@@ -77,9 +77,8 @@ fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
             .trace[0]
             .clone();
         applied_step.outcome = AgentStepOutcome::Applied;
-        crate::testing::apply_part_as(
-            &mut doc,
-            crate::resource::DEMO_AGENT,
+        doc.apply_part_as(
+            &crate::resource::demo_agent(),
             crate::testing::record_work(
                 crate::resource::DEMO_SUMMONS,
                 &AgentWork::new(
@@ -147,9 +146,8 @@ fn agent_work_compact_thread_scrolls_all_evidence_without_moving_timeline() {
         .with_trace((0..60).map(|index| AgentStep::authored("calculator.workspace",
             format!("Operation {index}: preserve graph bounds and add the requested revenue curve"),
             AgentStepOutcome::Applied, index)).collect());
-    crate::testing::apply_part_as(
-        &mut doc,
-        crate::resource::DEMO_AGENT,
+    doc.apply_part_as(
+        &crate::resource::demo_agent(),
         crate::testing::record_work(crate::resource::DEMO_SUMMONS, &work),
     )
     .unwrap();

@@ -136,7 +136,7 @@ impl ChatApp {
             return;
         };
         let mut chat = ui::tilo_resource::Replica::<crate::resource::Chat>::from_doc(doc.clone())
-            .as_invoker(&self.me.id);
+            .as_invoker(self.me.id.id());
         for action in dispatch.take_asked().expect("what was asked builds") {
             chat.apply_action(&action)
                 .expect("a confirmed change applies");

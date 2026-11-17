@@ -94,8 +94,8 @@ fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Workspace) {
     let models = Models::new(backend);
     let identity = LocalIdentity::demo();
     let mut doc = crate::testing::Workspace::default();
-    crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
-    crate::testing::say(&mut doc, &identity.id, "c_chat", "Question");
+    crate::testing::starter(&mut doc, identity.id.id(), &identity.name, &identity.initials);
+    crate::testing::say(&mut doc, identity.id.id(), "c_chat", "Question");
     let mut app = ChatApp::new(
         identity.clone(),
         crate::app::ChatRuntime::Unavailable,
@@ -104,7 +104,7 @@ fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Workspace) {
     .with_models(models);
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.chat",
-        &ui::tilo_resource::MemberId::person(&identity.id),
+        &identity.id,
     ));
     app.attach_workspace(&doc);
     app.reload(&doc);

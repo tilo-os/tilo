@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use ui::tilo_resource::MemberId;
 
 use crate::{ChatApp, identity::LocalIdentity};
 
@@ -11,10 +12,7 @@ fn projection(doc: &AutoCommit, identity: LocalIdentity) -> ChatApp {
         crate::app::ChatRuntime::Unavailable,
         tilo_content::ContentStore::memory(),
     );
-    app.attach_framework(ui::framework::Dispatcher::detached(
-        "so.tilo.chat",
-        &ui::tilo_resource::MemberId::person(&me),
-    ));
+    app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", &me));
     app.attach_detached_chain(&me);
     app.sync(doc, &ROOT);
     app
@@ -28,10 +26,7 @@ fn projection_of(workspace: &crate::testing::Workspace, identity: LocalIdentity)
         crate::app::ChatRuntime::Unavailable,
         tilo_content::ContentStore::memory(),
     );
-    app.attach_framework(ui::framework::Dispatcher::detached(
-        "so.tilo.chat",
-        &ui::tilo_resource::MemberId::person(&me),
-    ));
+    app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", &me));
     app.attach_workspace(workspace);
     app.sync(&workspace.chat, &ROOT);
     app
@@ -46,7 +41,12 @@ fn browser_media_reply_enables_voice_without_native_attachment_access() {
     use ui::widget::Collaborative;
     let identity = LocalIdentity::demo();
     let mut doc = AutoCommit::new();
-    crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    crate::testing::starter(
+        &mut doc,
+        identity.id.id(),
+        &identity.name,
+        &identity.initials,
+    );
     let channel = crate::testing::channels(&doc)
         .into_iter()
         .find(|channel| channel.kind == crate::model::ChannelKind::Voice)
@@ -120,7 +120,12 @@ fn a_call_that_cannot_start_says_why_and_never_does_nothing() {
     use ui::widget::Collaborative;
     let identity = LocalIdentity::demo();
     let mut doc = AutoCommit::new();
-    crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    crate::testing::starter(
+        &mut doc,
+        identity.id.id(),
+        &identity.name,
+        &identity.initials,
+    );
     let channel = crate::testing::channels(&doc)
         .into_iter()
         .find(|channel| channel.kind == crate::model::ChannelKind::Voice)
@@ -177,13 +182,18 @@ fn a_call_that_cannot_start_says_why_and_never_does_nothing() {
 #[test]
 fn component_projection_never_seeds_or_marks_read() {
     let identity = LocalIdentity {
-        id: "author".into(),
+        id: MemberId::person("author"),
         name: "Author".into(),
         initials: "A".into(),
         color_idx: 1,
     };
     let mut doc = AutoCommit::new();
-    crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    crate::testing::starter(
+        &mut doc,
+        identity.id.id(),
+        &identity.name,
+        &identity.initials,
+    );
     doc.commit();
     let before = (doc.base_heads(), doc.pending_ops());
     let mut app = projection(&doc, identity);
@@ -197,7 +207,12 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
     use winit::event::{ElementState, MouseButton, WindowEvent};
     let identity = LocalIdentity::demo();
     let mut doc = AutoCommit::new();
-    crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    crate::testing::starter(
+        &mut doc,
+        identity.id.id(),
+        &identity.name,
+        &identity.initials,
+    );
     doc.commit();
     let mut app = projection(&doc, identity);
     app.sync(&doc, &ROOT);
@@ -253,7 +268,12 @@ fn component_local_view_restores_presentation_without_reverting_document() {
     use ui::application_view::ApplicationViewState;
     let mut doc = AutoCommit::new();
     let identity = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    crate::testing::starter(
+        &mut doc,
+        identity.id.id(),
+        &identity.name,
+        &identity.initials,
+    );
     doc.commit();
     let mut app = projection(&doc, identity.clone());
     app.scroll = 125.;
@@ -275,7 +295,12 @@ fn component_local_view_restores_presentation_without_reverting_document() {
 fn a_window_that_has_not_opened_a_conversation_opens_the_workspace_first() {
     let mut doc = AutoCommit::new();
     let identity = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    crate::testing::starter(
+        &mut doc,
+        identity.id.id(),
+        &identity.name,
+        &identity.initials,
+    );
     doc.commit();
     let app = projection(&doc, identity);
     let first = app
@@ -291,7 +316,7 @@ fn a_window_that_has_not_opened_a_conversation_opens_the_workspace_first() {
 fn canonical_idle_projection_does_not_request_perpetual_frames() {
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, &me.id, &me.name, &me.initials);
+    crate::testing::starter(&mut doc, me.id.id(), &me.name, &me.initials);
     doc.commit();
     let mut app = projection(&doc, me);
     app.sync(&doc, &ROOT);
@@ -318,7 +343,7 @@ fn idle_chat_asks_no_frame_to_solve_its_layout() {
     // peer's pointer) re-solves nothing in Chat.
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, &me.id, &me.name, &me.initials);
+    crate::testing::starter(&mut doc, me.id.id(), &me.name, &me.initials);
     doc.commit();
     let mut app = projection(&doc, me);
     let _ = app.update(&doc, &ROOT);
@@ -358,7 +383,7 @@ fn a_mounted_chat_at_rest_is_no_frames_layout_requester() {
 fn canonical_composer_exports_ime_content_through_app_root() {
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
-    crate::testing::starter(&mut doc, &me.id, &me.name, &me.initials);
+    crate::testing::starter(&mut doc, me.id.id(), &me.name, &me.initials);
     doc.commit();
     let app = projection(&doc, me);
     assert!(app.is_focusable());
@@ -448,25 +473,28 @@ fn component_mount_in_workspace(
 ) {
     component_mount_as(
         cache,
-        author,
+        MemberId::person(author),
+        ui::permissions::PermissionContext::member(
+            &MemberId::person(author),
+            ui::permissions::Role::Owner,
+        ),
         instance,
         workspace,
-        ui::permissions::Role::Owner,
     )
 }
 
 fn component_mount_as(
     cache: &ui::portable_storage::PortableStorage,
-    author: &str,
+    author: MemberId,
+    permissions: ui::permissions::PermissionContext,
     instance: u64,
     workspace: &str,
-    role: ui::permissions::Role,
 ) -> (
     ui::headless::FrameHarness,
     ui::record::RecordStore,
     ui::record::DocumentCheckout,
 ) {
-    let (component, records) = component_as(cache, author, instance, workspace, role);
+    let (component, records) = component_as(cache, author, permissions, instance, workspace);
     let checkout = component.record().clone();
     let frame =
         ui::headless::FrameHarness::from_component(component, (1280, 720), fixture_runner_inputs())
@@ -477,10 +505,10 @@ fn component_mount_as(
 /// One mount of the workspace's Chat, not yet in a window.
 fn component_as(
     cache: &ui::portable_storage::PortableStorage,
-    author: &str,
+    author: MemberId,
+    permissions: ui::permissions::PermissionContext,
     instance: u64,
     workspace: &str,
-    role: ui::permissions::Role,
 ) -> (ui::application::AppComponent, ui::record::RecordStore) {
     use std::rc::Rc;
     use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
@@ -492,11 +520,7 @@ fn component_as(
         .unwrap();
     let views =
         Rc::new(ui::application_view::InstanceViewStore::portable(cache, workspace).unwrap());
-    let permissions =
-        ui::permissions::SharedPermissions::new(ui::permissions::PermissionContext::member(
-            &ui::permissions::MemberId::person(author),
-            role,
-        ));
+    let permissions = ui::permissions::SharedPermissions::new(permissions);
     let primary = ui::record::DocumentCheckout::package_primary(definition.record_kind.clone());
     let target = if records.try_open_record(&primary).is_ok() {
         LaunchTarget::Record {
@@ -514,7 +538,7 @@ fn component_as(
             device_id: "device".into(),
             instance_id: instance,
             permissions,
-            author: ui::permissions::MemberId::person(author),
+            author,
             action_context: tilo_actions::ActionContext::default(),
         },
         &target,
@@ -916,7 +940,17 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     );
 
     // The agent introduces itself, and the chat's own record names it by the row it writes.
-    let (mut agent, _, _) = component_mount(&cache, "agent:reading", 2);
+    let (mut agent, _, _) = component_mount_as(
+        &cache,
+        MemberId::agent("reading"),
+        ui::permissions::PermissionContext::agent_granted(
+            "reading",
+            &ui::permissions::TreePath::root(),
+            ui::permissions::KindSet::ALL,
+        ),
+        2,
+        "workspace",
+    );
     let workspace = agent
         .bound_resources(None)
         .unwrap()
@@ -951,7 +985,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         .pop()
         .unwrap();
     assert_eq!(asked.text, "Where does Odysseus wake up?");
-    assert_eq!(asked.author, "Visitor");
+    assert_eq!(asked.author, MemberId::person("Visitor"));
 
     // Its work is recorded on the message itself, in the part of the
     // chat's messages that holds it.
@@ -1001,7 +1035,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
                 .author
         })
         .unwrap();
-    assert_eq!(author, "agent:reading");
+    assert_eq!(author, MemberId::agent("reading"));
     // Each records only its own work: nobody rewrites the agent's.
     visitor.wait_until(ui::time::Duration::ZERO, |_| true);
     let shown = visitor.bound_resources(Some(&reply)).unwrap();
@@ -1047,10 +1081,10 @@ fn members_join_a_call_through_its_actions_without_being_asked() {
                 .unwrap();
         let (mut frame, _, _) = component_mount_as(
             &cache,
-            "author",
+            MemberId::person("author"),
+            ui::permissions::PermissionContext::member(&MemberId::person("author"), role),
             1,
             "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
-            role,
         );
         let none = serde_json::Map::new();
         for action in [
@@ -1118,10 +1152,13 @@ fn a_chat_mounted_alone_shows_its_call_in_the_windows_row_of_slots() {
     let cache = ui::portable_storage::PortableStorage::new("call-window-slots", "device").unwrap();
     let (mut frame, _, _) = component_mount_as(
         &cache,
-        "author",
+        MemberId::person("author"),
+        ui::permissions::PermissionContext::member(
+            &MemberId::person("author"),
+            ui::permissions::Role::Editor,
+        ),
         1,
         "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
-        ui::permissions::Role::Editor,
     );
     frame.host_window_slots();
     let join = ui::bound_dispatch::BoundActionAddress {
@@ -1236,7 +1273,7 @@ fn message_range_navigation_preserves_unicode_and_refuses_stale_offsets() {
     // Only its author edits a message.
     crate::testing::apply_part_as(
         &mut doc,
-        &message.author,
+        message.author.id(),
         crate::parts::ChatPart::EDIT_MESSAGE.with(crate::messages::chat_part::EditMessage {
             message: ui::tilo_resource::Id::from_raw(message.id.clone()),
             text: "café notes".into(),
@@ -1640,7 +1677,7 @@ fn a_newcomer_opening_chat_waits_for_the_workspaces_chat_and_never_founds_one() 
         .reserve_record(&primary)
         .unwrap()
         .initialize(|doc| {
-            crate::testing::starter(doc, &identity.id, &identity.name, &identity.initials);
+            crate::testing::starter(doc, identity.id.id(), &identity.name, &identity.initials);
             Ok(())
         })
         .unwrap();
@@ -1693,10 +1730,13 @@ fn a_chat_with_no_window_publishes_what_a_window_of_it_does() {
     let cache = ui::portable_storage::PortableStorage::new("unshown", "device").unwrap();
     let (component, _) = component_as(
         &cache,
-        "author",
+        MemberId::person("author"),
+        ui::permissions::PermissionContext::member(
+            &MemberId::person("author"),
+            ui::permissions::Role::Owner,
+        ),
         1,
         "workspace",
-        ui::permissions::Role::Owner,
     );
     let mut app = ui::App::from_component(component, fixture_runner_inputs()).unwrap();
     let catalogue = |app: &mut ui::App| {

@@ -41,14 +41,15 @@ pub(crate) fn message(report: &FeedbackReport) -> Option<crate::record::Message>
         .into_iter()
         .collect();
     Some(crate::record::Message {
-        channel: Id::from_raw(submission.destination.channel.clone()),
-        author: report.author.clone(),
-        ts: report.ts,
-        text: lines.join("\n"),
         body,
         reactions: report.reactions.clone(),
         attachments,
-        ..crate::record::Message::default()
+        ..crate::record::Message::new(
+            Id::from_raw(submission.destination.channel.clone()),
+            report.author.clone(),
+            report.ts,
+            lines.join("\n"),
+        )
     })
 }
 

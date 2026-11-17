@@ -1,4 +1,5 @@
 use super::*;
+use ui::tilo_resource::MemberId;
 use crate::testing::MountedChat;
 use std::{cell::Cell, task::Poll};
 use ui::models::{ModelBackend, ModelResponse, StopReason, StreamSink, Usage};
@@ -289,7 +290,7 @@ tilo_test_env::scenario! {
         );
         assert!(!app.model_message_label(&message).contains("Another person"));
         message.work = stream_work;
-        message.author = "bot:installed".into();
+        message.author = MemberId::bot("installed");
         let name = app.message_author_name(&message);
         assert!(matches!(app.message_author(&message, &name, "", None),
             ui::author::Author::Bot { appearance: Some(shown), .. } if shown.name == "Another person"));
@@ -297,7 +298,7 @@ tilo_test_env::scenario! {
         let label = app.model_message_label(&message);
         assert!(label.starts_with("Another person (bot:"));
         assert!(!label.contains("model output"));
-        message.author = "agent:actual".into();
+        message.author = MemberId::agent("actual");
         app.workspace_agent_names
             .insert("actual".to_owned(), "Actual agent".into());
         let name = app.message_author_name(&message);
@@ -394,7 +395,7 @@ tilo_test_env::scenario! {
         pump(&mut app, &mut doc);
         let mut message = reply(&doc, &start["reply"]);
         message.work = None;
-        message.author = "bot:bridge-installation".into();
+        message.author = MemberId::bot("bridge-installation");
         message.appearance = Some(tilo_actions::Appearance {
             name: "Dana".into(),
             avatar: None,
@@ -412,7 +413,7 @@ tilo_test_env::scenario! {
         // A member named alike: an unlinked persona says where it is from, one
         // linked to that member is them.
         app.users.push(crate::model::User {
-            id: "u_dana".into(),
+            id: MemberId::person("u_dana"),
             name: "Dana".into(),
             initials: "D".into(),
             color_idx: 0,
@@ -437,9 +438,9 @@ tilo_test_env::scenario! {
         else {
             panic!("a bridged message is the bot's");
         };
-        assert_eq!(linked_color, Some(app.identity_colour("u_dana")));
+        assert_eq!(linked_color, Some(app.identity_colour(&MemberId::person("u_dana"))));
         assert_ne!(
-            app.identity_colour("u_dana"),
+            app.identity_colour(&MemberId::person("u_dana")),
             app.identity_colour(&message.author),
             "not the bridge's own colour"
         );
@@ -460,15 +461,14 @@ tilo_test_env::scenario! {
         let mut record = crate::record::Chat::default();
         for (id, name) in [("u_dana", "Dana"), ("u_other_dana", "Dana")] {
             record.people.push(crate::record::Person {
-                id: ui::tilo_resource::Atom(id.to_owned()),
                 name: name.into(),
-                ..crate::record::Person::default()
+                ..crate::record::Person::unnamed(MemberId::person(id))
             });
         }
         let mut other = base.clone();
-        other.author = "u_other_dana".into();
+        other.author = MemberId::person("u_other_dana");
         let mut bridged = base;
-        bridged.author = "bot:bridge-installation".into();
+        bridged.author = MemberId::bot("bridge-installation");
         bridged.appearance = Some(tilo_actions::Appearance {
             name: "Dana".into(),
             avatar: None,
@@ -480,7 +480,7 @@ tilo_test_env::scenario! {
         });
         app.users = app.workspace_people_from(&record, &[(channel, vec![other, bridged.clone()])]);
         assert!(
-            app.users.iter().any(|user| user.id == "u_dana"),
+            app.users.iter().any(|user| user.id == MemberId::person("u_dana")),
             "the linked member is one of the workspace's people"
         );
         let members: Vec<&str> = app.users.iter().map(|user| user.name.as_str()).collect();
@@ -635,7 +635,7 @@ fn assert_mounted_model_attribution(
             .unwrap();
         assert_eq!(
             message.author,
-            crate::model::ME,
+            MemberId::person(crate::model::ME),
             "custody stays with the invoker"
         );
         assert_eq!(surface.message_author_name(message), "Assistant");
@@ -709,7 +709,7 @@ fn captured_provider_stream_keeps_the_real_invoker_and_model_attribution() {
                 .iter()
                 .find(|m| m.id == "shot_agent_stream")
                 .unwrap();
-            assert_eq!(message.author, crate::model::ME);
+            assert_eq!(message.author, MemberId::person(crate::model::ME));
             assert_eq!(surface.message_author_name(message), "Assistant");
             let initiator = surface.user_name(&message.author);
             assert!(

@@ -153,10 +153,10 @@ pub struct Chat {
     /// ([`Chat::direct_id`]).
     #[model(readonly)]
     pub channels: Collection<Conversation>,
-    /// The people and agents in the workspace, by [`MemberId::key`].
+    /// The people and agents in the workspace, under [`member_slot`].
     pub people: Keyed<Person>,
-    /// Each person's read mark per channel: how far into the chain of
-    /// message parts they have read it.
+    /// Each person's read mark per channel, under [`member_slot`]: how far
+    /// into the chain of message parts they have read it.
     pub read: BTreeMap<String, BTreeMap<String, crate::parts::ReadMark>>,
     /// Reviewed feedback filed in a channel, under its submission's id.
     pub feedback: Collection<FeedbackReport>,
@@ -216,12 +216,12 @@ pub struct Conversation {
     /// keep the workspace's layout may.
     #[model(readonly)]
     pub archived: bool,
-    /// Who the conversation is with, by [`MemberId::key`]: empty for a
+    /// Who the conversation is with: empty for a
     /// channel of the whole workspace. Not access control — every member
     /// reads every conversation; it decides where the conversation is
     /// listed and whose unread count moves.
     #[model(readonly)]
-    pub participants: Vec<Atom>,
+    pub participants: Vec<MemberId>,
 }
 
 impl Conversation {
@@ -233,19 +233,18 @@ impl Conversation {
     }
 }
 
-/// The prefix of a direct conversation's id: what it is with follows it
-/// (`direct:<root>|agent:<id>`, the member keys in order).
+/// The prefix of a direct conversation's id: the members it is with
+/// follow it, in order, as JSON.
 pub const DIRECT_CONVERSATION_PREFIX: &str = "direct:";
 
 /// One message of a channel.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[derive(Model, Debug, Clone, PartialEq)]
 pub struct Message {
     /// The channel it was posted in.
     #[model(readonly)]
     pub channel: Id,
-    /// Who wrote it: their [`MemberId::key`], or the id of a task run.
     #[model(readonly)]
-    pub author: Atom,
+    pub author: MemberId,
     /// When, in seconds since the epoch.
     #[model(readonly)]
     pub ts: i64,
@@ -314,6 +313,35 @@ pub struct Message {
     /// overwrites the reply that failed — the tries stand beside one another.
     #[model(readonly)]
     pub attempts: u32,
+}
+
+impl Message {
+    /// `text` by `author` in `channel` at `ts`, with nothing else to it.
+    #[must_use]
+    pub fn new(channel: Id, author: MemberId, ts: i64, text: String) -> Self {
+        Self {
+            channel,
+            author,
+            ts,
+            text,
+            body: Vec::new(),
+            edited: false,
+            history: Vec::new(),
+            parent: None,
+            quoted: None,
+            reactions: ui::tilo_resource::Reactions::new(),
+            mentions: Vec::new(),
+            attachments: Vec::new(),
+            pinned: false,
+            work: None,
+            appearance: None,
+            acting: None,
+            author_name: None,
+            origin: None,
+            share: None,
+            attempts: 0,
+        }
+    }
 }
 
 /// A window shared live into a channel: everyone who reads the channel sees
@@ -428,12 +456,10 @@ pub struct Revision {
 }
 
 /// A person or agent in the workspace.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[derive(Model, Debug, Clone, PartialEq)]
 pub struct Person {
-    /// Who they are, by [`MemberId::key`]: what messages, reactions and read
-    /// marks name.
     #[model(readonly)]
-    pub id: Atom,
+    pub id: MemberId,
     /// The name they show.
     #[model(label)]
     pub name: String,
@@ -446,23 +472,35 @@ pub struct Person {
 }
 
 impl Person {
-    /// Who this is, when a member writes under it.
+    /// `id`, not named yet.
     #[must_use]
-    pub fn member(&self) -> Option<MemberId> {
-        MemberId::parse(&self.id.0)
+    pub fn unnamed(id: MemberId) -> Self {
+        Self {
+            id,
+            name: String::new(),
+            initials: String::new(),
+            color: 0,
+            status: Presence::default(),
+        }
     }
 
     /// Whether this is software acting in the workspace rather than a person.
     #[must_use]
     pub fn is_agent(&self) -> bool {
-        self.member().is_some_and(|member| !member.is_person())
+        !self.id.is_person()
     }
 }
 
 impl Identified for Person {
     fn id(&self) -> Id {
-        Id::from_raw(self.id.0.clone())
+        member_slot(&self.id)
     }
+}
+
+/// The key the record keeps `member`'s person and read marks under.
+#[must_use]
+pub fn member_slot(member: &MemberId) -> Id {
+    Id::from_raw(ui::tilo_resource::text::author_mark(member))
 }
 
 /// The run of a message a reply quotes, as the reply carries it: the words as they read when
@@ -569,14 +607,14 @@ impl Identified for Step {
 }
 
 /// A reviewed feedback report filed in a channel.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[derive(Model, Debug, Clone, PartialEq)]
 pub struct FeedbackReport {
     /// What was submitted, as the person reviewed it.
     #[model(readonly)]
     pub submission: Option<ui::feedback::Submission>,
     /// Who filed it.
     #[model(readonly)]
-    pub author: Atom,
+    pub author: MemberId,
     /// When, in seconds since the epoch.
     #[model(readonly)]
     pub ts: i64,
@@ -591,10 +629,10 @@ pub struct FeedbackReport {
 }
 
 /// One triage step of a feedback report.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[derive(Model, Debug, Clone, PartialEq)]
 pub struct Triage {
     #[model(readonly)]
-    pub author: Atom,
+    pub author: MemberId,
     #[model(readonly)]
     pub ts: i64,
     #[model(readonly)]
@@ -685,9 +723,9 @@ pub(crate) fn prepare_file_post(
 
 /// Who an action is by; refused without one, since a report or a read mark
 /// is always someone's.
-pub(crate) fn author(cx: &ActionCx) -> Result<String, Refusal> {
+pub(crate) fn author(cx: &ActionCx) -> Result<MemberId, Refusal> {
     cx.author()
-        .map(ui::tilo_resource::MemberId::key)
+        .cloned()
         .ok_or_else(|| Refusal::new("an action in chat is always someone's"))
 }
 
@@ -817,7 +855,7 @@ pub(crate) fn valid_resource_at(at: &tilo_reference::ResourceAt) -> bool {
 /// (`retry`) is answered in a reply of its own ([`reply_id_at`]), never in the
 /// one that failed.
 #[must_use]
-pub fn reply_id(summons: &Id, agent: &str) -> Id {
+pub fn reply_id(summons: &Id, agent: &MemberId) -> Id {
     reply_id_at(summons, agent, 0)
 }
 
@@ -826,12 +864,12 @@ pub fn reply_id(summons: &Id, agent: &str) -> Id {
 /// every replica, so an agent never needs to be told the id of what it wrote,
 /// and a retried turn never overwrites the reply that failed.
 #[must_use]
-pub fn reply_id_at(summons: &Id, agent: &str, attempt: u32) -> Id {
+pub fn reply_id_at(summons: &Id, agent: &MemberId, attempt: u32) -> Id {
     use std::hash::Hasher as _;
     let mut hash = fnv::FnvHasher::default();
     hash.write(summons.as_str().as_bytes());
     hash.write(&[0]);
-    hash.write(agent.as_bytes());
+    hash.write(&agent.actor_bytes());
     if attempt > 0 {
         hash.write(&[0]);
         hash.write(&attempt.to_le_bytes());
@@ -864,19 +902,21 @@ impl Chat {
     /// make one, and neither has to create it first.
     #[must_use]
     pub fn direct_id(participants: impl IntoIterator<Item = MemberId>) -> Id {
-        let mut keys: Vec<String> = participants.into_iter().map(|one| one.key()).collect();
-        keys.sort();
-        keys.dedup();
-        Id::from_raw(format!("{DIRECT_CONVERSATION_PREFIX}{}", keys.join("|")))
+        let mut members: Vec<MemberId> = participants.into_iter().collect();
+        members.sort();
+        members.dedup();
+        let members = serde_json::to_string(&members).unwrap_or_default();
+        Id::from_raw(format!("{DIRECT_CONVERSATION_PREFIX}{members}"))
     }
 
     /// The participants the direct conversation `id` names, or none when
     /// `id` names no direct conversation.
     #[must_use]
     pub fn direct_participants(id: &Id) -> Option<Vec<MemberId>> {
-        let keys = id.as_str().strip_prefix(DIRECT_CONVERSATION_PREFIX)?;
-        let participants: Option<Vec<MemberId>> = keys.split('|').map(MemberId::parse).collect();
-        participants.filter(|participants| !participants.is_empty())
+        let members = id.as_str().strip_prefix(DIRECT_CONVERSATION_PREFIX)?;
+        serde_json::from_str::<Vec<MemberId>>(members)
+            .ok()
+            .filter(|participants| !participants.is_empty())
     }
 
     /// Whether `id` names a direct conversation.
@@ -895,10 +935,7 @@ impl Chat {
         }
         let participants = Self::direct_participants(id)?;
         Some(Conversation {
-            participants: participants
-                .into_iter()
-                .map(|one| Atom(one.key()))
-                .collect(),
+            participants,
             ..Conversation::default()
         })
     }
@@ -908,11 +945,7 @@ impl Chat {
     #[must_use]
     pub fn conversation_participants(&self, id: &Id) -> Vec<MemberId> {
         if let Some(channel) = self.channels.get(id) {
-            return channel
-                .participants
-                .iter()
-                .filter_map(|key| MemberId::parse(&key.0))
-                .collect();
+            return channel.participants.clone();
         }
         Self::direct_participants(id).unwrap_or_default()
     }
@@ -933,11 +966,7 @@ impl Chat {
             return false;
         };
         participants.iter().all(|participant| {
-            !participant.is_person()
-                || self
-                    .people
-                    .iter()
-                    .any(|person| person.id.0 == participant.key())
+            !participant.is_person() || self.people.find(&member_slot(participant)).is_some()
         })
     }
 
@@ -972,7 +1001,7 @@ impl Chat {
         category: Option<Id>,
         kind: Option<ChannelKind>,
         topic: Option<String>,
-        participants: Vec<Atom>,
+        participants: Vec<MemberId>,
     ) -> Result<(), Refusal> {
         if let Some(category) = &category
             && !self.categories.contains(category)
@@ -997,13 +1026,10 @@ impl Chat {
     }
 
     /// The person `id`, added when the workspace does not know them yet.
-    fn person(&mut self, id: &str) -> Result<&mut Person, Refusal> {
-        let key = Id::from_raw(id);
+    fn person(&mut self, id: &MemberId) -> Result<&mut Person, Refusal> {
+        let key = member_slot(id);
         if self.people.find(&key).is_none() {
-            self.people.push(Person {
-                id: Atom(id.to_owned()),
-                ..Person::default()
-            });
+            self.people.push(Person::unnamed(id.clone()));
         }
         self.people
             .find_mut(&key)
@@ -1014,7 +1040,7 @@ impl Chat {
     /// when it has none yet ([`open_workspace`]).
     pub(crate) fn begin(
         &mut self,
-        creator: &str,
+        creator: &MemberId,
         (name, initials, color): (&str, &str, u32),
     ) -> Result<(), Refusal> {
         let person = self.person(creator)?;
@@ -1121,8 +1147,7 @@ impl Chat {
     /// before it exists (`chat.workspace/channels/<id>`). Naming a channel
     /// that exists leaves it as it is.
     ///
-    /// `participants` says who the conversation is with, by
-    /// [`MemberId::key`] (`<root>`, `agent:<id>`): a conversation an
+    /// `participants` says who the conversation is with: a conversation an
     /// agent takes part in is one whose agents answer the person's messages in
     /// it. None is a channel of the whole workspace.
     #[action(moderation, audience = "agents")]
@@ -1135,8 +1160,8 @@ impl Chat {
             ChannelKind,
         >,
         #[param("What the channel is about")] topic: Option<String>,
-        #[param("Who the conversation is with, by participant key; none for the whole workspace")]
-        participants: Option<Vec<String>>,
+        #[param("Who the conversation is with; none for the whole workspace")]
+        participants: Option<Vec<MemberId>>,
     ) -> Result<(), Refusal> {
         let id = given_channel_id(&id)?;
         // A step run again, or two seeds naming one channel, meet on the
@@ -1144,17 +1169,7 @@ impl Chat {
         if self.channels.contains(&id) {
             return Ok(());
         }
-        let participants = participants
-            .unwrap_or_default()
-            .iter()
-            .map(|key| {
-                MemberId::parse(key.trim())
-                    .map(|participant| Atom(participant.key()))
-                    .ok_or_else(|| {
-                        Refusal::new(format!("`{key}` names no person or agent of the workspace"))
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let participants = participants.unwrap_or_default();
         self.make_channel(id, &name, category, kind, topic, participants)
     }
 
@@ -1396,16 +1411,15 @@ impl Chat {
         &mut self,
         cx: &mut ActionCx,
         #[param("The message")] message: String,
-        #[param("Who wrote it")] author: String,
+        #[param("Who wrote it")] author: MemberId,
         #[param("What is wrong with it")] reason: NonBlank,
     ) -> Result<(), Refusal> {
-        if author.is_empty() || author.len() > 4096 {
+        if author.id().is_empty() || author.id().len() > 4096 {
             return Err(Refusal::new("a reported message is someone's"));
         }
-        let person = author;
         self.moderation.report(
             cx,
-            person,
+            author.key(),
             Some("so.tilo.chat".to_owned()),
             None,
             Some(message),
@@ -1423,11 +1437,12 @@ impl Chat {
         person: &Id,
         #[param("What they did")] reason: NonBlank,
     ) -> Result<(), Refusal> {
-        if self.people.find(person).is_none() {
+        let Some(person) = self.people.find(person) else {
             return Err(Refusal::new("there is no such person"));
-        }
+        };
+        let person = person.id.key();
         self.moderation
-            .report(cx, person.to_string(), None, None, None, reason)
+            .report(cx, person, None, None, None, reason)
     }
 
     /// Decide on a report.
@@ -1481,7 +1496,7 @@ impl Chat {
             part: i64::try_from(part).unwrap_or(i64::MAX),
             seen: i64::from(seen),
         };
-        let marks = self.read.entry(me).or_default();
+        let marks = self.read.entry(member_slot(&me).to_string()).or_default();
         let mark = marks.entry(channel.to_string()).or_default();
         if *mark < read {
             *mark = read;
@@ -1516,7 +1531,7 @@ impl Chat {
         let ts = seconds(cx);
         let key = Id::from_raw(submission.id.clone());
         if let Some(known) = self.feedback.get(&key) {
-            return if known.submission.as_ref() == Some(&submission) && known.author.0 == me {
+            return if known.submission.as_ref() == Some(&submission) && known.author == me {
                 Ok(())
             } else {
                 Err(Refusal::new("feedback id conflict"))
@@ -1529,7 +1544,7 @@ impl Chat {
             key,
             FeedbackReport {
                 submission: Some(submission),
-                author: Atom(me),
+                author: me,
                 ts,
                 triage: Collection::new(),
                 reactions: ui::tilo_resource::Reactions::new(),
@@ -1561,7 +1576,7 @@ impl Chat {
             .push(
                 id,
                 Triage {
-                    author: Atom(me),
+                    author: me,
                     ts,
                     update: Some(update),
                 },

@@ -37,9 +37,12 @@ pub fn delivered_id(channel: &Id, author: &str, ts: i64, body: &str) -> Id {
 
 /// The name readers see for `message`: the name it was delivered or
 /// bridged under, else its author's as `name` gives it.
-pub fn shown_author(message: &Message, name: &dyn Fn(&str) -> String) -> String {
+pub fn shown_author(
+    message: &Message,
+    name: &dyn Fn(&ui::tilo_resource::MemberId) -> String,
+) -> String {
     message.appearance.as_ref().map_or_else(
-        || name(message.author.0.as_str()),
+        || name(&message.author),
         |shown| shown.name.clone(),
     )
 }
@@ -76,7 +79,7 @@ pub struct Channel<'a> {
 pub fn transcript(
     channel: &Channel<'_>,
     format: Option<&str>,
-    name: &dyn Fn(&str) -> String,
+    name: &dyn Fn(&ui::tilo_resource::MemberId) -> String,
 ) -> Result<Vec<u8>, String> {
     match format.map_or("md", str::trim) {
         "md" | "markdown" | "" => {
@@ -101,7 +104,7 @@ pub fn transcript(
             "channel": { "id": channel.id, "name": channel.name },
             "messages": channel.messages.iter().map(|(id, message)| serde_json::json!({
                 "id": id.as_str(),
-                "author": message.author.0,
+                "author": message.author,
                 "authorName": shown_author(message, name),
                 "date": rfc3339(message.ts),
                 "parent": message.parent.as_ref().map(Id::as_str),

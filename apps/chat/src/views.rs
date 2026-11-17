@@ -96,7 +96,7 @@ pub struct Names {
 }
 
 /// One message of a channel, as its page shows it.
-#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "the page's message carries independent facts the row draws (edited, pinned, retry, sending), each read off the record on its own"
@@ -105,9 +105,8 @@ pub struct Message {
     /// Its id, after `chat.workspace/messages/`.
     #[serde(default)]
     pub id: String,
-    /// Who wrote it: their participant id, which [`Channel::people`] names.
-    #[serde(default)]
-    pub author: String,
+    /// Who wrote it, as [`Channel::people`] names them.
+    pub author: MemberId,
     /// When, in seconds since the epoch.
     #[serde(default)]
     pub ts: i64,
@@ -208,15 +207,37 @@ impl Work {
     }
 }
 
+#[cfg(test)]
+impl Message {
+    /// A message by `author` with nothing in it.
+    pub(crate) fn by(author: MemberId) -> Self {
+        Self {
+            id: String::new(),
+            author,
+            ts: 0,
+            text: String::new(),
+            edited: false,
+            reply_to: None,
+            reactions: Vec::new(),
+            attachments: Vec::new(),
+            pinned: false,
+            work: None,
+            retry: false,
+            retry_summons: None,
+            attempts: 0,
+            sending: false,
+        }
+    }
+}
+
 /// The message a reply answers, as the quote over it says it.
-#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Quote {
     /// The message it answers, after `chat.workspace/messages/`: what a press opens.
     #[serde(default)]
     pub id: String,
     /// Who wrote it.
-    #[serde(default)]
-    pub author: String,
+    pub author: MemberId,
     /// The start of what it said, or — when the reply answers a span of it — the selected
     /// words themselves.
     #[serde(default)]
@@ -247,7 +268,7 @@ pub struct Reaction {
     pub emoji: String,
     /// Who reacted with it.
     #[serde(default)]
-    pub who: Vec<String>,
+    pub who: Vec<MemberId>,
 }
 
 /// What a message carries: a record it was shared from, the words it quotes, or a file it posts.
@@ -307,8 +328,8 @@ impl Channel {
 
     /// Who wrote `author`, when the channel names them.
     #[must_use]
-    pub fn person(&self, author: &str) -> Option<&Person> {
-        self.people.iter().find(|person| person.id.key() == author)
+    pub fn person(&self, author: &MemberId) -> Option<&Person> {
+        self.people.iter().find(|person| person.id == *author)
     }
 
     /// The message `id` says it answers, for the quote over a reply.
@@ -345,16 +366,16 @@ impl Channel {
         chat: &crate::record::Chat,
         rows: &[crate::model::Message],
         id: &str,
-        me: &str,
+        me: &MemberId,
         names: &Names,
     ) -> Self {
         let channel_id = Id::from_raw(id);
         let channel = chat.conversation(&channel_id);
         // What software wrote under, as its actions pinned it: the name it went by and the
         // person it acted for, which keep naming it after it left.
-        let acting: std::collections::HashMap<&str, &sdk::tilo_resource::Acting> = rows
+        let acting: std::collections::HashMap<&MemberId, &sdk::tilo_resource::Acting> = rows
             .iter()
-            .filter_map(|row| Some((row.author.as_str(), row.acting.as_ref()?)))
+            .filter_map(|row| Some((&row.author, row.acting.as_ref()?)))
             .collect();
         let mut people: Vec<Person> = Vec::new();
         for row in rows {
@@ -364,7 +385,7 @@ impl Channel {
                 names,
                 me,
                 &row.author,
-                acting.get(row.author.as_str()).copied(),
+                acting.get(&row.author).copied(),
             );
         }
         let messages = rows
@@ -420,7 +441,7 @@ impl Channel {
                         who: group
                             .reactors
                             .iter()
-                            .map(|reactor| reactor.by.key())
+                            .map(|reactor| reactor.by.clone())
                             .collect(),
                     })
                     .collect(),
@@ -463,18 +484,15 @@ impl Channel {
         people: &mut Vec<Person>,
         chat: &crate::record::Chat,
         names: &Names,
-        me: &str,
-        author: &str,
+        me: &MemberId,
+        author: &MemberId,
         acting: Option<&sdk::tilo_resource::Acting>,
     ) {
-        if people.iter().any(|held| held.id.key() == author) {
+        if people.iter().any(|held| held.id == *author) {
             return;
         }
-        let roster = chat.people.iter().find(|person| person.id.0 == author);
-        let agent = match roster {
-            Some(person) => person.is_agent(),
-            None => is_agent(author),
-        };
+        let roster = chat.people.find(&crate::record::member_slot(author));
+        let agent = !author.is_person();
         let shown = roster
             .map(|person| person.name.trim().to_owned())
             .filter(|name| !name.is_empty())
@@ -485,12 +503,11 @@ impl Channel {
         let name = match acting.filter(|_| agent) {
             Some(acting) => crate::identity::acting_label(
                 &shown,
-                acting.acted_for_person(),
+                crate::identity::acted_for(acting),
                 crate::identity::RoleWord::InName,
                 |person| {
                     chat.people
-                        .iter()
-                        .find(|held| held.id.0 == person)
+                        .find(&crate::record::member_slot(person))
                         .map_or_else(
                             || crate::identity::unnamed_label(person),
                             |held| held.name.trim().to_owned(),
@@ -501,7 +518,7 @@ impl Channel {
             None => shown,
         };
         people.push(Person {
-            id: MemberId::parse(author).unwrap_or_else(|| MemberId::agent(author)),
+            id: author.clone(),
             name,
         });
     }
@@ -587,21 +604,16 @@ fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> boo
         .to_string()
 }
 
-/// Whether `author` is software rather than a person: a member that is an agent or a bot.
-pub(crate) fn is_agent(author: &str) -> bool {
-    MemberId::parse(author).is_some_and(|member| !member.is_person())
-}
-
 /// The name an agent author shows, as the workspace's member record names it, and otherwise what
 /// Chat calls an agent it has not been told the name of. An author that is not an agent has no
 /// agent's name.
-fn agent_name(names: &Names, author: &str) -> Option<String> {
-    if !is_agent(author) {
+fn agent_name(names: &Names, author: &MemberId) -> Option<String> {
+    if author.is_person() {
         return None;
     }
-    let called = MemberId::parse(author)
-        .filter(|member| !member.is_person())
-        .and_then(|member| names.agents.get(member.id()))
+    let called = names
+        .agents
+        .get(author.id())
         .map(|name| name.trim())
         .filter(|name| !name.is_empty());
     Some(called.map_or_else(|| crate::i18n::t("chat-agent-kind"), str::to_owned))
@@ -1322,7 +1334,7 @@ fn to(c: &Channel) -> Arg {
 
 /// What a message's byline says of who wrote it: their name, or their id when the channel does
 /// not name them.
-fn author_label(person: Option<&Person>, id: &str) -> String {
+fn author_label(person: Option<&Person>, id: &MemberId) -> String {
     person
         .map(|person| person.name.trim().to_owned())
         .filter(|name| !name.is_empty())
@@ -1331,9 +1343,9 @@ fn author_label(person: Option<&Person>, id: &str) -> String {
 
 /// A person as a component draws them: their name, or Chat's honest placeholder for someone it
 /// cannot name, never their id.
-fn actor(person: Option<&Person>, id: &str) -> tilo_view::Actor {
+fn actor(person: Option<&Person>, id: &MemberId) -> tilo_view::Actor {
     tilo_view::Actor {
-        id: person.map_or_else(|| id.to_owned(), |person| person.id.key()),
+        id: person.map_or(id, |person| &person.id).key(),
         name: author_label(person, id),
     }
 }
@@ -1358,7 +1370,7 @@ mod tests {
             &workspace.read(),
             &rows,
             "c_crit",
-            crate::model::ME,
+            &MemberId::person(crate::model::ME),
             &Names::default(),
         )
     }
@@ -1451,11 +1463,11 @@ mod tests {
     }
 
     /// A message of `channel` written by `author` at `ts`, as the record's projection reads one.
-    fn row(channel: &str, id: &str, author: &str, ts: i64, text: &str) -> crate::model::Message {
+    fn row(channel: &str, id: &str, author: MemberId, ts: i64, text: &str) -> crate::model::Message {
         crate::model::Message {
             id: id.to_owned(),
             channel: channel.to_owned(),
-            author: author.to_owned(),
+            author,
             ts,
             text: text.to_owned(),
             body: Vec::new(),
@@ -1487,18 +1499,18 @@ mod tests {
             crate::record::Conversation {
                 name: "Assistant".to_owned(),
                 participants: vec![
-                    sdk::tilo_resource::Atom(MemberId::person(me).key()),
-                    sdk::tilo_resource::Atom(MemberId::agent(agent).key()),
+                    MemberId::person(me),
+                    MemberId::agent(agent),
                 ],
                 ..crate::record::Conversation::default()
             },
         );
         let rows = vec![
-            row("c_ask", "m_ask", me, 1_782_470_400, "hello"),
+            row("c_ask", "m_ask", MemberId::person(me), 1_782_470_400, "hello"),
             row(
                 "c_ask",
                 "m_reply",
-                &format!("agent:{agent}"),
+                MemberId::agent(agent),
                 1_782_470_460,
                 "Hi",
             ),
@@ -1510,7 +1522,7 @@ mod tests {
         names
             .agents
             .insert(agent.to_owned(), "Assistant".to_owned());
-        Channel::read(&chat, &rows, "c_ask", me, &names)
+        Channel::read(&chat, &rows, "c_ask", &MemberId::person(me), &names)
     }
 
     tilo_test_env::scenario! {
@@ -1528,7 +1540,7 @@ mod tests {
             let channel = unacquainted_channel(ME, "assistant");
             // The reading itself names them: their avatar and byline carry the name, not the key.
             let person = channel
-                .person(ME)
+                .person(&MemberId::person(ME))
                 .expect("the author is in the channel's people");
             assert_eq!(person.name, "Quinn Davis", "the person is named");
             assert!(!person.name.contains(ME), "never their routing id");
@@ -1572,7 +1584,7 @@ mod tests {
             const ME: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
             let channel = unacquainted_channel(ME, "assistant");
             let agent = channel
-                .person("agent:assistant")
+                .person(&MemberId::agent("assistant"))
                 .expect("the agent is in the channel's people");
             assert!(agent.is_agent(), "the author is an agent");
             assert_eq!(agent.name, "Assistant", "the agent is named");
@@ -1603,22 +1615,21 @@ mod tests {
             const BOB: &str = "7f3c0f9bb4ed0e42f1a2d0e5a3c1b0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3";
             let mut chat = crate::record::Chat::default();
             chat.people.push(crate::record::Person {
-                id: sdk::tilo_resource::Atom(ADA.to_owned()),
                 name: "Ada".to_owned(),
-                ..crate::record::Person::default()
+                ..crate::record::Person::unnamed(MemberId::person(ADA))
             });
-            let mut said = row("c_ask", "m_reply", "agent:helper", 1_782_470_460, "Hi");
+            let mut said = row("c_ask", "m_reply", MemberId::agent("helper"), 1_782_470_460, "Hi");
             said.acting =
                 Some(sdk::tilo_resource::Acting::agent("helper").acting_for(
                     sdk::tilo_resource::Acting::person(ADA),
                 ));
-            let rows = vec![row("c_ask", "m_ask", ADA, 1_782_470_400, "hello"), said];
+            let rows = vec![row("c_ask", "m_ask", MemberId::person(ADA), 1_782_470_400, "hello"), said];
             let names = Names {
                 agents: [("helper".to_owned(), "Helper".to_owned())].into(),
                 ..Names::default()
             };
-            let channel = Channel::read(&chat, &rows, "c_ask", BOB, &names);
-            let agent = channel.person("agent:helper").expect("the agent is named");
+            let channel = Channel::read(&chat, &rows, "c_ask", &MemberId::person(BOB), &names);
+            let agent = channel.person(&MemberId::agent("helper")).expect("the agent is named");
             assert_eq!(
                 agent.name,
                 sdk::acting_line("Helper", Some("Ada"), false),
@@ -1639,9 +1650,9 @@ mod tests {
                     ..crate::record::Conversation::default()
                 },
             );
-            let rows = vec![row("c_ask", "m_ask", STRANGER, 1_782_470_400, "hello")];
-            let channel = Channel::read(&chat, &rows, "c_ask", crate::model::ME, &Names::default());
-            let person = channel.person(STRANGER).expect("the author is named");
+            let rows = vec![row("c_ask", "m_ask", MemberId::person(STRANGER), 1_782_470_400, "hello")];
+            let channel = Channel::read(&chat, &rows, "c_ask", &MemberId::person(crate::model::ME), &Names::default());
+            let person = channel.person(&MemberId::person(STRANGER)).expect("the author is named");
             assert!(
                 !person.name.contains(STRANGER),
                 "the placeholder never spells the key: {}",
@@ -1742,7 +1753,6 @@ mod tests {
             };
             channel.messages.push(Message {
                 id: "m_shared".to_owned(),
-                author: channel.people[0].id.key(),
                 ts: 1_782_470_400,
                 attachments: vec![Attachment {
                     kind: "resource".to_owned(),
@@ -1750,7 +1760,7 @@ mod tests {
                     resource: Some(shared.clone()),
                     ..Attachment::default()
                 }],
-                ..Message::default()
+                ..Message::by(channel.people[0].id.clone())
             });
             let cx = view_cx(&channel);
             let tree = page(&channel, &cx);
@@ -1809,11 +1819,10 @@ mod tests {
             let mut channel = demo_channel();
             channel.messages.push(Message {
                 id: "m_dropped".to_owned(),
-                author: channel.people[0].id.key(),
                 ts: 1_782_470_400,
                 text: "what is left?".to_owned(),
                 attachments: vec![attachment],
-                ..Message::default()
+                ..Message::by(channel.people[0].id.clone())
             });
             let cx = view_cx(&channel);
             let tree = page(&channel, &cx);
@@ -1934,7 +1943,6 @@ mod tests {
             };
             channel.messages.push(Message {
                 id: "m_shared".to_owned(),
-                author: channel.people[0].id.key(),
                 ts: 1_782_470_400,
                 attachments: vec![Attachment {
                     kind: "resource".to_owned(),
@@ -1942,7 +1950,7 @@ mod tests {
                     resource: Some(shared.clone()),
                     ..Attachment::default()
                 }],
-                ..Message::default()
+                ..Message::by(channel.people[0].id.clone())
             });
             let cx = view_cx(&channel);
             let tree = page(&channel, &cx);
@@ -1982,30 +1990,30 @@ mod tests {
                 crate::record::Conversation {
                     name: "Assistant".to_owned(),
                     participants: vec![
-                        sdk::tilo_resource::Atom(MemberId::person(ME).key()),
-                        sdk::tilo_resource::Atom(MemberId::agent("assistant").key()),
+                        MemberId::person(ME),
+                        MemberId::agent("assistant"),
                     ],
                     ..crate::record::Conversation::default()
                 },
             );
-            let message = |id: &str, author: &str, ts: i64, text: &str, parent: Option<&str>| {
+            let message = |id: &str, author: MemberId, ts: i64, text: &str, parent: Option<&str>| {
                 let mut message = row("c_ask", id, author, ts, text);
                 message.parent = parent.map(str::to_owned);
                 message
             };
             let rows = vec![
-                message("m_one", ME, 1_782_470_400, "first", None),
-                message("m_two", ME, 1_782_470_410, "second", None),
+                message("m_one", MemberId::person(ME), 1_782_470_400, "first", None),
+                message("m_two", MemberId::person(ME), 1_782_470_410, "second", None),
                 message(
                     "m_three",
-                    "agent:assistant",
+                    MemberId::agent("assistant"),
                     1_782_470_420,
                     "answers the second",
                     Some("m_two"),
                 ),
                 message(
                     "m_four",
-                    "agent:assistant",
+                    MemberId::agent("assistant"),
                     1_782_470_430,
                     "answers the first",
                     Some("m_one"),
@@ -2018,7 +2026,7 @@ mod tests {
             names
                 .agents
                 .insert("assistant".to_owned(), "Assistant".to_owned());
-            let channel = Channel::read(&chat, &rows, "c_ask", ME, &names);
+            let channel = Channel::read(&chat, &rows, "c_ask", &MemberId::person(ME), &names);
             let by_id = |id: &str| {
                 channel
                     .messages
@@ -2063,14 +2071,14 @@ mod tests {
                 row(
                     "c_crit",
                     "m_asked",
-                    crate::model::ME,
+                    MemberId::person(crate::model::ME),
                     1_782_470_400,
                     answered,
                 ),
                 row(
                     "c_crit",
                     "m_other",
-                    crate::model::ME,
+                    MemberId::person(crate::model::ME),
                     1_782_470_410,
                     "and the cost line?",
                 ),
@@ -2078,7 +2086,7 @@ mod tests {
             let mut reply = row(
                 "c_crit",
                 "m_reply",
-                "agent:tide",
+                MemberId::agent("tide"),
                 1_782_470_420,
                 "Yes: that stretch flattens",
             );
@@ -2093,7 +2101,7 @@ mod tests {
                 &crate::record::Chat::default(),
                 &rows,
                 "c_crit",
-                crate::model::ME,
+                &MemberId::person(crate::model::ME),
                 &Names::default(),
             );
             let quoted = channel
@@ -2151,19 +2159,17 @@ mod tests {
         });
         channel.messages.push(Message {
             id: "m_asked".to_owned(),
-            author: crate::model::ME.to_owned(),
             ts: 1_782_470_300,
             text: "Add the revenue curve".to_owned(),
-            ..Message::default()
+            ..Message::by(MemberId::person(crate::model::ME))
         });
         channel.messages.push(Message {
-            id: crate::record::reply_id(&Id::from_raw("m_asked"), "agent:tide").to_string(),
-            author: "agent:tide".to_owned(),
+            id: crate::record::reply_id(&Id::from_raw("m_asked"), &MemberId::agent("tide")).to_string(),
             ts: 1_782_470_400,
             text: partial.to_owned(),
             reply_to: Some(Quote {
                 id: "m_asked".to_owned(),
-                author: crate::model::ME.to_owned(),
+                author: MemberId::person(crate::model::ME),
                 excerpt: "Add the revenue curve".to_owned(),
                 span: None,
             }),
@@ -2173,7 +2179,7 @@ mod tests {
                 failure_detail: String::new(),
                 steps: Vec::new(),
             }),
-            ..Message::default()
+            ..Message::by(MemberId::agent("tide"))
         });
         channel
     }
@@ -2273,7 +2279,7 @@ mod tests {
                         // that message, and posts nothing.
                         args: vec![
                             Arg::text(
-                                crate::record::reply_id(&Id::from_raw("m_asked"), "agent:tide")
+                                crate::record::reply_id(&Id::from_raw("m_asked"), &MemberId::agent("tide"))
                                     .to_string(),
                             ),
                             Arg::text("m_asked"),
@@ -2361,12 +2367,11 @@ mod tests {
             channel.messages[0].attempts = 1;
             channel.messages.push(Message {
                 id: "m_reply_2".to_owned(),
-                author: "agent:tide".to_owned(),
                 ts: 1_782_470_500,
                 text: "The curve is drawn".to_owned(),
                 reply_to: Some(Quote {
                     id: "m_asked".to_owned(),
-                    author: crate::model::ME.to_owned(),
+                    author: MemberId::person(crate::model::ME),
                     excerpt: "Add the revenue curve".to_owned(),
                     span: None,
                 }),
@@ -2376,7 +2381,7 @@ mod tests {
                     failure_detail: String::new(),
                     steps: Vec::new(),
                 }),
-                ..Message::default()
+                ..Message::by(MemberId::agent("tide"))
             });
             let cx = view_cx(&channel);
             let tree = page(&channel, &cx);
@@ -2403,11 +2408,11 @@ mod tests {
             let mut rows = workspace.message_rows("c_crit");
             let summons = rows[0].id.clone();
             let reply_id =
-                crate::record::reply_id(&Id::from_raw(summons.clone()), "agent:tide").to_string();
+                crate::record::reply_id(&Id::from_raw(summons.clone()), &MemberId::agent("tide")).to_string();
             rows.push(crate::model::Message {
                 id: reply_id.clone(),
                 channel: "c_crit".to_owned(),
-                author: "agent:tide".to_owned(),
+                author: MemberId::agent("tide"),
                 ts: 1_782_470_400,
                 text: String::new(),
                 body: Vec::new(),
@@ -2443,7 +2448,7 @@ mod tests {
                 sending: false,
             });
             let chat = workspace.read();
-            let channel = Channel::read(&chat, &rows, "c_crit", crate::model::ME, &Names::default());
+            let channel = Channel::read(&chat, &rows, "c_crit", &MemberId::person(crate::model::ME), &Names::default());
             let reply = channel.messages.last().expect("the reply");
             assert_eq!(reply.id, reply_id, "the reply is the attempt's own");
             assert_eq!(
@@ -2524,17 +2529,15 @@ mod tests {
             channel.messages = vec![
                 Message {
                     id: "m_day_one".to_owned(),
-                    author: crate::model::ME.to_owned(),
                     ts: 1_782_470_400, // 2026-06-30
                     text: "First day".to_owned(),
-                    ..Message::default()
+                    ..Message::by(MemberId::person(crate::model::ME))
                 },
                 Message {
                     id: "m_day_two".to_owned(),
-                    author: crate::model::ME.to_owned(),
                     ts: 1_782_470_400 + 86_400, // the day after
                     text: "Second day".to_owned(),
-                    ..Message::default()
+                    ..Message::by(MemberId::person(crate::model::ME))
                 },
             ];
             let cx = view_cx(&channel);
@@ -2563,17 +2566,15 @@ mod tests {
             channel.messages = vec![
                 Message {
                     id: "m_a".to_owned(),
-                    author: crate::model::ME.to_owned(),
                     ts: 1_782_470_400,
                     text: "One".to_owned(),
-                    ..Message::default()
+                    ..Message::by(MemberId::person(crate::model::ME))
                 },
                 Message {
                     id: "m_b".to_owned(),
-                    author: crate::model::ME.to_owned(),
                     ts: 1_782_470_400 + 60,
                     text: "Two".to_owned(),
-                    ..Message::default()
+                    ..Message::by(MemberId::person(crate::model::ME))
                 },
             ];
             let cx = view_cx(&channel);
@@ -2628,15 +2629,15 @@ mod tests {
                 crate::record::Conversation {
                     name: "Assistant".to_owned(),
                     participants: vec![
-                        sdk::tilo_resource::Atom(MemberId::person(ME).key()),
-                        sdk::tilo_resource::Atom(MemberId::agent("assistant").key()),
+                        MemberId::person(ME),
+                        MemberId::agent("assistant"),
                     ],
                     ..crate::record::Conversation::default()
                 },
             );
-            let mut said = row("c_ask", "m_reply", "agent:assistant", 1_782_470_420, "Hi");
+            let mut said = row("c_ask", "m_reply", MemberId::agent("assistant"), 1_782_470_420, "Hi");
             said.parent = Some("m_ask".to_owned());
-            let rows = vec![row("c_ask", "m_ask", ME, 1_782_470_400, "hello"), said];
+            let rows = vec![row("c_ask", "m_ask", MemberId::person(ME), 1_782_470_400, "hello"), said];
             let mut names = Names {
                 me: "Quinn Davis".to_owned(),
                 ..Names::default()
@@ -2644,7 +2645,7 @@ mod tests {
             names
                 .agents
                 .insert("assistant".to_owned(), "Assistant".to_owned());
-            let channel = Channel::read(&chat, &rows, "c_ask", ME, &names);
+            let channel = Channel::read(&chat, &rows, "c_ask", &MemberId::person(ME), &names);
             let cx = view_cx(&channel);
             let tree = page(&channel, &cx);
             passes(&tree);
@@ -2695,10 +2696,9 @@ mod tests {
             // 2026-06-26 09:16 UTC, read in the zone the page reads clocks in.
             channel.messages = vec![Message {
                 id: "m_when".to_owned(),
-                author: crate::model::ME.to_owned(),
                 ts: 1_782_465_360,
                 text: "Sent at a moment".to_owned(),
-                ..Message::default()
+                ..Message::by(MemberId::person(crate::model::ME))
             }];
             let cx = view_cx(&channel);
             let tree = page(&channel, &cx);
@@ -2733,24 +2733,21 @@ mod tests {
             channel.messages = vec![
                 Message {
                     id: "m_one".to_owned(),
-                    author: "u_aria".to_owned(),
                     ts: 1_782_470_400,
                     text: "First".to_owned(),
-                    ..Message::default()
+                    ..Message::by(MemberId::person("u_aria"))
                 },
                 Message {
                     id: "m_two".to_owned(),
-                    author: "u_aria".to_owned(),
                     ts: 1_782_470_460,
                     text: "Still the same run".to_owned(),
-                    ..Message::default()
+                    ..Message::by(MemberId::person("u_aria"))
                 },
                 Message {
                     id: "m_three".to_owned(),
-                    author: "u_milo".to_owned(),
                     ts: 1_782_470_520,
                     text: "Another person".to_owned(),
-                    ..Message::default()
+                    ..Message::by(MemberId::person("u_milo"))
                 },
             ];
             let cx = view_cx(&channel);
@@ -2798,11 +2795,11 @@ mod tests {
             let mut rows = workspace.message_rows("c_crit");
             // A day after the rest, so it starts a run of its own and carries its byline.
             let ts = rows.iter().map(|row| row.ts).max().unwrap_or_default() + 86_400;
-            let mut sent = row("c_crit", "m_sent", crate::model::ME, ts, "On its way");
+            let mut sent = row("c_crit", "m_sent", MemberId::person(crate::model::ME), ts, "On its way");
             sent.sending = true;
             rows.push(sent);
             let chat = workspace.read();
-            let channel = Channel::read(&chat, &rows, "c_crit", crate::model::ME, &Names::default());
+            let channel = Channel::read(&chat, &rows, "c_crit", &MemberId::person(crate::model::ME), &Names::default());
             assert!(
                 channel
                     .messages
@@ -2828,13 +2825,12 @@ mod tests {
     /// next question is a turn of its own, and what the agent did is folded under its reply.
     #[test]
     fn a_turn_is_the_question_and_the_replies_until_a_person_speaks_again() {
-        let message = |id: &str, author: &str, text: &str| Message {
+        let message = |id: &str, author: MemberId, text: &str| Message {
             id: id.to_owned(),
-            author: author.to_owned(),
             text: text.to_owned(),
-            ..Message::default()
+            ..Message::by(author)
         };
-        let mut reply = message("r1", "agent:assistant", "Two tasks are due.");
+        let mut reply = message("r1", MemberId::agent("assistant"), "Two tasks are due.");
         reply.work = Some(Work {
             state: "done".to_owned(),
             steps: vec!["Open Tasks".to_owned()],
@@ -2853,15 +2849,18 @@ mod tests {
                 },
             ],
             messages: vec![
-                message("q1", "pat", "what is due?"),
+                message("q1", MemberId::person("pat"), "what is due?"),
                 reply,
-                message("q2", "pat", "and tomorrow?"),
-                message("r2", "agent:assistant", "Nothing."),
+                message("q2", MemberId::person("pat"), "and tomorrow?"),
+                message("r2", MemberId::agent("assistant"), "Nothing."),
             ],
             ..Channel::default()
         };
         let turn_of_q1 = Turn::of(&channel, "q1").expect("the turn");
-        assert_eq!(turn_of_q1.question.text, "what is due?");
+        assert_eq!(
+            turn_of_q1.question.as_ref().map(|q| q.text.as_str()),
+            Some("what is due?")
+        );
         assert_eq!(
             turn_of_q1
                 .replies

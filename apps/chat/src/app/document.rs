@@ -6,6 +6,8 @@ use std::collections::{HashMap, HashSet};
 
 use automerge::AutoCommit;
 
+use ui::tilo_resource::MemberId;
+
 use crate::model::{self, Id, Message, User};
 
 use super::{ChatApp, unread_mentions};
@@ -37,7 +39,7 @@ impl ChatApp {
                     .map(|participant| ui::tilo_resource::search_index::IndexPerson {
                         name: String::new(),
                         anchor: String::new(),
-                        identity: participant.key(),
+                        identity: participant.id().to_owned(),
                         agent: !participant.is_person(),
                     })
                     .collect();
@@ -52,8 +54,8 @@ impl ChatApp {
     /// says someone is waiting on you, not just talking. Telling about a new
     /// one is the desktop's, for every app's mentions (`ui::mentions`).
     fn note_mentions(&mut self, per_channel: &[(Id, Vec<Message>)]) {
-        let me: Vec<&str> = std::iter::once(self.me.id.as_str())
-            .chain(self.former_ids.iter().map(String::as_str))
+        let me: Vec<&MemberId> = std::iter::once(&self.me.id)
+            .chain(self.former_ids.iter())
             .collect();
         let mentions: HashMap<Id, u32> = per_channel
             .iter()
@@ -272,12 +274,12 @@ impl ChatApp {
         self.composer_main.set_key(&self.active_channel);
         self.composer_main
             .set_placeholder(&self.conversation_placeholder(&self.active_channel));
-        self.composer_main.set_local_author(self.me.member());
+        self.composer_main.set_local_author(Some(self.me.id.clone()));
         let thread_key = self.thread_draft_key().unwrap_or_default();
         self.composer_thread.set_key(&thread_key);
         self.composer_thread
             .set_placeholder(&crate::i18n::t("chat-thread-reply-placeholder"));
-        self.composer_thread.set_local_author(self.me.member());
+        self.composer_thread.set_local_author(Some(self.me.id.clone()));
         self.composer_main
             .set_read_only(!self.main_composer_can_edit());
         self.composer_thread.set_read_only(!self.can_participate());
@@ -307,7 +309,7 @@ impl ChatApp {
         chat: &crate::record::Chat,
         per_channel: &[(Id, Vec<Message>)],
     ) -> Vec<User> {
-        let mut ids: HashSet<Id> = HashSet::from([self.me.id.clone()]);
+        let mut ids: HashSet<MemberId> = HashSet::from([self.me.id.clone()]);
         ids.extend(self.former_ids.iter().cloned());
 
         for channel in &self.channels {
@@ -322,8 +324,8 @@ impl ChatApp {
                     message
                         .acting
                         .iter()
-                        .filter_map(|by| by.acted_for_person())
-                        .map(str::to_owned),
+                        .filter_map(crate::identity::acted_for)
+                        .cloned(),
                 );
                 // A member who writes only from a linked account on a
                 // bridged service is still this workspace's person: their
@@ -334,10 +336,10 @@ impl ChatApp {
                     .as_ref()
                     .and_then(|appearance| appearance.persona.as_ref()?.linked.as_deref())
                 {
-                    ids.insert(linked.to_owned());
+                    ids.insert(MemberId::person(linked));
                 }
                 for reaction in &message.reactions {
-                    ids.extend(reaction.reactors.iter().map(|reactor| reactor.by.key()));
+                    ids.extend(reaction.reactors.iter().map(|reactor| reactor.by.clone()));
                 }
                 ids.extend(message.mentions.iter().map(|mention| mention.user.clone()));
             }
@@ -383,7 +385,7 @@ impl ChatApp {
         let color = u32::try_from(me.color_idx).unwrap_or_default();
         if (chat.channels.is_empty() && chat.people.is_empty())
             || chat.people.iter().any(|person| {
-                person.id.0 == me.id
+                person.id == me.id
                     && person.name == me.name
                     && person.initials == me.initials
                     && person.color == color

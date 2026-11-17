@@ -58,11 +58,16 @@ impl Talk {
         }
     }
 
-    /// Another replica of both, as `author`.
+    /// Another replica of both, as the person `author`.
     pub(super) fn fork_as(&mut self, author: &str) -> Self {
+        self.fork_as_member(MemberId::person(author))
+    }
+
+    /// Another replica of both, as `member`.
+    pub(super) fn fork_as_member(&mut self, member: MemberId) -> Self {
         Self {
-            chat: self.chat.fork().as_author(author),
-            part: self.part.fork().as_author(author),
+            chat: self.chat.fork().as_member(member.clone()),
+            part: self.part.fork().as_member(member),
             now_ms: self.now_ms,
         }
     }
@@ -142,7 +147,7 @@ tilo_test_env::scenario! {
         let rows = ada.rows("c_chat");
         let of = |text: &str| rows.iter().find(|row| row.text == text).unwrap();
         let bridged = of("from Discord");
-        assert_eq!(bridged.author, "bot:5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1");
+        assert_eq!(bridged.author, MemberId::bot("5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1"));
         assert_eq!(bridged.appearance.as_ref(), Some(&shown), "shown as Grace");
         assert_eq!(
             of("not Grace").appearance,
@@ -268,7 +273,7 @@ tilo_test_env::scenario! {
         let mut bo = ada.fork().as_author(BO);
         bo.apply(Chat::REPORT_MESSAGE.with(chat::ReportMessage {
             message: message.to_string(),
-            author: ADA.into(),
+            author: MemberId::person(ADA),
             reason: "spam".parse().unwrap(),
         }))
         .unwrap();
@@ -278,14 +283,14 @@ tilo_test_env::scenario! {
         assert_eq!(report.item, Some(message.to_string()));
         assert!(
             bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
-                person: id(BO),
+                person: crate::record::member_slot(&MemberId::person(BO)),
                 reason: "me".parse().unwrap(),
             }))
             .is_err(),
             "nobody reports themselves"
         );
         bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
-            person: id(ADA),
+            person: crate::record::member_slot(&MemberId::person(ADA)),
             reason: "spamming the channel".parse().unwrap(),
         }))
         .unwrap();
@@ -431,7 +436,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let status = Chat::paths()
             .people
-            .item(&id(ADA))
+            .item(&crate::record::member_slot(&MemberId::person(ADA)))
             .status
             .set(crate::model::Presence::Dnd);
         ada.apply(Invoke::edit(&status).unwrap()).unwrap();
@@ -460,12 +465,12 @@ tilo_test_env::scenario! {
         let mut talk = Talk::new();
         // A generic insert naming someone else as the author is refused: only
         // a post, which takes its author from whoever signed it, makes one.
-        let forged = Message {
-            channel: id("c_chat"),
-            author: ui::tilo_resource::Atom(BO.into()),
-            text: "I never said this".into(),
-            ..Message::default()
-        };
+        let forged = Message::new(
+            id("c_chat"),
+            MemberId::person(BO),
+            0,
+            "I never said this".into(),
+        );
         let insert = ChatPart::paths()
             .messages
             .insert_as(&id("m_forged"), 0, &forged);
@@ -473,7 +478,10 @@ tilo_test_env::scenario! {
         assert!(talk.messages().get(&id("m_forged")).is_none());
         talk.apply(post("my own words")).unwrap();
         let said = talk.said("my own words");
-        assert_eq!(talk.messages().get(&said).unwrap().author.0, ADA);
+        assert_eq!(
+            talk.messages().get(&said).unwrap().author,
+            MemberId::person(ADA)
+        );
         for edit in [
             ChatPart::paths().messages.remove(&said),
             ChatPart::paths().messages.move_to(&said, 0),
@@ -564,7 +572,7 @@ tilo_test_env::scenario! {
 
         let general = item("channels", &id("c_chat"));
         assert!(actions(&general).iter().any(|id| id == "open-channel"));
-        let person = item("people", &id(BO));
+        let person = item("people", &crate::record::member_slot(&MemberId::person(BO)));
         assert!(actions(&person).iter().any(|id| id == "open-person"));
     }
 
@@ -653,7 +661,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             people
                 .iter()
-                .map(|person| (person.id.as_str(), person.name.as_str()))
+                .map(|person| (person.id.id(), person.name.as_str()))
                 .collect::<Vec<_>>(),
             [(ADA, "Ada"), (BO, "Bo")]
         );
@@ -918,7 +926,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let chat = ada.chat.state().unwrap();
         assert_eq!(
-            chat.read_mark("c_chat", ADA),
+            chat.read_mark("c_chat", &MemberId::person(ADA)),
             crate::parts::ReadMark::default()
         );
         assert!(
@@ -945,14 +953,14 @@ tilo_test_env::scenario! {
         bo.chat.apply(mark(2)).unwrap();
         let chat = bo.chat.state().unwrap();
         let held = bo.messages();
-        assert_eq!(chat.unread(&held, "c_chat", BO), 1);
-        assert_eq!(chat.unread(&held, "c_chat", ADA), 3, "Ada read nothing");
+        assert_eq!(chat.unread(&held, "c_chat", &MemberId::person(BO)), 1);
+        assert_eq!(chat.unread(&held, "c_chat", &MemberId::person(ADA)), 3, "Ada read nothing");
         bo.chat.apply(mark(3)).unwrap();
         let three = crate::parts::ReadMark { part: 0, seen: 3 };
-        assert_eq!(bo.chat.state().unwrap().read_mark("c_chat", BO), three);
+        assert_eq!(bo.chat.state().unwrap().read_mark("c_chat", &MemberId::person(BO)), three);
         bo.chat.apply(mark(1)).unwrap();
         assert_eq!(
-            bo.chat.state().unwrap().read_mark("c_chat", BO),
+            bo.chat.state().unwrap().read_mark("c_chat", &MemberId::person(BO)),
             three,
             "a mark never moves back"
         );
@@ -1130,7 +1138,7 @@ tilo_test_env::scenario! {
         let with_bo = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
         let row = chat
             .conversation_rows(
-                ADA,
+                &MemberId::person(ADA),
                 &crate::messages::Messages::default(),
                 &crate::projection::AgentNames::new(),
             )
@@ -1138,10 +1146,10 @@ tilo_test_env::scenario! {
             .find(|row| row.id == with_bo.to_string())
             .expect("Ada lists her conversation with Bo");
         assert!(row.direct, "it is a conversation, not a channel");
-        assert_eq!(row.name, crate::identity::unnamed_label(BO));
+        assert_eq!(row.name, crate::identity::unnamed_label(&MemberId::person(BO)));
         let row = chat
             .conversation_rows(
-                BO,
+                &MemberId::person(BO),
                 &crate::messages::Messages::default(),
                 &crate::projection::AgentNames::new(),
             )
@@ -1168,7 +1176,7 @@ tilo_test_env::scenario! {
             .iter()
             .find(|row| row.text == "in their conversation")
             .expect("a member who is not a participant posts to the conversation");
-        assert_eq!(row.author, CY);
+        assert_eq!(row.author, MemberId::person(CY));
         assert_eq!(
             ada.chat
                 .state()
@@ -1325,11 +1333,10 @@ tilo_test_env::scenario! {
 
     phase an_agent_records_its_work_on_its_own_reply_to_the_summons;
     {
-        const AGENT: &str = "agent:tide";
         let mut ada = Talk::new();
         ada.apply(post("@Tide chart the revenue")).unwrap();
         let summons = ada.said("@Tide chart the revenue");
-        let mut agent = ada.fork_as(AGENT);
+        let mut agent = ada.fork_as_member(MemberId::agent("tide"));
         let work = |state: &str, outcome: &str| {
             ChatPart::RECORD_WORK.with(chat_part::RecordWork {
                 message: summons.clone(),
@@ -1356,9 +1363,9 @@ tilo_test_env::scenario! {
         let chat = agent.chat.state().unwrap();
         let held = agent.messages();
         let reply = chat
-            .message_row(&held, reply_id(&summons, AGENT).as_str())
+            .message_row(&held, reply_id(&summons, &MemberId::agent("tide")).as_str())
             .expect("the agent's reply is made once");
-        assert_eq!(reply.author, AGENT);
+        assert_eq!(reply.author, MemberId::agent("tide"));
         assert_eq!(reply.parent.as_deref(), Some(summons.as_str()));
         assert_eq!(reply.text, "On it.");
         let work = reply.work.expect("the reply carries the work");
@@ -1401,7 +1408,7 @@ tilo_test_env::scenario! {
         let summons = ada.said("Add the revenue curve");
         // The agent's answer, as an agent writes it: `record-work` derives the reply the person then
         // gives up on.
-        let agent = "agent:tide";
+        let agent = "tide";
         let mut answer = ada.part.fork().as_agent_for("tide", ADA);
         answer
             .apply(
@@ -1420,7 +1427,7 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         ada.part.sync_with(&mut answer).unwrap();
-        let first = reply_id_at(&summons, agent, 0);
+        let first = reply_id_at(&summons, &MemberId::agent(agent), 0);
         assert!(
             ada.part.state().unwrap().messages.get(&first).is_some(),
             "the agent wrote the reply the person gives up on"
@@ -1442,7 +1449,7 @@ tilo_test_env::scenario! {
             "the question is in its second attempt"
         );
         // The answer the agent writes now is the second attempt's reply, never the first's.
-        let second = reply_id_at(&summons, agent, 1);
+        let second = reply_id_at(&summons, &MemberId::agent(agent), 1);
         assert_ne!(
             first, second,
             "a retried turn is answered in a reply of its own"
@@ -1483,11 +1490,11 @@ tilo_test_env::scenario! {
         let rows = ada.rows("c_chat");
         assert_eq!(rows.len(), 1);
         let message = &rows[0];
-        assert_eq!(message.author, ADA, "the poster is whoever invoked");
+        assert_eq!(message.author, MemberId::person(ADA), "the poster is whoever invoked");
         assert_eq!(message.ts, 1234, "the time is the action's");
         assert_eq!(message.mentions.len(), 1);
-        assert_eq!(message.mentions[0].user, BO);
-        assert_eq!(chat.unread(&ada.messages(), "c_chat", BO), 1);
+        assert_eq!(message.mentions[0].user, MemberId::person(BO));
+        assert_eq!(chat.unread(&ada.messages(), "c_chat", &MemberId::person(BO)), 1);
     }
 
     phase a_post_that_says_nothing_or_is_misplaced_is_refused;
@@ -1799,7 +1806,8 @@ fn a_moved_message_shows_its_author_there_at_its_time_and_stays_the_movers() {
         "it stands where it was written there"
     );
     assert_eq!(
-        message.author.0, "agent:grant-a8a42b74",
+        message.author,
+        MemberId::agent("grant-a8a42b74"),
         "the mover stays its author"
     );
     assert_eq!(

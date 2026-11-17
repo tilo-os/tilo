@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use ui::tilo_resource::MemberId;
 
 use ui::framework::Chain;
 use ui::tilo_resource::Id;
@@ -17,7 +18,9 @@ fn long_post(n: usize) -> String {
 /// `part`; that post's id, every one before it checked to be in `part`.
 fn fill_part(workspace: &mut Workspace, part: u64) -> String {
     for n in 0..=PART_TEXT_BYTES / long_post(0).len() + 1 {
-        let id = workspace.say("u_aria", "c_general", &long_post(n)).unwrap();
+        let id = workspace
+            .say(&MemberId::person("u_aria"), "c_general", &long_post(n))
+            .unwrap();
         match workspace.messages().part_of(&Id::from_raw(&id)) {
             Some(at) if at == part => {}
             _ => return id,
@@ -53,7 +56,11 @@ fn a_full_part_rolls_posts_over_and_changes_land_where_the_message_is() {
         Some(0)
     );
     let mine = workspace
-        .say(crate::model::ME, "c_general", "mine, to edit later")
+        .say(
+            &MemberId::person(crate::model::ME),
+            "c_general",
+            "mine, to edit later",
+        )
         .unwrap();
     assert_eq!(workspace.messages().part_of(&Id::from_raw(&mine)), Some(0));
     // Long posts fill the head; the one after it is full starts part 1.
@@ -64,23 +71,31 @@ fn a_full_part_rolls_posts_over_and_changes_land_where_the_message_is() {
     // A reaction, an edit and a reply to messages of the full part go to it.
     assert_eq!(
         workspace
-            .apply_part_as(crate::model::ME, react(welcome, "🎉"))
+            .apply_part_as(&MemberId::person(crate::model::ME), react(welcome, "🎉"))
             .unwrap(),
         0
     );
     assert_eq!(
         workspace
-            .apply_part_as(crate::model::ME, edit(&mine, "mine, edited"))
+            .apply_part_as(
+                &MemberId::person(crate::model::ME),
+                edit(&mine, "mine, edited")
+            )
             .unwrap(),
         0
     );
     let reply = crate::demo::post("c_general", "a reply in the old thread", Some(welcome));
-    assert_eq!(workspace.apply_part_as("u_sora", reply).unwrap(), 0);
+    assert_eq!(
+        workspace
+            .apply_part_as(&MemberId::person("u_sora"), reply)
+            .unwrap(),
+        0
+    );
     // A post that is not a reply goes on in the head.
     assert_eq!(
         workspace
             .apply_part_as(
-                "u_sora",
+                &MemberId::person("u_sora"),
                 crate::demo::post("c_general", "still the head", None)
             )
             .unwrap(),
@@ -115,19 +130,29 @@ fn a_full_part_rolls_posts_over_and_changes_land_where_the_message_is() {
 fn a_post_is_read_against_the_chat_record_where_it_is_invoked() {
     let mut workspace = Workspace::demo().unwrap();
     // A voice channel takes no posts, and an unknown channel none either.
-    assert!(workspace.say("u_aria", "c_standup", "hello?").is_err());
-    assert!(workspace.say("u_aria", "c_nowhere", "hello?").is_err());
+    assert!(
+        workspace
+            .say(&MemberId::person("u_aria"), "c_standup", "hello?")
+            .is_err()
+    );
+    assert!(
+        workspace
+            .say(&MemberId::person("u_aria"), "c_nowhere", "hello?")
+            .is_err()
+    );
     // A mention is resolved against the record's people, whatever the
     // caller sent.
     let mut post = crate::demo::post("c_general", "@Aria Chen look", None);
     post.arguments.insert(
         "mentions".into(),
-        serde_json::json!([{ "user": "u_nobody", "start": 0, "len": 3, "is_agent": false }]),
+        serde_json::json!([{ "user": { "person": "u_nobody" }, "start": 0, "len": 3, "is_agent": false }]),
     );
-    workspace.apply_part_as("u_milo", post).unwrap();
+    workspace
+        .apply_part_as(&MemberId::person("u_milo"), post)
+        .unwrap();
     let row = workspace.message_rows("c_general").pop().unwrap();
     assert_eq!(row.mentions.len(), 1);
-    assert_eq!(row.mentions[0].user, "u_aria");
+    assert_eq!(row.mentions[0].user, MemberId::person("u_aria"));
 }
 
 #[test]
@@ -148,7 +173,7 @@ fn the_window_chain_rolls_over_and_reads_across_its_parts() {
         next = chain
             .stage_as(
                 &crate::demo::post("c_general", &long_post(n), None),
-                "u_aria",
+                &MemberId::person("u_aria"),
             )
             .unwrap()
             .expect("written into a part held here");
@@ -188,7 +213,9 @@ fn read_marks_are_positions_in_the_chain() {
     let mut workspace = Workspace::demo().unwrap();
     let general = Id::from_raw("c_general");
     fill_part(&mut workspace, 0);
-    workspace.say("u_milo", "c_general", "in part 1").unwrap();
+    workspace
+        .say(&MemberId::person("u_milo"), "c_general", "in part 1")
+        .unwrap();
     let held = workspace.messages();
     let end = held.read_to_end(&general);
     assert_eq!(end, crate::parts::ReadMark { part: 1, seen: 2 });
@@ -208,7 +235,7 @@ fn read_marks_are_positions_in_the_chain() {
     assert_eq!(
         workspace
             .read()
-            .unread(&held, "c_general", crate::model::ME),
+            .unread(&held, "c_general", &MemberId::person(crate::model::ME)),
         0
     );
     // A mark never moves back.
@@ -223,7 +250,9 @@ fn read_marks_are_positions_in_the_chain() {
         )
         .unwrap();
     assert_eq!(
-        workspace.read().read_mark("c_general", crate::model::ME),
+        workspace
+            .read()
+            .read_mark("c_general", &MemberId::person(crate::model::ME)),
         end
     );
 }
@@ -438,24 +467,24 @@ tilo_test_env::scenario! {
         ] {
             part.messages.push(
                 Id::from_raw(id),
-                crate::record::Message {
-                    channel: channel.clone(),
-                    author: ui::tilo_resource::Atom(author.to_owned()),
+                crate::record::Message::new(
+                    channel.clone(),
+                    MemberId::person(author),
                     ts,
-                    ..crate::record::Message::default()
-                },
+                    String::new(),
+                ),
             );
         }
         let held = Messages::single(part);
         assert_eq!(
-            held.unread_by_others(&channel, crate::parts::ReadMark { part: 0, seen: 1 }, "ada"),
+            held.unread_by_others(&channel, crate::parts::ReadMark { part: 0, seen: 1 }, &MemberId::person("ada")),
             2,
             "the two after the mark, though one was written earlier"
         );
         let first = held.first_unread(&channel, crate::parts::ReadMark { part: 0, seen: 1 });
         assert_eq!(first.map(ToString::to_string).as_deref(), Some("m_two"));
         assert_eq!(
-            held.unread_by_others(&channel, crate::parts::ReadMark { part: 0, seen: 3 }, "ada"),
+            held.unread_by_others(&channel, crate::parts::ReadMark { part: 0, seen: 3 }, &MemberId::person("ada")),
             0
         );
     }
@@ -473,13 +502,12 @@ tilo_test_env::scenario! {
         let mut seeded = ChatPart::default();
         seeded.messages.push(
             Id::from_raw("m_seeded"),
-            crate::record::Message {
-                channel: Id::from_raw("c_general"),
-                author: ui::tilo_resource::Atom("u_aria".to_owned()),
-                ts: 4_000_000_000,
-                text: "seeded".to_owned(),
-                ..crate::record::Message::default()
-            },
+            crate::record::Message::new(
+                Id::from_raw("c_general"),
+                MemberId::person("u_aria"),
+                4_000_000_000,
+                "seeded".to_owned(),
+            ),
         );
         let mut workspace = Workspace::default();
         workspace.write_part(0, &seeded).unwrap();
@@ -552,7 +580,7 @@ tilo_test_env::scenario! {
     {
         let mut workspace = Workspace::demo().unwrap();
         workspace
-            .say("u_aria", "c_general", "where this went")
+            .say(&MemberId::person("u_aria"), "c_general", "where this went")
             .unwrap();
         let bytes = workspace.part_bytes(0).unwrap();
         let mut doc = ui::automerge::AutoCommit::load(&bytes).unwrap();

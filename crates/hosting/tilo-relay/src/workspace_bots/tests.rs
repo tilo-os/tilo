@@ -101,7 +101,7 @@ fn texts_by(posts: &[chat::record::Message], person: [u8; 32]) -> Vec<String> {
     let person = hex::encode(person);
     posts
         .iter()
-        .filter(|message| message.author.0 == person)
+        .filter(|message| message.author.person_id() == Some(person.as_str()))
         .map(|message| message.text.clone())
         .collect()
 }
@@ -294,7 +294,7 @@ async fn flood_posts(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert
                 &ada,
                 chat::Chat::REPORT_MESSAGE.with(chat::record::chat::ReportMessage {
                     message: spam,
-                    author: mallory,
+                    author: tilo_resource::MemberId::person(mallory),
                     reason: "spam".parse().unwrap(),
                 }),
             )
@@ -550,7 +550,7 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
         .filter(|message| message.text == "welcome!")
         .collect();
     assert_eq!(answers.len(), 1, "one answer to one post");
-    assert_eq!(answers[0].author.0, format!("bot:{GREETER}"));
+    assert_eq!(answers[0].author, tilo_resource::MemberId::bot(GREETER));
 }
 
 /// A workspace with the chat, Ada introduced, and `#general`'s id.
@@ -1028,9 +1028,9 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
         .await
         .iter()
         .find(|message| message.text == "welcome!")
-        .map(|message| message.author.0.clone())
+        .map(|message| message.author.clone())
         .expect("the bridge posted");
-    assert_eq!(post, format!("bot:{GREETER}"), "still the bot's");
+    assert_eq!(post, tilo_resource::MemberId::bot(GREETER), "still the bot's");
     let shown: Vec<_> = AutoCommit::load(&bytes)
         .unwrap()
         .get_changes(&[])
@@ -1300,7 +1300,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
         .filter(|message| message.text == "welcome!")
         .collect();
     assert_eq!(answers.len(), 1, "the guest reads the bot's answer");
-    assert_eq!(answers[0].author.0, format!("bot:{GREETER}"));
+    assert_eq!(answers[0].author, tilo_resource::MemberId::bot(GREETER));
     assert!(
         posted.iter().any(|message| message.text == "hello"),
         "beside Ada's post"
@@ -1444,8 +1444,8 @@ async fn a_file_a_member_posted_stays_in_the_workspace_after_they_leave() {
     // Ada's device answers the host; then she leaves.
     workspaces.content_for_host(&workspace, ADA, &answer(&asks[0], ADA, &notes));
     assert_eq!(
-        keeper.kept_for(&blake3::hash(&notes).to_hex()).as_deref(),
-        Some(ada.as_str())
+        keeper.kept_for(&blake3::hash(&notes).to_hex()),
+        Some(tilo_resource::MemberId::person(ada.as_str()))
     );
     assert_eq!(
         opened(&workspaces, &workspace, BO, &notes),
@@ -1510,8 +1510,8 @@ async fn a_file_a_member_posted_stays_in_the_workspace_after_they_leave() {
     drop(keeper);
     let again = attachments_of(attachments::AttachmentLimits::default());
     assert_eq!(
-        again.kept_for(&blake3::hash(&slides).to_hex()).as_deref(),
-        Some(ada.as_str())
+        again.kept_for(&blake3::hash(&slides).to_hex()),
+        Some(tilo_resource::MemberId::person(ada.as_str()))
     );
     assert_eq!(again.kept_for(&blake3::hash(&notes).to_hex()), None);
 }

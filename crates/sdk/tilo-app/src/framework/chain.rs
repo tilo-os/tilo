@@ -2135,7 +2135,11 @@ impl<P: Chained> Chain<P> {
     ///
     /// # Errors
     /// As [`Self::invoke`].
-    pub fn stage_as(&self, invoke: &Invoke<P>, author: &str) -> Result<Option<u64>, ActionError> {
+    pub fn stage_as(
+        &self,
+        invoke: &Invoke<P>,
+        author: &tilo_resource::MemberId,
+    ) -> Result<Option<u64>, ActionError> {
         self.stage_at(invoke, author, tilo_resource::origin_now_ms())
     }
 
@@ -2147,12 +2151,12 @@ impl<P: Chained> Chain<P> {
     pub fn stage_at(
         &self,
         invoke: &Invoke<P>,
-        author: &str,
+        author: &tilo_resource::MemberId,
         now_ms: i64,
     ) -> Result<Option<u64>, ActionError> {
         let action = invoke.build(now_ms).map_err(ActionError::Refused)?;
         self.state
-            .apply_as(&action, &ActionInvoker::person(author), &mut None)
+            .apply_as(&action, &ActionInvoker::member(author.clone()), &mut None)
             .map(|written| written.map(|(index, _)| index))
     }
 

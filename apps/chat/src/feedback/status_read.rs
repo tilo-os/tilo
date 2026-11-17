@@ -60,7 +60,8 @@ fn schema() -> &'static serde_json::Value {
                 "triage":{"type":"array","maxItems":128,"items":{
                     "type":"object","additionalProperties":false,"required":["author","ts","update"],
                     "properties":{
-                        "author":{"type":"string","minLength":1},"ts":{"type":"integer"},
+                        "author": <ui::tilo_resource::MemberId as ui::tilo_resource::JsonSchema>::json_schema(),
+                        "ts":{"type":"integer"},
                         "update": update_schema()
                     }
                 }}

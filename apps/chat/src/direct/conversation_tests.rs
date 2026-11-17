@@ -44,7 +44,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(Chat::direct_participants(&"c_general".into()), None);
         // A conversation with oneself names one person; an id that names nobody,
-        // or holds a key that is no member, names no conversation.
+        // or does not read as members, names no conversation.
         let cy = MemberId::person("c1".repeat(32));
         let alone = Chat::direct_id([cy.clone()]);
         assert_eq!(
@@ -61,7 +61,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             Chat::direct_participants(&dangling.as_str().into()),
             None,
-            "a key that is no member"
+            "an id that does not read as members"
         );
     }
 
@@ -113,10 +113,10 @@ fn read_conversation(window: &mut Window, peer: &str) -> Vec<(String, String)> {
     let me = window
         .with_chat(|chat| chat.me.id.clone())
         .expect("a window");
-    let id = Chat::direct_id([MemberId::person(me), MemberId::person(peer.to_owned())]);
+    let id = Chat::direct_id([me, MemberId::person(peer.to_owned())]);
     crate::testing::mounted_rows(window, id.as_str())
         .into_iter()
-        .map(|message| (message.text, message.author.as_str().to_owned()))
+        .map(|message| (message.text, message.author.id().to_owned()))
         .collect()
 }
 
@@ -168,7 +168,7 @@ fn two_peoples_chat_is_the_workspaces_own_messages() {
         assert!(
             chat.channels
                 .iter()
-                .any(|row| row.direct && row.participants.iter().any(|key| key.contains(&ada))),
+                .any(|row| row.direct && row.participants.contains(&MemberId::person(ada.clone()))),
             "Bob's window names Ada's conversation: {:?}",
             chat.channels
                 .iter()
@@ -370,9 +370,8 @@ fn a_send_by_name_reaches_the_member_called_that() {
         .insert(agent.clone(), "Reviewer".to_owned());
     let mut chat = Chat::default();
     chat.people.push(crate::record::Person {
-        id: ui::tilo_resource::Atom("ad".repeat(32)),
         name: "Ada".into(),
-        ..Default::default()
+        ..crate::record::Person::unnamed(MemberId::person("ad".repeat(32)))
     });
     let named = |kind, name: &str| app.member_named(&Recipient::found(kind, "", name), &chat);
     assert_eq!(
@@ -596,9 +595,9 @@ fn an_agents_send_is_the_agents_on_every_member() {
     let mine = crate::testing::mounted_rows(&mut ada_window, &conversation.to_string());
     assert_eq!(
         mine.iter()
-            .map(|row| (row.text.as_str(), row.author.as_str()))
+            .map(|row| (row.text.as_str(), row.author.id()))
             .collect::<Vec<_>>(),
-        [("hello from the agent", "agent:helper")],
+        [("hello from the agent", "helper")],
         "on Ada's device the message is the agent's"
     );
     deliver_messages(&mut ada_window, &mut bob_window);
@@ -606,9 +605,9 @@ fn an_agents_send_is_the_agents_on_every_member() {
     assert_eq!(
         theirs
             .iter()
-            .map(|row| (row.text.as_str(), row.author.as_str()))
+            .map(|row| (row.text.as_str(), row.author.id()))
             .collect::<Vec<_>>(),
-        [("hello from the agent", "agent:helper")],
+        [("hello from the agent", "helper")],
         "and on Bob's"
     );
     bob_window.harness().relayout();

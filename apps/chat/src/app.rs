@@ -30,6 +30,7 @@ use winit::event::WindowEvent;
 
 use ui::Widget;
 use ui::presence::PresenceCtx;
+use ui::tilo_resource::MemberId;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Collaborative, Continuable, NavFeed, SidebarDrawer, VideoPlayer, WindowBarLink};
@@ -97,7 +98,7 @@ pub(crate) struct AttachmentImportPending {
 
 /// How many of `messages`' last `unread` top-level messages mention one of
 /// `me` and were written by someone else.
-pub(super) fn unread_mentions(messages: &[Message], unread: usize, me: &[&str]) -> u32 {
+pub(super) fn unread_mentions(messages: &[Message], unread: usize, me: &[&MemberId]) -> u32 {
     let top: Vec<&Message> = messages
         .iter()
         .filter(|message| message.is_top_level())
@@ -105,12 +106,12 @@ pub(super) fn unread_mentions(messages: &[Message], unread: usize, me: &[&str]) 
     let count = top
         .iter()
         .skip(top.len().saturating_sub(unread))
-        .filter(|message| !me.contains(&message.author.as_str()))
+        .filter(|message| !me.contains(&&message.author))
         .filter(|message| {
             message
                 .mentions
                 .iter()
-                .any(|mention| me.contains(&mention.user.as_str()))
+                .any(|mention| me.contains(&&mention.user))
         })
         .count();
     u32::try_from(count).unwrap_or(u32::MAX)
@@ -244,7 +245,7 @@ pub struct ChatApp {
     /// separate from `revealed_message` lets its visual accent remain while
     /// the reader subsequently scrolls through nearby context.
     pub(crate) reveal_scroll_pending: bool,
-    pub(crate) revealed_person: Option<Id>,
+    pub(crate) revealed_person: Option<MemberId>,
     pub(crate) emoji_open: bool,
     /// The message the open picker reacts to.
     pub(crate) emoji_target: Option<Id>,
@@ -356,7 +357,7 @@ pub struct ChatApp {
     // The workspace's answer for who everybody is, refreshed every frame from
     // presence (see `adopt_workspace`). A peer never writes its own name into
     // this map — only what the workspace says about a participant lands here.
-    pub(crate) workspace_names: HashMap<Id, String>,
+    pub(crate) workspace_names: HashMap<MemberId, String>,
     /// Whether presence answered this frame with who is here (see
     /// `adopt_workspace`): the answer decides who is offline, even when it names
     /// nobody but this window's own person. A window whose host has no
@@ -364,13 +365,13 @@ pub struct ChatApp {
     /// status instead.
     pub(crate) workspace_presence_answers: bool,
     /// Who the workspace's presence places in each voice channel.
-    pub(crate) workspace_voice: HashMap<Id, Vec<Id>>,
+    pub(crate) workspace_voice: HashMap<Id, Vec<MemberId>>,
     /// The numbers people who share a name are told apart by, as the workspace
     /// resolves them, so every screen in it numbers the same people alike.
     pub(crate) workspace_labels: ui::presence::ParticipantLabels,
     /// What the workspace calls this window's person, numbered like anyone else.
     pub(crate) own_label: Option<String>,
-    pub(crate) workspace_colors: HashMap<Id, (u8, u8, u8)>,
+    pub(crate) workspace_colors: HashMap<MemberId, (u8, u8, u8)>,
     /// What the workspace's record of its agents calls each of them, by bare id: the agent identity
     /// record every app of the workspace reads, followed as it changes. It names an author
     /// (`agent:<id>`) whether or not the agent is working here this moment.
@@ -400,7 +401,7 @@ pub struct ChatApp {
     pub(crate) input_floating_surface: Option<String>,
 
     /// The person each agent here acts for, as presence knows it.
-    pub(crate) agent_people: HashMap<Id, String>,
+    pub(crate) agent_people: HashMap<MemberId, MemberId>,
     /// What the workspace's host keeps of the files members post, as it says:
     /// a file it would not take is refused here, in plain words.
     pub(crate) workspace_files: crate::record::WorkspaceFiles,
@@ -419,7 +420,7 @@ pub struct ChatApp {
     // Other spellings of this window's person the workspace uses. See
     // `adopt_own_participant`: what was said under one of these is still
     // this person, so their lines go on reading as theirs.
-    pub(crate) former_ids: Vec<Id>,
+    pub(crate) former_ids: Vec<MemberId>,
 
     // The OS permission gate: routes channel participation + file-embed
     // hydration through the toolkit's permission model. Refreshed from the
@@ -459,7 +460,7 @@ pub struct ChatApp {
     /// wrote it: staged once the workspace's records take a write (a frame's
     /// read of the record holds them).
     pub(crate) staged_parts: std::collections::VecDeque<(
-        &'static str,
+        MemberId,
         ui::tilo_resource::Invoke<crate::parts::ChatPart>,
     )>,
     /// The scenario those messages are of.
@@ -633,7 +634,7 @@ impl ChatApp {
             "so.tilo.chat",
             &ui::tilo_resource::MemberId::person(crate::model::ME),
         ));
-        app.attach_detached_chain(crate::model::ME);
+        app.attach_detached_chain(&MemberId::person(crate::model::ME));
         app
     }
 
@@ -641,11 +642,11 @@ impl ChatApp {
     /// its actions reading the record as the window last read it: a test's
     /// stand-in for the workspace's.
     #[cfg(test)]
-    pub(crate) fn attach_detached_chain(&mut self, me: &str) {
+    pub(crate) fn attach_detached_chain(&mut self, me: &MemberId) {
         let last_read = std::rc::Rc::clone(&self.last_read);
         if let Some(chain) = ui::framework::Chain::detached(
             "so.tilo.chat",
-            &ui::tilo_resource::MemberId::person(me),
+            me,
             move || std::rc::Rc::clone(&last_read.borrow()),
         ) {
             self.attach_chain(chain);
@@ -657,8 +658,8 @@ impl ChatApp {
     #[cfg(test)]
     pub(crate) fn attach_workspace(&mut self, workspace: &crate::demo::Workspace) {
         self.last_read = workspace.base();
-        if let (Some(chain), Some(me)) = (workspace.chain(), self.me.member()) {
-            self.attach_chain(chain.as_reader(&me));
+        if let Some(chain) = workspace.chain() {
+            self.attach_chain(chain.as_reader(&self.me.id));
         }
     }
 
@@ -1051,7 +1052,7 @@ impl ChatApp {
         {
             // A message that does not stage is missing from the picture,
             // which its comparison shows.
-            let _ = chain.stage_as(&invoke, author);
+            let _ = chain.stage_as(&invoke, &author);
             staged = true;
         }
         if staged {
@@ -1215,7 +1216,7 @@ impl ChatApp {
         let reacting = self.message(msg).is_some_and(|m| {
             m.reactions
                 .iter()
-                .any(|r| r.emoji == emoji && self.me.member().is_some_and(|me| r.includes(&me)))
+                .any(|r| r.emoji == emoji && r.includes(&self.me.id))
         });
         let reactions = crate::resource::Chat::paths()
             .feedback
@@ -1245,7 +1246,7 @@ impl ChatApp {
         let reacting = self.message(msg).is_some_and(|m| {
             m.reactions
                 .iter()
-                .any(|r| r.emoji == emoji && self.me.member().is_some_and(|me| r.includes(&me)))
+                .any(|r| r.emoji == emoji && r.includes(&self.me.id))
         });
         let reactions = ChatPart::paths()
             .messages
@@ -1267,14 +1268,14 @@ impl ChatApp {
     }
 
     // --- model lookups ----------------------------------------------------
-    pub(crate) fn user(&self, id: &str) -> Option<&User> {
-        self.users.iter().find(|u| u.id == id)
+    pub(crate) fn user(&self, id: &MemberId) -> Option<&User> {
+        self.users.iter().find(|u| u.id == *id)
     }
 
     /// Whether `id` is this session's own participant, under its own id or
     /// a spelling the workspace uses for it.
-    pub(crate) fn is_me(&self, id: &str) -> bool {
-        id == self.me.id || self.former_ids.iter().any(|f| f == id)
+    pub(crate) fn is_me(&self, id: &MemberId) -> bool {
+        *id == self.me.id || self.former_ids.contains(id)
     }
 
     pub(crate) fn main_composer_can_edit(&self) -> bool {
@@ -1296,13 +1297,12 @@ impl ChatApp {
 
     /// The person this window is talking to in the open conversation, when it
     /// is a direct one: its participant that is not this window's person.
-    pub(crate) fn direct_person(&self) -> Option<String> {
+    pub(crate) fn direct_person(&self) -> Option<MemberId> {
         crate::record::Chat::direct_participants(&ui::tilo_resource::Id::from_raw(
             self.active_channel.clone(),
         ))?
         .into_iter()
-        .find(|participant| participant.is_person() && participant.id() != self.me.id)
-        .map(|participant| participant.id().to_owned())
+        .find(|participant| participant.is_person() && *participant != self.me.id)
     }
 
     pub(crate) fn channel(&self, id: &str) -> Option<&Channel> {

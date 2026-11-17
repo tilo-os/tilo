@@ -37,7 +37,7 @@ pub fn legacy(id: &str, text: &str, mentions: &[Mention]) -> Vec<BlockContent> {
         .map(|mention| {
             MarkSpan::new(
                 mention.start..mention.end(),
-                Mark::Mention(mention.user.clone()),
+                Mark::Mention(mention.user.key()),
             )
         })
         .collect();
@@ -55,14 +55,15 @@ pub fn mentions(blocks: &[BlockContent], participants: &[crate::record::Person])
     let mut offset = 0usize;
     for block in blocks {
         for span in &block.marks {
-            if let Mark::Mention(user) = &span.mark {
+            // The editor marks a mention with its member's key.
+            if let Mark::Mention(user) = &span.mark
+                && let Some(user) = ui::tilo_resource::MemberId::parse(user)
+            {
                 found.push(Mention {
-                    user: user.clone(),
+                    is_agent: !user.is_person(),
+                    user,
                     start: offset.saturating_add(span.range.start),
                     len: span.range.len(),
-                    is_agent: participants.iter().any(|participant| {
-                        participant.id.0 == user.as_str() && participant.is_agent()
-                    }),
                 });
             }
         }
@@ -87,9 +88,8 @@ mod tests {
 
     fn ada() -> crate::record::Person {
         crate::record::Person {
-            id: ui::tilo_resource::Atom("u-ada".into()),
             name: "Ada".into(),
-            ..crate::record::Person::default()
+            ..crate::record::Person::unnamed(ui::tilo_resource::MemberId::person("u-ada"))
         }
     }
 
@@ -121,7 +121,7 @@ mod tests {
         {
             let text = "ping @Ada\nsecond line";
             let mentions = [Mention {
-                user: "u-ada".into(),
+                user: ui::tilo_resource::MemberId::person("u-ada"),
                 start: 5,
                 len: 4,
                 is_agent: false,

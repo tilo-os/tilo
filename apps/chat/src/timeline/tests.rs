@@ -423,9 +423,8 @@ fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_
         dm.as_str(),
         "Fasse die Besprechungsnotizen zusammen.",
     );
-    crate::testing::apply_part_as(
-        &mut doc,
-        "agent:notes",
+    doc.apply_part_as(
+        &ui::tilo_resource::MemberId::agent("notes"),
         crate::demo::post(
             dm.as_str(),
             "Drei Punkte: Budget steht, Termin am Freitag, Ada schreibt das Protokoll.",
@@ -443,7 +442,7 @@ fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_
     let answered = app
         .messages
         .iter()
-        .find(|message| message.author.as_str() == "agent:notes")
+        .find(|message| message.author == ui::tilo_resource::MemberId::agent("notes"))
         .map(|message| message.id.clone())
         .expect("the conversation holds the agent's answer");
     assert_eq!(

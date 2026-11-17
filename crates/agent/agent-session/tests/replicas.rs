@@ -673,14 +673,17 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     for (record, mutation) in &started {
         page.apply_record(record, mutation).unwrap();
     }
-    let posted: Vec<(String, String)> = page
+    let posted: Vec<(ui::tilo_resource::MemberId, String)> = page
         .read_record(&chat::parts::part(0), chat::messages::read_part)
         .unwrap()
         .messages
         .iter()
-        .map(|(_, message)| (message.author.0.clone(), message.text.clone()))
+        .map(|(_, message)| (message.author.clone(), message.text.clone()))
         .collect();
-    assert_eq!(posted, [("bot:b1".to_owned(), "welcome!".to_owned())]);
+    assert_eq!(
+        posted,
+        [(ui::tilo_resource::MemberId::bot("b1"), "welcome!".to_owned())]
+    );
 }
 
 /// An agent acting for a person writes as the agent (its own actor is

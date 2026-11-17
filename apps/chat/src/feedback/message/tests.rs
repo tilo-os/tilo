@@ -1,4 +1,5 @@
 use automerge::AutoCommit as Doc;
+use ui::tilo_resource::MemberId;
 use ui::feedback::{
     Destination, FrameTimings, Hidden, Interaction, Outcome, Part, ReviewedFeedback,
     ReviewedSelection, ReviewedText, ScreenshotRef, Submission, TextKind,
@@ -136,7 +137,7 @@ tilo_test_env::scenario! {
         let rows = rows(&doc, &submission);
         assert_eq!(rows.len(), 1, "one message for the report");
         let row = &rows[0];
-        assert_eq!(row.author, "visitor:one");
+        assert_eq!(row.author, MemberId::person("visitor:one"));
         let lines: Vec<&str> = row.text.lines().collect();
         assert_eq!(
             lines,

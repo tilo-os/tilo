@@ -53,7 +53,7 @@ fn chat_state(replica: &Replica) -> chat::Chat {
 fn texts_by(messages: &chat::messages::Messages, author: &str) -> Vec<String> {
     messages
         .iter()
-        .filter(|(_, message)| message.author.0 == author)
+        .filter(|(_, message)| message.author.person_id() == Some(author))
         .map(|(_, message)| message.text.clone())
         .collect()
 }
@@ -124,7 +124,7 @@ fn flooded_workspace() -> Replica {
         ADA,
         chat::Chat::REPORT_MESSAGE.with(chat::record::chat::ReportMessage {
             message: spam,
-            author: MALLORY.into(),
+            author: tilo_resource::MemberId::person(MALLORY),
             reason: "spam".parse().unwrap(),
         }),
     )
@@ -264,7 +264,9 @@ fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
     assert!(
         state
             .people
-            .find(&tilo_resource::Id::from_raw(MALLORY))
+            .find(&chat::record::member_slot(
+                &tilo_resource::MemberId::person(MALLORY)
+            ))
             .is_some(),
         "she keeps her place in the roster"
     );

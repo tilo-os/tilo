@@ -27,8 +27,10 @@ pub(crate) struct Moderation {
 
 /// Whether `participant` names a person by their root key, the only id a
 /// ban can name.
-pub(crate) fn bannable(participant: &str) -> bool {
-    participant.len() == 64 && participant.bytes().all(|byte| byte.is_ascii_hexdigit())
+pub(crate) fn bannable(participant: &ui::tilo_resource::MemberId) -> bool {
+    participant
+        .person_id()
+        .is_some_and(|root| root.len() == 64 && root.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 /// The invocation banning `person` from `workspace`.
@@ -56,7 +58,7 @@ impl ChatApp {
         if self.is_me(&author) || !bannable(&author) {
             return;
         }
-        let request = ban_request(self.perms.workspace(), &author);
+        let request = ban_request(self.perms.workspace(), author.id());
         self.moderation.refused = None;
         self.moderation.pending.push(request.invocation);
         self.moderation
@@ -110,7 +112,7 @@ mod tests {
             panic!("a ban names its person");
         };
         assert_eq!(argument["person"], person);
-        assert!(bannable(&person));
-        assert!(!bannable("u_guest"));
+        assert!(bannable(&ui::tilo_resource::MemberId::person(person)));
+        assert!(!bannable(&ui::tilo_resource::MemberId::person("u_guest")));
     }
 }

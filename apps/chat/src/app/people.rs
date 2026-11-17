@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use tilo_actions::policy::MemberId;
 
-use crate::model::{self, Id, User};
+use crate::model::{self, User};
 
 use super::ChatApp;
 
@@ -19,8 +19,8 @@ impl ChatApp {
     /// telling every other peer what to call it, and two peers disagreeing
     /// about a third's name is a difference nobody can settle. So the workspace
     /// answers, and a peer only ever supplies its id.
-    pub fn display_name(&self, id: &str) -> String {
-        if let Some(name) = MemberId::parse(id)
+    pub fn display_name(&self, id: &MemberId) -> String {
+        if let Some(name) = Some(id)
             .filter(|member| !member.is_person())
             .and_then(|member| self.known_agent_name(member.id()))
         {
@@ -34,17 +34,17 @@ impl ChatApp {
         if let Some(n) = self.workspace_names.get(id)
             && !n.trim().is_empty()
         {
-            let n = self.workspace_labels.label(id, n);
+            let n = self.workspace_labels.label(id.id(), n);
             return if self.is_me(id) {
                 n
             } else {
                 crate::identity::shared_name_label(id, &n)
             };
         }
-        if let Some(u) = self.users.iter().find(|u| u.id == id)
+        if let Some(u) = self.users.iter().find(|u| u.id == *id)
             && !u.name.trim().is_empty()
         {
-            let name = self.workspace_labels.label(id, &u.name);
+            let name = self.workspace_labels.label(id.id(), &u.name);
             return if self.is_me(id) {
                 name
             } else {
@@ -58,22 +58,18 @@ impl ChatApp {
         if self.is_me(id) && !self.me.name.trim().is_empty() {
             return self.me.name.clone();
         }
-        id.to_string()
+        id.id().to_owned()
     }
 
     /// What the workspace calls the agent `agent` (its bare id): the name its own record keeps for
     /// it, else the name its device announced while here, else the name it introduced itself by.
     /// `None` for one the workspace names not.
     pub(crate) fn known_agent_name(&self, agent: &str) -> Option<String> {
-        let id = format!("agent:{agent}");
+        let id = MemberId::agent(agent);
         self.workspace_agent_names
             .get(agent)
             .cloned()
-            .or_else(|| {
-                [id.clone(), agent.to_owned()]
-                    .into_iter()
-                    .find_map(|id| self.workspace_names.get(&id).cloned())
-            })
+            .or_else(|| self.workspace_names.get(&id).cloned())
             .or_else(|| {
                 self.users
                     .iter()
@@ -87,14 +83,14 @@ impl ChatApp {
     /// What to call `id` on screen: this session's own participant by their
     /// name like anyone else, and an honest placeholder for someone the workspace
     /// has not named yet — nobody is ever shown their raw routing id.
-    pub(crate) fn user_name(&self, id: &str) -> String {
+    pub(crate) fn user_name(&self, id: &MemberId) -> String {
         // `is_me` rather than a bare comparison: a peer that has adopted the
         // workspace's address for itself still wrote its earlier lines under the
         // id it resolved at startup, and those are still its own. Their own
         // name, as everyone else reads it.
         if self.is_me(id) {
             let own = self.display_name(id);
-            if own != id && !own.trim().is_empty() {
+            if own != id.id() && !own.trim().is_empty() {
                 return own;
             }
             return crate::identity::unnamed_label(id);
@@ -108,8 +104,8 @@ impl ChatApp {
         let stored = self
             .users
             .iter()
-            .any(|u| u.id == id && u.name.trim() == named.trim());
-        if (named != id || stored) && !named.trim().is_empty() {
+            .any(|u| u.id == *id && u.name.trim() == named.trim());
+        if (named != id.id() || stored) && !named.trim().is_empty() {
             return crate::identity::shared_name_label(id, &named);
         }
         crate::identity::unnamed_label(id)
@@ -120,7 +116,7 @@ impl ChatApp {
     /// presence says ("Helper for Ada"), after it left too. `None` for anyone else.
     pub(crate) fn acting_name(
         &self,
-        id: &str,
+        id: &MemberId,
         acting: Option<&ui::tilo_resource::Acting>,
         kept: Option<&str>,
         word: crate::identity::RoleWord,
@@ -130,13 +126,13 @@ impl ChatApp {
             .filter(|name| !name.is_empty())
             .map(str::to_owned)
             .or_else(|| {
-                MemberId::parse(id)
+                Some(id)
                     .filter(|member| !member.is_person())
                     .and_then(|member| self.known_agent_name(member.id()))
             })?;
         let person = acting
-            .and_then(ui::tilo_resource::Acting::acted_for_person)
-            .or_else(|| self.agent_people.get(id).map(String::as_str));
+            .and_then(crate::identity::acted_for)
+            .or_else(|| self.agent_people.get(id));
         Some(crate::identity::acting_label(
             &name,
             person,
@@ -150,7 +146,7 @@ impl ChatApp {
     /// carries faces, three names and a count still says who leads the crowd
     /// instead of eliding a surname. A person named in full once — a
     /// message's author, a call's accessible reading — keeps `user_name`.
-    pub(crate) fn given_name(&self, id: &str) -> String {
+    pub(crate) fn given_name(&self, id: &MemberId) -> String {
         let name = self.user_name(id);
         match name.split_once(' ') {
             Some((given, rest)) if !given.is_empty() && !rest.trim().is_empty() => {
@@ -162,7 +158,7 @@ impl ChatApp {
 
     /// The avatar monogram for `id`, derived from whatever the workspace calls them
     /// so the letter never disagrees with the name beside it.
-    pub fn initials_for(&self, id: &str) -> String {
+    pub fn initials_for(&self, id: &MemberId) -> String {
         let name = self.display_name(id);
         let s = ui::widget::initials_for_name(&name);
         if s.is_empty() {
@@ -177,8 +173,8 @@ impl ChatApp {
     /// choice, else the one rule's), a person's the one the workspace announced for them, else
     /// the one rule every surface draws a participant by ([`ui::presence::member_hue`]) —
     /// so a face, a chip and a byline are one colour, here as in every app of the workspace.
-    pub(crate) fn participant_hue(&self, id: &str) -> ui::tokens::PresenceHue {
-        MemberId::parse(id)
+    pub(crate) fn participant_hue(&self, id: &MemberId) -> ui::tokens::PresenceHue {
+        Some(id)
             .filter(|member| !member.is_person())
             .and_then(|member| self.workspace_agent_colours.get(member.id()))
             .map(|slot| ui::tokens::PresenceHue::from_slot(usize::from(*slot)))
@@ -189,19 +185,14 @@ impl ChatApp {
                         ui::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
                     })
             })
-            .unwrap_or_else(|| {
-                MemberId::parse(id).map_or_else(
-                    || ui::tokens::PresenceHue::of_identity(id),
-                    |member| ui::presence::member_hue(&member, None),
-                )
-            })
+            .unwrap_or_else(|| ui::presence::member_hue(id, None))
     }
 
     /// The participant's own colour, in the shared presence vocabulary: the workspace's assignment
     /// when it made one for a person, otherwise [`Self::participant_hue`] as the colour that hue
     /// wears.
-    pub fn participant_color(&self, id: &str) -> (u8, u8, u8) {
-        let agent = MemberId::parse(id)
+    pub fn participant_color(&self, id: &MemberId) -> (u8, u8, u8) {
+        let agent = Some(id)
             .filter(|member| !member.is_person())
             .is_some_and(|member| self.workspace_agent_colours.contains_key(member.id()));
         self.workspace_colors
@@ -217,13 +208,11 @@ impl ChatApp {
     pub(crate) fn mention_people(&self) -> Vec<ui::widget::MentionCandidate> {
         self.users
             .iter()
-            .filter_map(|user| {
-                Some(ui::widget::MentionCandidate {
-                    id: MemberId::parse(&user.id)?,
-                    name: self.display_name(&user.id),
-                    hue: self.participant_hue(&user.id),
-                    is_self: self.is_me(&user.id),
-                })
+            .map(|user| ui::widget::MentionCandidate {
+                id: user.id.clone(),
+                name: self.display_name(&user.id),
+                hue: self.participant_hue(&user.id),
+                is_self: self.is_me(&user.id),
             })
             .collect()
     }
@@ -236,9 +225,8 @@ impl ChatApp {
             .participant_ids()
             .into_iter()
             .map(|(id, _)| crate::record::Person {
-                id: ui::tilo_resource::Atom(id.to_owned()),
                 name: self.display_name(id),
-                ..crate::record::Person::default()
+                ..crate::record::Person::unnamed(id.clone())
             })
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -248,15 +236,12 @@ impl ChatApp {
     /// [`Self::participants`] without their names: who can be mentioned, each
     /// once. A frame that only needs their colours reads this, so it neither
     /// names every participant nor allocates one string each.
-    pub(crate) fn participant_ids(&self) -> Vec<(&str, bool)> {
-        let mut out: Vec<(&str, bool)> = self
-            .users
-            .iter()
-            .map(|u| (u.id.as_str(), u.is_agent))
-            .collect();
+    pub(crate) fn participant_ids(&self) -> Vec<(&MemberId, bool)> {
+        let mut out: Vec<(&MemberId, bool)> =
+            self.users.iter().map(|u| (&u.id, u.is_agent)).collect();
         for id in self.workspace_names.keys() {
-            if !out.iter().any(|(listed, _)| *listed == id.as_str()) {
-                out.push((id.as_str(), false));
+            if !out.iter().any(|(listed, _)| *listed == id) {
+                out.push((id, false));
             }
         }
         out
@@ -268,7 +253,7 @@ impl ChatApp {
     /// projection of the shared user list + voice membership — no placeholders.
     pub(crate) fn roster_rows(&self) -> Vec<(User, Option<String>)> {
         // user id → the name of the voice channel they're connected to.
-        let mut in_voice: HashMap<Id, String> = HashMap::new();
+        let mut in_voice: HashMap<MemberId, String> = HashMap::new();
         for channel in self
             .channels
             .iter()
@@ -284,7 +269,7 @@ impl ChatApp {
             .cloned()
             .map(|mut u| {
                 u.status = self.live_status(&u);
-                let voice = in_voice.get(u.id.as_str()).cloned();
+                let voice = in_voice.get(&u.id).cloned();
                 (u, voice)
             })
             .collect();

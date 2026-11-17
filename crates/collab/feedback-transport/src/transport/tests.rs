@@ -292,7 +292,10 @@ fn canonical_owner_process() {
             let reports = chat::feedback::reports(doc).unwrap();
             assert_eq!(reports.len(), 1);
             assert_eq!(reports[0].submission, report);
-            assert_eq!(reports[0].author, hex::encode([12; 32]));
+            assert_eq!(
+                reports[0].author,
+                MemberId::person(hex::encode([12; 32]))
+            );
             let message = chat::feedback::message_id(ID);
             assert_eq!(
                 chat::projection::read(doc)

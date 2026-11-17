@@ -80,12 +80,13 @@ tilo_test_env::scenario! {
             .find(|(held, _)| held == id.as_str())
             .expect("the delivered message is held under the id its delivery derives");
         assert_eq!(
-            shown_author(&message, &|id: &str| id.to_owned()),
+            shown_author(&message, &|id| id.id().to_owned()),
             "Dana from Support"
         );
         assert_eq!(message.ts, 1_700_000_000);
         assert_ne!(
-            message.author.0, "Dana from Support",
+            message.author.id(),
+            "Dana from Support",
             "the author stays whoever delivered it"
         );
     }

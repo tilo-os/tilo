@@ -28,6 +28,8 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ChipStyle, ControlSize};
 
+use ui::tilo_resource::MemberId;
+
 use crate::app::{ChatApp, Hit};
 use crate::model::{self, VoiceMember};
 use crate::paint::{elide, line_in, line_of, text, width_of};
@@ -39,7 +41,7 @@ use crate::paint::{elide, line_in, line_of, text, width_of};
     reason = "independent facts about one participant (talking, muted, deafened, audio only, sharing), each read on its own"
 )]
 pub(crate) struct Participant {
-    user: String,
+    user: MemberId,
     /// The call hears them now: their face rings.
     talking: bool,
     muted: bool,
@@ -261,7 +263,7 @@ impl ChatApp {
                 .snapshot
                 .speaking
                 .iter()
-                .any(|person| self.is_me(person)),
+                .any(|person| self.is_me(&MemberId::person(person.as_str()))),
             muted: self.call.muted,
             deafened: self.call.deafened,
             audio_only: self.call.audio_only,
@@ -279,7 +281,7 @@ impl ChatApp {
                 deafened: m.deafened,
                 audio_only: m.audio_only,
                 sharing: m.sharing,
-                silenced: self.call_listening(&m.user).silenced,
+                silenced: self.call_listening(m.user.id()).silenced,
             });
         }
         out
@@ -299,7 +301,7 @@ impl ChatApp {
             self.speaking.clear();
             return;
         }
-        let heard: BTreeSet<String> = self
+        let heard: BTreeSet<MemberId> = self
             .call_participants()
             .into_iter()
             .filter(|p| p.talking && !p.muted)
@@ -314,8 +316,11 @@ impl ChatApp {
         if !keeps && let Some(speaker) = heard.iter().find(|person| **person != me) {
             self.call.featured = Some(speaker.clone());
         }
-        self.speaking
-            .reconcile(heard, theme.motion(), ui::time::now());
+        self.speaking.reconcile(
+            heard.iter().map(|person| person.id().to_owned()).collect(),
+            theme.motion(),
+            ui::time::now(),
+        );
     }
 
     /// Everyone in the docked call, the one it shows large first: the other
@@ -341,7 +346,7 @@ impl ChatApp {
     pub(crate) fn huddle_people(&self) -> Vec<String> {
         self.huddle_participants()
             .into_iter()
-            .map(|p| p.user)
+            .map(|p| p.user.id().to_owned())
             .collect()
     }
 
@@ -373,12 +378,12 @@ impl ChatApp {
 
     /// A person's face in the call: their picture or initials, their
     /// colour as a ring, and their speaking ring while the call hears them.
-    pub(crate) fn paint_call_face(&self, ctx: &mut PaintCtx<'_>, rect: Rect, user: &str) {
+    pub(crate) fn paint_call_face(&self, ctx: &mut PaintCtx<'_>, rect: Rect, user: &MemberId) {
         let name = self.user_name(user);
-        ui::widget::AvatarFace::new(&name, user)
+        ui::widget::AvatarFace::new(&name, user.id())
             .presence(self.identity_colour(user))
             .presence_ring()
-            .speaking(self.speaking.level(user, ui::motion::frame_now()))
+            .speaking(self.speaking.level(user.id(), ui::motion::frame_now()))
             .paint(ctx, rect);
     }
 
@@ -497,8 +502,8 @@ impl ChatApp {
         let me = self.me.id.clone();
         if !self.call.audio_only {
             // This person's own camera, from this device.
-            self.note_picture_tile(&me, ui::native_media::PictureSource::Camera, tf, rect);
-            if let Some(img) = self.remote_frames.get(&me) {
+            self.note_picture_tile(me.id(), ui::native_media::PictureSource::Camera, tf, rect);
+            if let Some(img) = self.remote_frames.get(me.id()) {
                 let radius = self.tile_radius(theme);
                 ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
                 return;
@@ -536,7 +541,7 @@ impl ChatApp {
     /// An empty viewfinder: the letterbox, the person's avatar and what the
     /// tile honestly shows ("Camera off", "No video") under it, one block
     /// centred in the band above the name plate.
-    fn paint_viewfinder(&self, paint: PaintCtx<'_>, rect: Rect, user: &str, caption: &str) {
+    fn paint_viewfinder(&self, paint: PaintCtx<'_>, rect: Rect, user: &MemberId, caption: &str) {
         let PaintCtx {
             scene,
             transform: tf,
@@ -623,7 +628,7 @@ impl ChatApp {
     /// Who is in the call beside this person, each named by `name`. The
     /// participants that matter are the others: a call is never only its
     /// reader, so this person's own name is left out of every line.
-    fn call_people(&self, name: impl Fn(&str) -> String) -> Vec<String> {
+    fn call_people(&self, name: impl Fn(&MemberId) -> String) -> Vec<String> {
         self.call_participants()
             .iter()
             .filter(|p| !self.is_me(&p.user))
@@ -1116,7 +1121,7 @@ impl ChatApp {
         // The people beside this one, in the order the call names them: their
         // faces stack a third behind each other, and the names say who they
         // are without the stack growing with the headcount.
-        let others: Vec<String> = self
+        let others: Vec<MemberId> = self
             .call_participants()
             .iter()
             .filter(|p| !self.is_me(&p.user))
@@ -1301,11 +1306,11 @@ impl ChatApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        sharer: &str,
+        sharer: &MemberId,
     ) {
         let media = &theme.tokens.colors.media;
         let name = self.user_name(sharer);
-        let is_me = sharer == self.me.id;
+        let is_me = *sharer == self.me.id;
         let radius = self.tile_radius(theme);
         scene.fill(
             Fill::NonZero,
@@ -1316,9 +1321,9 @@ impl ChatApp {
         );
         // The sharer's decoded screen takes over the tile once it arrives.
         if !is_me {
-            self.note_picture_tile(sharer, ui::native_media::PictureSource::Screen, tf, rect);
+            self.note_picture_tile(sharer.id(), ui::native_media::PictureSource::Screen, tf, rect);
         }
-        if let Some(img) = self.remote_screens.get(sharer) {
+        if let Some(img) = self.remote_screens.get(sharer.id()) {
             // All of a shared screen shows, letterboxed: nothing is cut off.
             ui::image_store::paint_image_contain(scene, tf, rect, img, radius);
         } else {
@@ -1477,7 +1482,7 @@ impl ChatApp {
     /// anyone. This peer's own share wins the featured tile; otherwise the first
     /// remote member the shared voice membership marks as sharing. This is the
     /// switch between the uniform grid and the featured presentation stage.
-    pub(crate) fn screen_sharer(&self) -> Option<String> {
+    pub(crate) fn screen_sharer(&self) -> Option<MemberId> {
         if self.call.sharing {
             return Some(self.me.id.clone());
         }
@@ -1681,18 +1686,18 @@ impl ChatApp {
             .snapshot
             .publishers
             .iter()
-            .any(|namespace| namespace == &p.user);
+            .any(|namespace| namespace == p.user.id());
         // Their decoded camera picture takes over the tile once it arrives;
         // until then the tile shows them.
         if !is_stream && !p.audio_only {
-            self.note_picture_tile(&p.user, ui::native_media::PictureSource::Camera, tf, rect);
+            self.note_picture_tile(p.user.id(), ui::native_media::PictureSource::Camera, tf, rect);
         }
-        if !is_stream && let Some(img) = self.remote_frames.get(&p.user) {
+        if !is_stream && let Some(img) = self.remote_frames.get(p.user.id()) {
             let radius = self.tile_radius(theme);
             ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
             // Over a picture, the tile's edge rings in their colour while
             // they talk, as their face does without one.
-            let speaking = self.speaking.level(&p.user, ui::motion::frame_now());
+            let speaking = self.speaking.level(p.user.id(), ui::motion::frame_now());
             ui::presence::paint_speaking_ring(
                 scene,
                 tf,
@@ -2166,7 +2171,7 @@ mod tests {
 
     fn participant(audio_only: bool) -> Participant {
         Participant {
-            user: "u_x".into(),
+            user: ui::tilo_resource::MemberId::person("u_x"),
             talking: false,
             muted: false,
             deafened: false,

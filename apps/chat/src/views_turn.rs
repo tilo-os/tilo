@@ -2,7 +2,7 @@
 
 use super::{
     Channel, Gap, Message, Node, Person, ResourceRef, Value, ViewCx, ViewResource, attachment_row,
-    failed_row, is_agent, node, sdk, ui, view,
+    failed_row, node, sdk, ui, view,
 };
 
 /// One turn of a conversation with an agent (canvas.md §3): the message a person asked in, and
@@ -23,9 +23,9 @@ pub struct Turn {
     /// The people its messages name.
     #[serde(default)]
     pub people: Vec<Person>,
-    /// What the person asked.
+    /// What the person asked; none for a turn not read yet.
     #[serde(default)]
-    pub question: Message,
+    pub question: Option<Message>,
     /// What the agent answered, oldest first: every message after the question until a person
     /// spoke again.
     #[serde(default)]
@@ -50,7 +50,7 @@ impl Turn {
             .take_while(|message| {
                 channel
                     .person(&message.author)
-                    .map_or_else(|| is_agent(&message.author), Person::is_agent)
+                    .map_or_else(|| !message.author.is_person(), Person::is_agent)
             })
             .cloned()
             .collect();
@@ -66,7 +66,7 @@ impl Turn {
             id: asked.id.clone(),
             channel: channel.id.clone(),
             people,
-            question: asked,
+            question: Some(asked),
             replies,
         })
     }

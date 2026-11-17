@@ -262,8 +262,8 @@ mod tests {
         {
             let held = [Reaction {
                 emoji: "❤".into(),
-                by: "u_ada".into(),
-                ..Reaction::default()
+                persona: None,
+                name: None,
             }];
             assert_eq!(to_tilo("❤️", &held), "❤");
             assert_eq!(to_tilo("❤️", &[]), "❤️");

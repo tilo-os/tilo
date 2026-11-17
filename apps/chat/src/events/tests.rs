@@ -526,7 +526,11 @@ tilo_test_env::scenario! {
         );
         assert!(app.thread_open.is_none(), "stale demo thread dropped");
         // And nothing fake leaked in.
-        assert!(app.users.iter().all(|u| u.id == model::ME));
+        assert!(
+            app.users
+                .iter()
+                .all(|u| u.id == MemberId::person(model::ME))
+        );
     }
 }
 
@@ -1805,7 +1809,7 @@ tilo_test_env::scenario! {
     phase cannot_edit_another_authors_message;
     {
         let (mut app, _doc) = app_with_doc();
-        assert_eq!(app.message("m_open").unwrap().author, "u_aria");
+        assert_eq!(app.message("m_open").unwrap().author, MemberId::person("u_aria"));
         app.begin_edit("m_open".into());
         assert!(
             app.editing.is_none(),
@@ -2094,14 +2098,20 @@ fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
 
 fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Workspace) {
     for (author, invoke) in crate::resource::agent_work_steps() {
-        crate::testing::apply_as(doc, author, invoke).unwrap();
+        let mut replica =
+            ui::tilo_resource::Replica::<crate::resource::Chat>::from_doc(std::mem::take(
+                &mut doc.chat,
+            ))
+            .as_member(author);
+        replica.apply_confirmed(invoke).unwrap();
+        std::mem::swap(&mut doc.chat, replica.doc_mut());
     }
     let mut head = crate::parts::ChatPart::clone(&doc.messages().parts()[0].1);
     let (summons, message) = crate::resource::agent_summons();
     head.messages.push(summons, message);
     doc.write_part(0, &head).unwrap();
     for (author, invoke) in crate::resource::agent_work_part_steps() {
-        crate::testing::apply_part_as(doc, author, invoke).unwrap();
+        doc.apply_part_as(&author, invoke).unwrap();
     }
     app.land(doc);
     app.stage_scenario("agent-work");
@@ -2504,7 +2514,7 @@ tilo_test_env::scenario! {
         let milo = app
             .semantic_hits()
             .into_iter()
-            .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if id == "u_milo"))
+            .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if *id == MemberId::person("u_milo")))
             .expect("Milo has a tile of his own");
         assert_eq!(milo.2.text, "Milo Park: volume and mute for you");
         assert!(
@@ -2516,18 +2526,18 @@ tilo_test_env::scenario! {
 
         app.on_hit(milo.1, &mut ui::widget::Edits::lend(&mut doc));
         let menu = app.menu.as_ref().expect("his tile opens the volume menu");
-        assert_eq!(menu.target, MenuTarget::CallParticipant("u_milo".into()));
+        assert_eq!(menu.target, MenuTarget::CallParticipant(MemberId::person("u_milo")));
         activate_context_menu_action(
             &mut app,
             &mut doc,
-            MenuTarget::CallParticipant("u_milo".into()),
+            MenuTarget::CallParticipant(MemberId::person("u_milo")),
             MenuAction::Silence,
         );
         assert!(app.call_listening("u_milo").silenced);
         activate_context_menu_action(
             &mut app,
             &mut doc,
-            MenuTarget::CallParticipant("u_milo".into()),
+            MenuTarget::CallParticipant(MemberId::person("u_milo")),
             MenuAction::Volume(50),
         );
         let listening = app.call_listening("u_milo");
@@ -2631,7 +2641,9 @@ tilo_test_env::scenario! {
         app.workspace_agent_names
             .insert("planner".into(), name.into());
         let channel = app.active_channel.clone();
-        let id = crate::testing::say(&mut doc, "agent:planner", &channel, "On it.");
+        let id = doc
+            .say(&MemberId::agent("planner"), &channel, "On it.")
+            .unwrap();
         app.reload(&doc);
         render_frame(&mut app, 320.0, 480.0);
         render_frame(&mut app, 320.0, 480.0);
@@ -2875,7 +2887,7 @@ tilo_test_env::scenario! {
 fn the_bar_leads_the_conversation_with_who_it_is_with() {
     let (mut app, _doc) = app_with_doc();
     app.active_channel = crate::record::Chat::direct_id([
-        MemberId::person(app.me.id.clone()),
+        app.me.id.clone(),
         MemberId::agent("assistant"),
     ])
     .to_string();
@@ -2885,7 +2897,7 @@ fn the_bar_leads_the_conversation_with_who_it_is_with() {
         .expect("the conversation is the window's location");
     let avatar = location.avatar.expect("the agent's face leads it");
     assert!(avatar.agent);
-    assert_eq!(avatar.identity, "agent:assistant");
+    assert_eq!(avatar.identity, "assistant");
     assert_eq!(location.icon, None);
 
     let channel = app

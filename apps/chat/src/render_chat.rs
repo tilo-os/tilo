@@ -28,6 +28,8 @@ use ui::widget::{
     ButtonFace, CardFace, ChipFace, ControlSize, MediaArt, MediaAspect, MediaCardFace, MediaSize,
 };
 
+use ui::tilo_resource::MemberId;
+
 use crate::app::{ChatApp, Hit, MenuTarget};
 use crate::model::{Message, Presence};
 use crate::paint::{band_at_least, elide, line_of, push_clip};
@@ -70,7 +72,7 @@ pub(crate) struct HeaderIdentityText {
 /// a colour picked to tell people apart is not a colour picked to be read.
 pub(crate) fn mention_colors(
     app: &ChatApp,
-    user: &str,
+    user: &MemberId,
     is_self: bool,
     theme: &Theme,
     ground: Color,
@@ -154,7 +156,7 @@ impl ChatApp {
     pub(crate) fn mention_paint(&self, theme: &Theme) -> (u64, ui::widget::marks::MentionPaint) {
         use std::hash::{Hash, Hasher};
         let ground = theme.tokens.colors.surfaces.content;
-        let colors = |user: &str| {
+        let colors = |user: &MemberId| {
             let (band, ink) = mention_colors(self, user, self.is_me(user), theme, ground);
             ui::widget::marks::MentionColors { ink, band }
         };
@@ -191,7 +193,7 @@ impl ChatApp {
         };
         let map: std::collections::HashMap<String, ui::widget::marks::MentionColors> = participants
             .into_iter()
-            .map(|(user, _)| (user.to_owned(), colors(user)))
+            .map(|(user, _)| (user.key(), colors(user)))
             .collect();
         let paint: ui::widget::marks::MentionPaint =
             std::rc::Rc::new(move |user: &str| map.get(user).copied().unwrap_or(fallback));
@@ -397,8 +399,8 @@ impl ChatApp {
         parts: &crate::app::PaintedMessage,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        if m.author.starts_with("bot:")
-            || crate::views::is_agent(&m.author)
+        if m.author.is_bot()
+            || !m.author.is_person()
             || crate::host_model::is_provider_output(m)
         {
             return;
@@ -428,14 +430,14 @@ impl ChatApp {
         shown: Option<&'a vello::peniko::ImageData>,
     ) -> Author<'a> {
         let color = self.identity_colour(&m.author);
-        if m.author.starts_with("bot:") {
+        if m.author.is_bot() {
             // The member a persona is linked to, by the name the workspace knows
             // them by: a linked account speaks as that member.
             let linked = m
                 .appearance
                 .as_ref()
                 .and_then(|appearance| appearance.persona.as_ref()?.linked.as_deref())
-                .and_then(|person| self.users.iter().find(|user| user.id == person));
+                .and_then(|person| self.users.iter().find(|user| user.id.person_id() == Some(person)));
             Author::Bot {
                 bot_name: name,
                 // The roster does not name a bot's installer yet; the chip's
@@ -454,7 +456,7 @@ impl ChatApp {
                 for_person: Some(initiator),
                 color,
             }
-        } else if crate::views::is_agent(&m.author) {
+        } else if !m.author.is_person() {
             Author::Agent {
                 name,
                 for_person: None,
@@ -463,7 +465,7 @@ impl ChatApp {
         } else {
             Author::Person {
                 name,
-                identity: &m.author,
+                identity: m.author.id(),
                 avatar: None,
                 color: Some(color),
             }
@@ -472,7 +474,7 @@ impl ChatApp {
 
     /// The colour `id` chose (or was given) as theirs: what their avatar,
     /// cursor and caret wear, before the theme's presence lightness.
-    pub(crate) fn identity_colour(&self, id: &str) -> Color {
+    pub(crate) fn identity_colour(&self, id: &MemberId) -> Color {
         let (red, green, blue) = self.participant_color(id);
         Color::from_rgb8(red, green, blue)
     }
@@ -879,12 +881,12 @@ mod tests {
         );
         app.attach_framework(ui::framework::Dispatcher::detached(
             "so.tilo.chat",
-            &ui::tilo_resource::MemberId::person(&app.me.id),
+            &app.me.id,
         ));
         let line = |id: &str, ts: i64| Message {
             id: id.into(),
             channel: "c".into(),
-            author: "u_ada".into(),
+            author: ui::tilo_resource::MemberId::person("u_ada"),
             ts,
             text: "x".into(),
             body: Vec::new(),

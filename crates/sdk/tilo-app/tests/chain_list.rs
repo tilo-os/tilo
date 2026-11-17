@@ -517,7 +517,7 @@ fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_it
         chain.head_arriving(),
         "the window asks the workspace which part is the newest"
     );
-    let refused = chain.stage_as(&written("two"), "bo");
+    let refused = chain.stage_as(&written("two"), &tilo_resource::MemberId::person("bo"));
     assert!(
         refused.is_err(),
         "the line waits for the answer rather than starting a part: {refused:?}"
@@ -543,7 +543,7 @@ fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_it
     );
     assert!(!chain.head_arriving());
     assert_eq!(
-        chain.stage_as(&written("two"), "bo").unwrap(),
+        chain.stage_as(&written("two"), &tilo_resource::MemberId::person("bo")).unwrap(),
         Some(1),
         "the line is written into the workspace's newest part"
     );

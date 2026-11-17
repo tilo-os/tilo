@@ -45,8 +45,6 @@ use serde::{Deserialize, Serialize};
 #[allow(unused_imports, reason = "the `JsonSchema` derive names the crate")]
 use ui::tilo_resource::{self, Atom, JsonSchema};
 
-use crate::model::Id;
-
 /// A structured reference to one workspace participant inside a message body.
 ///
 /// See the [module docs](self) for the full contract. `user` is authoritative;
@@ -55,8 +53,7 @@ use crate::model::Id;
 pub struct Mention {
     /// The participant referred to — the same id used for message attribution,
     /// the workspace roster and presence.
-    #[model(atom)]
-    pub user: Id,
+    pub user: ui::tilo_resource::MemberId,
     /// Byte offset of the `@` that opens the mention within the message text.
     pub start: usize,
     /// Byte length of the `@label` run within the message text.
@@ -165,7 +162,7 @@ pub fn resolve(text: &str, people: &[crate::record::Person]) -> Vec<Mention> {
         match (matched, who) {
             (Some(n), Some(p)) => {
                 out.push(Mention {
-                    user: p.id.0.clone(),
+                    user: p.id.clone(),
                     start: at,
                     len: '@'.len_utf8() + n,
                     is_agent: p.is_agent(),
@@ -181,6 +178,7 @@ pub fn resolve(text: &str, people: &[crate::record::Person]) -> Vec<Mention> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::tilo_resource::MemberId;
 
     fn workspace() -> Vec<crate::record::Person> {
         [
@@ -190,9 +188,11 @@ mod tests {
         ]
         .into_iter()
         .map(|(id, name)| crate::record::Person {
-            id: Atom(id.into()),
             name: name.into(),
-            ..crate::record::Person::default()
+            ..crate::record::Person::unnamed(
+                id.strip_prefix("agent:")
+                    .map_or_else(|| MemberId::person(id), MemberId::agent),
+            )
         })
         .collect()
     }
@@ -204,7 +204,7 @@ mod tests {
         {
             let m = resolve("morning @Ada", &workspace());
             assert_eq!(m.len(), 1);
-            assert_eq!(m[0].user, "u_ada");
+            assert_eq!(m[0].user, MemberId::person("u_ada"));
             assert_eq!(m[0].slice("morning @Ada"), "@Ada");
             assert!(!m[0].is_agent);
         }
@@ -214,14 +214,14 @@ mod tests {
             let text = "@Ada Lovelace can you look";
             let m = resolve(text, &workspace());
             assert_eq!(m.len(), 1, "one mention, not Ada plus stray prose");
-            assert_eq!(m[0].user, "u_lovelace");
+            assert_eq!(m[0].user, MemberId::person("u_lovelace"));
             assert_eq!(m[0].slice(text), "@Ada Lovelace");
         }
 
         phase an_agent_resolves_the_same_way_a_person_does;
         {
             let m = resolve("@Scribe please summarise", &workspace());
-            assert_eq!(m[0].user, "agent:agent_scribe", "the member's key");
+            assert_eq!(m[0].user, MemberId::agent("agent_scribe"), "the member's key");
             assert!(
                 m[0].is_agent,
                 "the workspace's agent flag travels with the mention"

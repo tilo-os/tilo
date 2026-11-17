@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use ui::presence::PresenceCtx;
+use ui::tilo_resource::MemberId;
 
 use crate::model::{self, Id};
 use crate::permissions::ChatPermissions;
@@ -14,9 +15,9 @@ use super::ChatApp;
 /// a frame can tell whether showing them again would draw anything else.
 #[derive(Clone, Default, PartialEq)]
 pub(crate) struct ChannelRows {
-    pub(crate) voice: HashMap<Id, Vec<Id>>,
-    pub(crate) names: HashMap<Id, String>,
-    pub(crate) colors: HashMap<Id, (u8, u8, u8)>,
+    pub(crate) voice: HashMap<Id, Vec<MemberId>>,
+    pub(crate) names: HashMap<MemberId, String>,
+    pub(crate) colors: HashMap<MemberId, (u8, u8, u8)>,
     pub(crate) in_calls: HashMap<Id, Vec<model::VoiceMember>>,
     /// Whether this window is in a call, and which.
     pub(crate) call: (bool, String),
@@ -137,11 +138,10 @@ impl ChatApp {
             .filter(|channel| channel.kind == model::ChannelKind::Voice)
             .filter_map(|channel| {
                 let key = Self::voice_presence_key(&channel.id);
-                let mut people: Vec<Id> = Vec::new();
+                let mut people: Vec<MemberId> = Vec::new();
                 for (user, _) in presence.carets.get(&key).into_iter().flatten() {
-                    let person = user.key();
-                    if !people.contains(&person) {
-                        people.push(person);
+                    if !people.contains(user) {
+                        people.push(user.clone());
                     }
                 }
                 (!people.is_empty()).then(|| (channel.id.clone(), people))
@@ -150,23 +150,22 @@ impl ChatApp {
         self.agent_people = presence
             .names
             .keys()
-            .filter_map(|id| Some((id.key(), presence.acting_for(id)?.key())))
+            .filter_map(|id| Some((id.clone(), presence.acting_for(id)?.clone())))
             .collect();
-        let named = |id: &Id| {
-            ui::permissions::MemberId::parse(id).is_some_and(|id| presence.names.contains_key(&id))
-        };
-        self.workspace_names.retain(|id, _| named(id));
-        self.workspace_colors.retain(|id, _| named(id));
+        self.workspace_names
+            .retain(|id, _| presence.names.contains_key(id));
+        self.workspace_colors
+            .retain(|id, _| presence.names.contains_key(id));
         for (id, name) in &presence.names {
             let name = name.trim();
             if name.is_empty() {
                 continue;
             }
-            self.workspace_names.insert(id.key(), name.to_string());
+            self.workspace_names.insert(id.clone(), name.to_string());
             // A colour is the same kind of answer: assigned per workspace so two
             // people never collide, and shared with the caret pill and cursor.
             self.workspace_colors
-                .insert(id.key(), presence.color_for(id));
+                .insert(id.clone(), presence.color_for(id));
         }
     }
 
@@ -181,10 +180,10 @@ impl ChatApp {
         self.workspace_labels.clone_from(presence.labels());
         self.own_label = presence.self_label();
         if let Some(self_id) = presence.self_id()
-            && self_id.key() != self.me.id
-            && !self.former_ids.contains(&self_id.key())
+            && *self_id != self.me.id
+            && !self.former_ids.contains(self_id)
         {
-            self.former_ids.push(self_id.key());
+            self.former_ids.push(self_id.clone());
         }
         if let Some(name) = presence.self_name()
             && name != self.me.name
@@ -226,7 +225,7 @@ mod tests {
         app.take_workspace();
         let row = "in-call:c_standup/u_dana";
         let mut dana = crate::model::VoiceMember {
-            user: "u_dana".into(),
+            user: MemberId::person("u_dana"),
             talking: false,
             muted: false,
             deafened: false,
@@ -247,7 +246,7 @@ mod tests {
         assert!(!rows(&app).iter().any(|id| id == row), "{:?}", rows(&app));
 
         // This window's own row goes the same way once it has hung up.
-        let mine = format!("in-call:c_standup/{}", app.me.id);
+        let mine = format!("in-call:c_standup/{}", app.me.id.id());
         app.call.active = true;
         app.call.channel = "c_standup".into();
         assert!(app.take_workspace(), "joining here is a change");

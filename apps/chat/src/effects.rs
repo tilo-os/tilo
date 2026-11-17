@@ -677,24 +677,32 @@ impl ChatApp {
         Ok(())
     }
 
-    fn open_person(&mut self, user: &str) -> Result<(), String> {
-        if !self.search_users.iter().any(|item| item.id == user) {
+    /// The person the record keeps under `slot` ([`crate::record::member_slot`]).
+    fn person_at(&self, slot: &str) -> Option<&crate::model::User> {
+        self.search_users
+            .iter()
+            .find(|user| crate::record::member_slot(&user.id).as_str() == slot)
+    }
+
+    fn open_person(&mut self, slot: &str) -> Result<(), String> {
+        let Some(user) = self.person_at(slot).map(|user| user.id.clone()) else {
             return Err("person no longer exists".into());
-        }
+        };
+        let user = &user;
         // Prefer the workspace's people when they already evidence this person;
         // otherwise open the first conversation where they wrote.
-        if !self.users.iter().any(|item| item.id == user)
+        if !self.users.iter().any(|item| item.id == *user)
             && let Some(channel) = self
                 .search_messages
                 .iter()
                 .find(|message| {
-                    message.author == user
-                        || message.mentions.iter().any(|mention| mention.user == user)
+                    message.author == *user
+                        || message.mentions.iter().any(|mention| mention.user == *user)
                         || message.reactions.iter().any(|reaction| {
                             reaction
                                 .reactors
                                 .iter()
-                                .any(|reactor| reactor.by.key() == user)
+                                .any(|reactor| reactor.by == *user)
                         })
                 })
                 .and_then(|message| self.channel(&message.channel))
@@ -704,7 +712,7 @@ impl ChatApp {
         }
         self.thread_open = None;
         self.revealed_message = None;
-        self.revealed_person = Some(user.to_owned());
+        self.revealed_person = Some(user.clone());
         self.focus = Focus::Main;
         self.right_flap.open();
         self.reselect();
@@ -742,7 +750,7 @@ impl ChatApp {
         let people = self
             .search_users
             .iter()
-            .filter_map(|user| self.person_row(&user.id));
+            .filter_map(|user| self.person_row(crate::record::member_slot(&user.id).as_str()));
         let reports = self
             .reports
             .iter()
@@ -891,7 +899,7 @@ impl ChatApp {
         // person.
         let author = self.message_author_label(message, crate::identity::RoleWord::InBadge);
         let agent = crate::host_model::is_provider_output(message)
-            || crate::views::is_agent(&message.author);
+            || !message.author.is_person();
         let mut row = LiveRow::new(
             item_row_id("messages", id),
             "chat.workspace.messages",
@@ -930,7 +938,7 @@ impl ChatApp {
     }
 
     fn person_row(&self, id: &str) -> Option<LiveRow> {
-        let user = self.search_users.iter().find(|item| item.id == id)?;
+        let user = self.person_at(id)?;
         Some(LiveRow::new(
             item_row_id("people", id),
             "chat.workspace.people",

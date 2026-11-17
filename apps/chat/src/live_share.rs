@@ -382,7 +382,7 @@ impl ChatApp {
         let cy = header.center().y;
         let face_rect = Rect::new(end - face, cy - face / 2.0, end, cy + face / 2.0);
         let name = self.user_name(&m.author);
-        AvatarFace::new(&name, &m.author)
+        AvatarFace::new(&name, m.author.id())
             .presence(self.identity_colour(&m.author))
             .paint(paint, face_rect);
         if !(share.open && self.sharer_here(&m.author)) {
@@ -448,7 +448,7 @@ impl ChatApp {
 
     /// Whether `author` is in the workspace now: a share is live only while its
     /// sharer is here to work on it.
-    fn sharer_here(&self, author: &str) -> bool {
+    fn sharer_here(&self, author: &ui::tilo_resource::MemberId) -> bool {
         self.user(author)
             .is_some_and(|user| user.status != crate::model::Presence::Offline)
     }

@@ -273,7 +273,10 @@ fn search_hits_open_the_channel_message_and_person_they_name() {
     app.call("open", serde_json::json!({ "anchor": milo }))
         .unwrap();
     app.settle();
-    assert_eq!(app.chat().revealed_person.as_deref(), Some("u_milo"));
+    assert_eq!(
+        app.chat().revealed_person,
+        Some(ui::tilo_resource::MemberId::person("u_milo"))
+    );
 }
 
 #[test]
@@ -671,7 +674,7 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
     let posted = messages(&mut app).pop().unwrap();
     assert_eq!(posted.text, "Summary: two open questions");
     assert_eq!(
-        posted.author, "agent:44444444-4444-4444-8444-444444444444",
+        posted.author, MemberId::agent("44444444-4444-4444-8444-444444444444"),
         "the post is the agent's, not its person's"
     );
     let react = crate::parts::ChatPart::paths()
@@ -728,7 +731,11 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
     let reply = state
         .message_row(&held, &crate::testing::agent_reply())
         .expect("agent reply is durable");
-    assert_eq!(reply.author, DEMO_AGENT, "the agent authors its own reply");
+    assert_eq!(
+        reply.author,
+        crate::resource::demo_agent(),
+        "the agent authors its own reply"
+    );
     assert_eq!(reply.parent.as_deref(), Some(DEMO_SUMMONS));
     let work = reply.work.expect("reply carries work evidence");
     assert!(matches!(
@@ -1027,7 +1034,10 @@ tilo_test_env::scenario! {
 
         let sentences = app.sentences(app.history().iter().filter(|entry| {
             entry.invoker.as_ref().is_some_and(|invoker| {
-                invoker.acting.by.key() == "agent:55555555-5555-4555-8555-555555555555"
+                invoker.acting.by.member_id()
+                    == Some(&ui::tilo_resource::MemberId::agent(
+                        "55555555-5555-4555-8555-555555555555"
+                    ))
             })
         }));
         assert_eq!(
@@ -1185,12 +1195,12 @@ fn search_finds_an_agents_conversation_by_the_name_its_record_keeps() {
         MemberId::person(crate::model::ME),
         MemberId::agent("notes"),
     ]);
-    crate::testing::say(
-        &mut doc,
-        "agent:notes",
+    doc.say(
+        &MemberId::agent("notes"),
         conversation.as_str(),
         "Here it is.",
-    );
+    )
+    .unwrap();
     app.reload(&doc);
 
     let entries = app.unrecorded_conversation_entries();

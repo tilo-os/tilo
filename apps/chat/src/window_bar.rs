@@ -9,7 +9,6 @@
 //! the conversation used to draw did. A thread that fills the window is the
 //! window's location, with Back to the conversation.
 
-use tilo_actions::policy::MemberId;
 use ui::framework::BarCommands;
 use ui::window_toolbar::{
     LocationAvatar, LocationPresence, ToolbarAction, ToolbarEvent, ToolbarLocation,
@@ -180,17 +179,14 @@ impl ChatApp {
             Some(channel) => channel.direct.then(|| channel.participants.clone()),
             None => crate::record::Chat::direct_participants(&ui::tilo_resource::Id::from_raw(
                 self.active_channel.clone(),
-            ))
-            .map(|participants| participants.iter().map(MemberId::key).collect()),
+            )),
         };
         if let Some(participants) = participants {
             let Some(other) = self.conversation_peer(&participants) else {
                 return (Some("users".to_owned()), None);
             };
-            // A member is named and coloured by its key, as its byline and its row are.
-            let identity = other.key();
             let presence = self
-                .user(other.id())
+                .user(&other)
                 .map(|user| match self.live_status(user) {
                     Presence::Online => LocationPresence::Online,
                     Presence::Idle => LocationPresence::Away,
@@ -198,9 +194,9 @@ impl ChatApp {
                     Presence::Offline => LocationPresence::Offline,
                 });
             let avatar = LocationAvatar {
-                name: self.display_name(&identity),
-                hue: Some(self.participant_hue(&identity)),
-                identity,
+                name: self.display_name(&other),
+                hue: Some(self.participant_hue(&other)),
+                identity: other.id().to_owned(),
                 agent: !other.is_person(),
                 presence,
             };

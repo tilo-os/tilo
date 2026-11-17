@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
         let who = app
             .participants()
             .into_iter()
-            .find(|participant| !app.is_me(&participant.id.0) && participant.name.len() > 2)
+            .find(|participant| !app.is_me(&participant.id) && participant.name.len() > 2)
             .expect("the demo workspace has someone to mention");
         let prefix: String = who.name.chars().take(2).collect();
         type_str(&mut app, &mut doc, &format!("ping @{prefix}"));
@@ -193,13 +193,13 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(sent.text, format!("ping {label} now"));
         assert_eq!(sent.mentions.len(), 1, "{:?}", sent.mentions);
-        assert_eq!(sent.mentions[0].user, who.id.0);
+        assert_eq!(sent.mentions[0].user, who.id);
         assert_eq!(sent.mentions[0].slice(&sent.text), label);
         assert!(
             sent.blocks()[0]
                 .marks
                 .iter()
-                .any(|span| span.mark == ui::widget::Mark::Mention(who.id.0.clone())),
+                .any(|span| span.mark == ui::widget::Mark::Mention(who.id.key())),
             "the body keeps the mention as written"
         );
         // Rendered through the read-only view, it lays out at its width.
@@ -396,7 +396,7 @@ tilo_test_env::scenario! {
     {
         use crate::model::Presence;
         let (mut app, _) = app_with_doc();
-        let others: Vec<String> = app
+        let others: Vec<MemberId> = app
             .users
             .iter()
             .filter(|u| !app.is_me(&u.id) && !u.is_agent)
@@ -406,10 +406,10 @@ tilo_test_env::scenario! {
         for user in &mut app.users {
             user.status = Presence::Online;
         }
-        let status = |app: &crate::app::ChatApp, id: &str| {
+        let status = |app: &crate::app::ChatApp, id: &MemberId| {
             app.roster_rows()
                 .into_iter()
-                .find(|(u, _)| u.id == id)
+                .find(|(u, _)| u.id == *id)
                 .map(|(u, _)| u.status)
         };
         // Without a workspace the record's word stands.
@@ -436,7 +436,7 @@ tilo_test_env::scenario! {
     {
         use crate::model::Presence;
         let (mut app, _) = app_with_doc();
-        let others: Vec<String> = app
+        let others: Vec<MemberId> = app
             .users
             .iter()
             .filter(|u| !app.is_me(&u.id) && !u.is_agent)
@@ -472,9 +472,9 @@ tilo_test_env::scenario! {
         presence.set_display_name(MemberId::agent("helper"), "Helper");
         presence.set_acting_for(MemberId::agent("helper"), Some(MemberId::person("ada")));
         app.adopt_workspace(&presence);
-        assert_eq!(app.user_name("agent:helper"), "Helper for Ada");
-        app.me.id = "ada".into();
-        assert_eq!(app.user_name("agent:helper"), "Helper for you");
+        assert_eq!(app.user_name(&MemberId::agent("helper")), "Helper for Ada");
+        app.me.id = MemberId::person("ada");
+        assert_eq!(app.user_name(&MemberId::agent("helper")), "Helper for you");
     }
 
     phase the_workspaces_call_places_its_people_in_the_voice_channel_by_person;
@@ -490,9 +490,10 @@ tilo_test_env::scenario! {
         let in_call = app.voice_people("c_huddle");
         for index in 1..=3 {
             let person = format!("{index:064x}");
-            assert!(in_call.contains(&person), "{person} is in the call");
+            let member = MemberId::person(person.clone());
+            assert!(in_call.contains(&member), "{person} is in the call");
             assert!(
-                !app.user_name(&person).contains(&person),
+                !app.user_name(&member).contains(&person),
                 "nobody is shown by their raw id"
             );
         }

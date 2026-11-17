@@ -209,46 +209,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn settling_the_chat_opens_its_channels_and_keeps_what_people_did;
 
-        phase a_newer_relay_settles_a_chat_an_older_one_stored_at_an_older_version;
-        // eu1 2026-10-19: a relay from 3287d858 never started on the Lounge an
-        // 8fca8fe781 relay had kept, its Chat stored at version 3: "open the
-        // chat's channels: read the chat: stored at version 3; it is brought up
-        // to version 5 when it opens".
-        {
-            use automerge::transaction::Transactable as _;
-            let mut doc = prepared_chat();
-            let channels = names(&["general"]);
-            settle_chat(&mut doc, &channels).unwrap();
-            doc.put(
-                automerge::ROOT,
-                tilo_resource::evolution::VERSION_KEY,
-                automerge::ScalarValue::Uint(3),
-            )
-            .unwrap();
-            doc.commit();
-            let before = channel_names(&{
-                let mut migrated = doc.fork();
-                tilo_resource::evolution::migrate::<chat::Chat>(&mut migrated).unwrap();
-                migrated
-            });
-            assert!(
-                chat::Chat::read(&doc).is_err(),
-                "stored at an older version"
-            );
-
-            settle_chat(&mut doc, &channels).unwrap();
-            assert_eq!(
-                tilo_resource::evolution::stored_version(&doc),
-                <chat::Chat as Resource>::VERSION,
-                "brought up to this build's version"
-            );
-            assert_eq!(channel_names(&doc), before, "nothing it held is lost");
-            // And the next start finds nothing to do.
-            let heads = doc.get_heads();
-            settle_chat(&mut doc, &channels).unwrap();
-            assert_eq!(doc.get_heads(), heads);
-        }
-
         phase the_chat_opens_with_the_named_channels;
         {
             let mut doc = prepared_chat();

@@ -17,6 +17,7 @@ use discord_wire::event::{
 use serde::Serialize;
 use serde_json::{Value, json};
 use ui::tilo_actions::Acting;
+use ui::tilo_resource::MemberId;
 
 use crate::inbound::{self, InboundPlan};
 use crate::outbound::{self, Context};
@@ -310,27 +311,23 @@ fn posted(
     }
     let channel = channel_of(item, event);
     let text = event.pointer("/arguments/text").and_then(Value::as_str);
-    let author = actor_key(event);
+    let author = actor(event);
     tilo::messages(chat)
         .into_iter()
         .rev()
         .find(|message| {
             message.channel == channel
-                && message.author == author
+                && author.as_ref() == Some(&message.author)
                 && text.is_none_or(|text| message.text == text)
                 && guild.mapping(MappedKind::Message, &message.id).is_none()
         })
         .map(|message| message.id)
 }
 
-/// Who made the change an event describes, spelled as a message's author is:
-/// the key of the change's actor in its acting tree (a person's root public
-/// key, `agent:<id>`, `bot:<id>`).
-fn actor_key(event: &Value) -> String {
-    event
-        .get("actor")
-        .and_then(|actor| serde_json::from_value::<Acting>(actor.clone()).ok())
-        .map_or_else(String::new, |acting| acting.by.key())
+/// The member who made the change an event describes.
+fn actor(event: &Value) -> Option<MemberId> {
+    let acting: Acting = serde_json::from_value(event.get("actor")?.clone()).ok()?;
+    acting.member_id().cloned()
 }
 
 fn payload<T: serde::de::DeserializeOwned>(payload: &Value) -> Option<T> {
@@ -582,9 +579,8 @@ fn workspace_change(plan: &mut BridgePlan, guild: &Guild, verb: &str, event: &Va
 fn guild_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, event: &Value) {
     if verb == "complete-link" {
         // A person took a link offer: the `/link` it answered says so.
-        let person = actor_key(event);
-        if !person.is_empty() {
-            inbound_plan(plan, inbound::plan_linked(read.guild, read.chat, &person));
+        if let Some(person) = actor(event).as_ref().and_then(MemberId::person_id) {
+            inbound_plan(plan, inbound::plan_linked(read.guild, read.chat, person));
         }
         return;
     }

@@ -288,14 +288,14 @@ fn emoji_search_enter_picks_the_best_match() {
 fn peer(id: &str, name: &str, initials: &str, color: usize) -> ChatApp {
     let mut app = ChatApp::new_ephemeral();
     app.me = crate::identity::LocalIdentity {
-        id: id.into(),
+        id: MemberId::person(id),
         name: name.into(),
         initials: initials.into(),
         color_idx: color,
     };
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.chat",
-        &ui::tilo_resource::MemberId::person(id),
+        &app.me.id.clone(),
     ));
     app.active_channel = crate::record::CHAT_CHANNEL.into();
     app.thread_open = None;
@@ -340,8 +340,8 @@ tilo_test_env::scenario! {
         b.attach_workspace(&parts);
         a.reload(&doc_a);
         b.reload(&doc_b);
-        assert_eq!(a.me.id, "u_alice");
-        assert_eq!(b.me.id, "u_bob");
+        assert_eq!(a.me.id,  MemberId::person("u_alice"));
+        assert_eq!(b.me.id,  MemberId::person("u_bob"));
 
         // Structure converges: a channel Alice creates shows up for Bob.
         crate::testing::apply_as(
@@ -380,9 +380,9 @@ tilo_test_env::scenario! {
             .iter()
             .find(|m| m.text == "morning all")
             .expect("B sees A's message");
-        assert_eq!(alice_msg.author, "u_alice");
+        assert_eq!(alice_msg.author, MemberId::person("u_alice"));
         assert_eq!(
-            b.user_name("u_alice"),
+            b.user_name(&MemberId::person("u_alice")),
             "Alice",
             "attributed to the right person"
         );
@@ -398,8 +398,8 @@ tilo_test_env::scenario! {
             .iter()
             .find(|m| m.text == "morning!")
             .expect("A sees B's reply");
-        assert_eq!(bob_msg.author, "u_bob");
-        assert_eq!(a.user_name("u_bob"), "Bob");
+        assert_eq!(bob_msg.author, MemberId::person("u_bob"));
+        assert_eq!(a.user_name(&MemberId::person("u_bob")), "Bob");
 
         // Both react with the SAME emoji to Alice's message. Distinct
         // identities mean the count is 2 — the exact thing a shared `u_me`
@@ -828,7 +828,7 @@ tilo_test_env::scenario! {
         app.call.join("c_huddle");
         service_streams(&mut app, "c_huddle", 2);
         let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
-        let me = app.me.id.clone();
+        let me = app.me.id.id().to_owned();
         let roster = &mut app.native_voice.snapshot.rosters[0];
         roster.people.push(me.clone());
         roster.people.sort();
@@ -837,7 +837,7 @@ tilo_test_env::scenario! {
         let muted = |app: &ChatApp, person: &str| {
             app.voice_in("c_huddle")
                 .iter()
-                .find(|member| member.user == person)
+                .find(|member| member.user.person_id() == Some(person))
                 .expect("in the call")
                 .muted
         };
@@ -867,7 +867,7 @@ tilo_test_env::scenario! {
             let member = app
                 .voice_in("c_huddle")
                 .iter()
-                .find(|member| member.user == person)
+                .find(|member| member.user.person_id() == Some(person))
                 .expect("in the call");
             (member.muted, member.deafened)
         };
@@ -902,7 +902,7 @@ tilo_test_env::scenario! {
         let (mut app, _doc) = app_with_doc();
         app.call.join("c_huddle");
         render_frame(&mut app, 1280.0, 800.0);
-        let me = app.me.id.clone();
+        let me = app.me.id.id().to_owned();
         assert_eq!(app.huddle_people(), vec![me.clone()], "alone: yourself");
         assert!(app.huddle_features_me());
 
@@ -942,7 +942,7 @@ tilo_test_env::scenario! {
         let people = app.call_people_label();
         assert_eq!(
             people,
-            app.user_name(&format!("{:064x}", 1)),
+            app.user_name(&MemberId::person(format!("{:064x}", 1))),
             "the people, not a count and not this person alone"
         );
         let root = app.accessibility().expect("chat semantics");
@@ -1013,7 +1013,7 @@ tilo_test_env::scenario! {
         let (mut app, _doc) = app_with_doc();
         app.call.join("c_huddle");
         service_streams(&mut app, "c_huddle", 4);
-        let me = app.me.id.clone();
+        let me = app.me.id.id().to_owned();
         let roster = &mut app.native_voice.snapshot.rosters[0];
         roster.people = vec![
             me,
@@ -1023,7 +1023,7 @@ tilo_test_env::scenario! {
             "u_devon".into(),
         ];
         app.refresh_native_streams();
-        assert_eq!(app.given_name("u_aria"), "Aria");
+        assert_eq!(app.given_name(&MemberId::person("u_aria")), "Aria");
         let short = app.call_people_short_label();
         let full = app.call_people_label();
         assert!(
@@ -1267,7 +1267,7 @@ tilo_test_env::scenario! {
         assert!(!app.in_call());
         assert_eq!(
             app.voice_people("c_huddle"),
-            vec![format!("{:064x}", 1)],
+            vec![MemberId::person(format!("{:064x}", 1))],
             "only who is still in the call"
         );
         assert!(

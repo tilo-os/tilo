@@ -180,9 +180,7 @@ pub fn plan_post(
         .clone()
         .or_else(|| author.as_ref().map(|a| a.name.clone()))
         .unwrap_or_default();
-    let automated = author.as_ref().is_some_and(|a| a.agent)
-        || message.author.starts_with("bot:")
-        || message.author.starts_with("agent:");
+    let automated = author.as_ref().is_some_and(|a| a.agent) || !message.author.is_person();
     let avatar_blob = author
         .as_ref()
         .and_then(|a| a.avatar.clone())
@@ -197,7 +195,7 @@ pub fn plan_post(
     let link = guild
         .links
         .iter()
-        .find(|link| link.person == message.author);
+        .find(|link| message.author.person_id() == Some(link.person.as_str()));
     let username = match link {
         Some(link) if !automated => slug::linked_webhook_username(&name, &link.user_name),
         _ => slug::webhook_username(&name, automated),
@@ -277,7 +275,11 @@ fn body(guild: &Guild, message: &Message, context: &Context) -> (String, Vec<Out
             continue;
         };
         text.push_str(before);
-        match guild.links.iter().find(|l| l.person == *user) {
+        match guild
+            .links
+            .iter()
+            .find(|l| user.person_id() == Some(l.person.as_str()))
+        {
             Some(link) => {
                 let _ = write!(text, "<@{}>", link.discord_user);
             }

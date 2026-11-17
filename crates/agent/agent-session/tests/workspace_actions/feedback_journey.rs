@@ -510,7 +510,7 @@ async fn assert_one_report(
             assert_eq!(reports.len(), 1);
             let report = reports.first().unwrap();
             assert_eq!(&report.submission, submission);
-            assert_eq!(report.author, person);
+            assert_eq!(report.author, ui::tilo_resource::MemberId::person(person));
             assert_eq!(
                 replica.read(|doc| chat::projection::read(doc)
                     .message_rows(&chat::messages::Messages::default(), "feedback")

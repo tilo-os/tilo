@@ -291,7 +291,7 @@ impl Walk<'_> {
         let by = cx
             .item_obj
             .as_ref()
-            .and_then(|item| self.string(item, "author"));
+            .and_then(|item| self.author(item));
         let excerpt = self.read_around(&text, &references, start);
         self.push(person, by, None, excerpt, cx);
     }
@@ -325,7 +325,7 @@ impl Walk<'_> {
         let item = cx.item_obj.as_ref();
         let by = by.or_else(|| {
             item.and_then(|item| {
-                self.string(item, "author")
+                self.author(item)
                     .or_else(|| self.string(item, "creator"))
             })
         });
@@ -379,6 +379,14 @@ impl Walk<'_> {
             obj = child;
         }
         Some(obj)
+    }
+
+    /// Who wrote the item `obj`: the id of the member its `author` holds.
+    fn author(&self, obj: &ObjId) -> Option<String> {
+        let author = self.string(obj, "author")?;
+        serde_json::from_str::<crate::permissions::MemberId>(&author)
+            .ok()
+            .map(|member| member.id().to_owned())
     }
 
     fn string(&self, obj: &ObjId, key: &str) -> Option<String> {

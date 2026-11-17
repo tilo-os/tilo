@@ -6,7 +6,7 @@ use ui::widget::Widget;
 #[test]
 fn a_live_peer_joins_through_the_user_action() {
     let mut app = ChatApp::new(
-        crate::identity::LocalIdentity::for_participant("person-1"),
+        crate::identity::LocalIdentity::for_participant(&MemberId::person("person-1")),
         ChatRuntime::Unavailable,
         ContentStore::memory(),
     )
@@ -52,7 +52,7 @@ fn a_live_peer_joins_through_the_user_action() {
 #[test]
 fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
     let mut app = ChatApp::new(
-        crate::identity::LocalIdentity::for_participant("person-1"),
+        crate::identity::LocalIdentity::for_participant(&MemberId::person("person-1")),
         ChatRuntime::Unavailable,
         ContentStore::memory(),
     )
@@ -130,7 +130,11 @@ fn primary_scroll_maps_bottom_anchor_and_clamps_without_editing() {
 
 fn user(id: &str, is_agent: bool) -> User {
     User {
-        id: id.into(),
+        id: if is_agent {
+            MemberId::agent(id)
+        } else {
+            MemberId::person(id)
+        },
         name: id.into(),
         initials: "U".into(),
         color_idx: 0,
@@ -157,18 +161,18 @@ fn a_remote_saved_you_name_is_not_the_current_reader() {
     app.attach_workspace(&workspace);
     app.sync(&state.doc, &state.root);
     assert_eq!(
-        app.user(stranger)
+        app.user(&MemberId::person(stranger))
             .expect("observe the actual foreign author in the production roster")
             .name,
         "You"
     );
-    let shown = app.user_name(stranger);
+    let shown = app.user_name(&MemberId::person(stranger));
     assert_ne!(
         shown, "You",
         "another person's stored name must not read as the current reader"
     );
     assert_eq!(
-        app.display_name(stranger),
+        app.display_name(&MemberId::person(stranger)),
         shown,
         "mentions and message headers name the same foreign person"
     );
@@ -205,7 +209,7 @@ tilo_test_env::scenario! {
     {
         let app = ChatApp::new_ephemeral();
         let stranger = "peer@9007495404254172154";
-        let shown = app.user_name(stranger);
+        let shown = app.user_name(&MemberId::person(stranger));
         assert!(
             !shown.contains("9007495404254172154"),
             "the id leaked onto the screen as `{shown}`"
@@ -246,13 +250,13 @@ tilo_test_env::scenario! {
         let mut app = ChatApp::new_ephemeral();
         let me = app.me.id.clone();
         let mut presence = PresenceCtx::default();
-        presence.set_self_participant(MemberId::person(me.clone()), "Sam");
+        presence.set_self_participant(me.clone(), "Sam");
         presence.set_display_name(MemberId::person("a-peer"), "sam");
         presence.set_display_name(MemberId::person("z-peer"), "Kim");
         app.adopt_workspace(&presence);
-        assert_eq!(app.user_name("a-peer"), "sam (1)");
+        assert_eq!(app.user_name(&MemberId::person("a-peer")), "sam (1)");
         assert_eq!(app.user_name(&me), "Sam (2)");
-        assert_eq!(app.user_name("z-peer"), "Kim");
+        assert_eq!(app.user_name(&MemberId::person("z-peer")), "Kim");
         let offered: Vec<String> = app.participants().into_iter().map(|p| p.name).collect();
         assert!(
             offered.contains(&"sam (1)".to_owned()),
@@ -261,7 +265,7 @@ tilo_test_env::scenario! {
 
         presence.set_display_name(MemberId::person("a-peer"), "Alex");
         app.adopt_workspace(&presence);
-        assert_eq!(app.user_name("a-peer"), "Alex");
+        assert_eq!(app.user_name(&MemberId::person("a-peer")), "Alex");
         assert_eq!(
             app.user_name(&me),
             "Sam",
@@ -301,7 +305,7 @@ fn a_call_names_each_person_once() {
     app.voice_members.insert(
         channel.clone(),
         vec![crate::model::VoiceMember {
-            user: "crane".into(),
+            user: MemberId::person("crane"),
             talking: false,
             muted: false,
             deafened: false,
@@ -312,8 +316,8 @@ fn a_call_names_each_person_once() {
         }],
     );
     app.adopt_workspace(&presence);
-    assert_eq!(app.voice_people(&channel), vec!["crane".to_owned()]);
-    assert_eq!(app.user_name("crane"), "Clever Crane");
+    assert_eq!(app.voice_people(&channel), vec![MemberId::person("crane")]);
+    assert_eq!(app.user_name(&MemberId::person("crane")), "Clever Crane");
     let offered = app
         .participants()
         .into_iter()
@@ -330,7 +334,7 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
     use ui::permissions::MemberId;
     let mut app = ChatApp::new_ephemeral();
     app.users.push(crate::model::User {
-        id: "ada-root".into(),
+        id: MemberId::person("ada-root"),
         name: "Swift Lynx".into(),
         initials: "SL".into(),
         color_idx: 0,
@@ -341,16 +345,16 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
     presence.set_display_name(MemberId::person("ada-root"), "Ada");
     app.adopt_workspace(&presence);
     assert!(
-        app.display_name("ada-root").contains("Ada"),
+        app.display_name(&MemberId::person("ada-root")).contains("Ada"),
         "the name they go by here now: {:?}",
-        app.display_name("ada-root")
+        app.display_name(&MemberId::person("ada-root"))
     );
 
     app.adopt_workspace(&PresenceCtx::default());
     assert!(
-        app.display_name("ada-root").contains("Swift Lynx"),
+        app.display_name(&MemberId::person("ada-root")).contains("Swift Lynx"),
         "gone: the workspace's name: {:?}",
-        app.display_name("ada-root")
+        app.display_name(&MemberId::person("ada-root"))
     );
 }
 
@@ -371,17 +375,18 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
         MemberId::person(crate::model::ME),
         MemberId::agent("notes"),
     ]);
-    let replied = crate::testing::say(
-        &mut doc,
-        "agent:notes",
-        conversation.as_str(),
-        "Here it is.",
-    );
+    let replied = doc
+        .say(
+            &MemberId::agent("notes"),
+            conversation.as_str(),
+            "Here it is.",
+        )
+        .unwrap();
     app.reload(&doc);
 
     let answer = doc.message_row(&replied).expect("the agent's answer");
-    assert_eq!(app.display_name("agent:notes"), "Notes");
-    assert_eq!(app.user_name("agent:notes"), "Notes (agent)");
+    assert_eq!(app.display_name(&MemberId::agent("notes")), "Notes");
+    assert_eq!(app.user_name(&MemberId::agent("notes")), "Notes (agent)");
     assert_eq!(app.message_author_name(&answer), "Notes (agent)");
     assert!(
         matches!(
@@ -403,7 +408,7 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
     assert_eq!(
         read.display_names(
             &conversation,
-            Some(crate::model::ME),
+            Some(&MemberId::person(crate::model::ME)),
             &app.workspace_agent_names
         ),
         "Notes"
@@ -412,9 +417,9 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
     // An agent wears the colour its own record gives it, whatever presence announced.
     app.workspace_agent_colours.insert("notes".to_owned(), 3);
     app.workspace_colors
-        .insert("agent:notes".to_owned(), (255, 0, 0));
+        .insert(MemberId::agent("notes"), (255, 0, 0));
     assert_eq!(
-        app.participant_hue("agent:notes"),
+        app.participant_hue(&MemberId::agent("notes")),
         ui::tokens::PresenceHue::from_slot(3)
     );
 
@@ -435,8 +440,8 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
         .as_ref()
         .expect("the row wears the agent's face");
     assert!(face.agent, "an agent's face, never a person's");
-    assert_eq!(face.identity, "agent:notes");
-    assert_eq!(face.colour, Some(app.identity_colour("agent:notes")));
+    assert_eq!(face.identity, "notes");
+    assert_eq!(face.colour, Some(app.identity_colour(&MemberId::agent("notes"))));
 
     // Open, the conversation's bar leads with the same face.
     app.active_channel = conversation.to_string();
@@ -445,12 +450,12 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
     assert!(bar.agent);
     assert_eq!(
         (bar.name.as_str(), bar.identity.as_str()),
-        ("Notes", "agent:notes")
+        ("Notes", "notes")
     );
 
     // An agent the record names not is never shown a part of its routing id either.
     assert_eq!(
-        app.user_name("agent:stranger"),
-        crate::identity::unnamed_label("agent:stranger")
+        app.user_name(&MemberId::agent("stranger")),
+        crate::identity::unnamed_label(&MemberId::agent("stranger"))
     );
 }

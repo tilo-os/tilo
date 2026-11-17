@@ -1,4 +1,5 @@
 use super::*;
+use ui::tilo_resource::MemberId;
 use automerge::{ObjType, ROOT, transaction::Transactable};
 use tilo_actions::EncodedAction;
 use ui::feedback::{Destination, Receipt, ReviewedFeedback, Submission};
@@ -333,13 +334,13 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
         })
         .unwrap();
     assert_eq!(report.submission, fixture.submission);
-    assert_eq!(report.author, "visitor");
+    assert_eq!(report.author, MemberId::person("visitor"));
     assert_eq!(report.triage.len(), 2);
     assert!(
         report
             .triage
             .iter()
-            .all(|entry| entry.author == "maintainer")
+            .all(|entry| entry.author == MemberId::person("maintainer"))
     );
     assert_eq!(
         report.triage[1].update,
@@ -413,7 +414,10 @@ fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
         value["content"]["triage"][1]["update"]["status"],
         "resolved"
     );
-    assert_eq!(value["content"]["triage"][1]["author"], "maintainer");
+    assert_eq!(
+        value["content"]["triage"][1]["author"],
+        serde_json::json!({"person": "maintainer"})
+    );
     assert_eq!(
         value["content"]["triage"][2]["update"]["reference"],
         serde_json::to_value(reference).unwrap()

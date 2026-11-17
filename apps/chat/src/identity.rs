@@ -9,7 +9,9 @@
 //! The demo used by screenshots and tests reads as [`LocalIdentity::demo`],
 //! the seeded demo's own person (`u_me` / "Quinn Davis").
 
-use crate::model::{self, Id};
+use ui::tilo_resource::MemberId;
+
+use crate::model;
 
 /// What the demo's own person is called: a name, like anyone else's.
 pub const DEMO_NAME: &str = "Quinn Davis";
@@ -17,22 +19,17 @@ pub const DEMO_NAME: &str = "Quinn Davis";
 /// The participant a view is for, as it is shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalIdentity {
-    pub id: Id,
+    pub id: MemberId,
     pub name: String,
     pub initials: String,
     pub color_idx: usize,
 }
 
 impl LocalIdentity {
-    /// The participant as a member.
-    pub fn member(&self) -> Option<ui::tilo_resource::MemberId> {
-        ui::tilo_resource::MemberId::parse(&self.id)
-    }
-
     /// The demo's own person — identical to the seeded demo's `u_me`.
     pub fn demo() -> Self {
         Self {
-            id: model::ME.to_string(),
+            id: MemberId::person(model::ME),
             name: DEMO_NAME.to_string(),
             initials: "QD".to_string(),
             color_idx: 0,
@@ -41,12 +38,12 @@ impl LocalIdentity {
 
     /// Participant `id` as this device shows its own person: the display
     /// name of the person's public identity record.
-    pub fn for_participant(id: &str) -> Self {
+    pub fn for_participant(id: &MemberId) -> Self {
         let name = ui::local_identity::own_name().unwrap_or_else(|| unnamed_label(id));
         Self {
             initials: initials_of(&name),
-            color_idx: color_from_bytes(id.as_bytes()),
-            id: id.to_owned(),
+            color_idx: color_from_bytes(id.id().as_bytes()),
+            id: id.clone(),
             name,
         }
     }
@@ -66,7 +63,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 /// Distinguish unnamed participants without exposing their complete routing id.
-pub(crate) fn unnamed_label(id: &str) -> String {
+pub(crate) fn unnamed_label(id: &MemberId) -> String {
     crate::i18n::t_args(
         "chat-person-unnamed",
         &[("tag", participant_tag(id).into())],
@@ -75,7 +72,7 @@ pub(crate) fn unnamed_label(id: &str) -> String {
 
 /// Shared person rows cannot use the current-reader label without an identity tag.
 /// Preserve the saved name and id; only its presentation is disambiguated.
-pub(crate) fn shared_name_label(id: &str, name: &str) -> String {
+pub(crate) fn shared_name_label(id: &MemberId, name: &str) -> String {
     if name.trim().is_empty() {
         unnamed_label(id)
     } else if name.trim() == "You" {
@@ -89,6 +86,15 @@ pub(crate) fn shared_name_label(id: &str, name: &str) -> String {
     } else {
         name.to_owned()
     }
+}
+
+/// The person `acting` acted for, when it acted for one.
+pub(crate) fn acted_for(acting: &ui::tilo_resource::Acting) -> Option<&MemberId> {
+    acting
+        .acted_for
+        .first()?
+        .member_id()
+        .filter(|member| member.is_person())
 }
 
 /// Where a name says its owner is software: after the name, or in the badge beside it.
@@ -106,10 +112,10 @@ pub(crate) enum RoleWord {
 /// the role `word` says.
 pub(crate) fn acting_label(
     name: &str,
-    person: Option<&str>,
+    person: Option<&MemberId>,
     word: RoleWord,
-    name_of: impl Fn(&str) -> String,
-    is_me: impl Fn(&str) -> bool,
+    name_of: impl Fn(&MemberId) -> String,
+    is_me: impl Fn(&MemberId) -> bool,
 ) -> String {
     person.map_or_else(
         || match word {
@@ -120,7 +126,8 @@ pub(crate) fn acting_label(
     )
 }
 
-fn participant_tag(id: &str) -> String {
+fn participant_tag(member: &MemberId) -> String {
+    let id = member.id();
     let body = id.rsplit(['@', ':']).next().unwrap_or(id);
     let tail: String = body
         .chars()
@@ -158,12 +165,13 @@ mod tests {
     #[test]
     fn identity_derivation_is_stable_and_tidy() {
         let me = LocalIdentity::demo();
-        assert_eq!(me.id, model::ME, "case demo: id");
+        assert_eq!(me.id, MemberId::person(model::ME), "case demo: id");
         assert_eq!(me.name, DEMO_NAME, "case demo: name");
 
-        let a = LocalIdentity::for_participant("alice");
-        assert_eq!(a.id, "alice");
-        assert_eq!(a, LocalIdentity::for_participant("alice"), "stable");
+        let alice = MemberId::person("alice");
+        let a = LocalIdentity::for_participant(&alice);
+        assert_eq!(a.id, alice);
+        assert_eq!(a, LocalIdentity::for_participant(&alice), "stable");
         assert_eq!(a.color_idx, color_from_bytes(b"alice"));
 
         assert_eq!(

@@ -763,7 +763,10 @@ impl crate::app::ChatApp {
             .map(|(channel, members)| {
                 (
                     channel.clone(),
-                    members.iter().map(|member| member.user.clone()).collect(),
+                    members
+                        .iter()
+                        .map(|member| member.user.id().to_owned())
+                        .collect(),
                 )
             })
             .collect();
@@ -802,7 +805,7 @@ impl crate::app::ChatApp {
             );
         }
         if !self.call.audio_only {
-            showing.insert((self.me.id.clone(), PictureSource::Camera));
+            showing.insert((self.me.id.id().to_owned(), PictureSource::Camera));
         }
         showing
     }
@@ -848,11 +851,15 @@ impl crate::app::ChatApp {
         }
         self.call_pictures.poll();
         let showing = self.showing_pictures();
-        let me = self.me.id.clone();
+        let me = self.me.id.id().to_owned();
         let own = |person: &str, me: &str, former: &[String]| {
             person == me || former.iter().any(|id| id == person)
         };
-        let former = self.former_ids.clone();
+        let former: Vec<String> = self
+            .former_ids
+            .iter()
+            .map(|id| id.id().to_owned())
+            .collect();
         // This person's own picture comes under the id the call knows them
         // by; their tile knows them by this window's.
         let shown = |person: &str, source: PictureSource| {
@@ -922,8 +929,8 @@ impl crate::app::ChatApp {
             self.call.muted,
             self.call.deafened,
         ));
-        let me: Vec<&str> = std::iter::once(self.me.id.as_str())
-            .chain(self.former_ids.iter().map(String::as_str))
+        let me: Vec<&str> = std::iter::once(self.me.id.id())
+            .chain(self.former_ids.iter().map(ui::tilo_resource::MemberId::id))
             .collect();
         for roster in &snapshot.rosters {
             // What the workspace says each person shows and whether they are
@@ -941,7 +948,7 @@ impl crate::app::ChatApp {
                 ),
             };
             let member = |user: &str, (muted, deafened): (bool, bool)| crate::model::VoiceMember {
-                user: user.to_owned(),
+                user: ui::tilo_resource::MemberId::person(user),
                 talking: snapshot.speaking.iter().any(|person| person == user),
                 muted,
                 deafened,
@@ -1003,6 +1010,7 @@ pub(crate) fn layer_for(width: f64, height: f64, source: PictureSource) -> Pictu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::tilo_resource::MemberId;
     use ui::native_media::{REPLY_TIMEOUT, State};
 
     fn live() -> Snapshot {
@@ -1841,7 +1849,7 @@ mod tests {
             chat.voice_members.insert(
                 "c_standup".into(),
                 vec![crate::model::VoiceMember {
-                    user: "someone".into(),
+                    user: MemberId::person("someone"),
                     talking: false,
                     muted: false,
                     deafened: false,
@@ -1851,7 +1859,7 @@ mod tests {
                     video: None,
                 }],
             );
-            assert_eq!(in_call(&chat), [chat.user_name("someone")]);
+            assert_eq!(in_call(&chat), [chat.user_name(&MemberId::person("someone"))]);
         }
 
         phase joining_panel_is_visible_without_claiming_live_capture_or_streams;

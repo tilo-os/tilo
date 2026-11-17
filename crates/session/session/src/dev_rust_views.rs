@@ -98,7 +98,8 @@ impl RustApps {
                 text: Some("Worth a watch".to_owned()),
                 mentions: None,
             });
-        let _ = self.chat.apply_part_as(chat::model::ME, invoke);
+        let _ = self.chat
+            .apply_part_as(&tilo_resource::MemberId::person(chat::model::ME), invoke);
     }
 }
 
@@ -214,7 +215,11 @@ impl Service for RustApps {
             if !text.trim().is_empty() {
                 for conversation in &to {
                     self.chat
-                        .say(chat::model::ME, &conversation.id, &text)
+                        .say(
+                            &tilo_resource::MemberId::person(chat::model::ME),
+                            &conversation.id,
+                            &text,
+                        )
                         .map_err(|error| ApiError::Failed(format!("{error:?}")))?;
                 }
             }

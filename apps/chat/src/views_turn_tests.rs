@@ -48,9 +48,8 @@ fn turn_answered(reply: Message) -> Turn {
         messages: vec![
             Message {
                 id: "q1".to_owned(),
-                author: "pat".to_owned(),
                 text: "which of my tasks are due this week?".to_owned(),
-                ..Message::default()
+                ..Message::by(MemberId::person("pat"))
             },
             reply,
         ],
@@ -65,13 +64,12 @@ fn turn_answered(reply: Message) -> Turn {
 fn a_turns_reply_reads_its_markdown_as_text() {
     let turn = turn_answered(Message {
         id: "r1".to_owned(),
-        author: "agent:assistant".to_owned(),
         text: "Two are due:\n\n- **Send the invoice** by Friday\n- Call *Ada*".to_owned(),
         work: Some(Work {
             state: "done".to_owned(),
             ..Work::default()
         }),
-        ..Message::default()
+        ..Message::by(MemberId::agent("assistant"))
     });
     let channel = Channel::default();
     let tree = super::turn(&turn, &view_cx(&channel));
@@ -104,13 +102,12 @@ fn a_turns_list_reads_as_a_bulleted_list() {
     ] {
         let turn = turn_answered(Message {
             id: "r1".to_owned(),
-            author: "agent:assistant".to_owned(),
             text: text.to_owned(),
             work: Some(Work {
                 state: "done".to_owned(),
                 ..Work::default()
             }),
-            ..Message::default()
+            ..Message::by(MemberId::agent("assistant"))
         });
         let channel = Channel::default();
         let tree = super::turn(&turn, &view_cx(&channel));
@@ -155,13 +152,12 @@ fn rich_blocks(node: &Node) -> Vec<(String, String)> {
 fn a_working_turn_says_what_it_is_doing_now() {
     let turn = turn_answered(Message {
         id: "r1".to_owned(),
-        author: "agent:assistant".to_owned(),
         work: Some(Work {
             state: "doing".to_owned(),
             steps: vec!["Opened Tasks".to_owned(), "Looked up Tasks".to_owned()],
             ..Work::default()
         }),
-        ..Message::default()
+        ..Message::by(MemberId::agent("assistant"))
     });
     let channel = Channel::default();
     let tree = super::turn(&turn, &view_cx(&channel));
@@ -180,12 +176,11 @@ fn a_working_turn_says_what_it_is_doing_now() {
     // Asked and not taken yet: it is thinking.
     let waiting = turn_answered(Message {
         id: "r1".to_owned(),
-        author: "agent:assistant".to_owned(),
         work: Some(Work {
             state: "taken".to_owned(),
             ..Work::default()
         }),
-        ..Message::default()
+        ..Message::by(MemberId::agent("assistant"))
     });
     assert!(
         texts(&super::turn(&waiting, &view_cx(&channel)))
@@ -208,14 +203,13 @@ fn a_done_turns_steps_are_one_line_that_unfolds() {
     );
     let turn = turn_answered(Message {
         id: "r1".to_owned(),
-        author: "agent:assistant".to_owned(),
         text: "Done.".to_owned(),
         work: Some(Work {
             state: "done".to_owned(),
             steps: vec!["Open Tasks".to_owned(), "Find tasks".to_owned()],
             ..Work::default()
         }),
-        ..Message::default()
+        ..Message::by(MemberId::agent("assistant"))
     });
     let channel = Channel::default();
     let tree = super::turn(&turn, &view_cx(&channel));
@@ -235,13 +229,12 @@ fn a_done_turns_steps_are_one_line_that_unfolds() {
 fn a_turns_words_scroll_inside_its_card() {
     let turn = turn_answered(Message {
         id: "r1".to_owned(),
-        author: "agent:assistant".to_owned(),
         text: "Nine tasks are due this week. ".repeat(40),
         work: Some(Work {
             state: "done".to_owned(),
             ..Work::default()
         }),
-        ..Message::default()
+        ..Message::by(MemberId::agent("assistant"))
     });
     let channel = Channel::default();
     let tree = super::turn(&turn, &view_cx(&channel));

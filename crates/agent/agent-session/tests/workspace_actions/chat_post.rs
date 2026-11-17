@@ -211,15 +211,14 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     for index in 0..HISTORY {
         grown_part.messages.push(
             ui::tilo_resource::Id::from_raw(format!("m{index}")),
-            chat::record::Message {
-                channel: channel.id.clone().into(),
-                author: ui::tilo_resource::Atom("ada".to_owned()),
-                ts: i64::try_from(index).unwrap_or(i64::MAX),
-                // Short: one publication carries the part, and the host
-                // reads every message of it all the same.
-                text: format!("history {index}"),
-                ..chat::record::Message::default()
-            },
+            // Short: one publication carries the part, and the host reads
+            // every message of it all the same.
+            chat::record::Message::new(
+                channel.id.clone().into(),
+                ui::tilo_resource::MemberId::person("ada"),
+                i64::try_from(index).unwrap_or(i64::MAX),
+                format!("history {index}"),
+            ),
         );
     }
     let store = ui::record::RecordOwners::new(state.path().join("history"))

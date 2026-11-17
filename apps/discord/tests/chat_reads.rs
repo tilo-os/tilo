@@ -151,7 +151,7 @@ fn the_record_api_reads_what_the_planners_read() {
     let stored = state
         .people
         .iter()
-        .find(|p| p.id.0 == message.author)
+        .find(|p| p.id == message.author)
         .unwrap();
     assert_eq!(author.name, stored.name);
 }

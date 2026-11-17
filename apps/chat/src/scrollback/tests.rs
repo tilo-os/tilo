@@ -5,6 +5,7 @@ use crate::testing::MountedChat;
 use ui::framework::testing::TestApp;
 use ui::framework::{Chain, PartArrival};
 use ui::tilo_resource::Id;
+use ui::tilo_resource::MemberId;
 
 use crate::ChatShell;
 use crate::parts::{ChatPart, PART_TEXT_BYTES, ReadMark};
@@ -78,7 +79,7 @@ fn three_parts(writer: &mut Window, per_part: usize) {
             let at = chain
                 .stage_as(
                     &crate::demo::post(CHAT_CHANNEL, &format!("{part}.{n}"), None),
-                    "u_aria",
+                    &MemberId::person("u_aria"),
                 )
                 .unwrap();
             assert_eq!(at, Some(part));
@@ -88,7 +89,10 @@ fn three_parts(writer: &mut Window, per_part: usize) {
         }
         for n in 0..=PART_TEXT_BYTES / long_post(0).len() + 1 {
             if chain
-                .stage_as(&crate::demo::post(ARCHIVE, &long_post(n), None), "u_milo")
+                .stage_as(
+                    &crate::demo::post(ARCHIVE, &long_post(n), None),
+                    &MemberId::person("u_milo"),
+                )
                 .unwrap()
                 != Some(part)
             {
@@ -470,7 +474,7 @@ fn a_newcomer_asks_for_the_chats_newest_part_and_starts_none_meanwhile() {
     );
     let post = crate::demo::post(CHAT_CHANNEL, "hello", None);
     assert_eq!(
-        chain.stage_as(&post, "u_bo").unwrap(),
+        chain.stage_as(&post, &MemberId::person("u_bo")).unwrap(),
         None,
         "nothing is written before the workspace answered: the post waits"
     );
@@ -492,7 +496,10 @@ fn a_newcomer_asks_for_the_chats_newest_part_and_starts_none_meanwhile() {
     );
     assert_eq!(held(&mut bo), [0], "the waiting post started it");
     assert!(chain.unwritten().is_none(), "the post was written");
-    assert_eq!(chain.stage_as(&post, "u_bo").unwrap(), Some(0));
+    assert_eq!(
+        chain.stage_as(&post, &MemberId::person("u_bo")).unwrap(),
+        Some(0)
+    );
 }
 
 /// Messages of `#chat` in each part where each part is to hold more than two

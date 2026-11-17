@@ -7662,7 +7662,44 @@
           },
           "participants": {
             "items": {
-              "type": "string"
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "person": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "person"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "agent": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "agent"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bot": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "bot"
+                  ],
+                  "type": "object"
+                }
+              ]
             },
             "type": [
               "array",
@@ -7862,7 +7899,44 @@
             "type": "string"
           },
           "author": {
-            "type": "string"
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "bot": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bot"
+                ],
+                "type": "object"
+              }
+            ]
           },
           "reason": {
             "minLength": 1,
@@ -8527,7 +8601,44 @@
                   "type": "integer"
                 },
                 "user": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "person": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "person"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "agent"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bot": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "bot"
+                      ],
+                      "type": "object"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -8931,7 +9042,44 @@
                   "type": "integer"
                 },
                 "user": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "person": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "person"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "agent"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bot": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "bot"
+                      ],
+                      "type": "object"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -9013,7 +9161,44 @@
                   "type": "integer"
                 },
                 "user": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "person": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "person"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "agent"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bot": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "bot"
+                      ],
+                      "type": "object"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -9113,7 +9298,44 @@
                   "type": "integer"
                 },
                 "user": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "person": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "person"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "agent"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bot": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "bot"
+                      ],
+                      "type": "object"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -9354,7 +9576,44 @@
                   "type": "integer"
                 },
                 "user": {
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "person": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "person"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "agent"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bot": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "bot"
+                      ],
+                      "type": "object"
+                    }
+                  ]
                 }
               },
               "required": [

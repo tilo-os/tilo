@@ -36,7 +36,7 @@ use crate::record::{
 /// its author's. Removing someone else's is moderation (`remove-message`),
 /// which the workspace's roles decide.
 fn own(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
-    if author(cx)? == message.author.0 {
+    if author(cx)? == message.author {
         Ok(())
     } else {
         Err(Refusal::new(
@@ -75,12 +75,14 @@ impl ChatPart {
                     // Who wrote it and where are ids here: the workspace's
                     // own record holds the names, so a row says them by what
                     // those resources are called now.
-                    let author = message.author.0.clone();
                     let sender = IndexPerson {
                         name: String::new(),
-                        anchor: item_resource_id::<Chat>("people", &Id::from_raw(author.clone())),
-                        agent: crate::views::is_agent(&author),
-                        identity: author,
+                        anchor: item_resource_id::<Chat>(
+                            "people",
+                            &crate::record::member_slot(&message.author),
+                        ),
+                        agent: !message.author.is_person(),
+                        identity: message.author.id().to_owned(),
                     };
                     let place = IndexPerson {
                         name: String::new(),
@@ -174,10 +176,6 @@ impl ChatPart {
         self.messages.push(
             id.clone(),
             Message {
-                channel: channel.clone(),
-                author: Atom(author),
-                ts,
-                text: posting.text,
                 body: posting.body,
                 parent: posting.parent,
                 quoted: posting.quoted,
@@ -188,7 +186,7 @@ impl ChatPart {
                 author_name: Some(cx.acting_name()).filter(|name| !name.trim().is_empty()),
                 origin: posting.origin,
                 share: posting.share,
-                ..Message::default()
+                ..Message::new(channel.clone(), author, ts, posting.text)
             },
         );
         Ok(id)
@@ -649,7 +647,7 @@ impl ChatPart {
         let by = self
             .messages
             .get(reply)
-            .map(|answered| answered.author.0.clone())
+            .map(|answered| answered.author.clone())
             .ok_or_else(|| Refusal::new("there is no such reply"))?;
         let summons = self
             .messages
@@ -712,7 +710,7 @@ impl ChatPart {
             .messages
             .get_mut(&reply)
             .ok_or_else(|| Refusal::new("there is no such message"))?;
-        if row.author.0 != me {
+        if row.author != me {
             return Err(Refusal::new("only the reply's author records its work"));
         }
         let record = row.work.get_or_insert_with(Work::default);
@@ -1290,7 +1288,7 @@ impl Messages {
     /// reader holds it, in the same order as [`Self::first_unread`]: the
     /// part's own.
     #[must_use]
-    pub fn unread_by_others(&self, channel: &Id, mark: parts::ReadMark, author: &str) -> usize {
+    pub fn unread_by_others(&self, channel: &Id, mark: parts::ReadMark, author: &tilo_resource::MemberId) -> usize {
         let from = u64::try_from(mark.part.max(0)).unwrap_or_default();
         let seen = usize::try_from(mark.seen.max(0)).unwrap_or(usize::MAX);
         let mut unread = 0;
@@ -1304,7 +1302,7 @@ impl Messages {
                 .values()
                 .filter(|message| message.channel == *channel && message.parent.is_none())
                 .skip(skip)
-                .filter(|message| message.author.0 != author)
+                .filter(|message| message.author != *author)
                 .count();
         }
         unread

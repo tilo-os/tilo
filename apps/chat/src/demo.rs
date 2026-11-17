@@ -352,7 +352,7 @@ pub fn demo(me: &str) -> Chat {
         ("u_iris", "Iris Wolfe", "IW", 6, Presence::Offline),
     ] {
         chat.people.push(Person {
-            id: Atom(id.to_owned()),
+            id: ui::tilo_resource::MemberId::person(id),
             name: name.to_owned(),
             initials: initials.to_owned(),
             color,
@@ -419,11 +419,7 @@ pub fn demo_part(me: &str) -> ChatPart {
         part.messages.push(
             Id::from_raw(id),
             Message {
-                channel: Id::from_raw(channel),
-                author: Atom(mine(&message.author)),
-                ts: message.ts,
                 mentions: crate::mention::resolve(&message.text, &participants),
-                text: message.text,
                 edited: message.edited,
                 history: message
                     .history
@@ -436,7 +432,12 @@ pub fn demo_part(me: &str) -> ChatPart {
                 parent: message.parent.map(Id::from_raw),
                 reactions,
                 attachments: message.attachments,
-                ..Message::default()
+                ..Message::new(
+                    Id::from_raw(channel),
+                    ui::tilo_resource::MemberId::person(mine(&message.author)),
+                    message.ts,
+                    message.text,
+                )
             },
         );
     };
@@ -507,7 +508,7 @@ pub fn write(doc: &mut AutoCommit, chat: &Chat) -> Result<(), ModelError> {
             add(&mut held.channels, id, channel.clone())?;
         }
         for person in &chat.people {
-            let id = Id::from_raw(person.id.0.clone());
+            let id = crate::record::member_slot(&person.id);
             if held.people.find(&id).is_some() {
                 return Err(ModelError::invalid(format!("an item `{id}` exists")));
             }
@@ -710,7 +711,7 @@ impl Workspace {
     /// number.
     pub fn apply_part_as(
         &mut self,
-        author: &str,
+        author: &ui::tilo_resource::MemberId,
         invoke: Invoke<ChatPart>,
     ) -> Result<u64, ApiError> {
         self.apply_part_at(author, ui::tilo_resource::origin_now_ms(), invoke)
@@ -722,7 +723,7 @@ impl Workspace {
     /// As [`Self::apply_part_as`].
     pub fn apply_part_at(
         &mut self,
-        author: &str,
+        author: &ui::tilo_resource::MemberId,
         now_ms: i64,
         invoke: impl Into<Invoke<ChatPart>>,
     ) -> Result<u64, ApiError> {
@@ -756,7 +757,12 @@ impl Workspace {
     ///
     /// # Errors
     /// As [`Self::apply_part_as`].
-    pub fn say(&mut self, author: &str, channel: &str, text: &str) -> Result<String, ApiError> {
+    pub fn say(
+        &mut self,
+        author: &ui::tilo_resource::MemberId,
+        channel: &str,
+        text: &str,
+    ) -> Result<String, ApiError> {
         let before: Vec<String> = self
             .message_rows(channel)
             .into_iter()
@@ -929,7 +935,7 @@ pub fn say_in_part(
 /// As [`Workspace::apply_part_as`].
 pub fn say(
     workspace: &mut Workspace,
-    author: &str,
+    author: &ui::tilo_resource::MemberId,
     channel: &str,
     text: &str,
 ) -> Result<String, ApiError> {

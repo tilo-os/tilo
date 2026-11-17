@@ -69,14 +69,14 @@ impl Chat {
             Some(SearchEntry::new(&message.text, "Feedback").anchored(anchor("feedback", id)))
         });
         let people = self.people.iter().map(|person| {
-            let person_anchor = anchor("people", &Id::from_raw(person.id.0.clone()));
+            let person_anchor = anchor("people", &crate::record::member_slot(&person.id));
             SearchEntry::new(&person.name, "")
                 .anchored(person_anchor.clone())
                 .of_kind(IndexKind::Person)
                 .showing(vec![IndexPerson {
                     name: person.name.trim().to_owned(),
                     anchor: person_anchor,
-                    identity: person.id.0.clone(),
+                    identity: person.id.id().to_owned(),
                     agent: person.is_agent(),
                 }])
         });
@@ -96,12 +96,14 @@ impl Chat {
             .map(|participant| IndexPerson {
                 name: self
                     .people
-                    .iter()
-                    .find(|person| person.id.0 == participant.key())
+                    .find(&crate::record::member_slot(&participant))
                     .map(|person| person.name.trim().to_owned())
                     .unwrap_or_default(),
-                anchor: item_resource_id::<Self>("people", &Id::from_raw(participant.key())),
-                identity: participant.key(),
+                anchor: item_resource_id::<Self>(
+                    "people",
+                    &crate::record::member_slot(&participant),
+                ),
+                identity: participant.id().to_owned(),
                 agent: !participant.is_person(),
             })
             .collect()
@@ -233,10 +235,11 @@ impl ResourceApp for ChatShell {
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
         crate::i18n::ensure();
+        // A view with no reader reads as a person with no id.
         let me = cx
             .me()
-            .map(ui::tilo_resource::MemberId::key)
-            .unwrap_or_default();
+            .cloned()
+            .unwrap_or_else(|| ui::tilo_resource::MemberId::person(String::new()));
         let live = cx.mode().is_live();
         // Native path access controls attachment import. A live browser
         // independently discovers its host's voice service through media replies.
@@ -401,7 +404,7 @@ impl ResourceApp for ChatShell {
         if fixture.scenario() == Some("agent-work") {
             for (_, invoke) in agent_work_steps() {
                 fixture.version(
-                    ui::tilo_resource::MemberId::agent(DEMO_AGENT_ID),
+                    demo_agent(),
                     crate::demo::NOW * 1000,
                     invoke,
                 );
@@ -433,7 +436,7 @@ impl ResourceApp for ChatShell {
         if cx.host().is_some_and(|host| host.capture().is_some()) {
             return Vec::new();
         }
-        let creator = LocalIdentity::for_participant(&cx.me().key());
+        let creator = LocalIdentity::for_participant(cx.me());
         vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
             name: creator.name,
             initials: creator.initials,
@@ -450,7 +453,7 @@ impl ResourceApp for ChatShell {
 #[cfg(feature = "samples")]
 pub(crate) fn part_scenario(
     scenario: Option<&str>,
-) -> (Option<ChatPart>, Vec<(&'static str, Invoke<ChatPart>)>) {
+) -> (Option<ChatPart>, Vec<(ui::tilo_resource::MemberId, Invoke<ChatPart>)>) {
     let me = crate::model::ME;
     if scenario == Some("starter") {
         return (None, Vec::new());
@@ -485,7 +488,7 @@ pub(crate) fn part_scenario(
         ) => steps.extend(
             provider_stream_scenario(scenario)
                 .into_iter()
-                .map(|invoke| (me, invoke)),
+                .map(|invoke| (ui::tilo_resource::MemberId::person(me), invoke)),
         ),
         Some("agent-work") => {
             let (id, message) = agent_summons();
@@ -530,13 +533,12 @@ fn long_thread_posts(me: &str) -> Vec<(Id, crate::record::Message)> {
             };
             (
                 Id::from_raw(format!("m_long_{index:03}")),
-                crate::record::Message {
-                    channel: Id::from_raw("c_crit"),
-                    author: ui::tilo_resource::Atom(author.to_owned()),
-                    ts: newest.saturating_sub(ago),
+                crate::record::Message::new(
+                    Id::from_raw("c_crit"),
+                    ui::tilo_resource::MemberId::person(author),
+                    newest.saturating_sub(ago),
                     text,
-                    ..crate::record::Message::default()
-                },
+                ),
             )
         })
         .collect()
@@ -594,34 +596,31 @@ pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<ChatPart>> 
 fn mention_post() -> (Id, crate::record::Message) {
     let text = "@You could you check the hover states on the new sidebar before standup?";
     let post = crate::record::Message {
-        channel: Id::from_raw("c_frontend"),
-        author: ui::tilo_resource::Atom("u_aria".to_owned()),
-        ts: crate::demo::NOW - 30,
-        text: text.into(),
         mentions: vec![crate::mention::Mention {
-            user: crate::model::ME.into(),
+            user: ui::tilo_resource::MemberId::person(crate::model::ME),
             start: 0,
             len: "@You".len(),
             is_agent: false,
         }],
-        ..crate::record::Message::default()
+        ..crate::record::Message::new(
+            Id::from_raw("c_frontend"),
+            ui::tilo_resource::MemberId::person("u_aria"),
+            crate::demo::NOW - 30,
+            text.into(),
+        )
     };
     (Id::from_raw("m_mention"), post)
 }
 
 /// The bridge the `bridged` scenario's post is by.
 #[cfg(feature = "samples")]
-pub(crate) const DEMO_BRIDGE: &str = "bot:5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1";
+const DEMO_BRIDGE: &str = "5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1";
 
 /// `bridged`: a bridge's post of a line someone wrote on Discord, shown
 /// under their name and picture while it stays the bridge's.
 #[cfg(feature = "samples")]
 fn bridged_post() -> (Id, crate::record::Message) {
     let post = crate::record::Message {
-        channel: Id::from_raw("c_crit"),
-        author: ui::tilo_resource::Atom(DEMO_BRIDGE.to_owned()),
-        ts: crate::demo::NOW - 60,
-        text: "Joining from Discord: the warmer palette reads much better on my phone.".into(),
         appearance: Some(crate::record::ShownAs {
             name: "Bo".into(),
             avatar: Some("tilo-demo://avatar-bo".into()),
@@ -631,25 +630,30 @@ fn bridged_post() -> (Id, crate::record::Message) {
                 linked: None,
             }),
         }),
-        ..crate::record::Message::default()
+        ..crate::record::Message::new(
+            Id::from_raw("c_crit"),
+            ui::tilo_resource::MemberId::bot(DEMO_BRIDGE),
+            crate::demo::NOW - 60,
+            "Joining from Discord: the warmer palette reads much better on my phone.".into(),
+        )
     };
     (Id::from_raw("m_bridged"), post)
 }
 
 /// The agent the `agent-work` scenario summons.
 #[cfg(feature = "samples")]
-pub(crate) const DEMO_AGENT: &str = "agent:tide";
-#[cfg(feature = "samples")]
-const DEMO_AGENT_ID: &str = "tide";
+pub(crate) fn demo_agent() -> ui::tilo_resource::MemberId {
+    ui::tilo_resource::MemberId::agent("tide")
+}
 /// The message summoning it.
 #[cfg(feature = "samples")]
 pub(crate) const DEMO_SUMMONS: &str = "m_agent_request";
 
 /// On the demo workspace: the agent introducing itself.
 #[cfg(feature = "samples")]
-pub(crate) fn agent_work_steps() -> Vec<(&'static str, Invoke<Chat>)> {
+pub(crate) fn agent_work_steps() -> Vec<(ui::tilo_resource::MemberId, Invoke<Chat>)> {
     vec![(
-        DEMO_AGENT,
+        demo_agent(),
         Chat::INTRODUCE.with(chat::Introduce {
             name: "Tide".into(),
             initials: "TI".into(),
@@ -663,17 +667,18 @@ pub(crate) fn agent_work_steps() -> Vec<(&'static str, Invoke<Chat>)> {
 #[cfg(feature = "samples")]
 pub(crate) fn agent_summons() -> (Id, crate::record::Message) {
     let summons = crate::record::Message {
-        channel: Id::from_raw("c_crit"),
-        author: ui::tilo_resource::Atom(crate::model::ME.to_owned()),
-        ts: crate::demo::NOW - 120,
-        text: "@Tide add the revenue curve to Calculator and keep the current bounds.".into(),
         mentions: vec![crate::mention::Mention {
-            user: DEMO_AGENT.into(),
+            user: demo_agent(),
             start: 0,
             len: "@Tide".len(),
             is_agent: true,
         }],
-        ..crate::record::Message::default()
+        ..crate::record::Message::new(
+            Id::from_raw("c_crit"),
+            ui::tilo_resource::MemberId::person(crate::model::ME),
+            crate::demo::NOW - 120,
+            "@Tide add the revenue curve to Calculator and keep the current bounds.".into(),
+        )
     };
     (Id::from_raw(DEMO_SUMMONS), summons)
 }
@@ -681,8 +686,11 @@ pub(crate) fn agent_summons() -> (Id, crate::record::Message) {
 /// On the demo conversation holding [`agent_summons`]: the agent's record
 /// of the work it took on, by the agent.
 #[cfg(feature = "samples")]
-pub(crate) fn agent_work_part_steps() -> Vec<(&'static str, Invoke<ChatPart>)> {
-    vec![(DEMO_AGENT, agent_work(&Id::from_raw(DEMO_SUMMONS)))]
+pub(crate) fn agent_work_part_steps() -> Vec<(ui::tilo_resource::MemberId, Invoke<ChatPart>)> {
+    vec![(
+        demo_agent(),
+        agent_work(&Id::from_raw(DEMO_SUMMONS)),
+    )]
 }
 
 /// The demo agent's record of the work `summons` asked of it.

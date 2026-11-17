@@ -14,7 +14,7 @@ use chat::demo::Workspace;
 use chat::drafts::ChatDrafts;
 use chat::messages::chat_part;
 use chat::parts::ChatPart;
-use ui::tilo_resource::{Id, Invoke, NonBlank, Replica};
+use ui::tilo_resource::{Id, Invoke, MemberId, NonBlank, Replica};
 use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
 /// What the chat binary answers search about `doc`: its entries, as the
@@ -67,7 +67,11 @@ fn text_hit(entries: &[serde_json::Value], text: &str) -> Option<String> {
 fn a_conversation_and_its_messages_are_found_from_the_records() {
     let mut workspace = Workspace::demo().expect("the demo workspace holds");
     let posted = workspace
-        .say("u_aria", "c_general", "the wheel is loose again")
+        .say(
+            &MemberId::person("u_aria"),
+            "c_general",
+            "the wheel is loose again",
+        )
         .expect("a message is posted");
     let chat = workspace.chat.save();
     let part = workspace.part_bytes(0).expect("the messages are a part");
@@ -201,11 +205,15 @@ fn a_draft_is_found_from_the_persons_own_record() {
 fn a_deleted_message_is_not_found() {
     let mut workspace = Workspace::demo().expect("the demo workspace holds");
     let posted = workspace
-        .say("u_aria", "c_general", "the wheel is loose again")
+        .say(
+            &MemberId::person("u_aria"),
+            "c_general",
+            "the wheel is loose again",
+        )
         .expect("a message is posted");
     workspace
         .apply_part_as(
-            "u_aria",
+            &MemberId::person("u_aria"),
             ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
                 message: Id::from_raw(posted),
             }),

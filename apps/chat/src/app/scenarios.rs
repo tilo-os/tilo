@@ -27,8 +27,9 @@ impl ChatApp {
             self.active_channel = "c_crit".into();
             // The demo conversation is read by its own person: what they
             // wrote is the reader's.
-            if !self.is_me(crate::model::ME) {
-                self.former_ids.push(crate::model::ME.into());
+            let demo = ui::tilo_resource::MemberId::person(crate::model::ME);
+            if !self.is_me(&demo) {
+                self.former_ids.push(demo);
             }
         }
         self.sharing_context = scenario == "live-context";
@@ -93,7 +94,7 @@ impl ChatApp {
                 // numbered alike, in the timeline and the people list.
                 let mut presence = PresenceCtx::empty();
                 presence.set_self_participant(
-                    ui::permissions::MemberId::person(self.me.id.clone()),
+                    self.me.id.clone(),
                     self.me.name.clone(),
                 );
                 for (id, name) in [
@@ -154,7 +155,7 @@ impl ChatApp {
                 self.call.expanded = scenario != "lounge";
                 self.right_flap.snap(false);
                 self.stage_connected_call();
-                let me = self.me.id.clone();
+                let me = self.me.id.id().to_owned();
                 let mut huddle = vec![
                     me,
                     "u_aria".to_owned(),
@@ -267,7 +268,7 @@ impl ChatApp {
                     // A call with four people beside this one, one of them
                     // muted, as the workspace reports them: the card's hero
                     // stacks three of their faces and counts the rest.
-                    let me = self.me.id.clone();
+                    let me = self.me.id.id().to_owned();
                     self.native_voice.snapshot.rosters = vec![ui::native_media::Roster {
                         channel_id: self.call.channel.clone(),
                         people: vec![

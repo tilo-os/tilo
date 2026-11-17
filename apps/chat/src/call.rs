@@ -69,7 +69,7 @@ pub struct CallState {
     /// Who the docked call shows large: the last other person the call
     /// heard, kept until someone else speaks, so the tile does not flip
     /// back and forth between two people taking turns.
-    pub featured: Option<String>,
+    pub featured: Option<ui::tilo_resource::MemberId>,
 }
 
 impl Default for CallState {

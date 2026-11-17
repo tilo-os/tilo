@@ -140,7 +140,7 @@ pub(crate) enum Hit {
     CallOpenWindow,
     /// Someone else in the call, by person id: opens how loud they play
     /// here.
-    CallParticipant(String),
+    CallParticipant(ui::tilo_resource::MemberId),
     /// Toggle the right flap (members / thread).
     ToggleRightFlap,
     /// Show or hide the open channel's pinned messages in the detail drawer.
@@ -151,7 +151,7 @@ pub(crate) enum Hit {
     /// member's in the list: who they are, Message and Follow. `place`
     /// tells the targets of one person apart.
     ShowPerson {
-        person: String,
+        person: ui::tilo_resource::MemberId,
         place: String,
     },
     Dismiss, // click on a scrim closes the top-most popover
@@ -224,7 +224,7 @@ impl Hit {
             Self::CallExpand => "chat.call-expand".into(),
             Self::CallLeave => "chat.call-leave".into(),
             Self::CallOpenWindow => "chat.call-open-window".into(),
-            Self::CallParticipant(id) => format!("chat.call-participant:{id}"),
+            Self::CallParticipant(id) => format!("chat.call-participant:{}", id.id()),
             other => format!("chat.control:{other:?}"),
         }
     }
@@ -564,10 +564,7 @@ impl ChatApp {
                                     .iter()
                                     .find(|reaction| reaction.emoji == *emoji)
                             })
-                            .is_some_and(|reaction| {
-                                ui::tilo_resource::MemberId::parse(&self.me.id)
-                                    .is_some_and(|me| reaction.includes(&me))
-                            });
+                            .is_some_and(|reaction| reaction.includes(&self.me.id));
                         (
                             content(ui::widget::reaction_strip::pill_name(emoji, mine)),
                             Role::ToggleButton,
@@ -726,7 +723,7 @@ impl ChatApp {
                 .iter()
                 .filter(|((_, id), _)| id == msg)
                 .find_map(|(_, strip)| {
-                    strip.tooltip_at(point, &|reactor| self.user_name(&reactor.by.key()))
+                    strip.tooltip_at(point, &|reactor| self.user_name(&reactor.by))
                 })
         {
             return Some(tip);

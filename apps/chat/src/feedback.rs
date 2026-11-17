@@ -38,7 +38,7 @@ pub enum TriageUpdate {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriageEntry {
-    pub author: String,
+    pub author: ui::tilo_resource::MemberId,
     pub ts: i64,
     pub update: TriageUpdate,
 }
@@ -47,7 +47,7 @@ pub struct TriageEntry {
 #[serde(deny_unknown_fields)]
 pub struct Report {
     pub submission: ui::feedback::Submission,
-    pub author: String,
+    pub author: ui::tilo_resource::MemberId,
     pub ts: i64,
     #[serde(default)]
     pub triage: Vec<TriageEntry>,
@@ -118,7 +118,7 @@ fn report_of(id: &Id, report: &crate::record::FeedbackReport) -> Result<Report, 
         .values()
         .filter_map(|entry| {
             Some(TriageEntry {
-                author: entry.author.0.clone(),
+                author: entry.author.clone(),
                 ts: entry.ts,
                 update: entry.update.clone()?,
             })
@@ -133,7 +133,7 @@ fn report_of(id: &Id, report: &crate::record::FeedbackReport) -> Result<Report, 
     });
     Ok(Report {
         submission,
-        author: report.author.0.clone(),
+        author: report.author.clone(),
         ts: report.ts,
         triage,
     })
@@ -212,7 +212,7 @@ pub fn canonical_feedback_projection(
     }
     let receipt = receipt_content(doc, &submission.id, &submission.destination)
         .map_err(|_| ui::feedback::Error::ReceiptMismatch)?;
-    Ok((receipt, report.author))
+    Ok((receipt, report.author.id().to_owned()))
 }
 
 /// Read the report from its canonical owner after checking that exact record's
@@ -254,6 +254,7 @@ pub fn receipt_from_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::tilo_resource::MemberId;
     use crate::record::chat;
     use crate::resource::Chat;
     use crate::testing::apply_as;
@@ -328,7 +329,7 @@ mod tests {
                 .filter(|message| message.id == message_id(&submission.id))
                 .collect();
             assert_eq!(matching.len(), 1);
-            assert_eq!(matching[0].author, "visitor:one");
+            assert_eq!(matching[0].author, MemberId::person("visitor:one"));
             assert_eq!(
                 report(&restored, &submission.id)
                     .unwrap()
@@ -390,12 +391,12 @@ mod tests {
             .unwrap();
             let report = report(&doc, &submission.id).unwrap().unwrap();
             assert_eq!(report.submission, submission);
-            assert_eq!(report.author, "visitor:one");
+            assert_eq!(report.author, MemberId::person("visitor:one"));
             assert_eq!(
                 report
                     .triage
                     .iter()
-                    .map(|entry| entry.author.as_str())
+                    .map(|entry| entry.author.id())
                     .collect::<Vec<_>>(),
                 ["maintainer:one", "maintainer:two"]
             );

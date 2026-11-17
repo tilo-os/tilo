@@ -85,13 +85,13 @@ impl Chat {
     #[must_use]
     pub fn conversation_rows(
         &self,
-        me: &str,
+        me: &MemberId,
         messages: &crate::messages::Messages,
         agents: &AgentNames,
     ) -> Vec<Channel> {
         let mut rows = self.channel_rows();
         let mut direct: Vec<(String, Channel)> = Vec::new();
-        let mut push = |id: &Id, participants: Vec<String>, recorded: Option<&Conversation>| {
+        let mut push = |id: &Id, participants: Vec<MemberId>, recorded: Option<&Conversation>| {
             let name = self.display_names(id, Some(me), agents);
             direct.push((
                 name.clone(),
@@ -112,22 +112,18 @@ impl Chat {
         };
         for (id, channel) in self.channels.iter() {
             if !channel.is_channel() {
-                let keys = channel.participants.iter().map(|key| key.0.clone());
-                push(id, keys.collect(), Some(channel));
+                push(id, channel.participants.clone(), Some(channel));
             }
         }
         let mut listed: std::collections::HashSet<Id> = std::collections::HashSet::new();
         for person in &self.people {
-            if person.is_agent() || person.id.0 == me {
+            if person.is_agent() || person.id == *me {
                 continue;
             }
-            let pair = [
-                MemberId::person(me.to_owned()),
-                MemberId::person(person.id.0.clone()),
-            ];
+            let pair = vec![me.clone(), person.id.clone()];
             let id = Chat::direct_id(pair.clone());
             if !self.channels.contains(&id) && listed.insert(id.clone()) {
-                push(&id, pair.iter().map(MemberId::key).collect(), None);
+                push(&id, pair, None);
             }
         }
         // A conversation written to by its id alone (one with an agent that a send opened) is
@@ -140,12 +136,9 @@ impl Chat {
             let Some(participants) = Chat::direct_participants(id) else {
                 continue;
             };
-            if participants
-                .iter()
-                .any(|participant| participant.is_person() && participant.id() == me)
-            {
+            if participants.contains(me) {
                 listed.insert(id.clone());
-                push(id, participants.iter().map(MemberId::key).collect(), None);
+                push(id, participants, None);
             }
         }
         direct.sort_by(|left, right| {
@@ -173,7 +166,7 @@ impl Chat {
     /// An agent is named by what the workspace's own record calls it (`agents`), the identity
     /// record every app of the workspace reads, not by whether its device happens to be here.
     #[must_use]
-    pub fn display_names(&self, id: &Id, me: Option<&str>, agents: &AgentNames) -> String {
+    pub fn display_names(&self, id: &Id, me: Option<&MemberId>, agents: &AgentNames) -> String {
         if let Some(conversation) = self.channels.get(id)
             && !conversation.participants.is_empty()
             && !conversation.name.trim().is_empty()
@@ -195,18 +188,17 @@ impl Chat {
                 agent_name
                     .or_else(|| {
                         self.people
-                            .iter()
-                            .find(|person| person.id.0 == participant.key())
+                            .find(&crate::record::member_slot(participant))
                             .map(|person| person.name.trim().to_owned())
                             .filter(|name| !name.is_empty())
                     })
-                    .unwrap_or_else(|| crate::identity::unnamed_label(participant.id()))
+                    .unwrap_or_else(|| crate::identity::unnamed_label(participant))
             })
             .collect();
         let others: Vec<String> = participants
             .iter()
             .zip(named.iter())
-            .filter(|(participant, _)| Some(participant.id()) != me)
+            .filter(|(participant, _)| Some(*participant) != me)
             .map(|(_, name)| name.clone())
             .collect();
         let shown = if others.is_empty() { named } else { others };
@@ -219,7 +211,7 @@ impl Chat {
         self.people
             .iter()
             .map(|person| User {
-                id: person.id.0.clone(),
+                id: person.id.clone(),
                 name: person.name.clone(),
                 initials: person.initials.clone(),
                 color_idx: usize::try_from(person.color).unwrap_or_default(),
@@ -303,9 +295,9 @@ impl Chat {
 
     /// How far `user` read `channel`.
     #[must_use]
-    pub fn read_mark(&self, channel: &str, user: &str) -> crate::parts::ReadMark {
+    pub fn read_mark(&self, channel: &str, user: &MemberId) -> crate::parts::ReadMark {
         self.read
-            .get(user)
+            .get(crate::record::member_slot(user).as_str())
             .and_then(|marks| marks.get(channel))
             .copied()
             .unwrap_or_default()
@@ -315,7 +307,12 @@ impl Chat {
     /// has not seen. In a direct conversation, what they wrote themselves is
     /// never unread for them.
     #[must_use]
-    pub fn unread(&self, messages: &crate::messages::Messages, channel: &str, user: &str) -> u32 {
+    pub fn unread(
+        &self,
+        messages: &crate::messages::Messages,
+        channel: &str,
+        user: &MemberId,
+    ) -> u32 {
         let mark = self.read_mark(channel, user);
         let unread = if self.is_direct_conversation(channel) {
             messages.unread_by_others(&Id::from_raw(channel), mark, user)
@@ -397,7 +394,7 @@ pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message 
     Message {
         id: id.to_string(),
         channel: message.channel.to_string(),
-        author: message.author.0.clone(),
+        author: message.author.clone(),
         ts: message.ts,
         text: message.text.clone(),
         body: message

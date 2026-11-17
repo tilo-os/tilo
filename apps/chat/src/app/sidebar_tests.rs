@@ -7,7 +7,7 @@ use tilo_actions::policy::MemberId;
 /// A direct conversation row as the record projects it, named `name`.
 fn conversation(app: &ChatApp, key: &str, name: &str) -> crate::model::Channel {
     let id = crate::record::Chat::direct_id([
-        MemberId::person(app.me.id.as_str()),
+        app.me.id.clone(),
         MemberId::person(key),
     ]);
     crate::model::Channel {
@@ -22,8 +22,8 @@ fn conversation(app: &ChatApp, key: &str, name: &str) -> crate::model::Channel {
         archived: false,
         direct: true,
         participants: vec![
-            MemberId::person(app.me.id.as_str()).key(),
-            MemberId::person(key).key(),
+            app.me.id.clone(),
+            MemberId::person(key),
         ],
     }
 }
@@ -65,7 +65,7 @@ tilo_test_env::scenario! {
         let key = |i: u64| format!("{i:064x}");
         let row = |i: u64, name: &str| {
             let id = crate::record::Chat::direct_id([
-                MemberId::person(me.clone()),
+                me.clone(),
                 MemberId::person(key(i)),
             ]);
             crate::model::Channel {
@@ -121,7 +121,7 @@ tilo_test_env::scenario! {
     {
         let mut app = app_in_workspace();
         let key = format!("{:064x}", 7);
-        let row = conversation(&app, &key, &crate::identity::unnamed_label(&key));
+        let row = conversation(&app, &key, &crate::identity::unnamed_label(&MemberId::person(key.clone())));
         app.active_channel = row.id.clone();
         app.channels.push(row);
         app.show_sidebar();
@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
             .iter()
             .map(|item| item.label.clone())
             .collect();
-        assert_eq!(people, [crate::identity::unnamed_label(&key)]);
+        assert_eq!(people, [crate::identity::unnamed_label(&MemberId::person(key.clone()))]);
         assert!(!people[0].trim().is_empty());
         assert_ne!(people[0], key, "never the raw key");
     }

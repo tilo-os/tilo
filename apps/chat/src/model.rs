@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;
+use ui::tilo_resource::MemberId;
 
 /// String identifier (UUID or stable seed key). Used as Automerge map
 /// keys so it must round-trip as a plain string.
@@ -156,9 +157,8 @@ pub struct Channel {
     /// A direct conversation between some of the workspace's people, rather
     /// than one of its named channels.
     pub direct: bool,
-    /// Who a direct conversation is with, by [`MemberId::key`]
-    /// (`<root>`, `agent:<id>`, `bot:<id>`); empty for a channel.
-    pub participants: Vec<String>,
+    /// Who a direct conversation is with; empty for a channel.
+    pub participants: Vec<MemberId>,
 }
 
 /// One person currently connected to a voice channel, with their live
@@ -170,7 +170,7 @@ pub struct Channel {
     reason = "each bool mirrors a distinct CRDT voice-membership field (talking/muted/deafened/audio_only/sharing) read straight off the shared state — grouping them would just relocate the boolean soup, not remove it"
 )]
 pub struct VoiceMember {
-    pub user: Id,
+    pub user: MemberId,
     /// True while this person's mic is transmitting above the speaking
     /// threshold — drives the speaking ring in both surfaces.
     pub talking: bool,
@@ -205,7 +205,7 @@ pub struct VideoCaps {
 
 #[derive(Clone, Debug)]
 pub struct User {
-    pub id: Id,
+    pub id: MemberId,
     pub name: String,
     pub initials: String,
     pub color_idx: usize,
@@ -230,7 +230,7 @@ pub struct EditRecord {
 pub struct Message {
     pub id: Id,
     pub channel: Id,
-    pub author: Id,
+    pub author: MemberId,
     pub ts: i64,
     /// The body's plain text (see [`crate::body`]): what search, agents,
     /// notifications and edit history read.
@@ -622,7 +622,7 @@ pub enum AgentWorkState {
 /// avatar + name header followed by stacked bodies.
 #[derive(Clone, Debug)]
 pub struct MessageGroup {
-    pub author: Id,
+    pub author: MemberId,
     /// Indices into the source `&[Message]` slice, in order.
     pub message_indices: Vec<usize>,
 }
@@ -677,8 +677,8 @@ pub fn reply_count(messages: &[Message], parent_id: &str) -> usize {
 
 /// Distinct authors who replied in a thread, in first-seen order. Used to
 /// render the stacked avatar cluster on the "N replies" affordance.
-pub fn thread_participants(messages: &[Message], parent_id: &str) -> Vec<Id> {
-    let mut seen: Vec<Id> = Vec::new();
+pub fn thread_participants(messages: &[Message], parent_id: &str) -> Vec<MemberId> {
+    let mut seen: Vec<MemberId> = Vec::new();
     for m in messages {
         if m.parent.as_deref() == Some(parent_id) && !seen.contains(&m.author) {
             seen.push(m.author.clone());
@@ -714,7 +714,7 @@ mod tests {
         Message {
             id: id.into(),
             channel: "c".into(),
-            author: author.into(),
+            author: MemberId::person(author),
             ts,
             text: "x".into(),
             body: Vec::new(),
@@ -818,7 +818,10 @@ mod tests {
                     msg("r3", "u2", 30, Some("a")),
                 ];
                 assert_eq!(reply_count(&msgs, "a"), 3);
-                assert_eq!(thread_participants(&msgs, "a"), vec!["u2", "u3"]);
+                assert_eq!(
+                    thread_participants(&msgs, "a"),
+                    vec![MemberId::person("u2"), MemberId::person("u3")]
+                );
             }
         }
 

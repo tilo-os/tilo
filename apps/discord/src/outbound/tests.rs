@@ -19,8 +19,19 @@ fn guild() -> Guild {
     g
 }
 
+/// `author` as the record stores a member, as its JSON text: `agent:<id>` an
+/// agent's, else a person's.
+fn member(author: &str) -> Value {
+    let member = author.strip_prefix("agent:").map_or_else(
+        || ui::tilo_resource::MemberId::person(author),
+        ui::tilo_resource::MemberId::agent,
+    );
+    Value::String(serde_json::to_string(&member).unwrap())
+}
+
 fn msg(id: &str, author: &str, text: &str, extra: &Value) -> (String, Value) {
-    let mut value = json!({"channel": "c1", "author": author, "text": text, "parent": null});
+    let mut value =
+        json!({"channel": "c1", "author": member(author), "text": text, "parent": null});
     if let (Some(v), Some(extra)) = (value.as_object_mut(), extra.as_object()) {
         v.extend(extra.clone());
     }
@@ -31,9 +42,9 @@ fn chat(messages: &[(String, Value)]) -> crate::tilo::ChatRead {
     crate::tilo::ChatRead::new(
         json!({
             "people": {
-                "u_ada": {"id": "u_ada", "name": "Ada", "agent": false, "avatar": "av1"},
-                "u_bo": {"id": "u_bo", "name": "Bo", "agent": false},
-                "agent:x": {"id": "agent:x", "name": "Discord Scribe", "agent": true}
+                "u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada", "agent": false, "avatar": "av1"},
+                "u_bo": {"id": r#"{"person":"u_bo"}"#, "name": "Bo", "agent": false},
+                "agent:x": {"id": r#"{"agent":"x"}"#, "name": "Discord Scribe", "agent": true}
             }
         }),
         messages.to_vec(),
@@ -298,7 +309,10 @@ tilo_test_env::scenario! {
             person: "u_bo".into(),
             ..Link::default()
         });
-        let mentions = "[{\"user\":\"u_bo\",\"start\":3,\"len\":3,\"is_agent\":false},{\"user\":\"u_ada\",\"start\":11,\"len\":4,\"is_agent\":false}]";
+        let mentions = json!([
+            {"user": member("u_bo"), "start": 3, "len": 3, "is_agent": false},
+            {"user": member("u_ada"), "start": 11, "len": 4, "is_agent": false}
+        ]);
         let chat = chat(&[msg(
             "m1",
             "u_ada",
@@ -455,7 +469,7 @@ tilo_test_env::scenario! {
         let mut g = guild();
         g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
         let reacted = |rs: Value| chat(&[msg("m1", "u_ada", "x", &json!({"reactions": rs}))]);
-        let one = reacted(json!([{"emoji": "👍", "by": "u_ada", "at": 1}]));
+        let one = reacted(json!([{"emoji": "👍", "by": r#"{"person":"u_ada"}"#, "at": 1}]));
         let (reacts, unreacts) = plan_reaction(&g, &one, "m1", "👍", true);
         assert_eq!(
             reacts,
@@ -467,8 +481,8 @@ tilo_test_env::scenario! {
         );
         assert!(unreacts.is_empty());
         let two = reacted(json!([
-            {"emoji": "👍", "by": "u_ada", "at": 1},
-            {"emoji": "👍", "by": "u_bo", "at": 2}
+            {"emoji": "👍", "by": r#"{"person":"u_ada"}"#, "at": 1},
+            {"emoji": "👍", "by": r#"{"person":"u_bo"}"#, "at": 2}
         ]));
         assert!(
             plan_reaction(&g, &two, "m1", "👍", true).0.is_empty(),
@@ -480,7 +494,7 @@ tilo_test_env::scenario! {
         );
         // What the bridge reacted for Discord people never goes back out.
         let persona_only = reacted(json!([
-            {"emoji": "👍", "by": "bot:i", "persona": "discord/d7", "name": "Dee", "at": 1}
+            {"emoji": "👍", "by": r#"{"bot":"i"}"#, "persona": "discord/d7", "name": "Dee", "at": 1}
         ]));
         assert_eq!(
             plan_reaction(&g, &persona_only, "m1", "👍", false).1.len(),
@@ -489,8 +503,8 @@ tilo_test_env::scenario! {
         );
         // One emoji spelled with or without its variation selector is one.
         let hearts = reacted(json!([
-            {"emoji": "❤", "by": "u_bo", "at": 1},
-            {"emoji": "❤️", "by": "u_ada", "at": 2}
+            {"emoji": "❤", "by": r#"{"person":"u_bo"}"#, "at": 1},
+            {"emoji": "❤️", "by": r#"{"person":"u_ada"}"#, "at": 2}
         ]));
         assert!(
             plan_reaction(&g, &hearts, "m1", "❤️", true).0.is_empty(),
@@ -508,7 +522,7 @@ tilo_test_env::scenario! {
             animated: false,
         }]);
         let reacted = |rs: Value| chat(&[msg("m1", "u_ada", "x", &json!({"reactions": rs}))]);
-        let hello = reacted(json!([{"emoji": ":tilo_hello:", "by": "u_ada", "at": 1}]));
+        let hello = reacted(json!([{"emoji": ":tilo_hello:", "by": r#"{"person":"u_ada"}"#, "at": 1}]));
         assert_eq!(
             plan_reaction(&g, &hello, "m1", ":tilo_hello:", true).0[0].emoji,
             "tilo_hello:55",
@@ -518,7 +532,7 @@ tilo_test_env::scenario! {
             plan_reaction(&g, &reacted(json!([])), "m1", ":tilo_hello:", false).1[0].emoji,
             "tilo_hello:55"
         );
-        let pizza = reacted(json!([{"emoji": ":pizza:", "by": "u_ada", "at": 1}]));
+        let pizza = reacted(json!([{"emoji": ":pizza:", "by": r#"{"person":"u_ada"}"#, "at": 1}]));
         assert_eq!(
             plan_reaction(&g, &pizza, "m1", ":pizza:", true),
             (Vec::new(), Vec::new()),

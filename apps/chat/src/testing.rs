@@ -31,7 +31,7 @@ pub(crate) fn apply_part_at(
     now_ms: i64,
     invoke: Invoke<crate::parts::ChatPart>,
 ) -> Result<u64, ui::tilo_actions::ApiError> {
-    workspace.apply_part_at(author, now_ms, invoke)
+    workspace.apply_part_at(&ui::tilo_resource::MemberId::person(author), now_ms, invoke)
 }
 
 /// A verb on the messages of `workspace`, applied as `author` invokes it; the
@@ -41,7 +41,7 @@ pub(crate) fn apply_part_as(
     author: &str,
     invoke: Invoke<crate::parts::ChatPart>,
 ) -> Result<u64, ui::tilo_actions::ApiError> {
-    workspace.apply_part_as(author, invoke)
+    workspace.apply_part_as(&ui::tilo_resource::MemberId::person(author), invoke)
 }
 
 /// Start the chat in `doc` as `me` would: the workspace's `#chat` and `#voice`.
@@ -55,7 +55,8 @@ pub(crate) fn introduce(doc: &mut AutoCommit, me: &str, name: &str, initials: &s
 
 /// Post `text` in `channel` as `author`; the new message's id.
 pub(crate) fn say(doc: &mut Workspace, author: &str, channel: &str, text: &str) -> String {
-    doc.say(author, channel, text).unwrap()
+    doc.say(&ui::tilo_resource::MemberId::person(author), channel, text)
+        .unwrap()
 }
 
 /// Write `text` in `app`'s main composer, as its person typing it: the
@@ -166,7 +167,11 @@ pub(crate) fn top_level(doc: &Workspace, channel: &str) -> usize {
     doc.messages().top_level(&Id::from_raw(channel))
 }
 
-pub(crate) fn read_mark(doc: &AutoCommit, channel: &str, user: &str) -> crate::parts::ReadMark {
+pub(crate) fn read_mark(
+    doc: &AutoCommit,
+    channel: &str,
+    user: &ui::tilo_resource::MemberId,
+) -> crate::parts::ReadMark {
     crate::projection::read(doc).read_mark(channel, user)
 }
 
@@ -221,7 +226,7 @@ pub(crate) fn submit_feedback(submission: &ui::feedback::Submission) -> Invoke<C
 pub(crate) fn agent_reply() -> String {
     crate::record::reply_id(
         &Id::from_raw(crate::resource::DEMO_SUMMONS),
-        crate::resource::DEMO_AGENT,
+        &crate::resource::demo_agent(),
     )
     .to_string()
 }

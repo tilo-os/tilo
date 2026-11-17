@@ -94,7 +94,7 @@ tilo_test_env::scenario! {
             ..Link::default()
         });
         let chat = crate::tilo::ChatRead::new(
-            json!({"people": {"u_ada": {"id": "u_ada", "name": "Ada Lovelace", "avatar": "blob-ada"}}}),
+            json!({"people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada Lovelace", "avatar": "blob-ada"}}}),
             Vec::new(),
         );
         let post = &plan_created(&g, &chat, &created("dm1", "hello")).posts[0];
@@ -479,7 +479,7 @@ tilo_test_env::scenario! {
             serde_json::Value::Null,
             vec![(
                 "m1".into(),
-                json!({"channel": "c1", "author": "u_ada", "text": "x", "reactions": [{"emoji": "❤", "by": "u_ada", "at": 1}]}),
+                json!({"channel": "c1", "author": r#"{"person":"u_ada"}"#, "text": "x", "reactions": [{"emoji": "❤", "by": r#"{"person":"u_ada"}"#, "at": 1}]}),
             )],
         );
         let event = ReactionChanged {
@@ -508,7 +508,7 @@ tilo_test_env::scenario! {
             serde_json::Value::Null,
             vec![(
                 "m1".into(),
-                json!({"channel": "c1", "author": "u_ada", "text": "x", "reactions": [{"emoji": "🎉", "by": "bot", "persona": "discord/u8", "name": "Bo", "at": 1}]}),
+                json!({"channel": "c1", "author": r#"{"person":"u_ada"}"#, "text": "x", "reactions": [{"emoji": "🎉", "by": r#"{"person":"bot"}"#, "persona": "discord/u8", "name": "Bo", "at": 1}]}),
             )],
         );
         // Discord's removal names the member by id, without their name.
@@ -784,7 +784,7 @@ fn named(user_name: &str, display_name: Option<&str>) -> UserName {
 
 fn chat_with_ada() -> crate::tilo::ChatRead {
     crate::tilo::ChatRead::new(
-        json!({"people": {"u_ada": {"id": "u_ada", "name": "Ada Lovelace"}}}),
+        json!({"people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada Lovelace"}}}),
         vec![],
     )
 }

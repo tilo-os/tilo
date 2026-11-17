@@ -92,7 +92,7 @@ pub(crate) enum MenuTarget {
     Workspace,
     /// Someone else in the call, by person: how loud they play
     /// on this device.
-    CallParticipant(String),
+    CallParticipant(ui::tilo_resource::MemberId),
 }
 
 /// The structural actions reachable from a context menu.
@@ -281,7 +281,7 @@ impl ChatApp {
         };
         let channel = matches!(target, MenuTarget::Channel(_));
         let listening = match &target {
-            MenuTarget::CallParticipant(id) => Some(self.call_listening(id)),
+            MenuTarget::CallParticipant(id) => Some(self.call_listening(id.id())),
             _ => None,
         };
         let checked = move |action: MenuAction| {

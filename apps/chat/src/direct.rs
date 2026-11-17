@@ -21,7 +21,7 @@ use crate::parts::ChatPart;
 use crate::record::Chat;
 
 impl ChatApp {
-    /// The person the operation's `key` names here, and the one conversation
+    /// The person `key` (their root key) names here, and the one conversation
     /// with them. A workspace whose chat this window does not hold yet says
     /// so, and so does a chat that knows no such person: two different
     /// things to tell the person asking.
@@ -36,28 +36,22 @@ impl ChatApp {
         let Some(person) = chat
             .people
             .iter()
-            .find(|person| person.id.0 == key && !person.is_agent())
+            .find(|person| person.id.person_id() == Some(key))
         else {
             return Err(crate::i18n::t("chat-person-unknown"));
         };
-        if person.id.0 == self.me.id {
+        if person.id == self.me.id {
             return Err(crate::i18n::t("chat-person-unknown"));
         }
-        let id = Chat::direct_id([
-            MemberId::person(self.me.id.clone()),
-            MemberId::person(person.id.0.clone()),
-        ]);
-        Ok((person.id.0.clone(), id))
+        let id = Chat::direct_id([self.me.id.clone(), person.id.clone()]);
+        Ok((key.to_owned(), id))
     }
 
     /// Show the conversation with `agent`, as search's agent hit does: a
     /// direct conversation's id names the two it is between, so an agent the
     /// window has not talked to yet still opens where the conversation is.
     pub(crate) fn open_agent(&mut self, agent: &str, chat: &Chat) {
-        let id = Chat::direct_id([
-            MemberId::person(self.me.id.clone()),
-            MemberId::agent(agent.to_owned()),
-        ]);
+        let id = Chat::direct_id([self.me.id.clone(), MemberId::agent(agent.to_owned())]);
         self.open_conversation(&id, chat);
     }
 
@@ -186,7 +180,7 @@ impl ChatApp {
                 .map(|(id, _)| id.clone())
                 .ok_or_else(|| crate::i18n::t("chat-send-needs-recipient"));
         }
-        let mut participants = vec![MemberId::person(self.me.id.clone())];
+        let mut participants = vec![self.me.id.clone()];
         for recipient in to {
             match recipient.kind {
                 RecipientKind::Person | RecipientKind::Agent => {
@@ -221,11 +215,12 @@ impl ChatApp {
             if agent {
                 return Ok(MemberId::agent(recipient.id.clone()));
             }
+            let person = MemberId::person(recipient.id.clone());
             return chat
                 .people
                 .iter()
-                .any(|person| person.id.0 == recipient.id)
-                .then(|| MemberId::person(recipient.id.clone()))
+                .any(|known| known.id == person)
+                .then_some(person)
                 .ok_or_else(unknown);
         }
         let name = recipient.name.trim().to_lowercase();
@@ -243,14 +238,15 @@ impl ChatApp {
         chat.people
             .iter()
             .filter(|person| person.name.trim().to_lowercase() == name)
-            .filter_map(crate::record::Person::member)
+            .map(|person| &person.id)
             .find(|member| {
                 (if agent {
                     member.is_agent()
                 } else {
                     member.is_person()
-                }) && member.id() != self.me.id
+                }) && **member != self.me.id
             })
+            .cloned()
             .ok_or_else(unknown)
     }
 

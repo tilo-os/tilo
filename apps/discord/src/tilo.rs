@@ -3,6 +3,7 @@
 //! rather than Chat's types so the connector does not carry Chat's code.
 
 use serde_json::Value;
+use ui::tilo_resource::MemberId;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Category {
@@ -21,13 +22,10 @@ pub struct Channel {
 }
 
 /// One reaction, as Chat's `Reactions` field holds it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reaction {
     /// A Unicode emoji, or a workspace emoji as `:name:`.
     pub emoji: String,
-    /// The participant who reacted: a person, or the bot reacting for
-    /// someone elsewhere.
-    pub by: String,
     /// The outside account a bot reacted for (`discord/80351110224678912`).
     pub persona: Option<String>,
     /// The name that account shows.
@@ -67,16 +65,16 @@ pub struct Share {
 }
 
 /// A Chat message.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
     pub id: String,
     pub channel: String,
-    pub author: String,
+    pub author: MemberId,
     pub text: String,
     pub parent: Option<String>,
     pub reactions: Vec<Reaction>,
     /// `(user, byte start, byte len)` of each mention in `text`.
-    pub mentions: Vec<(String, usize, usize)>,
+    pub mentions: Vec<(MemberId, usize, usize)>,
     /// The files it carries, which go across as Discord attachments.
     pub attachments: Vec<Attachment>,
     /// The name the message shows instead of its author's, when a bot posted
@@ -89,9 +87,9 @@ pub struct Message {
 }
 
 /// A person or agent in the chat.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Person {
-    pub id: String,
+    pub id: MemberId,
     pub name: String,
     pub agent: bool,
     /// Their avatar's content address.
@@ -324,7 +322,6 @@ fn reactions(value: &Value) -> Vec<Reaction> {
         .filter_map(|r| {
             Some(Reaction {
                 emoji: r.get("emoji")?.as_str()?.to_owned(),
-                by: text(r, "by"),
                 persona: opt_text(r, "persona"),
                 name: opt_text(r, "name"),
             })
@@ -405,24 +402,31 @@ fn share(value: &Value) -> Option<Share> {
 pub fn messages(chat: &ChatRead) -> Vec<Message> {
     chat.messages
         .iter()
-        .map(|(id, value)| read_message(id, value))
+        .filter_map(|(id, value)| read_message(id, value))
         .collect()
 }
 
 #[must_use]
 pub fn message(chat: &ChatRead, id: &str) -> Option<Message> {
     let (id, value) = chat.messages.iter().find(|(m, _)| m == id)?;
-    Some(read_message(id, value))
+    read_message(id, value)
 }
 
-fn read_message(id: &str, v: &Value) -> Message {
+/// The member `value` holds under `field`: a record stores a member as its
+/// JSON text.
+fn member(value: &Value, field: &str) -> Option<MemberId> {
+    serde_json::from_str(value.get(field)?.as_str()?).ok()
+}
+
+/// The message `v` holds; none when it names no author.
+fn read_message(id: &str, v: &Value) -> Option<Message> {
     let id = id.to_owned();
-    let mentions = match json_field(v, "mentions") {
-        Value::Array(items) => items
+    let mentions = match v.get("mentions") {
+        Some(Value::Array(items)) => items
             .iter()
             .filter_map(|m| {
                 Some((
-                    m.get("user")?.as_str()?.to_owned(),
+                    member(m, "user")?,
                     usize::try_from(m.get("start")?.as_u64()?).ok()?,
                     usize::try_from(m.get("len")?.as_u64()?).ok()?,
                 ))
@@ -432,19 +436,10 @@ fn read_message(id: &str, v: &Value) -> Message {
     };
     let appearance = json_field(v, "appearance");
     let (attachments, reference) = carried(v);
-    Message {
+    Some(Message {
         id,
         channel: text(v, "channel"),
-        author: match v.get("author") {
-            Some(Value::String(author)) => author.clone(),
-            Some(other) => other
-                .as_object()
-                .and_then(|o| o.values().next())
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            None => String::new(),
-        },
+        author: member(v, "author")?,
         text: text(v, "text"),
         parent: opt_text(v, "parent"),
         reactions: reactions(v),
@@ -453,18 +448,17 @@ fn read_message(id: &str, v: &Value) -> Message {
         appearance_name: opt_text(&appearance, "name"),
         reference,
         share: share(v),
-    }
+    })
 }
 
-/// The person or agent `id` of the workspace's chat, as Chat's record keeps
-/// its people (by their participant id).
+/// The person or agent `id` of the workspace's chat.
 #[must_use]
-pub fn person(chat: &ChatRead, id: &str) -> Option<Person> {
+pub fn person(chat: &ChatRead, id: &MemberId) -> Option<Person> {
     let people = chat.record.get("people")?.as_object()?;
-    people.iter().find_map(|(key, p)| {
+    people.values().find_map(|p| {
         let p = p.get("v").unwrap_or(p);
-        (key == id || text(p, "id") == id).then(|| Person {
-            id: id.to_owned(),
+        (member(p, "id").as_ref() == Some(id)).then(|| Person {
+            id: id.clone(),
             name: text(p, "name"),
             agent: flag(p, "agent"),
             avatar: opt_text(p, "avatar"),
@@ -501,14 +495,14 @@ mod tests {
                     "c_general": {"k": "b", "v": {"category": "k_chat", "name": "general", "topic": "talk", "kind": "text", "archived": false}},
                     "c_voice": {"k": "c", "v": {"category": "k_chat", "name": "voice", "topic": "", "kind": "voice", "archived": false}}
                 },
-                "people": {"u_ada": {"id": "u_ada", "name": "Ada", "agent": false, "avatar": "aa"}}
+                "people": {"u_ada": {"id": r#"{"person":"u_ada"}"#, "name": "Ada", "agent": false, "avatar": "aa"}}
             }),
             vec![(
                 "m1".into(),
-                json!({"channel": "c_general", "author": "u_ada", "text": "hi @Bo", "parent": null,
-                  "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1},
-                                {"emoji": "👍", "by": "bot:i", "persona": "discord/d7", "name": "Dee", "at": 2}],
-                  "mentions": "[{\"user\":\"u_bo\",\"start\":3,\"len\":3,\"is_agent\":false}]",
+                json!({"channel": "c_general", "author": r#"{"person":"u_ada"}"#, "text": "hi @Bo", "parent": null,
+                  "reactions": [{"emoji": "👍", "by": r#"{"person":"u_bo"}"#, "at": 1},
+                                {"emoji": "👍", "by": r#"{"bot":"i"}"#, "persona": "discord/d7", "name": "Dee", "at": 2}],
+                  "mentions": [{"user": r#"{"person":"u_bo"}"#, "start": 3, "len": 3, "is_agent": false}],
                   "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}]}),
             )],
         )
@@ -521,8 +515,9 @@ mod tests {
         {
             let part =
                 |record: &str, value: Value| json!({"records": [{"record": record, "value": value}]});
-            let message =
-                |channel: &str, k: &str| json!({"k": k, "v": {"channel": channel, "text": k}});
+            let message = |channel: &str, k: &str| {
+                json!({"k": k, "v": {"channel": channel, "author": r#"{"person":"u_ada"}"#, "text": k}})
+            };
             let read = ChatRead::of(&json!({
                 "chat": part("", json!({"channels": {}})),
                 "changed": part("p1", json!({"messages": {"m1": message("c_a", "a")}})),
@@ -555,17 +550,16 @@ mod tests {
             assert_eq!(ws.first_text_channel().unwrap().id, "c_goal");
         }
 
-        phase reads_a_message_with_json_text_fields;
+        phase reads_a_message_its_reactions_and_mentions;
         {
             let m = message(&chat(), "m1").unwrap();
-            assert_eq!(m.author, "u_ada");
-            assert_eq!(m.mentions, [("u_bo".to_owned(), 3, 3)]);
+            assert_eq!(m.author, MemberId::person("u_ada"));
+            assert_eq!(m.mentions, [(MemberId::person("u_bo"), 3, 3)]);
             assert_eq!(m.reactions.len(), 2);
             assert_eq!(
                 m.reactions[0],
                 Reaction {
                     emoji: "👍".into(),
-                    by: "u_bo".into(),
                     persona: None,
                     name: None,
                 }
@@ -574,7 +568,10 @@ mod tests {
             assert_eq!(m.reactions[1].name.as_deref(), Some("Dee"));
             assert_eq!(m.attachments[0].size, Some(5));
             assert_eq!(
-                person(&chat(), "u_ada").unwrap().avatar.as_deref(),
+                person(&chat(), &MemberId::person("u_ada"))
+                    .unwrap()
+                    .avatar
+                    .as_deref(),
                 Some("aa")
             );
         }
@@ -587,11 +584,11 @@ mod tests {
                 serde_json::Value::Null,
                 vec![(
                     "m2".into(),
-                    json!({"channel": "c_general", "author": "bot:i", "text": "hi @Bo", "parent": null, "reactions": [], "mentions": [{"user": "u_bo", "start": 3, "len": 3, "is_agent": false}], "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}], "appearance": {"name": "Bo"}}),
+                    json!({"channel": "c_general", "author": r#"{"bot":"i"}"#, "text": "hi @Bo", "parent": null, "reactions": [], "mentions": [{"user": r#"{"person":"u_bo"}"#, "start": 3, "len": 3, "is_agent": false}], "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}], "appearance": {"name": "Bo"}}),
                 )],
             );
             let m = message(&chat, "m2").unwrap();
-            assert_eq!(m.mentions, [("u_bo".to_owned(), 3, 3)]);
+            assert_eq!(m.mentions, [(MemberId::person("u_bo"), 3, 3)]);
             let attachment = &m.attachments[0];
             assert_eq!((attachment.blob.as_str(), attachment.size), ("ff", Some(5)));
             assert_eq!(m.appearance_name.as_deref(), Some("Bo"));
@@ -606,11 +603,11 @@ mod tests {
                 vec![
                     (
                         "m3".into(),
-                        json!({"channel": "c_general", "author": "u_ada", "text": "Plan", "parent": null, "attachments": [{"$variant": "resource", "label": "Plan", "at": {"app": "so.tilo.notes", "record": "plan", "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan", "span": null}}}], "share": {"access": {"$variant": "edit"}, "open": true, "ended": false}}),
+                        json!({"channel": "c_general", "author": r#"{"person":"u_ada"}"#, "text": "Plan", "parent": null, "attachments": [{"$variant": "resource", "label": "Plan", "at": {"app": "so.tilo.notes", "record": "plan", "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan", "span": null}}}], "share": {"access": {"$variant": "edit"}, "open": true, "ended": false}}),
                     ),
                     (
                         "m4".into(),
-                        json!({"channel": "c_general", "author": "u_ada", "text": "Plan", "parent": null, "attachments": [{"$variant": "resource", "label": "Plan", "at": {"app": "so.tilo.notes", "reference": "{\"kind\":\"notes.page\",\"id\":\"notes.page:1\",\"label\":\"Plan\"}"}}], "share": {"access": "View", "open": false, "ended": true}}),
+                        json!({"channel": "c_general", "author": r#"{"person":"u_ada"}"#, "text": "Plan", "parent": null, "attachments": [{"$variant": "resource", "label": "Plan", "at": {"app": "so.tilo.notes", "reference": "{\"kind\":\"notes.page\",\"id\":\"notes.page:1\",\"label\":\"Plan\"}"}}], "share": {"access": "View", "open": false, "ended": true}}),
                     ),
                 ],
             );

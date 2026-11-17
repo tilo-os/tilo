@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@ae794dc9ae54fb95";
+export const SURFACE = "so.tilo.chat@f1c068c67958c1ec";
 
 export interface Category {
   name: string;
@@ -479,7 +479,7 @@ export interface CreateChannelWithIdArgs {
   category?: string;
   kind?: ChannelKind;
   topic?: string;
-  participants?: string[];
+  participants?: unknown[];
 }
 
 /** The arguments of `delete-category`. */
@@ -543,7 +543,7 @@ export interface DeleteChannelArgs {
 /** The arguments of `report-message`. */
 export interface ReportMessageArgs {
   message: string;
-  author: string;
+  author: unknown;
   reason: string;
 }
 
@@ -816,7 +816,7 @@ export interface Workspace extends tilo.Resource {
     category?: string;
     kind?: ChannelKind;
     topic?: string;
-    participants?: string[];
+    participants?: unknown[];
   }): Promise<tilo.Run | void>;
   /** Runs `create-channel-with-id` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   createChannelWithIdMany(items: CreateChannelWithIdArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -880,7 +880,7 @@ export interface Workspace extends tilo.Resource {
   deleteChannelMany(items: DeleteChannelArgs[]): Promise<tilo.ActionAnswer[]>;
   reportMessage(args: {
     message: string;
-    author: string;
+    author: unknown;
     reason: string;
   }): Promise<tilo.Run | void>;
   /** Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */

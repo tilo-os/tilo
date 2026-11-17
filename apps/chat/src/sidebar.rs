@@ -148,9 +148,8 @@ impl ChatApp {
                 // A conversation with one other wears their face: an agent's own, a person's
                 // avatar, each in the colour they wear everywhere in the workspace.
                 if let Some(with) = with {
-                    let author = with.key();
                     item = item
-                        .person(&author, Some(self.identity_colour(&author)), false)
+                        .person(with.id(), Some(self.identity_colour(&with)), false)
                         .person_face(&conversation.name, None);
                     if !with.is_person() {
                         item = item.agent_face();
@@ -163,13 +162,12 @@ impl ChatApp {
 
     /// The one other participant of a conversation with `participants` (their keys), when it has
     /// exactly one.
-    pub(crate) fn conversation_peer(&self, participants: &[String]) -> Option<MemberId> {
+    pub(crate) fn conversation_peer(&self, participants: &[MemberId]) -> Option<MemberId> {
         let mut others = participants
             .iter()
-            .filter_map(|key| MemberId::parse(key))
-            .filter(|participant| !participant.is_person() || !self.is_me(participant.id()));
+            .filter(|participant| !self.is_me(participant));
         let peer = others.next()?;
-        others.next().is_none().then_some(peer)
+        others.next().is_none().then(|| peer.clone())
     }
 
     /// The channels of one category (`""` for those outside any), each
@@ -233,9 +231,9 @@ impl ChatApp {
                 .into_iter()
                 .map(|person| {
                     let name = self.user_name(&person);
-                    let speaking = self.speaking.level(&person, now) > 0.0;
-                    NavItem::new(format!("in-call:{}/{person}", channel.id), name)
-                        .person(&person, Some(self.identity_colour(&person)), speaking)
+                    let speaking = self.speaking.level(person.id(), now) > 0.0;
+                    NavItem::new(format!("in-call:{}/{}", channel.id, person.id()), name)
+                        .person(person.id(), Some(self.identity_colour(&person)), speaking)
                         .person_face(self.user_name(&person), None)
                         .without_actions()
                 })

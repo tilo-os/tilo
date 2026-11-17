@@ -760,7 +760,7 @@ impl ChatApp {
 
     /// How loud someone else in the call plays here: silenced, or at one of
     /// a few levels, on this device only.
-    pub(crate) fn open_participant_menu(&mut self, id: String) {
+    pub(crate) fn open_participant_menu(&mut self, id: ui::tilo_resource::MemberId) {
         self.menu = Some(self.context_menu(
             MenuTarget::CallParticipant(id),
             self.last_mouse,
@@ -1004,7 +1004,7 @@ impl ChatApp {
             Hit::RevealMessage(id) => drop(self.reveal_message(&id)),
             // The desktop shows the one card it has for people.
             Hit::ShowPerson { person, .. } => {
-                ui::person_card::show(&person, &self.user_name(&person));
+                ui::person_card::show(person.id(), &self.user_name(&person));
             }
             Hit::Dismiss => self.on_hit_dismiss(),
             // MessageMenu is a right-click affordance and drag handles are
@@ -1337,7 +1337,7 @@ impl ChatApp {
     ) {
         match target {
             MenuTarget::CallParticipant(id) => {
-                let mut listening = self.call_listening(&id);
+                let mut listening = self.call_listening(id.id());
                 match action {
                     MenuAction::Silence => listening.silenced = !listening.silenced,
                     MenuAction::Volume(percent) => {
@@ -1346,7 +1346,7 @@ impl ChatApp {
                     }
                     _ => return,
                 }
-                self.set_call_listening(&id, listening);
+                self.set_call_listening(id.id(), listening);
             }
             MenuTarget::Channel(id) => self.apply_channel_action(&id, action, doc),
             MenuTarget::Category(id) => self.apply_category_action(&id, action, doc),
@@ -1418,7 +1418,7 @@ impl ChatApp {
                         self.apply_now(
                             doc,
                             Chat::REPORT_PERSON.with(chat::ReportPerson {
-                                person: item(&author),
+                                person: crate::record::member_slot(&author),
                                 reason,
                             }),
                         );
@@ -2088,7 +2088,7 @@ impl ChatApp {
         let shared = self
             .held_messages()
             .iter()
-            .filter(|(_, message)| message.ts >= since && self.is_me(&message.author.0))
+            .filter(|(_, message)| message.ts >= since && self.is_me(&message.author))
             .flat_map(|(_, message)| {
                 message
                     .attachments

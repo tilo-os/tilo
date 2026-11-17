@@ -2,8 +2,10 @@
 //! inline message editor — and the presence a draft publishes while it is
 //! being written.
 
-use super::{ChatApp, Focus, Id};
 use ui::presence::PresenceKey;
+use ui::tilo_resource::MemberId;
+
+use super::{ChatApp, Focus};
 
 impl ChatApp {
     /// The composer for the surface the user is typing in.
@@ -74,7 +76,7 @@ impl ChatApp {
         self.call.active && !self.native_voice.ended_for_a_reason()
     }
 
-    pub(crate) fn voice_people(&self, channel: &str) -> Vec<Id> {
+    pub(crate) fn voice_people(&self, channel: &str) -> Vec<MemberId> {
         let mut people = Vec::new();
         if self.in_call() && self.call.channel == channel {
             people.push(self.me.id.clone());

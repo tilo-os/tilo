@@ -11,7 +11,7 @@ use discord_wire::op::{FetchAssetOp, InAttachment, MemberRolesOp};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, JsonSchema};
+use ui::tilo_resource::{self, JsonSchema, MemberId};
 
 use crate::record::{Guild, MAX_FETCH_BYTES, MappedKind, Origin};
 use crate::{roles, tilo};
@@ -243,7 +243,10 @@ fn appearance(
         .links
         .iter()
         .find(|link| link.discord_user == author.id)
-        .and_then(|link| Some((link, tilo::person(chat, &link.person)?)))
+        .and_then(|link| {
+            let person = tilo::person(chat, &MemberId::person(link.person.as_str()))?;
+            Some((link, person))
+        })
         .filter(|(_, person)| !person.name.trim().is_empty());
     // A linked person with no picture of their own in Tilo shows their
     // Discord one, so they look the same on both sides.
@@ -656,7 +659,7 @@ pub fn plan_command(guild: &Guild, chat: &crate::tilo::ChatRead, event: &Command
             let content = match link {
                 Some(link) => {
                     plan.unlinks.push(event.user_id.clone());
-                    let name = tilo::person(chat, &link.person)
+                    let name = tilo::person(chat, &MemberId::person(link.person.as_str()))
                         .map(|person| person.name)
                         .filter(|name| !name.trim().is_empty())
                         .unwrap_or_else(|| "your Tilo account".to_owned());
@@ -711,7 +714,7 @@ pub fn plan_linked(guild: &Guild, chat: &crate::tilo::ChatRead, person: &str) ->
     let Some(link) = guild.links.iter().find(|link| link.person == person) else {
         return plan;
     };
-    let tilo = tilo::person(chat, person);
+    let tilo = tilo::person(chat, &MemberId::person(person));
     if let Some(interaction) = &link.interaction {
         let name = tilo
             .as_ref()

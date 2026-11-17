@@ -1,4 +1,5 @@
 use super::*;
+use ui::tilo_resource::MemberId;
 use crate::messages::chat_part;
 use crate::parts::ChatPart;
 use crate::testing::MountedChat;
@@ -208,7 +209,7 @@ tilo_test_env::scenario! {
     {
         let mut doc = fixture();
         let summons = Id::from_raw("m_concept");
-        let reply = crate::record::reply_id(&summons, crate::model::ME);
+        let reply = crate::record::reply_id(&summons, &MemberId::person(crate::model::ME));
         let output = |sequence, event| {
             ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
                 channel: Id::from_raw("c_crit"),

@@ -103,7 +103,7 @@ pub(super) fn snapshot(
     if request
         .expected_author
         .as_ref()
-        .is_some_and(|author| *author != report.author)
+        .is_some_and(|author| report.author.person_id() != Some(author.as_str()))
     {
         return Err(SemanticReadError::InvalidOwner);
     }

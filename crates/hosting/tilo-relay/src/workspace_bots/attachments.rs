@@ -39,6 +39,7 @@ use tilo_lock::MutexRecover as _;
 use super::CHAT;
 use crate::workspaces::{ContentKeeper, RecordWrite, Workspaces};
 use tilo_content::ContentStore;
+use tilo_resource::MemberId;
 
 /// How long the host waits before it asks again for files nobody answered.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(90);
@@ -81,8 +82,8 @@ impl Default for AttachmentLimits {
 /// One file the host keeps for a member.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Kept {
-    /// The participant id of the member who posted it.
-    member: String,
+    /// The member who posted it.
+    member: MemberId,
     bytes: u64,
     /// The order it was kept in: the oldest goes first.
     order: u64,
@@ -100,19 +101,19 @@ struct Ledger {
 }
 
 impl Ledger {
-    fn total(&self, member: Option<&str>) -> u64 {
+    fn total(&self, member: Option<&MemberId>) -> u64 {
         self.kept
             .values()
-            .filter(|kept| member.is_none_or(|member| kept.member == member))
+            .filter(|kept| member.is_none_or(|member| kept.member == *member))
             .map(|kept| kept.bytes)
             .fold(0, u64::saturating_add)
     }
 
     /// The oldest file of `member`, or of anyone.
-    fn oldest(&self, member: Option<&str>) -> Option<String> {
+    fn oldest(&self, member: Option<&MemberId>) -> Option<String> {
         self.kept
             .iter()
-            .filter(|(_, kept)| member.is_none_or(|member| kept.member == member))
+            .filter(|(_, kept)| member.is_none_or(|member| kept.member == *member))
             .min_by_key(|(_, kept)| kept.order)
             .map(|(hash, _)| hash.clone())
     }
@@ -121,7 +122,7 @@ impl Ledger {
 struct State {
     ledger: Ledger,
     /// The files asked for and not whole yet, named by who posted them.
-    wants: ContentWants<String>,
+    wants: ContentWants<MemberId>,
     /// Parts that held files nobody answered for yet: read again later.
     unanswered: BTreeSet<String>,
     /// Parts members wrote to since they were last read.
@@ -133,7 +134,7 @@ struct State {
 
 /// A file the host asked a member for.
 struct Taken {
-    member: String,
+    member: MemberId,
     at_ms: u64,
     bytes: u64,
 }
@@ -157,8 +158,8 @@ pub struct WorkspaceAttachments {
 pub struct Referenced {
     /// The content's hash, lowercase BLAKE3 hex.
     pub hash: String,
-    /// The participant id of its poster.
-    pub member: String,
+    /// Its poster.
+    pub member: MemberId,
     /// The size the message names, if any.
     pub size: Option<u64>,
 }
@@ -177,7 +178,7 @@ pub fn referenced(part: &[u8]) -> Vec<Referenced> {
             message.attachments.iter().filter_map(move |attached| {
                 Some(Referenced {
                     hash: tilo_content::content_address(attached.blob()?)?,
-                    member: message.author.0.clone(),
+                    member: message.author.clone(),
                     size: attached.size(),
                 })
             })
@@ -206,12 +207,12 @@ pub fn reported(record: &[u8]) -> Vec<Referenced> {
             let feedback = &submission.feedback;
             let picture = feedback.screenshot.as_ref().map(|picture| Referenced {
                 hash: address(&picture.hash),
-                member: author.0.clone(),
+                member: author.clone(),
                 size: None,
             });
             let recording = feedback.recording.as_ref().map(|recording| Referenced {
                 hash: address(&recording.hash),
-                member: author.0.clone(),
+                member: author.clone(),
                 size: Some(u64::from(recording.bytes)),
             });
             picture.into_iter().chain(recording)
@@ -449,7 +450,7 @@ impl WorkspaceAttachments {
 
     /// Keep `bytes`, the whole and verified file `hash` `member` posted,
     /// and let the oldest files go past the member's and the workspace's quota.
-    fn keep(&self, state: &mut State, member: &str, hash: &str, bytes: &[u8]) {
+    fn keep(&self, state: &mut State, member: &MemberId, hash: &str, bytes: &[u8]) {
         let Ok(size) = u64::try_from(bytes.len()) else {
             return;
         };
@@ -469,7 +470,7 @@ impl WorkspaceAttachments {
         state.ledger.kept.insert(
             hash.to_owned(),
             Kept {
-                member: member.to_owned(),
+                member: member.clone(),
                 bytes: size,
                 order,
             },
@@ -511,7 +512,7 @@ impl WorkspaceAttachments {
 
     /// Whether the host keeps file `hash` for a member, and for whom.
     #[must_use]
-    pub fn kept_for(&self, hash: &str) -> Option<String> {
+    pub fn kept_for(&self, hash: &str) -> Option<MemberId> {
         self.state
             .lock_recover()
             .ledger
@@ -625,12 +626,12 @@ mod tests {
                 [
                     Referenced {
                         hash: picture,
-                        member: "visitor:one".into(),
+                        member: MemberId::person("visitor:one"),
                         size: None,
                     },
                     Referenced {
                         hash: recording,
-                        member: "visitor:three".into(),
+                        member: MemberId::person("visitor:three"),
                         size: Some(4_096),
                     },
                 ]
@@ -645,16 +646,17 @@ mod tests {
                 ledger.kept.insert(
                     hash.into(),
                     Kept {
-                        member: member.into(),
+                        member: MemberId::person(member),
                         bytes: 10,
                         order,
                     },
                 );
             }
-            assert_eq!(ledger.total(Some("ada")), 20);
+            let (ada, bo) = (MemberId::person("ada"), MemberId::person("bo"));
+            assert_eq!(ledger.total(Some(&ada)), 20);
             assert_eq!(ledger.total(None), 30);
-            assert_eq!(ledger.oldest(Some("ada")).as_deref(), Some("a"));
-            assert_eq!(ledger.oldest(Some("bo")).as_deref(), Some("b"));
+            assert_eq!(ledger.oldest(Some(&ada)).as_deref(), Some("a"));
+            assert_eq!(ledger.oldest(Some(&bo)).as_deref(), Some("b"));
             assert_eq!(ledger.oldest(None).as_deref(), Some("a"));
             let saved = serde_json::to_vec(&ledger).unwrap();
             let read: Ledger = serde_json::from_slice(&saved).unwrap();

@@ -1355,7 +1355,7 @@ impl ChatApp {
         let strip = strips.entry((thread, m.id.clone())).or_default();
         let laid = strip.layout(
             &m.reactions,
-            ui::tilo_resource::MemberId::parse(&self.me.id).as_ref(),
+            Some(&self.me.id),
             self.can_participate(),
             (origin, width),
             tr,
@@ -1454,8 +1454,8 @@ impl ChatApp {
         for pid in parts.iter().take(3) {
             // An agent who answered wears its own face, as its byline does.
             let name = self.display_name(pid);
-            let mut face = AvatarFace::new(&name, pid);
-            if crate::views::is_agent(pid) {
+            let mut face = AvatarFace::new(&name, pid.id());
+            if !pid.is_person() {
                 face = face.agent();
             }
             face.presence(self.identity_colour(pid))

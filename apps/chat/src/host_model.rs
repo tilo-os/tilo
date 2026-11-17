@@ -78,8 +78,7 @@ impl HostModel {
 /// Stream output keeps the authenticated invoker for custody, but is not that
 /// person's speech. Appearance supplies only the model's display name.
 pub(crate) fn is_provider_output(message: &crate::model::Message) -> bool {
-    !message.author.starts_with("bot:")
-        && !crate::views::is_agent(&message.author)
+    message.author.is_person()
         && message
             .work
             .as_ref()
@@ -145,7 +144,7 @@ impl ChatApp {
                 .map(|appearance| appearance.name.as_str())
                 .filter(|name| !name.trim().is_empty())
                 .map_or_else(|| crate::i18n::t("chat-model-author"), str::to_owned)
-        } else if message.author.starts_with("bot:") {
+        } else if message.author.is_bot() {
             self.bot_name(message)
         } else {
             self.acting_name(
@@ -187,7 +186,7 @@ impl ChatApp {
                     ("person", self.user_name(&message.author).into()),
                 ],
             )
-        } else if message.author.starts_with("bot:")
+        } else if message.author.is_bot()
             && let Some(service) = bridged_service(message)
         {
             // A person a bridge speaks for, by their own name and where
@@ -205,7 +204,7 @@ impl ChatApp {
             } else {
                 shown
             }
-        } else if message.author.starts_with("bot:") {
+        } else if message.author.is_bot() {
             let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
             let shown = self
                 .message_author(message, &name, "", None)

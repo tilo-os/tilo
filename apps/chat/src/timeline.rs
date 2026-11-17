@@ -60,7 +60,7 @@ struct PaintLook {
     column: [u64; 4],
     mentions: u64,
     people: u64,
-    me: String,
+    me: ui::tilo_resource::MemberId,
     menu_open: bool,
     emoji_open: bool,
     participate: bool,
