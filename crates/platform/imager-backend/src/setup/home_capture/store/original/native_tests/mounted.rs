@@ -64,7 +64,7 @@ fn actual_mounted_root_registration_binds_kernel_caller_independently_of_source_
         .tempdir_in(&mount)
         .unwrap();
     // The admitted source user can traverse the fixture ancestor; broker
-    // custody remains root-controlled and the actual Home remains private.
+    // ownership remains root-controlled and the actual Home remains private.
     owner(temp.path(), 0, 0, 0o711);
     let home = temp.path().join("alice");
     std::fs::create_dir(&home).unwrap();
@@ -143,7 +143,7 @@ fn actual_mounted_root_registration_binds_kernel_caller_independently_of_source_
         !path.exists(),
         "cancelled admission cannot publish mounted source authority"
     );
-    let witness = store
+    let proof = store
         .register_mounted_roots(&home, &plan, &roots, &channel, &cancel)
         .unwrap();
 
@@ -153,7 +153,7 @@ fn actual_mounted_root_registration_binds_kernel_caller_independently_of_source_
         store
             .register_mounted_roots(&home, &plan, &roots, &channel, &cancel)
             .unwrap(),
-        witness
+        proof
     );
     let after = std::fs::metadata(&path).unwrap();
     assert_eq!(
@@ -194,10 +194,10 @@ fn actual_mounted_root_registration_binds_kernel_caller_independently_of_source_
     drop((roots, report, refusal, binds, store));
     let readonly = ReadOnly::enter(&mount);
     let source = crate::setup::migration_handoff::resolve(&plan, &mount).unwrap();
-    let context = SourceReadContext::review_witness(source, &primary.witness().unwrap()).unwrap();
-    context.verify_mounted_witness(&witness).unwrap();
+    let context = SourceReadContext::review_proof(source, &primary.proof().unwrap()).unwrap();
+    context.verify_mounted_proof(&proof).unwrap();
     context
-        .with_mounted_sources(&witness, &cancel, |sources| {
+        .with_mounted_sources(&proof, &cancel, |sources| {
             assert_eq!(sources.len(), 2);
             assert_eq!(sources[0].placement(), Path::new("mounted-directory"));
             assert_eq!(sources[1].placement(), Path::new("mounted-file"));
@@ -237,23 +237,23 @@ fn actual_mounted_root_registration_binds_kernel_caller_independently_of_source_
         .unwrap();
     assert!(
         context
-            .with_mounted_sources(&witness, &AtomicBool::new(true), |_| -> io::Result<()> {
+            .with_mounted_sources(&proof, &AtomicBool::new(true), |_| -> io::Result<()> {
                 panic!("Cancelled source use must not expose descriptors")
             })
             .is_err()
     );
-    let mut forged = serde_json::to_value(&witness).unwrap();
+    let mut forged = serde_json::to_value(&proof).unwrap();
     let old = forged["sha256"][0].as_u64().unwrap();
     forged["sha256"][0] = serde_json::json!(old ^ 1);
     let forged = serde_json::from_value(forged).unwrap();
     assert!(
-        context.verify_mounted_witness(&forged).is_err(),
+        context.verify_mounted_proof(&forged).is_err(),
         "request bytes do not replace protected record authority"
     );
     assert!(
         context
             .with_mounted_sources(&forged, &cancel, |_| -> io::Result<()> {
-                panic!("Public witness cannot substitute protected source authority")
+                panic!("Public proof cannot substitute protected source authority")
             })
             .is_err()
     );
@@ -265,10 +265,10 @@ fn actual_mounted_root_registration_binds_kernel_caller_independently_of_source_
     owner(&file, 1003, 1002, 0o640);
     let readonly = ReadOnly::enter(&mount);
     let source = crate::setup::migration_handoff::resolve(&plan, &mount).unwrap();
-    let context = SourceReadContext::review_witness(source, &primary.witness().unwrap()).unwrap();
+    let context = SourceReadContext::review_proof(source, &primary.proof().unwrap()).unwrap();
     assert!(
         context
-            .with_mounted_sources(&witness, &cancel, |_| -> io::Result<()> {
+            .with_mounted_sources(&proof, &cancel, |_| -> io::Result<()> {
                 panic!("Actual replacement inode must refuse before projection")
             })
             .is_err()
@@ -280,9 +280,9 @@ fn actual_mounted_root_registration_binds_kernel_caller_independently_of_source_
     owner(&path, 1000, 1001, 0o600);
     let readonly = ReadOnly::enter(&mount);
     let source = crate::setup::migration_handoff::resolve(&plan, &mount).unwrap();
-    let context = SourceReadContext::review_witness(source, &primary.witness().unwrap()).unwrap();
+    let context = SourceReadContext::review_proof(source, &primary.proof().unwrap()).unwrap();
     assert!(
-        context.verify_mounted_witness(&witness).is_err(),
+        context.verify_mounted_proof(&proof).is_err(),
         "caller-owned identical bytes are not root authority"
     );
     drop(context);
@@ -318,7 +318,7 @@ fn actual_foreign_mounted_volume_record_binds_its_own_filesystem_and_kernel_call
         .tempdir_in(&mount)
         .unwrap();
     // The admitted source user can traverse the fixture ancestor; broker
-    // custody remains root-controlled and the actual Home remains private.
+    // ownership remains root-controlled and the actual Home remains private.
     owner(temp.path(), 0, 0, 0o711);
     let home = temp.path().join("alice");
     std::fs::create_dir(&home).unwrap();
@@ -421,7 +421,7 @@ fn actual_foreign_mounted_volume_record_binds_its_own_filesystem_and_kernel_call
         !path.exists(),
         "cancelled admission cannot publish mounted source authority"
     );
-    let witness = store
+    let proof = store
         .register_mounted_roots(&home, &plan, &roots, &channel, &cancel)
         .unwrap();
 
@@ -442,7 +442,7 @@ fn actual_foreign_mounted_volume_record_binds_its_own_filesystem_and_kernel_call
         store
             .register_mounted_roots(&home, &plan, &roots, &channel, &cancel)
             .unwrap(),
-        witness
+        proof
     );
     let volume_record_after = std::fs::metadata(&volume_record).unwrap();
     assert_eq!(
@@ -517,10 +517,10 @@ fn actual_foreign_mounted_volume_record_binds_its_own_filesystem_and_kernel_call
     let readonly_primary = ReadOnly::enter(&mount);
     let readonly_foreign = ReadOnly::enter(&foreign_mount);
     let source = crate::setup::migration_handoff::resolve(&plan, &mount).unwrap();
-    let context = SourceReadContext::review_witness(source, &primary.witness().unwrap()).unwrap();
+    let context = SourceReadContext::review_proof(source, &primary.proof().unwrap()).unwrap();
     assert_eq!(
         context
-            .verify_mounted_witness(&witness)
+            .verify_mounted_proof(&proof)
             .unwrap_err()
             .to_string(),
         "Volume source also has a writable mount"
@@ -528,9 +528,9 @@ fn actual_foreign_mounted_volume_record_binds_its_own_filesystem_and_kernel_call
     // The rejected context owns no alias mount. Retire that exact fixture bind
     // normally before accepting the genuinely readonly volume epoch.
     drop(writable_alias);
-    context.verify_mounted_witness(&witness).unwrap();
+    context.verify_mounted_proof(&proof).unwrap();
     context
-        .with_mounted_sources(&witness, &cancel, |sources| {
+        .with_mounted_sources(&proof, &cancel, |sources| {
             assert_eq!(sources.len(), 2);
             for entry in sources {
                 assert_eq!(
@@ -564,7 +564,7 @@ fn actual_foreign_mounted_volume_record_binds_its_own_filesystem_and_kernel_call
             Ok(())
         })
         .unwrap();
-    let epoch = context.retain_mounted_sources(&witness, &cancel).unwrap();
+    let epoch = context.retain_mounted_sources(&proof, &cancel).unwrap();
     // These are actual protected two-filesystem inputs, not a request table.
     let digest = epoch.table_sha256(&cancel).unwrap();
     assert_ne!(digest, [0; 32]);
@@ -633,7 +633,7 @@ fn actual_foreign_mounted_volume_record_binds_its_own_filesystem_and_kernel_call
             .is_err()
     );
     // Raise REAL cancellation inside the actual source callback after changing
-    // native readonly state. The postcondition must observe custody failure,
+    // native readonly state. The postcondition must observe ownership failure,
     // not return early with Interrupted before inspecting protected sources.
     let callback_cancel = AtomicBool::new(false);
     let postcondition = epoch

@@ -3,7 +3,7 @@
 //! Every step of a bot's run is an invocation here, as the bot: the caller
 //! must be this installation's `Caller::bot`. The change names the bot, its
 //! installer, the invocation it came from and the run's cause. The replica
-//! decides with the installer's standing bounded by the bot's grants, so a
+//! decides with the installer's access bounded by the bot's grants, so a
 //! bot never does more than its installer can now.
 //!
 //! A step its run already took (the host restarted mid-run) is found in the
@@ -190,7 +190,7 @@ pub struct BotApi<P: ApiMember> {
     outboxes: Vec<OutboxSpec>,
     cause: Mutex<Option<Cause>>,
     /// Steps taken since the API was made, by invocation.
-    ledger: Mutex<HashMap<InvocationId, ReceiptStatus>>,
+    log: Mutex<HashMap<InvocationId, ReceiptStatus>>,
     /// The person the program runs for (hex root) and what the host answers
     /// for them, for a program that runs for one.
     host: OnceLock<(String, Arc<dyn HostSteps>)>,
@@ -212,7 +212,7 @@ impl<P: ApiMember> BotApi<P> {
             installer,
             outboxes,
             cause: Mutex::new(None),
-            ledger: Mutex::new(HashMap::new()),
+            log: Mutex::new(HashMap::new()),
             host: OnceLock::new(),
             keeps: OnceLock::new(),
         }
@@ -240,7 +240,7 @@ impl<P: ApiMember> BotApi<P> {
     /// as it now is, instead of answering every step from what it did the
     /// first time.
     pub fn forget_steps(&self) {
-        self.ledger.lock_recover().clear();
+        self.log.lock_recover().clear();
     }
 
     /// The cause every change of the next run records.
@@ -673,7 +673,7 @@ impl<P: ApiMember + 'static> ActionHost for BotApi<P> {
         if !self.its_own(caller) {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
-        let known = self.ledger.lock_recover().get(&request.invocation).cloned();
+        let known = self.log.lock_recover().get(&request.invocation).cloned();
         if let Some(status) = known {
             return Pending::ready(Ok(InvocationReceipt {
                 invocation: request.invocation,
@@ -681,7 +681,7 @@ impl<P: ApiMember + 'static> ActionHost for BotApi<P> {
             }));
         }
         let result = self.run(&request).map(|status| {
-            self.ledger
+            self.log
                 .lock_recover()
                 .insert(request.invocation, status.clone());
             InvocationReceipt {
@@ -697,8 +697,8 @@ impl<P: ApiMember + 'static> ActionHost for BotApi<P> {
             return None;
         }
         // Steps taken before a restart are found when the run invokes them
-        // again ([`AutomationStep`]); the ledger knows this API's own.
-        let status = self.ledger.lock_recover().get(id).cloned()?;
+        // again ([`AutomationStep`]); the log knows this API's own.
+        let status = self.log.lock_recover().get(id).cloned()?;
         update_of(*id, &status).map(|update| InvocationState::new(*id, update))
     }
 

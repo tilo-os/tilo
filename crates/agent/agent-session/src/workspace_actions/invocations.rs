@@ -8,19 +8,19 @@
 //!   of a run its client named. Each record's history is read once per change
 //!   of the record ([`Index`]), so a listing costs what changed since the
 //!   last.
-//! - **The calls.** The ledger remembers each invocation the host was asked
+//! - **The calls.** The log remembers each invocation the host was asked
 //!   for, who asked and how it stands. A call's step is the one its changes
 //!   record: the gesture its caller said, under the run the host stamped
 //!   ([`super::caller_context`], [`tilo_actions::context::recorded_gesture`]),
 //!   so a call and its changes are one run. A call that changed nothing is a
-//!   run of the ledger's alone, gone when the host restarts or lets go of it.
+//!   run of the log's alone, gone when the host restarts or lets go of it.
 //!
 //! A caller is given, of each run, only what lies in records they may read
 //! now: a record's share of a run when the check a read of that record makes
 //! passes for them (the host's own person as the owner; anyone else by the
 //! record's policy ([`Worker::policy_for`]) held to their own bound, an
 //! agent's grants or a device's cap included, answering Read, not Ask, at the
-//! record's node), a call the ledger remembers when they may read the record
+//! record's node), a call the log remembers when they may read the record
 //! it addressed (or, for a call on no record, read across the workspace,
 //! [`Worker::may_across`]). A run's words are its steps' titles, never what
 //! a step carried ([`step_title`]): the index is read once for everyone. A run
@@ -47,7 +47,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
 use ui::history_source::words::HistoryWords;
 
-use super::ledger::Entry;
+use super::invocation_log::Entry;
 use super::{Job, Needs, Worker, WorkspaceActions, resource_of};
 
 /// One record of a workspace: its app and its id there.
@@ -239,7 +239,7 @@ fn shares(app_id: &str, record: &str, entries: &[Value]) -> Vec<(String, Share)>
     // Where in `shares` each step is.
     let mut places: HashMap<String, usize> = HashMap::new();
     // Where in `changes` each step's last edit still in effect is.
-    let mut standing: HashMap<String, usize> = HashMap::new();
+    let mut access: HashMap<String, usize> = HashMap::new();
     for (at, entry) in changes.iter().enumerate() {
         let Some(step) = text(entry, "step") else {
             continue;
@@ -282,7 +282,7 @@ fn shares(app_id: &str, record: &str, entries: &[Value]) -> Vec<(String, Share)>
         }
         share.edits = share.edits.saturating_add(1);
         if in_effect(entry) {
-            standing.insert(step.to_owned(), at);
+            access.insert(step.to_owned(), at);
         } else {
             share.undone = share.undone.saturating_add(1);
         }
@@ -290,7 +290,7 @@ fn shares(app_id: &str, record: &str, entries: &[Value]) -> Vec<(String, Share)>
     // Someone's edit after a run's last edit in effect, in effect too, holds
     // the run's undo back, as the undo itself finds it.
     for (step, share) in &mut shares {
-        let Some(&last) = standing.get(step.as_str()) else {
+        let Some(&last) = access.get(step.as_str()) else {
             continue;
         };
         share.over = changes
@@ -302,7 +302,7 @@ fn shares(app_id: &str, record: &str, entries: &[Value]) -> Vec<(String, Share)>
     shares
 }
 
-/// One call the ledger remembers, as a run lists it.
+/// One call the log remembers, as a run lists it.
 struct Call {
     id: String,
     started_ms: i64,
@@ -367,7 +367,7 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
         started_ms: entry.started_ms,
         ended_ms: entry.ended_ms,
         update: entry.update.clone(),
-        waiting: entry.asked && entry.witness.is_none() && !entry.update.is_terminal(),
+        waiting: entry.asked && entry.approval.is_none() && !entry.update.is_terminal(),
         by: InvocationBy {
             name,
             kind: kind.to_owned(),
@@ -669,7 +669,7 @@ impl WorkspaceActions {
 }
 
 impl Worker {
-    /// Note in the ledger the changes `invocation` handed to the session, as
+    /// Note in the log the changes `invocation` handed to the session, as
     /// it ran, before they are saved and let go of ([`join_written`]).
     pub(super) fn note_written(&self, invocation: InvocationId) {
         let written: Vec<(String, String, String)> = self
@@ -686,7 +686,7 @@ impl Worker {
         if written.is_empty() {
             return;
         }
-        if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
+        if let Some(entry) = self.log().entries.get_mut(&invocation) {
             entry.written = written;
         }
     }
@@ -727,13 +727,12 @@ impl Worker {
         );
         let mut recorded = index.steps();
         let mut calls = {
-            let mut ledger = self.ledger();
-            ledger.stamp_ended();
-            ledger
-                .order
+            let mut log = self.log();
+            log.stamp_ended();
+            log.order
                 .iter()
                 .filter_map(|id| {
-                    let entry = ledger.entries.get(id)?;
+                    let entry = log.entries.get(id)?;
                     (entry.workspace == Some(workspace_id) && !is_link_lookup(entry))
                         .then(|| call_of(id.0.to_string(), entry))
                 })

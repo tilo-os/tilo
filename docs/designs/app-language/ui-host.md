@@ -25,9 +25,9 @@ layout, text, fonts, rendering): about 50 MB before its data.
 
 ## 2. What stays
 
-- **Identity, custody, sandbox.** Each instance gets its own launch resource with its app's
+- **Identity, ownership, sandbox.** Each instance gets its own launch resource with its app's
   creation resource and ticket. The launcher opens each instance's connections (broker, identity,
-  window) with that app's own custody and hands them over. Nothing trusts a host's claim about
+  window) with that app's own ownership and hands them over. Nothing trusts a host's claim about
   which app it is.
 - **Windows belong to apps.** Each app window keeps its launch identity for its surface and
   accessibility, but opens no broker connection: the window is presentation, the instance in

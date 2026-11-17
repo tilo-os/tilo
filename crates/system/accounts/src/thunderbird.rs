@@ -135,7 +135,7 @@ impl Candidate {
 
     /// Build shared configuration only after an explicit authentication
     /// choice. Missing source preferences never imply password auth.
-    /// Credentials and enrollment are separate custody operations.
+    /// Credentials and enrollment are separate ownership operations.
     pub fn reviewed_config(
         &self,
         authentication: AuthMethod,

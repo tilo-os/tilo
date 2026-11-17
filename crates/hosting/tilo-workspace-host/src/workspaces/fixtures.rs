@@ -313,27 +313,27 @@ pub async fn admit_view_reader(
 /// # Panics
 ///
 /// The workspace is not governed here, or its governance does not read.
-pub async fn project_standings(workspaces: &Workspaces, workspace: &str) {
+pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
     let state = workspaces
         .workspace(workspace)
         .await
         .expect("a governed workspace");
-    let (standings, workspace_id) = {
+    let (device_access, workspace_id) = {
         let governed = state.lock().await;
-        let standings = governed
+        let device_access = governed
             .peer()
             .governance()
-            .governed_standings(tilo_clock::wall())
-            .expect("the workspace's standings");
-        (standings, governed.workspace_id())
+            .governed_device_access(tilo_clock::wall())
+            .expect("the workspace's device_access");
+        (device_access, governed.workspace_id())
     };
     workspaces
         .inner
         .host
         .access
-        .replace_standings(workspace_id, true, standings)
+        .replace_access(workspace_id, true, device_access)
         .await
-        .expect("the relay projects the workspace's standings");
+        .expect("the relay projects the workspace's device_access");
 }
 
 /// Until when `workspace` restricts `person`, as `host` reads its policy.

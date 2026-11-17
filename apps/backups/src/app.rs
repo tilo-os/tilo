@@ -634,7 +634,7 @@ impl Store {
     }
 
     /// End `run` the way its result says: stopped by the person, failed with its reason, or
-    /// done. A stop is recorded in the ledger as something that happened, because the
+    /// done. A stop is recorded in the log as something that happened, because the
     /// person asked for it rather than it failing.
     fn end_job(
         kind: JobKind,

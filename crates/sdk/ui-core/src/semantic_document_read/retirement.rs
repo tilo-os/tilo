@@ -59,7 +59,7 @@ impl DomainCore {
     fn finish_retirement(&self) {
         self.request_retirement();
         // Poison is permanent. Recover only to complete negative retirement; never clear
-        // poison, invoke a callback, or drop custody under the guard.
+        // poison, invoke a callback, or drop ownership under the guard.
         let guard = self.check.lock_recover();
         self.retired.store(true, Ordering::Release);
         drop(guard);

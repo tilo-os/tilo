@@ -49,7 +49,7 @@
 //!   started on its own — a script posting, a download — waits on nobody's
 //!   invocation, so the session holding the window reports it here
 //!   ([`Self::held_reported`]) and the person is asked about it just the
-//!   same: their allow answers the session with the witness that releases
+//!   same: their allow answers the session with the approval that releases
 //!   that one request, and a denial keeps the page as it is.
 //! - **Meter** ([`BrowserMeter`]): every page action is admitted for the
 //!   workspace's account before it is handed over, and counted once the
@@ -97,7 +97,7 @@ use tilo_actions::{ActionFailure, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PageDeparture, PendingConfirmation};
 use tilo_user_identity::{
-    Answered, DeviceCapabilities, DeviceCert, HostWitness, Parties, sign_device_cert,
+    Answered, DeviceCapabilities, DeviceCert, HostApproval, Parties, sign_device_cert,
 };
 
 /// The app a hosted workspace opens Browser through.
@@ -185,8 +185,8 @@ pub const DEVICE_LIFETIME: Duration = Duration::from_secs(2 * 60 * 60);
 /// lives on.
 pub const RECONNECT: Duration = Duration::from_secs(30);
 /// How long the person's answer to one page action stays good for running
-/// it: their confirmation of that invocation, not a standing grant.
-pub const WITNESS_LIFETIME: u64 = 5 * 60 * 1_000_000_000;
+/// it: their confirmation of that invocation, not a lasting grant.
+pub const APPROVAL_LIFETIME: u64 = 5 * 60 * 1_000_000_000;
 /// The waits before a host asks again for a workspace it could not name yet
 /// ([`HostedBrowsers::ready_workspace_name`]).
 const NOT_READY_WAITS: [Duration; 4] = [
@@ -551,7 +551,7 @@ impl HostedBrowsers {
 
     /// The Browser this host's environment names, when it serves Browser
     /// at all: where they start and stop (a placer and its VM hosts,
-    /// [`crate::placed_browsers::PlacedBrowsers`]), the ledger their page
+    /// [`crate::placed_browsers::PlacedBrowsers`]), the log their page
     /// actions are counted in ([`crate::browser_actions::BrowserMeter`]), and
     /// the address the sessions reach this host at.
     ///
@@ -567,10 +567,10 @@ impl HostedBrowsers {
         };
         let meter = crate::browser_actions::BrowserMeter::from_env()?.ok_or_else(|| {
             format!(
-                "{} names where Browser sessions start, so {} must name the ledger their \
+                "{} names where Browser sessions start, so {} must name the log their \
                  page actions are counted in",
                 crate::placed_shells::PLACER_ENV,
-                tilo_host_account::browser_actions::LEDGER_ENV
+                tilo_host_account::browser_actions::ACTIONS_LOG_ENV
             )
         })?;
         // The address their sessions reach this host at is part of serving
@@ -759,8 +759,8 @@ impl HostedBrowsers {
         let device = *caller.device_public_key()?;
         let permitted = match &request.confirmation {
             None => true,
-            Some(Confirmation::Witnessed(token)) => {
-                self.witnessed(token, workspace_id, device, request)
+            Some(Confirmation::Approved(token)) => {
+                self.approved(token, workspace_id, device, request)
             }
             Some(_) => false,
         };
@@ -774,7 +774,7 @@ impl HostedBrowsers {
             return Some(waiting(request.invocation));
         }
         // A key whose person let it operate web pages needs no question about
-        // one: this host answers for them with the same witness their answer
+        // one: this host answers for them with the same approval their answer
         // would have made, so the window runs it once and answers the caller
         // itself.
         let mut operated = None;
@@ -831,7 +831,7 @@ impl HostedBrowsers {
     /// page posted on its own, or started a download — is put to the person
     /// here: the session holding the window reports it
     /// ([`RemoteActionMessage::Confirm`] naming the window's [`SEND_HELD`]),
-    /// this host asks the person once, and their answer is the witness that
+    /// this host asks the person once, and their answer is the approval that
     /// releases that one request, made for the invocation the report names.
     /// A denial, or a question nobody answers, is the answer that keeps the
     /// page as it is: the session runs [`KEEP_HELD`] with it.
@@ -980,7 +980,7 @@ impl HostedBrowsers {
 
     /// Ask the person `caller` acts for whether `request` — a page action of
     /// `workspace_id`'s window — may run, once. Their answer runs it as the
-    /// caller asked it, carrying the witness the window accepts; a denial, or
+    /// caller asked it, carrying the approval the window accepts; a denial, or
     /// a question nobody answers, ends the invocation refused and nothing
     /// runs. `departure` is what the window said it holds for them, when it
     /// said so: the question names what leaves a page rather than a label.
@@ -1166,7 +1166,7 @@ impl HostedBrowsers {
     }
 
     /// Where the person is asked about a page action, and the key their answer
-    /// is witnessed with: this host's own, once it runs.
+    /// is approved with: this host's own, once it runs.
     fn certifying(&self) -> Option<(CertificationProtocol, SigningKey)> {
         let authority = self.authority.lock_recover();
         let authority = authority.as_ref()?;
@@ -1184,27 +1184,27 @@ impl HostedBrowsers {
     /// the answer of the host that certified `workspace_id`'s window, for the
     /// person it serves, naming this caller, this invocation, this action and
     /// these arguments, and still good.
-    fn witnessed(
+    fn approved(
         &self,
         token: &str,
         workspace_id: WorkspaceId,
         caller: [u8; 32],
         request: &InvokeRequest,
     ) -> bool {
-        let Some(witness) = HostWitness::decode(token) else {
+        let Some(approval) = HostApproval::decode(token) else {
             return false;
         };
         let open = self.open.lock_recover();
         let Some(up) = open.get(&workspace_id) else {
             return false;
         };
-        witness.stands_for(&up.device, tilo_clock::unix_now_ns())
-            && witness.caller_device_public_key == caller
-            && witness.invocation == *request.invocation.0.as_bytes()
-            && witness.provider == request.target.provider
-            && witness.resource == request.target.address.resource
-            && witness.action == request.target.address.action
-            && witness.argument == argument_digest(request.argument.to_slot().as_deref())
+        approval.stands_for(&up.device, tilo_clock::unix_now_ns())
+            && approval.caller_device_public_key == caller
+            && approval.invocation == *request.invocation.0.as_bytes()
+            && approval.provider == request.target.provider
+            && approval.resource == request.target.address.resource
+            && approval.action == request.target.address.action
+            && approval.argument == argument_digest(request.argument.to_slot().as_deref())
     }
 
     /// Whether what device `from` sends `to` in `workspace_id` is the
@@ -1779,7 +1779,7 @@ impl Asked {
     }
 
     /// `answer` as this invocation's confirmation, or the refusal it amounts
-    /// to: the witness `key` signs, for exactly this action and these
+    /// to: the approval `key` signs, for exactly this action and these
     /// arguments, naming this caller and this window.
     fn confirmed(
         &self,
@@ -1790,7 +1790,7 @@ impl Asked {
             // The question shows no draft, so nothing in it is changed.
             Ok(ConfirmationAnswer::AllowOnce) => {
                 let now = tilo_clock::unix_now_ns();
-                let mut witness = HostWitness::unsigned(
+                let mut approval = HostApproval::unsigned(
                     Parties {
                         person: self.person,
                         host: key.verifying_key().to_bytes(),
@@ -1804,12 +1804,12 @@ impl Asked {
                         action: self.request.target.address.action.clone(),
                         argument: argument_digest(self.request.argument.to_slot().as_deref()),
                     },
-                    (now, now.saturating_add(WITNESS_LIFETIME)),
+                    (now, now.saturating_add(APPROVAL_LIFETIME)),
                 );
-                witness
+                approval
                     .sign(key)
                     .map(|()| {
-                        ConfirmedInvocation::unchanged(Confirmation::Witnessed(witness.encode()))
+                        ConfirmedInvocation::unchanged(Confirmation::Approved(approval.encode()))
                     })
                     .map_err(|error| ActionHostError::Unavailable {
                         reason: format!("the host could not answer for the person: {error}"),
@@ -2549,13 +2549,13 @@ mod tests {
      {
         use crate::browser_actions::BrowserMeter;
         use crate::placed_shells::{MEMBERS_ENV, PLACER_ENV};
-        use tilo_host_account::{ACCOUNT_ENV, LEDGER_ENV, PLANS_ENV};
+        use tilo_host_account::{ACCOUNT_ENV, LOG_ENV, PLANS_ENV};
 
         let mut env = tilo_test_env::ScopedEnv::new();
         env.remove(PLACER_ENV)
             .remove(MEMBERS_ENV)
             .remove(ACCOUNT_ENV)
-            .remove(LEDGER_ENV)
+            .remove(LOG_ENV)
             .remove(PLANS_ENV)
             .remove(RELAY_ENV);
         assert!(
@@ -2563,7 +2563,7 @@ mod tests {
             "a host with no placer places no Browser"
         );
 
-        // A placer alone is half a host: without a ledger it would serve
+        // A placer alone is half a host: without a log it would serve
         // Browser free of charge.
         let dir = tempfile::tempdir().unwrap();
         let members = dir.path().join("members.json");
@@ -2572,12 +2572,12 @@ mod tests {
             .set(MEMBERS_ENV, &members)
             .set(ACCOUNT_ENV, "acct-1");
         let error = HostedBrowsers::from_env().err().unwrap();
-        assert!(error.contains(LEDGER_ENV), "{error}");
+        assert!(error.contains(LOG_ENV), "{error}");
         assert!(BrowserMeter::from_env().unwrap().is_none());
 
-        // With the ledger but no address, its sessions would be told to reach
+        // With the log but no address, its sessions would be told to reach
         // it where they cannot.
-        env.set(LEDGER_ENV, dir.path().join("actions.jsonl"))
+        env.set(LOG_ENV, dir.path().join("actions.jsonl"))
             .set(PLANS_ENV, dir.path().join("plans.json"));
         let error = HostedBrowsers::from_env().err().unwrap();
         assert!(error.contains(RELAY_ENV), "{error}");

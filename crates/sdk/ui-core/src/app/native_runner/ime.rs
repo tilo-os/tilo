@@ -194,7 +194,7 @@ mod floating_ime_continuation_tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn a_floating_ime_keeps_its_caret_and_custody;
+        fn a_floating_ime_keeps_its_caret_and_ownership;
 
         phase returned_caret_keeps_signed_child_coordinates_and_content_type;
         {
@@ -230,7 +230,7 @@ mod floating_ime_continuation_tests {
             );
         }
 
-        phase empty_preedit_does_not_retire_custody_before_the_commit_in_the_same_batch;
+        phase empty_preedit_does_not_retire_ownership_before_the_commit_in_the_same_batch;
         {
             assert_eq!(
                 preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Preedit(

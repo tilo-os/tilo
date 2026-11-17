@@ -1,21 +1,21 @@
-//! The Browser page actions an account ran, as the relay's ledger keeps
+//! The Browser page actions an account ran, as the relay's log keeps
 //! them.
 //!
 //! Every page action the relay runs on a hosted Browser is one line of a
-//! file it appends to ([`LEDGER_ENV`]), written before the action: a relay
+//! file it appends to ([`ACTIONS_LOG_ENV`]), written before the action: a relay
 //! that stops leaves no action uncounted, and a line still being written is
 //! skipped rather than read as another. An account's count is the lines of
-//! its billing period ([`Ledger::count`]); nothing here knows prices.
+//! its billing period ([`Log::count`]); nothing here knows prices.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// The ledger of Browser page actions the relay keeps, a file. Set on a host
+/// The log of Browser page actions the relay keeps, a file. Set on a host
 /// that runs hosted Browser; the relay writes it and reads it, this crate
-/// reads it for the account's standing.
-pub const LEDGER_ENV: &str = "TILO_HOSTED_BROWSER_ACTIONS";
+/// reads it for the account's subscription.
+pub const ACTIONS_LOG_ENV: &str = "TILO_HOSTED_BROWSER_ACTIONS";
 
 /// One page action an account ran.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -27,13 +27,13 @@ pub struct PageAction {
     pub at_ms: u64,
 }
 
-/// The ledger file of page actions.
+/// The log file of page actions.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Ledger {
+pub struct Log {
     path: PathBuf,
 }
 
-impl Ledger {
+impl Log {
     #[must_use]
     pub fn new(path: PathBuf) -> Self {
         Self { path }

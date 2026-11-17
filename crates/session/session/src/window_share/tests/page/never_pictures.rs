@@ -89,7 +89,7 @@ fn starting_row(host: &Member, tab: u64) -> Option<Value> {
 /// so, and the page is what the sharing device says it sends.
 fn page_drawn(two: &Two) -> bool {
     two.tile()
-        .is_some_and(|tile| tile.page && tile.standing == Standing::Pictured)
+        .is_some_and(|tile| tile.page && tile.state == StreamState::Pictured)
         && two.received().is_some_and(|stream| {
             stream["pictured"] == true && stream["codec"].as_str() == Some(CODEC)
         })
@@ -254,7 +254,7 @@ fn a_window_shared_while_its_apps_offer_names_no_window_waits_for_its_page() {
             .session
             .handle()
             .peer_surface_read(front)
-            .is_some_and(|tile| tile.page && tile.standing == Standing::Pictured)
+            .is_some_and(|tile| tile.page && tile.state == StreamState::Pictured)
     };
     assert!(
         two.within(LINK, &mut [&mut app], |two, _| {

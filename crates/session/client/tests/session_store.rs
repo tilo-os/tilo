@@ -22,8 +22,8 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
-use tilo_session_client::custody::PeerStore as _;
 use tilo_session_client::device::{Entering, entry_request};
+use tilo_session_client::membership_check::PeerStore as _;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 

@@ -5,9 +5,11 @@
 
 use std::sync::Arc;
 
-use account_custody::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
-use account_custody::nextcloud::{self, NextcloudError};
-use account_custody::{Authorization, Custodian, CustodyError, LoopbackCancel, OAuthCloud};
+use account_credentials::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
+use account_credentials::nextcloud::{self, NextcloudError};
+use account_credentials::{
+    Authorization, CredentialError, CredentialStore, LoopbackCancel, OAuthCloud,
+};
 use accounts::cloud_types::FilesMode;
 use ui::widget::{Button, Checkbox, Dropdown, Row, Spacer, TextInput, TextInputKind};
 
@@ -121,7 +123,7 @@ enum Stage {
 pub struct SignInFlow {
     kind: AccountKind,
     existing_id: Option<String>,
-    custodian: Custodian,
+    credential_store: CredentialStore,
     opener: Arc<dyn BrowserOpener>,
     name: ui::LocalState<String>,
     server: ui::LocalState<String>,
@@ -150,14 +152,14 @@ struct SelectedServices {
 }
 
 fn oauth_completed(
-    custodian: &Custodian,
+    credential_store: &CredentialStore,
     cloud: OAuthCloud,
     kind: AccountKind,
     existing_id: Option<String>,
     display_name: String,
-    tokens: &account_custody::TokenSet,
+    tokens: &account_credentials::TokenSet,
     selected: SelectedServices,
-) -> Result<Outcome, CustodyError> {
+) -> Result<Outcome, CredentialError> {
     let kind = if cloud == OAuthCloud::GoogleDrive && !selected.files {
         AccountKind::Mail
     } else {
@@ -166,16 +168,16 @@ fn oauth_completed(
     let mount = if kind == AccountKind::Mail {
         serde_json::Value::Null
     } else {
-        custodian.resolve_storage(cloud, tokens)?
+        credential_store.resolve_storage(cloud, tokens)?
     };
     let mail = if selected.mail {
-        let email = custodian.gmail_identity(tokens)?;
+        let email = credential_store.gmail_identity(tokens)?;
         if selected
             .expected_mail
             .as_deref()
             .is_some_and(|expected| !email.eq_ignore_ascii_case(expected))
         {
-            return Err(CustodyError::SignIn(
+            return Err(CredentialError::SignIn(
                 "Google returned a different mailbox; sign in with this account's email address"
                     .into(),
             ));
@@ -199,7 +201,7 @@ fn oauth_completed(
         account.display_name = email;
         account.config = config
             .to_value()
-            .map_err(|error| CustodyError::Storage(error.to_string()))?;
+            .map_err(|error| CredentialError::Storage(error.to_string()))?;
         Some(account)
     } else {
         None
@@ -211,7 +213,7 @@ fn oauth_completed(
     if kind == AccountKind::Mail {
         let mailbox = mail
             .as_ref()
-            .ok_or_else(|| CustodyError::SignIn("Gmail sign-in requires mail consent".into()))?;
+            .ok_or_else(|| CredentialError::SignIn("Gmail sign-in requires mail consent".into()))?;
         super::merge_config(&mut config, mailbox.config.clone());
     } else {
         super::merge_config(
@@ -236,7 +238,7 @@ fn oauth_completed(
         existing_id,
         display_name,
         config,
-        secret: account_custody::oauth_secret(tokens),
+        secret: account_credentials::oauth_secret(tokens),
         mail: if kind == AccountKind::Mail {
             None
         } else {
@@ -246,7 +248,7 @@ fn oauth_completed(
 }
 
 fn icloud_config(
-    auth: &dyn account_custody::icloud::ICloudAuth,
+    auth: &dyn account_credentials::icloud::ICloudAuth,
     apple_id: &str,
 ) -> serde_json::Value {
     let mut config = serde_json::Map::new();
@@ -259,17 +261,17 @@ fn icloud_config(
 }
 
 /// Why this kind cannot start a sign-in in this build, if it cannot.
-pub fn unavailable_reason(kind: AccountKind, custodian: &Custodian) -> Option<String> {
+pub fn unavailable_reason(kind: AccountKind, credential_store: &CredentialStore) -> Option<String> {
     let oauth_use = if kind == AccountKind::Mail {
-        Some(account_custody::OAuthUse::mail(
-            account_custody::OAuthIssuer::Google,
+        Some(account_credentials::OAuthUse::mail(
+            account_credentials::OAuthIssuer::Google,
         ))
     } else {
         kind.oauth_cloud().map(OAuthCloud::oauth_use)
     };
     if let Some(oauth_use) = oauth_use {
-        return match custodian.use_config(oauth_use) {
-            Err(CustodyError::NotConfigured { provider, key }) => Some(format!(
+        return match credential_store.use_config(oauth_use) {
+            Err(CredentialError::NotConfigured { provider, key }) => Some(format!(
                 "{provider} sign-in is not configured in this build: it needs an OAuth client \
                  ID registered with {}, provided as {key} when Tilo is built or started.",
                 oauth_use.issuer.label()
@@ -277,7 +279,7 @@ pub fn unavailable_reason(kind: AccountKind, custodian: &Custodian) -> Option<St
             _ => None,
         };
     }
-    (kind == AccountKind::ICloudDrive && !custodian.icloud().is_available())
+    (kind == AccountKind::ICloudDrive && !credential_store.icloud().is_available())
         .then(|| "iCloud Drive sign-in is not available in this build yet.".to_string())
 }
 
@@ -289,7 +291,7 @@ impl SignInFlow {
     pub fn new(
         kind: AccountKind,
         existing: Option<&accounts::Account>,
-        custodian: Custodian,
+        credential_store: CredentialStore,
         opener: Arc<dyn BrowserOpener>,
     ) -> Self {
         let text = |key: &str| {
@@ -302,7 +304,7 @@ impl SignInFlow {
         Self {
             kind,
             existing_id: existing.map(|account| account.id.to_string()),
-            custodian,
+            credential_store,
             opener,
             name: ui::LocalState::new(
                 existing
@@ -411,7 +413,7 @@ impl SignInFlow {
             } else {
                 self.kind
             };
-        unavailable_reason(kind, &self.custodian)
+        unavailable_reason(kind, &self.credential_store)
     }
 
     fn selected_services(&self) -> SelectedServices {
@@ -550,7 +552,7 @@ impl SignInFlow {
             return;
         };
         let root = self
-            .custodian
+            .credential_store
             .config_root()
             .map(std::path::Path::to_path_buf)
             .or_else(accounts::config_root);
@@ -596,7 +598,7 @@ impl SignInFlow {
     }
 
     fn save_mode_only(&mut self) {
-        let custodian = self.custodian.clone();
+        let credential_store = self.credential_store.clone();
         let Some(id) = self.existing_id.clone() else {
             self.message = Some("Connect this account before changing its Files mode".into());
             return;
@@ -613,9 +615,9 @@ impl SignInFlow {
                     // No service was added: retain the approved grant, never ask for
                     // broader scopes merely to change local Files policy.
                     if let Some(cloud) = kind.oauth_cloud() {
-                        let scopes =
-                            custodian.oauth_scopes(&accounts::AccountId::from(id.as_str()))?;
-                        let (provider, _) = custodian.use_config(cloud.oauth_use())?;
+                        let scopes = credential_store
+                            .oauth_scopes(&accounts::AccountId::from(id.as_str()))?;
+                        let (provider, _) = credential_store.use_config(cloud.oauth_use())?;
                         if !scopes.as_deref().is_some_and(|granted| {
                             provider.scopes.iter().all(|required| {
                                 granted.split_whitespace().any(|scope| scope == required)
@@ -624,13 +626,13 @@ impl SignInFlow {
                             return Ok(Outcome::NeedsAuthorization(cloud));
                         }
                     }
-                    let vault = accounts::SecretVault::open_person(custodian.config_root());
+                    let vault = accounts::SecretVault::open_person(credential_store.config_root());
                     if let Some(error) = vault.recovery_error() {
-                        return Err(CustodyError::Storage(error.to_string()));
+                        return Err(CredentialError::Storage(error.to_string()));
                     }
                     let secret = vault
                         .get(&accounts::AccountId::from(id.as_str()))
-                        .ok_or(CustodyError::NeedsAuthentication)?;
+                        .ok_or(CredentialError::NeedsAuthentication)?;
                     Ok(Outcome::completed(Completed {
                         kind,
                         existing_id: Some(id),
@@ -688,15 +690,15 @@ impl SignInFlow {
 
     fn start_oauth(&mut self, cloud: OAuthCloud) {
         let request = if self.kind == AccountKind::Mail {
-            self.custodian.begin_sign_in_for(
-                account_custody::OAuthUse::mail(account_custody::OAuthIssuer::Google),
+            self.credential_store.begin_sign_in_for(
+                account_credentials::OAuthUse::mail(account_credentials::OAuthIssuer::Google),
                 self.expected_mail.as_deref(),
             )
         } else if cloud == OAuthCloud::GoogleDrive {
-            self.custodian
+            self.credential_store
                 .begin_google_services_sign_in(self.files.get(), self.google_mail.get())
         } else {
-            self.custodian.begin_sign_in(cloud, None)
+            self.credential_store.begin_sign_in(cloud, None)
         };
         let authorization = match request {
             Ok(authorization) => authorization,
@@ -728,14 +730,14 @@ impl SignInFlow {
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
-        let custodian = self.custodian.clone();
+        let credential_store = self.credential_store.clone();
         let selected = self.selected_services();
         let _ = crate::device_read::thread(
             "settings-cloud-sign-in",
             Box::new(move || {
-                let outcome = Custodian::finish_sign_in(authorization).and_then(|tokens| {
+                let outcome = CredentialStore::finish_sign_in(authorization).and_then(|tokens| {
                     oauth_completed(
-                        &custodian,
+                        &credential_store,
                         cloud,
                         kind,
                         existing_id,
@@ -778,15 +780,15 @@ impl SignInFlow {
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
-        let custodian = self.custodian.clone();
+        let credential_store = self.credential_store.clone();
         let selected = self.selected_services();
         let _ = crate::device_read::thread(
             "settings-cloud-sign-in",
             Box::new(move || {
-                let outcome =
-                    Custodian::finish_sign_in_with_code(authorization, &code).and_then(|tokens| {
+                let outcome = CredentialStore::finish_sign_in_with_code(authorization, &code)
+                    .and_then(|tokens| {
                         oauth_completed(
-                            &custodian,
+                            &credential_store,
                             cloud,
                             kind,
                             existing_id,
@@ -872,7 +874,7 @@ impl SignInFlow {
             self.message = Some("enter your Apple ID and password".into());
             return;
         }
-        let auth = Arc::clone(self.custodian.icloud());
+        let auth = Arc::clone(self.credential_store.icloud());
         let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
@@ -887,7 +889,7 @@ impl SignInFlow {
                         existing_id,
                         display_name,
                         config: icloud_config(auth.as_ref(), &apple_id),
-                        secret: account_custody::icloud_secret(&apple_id, &session),
+                        secret: account_credentials::icloud_secret(&apple_id, &session),
                         mail: None,
                     }),
                     Ok(ICloudSignIn::NeedsCode(challenge)) => Outcome::NeedsCode(challenge),
@@ -913,7 +915,7 @@ impl SignInFlow {
             self.message = Some("enter the six-digit verification code".into());
             return;
         }
-        let auth = Arc::clone(self.custodian.icloud());
+        let auth = Arc::clone(self.credential_store.icloud());
         let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
@@ -930,7 +932,7 @@ impl SignInFlow {
                         existing_id,
                         display_name,
                         config: icloud_config(auth.as_ref(), &apple_id),
-                        secret: account_custody::icloud_secret(&apple_id, &session),
+                        secret: account_credentials::icloud_secret(&apple_id, &session),
                         mail: None,
                     }),
                     Err(error) => Outcome::Failed(error.to_string()),
@@ -1303,7 +1305,7 @@ mod service_choice_tests {
         SignInFlow::new(
             kind,
             existing,
-            Custodian::for_root(None),
+            CredentialStore::for_root(None),
             Arc::new(PortalOpener),
         )
     }
@@ -1386,10 +1388,10 @@ mod service_choice_tests {
                     .header("Content-Type", "application/json")
                     .body(r#"{"emailAddress":"other@example.org"}"#),
             ]);
-            let custodian = Custodian::for_root(None)
+            let credential_store = CredentialStore::for_root(None)
                 .with_gmail_profile_endpoint(format!("{}/profile", server.url()));
             // Only a mail scope: resolving a Drive mount would reject these tokens.
-            let tokens = account_custody::TokenSet {
+            let tokens = account_credentials::TokenSet {
                 scope: Some("https://mail.google.com/".into()),
                 ..Default::default()
             };
@@ -1399,7 +1401,7 @@ mod service_choice_tests {
                 .unwrap();
             google.expected_mail = Some("ada@example.org".into());
             let completed = oauth_completed(
-                &custodian,
+                &credential_store,
                 OAuthCloud::GoogleDrive,
                 AccountKind::GoogleDrive,
                 None,
@@ -1422,7 +1424,7 @@ mod service_choice_tests {
             assert_eq!(completed.config["email"], "ada@example.org");
             assert!(
                 oauth_completed(
-                    &custodian,
+                    &credential_store,
                     OAuthCloud::GoogleDrive,
                     AccountKind::GoogleDrive,
                     None,

@@ -222,7 +222,7 @@ mod tests {
             assert!(!safe.to_string().contains("private rename value"));
         }
 
-        phase redraw_witness_is_bounded_and_a_new_input_replaces_it;
+        phase redraw_observation_is_bounded_and_a_new_input_replaces_it;
         {
             let mut trace = Trace {
                 next_id: 1,
@@ -245,7 +245,7 @@ mod tests {
             assert!(trace.drawn(Some(35), None).is_none());
         }
 
-        phase discarded_draw_keeps_a_content_free_witness_for_its_redraw;
+        phase discarded_draw_keeps_a_content_free_observation_for_its_redraw;
         {
             let mut trace = Trace::default();
             trace.pending.push(1);
@@ -257,7 +257,7 @@ mod tests {
             assert_eq!(first["input_ids"], serde_json::json!([1]));
             let retry = trace
                 .drawn(Some(435), Some(state))
-                .expect("a discarded first buffer must not erase the input witness for a later draw");
+                .expect("a discarded first buffer must not erase the input observation for a later draw");
             assert_eq!(retry["cpu_frame_id"], 435);
             assert_eq!(retry["input_ids"], first["input_ids"]);
             assert_eq!(retry["state"], first["state"]);

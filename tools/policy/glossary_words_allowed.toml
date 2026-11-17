@@ -76,8 +76,8 @@ paths = [
     "crates/system/tilo-dav/*",
     "apps/calendar/src/setup/tests.rs",
     "apps/settings/tests/accounts_calendar_loop.rs",
-    "apps/mail/tests/oauth_custody.rs",
-    "crates/system/account-custody/tests/oauth_capabilities.rs",
+    "apps/mail/tests/oauth_credentials.rs",
+    "crates/system/account-credentials/tests/oauth_capabilities.rs",
     "docs/windows-compatibility.md",
 ]
 

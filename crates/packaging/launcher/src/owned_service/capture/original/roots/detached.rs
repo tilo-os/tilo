@@ -1,5 +1,5 @@
 //! Fresh, nonrecursive detached copies of already authenticated held roots. Neither
-//! caller paths nor serialized records can construct this custody.
+//! caller paths nor serialized records can construct this ownership.
 use super::{
     AsRawFd, Component, File, FromRawFd, Inputs, MetadataExt, OpenOptionsExt, OsStrExt, Path,
     PathBuf, Projection, RawFd, check_input, identity, io, refused, root, validate,
@@ -59,7 +59,7 @@ impl Inputs {
             result.projections.push(projection);
             result.originals.push(source.try_clone()?);
             result.topologies.push(topology);
-            // Recheck live original descriptors; cloning never replaces their custody.
+            // Recheck live original descriptors; cloning never replaces their ownership.
             self.check()?;
         }
         result.check()?;
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(
             inputs.projections(),
             original,
-            "base custody must remain unchanged"
+            "base ownership must remain unchanged"
         );
         assert_ne!(first.projections()[0].mount, second.projections()[0].mount);
         for lease in [&first, &second] {

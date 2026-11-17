@@ -1,6 +1,6 @@
 //! Exact-source discovery using the governor's already-owned channel state.
 use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
-use tilo_action_policy::Standing;
+use tilo_action_policy::MemberAccess;
 use tilo_actions::remote::Caller;
 use tilo_agent_session::workspace_actions::{ViewDocument, ViewReadPolicy};
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -9,12 +9,12 @@ use tilo_relay_protocol::WorkspaceId;
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
 impl GovernedWorkspace {
-    /// The standing `caller` holds here now: only a person on a device this
+    /// The access `caller` holds here now: only a person on a device this
     /// workspace certified, whose certificate is current and whose membership
     /// it still records. A revoked device, a removed member and a stranger hold
     /// none. What a member may do with what they find is decided per action, by
-    /// this standing.
-    fn admitted(&self, caller: &Caller) -> Option<Standing> {
+    /// this access.
+    fn admitted(&self, caller: &Caller) -> Option<MemberAccess> {
         if !caller.acting().is_person() {
             return None;
         }
@@ -32,7 +32,7 @@ impl GovernedWorkspace {
     }
 
     /// The device of `person`'s this workspace certified most recently and admits now: the one an
-    /// agent this host runs for them works on, so what the agent may do is the person's standing
+    /// agent this host runs for them works on, so what the agent may do is the person's access
     /// here at every step, and a person removed from the workspace leaves their agent nothing.
     fn person_device(&self, person: &[u8; 32]) -> Option<[u8; 32]> {
         let peer = self.peer();
@@ -50,14 +50,14 @@ impl GovernedWorkspace {
         self.admitted(caller).is_some()
     }
 
-    /// `caller`'s standing across the workspace now and its sandbox: what
+    /// `caller`'s access across the workspace now and its sandbox: what
     /// every record's policy holds before the record's own read is checked.
     fn workspace_policy(&self, caller: &Caller) -> Option<ViewReadPolicy> {
-        let standing = self.admitted(caller)?;
+        let access = self.admitted(caller)?;
         let sandbox = self.peer().governance().governed_sandbox().ok()?;
         Some(ViewReadPolicy {
             workspace: self.workspace().to_owned(),
-            standing,
+            access,
             sandbox,
             unix_time: tilo_clock::wall()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -148,7 +148,7 @@ impl Workspaces {
         .flatten()
     }
 
-    /// `caller`'s standing across the workspace `workspace` governed here,
+    /// `caller`'s access across the workspace `workspace` governed here,
     /// with no record's read checked: what a workspace's content and its new
     /// records are decided by.
     pub async fn workspace_policy(

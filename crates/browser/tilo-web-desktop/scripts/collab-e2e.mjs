@@ -211,12 +211,12 @@ for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
 try {
   const q = new URLSearchParams(location.search);
   const {connectPeer} = await import('./peer.mjs');
-  const {openDeviceCustody, idbStorage} = await import('./device-custody.mjs');
+  const {openDeviceKey, idbStorage} = await import('./device-key.mjs');
   const profile = q.get('profile');
-  const custody = await openDeviceCustody({profile, storage: idbStorage()});
+  const deviceKey = await openDeviceKey({profile, storage: idbStorage()});
   const peer = globalThis.peer = await connectPeer({
     origin: q.get('origin'), userPublicKey: q.get('user'), label: q.get('label'), workspace: q.get('workspace'),
-    custody, profile, displayName: q.get('label'),
+    deviceKey, profile, displayName: q.get('label'),
   });
   globalThis.tiloMount = await peer.mountDesktop(document.getElementById('surface'), {apps: [q.get('app')]});
   globalThis.harnessReady = true;

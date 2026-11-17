@@ -319,7 +319,7 @@ impl Shared {
             | Command::Close { generation } => *generation,
         };
         // The admission this output was opened under can have ended since; it is asked outside the
-        // registry's lock, because it waits on membership and custody.
+        // registry's lock, because it waits on membership and ownership.
         let retained = self.caller(key, generation)?;
         if let Err(error) = retained() {
             self.stop(Some(key.peer));
@@ -775,7 +775,7 @@ mod tests {
             .await
             .unwrap();
         let ended: Arc<dyn Fn() -> Result<(), String> + Send + Sync> =
-            Arc::new(|| Err("committed read launcher custody ended".into()));
+            Arc::new(|| Err("committed read launcher ownership ended".into()));
         let refused = audio.0.control(
             &key(1),
             &*ended,

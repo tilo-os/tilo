@@ -416,7 +416,7 @@ impl BrowserWidget {
         if !request.valid() {
             return Err(Self::refused_page_request(&request));
         }
-        if matches!(request, PageRequest::Ledger { .. }) {
+        if matches!(request, PageRequest::Log { .. }) {
             return self.read_page_resource(invocation, actor, request);
         }
         self.take_page_turn(invocation, actor, request)?;

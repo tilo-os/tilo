@@ -149,7 +149,7 @@ impl<S: SheetState> Sheet<S> {
 
     /// The sheet stands over the session's lock: while the session is locked it is the one thing
     /// drawn and the one that takes the keyboard and the pointer. The lock view is.
-    pub(crate) const fn standing_over_lock(mut self) -> Self {
+    pub(crate) const fn over_lock(mut self) -> Self {
         self.role = Role::OverLock;
         self
     }
@@ -666,7 +666,7 @@ mod tests {
             assert_eq!(covering(None, &[], false), None);
         }
 
-        phase a_sheet_standing_on_every_display_covers_all_of_them;
+        phase a_sheet_on_every_display_covers_all_of_them;
         {
             assert_eq!(
                 covering(None, &[RIGHT_SHOWN, LEFT_SHOWN], true),

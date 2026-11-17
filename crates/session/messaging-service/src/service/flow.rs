@@ -339,8 +339,8 @@ impl<P: Provider> Flow<P> {
         }
         drop(state);
         let identity = service
-            .custody
-            .admit(service.custody.new_owner(P::SERVICE))?;
+            .ownership
+            .admit(service.ownership.new_owner(P::SERVICE))?;
         let account = Self::account_of(&identity.owner);
         Ok((account, identity))
     }
@@ -500,8 +500,8 @@ impl<P: Provider> Flow<P> {
             state.chooser = None;
         }
         let identity = service
-            .custody
-            .admit(service.custody.new_owner(P::SERVICE))?;
+            .ownership
+            .admit(service.ownership.new_owner(P::SERVICE))?;
         let epoch = self.lock().epoch;
         let provider = self.provider.clone();
         let worker = service.clone();
@@ -870,8 +870,8 @@ impl<P: Provider> Flow<P> {
                 continue;
             }
             let owner = Owner {
-                actor: service.custody.actor().into(),
-                device: service.custody.device().into(),
+                actor: service.ownership.actor().into(),
+                device: service.ownership.device().into(),
                 service: P::SERVICE,
                 account: id,
                 linking_generation: generation,
@@ -892,7 +892,7 @@ impl<P: Provider> Flow<P> {
             let provider = self.provider.clone();
             let worker = service.clone();
             let resumed = blocking(move || {
-                let identity = worker.custody.admit(owner)?.running();
+                let identity = worker.ownership.admit(owner)?.running();
                 let credential = Credential::new(&worker.vault, &identity, request)?;
                 credential.check()?;
                 provider.resume(&worker, &identity, credential, scope, &row)

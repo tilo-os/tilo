@@ -13,13 +13,13 @@ use std::{
 use tilo_lock::MutexRecover as _;
 
 pub(super) const MAX_DEVICE_WORKERS: usize = 8;
-static OUTSTANDING: AtomicUsize = AtomicUsize::new(0);
+static OUTSTATE: AtomicUsize = AtomicUsize::new(0);
 type Guard = Arc<dyn Fn() -> bool + Send + Sync>;
 
 pub(super) struct Permit;
 impl Permit {
     pub(super) fn acquire() -> Result<Self, AudioError> {
-        OUTSTANDING
+        OUTSTATE
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_DEVICE_WORKERS).then(|| count.saturating_add(1))
             })
@@ -29,7 +29,7 @@ impl Permit {
 }
 impl Drop for Permit {
     fn drop(&mut self) {
-        OUTSTANDING.fetch_sub(1, Ordering::AcqRel);
+        OUTSTATE.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -204,7 +204,7 @@ impl DevicePipeline {
                     std::thread::park_timeout(Duration::from_millis(5));
                 }
                 worker_stop.stop();
-                // A driver may block here. Its permit and FD custody remain live;
+                // A driver may block here. Its permit and FD ownership remain live;
                 // cancellation and future admission never wait for this thread.
                 loop {
                     let _ = pipeline.0.set_state(gst::State::Null);
@@ -254,5 +254,5 @@ impl Drop for DevicePipeline {
 
 #[cfg(test)]
 pub(super) fn outstanding_workers() -> usize {
-    OUTSTANDING.load(Ordering::Acquire)
+    OUTSTATE.load(Ordering::Acquire)
 }

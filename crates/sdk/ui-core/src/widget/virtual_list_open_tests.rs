@@ -199,7 +199,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_row_named_again_keeps_standing_open_while_the_rows_come_back;
+    phase a_row_named_again_keeps_held_open_while_the_rows_come_back;
     {
         let (mut list, rows, closes) = renamed_list();
         let _ = lay_out(&mut list, 300.0);
@@ -273,7 +273,7 @@ tilo_test_env::scenario! {
         assert!(opened.borrow().is_empty());
     }
 
-    phase the_row_standing_open_is_handed_to_a_reader_once;
+    phase the_row_held_open_is_handed_to_a_reader_once;
     {
         let mut list = opening_list();
         let _ = lay_out(&mut list, 300.0);

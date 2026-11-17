@@ -1,4 +1,4 @@
-//! Factory ordering and worker-custody regressions only; native authority
+//! Factory ordering and worker-ownership regressions only; native authority
 //! must additionally be proved through the real enrolled-owner broker fixture.
 use super::*;
 use std::cell::Cell;

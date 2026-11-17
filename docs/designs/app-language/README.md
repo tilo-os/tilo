@@ -27,7 +27,7 @@ native UI come from the system.
   the index; `in: r` narrows to a subtree. Nothing loads more than what is shown.
 - **Views** are functions of resources, plus each person's own view state, which shows as
   presence. `default view v for T` is what opens a resource of `T`, `row view r for T` how it
-  appears in a list, and `place view p for T` what a place of it shows standing on its own when
+  appears in a list, and `place view p for T` what a place of it shows access on its own when
   its default view is the app's window (a root's). Views decide which actions they show and where.
 - **Actions** are the only way to change anything, and every action is available to people,
   agents, the palette and programs. They are typed, attributed, undoable and permission-checked,

@@ -1,4 +1,4 @@
-//! The person's account custody, as the session serves it to the apps that ask: Browser lists,
+//! The person's account credentials, as the session serves it to the apps that ask: Browser lists,
 //! resolves and forgets the website sessions the person selected, Settings seals an account's
 //! secret, and Mail is released the one it keeps. Every call goes through the action API the
 //! shipped app already speaks, on a connection admitted as that app in its workspace, and nothing
@@ -42,7 +42,7 @@ const MAIL: &str = "so.tilo.mail";
 /// Browser's record in the workspace: the route its app connection joins.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000bf";
 /// The secret the person's email account is sealed with.
-const PASSWORD: &str = "an app password only custody is released";
+const PASSWORD: &str = "an app password only ownership is released";
 /// What the selected website session's cookie holds.
 const MARKER: &str = "private-session-marker";
 /// The person's email account, as their accounts record keys it.
@@ -81,7 +81,7 @@ struct Fixture {
     _home: tempfile::TempDir,
 }
 
-/// The person's account vault under this host's one custody: the keyring where it answers,
+/// The person's account vault under this host's one ownership: the keyring where it answers,
 /// otherwise an owner-only key file beside the ciphertext.
 fn person_vault(root: &Path) -> accounts::AccountCredentials {
     accounts::AccountCredentials::open_in(root)
@@ -330,7 +330,7 @@ fn config_root() -> PathBuf {
 }
 
 /// A person's selected website session, sealed in `root` as selection leaves it: its account entry,
-/// and its cookies in custody under the person's key.
+/// and its cookies held under the person's key.
 fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::create_dir_all(root).expect("the person's accounts directory");
@@ -360,7 +360,7 @@ fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
     let id = AccountId::from(session.session_id.clone());
     let mut account = accounts::Account::new(
         id.clone(),
-        account_custody::service_sessions::SERVICE_SESSION_TYPE,
+        account_credentials::service_sessions::SERVICE_SESSION_TYPE,
     );
     account.config = serde_json::json!({"service": "slack", "setup_binding": "prepared-operation"});
     let mut store = AccountStore::load_in(root);
@@ -369,7 +369,7 @@ fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
     let mut vault = SecretVault::open_person(Some(root));
     vault.put(
         &id,
-        &account_custody::service_sessions::service_session_secret(&session)
+        &account_credentials::service_sessions::service_session_secret(&session)
             .expect("the selected session is sealable"),
     );
     vault.try_save().expect("the person's vault");
@@ -430,11 +430,11 @@ fn browser_lists_resolves_and_forgets_the_selection_where_a_key_file_holds_the_v
     browser_lists_resolves_and_forgets(Keyring::Missing);
 }
 
-/// Which custody the person's vault reports on a host of this kind.
-fn custody_on(keyring: Keyring) -> accounts::SecretCustody {
+/// Which ownership the person's vault reports on a host of this kind.
+fn backend_on(keyring: Keyring) -> accounts::VaultBackend {
     match keyring {
-        Keyring::Answers => accounts::SecretCustody::System,
-        Keyring::Missing => accounts::SecretCustody::LocalFile,
+        Keyring::Answers => accounts::VaultBackend::System,
+        Keyring::Missing => accounts::VaultBackend::LocalFile,
     }
 }
 
@@ -442,9 +442,9 @@ fn browser_lists_resolves_and_forgets(keyring: Keyring) {
     let fixture = fixture(keyring);
     let root = config_root();
     assert_eq!(
-        SecretVault::open_person(Some(&root)).custody(),
-        custody_on(keyring),
-        "the person's vault is keyed by this host's one custody"
+        SecretVault::open_person(Some(&root)).backend(),
+        backend_on(keyring),
+        "the person's vault is keyed by this host's one ownership"
     );
     let selected = select_in(&root, fixture.keys.root);
     assert_eq!(
@@ -475,7 +475,7 @@ fn browser_lists_resolves_and_forgets(keyring: Keyring) {
     );
     let Ok(Reply::Resolved { session: resolved }) = &replies[1] else {
         panic!(
-            "and resolved to the cookies custody keeps for it: {:?}",
+            "and resolved to the cookies ownership keeps for it: {:?}",
             replies[1]
         );
     };
@@ -557,7 +557,7 @@ fn the_persons_other_device_reads_and_forgets_the_selection() {
     );
     assert!(
         matches!(&replies[2], Ok(Reply::List { sessions }) if sessions.is_empty()),
-        "the person's custody is theirs, whichever of their devices asks: {:?}",
+        "the person's ownership is theirs, whichever of their devices asks: {:?}",
         replies[2]
     );
 }
@@ -610,8 +610,8 @@ fn settings_seals_an_account_secret_in_the_persons_vault() {
         let _ = person_vault(&root);
     }
     assert_eq!(
-        SecretVault::open_person(Some(&root)).custody(),
-        custody_on(Keyring::Missing),
+        SecretVault::open_person(Some(&root)).backend(),
+        backend_on(Keyring::Missing),
         "with no keyring, an owner-only key beside the vault keeps it"
     );
     let (_root, socket) = private_socket();
@@ -632,7 +632,7 @@ fn settings_seals_an_account_secret_in_the_persons_vault() {
     let store = AccountStore::load_in(&root);
     let credentials = person_vault(&root);
     assert_eq!(
-        accounts::custody::release(&store, &credentials, MAIL, ACCOUNT)
+        accounts::secret_release::release(&store, &credentials, MAIL, ACCOUNT)
             .expect("Mail keeps email accounts")
             .as_str(),
         PASSWORD,
@@ -640,12 +640,12 @@ fn settings_seals_an_account_secret_in_the_persons_vault() {
     );
     for app in [BROWSER, "so.tilo.notes", "so.tilo.calendar"] {
         assert!(
-            accounts::custody::release(&store, &credentials, app, ACCOUNT).is_err(),
+            accounts::secret_release::release(&store, &credentials, app, ACCOUNT).is_err(),
             "{app} is not released the account's secret"
         );
     }
     assert!(
-        accounts::custody::release(&store, &credentials, SETTINGS, ACCOUNT).is_err(),
+        accounts::secret_release::release(&store, &credentials, SETTINGS, ACCOUNT).is_err(),
         "Settings is the keeper of accounts, and never reads a secret back"
     );
 }
@@ -693,12 +693,12 @@ fn mail_is_released_the_account_secret_it_keeps() {
         ));
         store.save_in(&root).expect("the person's accounts");
         let mut credentials = person_vault(&root);
-        accounts::custody::seal(&mut credentials, SETTINGS, ACCOUNT, PASSWORD)
+        accounts::secret_release::seal(&mut credentials, SETTINGS, ACCOUNT, PASSWORD)
             .expect("Settings seals the account's secret");
     }
     assert_eq!(
-        SecretVault::open_person(Some(&root)).custody(),
-        custody_on(Keyring::Answers),
+        SecretVault::open_person(Some(&root)).backend(),
+        backend_on(Keyring::Answers),
         "the keyring keeps the person's vault key, not a file beside it"
     );
     let (_root, socket) = private_socket();

@@ -871,7 +871,7 @@ jobs:
           printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
           rm -rf "$runtime"
       # Canvas's painting engines, the YouTube client of Music and Tube,
-      # account custody with the IMAP client (Mail, Settings), the time-zone
+      # account credentials with the IMAP client (Mail, Settings), the time-zone
       # database (Calendar, Clocks), the contact directory (Calendar,
       # Contacts, Mail, Messages), the spreadsheet formula engine (Sheets) and
       # the agent's web search live in engine libraries beside the runtime. Each app's

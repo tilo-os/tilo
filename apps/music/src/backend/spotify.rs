@@ -8,7 +8,7 @@ use ui::time::Instant;
 
 use serde_json::Value;
 use tilo_spotify::AccountId;
-use tilo_spotify::custody::{Capability, Custodian, OAuthIssuer, OAuthUse};
+use tilo_spotify::ownership::{Capability, CredentialStore, OAuthIssuer, OAuthUse};
 
 #[path = "spotify_control.rs"]
 mod control;
@@ -24,7 +24,7 @@ const ACCOUNT: &str = "music.spotify";
 const MAX_RESPONSE: u64 = 2 * 1024 * 1024;
 
 pub struct SpotifyBackend {
-    custody: Custodian,
+    ownership: CredentialStore,
     http: reqwest::blocking::Client,
     retry_after: Mutex<Option<Instant>>,
     api_origin: String,
@@ -41,7 +41,7 @@ impl SpotifyBackend {
             .build()
             .map_err(|_| BackendError("Spotify network initialization failed".into()))?;
         Ok(Self {
-            custody: Custodian::live(),
+            ownership: CredentialStore::live(),
             http,
             retry_after: Mutex::new(None),
             api_origin: "https://api.spotify.com/v1/".into(),
@@ -49,27 +49,27 @@ impl SpotifyBackend {
     }
 
     pub(super) fn disconnect(&self) -> Result<(), BackendError> {
-        self.custody
+        self.ownership
             .forget_oauth(&AccountId::from(ACCOUNT.to_string()))
             .map_err(|_| BackendError("Could not forget Spotify sign-in".into()))?;
-        self.custody
+        self.ownership
             .forget_oauth(&AccountId::from("music.spotify.streaming".to_string()))
             .map_err(|_| BackendError("Could not forget Spotify streaming sign-in".into()))
     }
 
-    /// PKCE browser sign-in, with state validation and encrypted system custody.
+    /// PKCE browser sign-in, with state validation and an encrypted system store.
     pub(super) fn check_connected(&self) -> Result<(), BackendError> {
         self.get("me", &[]).map(|_| ())
     }
 
-    /// Authorize in the system browser and seal the grant in custody.
+    /// Authorize in the system browser and seal the grant held.
     pub fn sign_in(&self) -> Result<(), BackendError> {
         self.sign_in_for(USE, ACCOUNT)
     }
 
     pub(super) fn sign_in_read_only(&self) -> Result<(), BackendError> {
         let authorization = self
-            .custody
+            .ownership
             .begin_sign_in_for_scopes(USE, &["user-read-private", "user-library-read"], None)
             .map_err(|_| {
                 BackendError("Spotify sign-in is unavailable or its callback port is busy".into())
@@ -82,30 +82,30 @@ impl SpotifyBackend {
     }
 
     fn sign_in_for(&self, usage: OAuthUse, account: &str) -> Result<(), BackendError> {
-        let authorization = self.custody.begin_sign_in_for(usage, None)
+        let authorization = self.ownership.begin_sign_in_for(usage, None)
             .map_err(|_| BackendError("Spotify sign-in is not configured or its callback port is busy. Register Tilo's public client with http://127.0.0.1:47654/oauth.".into()))?;
         self.finish_sign_in(authorization, account, None)
     }
 
     fn finish_sign_in(
         &self,
-        authorization: tilo_spotify::custody::Authorization,
+        authorization: tilo_spotify::ownership::Authorization,
         account: &str,
         requested_scope: Option<&str>,
     ) -> Result<(), BackendError> {
         ui::portal::open_uri(authorization.url()).map_err(|_| {
             BackendError("Could not open Spotify sign-in in the system browser".into())
         })?;
-        let mut tokens = Custodian::finish_sign_in(authorization)
+        let mut tokens = CredentialStore::finish_sign_in(authorization)
             .map_err(|_| BackendError("Spotify sign-in did not complete. Try again.".into()))?;
         // RFC 6749: omitted scope means the grant matches the requested scope.
         if tokens.scope.is_none() {
             tokens.scope = requested_scope.map(str::to_string);
         }
-        self.custody
+        self.ownership
             .seal_oauth(&AccountId::from(account.to_string()), &tokens)
             .map_err(|_| {
-                BackendError("Could not save Spotify sign-in in system credential custody".into())
+                BackendError("Could not save Spotify sign-in in system credential storage".into())
             })
     }
 
@@ -207,7 +207,7 @@ impl SpotifyBackend {
         }
         for force in [false, true] {
             let token = self
-                .custody
+                .ownership
                 .oauth_access_token(&AccountId::from(account.to_string()), usage, force)
                 .map_err(|_| BackendError("Connect Spotify again to browse your library".into()))?;
             let mut endpoint = url::Url::parse(&format!("{}{path}", self.api_origin))
@@ -686,24 +686,24 @@ fn library_home(albums: &Value, playlists: &Value, artists: &Value) -> HomeConte
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_spotify::custody as account_custody;
+    use tilo_spotify::ownership as account_credentials;
     fn fixture(
         origin: &str,
         server: &tilo_oauth::fake::FakeAuthorizationServer,
     ) -> (SpotifyBackend, tempfile::TempDir) {
         let root = tempfile::tempdir().unwrap();
-        let mut table = account_custody::ClientTable::default();
+        let mut table = account_credentials::ClientTable::default();
         table.spotify.client_id = "tilo-test".into();
         table.spotify.scopes.music = vec!["user-library-read".into()];
         table.spotify.scopes.music_streaming = vec!["streaming".into(), "user-read-private".into()];
-        let custody = Custodian::for_root(Some(root.path().to_owned()))
+        let ownership = CredentialStore::for_root(Some(root.path().to_owned()))
             .with_client_table(table)
             .with_issuer_endpoints(OAuthIssuer::Spotify, server.provider());
         server.accept_refresh_token("refresh-test");
-        custody
+        ownership
             .seal_oauth(
                 &AccountId::from(ACCOUNT.to_string()),
-                &account_custody::TokenSet {
+                &account_credentials::TokenSet {
                     access_token: "initial-test".into(),
                     refresh_token: "refresh-test".into(),
                     expires_in: 3600,
@@ -713,7 +713,7 @@ mod tests {
             )
             .unwrap();
         let mut backend = SpotifyBackend::new().unwrap();
-        backend.custody = custody;
+        backend.ownership = ownership;
         backend.api_origin = format!("{origin}/");
         (backend, root)
     }
@@ -735,10 +735,10 @@ mod tests {
             ]);
             let (backend, _root) = fixture(&api.url(), &oauth);
             backend
-                .custody
+                .ownership
                 .seal_oauth(
                     &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
-                    &account_custody::TokenSet {
+                    &account_credentials::TokenSet {
                         access_token: "stream-test".into(),
                         refresh_token: "refresh-test".into(),
                         expires_in: 3600,
@@ -803,10 +803,10 @@ mod tests {
             ]);
             let (backend, _root) = fixture(&api.url(), &oauth);
             backend
-                .custody
+                .ownership
                 .seal_oauth(
                     &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
-                    &account_custody::TokenSet {
+                    &account_credentials::TokenSet {
                         access_token: "stream-test".into(),
                         refresh_token: "refresh-test".into(),
                         expires_in: 3600,
@@ -847,10 +847,10 @@ mod tests {
             ),
         ] {
             backend
-                .custody
+                .ownership
                 .seal_oauth(
                     &AccountId::from(account.to_string()),
-                    &account_custody::TokenSet {
+                    &account_credentials::TokenSet {
                         access_token: access_token.into(),
                         refresh_token: "refresh-test".into(),
                         scope: Some(scope.into()),
@@ -988,7 +988,7 @@ mod tests {
             let api = Responder::start(Vec::new());
             let (backend, _root) = account_status_fixture(&api.url(), &oauth);
             backend
-                .custody
+                .ownership
                 .forget_oauth(&AccountId::from(
                     tilo_spotify::STREAMING_ACCOUNT.to_string(),
                 ))
@@ -1002,10 +1002,10 @@ mod tests {
             );
             for scope in [None, Some("user-read-private".into())] {
                 backend
-                    .custody
+                    .ownership
                     .seal_oauth(
                         &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
-                        &account_custody::TokenSet {
+                        &account_credentials::TokenSet {
                             access_token: "stream-test".into(),
                             refresh_token: "refresh-test".into(),
                             expires_in: 3600,
@@ -1457,10 +1457,10 @@ mod tests {
     #[cfg(feature = "spotify-native")]
     fn seal_test_streaming_grant(backend: &SpotifyBackend) {
         backend
-            .custody
+            .ownership
             .seal_oauth(
                 &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
-                &account_custody::TokenSet {
+                &account_credentials::TokenSet {
                     access_token: "stream-test".into(),
                     refresh_token: "refresh-test".into(),
                     expires_in: 3600,
@@ -1486,10 +1486,10 @@ mod tests {
             ]);
             let (backend, _root) = fixture(&api.url(), &oauth);
             backend
-                .custody
+                .ownership
                 .seal_oauth(
                     &AccountId::from(ACCOUNT.to_string()),
-                    &account_custody::TokenSet {
+                    &account_credentials::TokenSet {
                         access_token: "initial-test".into(),
                         refresh_token: "refresh-test".into(),
                         scope: Some("user-read-private user-library-read".into()),

@@ -313,7 +313,7 @@ mod tests {
     }
 
     /// The window `tab` stands at on the screen's content area, as the shell laid it out.
-    fn standing(tab: u64) -> (u64, Rect) {
+    fn placed(tab: u64) -> (u64, Rect) {
         (tab, Rect::new(32.0, 80.0, 1248.0, 788.0))
     }
 
@@ -344,7 +344,7 @@ mod tests {
         shell(
             &tree,
             &notes,
-            &[standing(NOTES)],
+            &[placed(NOTES)],
             Some(Rect::new(0.0, 36.0, 1280.0, 800.0)),
             &Focus {
                 place: Some("1".to_owned()),

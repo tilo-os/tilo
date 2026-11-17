@@ -469,7 +469,7 @@ pub struct Choosing {
 
 impl Choosing {
     /// The segments the choosers stand on in `invite`: the part, and whose.
-    fn standing(&self, invite: &Invite) -> (usize, usize) {
+    fn segments(&self, invite: &Invite) -> (usize, usize) {
         let made = invite.created.as_ref();
         let role = self
             .role
@@ -500,7 +500,7 @@ impl Choosing {
     /// The link the choosers stand at in `invite`: the part's key, and the
     /// person's (empty: anyone holding it).
     fn asking(&self, invite: &Invite) -> (String, String) {
-        let (role, whose) = self.standing(invite);
+        let (role, whose) = self.segments(invite);
         let role = invite.roles.get(role).map(|role| role.key.clone());
         let recipient = whose
             .checked_sub(1)
@@ -651,7 +651,7 @@ fn composing(invite: &Invite, choosing: &LocalState<Choosing>, picked: &Choosing
         items.push(caption(&invite.refusal));
         return Box::new(Section::new(items));
     }
-    let (role_at, whose_at) = picked.standing(invite);
+    let (role_at, whose_at) = picked.segments(invite);
     if !invite.roles.is_empty() {
         items.push(caption(&invite.role_label));
         items.push(roles(invite, choosing, role_at));

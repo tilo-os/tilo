@@ -194,7 +194,7 @@ fn validate_envelope(receipt: &VerificationReceipt, flow: &EvidenceFlow) -> Resu
         .iter()
         .all(|name| receipt.excludes.iter().any(|value| value == name))
     {
-        return Err("evidence flow custody exclusions missing".into());
+        return Err("evidence flow provenance exclusions missing".into());
     }
     if receipt.tools.len() > 32
         || receipt.tools.iter().any(|(name, tool)| {

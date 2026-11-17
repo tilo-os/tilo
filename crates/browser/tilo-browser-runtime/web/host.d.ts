@@ -277,10 +277,10 @@ export function mountDesktop(target: HTMLElement, options?: MountOptions): Promi
 /** Terminal page-host shutdown. Individual peers must use their own cleanup method. */
 export function shutdown(): Promise<void>;
 
-/** Retry retained close failures before releasing exclusive actor custody. */
+/** Retry retained close failures before releasing exclusive actor device key. */
 export function retryPendingRecovery(): Promise<void>;
 
-/** Number of failed closes retaining actor custody and pending durable bytes. */
+/** Number of failed closes retaining actor device key and pending durable bytes. */
 export function pendingRecoveryCount(): number;
 
 

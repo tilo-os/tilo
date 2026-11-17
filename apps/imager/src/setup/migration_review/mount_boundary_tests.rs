@@ -20,7 +20,7 @@ use std::{
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 const CHILD: &str = "TILO_HOME_MOUNT_BOUNDARY_CHILD";
-const WITNESS: &str = "TILO_HOME_MOUNT_BOUNDARY_WITNESS";
+const OBSERVATION: &str = "TILO_HOME_MOUNT_BOUNDARY_OBSERVATION";
 const COMPLETE: &[u8] = b"all-mount-assertions-complete\n";
 
 struct OwnedChild(Child);
@@ -166,16 +166,16 @@ fn actual_same_filesystem_directory_and_file_binds_refuse_home_review() {
         "canonical privileged native qualification required"
     );
     if std::env::var_os(CHILD).is_none() {
-        let witness = tempfile::Builder::new()
+        let proof = tempfile::Builder::new()
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir()
             .unwrap();
-        let witness_root = std::fs::canonicalize(witness.path()).unwrap();
+        let proof_root = std::fs::canonicalize(proof.path()).unwrap();
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
             .args(["--exact", SELECTOR, "--nocapture"])
             .env(CHILD, "1")
-            .env(WITNESS, &witness_root);
+            .env(OBSERVATION, &proof_root);
         // SAFETY: child-only, async-signal-safe namespace/mount syscalls before
         // exec; no test runner or real host mount namespace is mutated.
         unsafe {
@@ -197,7 +197,7 @@ fn actual_same_filesystem_directory_and_file_binds_refuse_home_review() {
             });
         }
         assert!(bounded_child(&mut command).success());
-        let marker = witness_root.join("complete");
+        let marker = proof_root.join("complete");
         let metadata = std::fs::symlink_metadata(&marker)
             .expect("child must complete actual assertions, not zero selected tests");
         assert!(metadata.is_file() && !metadata.is_symlink());
@@ -207,15 +207,16 @@ fn actual_same_filesystem_directory_and_file_binds_refuse_home_review() {
         assert_eq!(std::fs::read(marker).unwrap(), COMPLETE);
         return;
     }
-    let witness_root =
-        PathBuf::from(std::env::var_os(WITNESS).expect("owned parent witness directory required"));
-    let metadata = std::fs::symlink_metadata(&witness_root).unwrap();
+    let proof_root = PathBuf::from(
+        std::env::var_os(OBSERVATION).expect("owned parent proof directory required"),
+    );
+    let metadata = std::fs::symlink_metadata(&proof_root).unwrap();
     assert!(metadata.is_dir() && !metadata.is_symlink());
     assert_eq!(metadata.uid(), 0);
     assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
     let temporary = tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir_in(&witness_root)
+        .tempdir_in(&proof_root)
         .unwrap();
     let root = std::fs::canonicalize(temporary.path()).unwrap();
     let home = root.join("home");
@@ -385,7 +386,7 @@ fn actual_same_filesystem_directory_and_file_binds_refuse_home_review() {
         .create_new(true)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(witness_root.join("complete"))
+        .open(proof_root.join("complete"))
         .unwrap();
     std::io::Write::write_all(&mut marker, COMPLETE).unwrap();
     marker.sync_all().unwrap();

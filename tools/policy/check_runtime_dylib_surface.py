@@ -100,16 +100,16 @@ ENGINES = {
     "rquickjs-core": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "rquickjs-sys": "QuickJS, rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "tilo-accounts-engine": "the online-account engine library (libtilo_accounts_engine.so)",
-    "account-custody": "online-account custody, which Mail, Settings and Calendar load from "
+    "account-credentials": "online-account credentials, which Mail, Settings and Calendar load from "
                        "libtilo_accounts_engine.so",
-    "tilo-oauth": "the OAuth client under account-custody, in libtilo_accounts_engine.so",
-    "cloud-source-dropbox": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
-    "cloud-source-gdrive": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
-    "cloud-source-icloud": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
-    "cloud-source-onedrive": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
+    "tilo-oauth": "the OAuth client under account-credentials, in libtilo_accounts_engine.so",
+    "cloud-source-dropbox": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-gdrive": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-icloud": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-onedrive": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
     "async-imap": "the IMAP client Mail and Settings load from libtilo_accounts_engine.so",
     "imap-proto": "the IMAP parser under async-imap, in libtilo_accounts_engine.so",
-    "tilo-dav": "the WebDAV/CalDAV client, whose calendar sign-in reaches account custody, which "
+    "tilo-dav": "the WebDAV/CalDAV client, whose calendar sign-in reaches account credentials, which "
                 "Calendar and Settings load from libtilo_accounts_engine.so",
     "tilo-timezone-engine": "the time-zone database's engine library (libtilo_timezone_engine.so)",
     "chrono-tz": "the time-zone database, which Calendar and Clocks load from "

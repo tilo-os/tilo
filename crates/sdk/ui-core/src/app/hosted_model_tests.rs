@@ -468,7 +468,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.collaboration.manager = admitted_delivery_manager();
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -477,12 +477,12 @@ tilo_test_env::scenario! {
         app.publish_action_surface();
         let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
         assert_eq!(page.rows.len(), 1);
-        let before = crate::bound_dispatch::directory_witness(app.root_widget.as_ref(), &app.state.doc)
+        let before = crate::bound_dispatch::directory_observation(app.root_widget.as_ref(), &app.state.doc)
             .unwrap()[0]
             .generation
             .unwrap();
         app.pump_hosted_model();
-        let after = crate::bound_dispatch::directory_witness(app.root_widget.as_ref(), &app.state.doc)
+        let after = crate::bound_dispatch::directory_observation(app.root_widget.as_ref(), &app.state.doc)
             .unwrap()[0]
             .generation
             .unwrap();

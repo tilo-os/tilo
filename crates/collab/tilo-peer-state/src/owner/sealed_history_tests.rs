@@ -160,8 +160,8 @@ async fn write_all(
         .map(|committed| committed.len())
 }
 
-/// What custody holds, in the order it sends it.
-fn custody(
+/// What ownership holds, in the order it sends it.
+fn ownership(
     owner: &NativeWorkspaceOwner,
     workspace: WorkspaceId,
     now: SystemTime,
@@ -176,14 +176,14 @@ fn custody(
         .unwrap()
 }
 
-/// The host keeps all of custody durably: what it was sent, in order.
+/// The host keeps all of ownership durably: what it was sent, in order.
 fn answer(
     owner: &NativeWorkspaceOwner,
     workspace: WorkspaceId,
     now: SystemTime,
     order: &mut u64,
 ) -> Vec<NeighbourMsg> {
-    let held = custody(owner, workspace, now);
+    let held = ownership(owner, workspace, now);
     let answers = held
         .iter()
         .map(|(id, _)| {
@@ -220,7 +220,7 @@ fn written_at(
         .collect()
 }
 
-/// Everything custody holds, as the host takes it from its head until it owes nothing: the
+/// Everything ownership holds, as the host takes it from its head until it owes nothing: the
 /// device drafts what it sends next before each pass, as its session does.
 async fn drain(
     owner: &NativeWorkspaceOwner,
@@ -446,7 +446,7 @@ async fn writes_past_a_full_sealed_history_land_after_its_compaction() {
         "every change reads"
     );
     assert!(held() <= 256, "the history stays within its bound");
-    // Custody sends the compaction before the writes it made workspace for.
+    // Ownership sends the compaction before the writes it made workspace for.
     let sent = drain(owner, workspace, now, &mut 0).await;
     let compaction = sent
         .iter()
@@ -528,7 +528,7 @@ async fn a_full_history_whose_first_compaction_failed_is_compacted_once_the_keys
     assert!(held() <= 256, "the history stays within its bound");
 }
 
-/// Writes a device makes while its host is away: custody keeps every one of them, past what
+/// Writes a device makes while its host is away: ownership keeps every one of them, past what
 /// it keeps in its record (eight writes here) and the record's sealed history bound many times.
 const AWAY: usize = 2_000;
 
@@ -570,14 +570,14 @@ async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_r
         );
     }
     let owed = joined.owner.unadmitted_writes(workspace).unwrap();
-    assert!(owed >= AWAY, "custody owes every write: {owed}");
+    assert!(owed >= AWAY, "ownership owes every write: {owed}");
     drop(joined.owner);
     let owner = open_file(&path).unwrap();
     owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
     assert_eq!(
         owner.unadmitted_writes(workspace).unwrap(),
         owed,
-        "custody keeps them all through a restart"
+        "ownership keeps them all through a restart"
     );
     // Meanwhile another member writes at the host.
     let peers = written_at(
@@ -588,7 +588,7 @@ async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_r
         now,
     );
 
-    // Back: custody goes to the host in its order until it owes nothing.
+    // Back: ownership goes to the host in its order until it owes nothing.
     for message in drain(&owner, workspace, now, &mut order).await {
         host.receive_from(TransportOrigin::RelayDelta(member), message.clone(), now)
             .unwrap();
@@ -894,7 +894,7 @@ impl Host {
     }
 }
 
-/// Custody goes to the host one write at a time, each answered as the host took it, until it
+/// Ownership goes to the host one write at a time, each answered as the host took it, until it
 /// owes nothing; the device drafts what it sends next before each, as its session does, and
 /// `refuse` picks writes the host refuses whatever they are. Answers what the host refused;
 /// with `until_refused`, as soon as it refused one.
@@ -911,7 +911,7 @@ async fn delivered(
             .compact_outgoing(workspace, &member_key(), now)
             .await
             .unwrap();
-        let Some((id, message)) = custody(owner, workspace, now).into_iter().next() else {
+        let Some((id, message)) = ownership(owner, workspace, now).into_iter().next() else {
             return refused;
         };
         let answer = if !refuse(&message) && host.take(&message, now) {
@@ -939,7 +939,7 @@ async fn delivered(
         }
     }
     panic!(
-        "custody still owes {} writes, {} refused",
+        "ownership still owes {} writes, {} refused",
         owner.unadmitted_writes(workspace).unwrap(),
         refused.len()
     );

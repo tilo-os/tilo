@@ -73,9 +73,9 @@ test-note = Note
 ## crates/sdk/tilo-app/tests/attached_view.rs
 test-bench = Bench
 test-bench-sit = Sit down
-test-ledger = Ledger
-test-ledger-ask = Ask for an entry
-test-ledger-answer = Record what looking an entry up answered
+test-entries = Entries
+test-entries-ask = Ask for an entry
+test-entries-answer = Record what looking an entry up answered
 
 ## crates/sdk/tilo-app/tests/by_app.rs
 test-jukebox = Player

@@ -1,4 +1,4 @@
-//! The write seam: what may be written, which engine writes it, and the job that does.
+//! The write boundary: what may be written, which engine writes it, and the job that does.
 
 use std::io;
 #[cfg(test)]
@@ -132,7 +132,7 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
             || req.handoff_stage.is_some()
             || req.target.stable_id.as_ref().is_none_or(String::is_empty))
     {
-        return JobStart::InvalidProfile("Migration media requires Linux, stable device custody and encrypted prepared setup without legacy tail handoff".into());
+        return JobStart::InvalidProfile("Migration media requires Linux, stable device identity and encrypted prepared setup without legacy tail handoff".into());
     }
     #[cfg(target_os = "linux")]
     if let Some(pending) = &req.offline_layout
@@ -288,7 +288,7 @@ impl JobControl {
         control
     }
 
-    /// Positive native completion evidence; terminal progress is not this witness.
+    /// Positive native completion evidence; terminal progress is not this proof.
     pub(crate) fn observed_stopped(&self) -> bool {
         self.worker.stopped.load(Ordering::Acquire)
     }
@@ -512,7 +512,7 @@ impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
             return self
                 .authenticated_caller
                 .ok_or_else(|| {
-                    io::Error::other("Original migration requires authenticated helper custody")
+                    io::Error::other("Original migration requires authenticated helper ownership")
                 })
                 .and_then(|uid| crate::setup::media_setup::writer::validate_caller(layout, uid));
         }
@@ -576,7 +576,7 @@ impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
         if let Some(pending) = &self.req.offline_layout {
             return self
                 .authenticated_caller
-                .ok_or_else(|| io::Error::other("Original migration caller custody missing"))
+                .ok_or_else(|| io::Error::other("Original migration caller ownership missing"))
                 .and_then(|uid| {
                     crate::setup::media_setup::writer::provision_after_write(
                         &self.req.target,

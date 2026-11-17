@@ -547,7 +547,7 @@ fn pairing_name_and_approval_code_paint_at_all_host_scales_in_both_themes() {
                 viewport,
                 tag,
             );
-            let (_custody, waiting) = pairing::waiting_fixture();
+            let (_ownership, waiting) = pairing::waiting_fixture();
             app.with_widget::<InstallerPreview, _>(|preview| {
                 preview.pairing = waiting;
                 preview.dirty = true;
@@ -583,8 +583,8 @@ fn pairing_name_and_approval_code_paint_at_all_host_scales_in_both_themes() {
 #[test]
 #[cfg(unix)]
 fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation() {
-    let custody = crate::setup::test_support::qualified_tempdir();
-    let root = custody.path().canonicalize().unwrap();
+    let ownership = crate::setup::test_support::qualified_tempdir();
+    let root = ownership.path().canonicalize().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
     env.set("TILO_OAUTH_SPOTIFY_CLIENT_ID", "installer-render-client");
@@ -909,10 +909,10 @@ pub(super) fn body_scroll_geometry(root: &mut dyn Widget) -> Option<(vello::kurb
 #[test]
 #[cfg(unix)]
 fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
-    let custody = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", custody.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     for (viewport, host_scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
         let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
@@ -1065,10 +1065,10 @@ fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
 #[test]
 #[cfg(unix)]
 fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
-    let custody = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", custody.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     for (viewport, host_scale) in [((1180, 820), 1.0), ((2560, 1440), 1.0), ((2560, 1440), 2.0)] {
         let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
@@ -1150,10 +1150,10 @@ fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
 #[test]
 #[cfg(unix)]
 fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
-    let custody = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", custody.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
@@ -1418,10 +1418,10 @@ pub(super) fn paint_native_flatpak_inventory(
 #[test]
 #[cfg(unix)]
 fn destination_discloses_usb_route_before_personal_setup() {
-    let custody = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", custody.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     for runtime_check in ["0", "1"] {
         environment.set(
             super::super::internal_install_flow::RUNTIME_ALLOW_VAR,
@@ -1700,10 +1700,10 @@ fn migration_route_consequences_are_present_in_the_semantic_choice() {
 #[test]
 #[cfg(unix)]
 fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation() {
-    let custody = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", custody.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     for (tag, theme) in [
         ("dark", Theme::dark()),
         ("light", Theme::light()),
@@ -1757,10 +1757,10 @@ fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation()
 #[test]
 #[cfg(unix)]
 fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
-    let custody = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", custody.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     environment.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
     for (tag, theme) in [
         ("dark", Theme::dark()),
@@ -1824,10 +1824,10 @@ fn a_blocked_preparation_still_lets_the_person_go_back() {
 #[test]
 #[cfg(unix)]
 fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview() {
-    let custody = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", custody.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     let viewport = (1180, 820);
     let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
@@ -1928,10 +1928,10 @@ fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview()
 #[test]
 #[cfg(unix)]
 fn password_mismatch_marks_confirmation_and_uses_shared_field_feedback() {
-    let custody = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", custody.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
@@ -1996,10 +1996,10 @@ fn password_mismatch_marks_confirmation_and_uses_shared_field_feedback() {
 #[test]
 #[cfg(unix)]
 fn password_policy_feedback_explains_the_actual_requirement_through_public_effects() {
-    let custody = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", custody.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     let viewport = (1180, 820);
     let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
@@ -2123,10 +2123,10 @@ fn compact_password_submission_keeps_feedback_readable_at_200_percent() {
 
 #[cfg(unix)]
 fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
-    let custody = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", custody.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     for semantic in [false, true] {
         for mismatch in [false, true] {
             let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
@@ -2699,10 +2699,10 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
             node.name.as_deref() == Some(t("installer-preview-password-hint").as_str())
         }) || root.children().into_iter().any(has_guidance)
     }
-    let custody = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", custody.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     for (viewport, theme, tag) in [
         ((480, 800), Theme::light(), "compact-light"),
         ((1180, 820), Theme::dark(), "dark"),

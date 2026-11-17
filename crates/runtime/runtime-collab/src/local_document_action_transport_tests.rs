@@ -79,7 +79,7 @@ async fn admit(
 
 fn report() -> LocalDocumentActionReport {
     LocalDocumentActionReport {
-        custody: None,
+        ownership: None,
         version: 1,
         invocation: uuid::Uuid::from_bytes([1; 16]),
         capture_id: uuid::Uuid::from_bytes([4; 16]),
@@ -127,7 +127,7 @@ tilo_test_env::scenario! {
                 "argument",
                 "capture_id",
                 "context",
-                "custody",
+                "ownership",
                 "encoded",
                 "group",
                 "invocation",
@@ -143,10 +143,10 @@ tilo_test_env::scenario! {
         }
         assert_eq!(json["invocation"], value.invocation.to_string());
         assert_eq!(json["capture_id"], value.capture_id.to_string());
-        let mut missing_custody = json.clone();
-        missing_custody.as_object_mut().unwrap().remove("custody");
-        let legacy: LocalDocumentActionReport = serde_json::from_value(missing_custody).unwrap();
-        assert!(legacy.custody.is_none());
+        let mut missing_ownership = json.clone();
+        missing_ownership.as_object_mut().unwrap().remove("ownership");
+        let legacy: LocalDocumentActionReport = serde_json::from_value(missing_ownership).unwrap();
+        assert!(legacy.ownership.is_none());
         let mut missing_capture = json.clone();
         missing_capture
             .as_object_mut()

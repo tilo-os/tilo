@@ -1,4 +1,4 @@
-//! Verify only an explicitly connected Files endpoint, before publishing custody.
+//! Verify only an explicitly connected Files endpoint, before publishing ownership.
 use crate::account_store::ConnectionError;
 use accounts::Account;
 use std::time::Duration;
@@ -6,7 +6,7 @@ use tilo_dav::{Credentials, DavClient, Depth, Limits, Options, PropName, Redirec
 
 /// Normalize a user-entered DAV server with the same validation as connection setup.
 pub fn normalize_server(value: &str) -> Result<String, ConnectionError> {
-    account_custody::nextcloud::server_url(value)
+    account_credentials::nextcloud::server_url(value)
         .map(|url| url.to_string())
         .map_err(|_| ConnectionError::InvalidConfiguration)
 }

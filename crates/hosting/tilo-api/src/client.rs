@@ -430,8 +430,8 @@ impl Client {
                     failed = failed.saturating_add(1);
                     // Where does it stand now? The server keeps an upload a
                     // lost connection cut, so the rest continues it.
-                    let standing = self.upload_status(&upload).await?;
-                    offset = standing
+                    let status = self.upload_status(&upload).await?;
+                    offset = status
                         .get("offset")
                         .and_then(Value::as_u64)
                         .unwrap_or(offset);

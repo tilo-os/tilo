@@ -43,11 +43,11 @@ fn toolkit() -> component_scan::Scan {
     component_scan::scan(&toolkit_src()).expect("the toolkit's sources read")
 }
 
-/// The ledger: each public app-facing widget the toolkit has not described yet, with the reason
+/// The log: each public app-facing widget the toolkit has not described yet, with the reason
 /// its line gives, and the line it was written on for messages.
-fn ledger() -> Vec<(String, String)> {
+fn log() -> Vec<(String, String)> {
     let path = toolkit_src().join("component/not_yet_described.txt");
-    let text = std::fs::read_to_string(&path).expect("the toolkit's ledger reads");
+    let text = std::fs::read_to_string(&path).expect("the toolkit's log reads");
     text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
     {
         let scan = toolkit();
         let bound = bound();
-        let owed: BTreeSet<String> = ledger().into_iter().map(|(name, _)| name).collect();
+        let owed: BTreeSet<String> = log().into_iter().map(|(name, _)| name).collect();
         let unaccounted: Vec<String> = scan
             .widgets
             .iter()
@@ -93,12 +93,12 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_ledger_only_shrinks_and_names_widgets_that_are_really_out;
+    phase the_log_only_shrinks_and_names_widgets_that_are_really_out;
     {
         let scan = toolkit();
         let bound = bound();
         let mut stale = Vec::new();
-        for (name, why) in ledger() {
+        for (name, why) in log() {
             assert!(
                 !why.is_empty(),
                 "`{name}` says why it is not reachable from tilolang yet"
@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
     }
 
     phase every_bound_component_is_one_the_toolkit_declares;
-    // The ledger holds no component the toolkit has not written yet: the catalogue and the toolkit's
+    // The log holds no component the toolkit has not written yet: the catalogue and the toolkit's
     // declarations are one reading, so a component bound without a described widget cannot hide.
     {
         let declared: BTreeSet<String> = toolkit().component_names().into_iter().collect();

@@ -185,12 +185,12 @@ pub fn run(home: bool) -> io::Result<()> {
     let (stream, _) = listener.accept()?;
     verify_root_peer(&stream)?;
     // A duplicate of this exact root-connected endpoint is only a local liveness
-    // witness. POLLIN means RPC traffic; it must never be confused with death.
-    let witness = Arc::new(stream.try_clone()?);
+    // proof. POLLIN means RPC traffic; it must never be confused with death.
+    let proof = Arc::new(stream.try_clone()?);
     session
         .attach_lifetime(Arc::new(move || {
             let mut descriptor = libc::pollfd {
-                fd: witness.as_raw_fd(),
+                fd: proof.as_raw_fd(),
                 events: libc::POLLRDHUP,
                 revents: 0,
             };

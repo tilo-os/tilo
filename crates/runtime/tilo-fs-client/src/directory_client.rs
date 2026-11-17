@@ -163,7 +163,7 @@ impl DirectoryClient {
         }
     }
 
-    /// Retain metadata custody without any byte IO capability.
+    /// Retain metadata ownership without any byte IO capability.
     pub async fn pin_metadata(
         &self,
         name: &EntryName,
@@ -357,7 +357,7 @@ impl DirectoryClient {
     }
 }
 
-/// Single custody of draining native job updates. IDs identify actual receipts;
+/// Single ownership of draining native job updates. IDs identify actual receipts;
 /// fetching a report still requires the actual scoped `OperationOwner`.
 pub struct NativeJobClient {
     object: Arc<Object>,
@@ -433,7 +433,7 @@ impl MetadataPinClient {
     }
 
     /// # Errors
-    /// Refuses unavailable, revoked or disconnected metadata custody.
+    /// Refuses unavailable, revoked or disconnected metadata ownership.
     pub async fn check_scope(&self) -> Result<(), NotAvailable> {
         match call(&self.object, FsRequest::PinCheckScope).await? {
             FsReply::Empty => Ok(()),

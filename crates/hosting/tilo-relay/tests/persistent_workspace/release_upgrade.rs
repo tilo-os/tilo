@@ -577,20 +577,18 @@ fn the_people_a_release_kept_arrive_in_the_release_that_starts_fresh() {
     }
     // The address nobody confirmed still stands as it did, its link still
     // lists it.
-    let standing = operator(
+    let access = operator(
         &socket,
         &serde_json::json!({
-            "op": "standing",
+            "op": "status",
             "request": "aa",
             "removal_sha256": seed.wait_list.unconfirmed_removal_sha256,
         }),
     );
     assert_eq!(
-        standing
-            .get("standing")
-            .and_then(|standing| standing.as_str()),
+        access.get("status").and_then(|access| access.as_str()),
         Some("pending"),
-        "{standing}"
+        "{status}"
     );
     // The person the release invited at an address: the address came over, and
     // the invitation mail went to it.

@@ -84,8 +84,8 @@ fn enrolled_with(
 
 /// The file one workspace's record is in, as this device holds it: the
 /// snapshot the index names (`<workspace>.<revision>.json`), not the journal
-/// beside it (`<workspace>.<revision>.log`) nor a run of its outgoing custody
-/// (`<workspace>.custody.<hash>`), whose names begin the same way and hold
+/// beside it (`<workspace>.<revision>.log`) nor a run of its outgoing ownership
+/// (`<workspace>.ownership.<hash>`), whose names begin the same way and hold
 /// bytes that are no document.
 fn workspace_file(path: &std::path::Path, workspace: WorkspaceId) -> PathBuf {
     let name = format!("{workspace}.");
@@ -263,7 +263,7 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn a_local_write_is_committed_durably_or_not_at_all;
 
-    phase a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt;
+    phase a_local_write_is_durable_with_its_outgoing_ownership_before_its_receipt;
     {
         let joined = enrolled();
         assert_eq!(joined.owner.unadmitted_writes(joined.workspace).unwrap(), 0);
@@ -1366,7 +1366,7 @@ async fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_
 }
 
 #[tokio::test]
-async fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
+async fn a_refused_renewal_leaves_the_sealed_write_in_ownership_as_it_was() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);

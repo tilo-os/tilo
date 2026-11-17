@@ -141,7 +141,7 @@ async fn local_endpoint(key: &SigningKey) -> iroh::Endpoint {
 
 impl Joined {
     pub(in crate::standalone) fn test_certificate(&self) -> &DeviceCert {
-        &self.custody.device_cert
+        &self.identity.device_cert
     }
 
     pub(in crate::standalone) async fn test_empty() -> (Arc<Self>, tempfile::TempDir) {
@@ -186,9 +186,9 @@ impl Joined {
                 tilo_relay_protocol::WorkSetting::none(),
             ),
             tilo_workspace_host::host::HostIdentity {
-                user_public_key: joined.custody.device_cert.user_public_key,
-                device_signing_key: native_key(&joined.custody),
-                device_cert: joined.custody.device_cert.clone(),
+                user_public_key: joined.identity.device_cert.user_public_key,
+                device_signing_key: native_key(&joined.identity),
+                device_cert: joined.identity.device_cert.clone(),
                 revocations: RevocationList::new(),
             },
             joined.endpoint(),
@@ -413,27 +413,27 @@ impl HostedWorkspace {
     }
 }
 
-fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor: &str) {
-    let mut custody = joined.custody.clone();
+fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, actor: &str) {
+    let mut identity = joined.identity.clone();
     // In memory only: this probe compares what it holds, never a disk.
-    custody.custody = std::sync::Arc::new(tilo_identity_host::custody::Kept::new(
-        custody.device_cert.clone(),
-        std::sync::Arc::clone(&custody.signer),
+    identity.identity_store = std::sync::Arc::new(tilo_identity_host::identity_store::Kept::new(
+        identity.device_cert.clone(),
+        std::sync::Arc::clone(&identity.signer),
     ));
-    let workspace_cert = custody.device_cert.clone();
+    let workspace_cert = identity.device_cert.clone();
     let default_root = SigningKey::from_bytes(&[95; 32]);
-    custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
-    sign_device_cert(&mut custody.device_cert, &default_root).unwrap();
+    identity.device_cert.user_public_key = default_root.verifying_key().to_bytes();
+    sign_device_cert(&mut identity.device_cert, &default_root).unwrap();
     let default_actor = tilo_action_broker::collab_app_broker::person_id_for_root(
-        custody.device_cert.user_public_key,
+        identity.device_cert.user_public_key,
     );
-    custody = HostIdentity::held(
-        custody.device_cert.clone(),
-        std::sync::Arc::clone(&custody.signer),
+    identity = HostIdentity::held(
+        identity.device_cert.clone(),
+        std::sync::Arc::clone(&identity.signer),
         std::sync::Arc::new(
-            tilo_identity_host::custody::Kept::new(
-                custody.device_cert.clone(),
-                std::sync::Arc::clone(&custody.signer),
+            tilo_identity_host::identity_store::Kept::new(
+                identity.device_cert.clone(),
+                std::sync::Arc::clone(&identity.signer),
             )
             .in_workspace(workspace, workspace_cert, Vec::new()),
         ),
@@ -441,7 +441,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     let mut probe = Joined {
         executions: super::super::execution::ExecutionPins::new(&joined.owner),
         owner: joined.owner.clone(),
-        custody,
+        identity,
         endpoint: joined.endpoint.clone(),
         refused: joined.refused.clone(),
         channels: Arc::clone(&joined.channels),
@@ -473,33 +473,33 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     probe.recheck_mcp_executions(workspace).unwrap();
     assert!(retained.execution_is_live());
     // What this profile holds for the workspace is not what the run was admitted
-    // with: the read succeeds and says the custody changed, so the run ends.
-    let mut renewed = probe.custody.device_cert.clone();
+    // with: the read succeeds and says the ownership changed, so the run ends.
+    let mut renewed = probe.identity.device_cert.clone();
     renewed.device_label = "a reissued certificate".into();
     sign_device_cert(&mut renewed, &default_root).unwrap();
-    let kept = tilo_identity_host::custody::Kept::new(
-        probe.custody.device_cert.clone(),
-        std::sync::Arc::clone(&probe.custody.signer),
+    let kept = tilo_identity_host::identity_store::Kept::new(
+        probe.identity.device_cert.clone(),
+        std::sync::Arc::clone(&probe.identity.signer),
     )
     .in_workspace(workspace, renewed, Vec::new());
-    probe.custody = HostIdentity::held(
-        probe.custody.device_cert.clone(),
-        std::sync::Arc::clone(&probe.custody.signer),
+    probe.identity = HostIdentity::held(
+        probe.identity.device_cert.clone(),
+        std::sync::Arc::clone(&probe.identity.signer),
         std::sync::Arc::new(kept),
     );
     assert!(
         probe.recheck_mcp_executions(workspace).is_err(),
-        "a custody the read confirms is not what the run was admitted with"
+        "an ownership the read confirms is not what the run was admitted with"
     );
     assert!(
         !retained.execution_is_live(),
-        "authority-side original-pin recheck closes retained custody without a wrapper call"
+        "authority-side original-pin recheck closes retained ownership without a wrapper call"
     );
     assert!(
         probe
             .action_workspace(actor, &workspace.to_string())
             .is_err(),
-        "changed selected custody must not reuse the retained roster identity"
+        "changed selected ownership must not reuse the retained roster identity"
     );
     assert!(!probe.workspaces().iter().any(|held| held.id() == workspace));
 }
@@ -671,11 +671,11 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);
 
-    let custody = HostIdentity::kept(device.clone(), device_key.clone());
+    let identity = HostIdentity::kept(device.clone(), device_key.clone());
     let own_workspace = WorkspaceId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
     let joined = Joined::open(
         directory.path(),
-        custody,
+        identity,
         local_endpoint(&device_key).await,
         BTreeSet::from([own_workspace]),
         (
@@ -928,11 +928,11 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         }
     })
     .await;
-    assert_changed_custody_refused(&joined, workspace, &actor);
+    assert_changed_ownership_refused(&joined, workspace, &actor);
     assert_runtime_admission_revoked(&joined, workspace, &actor);
     assert!(
         !retained_caller.execution_is_live(),
-        "native enrollment fence synchronously closes captured run custody"
+        "native enrollment fence synchronously closes captured run ownership"
     );
     assert!(execution.check(&joined).is_err());
     assert!(
@@ -1548,7 +1548,7 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
 async fn a_write_to_a_record_the_workspace_lacks_is_taken_only_in_a_declared_kind() {
     let workspace = WorkspaceId::new();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
-    let key = native_key(&joined.custody);
+    let key = native_key(&joined.identity);
     for (app, kind) in [
         ("dev.tilo.declared", None),
         ("dev.tilo.declared", Some("dev.tilo.other")),
@@ -1584,7 +1584,7 @@ async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
     let (empty, directory) = Joined::test_empty().await;
     let joined = Joined::open(
         directory.path(),
-        empty.custody.clone(),
+        empty.identity.clone(),
         empty.endpoint(),
         BTreeSet::from([workspace]),
         (
@@ -1598,14 +1598,14 @@ async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
         .commit(signed_write(
             workspace,
             "dev.tilo.declared",
-            &native_key(&empty.custody),
+            &native_key(&empty.identity),
         ))
         .await
         .unwrap_err();
     assert!(refused.contains("read only"), "{refused}");
 }
 
-/// The key `custody` holds in the clear, for a test that hands it to a host or writes it to disk.
-pub(super) fn native_key(custody: &HostIdentity) -> ed25519_dalek::SigningKey {
-    ed25519_dalek::SigningKey::from_bytes(&custody.signer.endpoint_secret().expect("a native key"))
+/// The key `ownership` holds in the clear, for a test that hands it to a host or writes it to disk.
+pub(super) fn native_key(identity: &HostIdentity) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&identity.signer.endpoint_secret().expect("a native key"))
 }

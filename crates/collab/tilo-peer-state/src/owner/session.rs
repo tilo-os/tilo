@@ -12,7 +12,7 @@ use crate::join::TransportHint;
 use crate::owner::{AppWrite, NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, took_in};
 use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity_host::identity_store::HostIdentity;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 /// An enrolled workspace to hold a link for.
@@ -68,7 +68,7 @@ impl Connect {
         &self,
         identity: &HostIdentity,
     ) -> Result<(TransportHint, DeviceCert, u64), String> {
-        let (cert, continuity) = self.custody(identity)?;
+        let (cert, continuity) = self.ownership(identity)?;
         let hint = self
             .owner
             .with_current(self.workspace, |view| Ok(view.transport_hint()?.clone()))?;
@@ -76,11 +76,11 @@ impl Connect {
     }
     /// Whether this device may act as `workspace`'s own member now, and the
     /// continuity its record is at ([`Self::material`]).
-    pub fn custody(&self, identity: &HostIdentity) -> Result<(DeviceCert, u64), String> {
+    pub fn ownership(&self, identity: &HostIdentity) -> Result<(DeviceCert, u64), String> {
         self.owner.with_current(self.workspace, |view| {
             let (cert, entries) = identity.current_material(view.workspace_id())?;
             if &cert != view.device() {
-                return Err("native custody differs from enrollment".into());
+                return Err("native ownership differs from enrollment".into());
             }
             view.peer()
                 .permissions(cert.device_public_key, tilo_clock::wall())
@@ -134,9 +134,9 @@ impl Connect {
             .unwrap_or(false)
     }
     /// The renewal of the certificate the workspace's record holds, when this
-    /// device's custody holds one: the device proves its membership with it
+    /// device's ownership holds one: the device proves its membership with it
     /// ([`crate::owner::enroll::renew_membership`]) before its links dial again,
-    /// as [`Self::material`] refuses custody that differs from the record.
+    /// as [`Self::material`] refuses ownership that differs from the record.
     pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
         self.owner.with_current(self.workspace, |view| {
             let (cert, _) = identity.current_material(view.workspace_id())?;
@@ -204,7 +204,7 @@ impl Scope {
     }
     /// Whether this link is still pinned to this material: the same host
     /// and certificate. `continuity` is the owner's current one, which the
-    /// caller read with the material that re-validated this device's standing
+    /// caller read with the material that re-validated this device's access
     /// ([`Connect::material`] refuses a device no longer admitted, permitted
     /// or behind an unrevoked host); the link adopts it.
     #[must_use]
@@ -229,7 +229,7 @@ impl Scope {
     /// is the one the link is pinned to ([`Connect::material`]).
     ///
     /// # Errors
-    /// This device's standing in the workspace, or the link's pin, changed.
+    /// This device's access in the workspace, or the link's pin, changed.
     pub fn current(&self, identity: &HostIdentity) -> Result<(), String> {
         let (hint, device, continuity) = self.connect.material(identity)?;
         if self.pinned_to(&hint, &device, continuity) {
@@ -238,7 +238,7 @@ impl Scope {
             Err("native publication session changed".into())
         }
     }
-    /// Whether the custody `view` holds still publishes over this link, as it stands in the
+    /// Whether the ownership `view` holds still publishes over this link, as it stands in the
     /// owner's turn: the same certificate, host and continuity, the certificate this device
     /// selects for the workspace, and its permission to write.
     ///
@@ -257,7 +257,7 @@ impl Scope {
         }
         let (selected, _) = identity.current_material(view.workspace_id())?;
         if &selected != view.device() {
-            return Err("native publication custody changed".into());
+            return Err("native publication ownership changed".into());
         }
         view.peer()
             .permissions(selected.device_public_key, tilo_clock::wall())
@@ -296,7 +296,7 @@ pub fn app_write(
     if cluster_id != &workspace.to_string() {
         return None;
     }
-    let standing = owner
+    let access = owner
         .with_current(workspace, |view| {
             view.peer()
                 .permissions(author, tilo_clock::wall())
@@ -308,7 +308,7 @@ pub fn app_write(
         app_id: app_id.clone(),
         cluster_id: cluster_id.clone(),
         document_id: document_id.clone(),
-        author: standing,
+        author: access,
         replayed,
         envelope: (**envelope).clone(),
         own: own.clone().filter(|own| own.names(document_id)),
@@ -444,7 +444,7 @@ impl Input {
     }
     /// The author's current standing in the workspace: the workspace's policy, and
     /// the bound on a device not theirs.
-    pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
+    pub fn access(&self) -> Result<tilo_action_policy::MemberAccess, String> {
         self.scope
             .connect
             .owner

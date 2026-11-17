@@ -111,9 +111,9 @@ pub unsafe fn prepare() -> Result<(), SpeechError> {
     }
 }
 
-/// Run the production handler with a previously verified catalogue witness.
+/// Run the production handler with a previously verified catalogue approval.
 /// The CLI chooses image trust before invoking this function. Qualification
-/// uses an isolated ephemeral witness in a separate, uninstalled child.
+/// uses an isolated ephemeral approval in a separate, uninstalled child.
 /// # Errors
 /// Fails closed on object/licence, protocol, confinement or engine errors.
 #[cfg(feature = "whisper")]

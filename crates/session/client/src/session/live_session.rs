@@ -335,7 +335,7 @@ pub(crate) struct LiveSessionJoin {
     /// host must prove to be over WebTransport.
     pub host_cert: tilo_user_identity::DeviceCert,
     /// This device's statement that its iroh endpoint speaks for it, when the
-    /// endpoint is not the device's own key (a custody-held one): the grant
+    /// endpoint is not the device's own key (an ownership-held one): the grant
     /// carries it. Empty over WebTransport, where the device proves itself.
     pub delegation: Vec<u8>,
     /// The workspace joined.

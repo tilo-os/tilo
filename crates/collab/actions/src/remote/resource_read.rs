@@ -1,7 +1,7 @@
 //! Record reads outside their app: how an agent reads a workspace's records
 //! (`docs/designs/app-language/agents.md`, "Reading records outside their app").
 //!
-//! A workspace's records are sealed per app: a connection holding that app's launch custody opens
+//! A workspace's records are sealed per app: a connection holding that app's launch ownership opens
 //! them. An agent is not an app. It is admitted acting for the person whose session it works in,
 //! never session-delegated and holding no app's route, and reads one record at a time through
 //! this API. Each read is decided by the check every reader of a record goes through (the lesser

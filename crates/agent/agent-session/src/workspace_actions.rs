@@ -30,10 +30,10 @@
 //! Document invocations serve the host user's own devices as theirs. Anyone
 //! else the workspace admits, and an agent a person's own device handed its
 //! session to (the host's own person's included), is served within bounds
-//! ([`bounded`]): in a replica of their own on their current standing, an
+//! ([`bounded`]): in a replica of their own on their current access, an
 //! agent's bounded as every agent's is; what that replica offers is both
 //! what their listing shows and all the host runs for them; an action that
-//! asks first is put to the person; and nothing is saved that their standing
+//! asks first is put to the person; and nothing is saved that their access
 //! does not let them write. Exact local View discovery also serves currently
 //! certified workspace readers, through the host's canonical Read policy;
 //! that grants no document invocation authority.
@@ -59,10 +59,10 @@ mod feedback;
 mod found;
 mod found_files;
 mod host_actions;
+mod invocation_log;
 mod invocations;
 mod jobs;
 mod keys;
-mod ledger;
 mod link;
 mod listing;
 mod member;
@@ -101,9 +101,9 @@ use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_documents::WorkspaceDocuments;
 use catch_up::{catch_up, hold_parts};
 use collab_types::DocumentMutation;
+use invocation_log::InvocationLog;
 use jobs::Jobs;
 use keys::{Keys, catalogue_keys};
-use ledger::Ledger;
 use publish::Unsaved;
 use run_context::{caller_context, said_invocation_title};
 use tilo_actions::InteractionPhase;
@@ -270,7 +270,7 @@ impl Job {
 
     /// What the job must have before it reads its workspace: what it is about
     /// to read names what it waits for. An invocation is named here by its id
-    /// alone: the worker reads its request from the ledger
+    /// alone: the worker reads its request from the log
     /// ([`Worker::keys`]).
     fn keys(&self) -> Keys {
         match self {
@@ -301,7 +301,7 @@ impl Job {
 const SLOW_JOB: Duration = Duration::from_secs(2);
 
 struct Shared {
-    ledger: Mutex<Ledger>,
+    log: Mutex<InvocationLog>,
     link: OnceLock<Arc<dyn WorkspaceDocumentsLink>>,
     jobs: Mutex<Option<Jobs>>,
     /// How the service joins workspaces, once its thread runs.
@@ -319,7 +319,7 @@ struct Shared {
     /// The uploads callers have open.
     puts: tilo_actions::remote::HostedContentPuts,
     /// The answers people gave to invocations run for them.
-    witnesses: bounded::Witnesses,
+    approvals: bounded::Approvals,
     /// Workspaces whose notes and folder wait for a pass to bring them into step.
     projecting: Mutex<HashSet<WorkspaceId>>,
     /// Records whose name in their app's index waits to be read again.
@@ -340,7 +340,7 @@ impl WorkspaceActions {
     pub fn new(catalogue: CatalogueFactory) -> Self {
         Self {
             shared: Arc::new(Shared {
-                ledger: Mutex::new(Ledger::default()),
+                log: Mutex::new(InvocationLog::default()),
                 link: OnceLock::new(),
                 jobs: Mutex::new(None),
                 host_device: OnceLock::new(),
@@ -348,7 +348,7 @@ impl WorkspaceActions {
                 joins: Mutex::default(),
                 stores: Mutex::default(),
                 puts: tilo_actions::remote::HostedContentPuts::default(),
-                witnesses: bounded::Witnesses::default(),
+                approvals: bounded::Approvals::default(),
                 projecting: Mutex::default(),
                 renaming: Mutex::default(),
             }),
@@ -412,7 +412,7 @@ impl WorkspaceActions {
     /// is shown and grants nothing, and the governed view lookup behind it
     /// applies their own grant. Other people and their agents may act on a
     /// record, or open a new one, through the host: the worker runs it under
-    /// their own current standing, and refuses what it does not allow.
+    /// their own current access, and refuses what it does not allow.
     fn admits(&self, caller: &Caller, request: &InvokeRequest) -> bool {
         let on_resource = resource_of(&request.target.provider, "").is_some();
         let link_request =
@@ -475,7 +475,7 @@ impl WorkspaceActions {
     /// Whether `caller` started invocation `id` here.
     #[must_use]
     pub fn owns(&self, caller: &Caller, id: &InvocationId) -> bool {
-        self.ledger().owned(caller, id).is_some()
+        self.log().owned(caller, id).is_some()
     }
 
     /// How invocation `id` of `caller` stands here now, when this host holds it: what a caller
@@ -484,9 +484,8 @@ impl WorkspaceActions {
     #[must_use]
     pub fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         let update = {
-            let ledger = self.ledger();
-            ledger
-                .entries
+            let log = self.log();
+            log.entries
                 .get(id)
                 .filter(|entry| entry.caller == *caller)?
                 .update
@@ -495,8 +494,8 @@ impl WorkspaceActions {
         Some(InvocationState::new(*id, update))
     }
 
-    fn ledger(&self) -> std::sync::MutexGuard<'_, Ledger> {
-        self.shared.ledger.lock_recover()
+    fn log(&self) -> std::sync::MutexGuard<'_, InvocationLog> {
+        self.shared.log.lock_recover()
     }
 
     #[allow(
@@ -572,7 +571,7 @@ impl WorkspaceActions {
                 })
             }
             RemoteActionMessage::Observe { invocation, .. } => {
-                let state = self.ledger().owned(caller, &invocation).map(|entry| {
+                let state = self.log().owned(caller, &invocation).map(|entry| {
                     InvocationState::new(invocation, entry.update.clone())
                         .left_at(entry.left_at.clone())
                 });
@@ -703,8 +702,8 @@ impl WorkspaceActions {
             });
         }
         {
-            let mut ledger = self.ledger();
-            if let Some(entry) = ledger.entries.get(&invocation) {
+            let mut log = self.log();
+            if let Some(entry) = log.entries.get(&invocation) {
                 if entry.caller != *caller || !entry.request.same_invocation(&request) {
                     return receipt(ReceiptStatus::Rejected {
                         error: ActionHostError::InvocationConflict,
@@ -713,7 +712,7 @@ impl WorkspaceActions {
                 let state = InvocationState::new(invocation, entry.update.clone());
                 return receipt(state.receipt().status);
             }
-            if !ledger.insert(caller, request) {
+            if !log.insert(caller, request) {
                 return receipt(ReceiptStatus::Rejected {
                     error: ActionHostError::Unavailable {
                         reason: "the host is running as many actions as it keeps track of; \
@@ -722,7 +721,7 @@ impl WorkspaceActions {
                     },
                 });
             }
-            if let Some(entry) = ledger.entries.get_mut(&invocation) {
+            if let Some(entry) = log.entries.get_mut(&invocation) {
                 entry.workspace = Some(workspace_id);
             }
         }
@@ -733,7 +732,7 @@ impl WorkspaceActions {
             done,
         };
         if let Err(Job::Invoke { done, .. }) = self.submit(job) {
-            self.ledger().forget(&invocation);
+            self.log().forget(&invocation);
             done.complete(InvocationReceipt {
                 invocation,
                 status: ReceiptStatus::Rejected {
@@ -772,9 +771,9 @@ impl WorkspaceActions {
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-        let mut ledger = self.ledger();
-        let running = ledger.running.contains(id);
-        let entry = ledger
+        let mut log = self.log();
+        let running = log.running.contains(id);
+        let entry = log
             .entries
             .get_mut(id)
             .filter(|entry| entry.caller == *caller)
@@ -804,7 +803,7 @@ impl WorkspaceActions {
             invocation: *id,
             message: Some("cancelled before it started".into()),
         };
-        drop(ledger);
+        drop(log);
         Ok(())
     }
 }
@@ -1475,7 +1474,7 @@ impl Worker {
     fn keys(&self, job: &Job) -> Keys {
         match job {
             Job::Invoke { invocation, .. } => self
-                .ledger()
+                .log()
                 .entries
                 .get(invocation)
                 .map_or(Keys::Joined, |entry| self.invoke_keys(&entry.request)),
@@ -1661,7 +1660,7 @@ impl Worker {
         let kind = job.kind();
         self.take(job);
         // What it ended, it ended now, as a listing of runs says.
-        self.ledger().stamp_ended();
+        self.log().stamp_ended();
         let (waited, ran) = (started.duration_since(queued), started.elapsed());
         tracing::debug!(
             kind,
@@ -1783,8 +1782,8 @@ impl Worker {
         self.watch_handed();
     }
 
-    fn ledger(&self) -> std::sync::MutexGuard<'_, Ledger> {
-        self.shared.ledger.lock_recover()
+    fn log(&self) -> std::sync::MutexGuard<'_, InvocationLog> {
+        self.shared.log.lock_recover()
     }
 
     /// Let go of everything held of `workspace_id`, deleted: its
@@ -2082,7 +2081,7 @@ impl Worker {
             .view_read_policy(workspace, caller, &route.app_id, &route.document)
             .ok_or_else(refuse)?;
         if fresh.workspace != first.workspace
-            || fresh.standing != first.standing
+            || fresh.access != first.access
             || fresh.sandbox != first.sandbox
         {
             return Err(refuse());
@@ -2176,7 +2175,7 @@ impl Worker {
         self.note_written(invocation);
         let (outcome, unsaved) = self.saved(workspace_id, performed);
         let about = self
-            .ledger()
+            .log()
             .entries
             .get_mut(&invocation)
             .and_then(|entry| entry.about.take());
@@ -2188,7 +2187,7 @@ impl Worker {
         ) && let Some(about) = about
             && let Some(receipt) = self.ask_person(workspace_id, &caller, &request, &about)
         {
-            self.ledger().running.remove(&invocation);
+            self.log().running.remove(&invocation);
             return receipt;
         }
         log_outcome(&request.target, &outcome);
@@ -2215,8 +2214,8 @@ impl Worker {
         &self,
         invocation: InvocationId,
     ) -> Result<(Caller, InvokeRequest), InvocationReceipt> {
-        let mut ledger = self.ledger();
-        let claimed = match ledger.entries.get(&invocation) {
+        let mut log = self.log();
+        let claimed = match log.entries.get(&invocation) {
             None => Err(rejected(invocation, ActionHostError::UnknownInvocation)),
             Some(entry) if entry.update.is_terminal() => {
                 // Cancelled before it started.
@@ -2225,7 +2224,7 @@ impl Worker {
             Some(entry) => Ok((entry.caller.clone(), entry.request.clone())),
         };
         if claimed.is_ok() {
-            ledger.running.insert(invocation);
+            log.running.insert(invocation);
         }
         claimed
     }
@@ -2242,8 +2241,8 @@ impl Worker {
             (Ok(done), Some(unsaved)) => return self.answer_pending(invocation, done, unsaved),
             (outcome, _) => outcome,
         };
-        let mut ledger = self.ledger();
-        ledger.running.remove(&invocation);
+        let mut log = self.log();
+        log.running.remove(&invocation);
         let (update, left_at) = match outcome {
             Ok((output, left_at)) => (InvocationUpdate::Succeeded { invocation, output }, left_at),
             Err(Outcome::Failed(error)) if !settles(&error) => {
@@ -2251,7 +2250,7 @@ impl Worker {
                 // invocation's answer: forgotten, the same request under the
                 // same id runs it again rather than being handed the failure
                 // it already has.
-                ledger.forget(&invocation);
+                log.forget(&invocation);
                 return InvocationReceipt {
                     invocation,
                     status: ReceiptStatus::Failed { error },
@@ -2261,7 +2260,7 @@ impl Worker {
             // Answered accepted while the person was asked: it ends refused,
             // and stays to say so.
             Err(Outcome::Rejected(error))
-                if ledger
+                if log
                     .entries
                     .get(&invocation)
                     .is_some_and(|entry| entry.asked) =>
@@ -2275,12 +2274,12 @@ impl Worker {
                 (InvocationUpdate::Failed { invocation, error }, None)
             }
             Err(Outcome::Rejected(error)) => {
-                ledger.forget(&invocation);
+                log.forget(&invocation);
                 return rejected(invocation, error);
             }
         };
-        ledger.answered(invocation, &update, left_at);
-        drop(ledger);
+        log.answered(invocation, &update, left_at);
+        drop(log);
         InvocationState::new(invocation, update).receipt()
     }
 
@@ -2429,11 +2428,11 @@ impl Worker {
             .descriptor(&target.address)
             .ok_or_else(unknown_action)?;
         let arguments = descriptor.bind_prompt_text(arguments);
-        let binding = bounded::WitnessBinding::of(workspace_id, caller, request);
+        let binding = bounded::ApprovalBinding::of(workspace_id, caller, request);
         let confirmed = confirms(
             &descriptor.contract.confirmation,
             request.confirmation.as_ref(),
-            |token| self.shared.witnesses.take(token, &binding),
+            |token| self.shared.approvals.take(token, &binding),
         );
         let holder = self.holder_of(&route);
         let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
@@ -2836,14 +2835,14 @@ impl Worker {
 /// Whether `given`, from the host's own person on their own device, confirms
 /// an action asking `policy`: their own word, the phrase it names, or a
 /// token naming their answer that the host issued for this very invocation
-/// (`witnessed` spends it).
+/// (`approved` spends it).
 fn confirms(
     policy: &ConfirmationPolicy,
     given: Option<&Confirmation>,
-    witnessed: impl FnOnce(&str) -> bool,
+    approved: impl FnOnce(&str) -> bool,
 ) -> bool {
     match (policy, given) {
-        (_, Some(Confirmation::Witnessed(token))) => witnessed(token),
+        (_, Some(Confirmation::Approved(token))) => approved(token),
         (ConfirmationPolicy::Phrase { phrase }, Some(Confirmation::Phrase(given))) => {
             phrase == given
         }

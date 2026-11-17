@@ -131,7 +131,7 @@ tilo_test_env::scenario! {
         assert!(across > measure * 2.0, "a column that is no page: {across}");
     }
 
-    phase a_column_standing_in_content_put_in_later_follows_that_content;
+    phase a_column_in_content_put_in_later_follows_that_content;
     {
         fn widths(node: &crate::headless::InspectionNode, out: &mut Vec<f64>) {
             if node.widget == "Page"

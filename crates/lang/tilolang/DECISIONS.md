@@ -232,7 +232,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   this week") is no resource with a place view: it is a question, which the canvas sends to the
   person's agent, and the agent answers with a view of its own over a `find` (the Views app's
   `WrittenView`), placed as any view is.
-- **An item's actions are on the item.** A row, card or tree node standing for a resource
+- **An item's actions are on the item.** A row, card or tree node state for a resource
   carries its type's actions in its context menu (right-click, long press, Menu key) and, for
   a list row, as its swipe; the page of one item carries them behind the "…" beside its title.
   The host places them there from the declarations, once, and the view places no menu of its

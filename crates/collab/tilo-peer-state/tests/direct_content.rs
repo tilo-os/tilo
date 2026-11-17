@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::{NeighbourMsg, peer_handle};
 use std::sync::Arc;
 use std::time::Duration;
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity_host::identity_store::HostIdentity;
 use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join_answer::JoinAnswer;
 use tilo_peer_state::owner::testing;

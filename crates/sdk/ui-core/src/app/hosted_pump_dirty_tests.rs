@@ -513,7 +513,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -616,7 +616,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });

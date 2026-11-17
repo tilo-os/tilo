@@ -253,7 +253,7 @@ pub struct VirtualListProps {
     /// How far the list is scrolled, in logical pixels.
     #[component(state)]
     pub scroll: Option<f64>,
-    /// The item standing open into its document where it stands in the list: its row grows to
+    /// The item held open into its document where it stands in the list: its row grows to
     /// hold what the item's row gives as its `detail`, and Escape or a press beside it closes
     /// it. A host keeps which item is open and gives it back, so a list it builds again shows
     /// the item as the person left it.
@@ -276,7 +276,7 @@ pub struct VirtualListProps {
     /// The person opened a row into its item where it stands: carries the item.
     #[component(event(value = ResourceId))]
     pub opened: Event,
-    /// The row standing open closed: pressed again, Escape, a press beside it, or its item
+    /// The row held open closed: pressed again, Escape, a press beside it, or its item
     /// left the list.
     #[component(event)]
     pub closed: Event,
@@ -2244,26 +2244,26 @@ mod tests {
         assert_eq!(
             inner.open_row().map(String::as_str),
             Some("row-2"),
-            "the item the host holds open is the row standing open"
+            "the item the host holds open is the row held open"
         );
         lay_out(inner, 400.0);
         // // The item's document stands in the row's place: the rows over it keep their parts, // and the
         // rows under it follow where the document ends, never standing one row above // it. What the row
         // writes there is the layout check's to read (`repeated_row_title`), // which watches a title
         // written in a row and again in the item it opened into.
-        let standing = inner.viewport.item_top(2).unwrap_or_default();
+        let row_top = inner.viewport.item_top(2).unwrap_or_default();
         let above = inner.viewport.item_top(1).unwrap_or_default()
             + inner.viewport.item_height(1).unwrap_or_default();
         assert_eq!(
-            standing, above,
-            "the document stands where the row stood: {standing} over the row's {above}"
+            row_top, above,
+            "the document stands where the row stood: {row_top} over the row's {above}"
         );
         assert_eq!(
             inner.row_box(2).map(|row| row.y0),
-            Some(standing),
+            Some(row_top),
             "the row drawn for the item starts where its part does"
         );
-        let below = standing + inner.viewport.item_height(2).unwrap_or_default();
+        let below = row_top + inner.viewport.item_height(2).unwrap_or_default();
         assert_eq!(
             inner.viewport.item_top(3),
             Some(below),
@@ -2381,7 +2381,7 @@ mod tests {
     /// showing one row builds such a row beside the one it holds, struck, rather than leaving
     /// its part on its way.
     #[test]
-    fn a_row_standing_in_for_a_removed_item_is_built_beside_the_hosts_rows() {
+    fn a_row_in_place_of_a_removed_item_is_built_beside_the_hosts_rows() {
         let props = |removed: Vec<ListItemProps>| VirtualListProps {
             in_column: true,
             rows: DescribedRows {
@@ -2742,7 +2742,7 @@ mod tests {
     /// box, so its leading control and its title stand on the column the rows at its depth stand
     /// on, and only what the item holds grows.
     #[test]
-    fn an_item_standing_open_keeps_the_column_of_the_rows_at_its_depth() {
+    fn an_item_held_open_keeps_the_column_of_the_rows_at_its_depth() {
         let list = |open: &str, theme: &crate::theme::Theme| {
             let rendered: SharedRows = Rc::new(RefCell::new(ViewRows::new(
                 &[
@@ -2778,9 +2778,8 @@ mod tests {
                 let scaled = theme.text_scale != 1.0;
                 let node = laid_out_in(list(open, &theme), theme.clone());
                 let at = |id: &str| {
-                    rect_of_id(&node, id).unwrap_or_else(|| {
-                        panic!("the widget {id} shows with {open} standing open")
-                    })
+                    rect_of_id(&node, id)
+                        .unwrap_or_else(|| panic!("the widget {id} shows with {open} held open"))
                 };
                 let grid = row_grid(&node, beside)
                     .unwrap_or_else(|| panic!("the row {beside} lays its content out"));
@@ -2792,7 +2791,7 @@ mod tests {
                 let document = at(&format!("document-{open}"));
                 assert!(
                     (document[0] - content).abs() < 0.5,
-                    "the item standing open starts its document at x {:.0}, where the row {beside} \
+                    "the item held open starts its document at x {:.0}, where the row {beside} \
                  starts its content at x {content:.0}{}",
                     document[0],
                     if scaled { " at text scale 1.5" } else { "" }

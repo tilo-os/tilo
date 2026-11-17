@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use tilo_action_policy::{Standing, WorkspacePolicy};
+use tilo_action_policy::{MemberAccess, WorkspacePolicy};
 use tilo_app::framework::WorkspaceResource;
 use tilo_app::tilo_workspace_agent::{
     KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
@@ -305,7 +305,7 @@ impl Agents {
                     return Held::Unknown;
                 }
             }
-            let permissions = PermissionContext::from_standing(Standing::person(
+            let permissions = PermissionContext::from_access(MemberAccess::person(
                 policy.clone(),
                 person.to_owned(),
             ))

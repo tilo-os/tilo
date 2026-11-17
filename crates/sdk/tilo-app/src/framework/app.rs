@@ -158,7 +158,7 @@ pub trait ResourceApp: 'static {
         None
     }
 
-    /// Import a former document format using host-local custody, before typed
+    /// Import a former document format using host-local ownership, before typed
     /// projection or resource publication. Unlike schema evolution this may
     /// depend on device services. A pending or failed import must leave the
     /// document unchanged; returning an error withholds the resource. Reopening
@@ -629,7 +629,7 @@ pub(crate) struct AppHooks {
     pub(crate) opening: fn(&OpeningCx<'_>) -> Option<Box<dyn OpeningView>>,
     pub(crate) action_registry: fn() -> tilo_actions::ActionRegistry,
     history: fn() -> &'static ui_core::history_mode::HistoryDefinition,
-    file_history_witness: fn() -> &'static ui_core::history_mode::HistoryDefinition,
+    file_history_observation: fn() -> &'static ui_core::history_mode::HistoryDefinition,
 }
 
 /// [`AppHooks::new_resource`] — the context, and what the launch named.
@@ -681,7 +681,7 @@ impl<A: ResourceApp> Hooks<A> {
         opening: A::opening,
         action_registry: action_registry::<A>,
         history: super::preview::history_definition::<A>,
-        file_history_witness: super::preview::file_history_witness::<A>,
+        file_history_observation: super::preview::file_history_observation::<A>,
     };
 }
 
@@ -1418,7 +1418,7 @@ fn start_resource(
         .showing_file_history(
             files
                 .clone()
-                .map(|source| (source, (app.file_history_witness)())),
+                .map(|source| (source, (app.file_history_observation)())),
         )
         .showing_folder_history(folder.clone().map(|source| (source, (app.history)())));
     let editing = Editing::Live {

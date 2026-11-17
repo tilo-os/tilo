@@ -403,7 +403,7 @@ async fn joins_in(
     tilo_peer_state::owner::NativeWorkspaceOwner,
     tilo_desktop_model::WorkspaceId,
 ) {
-    use tilo_identity_host::custody::HostIdentity;
+    use tilo_identity_host::identity_store::HostIdentity;
     let owner = owner_at(state);
     let identity = HostIdentity::kept(cert.clone(), key.clone());
     let topic = tilo_peer_state::join::WorkspaceId::parse(named).expect("a workspace topic");
@@ -470,7 +470,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     let store = Arc::new(Store::open(frames.path(), Appetite::StoreAll).unwrap());
     // What the device's own channels hold of the workspace: a member that links is handed it as
     // its link starts, since the device says a channel's frame once, to the members linked then.
-    let standing = NeighbourMsg::MlsGovernance {
+    let access = NeighbourMsg::MlsGovernance {
         workspace: WORKSPACE.into(),
         frame: Box::new(
             collab_types::MlsGovernanceFrame::signed(
@@ -484,7 +484,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         ),
         delivery: 7,
     };
-    let handed = standing.clone();
+    let handed = access.clone();
     let serving = Owning::new(host.clone(), host_key.clone(), Arc::clone(&store))
         .with_channel_history(Arc::new(move |asked| {
             if asked == workspace {
@@ -650,7 +650,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     // it, and none of it is the workspace's state.
     let first = hears(
         &mut c_first,
-        &standing,
+        &access,
         "a member that links is handed the channel governance the device holds",
     )
     .await;
@@ -939,7 +939,7 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
 
 /// What a device commits to a workspace it hosts itself reaches the members linked to it at
 /// once, and a member that links later catches up on it. Such a workspace keeps no outgoing
-/// custody (its own device is its keeper) and holds no link to a host, so the commit went
+/// ownership (its own device is its keeper) and holds no link to a host, so the commit went
 /// nowhere live: e2e-branch's box showed windows its copy opened, and the copy saw box's only
 /// after it linked again. A member's link signs the device's snapshots for its catch-up between
 /// the device's commits, with the same key: the commit after it is refused unless both take
@@ -1071,8 +1071,8 @@ async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_liv
 /// How many grants of the share `share` the governance `peer` holds gives, as `device` reads it.
 fn grants_of(peer: &StatePeer, device: [u8; 32], share: &str) -> usize {
     peer.permissions(device, SystemTime::now())
-        .map_or(0, |standing| {
-            standing
+        .map_or(0, |access| {
+            access
                 .policy
                 .grants
                 .iter()
@@ -1111,7 +1111,7 @@ pub(crate) async fn commit_membership(
 
 /// A window a device shares in a workspace it hosts itself is shared with the members linked to
 /// it, now: the share is a change of the governance the device keeps itself, so no host hands it
-/// on, and the device's own commit has to. Committed into its custody for a host to take, the
+/// on, and the device's own commit has to. Committed into its ownership for a host to take, the
 /// share reached a member only when its link was next made: a person shared a window on the
 /// machine hosting the workspace, and their other machine never showed it.
 ///

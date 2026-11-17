@@ -82,7 +82,7 @@ the app's. An app cannot make a background write look like the person's.
 A token says the person was acting in that view. It does not say which action they meant,
 because the app chose what to submit. So an action that the policy says
 needs the person's consent (an outside action, a destructive one, anything beyond the
-app's standing grants) is confirmed on a sheet the system draws, which the app
+app's access grants) is confirmed on a sheet the system draws, which the app
 can't draw over or answer. The app's own pixels never decide consent.
 
 The session signs every change as its actor. The person's changes are signed with this

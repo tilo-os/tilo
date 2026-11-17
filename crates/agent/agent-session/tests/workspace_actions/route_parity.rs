@@ -52,7 +52,7 @@ struct Member {
 }
 
 impl Member {
-    fn standing(&self, caller: &Caller) -> Option<ui::permissions::Standing> {
+    fn access(&self, caller: &Caller) -> Option<ui::permissions::MemberAccess> {
         (caller.user_public_key() == Some(&self.person)
             && caller
                 .device_public_key()
@@ -60,7 +60,7 @@ impl Member {
             && caller.acting().is_person())
         .then(|| {
             let person = hex::encode(self.person);
-            tilo_action_policy::Standing::person(workspace_policy(&person), person)
+            tilo_action_policy::MemberAccess::person(workspace_policy(&person), person)
         })
     }
 }
@@ -74,7 +74,7 @@ fn workspace_policy(member: &str) -> tilo_action_policy::WorkspacePolicy {
         &ui::permissions::MemberId::person(member.to_owned()),
         Role::Editor,
     )
-    .standing()
+    .access()
     .policy
     .as_ref()
     .clone();
@@ -101,7 +101,7 @@ impl WorkspaceDocumentsLink for Member {
         self.host.clone()
     }
     fn admits(&self, _workspace: WorkspaceId, caller: &Caller) -> bool {
-        self.standing(caller).is_some()
+        self.access(caller).is_some()
     }
     fn view_read_policy(
         &self,
@@ -112,7 +112,7 @@ impl WorkspaceDocumentsLink for Member {
     ) -> Option<ViewReadPolicy> {
         Some(ViewReadPolicy {
             workspace: WORKSPACE.into(),
-            standing: self.standing(caller)?,
+            access: self.access(caller)?,
             sandbox: Vec::new(),
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
         })

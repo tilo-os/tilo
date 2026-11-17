@@ -198,7 +198,7 @@ impl MountPlacement {
             || identity(&self.parent)? != self.parent_identity
             || identity(&self.point)? != self.point_identity
         {
-            return Err(refused("Exposure namespace/staging custody differs"));
+            return Err(refused("Exposure namespace/staging ownership differs"));
         }
         let current = protected_directory(self.path.parent().ok_or(io::ErrorKind::InvalidData)?)?;
         if self.stage_pending && self.stage_detach == StageDetach::Attached {

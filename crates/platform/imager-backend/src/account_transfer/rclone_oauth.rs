@@ -4,7 +4,7 @@
 //! No arbitrary token endpoints, service accounts, sovereign clouds or app-only grants.
 use std::collections::BTreeMap;
 
-use account_custody::{ImportedRegistration, OAuthCloud, Registration, TokenSet};
+use account_credentials::{ImportedRegistration, OAuthCloud, Registration, TokenSet};
 use accounts::{Account, SecretVault};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -160,12 +160,12 @@ fn tokens(values: &BTreeMap<&str, &str>) -> Result<PrivateTokens, ConnectionErro
 }
 
 #[cfg(unix)]
-struct SourceWitness {
+struct SourceProof {
     root: std::sync::Arc<crate::migration_directory::PinnedDirectory>,
     stamp: (u64, u64, u64, cap_std::time::SystemTime),
 }
 #[cfg(unix)]
-impl SourceWitness {
+impl SourceProof {
     fn open(roots: &SourceRoots) -> Result<Self, ConnectionError> {
         let root = crate::migration_directory::PinnedDirectory::open_absolute(&roots.config)
             .map_err(|_| ConnectionError::AccountMissing)?;
@@ -214,7 +214,7 @@ impl Connector {
             return Err(ConnectionError::InvalidConfiguration);
         }
         #[cfg(unix)]
-        let witness = SourceWitness::open(roots)?;
+        let proof = SourceProof::open(roots)?;
         let text = super::discovery::metadata(&roots.config, &selected.profile)
             .map_err(|_| ConnectionError::CredentialUnavailable)?
             .ok_or(ConnectionError::AccountMissing)?;
@@ -255,21 +255,21 @@ impl Connector {
             let secret = vault
                 .get(&id)
                 .ok_or(ConnectionError::CredentialUnavailable)?;
-            if !account_custody::imported_oauth_matches(&secret, &registration) {
+            if !account_credentials::imported_oauth_matches(&secret, &registration) {
                 return Err(ConnectionError::AlreadyPresent);
             }
             self.recheck_rclone(roots, selected, &text)?;
             #[cfg(unix)]
-            witness.validate()?;
+            proof.validate()?;
             return Ok(id);
         }
         let renewed = PrivateTokens(
-            self.custodian
+            self.credential_store
                 .refresh_imported_cloud(cloud, &source_tokens.0, &registration)
-                .map_err(super::connect::custody_error)?,
+                .map_err(super::connect::credential_error)?,
         );
         let mount = self
-            .custodian
+            .credential_store
             .resolve_imported_storage(
                 cloud,
                 &renewed.0,
@@ -286,16 +286,16 @@ impl Connector {
                     .copied()
                     .filter(|s| !s.is_empty()),
             )
-            .map_err(super::connect::custody_error)?;
+            .map_err(super::connect::credential_error)?;
         self.recheck_rclone(roots, selected, &text)?;
         #[cfg(unix)]
-        witness.validate()?;
+        proof.validate()?;
         let mut account = Account::new(id, cloud.type_id());
         account.display_name = current.label;
         account.config = serde_json::json!({"provider":cloud.type_id(), accounts::cloud_types::MOUNT_CONFIG_KEY:mount});
         self.persist_import(
             account,
-            account_custody::imported_oauth_secret(&renewed.0, &registration),
+            account_credentials::imported_oauth_secret(&renewed.0, &registration),
         )
     }
 

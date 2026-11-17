@@ -256,7 +256,7 @@ pub use host_services::{MODEL_CLIENTS, ModelClients, builtin_model_clients};
 mod link;
 // A pairing link drawn as the code a phone reads.
 #[cfg(target_arch = "wasm32")]
-mod mount_service_custody;
+mod mount_service_lease;
 #[cfg(target_arch = "wasm32")]
 mod qr_code;
 // The page's user root: the envelope it is kept in, and what it signs.

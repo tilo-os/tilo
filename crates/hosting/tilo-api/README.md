@@ -29,7 +29,7 @@ relay the person's workspaces live on. Grants are listed and revoked at
 
 ## Authority
 
-The API server holds no device of anyone and no standing authority over anyone.
+The API server holds no device of anyone and no access authority over anyone.
 For each grant it generates a key, and the person's root certifies it as an
 agent's grant (`tilo_user_identity::DeviceCapabilities::agent`): scoped to
 all of the person's workspaces or one, expiring within 90 days (the API server asks

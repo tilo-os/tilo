@@ -847,23 +847,23 @@ impl ui::widget::controls::ActionControls for Music {
             ui::widget::controls::on_control_invocation_result(child, address, result);
         }
     }
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
+        attachment: ui::control_domain::DomainAttachment,
     ) {
         self.control_domain = Some(domain.clone());
         // These retained controls appear on different destinations. Install the
-        // same owner custody before a hidden control joins the physical tree.
+        // same owner ownership before a hidden control joins the physical tree.
         for button in &mut self.page.source_buttons {
-            ui::widget::controls::install_control_custody(button, domain, attachment);
+            ui::widget::controls::attach_controls(button, domain, attachment);
         }
 
         for emitter in &mut self.spotify_menu_controls {
-            let _ = emitter.install_custody(domain, attachment);
+            let _ = emitter.attach(domain, attachment);
         }
         for child in ui::widget::Widget::children_mut(self) {
-            ui::widget::controls::install_control_custody(child, domain, attachment);
+            ui::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 

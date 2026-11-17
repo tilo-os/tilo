@@ -115,7 +115,7 @@ fn engines_are_deterministic_and_incremental_painting_equals_replay() {
 
 /// A window of the grid paints what the whole grid paints there: the
 /// ground, the mottling and the brushwork follow whole-grid cells, so
-/// windows of a painting meet without seams and a zoomed view can
+/// windows of a painting meet without boundaries and a zoomed view can
 /// simulate only what it shows. Marks that end outside the window, or dry
 /// the wash elsewhere, still count.
 #[test]

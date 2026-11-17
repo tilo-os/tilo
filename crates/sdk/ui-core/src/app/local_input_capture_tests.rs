@@ -1,14 +1,14 @@
 // Uses the ordinary retained component, publication and public local action API.
-struct CustodyCapturePeer {
+struct OwnershipCapturePeer {
     inner: CapturePeer,
-    custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
+    ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
 }
-impl crate::collaboration::PeerTransport for CustodyCapturePeer {
+impl crate::collaboration::PeerTransport for OwnershipCapturePeer {
     fn connection_snapshot(
         &self,
         _: &crate::collaboration::RouteSpec,
     ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
-        self.custody.clone()
+        self.ownership.clone()
     }
     fn is_connected(&self) -> bool {
         true
@@ -28,7 +28,7 @@ impl crate::collaboration::PeerTransport for CustodyCapturePeer {
     }
 }
 struct CapturePeer(Rc<RefCell<Vec<(crate::collaboration::RouteSpec, CollabRequest)>>>);
-fn capture_custody(
+fn capture_ownership(
     route: &crate::collaboration::RouteSpec,
 ) -> runtime_collab::committed_document::ConnectionSnapshot {
     runtime_collab::committed_document::ConnectionSnapshot {
@@ -45,7 +45,7 @@ impl crate::collaboration::PeerTransport for CapturePeer {
         &self,
         route: &crate::collaboration::RouteSpec,
     ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
-        Some(capture_custody(route))
+        Some(capture_ownership(route))
     }
     fn is_connected(&self) -> bool {
         true
@@ -406,7 +406,7 @@ fn definitive_local_capture_failures_release_pins_and_editing_recovers() {
         };
         fixture.app.apply_collab_event_for_test(reply);
         assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
-        assert_eq!(fixture.app.local_input_capture.custody_size(), 0);
+        assert_eq!(fixture.app.local_input_capture.ownership_size(), 0);
         assert!(
             fixture
                 .app
@@ -444,7 +444,7 @@ impl crate::collaboration::PeerTransport for RecoveringCapturePeer {
         &self,
         route: &crate::collaboration::RouteSpec,
     ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
-        Some(capture_custody(route))
+        Some(capture_ownership(route))
     }
     fn is_connected(&self) -> bool {
         self.connected.get()
@@ -564,7 +564,7 @@ tilo_test_env::scenario! {
                 true,
             ));
             assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
-            assert_eq!(fixture.app.local_input_capture.custody_size(), 0);
+            assert_eq!(fixture.app.local_input_capture.ownership_size(), 0);
             assert!(
                 fixture
                     .app
@@ -624,10 +624,10 @@ tilo_test_env::scenario! {
                 });
         }
         // Distinct snapshots also have a byte budget, which may fill before
-        // the 64-revision limit. Neither bound may evict uncertain custody.
+        // the 64-revision limit. Neither bound may evict uncertain ownership.
         assert!((2..=64).contains(&admitted));
         assert_eq!(fixture.app.local_input_capture.pending_count(), admitted);
-        assert!(fixture.app.local_input_capture.custody_size() < 4 * 1024 * 1024);
+        assert!(fixture.app.local_input_capture.ownership_size() < 4 * 1024 * 1024);
         // One more edit still lands; the history cannot carry it, and the window
         // says so rather than dropping the keystroke.
         let before = heads(&fixture);

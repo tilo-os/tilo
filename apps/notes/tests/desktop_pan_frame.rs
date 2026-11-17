@@ -184,7 +184,7 @@ fn assert_pan_frames(harness: &mut FrameHarness, handle: &DesktopHandle) {
     );
     // Nor does it ask each window's History again whether the app still
     // has the document owners it registered, or whether a committed
-    // frontier moved: the frame before asked, and its witness proves that
+    // frontier moved: the frame before asked, and its observation proves that
     // nothing either reads has moved since. Each such question walks a
     // whole app.
     assert_eq!(

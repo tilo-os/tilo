@@ -120,7 +120,7 @@ pub mod action_palette;
 pub mod agent_identity;
 pub mod animation;
 pub mod arriving;
-/// What wants a person: the waiting stack, and the ledger an outcome goes to when it does not.
+/// What wants a person: the waiting stack, and the log an outcome goes to when it does not.
 pub mod attention;
 pub mod author;
 pub mod capability;
@@ -633,9 +633,9 @@ pub(crate) mod retained_widgets;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod presentation_feedback;
 
-/// Emission-time local control custody.
-pub mod control_custody;
-pub use control_custody::{
+/// Emission-time local control ownership.
+pub mod control_domain;
+pub use control_domain::{
     ControlCoverage, ControlDomain, ControlOutbox, ControlProducerDiscipline,
 };
 mod focus_navigation;

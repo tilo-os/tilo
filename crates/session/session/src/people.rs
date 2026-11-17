@@ -258,7 +258,7 @@ impl Shown {
 
     /// Whether the roster stands kept at an edge of the shell, drawn and pressed where it waits: a
     /// pin waiting away with nobody else here does not.
-    fn standing(&self) -> bool {
+    fn is_kept(&self) -> bool {
         !self.sheet()
             && self
                 .pinned
@@ -339,7 +339,7 @@ impl People {
     pub fn toggle(&self) {
         // Kept on screen and standing, the roster is already where the faces would open it: they
         // have nothing to do, and the panel's own button puts it back in the bar.
-        if self.shown.borrow().standing() {
+        if self.shown.borrow().is_kept() {
             return;
         }
         // Their press closed it a moment ago: this is that press, not another.
@@ -461,7 +461,7 @@ impl Published for People {
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
-        if !self.open.get() && !self.shown.borrow().standing() {
+        if !self.open.get() && !self.shown.borrow().is_kept() {
             return None;
         }
         self.layer().and_then(|layer| layer.a11y_tree())
@@ -472,7 +472,7 @@ impl Published for People {
     }
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
-        (self.open.get() || self.shown.borrow().standing())
+        (self.open.get() || self.shown.borrow().is_kept())
             && self
                 .layer()
                 .is_some_and(|layer| layer.a11y_action(target, action))
@@ -486,14 +486,14 @@ impl Published for People {
     /// the host drew.
     fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         match self.layer() {
-            Some(layer) if self.open.get() || self.shown.borrow().standing() => layer.controls(),
+            Some(layer) if self.open.get() || self.shown.borrow().is_kept() => layer.controls(),
             _ => Vec::new(),
         }
     }
 
     fn press(&mut self, name: &str) -> Result<(), String> {
         match self.layer() {
-            Some(layer) if self.open.get() || self.shown.borrow().standing() => layer.press(name),
+            Some(layer) if self.open.get() || self.shown.borrow().is_kept() => layer.press(name),
             _ => Err(format!("no control named {name}")),
         }
     }
@@ -502,7 +502,7 @@ impl Published for People {
     /// where they are. While a person's card stands in the roster's place, there are no rows to
     /// read: the card is what is read, and what is read is what the host drew of it.
     fn accessible_labels(&mut self) -> Vec<String> {
-        if !self.open.get() && !self.shown.borrow().standing() {
+        if !self.open.get() && !self.shown.borrow().is_kept() {
             return Vec::new();
         }
         if self.shown.borrow().card_open.is_some() {
@@ -749,12 +749,12 @@ impl Panel {
         // The card standing is someone else's: what the roster says of them now is what it says,
         // beside the row under it (an agent narrates every action). Built before the card is laid
         // out, as it is opened here, never while the frame draws.
-        let standing = shown
+        let card = shown
             .card_open
             .clone()
             .filter(|who| who != SELF_CARD)
             .and_then(|who| self.person_model(&who, &shown.rows));
-        if let Some(model) = standing {
+        if let Some(model) = card {
             self.profile.updated(&model);
         }
         let asked = if std::mem::take(&mut shown.own_card) {
@@ -1475,7 +1475,7 @@ impl Panel {
             return;
         }
         let area = shown.area;
-        let standing = {
+        let placed = {
             let Some(pin) = shown.pinned.as_mut() else {
                 return;
             };
@@ -1498,7 +1498,7 @@ impl Panel {
             );
             (pose, pin.panel)
         };
-        let (pose, slot) = standing;
+        let (pose, slot) = placed;
         let placed = pose.applied_to(transform);
         scene.push_layer(
             Fill::NonZero,
@@ -1835,7 +1835,7 @@ impl Widget for Panel {
         let shown = self.shown.borrow();
         // Each control says where it stands and carries what pressing it does, so a reader
         // presses the roster's own buttons as the person does.
-        let roster = ((self.open.get() || shown.standing()) && !self.profile.is_open())
+        let roster = ((self.open.get() || shown.is_kept()) && !self.profile.is_open())
             .then(|| shown.overlay.accessibility_with_targets());
         drop(shown);
         // The banner stands beside the windows, so it is read whether the roster is up or not: a
@@ -1971,7 +1971,7 @@ impl Widget for Panel {
         }
         // Kept on screen, the roster is pressed by the person's own pointer: it draws and answers
         // where it stands, and never takes the keyboard.
-        let kept = self.shown.borrow().standing();
+        let kept = self.shown.borrow().is_kept();
         if !self.open.get() && !kept {
             self.handle_pinned(event, ctx);
             return;
@@ -2031,7 +2031,7 @@ impl Widget for Panel {
         }
         // Kept on screen, a press on its header drags it to another edge: a card's own press is
         // the card's.
-        let drags = shown.standing()
+        let drags = shown.is_kept()
             && shown
                 .cursor
                 .is_some_and(|point| shown.overlay.header_rect().contains(point));

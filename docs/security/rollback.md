@@ -158,7 +158,7 @@ known-vulnerable generation instead of leaving it inside the window.
 
 `--floor-authority-key` selects the key that authorises floor advances; it defaults
 to the PCR-prediction key because both are the same trust domain. Production
-custody should separate them — a prediction signature says "these are the expected
+ownership should separate them — a prediction signature says "these are the expected
 measurements", while a floor approval permanently narrows what a machine will boot.
 
 `TILO_ROLLBACK_DEBUG=1` prints the failing TPM tool's own diagnostics, which is
@@ -274,7 +274,7 @@ firmware update from turning into a recovery-key prompt.
    `latest`/generation split. A registry can still freeze a brand-new machine on a
    complete older signed view; an installed machine's TPM floor prevents that view
    from unlocking once its floor advanced. Closing freshness for new installations
-   requires an independent signed witness/checkpoint, tracked as a priority gap in
+   requires an independent signed approval/checkpoint, tracked as a priority gap in
    [threat-model.md](threat-model.md).
 
    There is no default, and nothing falls back to one when the registry cannot be

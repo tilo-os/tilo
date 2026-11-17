@@ -996,14 +996,14 @@ impl DesktopSurface {
             tiles,
             Rc::clone(&shared.borrow().peers),
         )) as Box<dyn TileSource>;
-        let mut surface = Self::standing(Rc::clone(&shared), tiles, &search);
+        let mut surface = Self::on_shared(Rc::clone(&shared), tiles, &search);
         surface.show_active_strip();
         (surface, DesktopHandle { shared })
     }
 
     /// The surface's own state, standing on the `shared` shell `new` made and drawing with `tiles` ,
     /// after its search `search` .
-    fn standing(
+    fn on_shared(
         shared: Rc<RefCell<Shared>>,
         tiles: Box<dyn TileSource>,
         search: &Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,

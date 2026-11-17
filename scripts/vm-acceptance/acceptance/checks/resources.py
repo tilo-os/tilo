@@ -1587,7 +1587,7 @@ SHOVEL_THREAD = "ui-collab-shove"
 # an app that never opens in the shared workspace is refused on that path.
 SHARED_SESSION_LOG = (
     "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
-    "| grep -aiE 'launch|authorship|native|membership|owner|custody|refus|identity|enroll|governor' "
+    "| grep -aiE 'launch|authorship|native|membership|owner|ownership|refus|identity|enroll|governor' "
     "| tail -n 200 | cut -c1-500; true")
 
 

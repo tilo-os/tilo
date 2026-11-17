@@ -146,11 +146,11 @@ fn peers() -> Peers {
         .shared_person::<accounts::person::PersonAccounts>()
         .unwrap();
 
-    // The device: custody releases it the secret, and it reaches the servers.
+    // The device: ownership releases it the secret, and it reaches the servers.
     let mut device = Window::on_device("laptop").unwrap();
     {
         let app = mail(&mut device);
-        app.custody = Some(crate::custody::SecretRelease::kept_under(
+        app.ownership = Some(crate::account_secrets::SecretRelease::kept_under(
             vault.path().to_path_buf(),
         ));
         let engine = crate::engine::live::LiveEngine::trusting(
@@ -177,7 +177,7 @@ fn peers() -> Peers {
     {
         let app = mail(&mut page);
         app.reach_no_server();
-        app.custody = None;
+        app.ownership = None;
         app.state().checks.asks = true;
         app.follow_person_accounts(accounts);
         app.copies = Some(crate::copies::Copies::new(copies, carried));

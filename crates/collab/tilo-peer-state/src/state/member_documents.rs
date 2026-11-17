@@ -1,5 +1,5 @@
 //! A record a member creates: empty, where the member may change the record.
-use super::{AutoCommit, DocumentMutation, Route, SignedOp, Standing, StatePeer, SystemTime};
+use super::{AutoCommit, DocumentMutation, MemberAccess, Route, SignedOp, StatePeer, SystemTime};
 use tilo_action_policy::ActionKind;
 
 impl StatePeer {
@@ -7,7 +7,7 @@ impl StatePeer {
     /// that record.
     pub(super) fn may_create_document(
         &self,
-        member: &Standing,
+        member: &MemberAccess,
         route: &Route,
         at: SystemTime,
     ) -> bool {

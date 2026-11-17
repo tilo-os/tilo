@@ -13,7 +13,7 @@ status/set/remove: the session must explicitly grant credential management.
 There is no credential-read operation.
 
 The service is single-user: caller roles are capabilities, not tenant identities.
-Run separate processes with isolated configuration, storage and credential custody
+Run separate processes with isolated configuration, storage and credential storage
 for different users, and route each authenticated session only to its user's
 instance. Do not put grants for unrelated users in one session directory.
 
@@ -152,7 +152,7 @@ when the transport proves no request was sent, or when the provider explicitly
 refuses an unprocessed request. Unknown outcomes and interrupted generation are
 not automatically replayed.
 
-Signed-in providers carry no key: the gateway asks account custody for a
+Signed-in providers carry no key: the gateway asks account credentials for a
 current access token for the profile's own grant (`sign_in_grant_id`),
 refreshed there when due, and keeps it no longer than its expiry. A Google
 sign-in adds the billing project; a ChatGPT sign-in speaks Responses to the

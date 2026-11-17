@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use account_custody::hugging_face::{HUGGING_FACE_DOWNLOADS, HubCredential};
+use account_credentials::hugging_face::{HUGGING_FACE_DOWNLOADS, HubCredential};
 use agent_provider_config::local::HardwareSnapshot;
 use agent_provider_config::local::hub::{ApiModelInfo, HubAccount, HubModelOffer, HubTokenState};
 use test_http::{Reply, Responder};
@@ -138,7 +138,7 @@ fn a_hugging_face_sign_in_is_stored_where_a_token_goes_and_shows_who() {
     let control = mock(snapshot(None));
     let mut pane = model_over(control.clone());
     let browser = Arc::new(Browser(Mutex::new(Vec::new())));
-    pane.custodian = account_custody::Custodian::for_root(None).with_use(
+    pane.credential_store = account_credentials::CredentialStore::for_root(None).with_use(
         HUGGING_FACE_DOWNLOADS,
         server.provider(),
         "hf-client",
@@ -158,7 +158,7 @@ fn a_hugging_face_sign_in_is_stored_where_a_token_goes_and_shows_who() {
         .hub
         .sign_in(
             false,
-            &model.custodian,
+            &model.credential_store,
             &model.opener,
             (&model.hub_userinfo, &control_dyn),
         )

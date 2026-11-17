@@ -21,7 +21,7 @@
 //! | [`WAIT_LIST`] | `{email, language}` | `{email, removal, mail}` |
 //! | [`WAIT_LIST_REMOVE`] | `{secret}` | `{}` |
 //! | [`WAIT_LIST_CONFIRM`] | `{token}` | `{confirmed}` |
-//! | [`WAIT_LIST_STANDING`] | `{secret}` | `{standing}` |
+//! | [`WAIT_LIST_STATUS`] | `{secret}` | `{state}` |
 //!
 //! The wait list is what an entry that takes people by invitation keeps for
 //! someone it turns away: an address it may be invited at, confirmed by the
@@ -69,7 +69,7 @@ pub fn entry_route(route: &str) -> Option<(&str, &str)> {
     let (workspace, step) = rest.split_once('/')?;
     let two_words = matches!(
         step,
-        WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STANDING
+        WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STATUS
     );
     (!workspace.is_empty() && (two_words || !step.contains('/'))).then_some((workspace, step))
 }
@@ -85,7 +85,7 @@ pub const WAIT_LIST_REMOVE: &str = "wait-list/remove";
 /// The step opening the link a confirmation mail carried.
 pub const WAIT_LIST_CONFIRM: &str = "wait-list/confirm";
 /// The step asking where the address a removal secret belongs to stands.
-pub const WAIT_LIST_STANDING: &str = "wait-list/standing";
+pub const WAIT_LIST_STATUS: &str = "wait-list/status";
 
 /// What the owner decided when they made the workspace public.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

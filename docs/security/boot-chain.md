@@ -423,7 +423,7 @@ gets a PCR 4 value that matches a prediction the TPM will honour. Refusing that
 needs monotonicity the PCRs cannot express — a TPM NV counter that only moves
 forward, with the policy bound to its current value. `systemd-cryptenroll` does
 not expose that today, so anti-rollback is a gap in any PCR-only design, UKI or
-not. Worth knowing before PCR 11 gets treated as the thing standing between the
+not. Worth knowing before PCR 11 gets treated as the thing access between the
 system and a rollback attack.
 
 #### Is `bootc --composefs-backend` close enough to depend on?

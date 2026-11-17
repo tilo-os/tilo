@@ -5,9 +5,9 @@ use std::sync::{
 };
 
 #[test]
-fn profile_key_refuses_local_custody_even_with_exact_protected_grant() {
+fn profile_key_refuses_local_ownership_even_with_exact_protected_grant() {
     let (root, mut broker, request, scope) = fixture();
-    assert_eq!(broker.store.custody(), SecretCustody::LocalFile);
+    assert_eq!(broker.store.backend(), VaultBackend::LocalFile);
     broker
         .request_scoped(&request, &scope, |_, _, _| AccessDecision::AllowForSession)
         .unwrap();
@@ -309,15 +309,15 @@ fn proposal_creates_no_access_and_confirmed_session_decision_is_exact_and_one_us
 }
 
 #[test]
-fn proposal_refuses_foreign_or_retired_admission_before_opening_custody() {
+fn proposal_refuses_foreign_or_retired_admission_before_opening_ownership() {
     let count = Arc::new(AtomicUsize::new(0));
     let opens = count.clone();
     let (root, broker, request, scope) = fixture();
     drop(broker);
-    let custody = root.clone();
+    let backend = root.clone();
     let owner = CredentialOwner::deferred(&scope.actor, &scope.device, move || {
         opens.fetch_add(1, Ordering::SeqCst);
-        SecretStore::open_in(&custody)
+        SecretStore::open_in(&backend)
     })
     .unwrap();
     let mut foreign = scope.clone();

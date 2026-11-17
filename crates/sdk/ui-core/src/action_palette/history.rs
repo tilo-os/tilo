@@ -10,7 +10,7 @@ impl ActionPalette {
         self.request_generation = uuid::Uuid::new_v4();
     }
 
-    pub(crate) fn history_has_custody(&self) -> bool {
+    pub(crate) fn history_has_ownership(&self) -> bool {
         self.history_resolution_error.is_some()
             || self
                 .pending_dispatch
@@ -87,7 +87,7 @@ impl ActionPalette {
             .pending_dispatch
             .as_ref()
             .or_else(|| self.confirm.as_ref().map(|state| &state.pending))?;
-        if pending.history_witness.is_some() {
+        if pending.history_seen.is_some() {
             return None;
         }
         Some((
@@ -97,41 +97,41 @@ impl ActionPalette {
         ))
     }
 
-    pub(crate) fn retain_history_exact_witness(
+    pub(crate) fn retain_history_exact_observation(
         &mut self,
-        witness: Result<crate::bound_dispatch::ControlWitness, String>,
+        observation: Result<crate::bound_dispatch::ControlObservation, String>,
     ) {
-        let identity = witness
+        let identity = observation
             .as_ref()
-            .map(crate::bound_dispatch::ControlWitness::identity)
+            .map(crate::bound_dispatch::ControlObservation::identity)
             .cloned()
             .map_err(Clone::clone);
         if let Some(pending) = self.pending_dispatch.as_mut() {
             pending.history_identity = Some(identity);
-            pending.history_witness = Some(witness);
+            pending.history_seen = Some(observation);
         } else if let Some(confirm) = self.confirm.as_mut() {
             confirm.pending.history_identity = Some(identity);
-            confirm.pending.history_witness = Some(witness);
+            confirm.pending.history_seen = Some(observation);
         }
     }
 
-    pub(crate) fn retain_history_custody(
+    pub(crate) fn retain_history_ownership(
         &mut self,
         target: crate::bound_dispatch::local_target::LocalResourceTarget,
         identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
-        witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
+        observation: Option<Result<crate::bound_dispatch::ControlObservation, String>>,
     ) {
-        if self.history_has_custody() {
+        if self.history_has_ownership() {
             return;
         }
         if let Some(pending) = self.pending_dispatch.as_mut() {
             pending.history_target = Some(target);
             pending.history_identity = identity;
-            pending.history_witness = witness;
+            pending.history_seen = observation;
         } else if let Some(confirm) = self.confirm.as_mut() {
             confirm.pending.history_target = Some(target);
             confirm.pending.history_identity = identity;
-            confirm.pending.history_witness = witness;
+            confirm.pending.history_seen = observation;
         } else if let Some(arg) = self.arg.as_mut() {
             arg.history_target = Some(target);
             arg.history_draft_identity = identity;
@@ -139,7 +139,7 @@ impl ActionPalette {
     }
 
     pub(crate) fn retain_history_resolution_error(&mut self, reason: impl Into<String>) {
-        if !self.history_has_custody() {
+        if !self.history_has_ownership() {
             self.history_resolution_error = Some(reason.into());
         }
     }

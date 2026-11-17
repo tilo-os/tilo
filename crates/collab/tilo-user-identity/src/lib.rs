@@ -46,7 +46,7 @@
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
 //! - [`CERTIFICATION_REQUEST_TAG`] — `tilo-device-certification-request-v1\0`
-//! - [`HOST_WITNESS_PREIMAGE_TAG`] — `tilo-host-witness-v1\0`
+//! - [`HOST_APPROVAL_PREIMAGE_TAG`] — `tilo-host-approval-v1\0`
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -94,7 +94,7 @@ mod keychain;
 #[cfg(target_os = "linux")]
 pub mod nofollow;
 // Identity files need an owner-checked filesystem; the browser keeps its
-// device key in host custody instead.
+// device key in host ownership instead.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 pub mod projection;
@@ -103,13 +103,13 @@ pub mod root_envelope;
 pub mod root_statement;
 pub mod sign;
 pub mod sign_in;
+pub mod signed_approval;
 #[cfg(unix)]
 pub mod update_lock;
-pub mod witness;
 
 pub use approval::{
     APPROVAL_REQUEST_TAG, APPROVAL_RESPONSE_TAG, APPROVAL_SCHEMA_VERSION, ApprovalError,
-    ApprovalLedger, ApprovalPurpose, ApprovalRequest, DeviceApproval,
+    ApprovalLog, ApprovalPurpose, ApprovalRequest, DeviceApproval,
 };
 pub use canonical::CanonicalError;
 pub use cert::{
@@ -144,7 +144,7 @@ pub use enrollment::{
     decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
     verify_enrollment_token,
 };
-pub use fleet::{CertifiedFleet, DeviceStanding, FleetError};
+pub use fleet::{CertifiedFleet, DeviceCertification, FleetError};
 pub use image::{
     IMAGE_ENDORSEMENT_PREIMAGE_TAG, IMAGE_SIGNING_AUTHORIZATION_PREIMAGE_TAG, ImageEndorsement,
     ImageEndorsementError, ImageSigningAuthorization, ImageSigningAuthorizationError,
@@ -174,7 +174,9 @@ pub use revocation::{
 };
 pub use sign::{CallbackSigner, SignError, StatementSigner};
 pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, agent_endpoint_audience, sign_in_digest};
-pub use witness::{Answered, HOST_WITNESS_PREIMAGE_TAG, HostWitness, HostWitnessError, Parties};
+pub use signed_approval::{
+    Answered, HOST_APPROVAL_PREIMAGE_TAG, HostApproval, HostApprovalError, Parties,
+};
 
 use serde::{Deserialize, Serialize};
 

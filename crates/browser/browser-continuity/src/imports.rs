@@ -53,7 +53,7 @@ impl ImportBundle {
     }
     /// Partition a complete normalized capture without discarding rows.
     /// # Errors
-    /// Refuses sources exceeding bounded custody or invalid chunk metadata.
+    /// Refuses sources exceeding bounded ownership or invalid chunk metadata.
     pub fn from_batch(mut batch: ImportBatch) -> Result<Self, ActionError> {
         if batch.bookmarks.len().saturating_add(batch.history.len()) > MAX_BUNDLE_ENTRIES {
             return Err(refused());

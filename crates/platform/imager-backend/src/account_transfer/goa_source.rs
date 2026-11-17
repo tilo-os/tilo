@@ -5,8 +5,8 @@
 //! <https://github.com/GNOME/gnome-online-accounts/blob/master/data/dbus-interfaces.xml>
 use super::{Candidate, ConnectionError, Connector, Origin, SourceRoots};
 #[cfg(test)]
-use account_custody::OAuthCloud;
-use account_custody::{ImportedRegistration, Registration, TokenSet};
+use account_credentials::OAuthCloud;
+use account_credentials::{ImportedRegistration, Registration, TokenSet};
 use accounts::{Account, AccountId, SecretVault};
 use sha2::{Digest, Sha256};
 use std::{io::Read, path::Path};
@@ -92,7 +92,7 @@ fn original_registration(
     hash.update(definition.source_id().as_bytes());
     hash.update(tokens.refresh_token.as_bytes());
     ImportedRegistration::new(definition.cloud(), client, hex::encode(hash.finalize()))
-        .map_err(super::connect::custody_error)
+        .map_err(super::connect::credential_error)
 }
 type SourceStamp = (u64, u64, u64, cap_std::time::SystemTime);
 fn source_stamp(
@@ -193,15 +193,15 @@ impl Connector {
             return Ok(id);
         }
         let renewed = PrivateTokens(
-            self.custodian
+            self.credential_store
                 .refresh_imported_cloud(definition.cloud(), &tokens.0, &registration)
-                .map_err(super::connect::custody_error)?,
+                .map_err(super::connect::credential_error)?,
         );
         self.verify_goa_identity(&definition, &renewed.0)?;
         let mount = self
-            .custodian
+            .credential_store
             .resolve_imported_storage(definition.cloud(), &renewed.0, None, None)
-            .map_err(super::connect::custody_error)?;
+            .map_err(super::connect::credential_error)?;
         self.recheck_goa(roots, selected, &before)?;
         validate_source(&source, &stamp)?;
         let mut account = Account::new(id, definition.cloud().type_id());
@@ -209,7 +209,7 @@ impl Connector {
         account.config = serde_json::json!({"provider":definition.cloud().type_id(),"source_goa_identity":definition.identity.clone(),accounts::cloud_types::MOUNT_CONFIG_KEY:mount});
         self.persist_import(
             account,
-            account_custody::imported_oauth_secret(&renewed.0, &registration),
+            account_credentials::imported_oauth_secret(&renewed.0, &registration),
         )
     }
     fn goa_already_imported(
@@ -234,7 +234,7 @@ impl Connector {
                     .get(id)
                     .ok_or(ConnectionError::CredentialUnavailable)?,
             );
-            if !account_custody::imported_oauth_matches(&secret.0, registration) {
+            if !account_credentials::imported_oauth_matches(&secret.0, registration) {
                 return Err(ConnectionError::AlreadyPresent);
             }
             return Ok(true);

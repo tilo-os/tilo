@@ -808,7 +808,7 @@ pub trait PlaybackStream: Send {
     fn failure(&self) -> Option<String>;
 }
 
-/// One-shot custody of an output verified by the local device observer.
+/// One-shot ownership of an output verified by the local device observer.
 /// This descriptor stays in the host; apps never receive it.
 #[cfg(unix)]
 pub struct ObservedPlayback {

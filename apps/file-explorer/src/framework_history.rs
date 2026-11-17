@@ -1,4 +1,4 @@
-//! The mounted file's history: custody of the open file, and the immutable
+//! The mounted file's history: ownership of the open file, and the immutable
 //! versions agents sign.
 use fs_protocol::files::{
     CHECKED_HISTORY_RESTORE_XATTR, CHECKED_HISTORY_RESULT_XATTR_PREFIX,

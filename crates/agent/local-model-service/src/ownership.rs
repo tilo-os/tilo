@@ -1,4 +1,4 @@
-//! Persisted container custody and observed cleanup checks for the local runtime.
+//! Persisted container ownership and observed cleanup checks for the local runtime.
 //! No container name or caller-supplied selector grants lifecycle authority.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -121,10 +121,10 @@ pub fn verify_stopped_unit(properties: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Detached custody when a newer canonical model state refuses admission.
+/// Detached ownership when a newer canonical model state refuses admission.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OrphanCustody {
+struct OrphanOwnership {
     schema: u16,
     model_id: String,
     process: crate::ProcessHandle,
@@ -132,7 +132,7 @@ struct OrphanCustody {
 
 fn private_directory(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
     use std::os::unix::fs::DirBuilderExt;
-    let directory = root.join("orphan-custody");
+    let directory = root.join("orphan-ownership");
     match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -140,19 +140,19 @@ fn private_directory(root: &std::path::Path) -> Result<std::path::PathBuf, Strin
     }
     let metadata = std::fs::symlink_metadata(&directory).map_err(|error| error.to_string())?;
     if !metadata.is_dir() || !tilo_files::native::private::private_to_me(&metadata) {
-        return Err("orphan custody directory is not private and owned".into());
+        return Err("orphan ownership directory is not private and owned".into());
     }
     Ok(directory)
 }
 
-fn custody_id(handle: &crate::ProcessHandle) -> Result<&str, String> {
+fn ownership_id(handle: &crate::ProcessHandle) -> Result<&str, String> {
     let container = handle
         .container
         .as_ref()
-        .ok_or("prepared runtime has no container custody")?;
+        .ok_or("prepared runtime has no container ownership")?;
     container.validate()?;
     if handle.id != container.unit() {
-        return Err("prepared runtime unit differs from container custody".into());
+        return Err("prepared runtime unit differs from container ownership".into());
     }
     Ok(&container.run_id)
 }
@@ -164,7 +164,7 @@ pub(crate) fn retain_orphan(
 ) -> Result<String, String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let id = custody_id(handle)?;
+    let id = ownership_id(handle)?;
     let directory = private_directory(root)?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -173,7 +173,7 @@ pub(crate) fn retain_orphan(
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(directory.join(format!("{id}.json")))
         .map_err(|error| error.to_string())?;
-    let receipt = OrphanCustody {
+    let receipt = OrphanOwnership {
         schema: 1,
         model_id: model.into(),
         process: handle.clone(),
@@ -191,7 +191,7 @@ pub(crate) fn retain_orphan(
 /// This does not adopt the receipt into canonical model state.
 ///
 /// # Errors
-/// Refuses malformed/private-file violations, current canonical custody,
+/// Refuses malformed/private-file violations, current canonical ownership,
 /// unavailable observations, or unsuccessful supervisor cleanup.
 pub fn recover_orphan<P: crate::ProcessSupervisor>(
     root: &std::path::Path,
@@ -216,25 +216,25 @@ pub fn recover_orphan<P: crate::ProcessSupervisor>(
         || metadata.len() > 65536
     {
         return Err(refuse(
-            "orphan custody is not a bounded private regular file".into(),
+            "orphan ownership is not a bounded private regular file".into(),
         ));
     }
     let mut body = Vec::new();
     file.take(65537).read_to_end(&mut body)?;
     if body.len() > 65536 {
-        return Err(refuse("orphan custody grew beyond its bound".into()));
+        return Err(refuse("orphan ownership grew beyond its bound".into()));
     }
-    let receipt: OrphanCustody =
+    let receipt: OrphanOwnership =
         serde_json::from_slice(&body).map_err(|error| refuse(error.to_string()))?;
-    if receipt.schema != 1 || custody_id(&receipt.process).map_err(refuse)? != run_id {
-        return Err(refuse("orphan custody receipt identity mismatch".into()));
+    if receipt.schema != 1 || ownership_id(&receipt.process).map_err(refuse)? != run_id {
+        return Err(refuse("orphan ownership receipt identity mismatch".into()));
     }
     let state = crate::load_state(&root.join(crate::STATE_FILE))?;
     let owned = receipt
         .process
         .container
         .as_ref()
-        .ok_or_else(|| refuse("missing custody".into()))?;
+        .ok_or_else(|| refuse("missing ownership".into()))?;
     if state
         .models
         .values()
@@ -247,7 +247,7 @@ pub fn recover_orphan<P: crate::ProcessSupervisor>(
         })
     {
         return Err(refuse(
-            "orphan recovery refuses current canonical process custody".into(),
+            "orphan recovery refuses current canonical process ownership".into(),
         ));
     }
     supervisor.stop(&receipt.process)?;

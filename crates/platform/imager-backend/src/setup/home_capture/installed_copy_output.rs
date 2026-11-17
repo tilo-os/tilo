@@ -15,8 +15,8 @@ use crate::setup::{
     portable_home_media::Expectation as Home,
 };
 use launcher::owned_service::{
-    InstalledCopyOutputAdmission, InstalledCopyOutputBinding, InstalledCopyOutputCustody,
-    InstalledCopyOutputFiles, ServiceAuthority, ServiceCancellation, ServiceEndpoint,
+    InstalledCopyOutputAdmission, InstalledCopyOutputBinding, InstalledCopyOutputFiles,
+    InstalledCopyOutputOwnership, ServiceAuthority, ServiceCancellation, ServiceEndpoint,
 };
 use runtime_portal::process_binding::ExecutingPeer;
 use sha2::{Digest, Sha256};
@@ -46,9 +46,9 @@ pub struct InstalledCopyTransaction {
     recovered: Option<RecoveredExport>,
 }
 // Only `prepare_recovered` creates this from the actual protected guard; its retained source and
-// files stay custody, and facts alone never mint a Verified token.
+// files stay ownership, and facts alone never mint a Verified token.
 struct RecoveredExport {
-    _custody: InstalledCopyRecovery,
+    _ownership: InstalledCopyRecovery,
     facts: InstalledVerifiedArtifactFacts,
     sealed_parent: Option<Arc<PinnedDirectory>>,
 }
@@ -148,9 +148,9 @@ impl InstalledCopyTransaction {
                 cancelled,
                 cancellation: ServiceCancellation::default(),
                 recovered: Some(RecoveredExport {
-                    _custody: recovery
+                    _ownership: recovery
                         .take()
-                        .ok_or_else(|| refused("Installed recovery custody absent"))?,
+                        .ok_or_else(|| refused("Installed recovery ownership absent"))?,
                     facts,
                     sealed_parent,
                 }),
@@ -210,7 +210,7 @@ impl InstalledCopyTransaction {
                 };
                 let admission = admission
                     .with_inventory_scratch(inventory, allowance)?
-                    .retain_inventory_scratch_custody(self.clone())?
+                    .retain_inventory_scratch_ownership(self.clone())?
                     .with_installed_copy_output(output)?;
                 runs.push(original_worker::launch(
                     self.clone(),
@@ -401,7 +401,7 @@ impl OriginalWorkerOwner for InstalledCopyTransaction {
             .record_namespace(&self.scratch, endpoint, &self.cancelled)
     }
 }
-impl InstalledCopyOutputCustody for InstalledCopyTransaction {
+impl InstalledCopyOutputOwnership for InstalledCopyTransaction {
     fn binding(&self) -> io::Result<InstalledCopyOutputBinding> {
         self.check()?;
         let facts = self.scratch.facts(&self.cancelled)?;
@@ -452,7 +452,7 @@ impl InstalledCopyOutputCustody for InstalledCopyTransaction {
         self.check()?;
         self.attempt.additional_output_reservation(&self.cancelled)
     }
-    fn check_physical_and_operation_custody(&self) -> io::Result<()> {
+    fn check_physical_and_operation_ownership(&self) -> io::Result<()> {
         self.check()
     }
 }
@@ -927,7 +927,7 @@ impl InstalledVerifiedArtifacts {
                 .files
                 .iter()
                 .find(|(_, facts)| facts.name == name)
-                .ok_or_else(|| refused("Installed sealed file custody missing"))?;
+                .ok_or_else(|| refused("Installed sealed file ownership missing"))?;
             Ok(Some(file.try_clone()?))
         };
         let files = (
@@ -955,7 +955,7 @@ impl ServiceAuthority for InstalledVerifiedArtifacts {
         self.directory.validate_destination()?;
         let parent = self.directory.file.metadata()?;
         if parent.uid() != 0 || parent.gid() != 0 || parent.mode() & 0o7777 != 0o700 {
-            return Err(refused("Installed sealed artifact custody changed"));
+            return Err(refused("Installed sealed artifact ownership changed"));
         }
         // Crypto verification happens when minting the token and recording the transition; this
         // private root directory and `O_RDONLY` descriptors prevent receiver writes, and the check pins
@@ -1121,7 +1121,7 @@ impl InstalledCopyCompletion {
         let mut held = self
             .cleanup
             .lock()
-            .map_err(|_| refused("Installed completion cleanup custody poisoned"))?;
+            .map_err(|_| refused("Installed completion cleanup ownership poisoned"))?;
         if held.is_none() {
             let tx = artifacts.transaction();
             if !std::ptr::eq(attempt, tx.attempt.as_ref()) {
@@ -1141,7 +1141,7 @@ impl InstalledCopyCompletion {
         permit.remove_empty_directories(cancel)?;
         permit.remove_secret_and_finish(cancel)?;
         let metadata_quarantined = permit.metadata_quarantined();
-        *held = None; // Break intentional custody cycle only after exact retirement.
+        *held = None; // Break intentional ownership cycle only after exact retirement.
         Ok(metadata_quarantined)
     }
     pub(in crate::setup::home_capture) fn journal_facts(

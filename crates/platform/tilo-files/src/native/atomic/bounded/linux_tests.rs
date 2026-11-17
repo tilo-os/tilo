@@ -12,7 +12,7 @@
 //! ```
 #![expect(
     clippy::result_large_err,
-    reason = "the tests return the production custody-carrying errors from closures"
+    reason = "the tests return the production ownership-carrying errors from closures"
 )]
 use super::*;
 use std::fs;

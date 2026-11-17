@@ -3069,7 +3069,7 @@
         },
         {
           "name": "context",
-          "doc": "The pointer's right button pressed on the map: carries the key of the pin standing under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y. What the view does with it is its own: the shell's canvas opens the pointed place's menu, or the canvas's own for free space (`canvas.md` §1, §6).",
+          "doc": "The pointer's right button pressed on the map: carries the key of the pin pin_places under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y. What the view does with it is its own: the shell's canvas opens the pointed place's menu, or the canvas's own for free space (`canvas.md` §1, §6).",
           "value": "text",
           "at": {
             "list": "int"
@@ -6014,7 +6014,7 @@
         },
         {
           "name": "closed",
-          "doc": "The row standing open closed: pressed again, Escape, a press beside it, or its item left the list."
+          "doc": "The row held open closed: pressed again, Escape, a press beside it, or its item left the list."
         }
       ],
       "state": [
@@ -6045,7 +6045,7 @@
         },
         {
           "name": "open",
-          "doc": "The item standing open into its document where it stands in the list: its row grows to hold what the item's row gives as its `detail`, and Escape or a press beside it closes it. A host keeps which item is open and gives it back, so a list it builds again shows the item as the person left it.",
+          "doc": "The item held open into its document where it stands in the list: its row grows to hold what the item's row gives as its `detail`, and Escape or a press beside it closes it. A host keeps which item is open and gives it back, so a list it builds again shows the item as the person left it.",
           "type": {
             "option": "resource"
           }

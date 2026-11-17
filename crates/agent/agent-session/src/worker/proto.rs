@@ -92,13 +92,13 @@ pub(crate) enum Request {
         app_id: String,
         workspace: String,
         member: tilo_actions::MemberId,
-        /// JSON `ReplicaActor`: a bot's standing nests maps postcard
+        /// JSON `ReplicaActor`: a bot's access nests maps postcard
         /// cannot describe.
         actor: String,
         seed: Option<(String, Vec<Vec<u8>>)>,
     },
     /// The held record's member reads their standing as of a later time:
-    /// JSON `ReplicaActor`, a member of the same standing and sandbox.
+    /// JSON `ReplicaActor`, a member of the same access and sandbox.
     Renew { actor: String },
     /// Every operation the held record publishes now.
     Survey,

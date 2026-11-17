@@ -1,10 +1,10 @@
+#[cfg(feature = "live")]
+mod account_secrets;
 mod actions;
 #[cfg(feature = "live")]
 mod agent_review;
 mod attachments;
 mod compose;
-#[cfg(feature = "live")]
-mod custody;
 #[cfg(feature = "live")]
 mod idle;
 #[cfg(feature = "live")]

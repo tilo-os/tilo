@@ -1,4 +1,4 @@
-//! Root-native source worker; source custody remains inseparable from supervision.
+//! Root-native source worker; source ownership remains inseparable from supervision.
 //! No public dispatcher or frontend capability is enabled by this module.
 use super::{
     home_capture::TrustedCaptureService, installed_retained_actor::InstalledRetainedLaunchInput,
@@ -60,7 +60,7 @@ impl RetainedIoAuthority for Authority {
         let mut slot = self
             .native_owner
             .lock()
-            .map_err(|_| io::Error::other("Native custody poisoned"))?;
+            .map_err(|_| io::Error::other("Native ownership poisoned"))?;
         if slot.is_some() {
             return Err(refused());
         }
@@ -71,7 +71,7 @@ impl RetainedIoAuthority for Authority {
         let slot = self
             .native_owner
             .lock()
-            .map_err(|_| io::Error::other("Native custody poisoned"))?;
+            .map_err(|_| io::Error::other("Native ownership poisoned"))?;
         slot.as_ref().ok_or_else(refused)?.confirm_retirement()
     }
     fn target_uid(&self) -> u32 {
@@ -266,7 +266,7 @@ impl RetainedSourceWorker {
             self.stopped = receipt || kernel_stop;
             if !self.stopped {
                 return Err(io::Error::other(
-                    "Retained source shutdown was not observed; custody retained",
+                    "Retained source shutdown was not observed; ownership retained",
                 ));
             }
         }
@@ -297,7 +297,7 @@ impl Drop for RetainedSourceWorker {
         if !self.stopped || self.authority.is_some() {
             // No observed exit or unresolved captures means no source release.
             // Root controller retains this owner on an error; if it unwinds,
-            // keep exact custody until process teardown instead of erasing it.
+            // keep exact ownership until process teardown instead of erasing it.
             std::mem::forget(self.endpoint.take());
             std::mem::forget(self.selected_file.take());
             std::mem::forget(self.authority.take());
@@ -355,7 +355,7 @@ mod retirement_tests {
     }
     /// Whether the worker can still vouch for a live source: an actual endpoint, a supervisor
     /// still running, and its authority checking out. A context digest alone never counts.
-    fn live_custody(owner: &RetainedSourceWorker) -> bool {
+    fn live_ownership(owner: &RetainedSourceWorker) -> bool {
         !owner.stopped
             && owner.endpoint.is_some()
             && owner.job.as_ref().is_some_and(|job| !job.is_finished())
@@ -367,16 +367,16 @@ mod retirement_tests {
     tilo_test_env::scenario! {
         /// Retiring a retained source worker whose stop was never observed.
         /// Each phase was a test of its own and builds its own fixture.
-        fn an_unknown_stop_keeps_source_and_control_custody;
+        fn an_unknown_stop_keeps_source_and_control_ownership;
 
-        phase missing_or_panicked_stop_keeps_source_and_control_custody_on_retries;
+        phase missing_or_panicked_stop_keeps_source_and_control_ownership_on_retries;
         {
             for panic in [false, true] {
                 let mut owner = unknown_worker(panic);
                 owner.source_view = [9; 32];
                 assert!(
-                    !live_custody(&owner),
-                    "source digest cannot replace actual endpoint custody"
+                    !live_ownership(&owner),
+                    "source digest cannot replace actual endpoint ownership"
                 );
                 let path = owner.working.as_ref().unwrap().path().to_owned();
                 let expected = owner.selected_file.as_ref().unwrap().metadata().unwrap();
@@ -387,7 +387,7 @@ mod retirement_tests {
                 );
                 assert!(!owner.stopped);
                 assert!(
-                    !live_custody(&owner),
+                    !live_ownership(&owner),
                     "unknown stop never becomes a live source epoch"
                 );
                 let held = owner.selected_file.as_ref().unwrap().metadata().unwrap();

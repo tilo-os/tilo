@@ -131,7 +131,7 @@ pub(in super::super) fn fixture(
 }
 
 #[tokio::test]
-async fn native_profile_bootstrap_refuses_revocation_before_sdk_custody_or_network() {
+async fn native_profile_bootstrap_refuses_revocation_before_sdk_ownership_or_network() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("sdk");
     let owner = crate::journal::Owner {

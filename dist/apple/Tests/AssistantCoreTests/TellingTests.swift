@@ -77,7 +77,7 @@ final class TellingTests: XCTestCase {
         XCTAssertEqual(morning["reminder-remind-jonas"],
                        LiveFacts(kind: .reminder, title: "Remind: call Jonas", until: Drawing.at(10, 14)))
         let maya = try XCTUnwrap(morning["task-maya"])
-        XCTAssertEqual(maya.standing, .needsYou)
+        XCTAssertEqual(maya.state, .needsYou)
         XCTAssertFalse(LiveActivityPlan.mayBegin(maya), "work born needing the person is told by a notification")
         XCTAssertTrue(LiveActivityPlan.mayBegin(try XCTUnwrap(morning["reminder-remind-jonas"])))
 
@@ -104,14 +104,14 @@ final class TellingTests: XCTestCase {
         var agents = Drawing.subAgents
         agents[0].startedBy = .person
         let work = try XCTUnwrap(plan(at: Drawing.now, agents: agents)["sub-agent-usage-drop"])
-        XCTAssertEqual(work, LiveFacts(kind: .work, standing: .running, title: "Usage drop: investigate", detail: "Coder"))
+        XCTAssertEqual(work, LiveFacts(kind: .work, state: .running, title: "Usage drop: investigate", detail: "Coder"))
         XCTAssertTrue(LiveActivityPlan.mayBegin(work))
-        agents[0].standing = .done
+        agents[0].state = .done
         XCTAssertNil(plan(at: Drawing.now, agents: agents)["sub-agent-usage-drop"])
     }
 
     func testAnActivitysFactsCrossAsPlainData() throws {
-        let facts = LiveFacts(kind: .brief, standing: .needsYou, title: "Call", detail: "soon", points: ["a"],
+        let facts = LiveFacts(kind: .brief, state: .needsYou, title: "Call", detail: "soon", points: ["a"],
                               until: Drawing.at(10, 30), isImportant: true)
         let data = try JSONEncoder().encode(facts)
         XCTAssertEqual(try JSONDecoder().decode(LiveFacts.self, from: data), facts)

@@ -35,12 +35,12 @@ pub fn wait_until_the_directory_answered(session: &mut Session) {
     // that as the suite allows, not a second count.
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let standing = session
+        let state = session
             .workspace_directory()
             .expect("the session hosts the workspace directory")
             .directory()
             .status;
-        if standing != Status::Loading {
+        if state != Status::Loading {
             return;
         }
         assert!(

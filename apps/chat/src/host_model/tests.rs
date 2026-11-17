@@ -636,7 +636,7 @@ fn assert_mounted_model_attribution(
         assert_eq!(
             message.author,
             MemberId::person(crate::model::ME),
-            "custody stays with the invoker"
+            "ownership stays with the invoker"
         );
         assert_eq!(surface.message_author_name(message), "Assistant");
         let initiator = surface.user_name(&message.author);

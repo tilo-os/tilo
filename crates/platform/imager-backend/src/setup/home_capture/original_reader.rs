@@ -20,10 +20,10 @@ pub(super) fn admit(
     publisher: &str,
     source: Source<'_>,
     authority: &OriginalReadClaim,
-    custody: Arc<dyn launcher::owned_service::ServiceAuthority>,
+    ownership: Arc<dyn launcher::owned_service::ServiceAuthority>,
     cancel: &AtomicBool,
 ) -> io::Result<launcher::owned_service::CaptureAdmission> {
-    custody.check()?;
+    ownership.check()?;
     let facts = source.caller;
     let mut admission = launcher::owned_service::CaptureAdmission::verify_original_source(
         runtime,
@@ -35,7 +35,7 @@ pub(super) fn admit(
         authority.binding_sha256()?,
     )?
     .with_archive_helper()?
-    .retain_original_source_custody(custody.clone())?;
+    .retain_original_source_ownership(ownership.clone())?;
     if let Some(epoch) = source.mounted {
         let binding = authority.mounted_binding()?.ok_or_else(|| {
             io::Error::new(
@@ -74,9 +74,9 @@ pub(super) fn admit(
             binding,
             sources.inventory_file()?,
             sources.files()?,
-            custody.clone(),
+            ownership.clone(),
         )?;
     }
-    custody.check()?;
+    ownership.check()?;
     Ok(admission)
 }

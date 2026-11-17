@@ -28,7 +28,7 @@ fn fixture() -> tempfile::TempDir {
     root
 }
 #[test]
-fn cross_process_partial_adoption_renews_the_sealed_unit_and_move_witnesses() {
+fn cross_process_partial_adoption_renews_the_sealed_unit_and_move_observations() {
     use imager_backend::setup::user_transfer::{self, TransferEvent, TransferRequest};
     let root = fixture();
     let source = root.path().join("original");
@@ -38,10 +38,10 @@ fn cross_process_partial_adoption_renews_the_sealed_unit_and_move_witnesses() {
     std::fs::write(source.join("first"), b"first document").unwrap();
     std::fs::write(source.join("second"), b"second document").unwrap();
     std::fs::create_dir_all(source.join(".config/tilo")).unwrap();
-    std::fs::write(source.join(".config/tilo/primary.json"), b"old custody").unwrap();
+    std::fs::write(source.join(".config/tilo/primary.json"), b"old ownership").unwrap();
     std::fs::write(
         target.join(".config/tilo/primary.json"),
-        b"selected custody",
+        b"selected ownership",
     )
     .unwrap();
     let request = TransferRequest {
@@ -95,11 +95,11 @@ fn cross_process_partial_adoption_renews_the_sealed_unit_and_move_witnesses() {
     );
     assert_eq!(
         std::fs::read(target.join(".config/tilo/primary.json")).unwrap(),
-        b"selected custody"
+        b"selected ownership"
     );
     assert_eq!(
         std::fs::read(quarantine.join(".config/tilo/primary.json")).unwrap(),
-        b"old custody"
+        b"old ownership"
     );
     // The sealed unit, not the original, is the authority once it is admitted.
     std::fs::write(source.join("second"), b"changed original").unwrap();

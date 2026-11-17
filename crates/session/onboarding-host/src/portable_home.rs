@@ -34,7 +34,7 @@ pub enum HelperEvent {
 pub struct HelperPreview {
     install_items: usize,
     collisions: usize,
-    inactive_custody: usize,
+    inactive_ownership: usize,
     runtime_sockets: u64,
     recovered: bool,
 }
@@ -45,7 +45,7 @@ pub struct HelperResult {
     cancelled: bool,
     installed: usize,
     collisions: usize,
-    inactive_custody: usize,
+    inactive_ownership: usize,
     failures: usize,
     verified: bool,
 }

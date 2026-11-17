@@ -6,13 +6,13 @@ use zeroize::Zeroizing;
 
 fn refused<T>(result: std::io::Result<T>) {
     assert_eq!(
-        result.err().expect("must refuse custody").kind(),
+        result.err().expect("must refuse ownership").kind(),
         std::io::ErrorKind::Unsupported
     );
 }
 
 #[test]
-fn identity_operations_never_create_or_restore_custody() {
+fn identity_operations_never_create_or_restore_ownership() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("identity");
     refused(PreparedIdentity::create(
@@ -35,7 +35,7 @@ fn identity_operations_never_create_or_restore_custody() {
 #[test]
 fn selected_avatar_and_private_tree_have_no_unprotected_fallback() {
     let temp = tempfile::tempdir().unwrap();
-    let directory = temp.path().join("custody");
+    let directory = temp.path().join("ownership");
     refused(ensure_private_tree(&directory));
     refused(read_avatar(Path::new("not-an-admitted-photo")));
     assert!(!directory.exists());

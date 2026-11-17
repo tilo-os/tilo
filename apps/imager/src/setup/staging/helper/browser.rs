@@ -43,7 +43,7 @@ impl Engine<'_> {
             if &artifact.expectation != expected {
                 return Err(Refusal::new(
                     codes::REQUEST_INVALID,
-                    "Browser custody declaration changed",
+                    "Browser ownership declaration changed",
                 ));
             }
             let bytes = artifact

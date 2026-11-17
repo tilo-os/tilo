@@ -1,4 +1,4 @@
-//! Call state and the call-action permission seam.
+//! Call state and the call-action permission boundary.
 //!
 //! The conferencing experience is split into two concerns:
 //!
@@ -14,7 +14,7 @@
 
 use vello::kurbo::{Rect, Size};
 
-/// A discrete call action that flows through the permission seam before it
+/// A discrete call action that flows through the permission boundary before it
 /// takes effect. Keeping these in one enum means a future real permission
 /// system checks a single, enumerable surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

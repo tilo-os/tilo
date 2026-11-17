@@ -1,4 +1,4 @@
-// Opt-in acceptance of the real current-owner preparation path, on disposable custody.
+// Opt-in acceptance of the real current-owner preparation path, on disposable ownership.
 use super::*;
 use ed25519_dalek::Signer as _;
 use std::os::unix::fs::PermissionsExt as _;
@@ -10,7 +10,7 @@ fn private(path: &std::path::Path) {
 
 #[test]
 fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_original() {
-    // SAFETY: credential observation only. This opt-in test requires real root custody.
+    // SAFETY: credential observation only. This opt-in test requires real root ownership.
     assert_eq!(
         unsafe { libc::geteuid() },
         0,
@@ -242,6 +242,6 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
     );
     assert!(
         prepared.desktop_manifest().is_err(),
-        "delivery retains original source custody"
+        "delivery retains original source ownership"
     );
 }

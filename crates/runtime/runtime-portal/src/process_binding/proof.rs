@@ -92,16 +92,16 @@ impl Drop for Proof {
 impl Proof {
     /// Start a process proof responder.
     /// # Errors
-    /// Always returns unsupported without Linux process custody.
+    /// Always returns unsupported without Linux process ownership.
     pub fn start() -> io::Result<Self> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "selected open requires Linux process custody",
+            "selected open requires Linux process ownership",
         ))
     }
     /// Borrow the proof descriptor.
     /// # Errors
-    /// Always returns unsupported without Linux process custody.
+    /// Always returns unsupported without Linux process ownership.
     pub fn descriptor(&self) -> io::Result<u32> {
         Err(io::Error::other("selected open proof unavailable"))
     }
@@ -110,7 +110,7 @@ impl Proof {
     }
     /// Join the proof responder.
     /// # Errors
-    /// Always returns unsupported without Linux process custody.
+    /// Always returns unsupported without Linux process ownership.
     pub fn result(&mut self) -> io::Result<()> {
         Err(io::Error::other("selected open proof unavailable"))
     }
@@ -161,7 +161,7 @@ mod tests {
         }
     }
     #[test]
-    fn cancellation_stops_actual_proof_before_descriptor_custody_ends() {
+    fn cancellation_stops_actual_proof_before_descriptor_ownership_ends() {
         // A deadline no test outlives: only the drop can end the handshake.
         let proof = Proof::start_with_timeout(std::time::Duration::from_secs(24 * 60 * 60))
             .expect("owned socketpair");

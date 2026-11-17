@@ -14,7 +14,7 @@ impl Session {
     /// installed, or another one bound in its place: the menu is a reading
     /// either way, and this only puts it on the screen.
     ///
-    /// The view runs for the session's life, standing hidden over the shell
+    /// The view runs for the session's life, placement hidden over the shell
     /// between openings: an app takes a moment to start and connect, and a
     /// menu that waits for that is a menu the person pressed for and did not
     /// see. Showing the surface it already stands on costs no start.
@@ -42,7 +42,7 @@ impl Session {
             .is_some_and(|rows| !rows.is_empty());
         // A menu belongs to its window: one the reading holds for a window that is gone — closed
         // under it, or offering nothing any more — closes, as it does when its row is chosen,
-        // rather than standing over the shell with nothing to say and holding the keyboard.
+        // rather than placement over the shell with nothing to say and holding the keyboard.
         if for_a_window && !has_rows {
             self.close_window_menu();
         }
@@ -86,12 +86,12 @@ impl Session {
         let namespace = surfaces::namespace(VIEW);
         // It covers the display the menu was opened on, and the reading's anchor is on that display.
         if up
-            && let Some(standing) = self
+            && let Some(placement) = self
                 .shared
                 .overlays
                 .place(tilo_desktop::overlays::Part::WindowMenu)
         {
-            self.stand_layer(&namespace, &standing);
+            self.stand_layer(&namespace, &placement);
         }
         if self.compositor.layer_shown(&namespace) != Some(up) {
             if !up {

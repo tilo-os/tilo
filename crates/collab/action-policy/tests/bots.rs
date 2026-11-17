@@ -2,8 +2,8 @@
 //! may do right now, never beyond its own grant, never governing the workspace.
 
 use tilo_action_policy::{
-    Acting, ActionKind, Answer, Authority, Context, Grantee, KindSet, Level, Refusal, Role, Rule,
-    Standing, TreePath, WorkspacePolicy, bot,
+    Acting, ActionKind, Answer, Authority, Context, Grantee, KindSet, Level, MemberAccess, Refusal,
+    Role, Rule, TreePath, WorkspacePolicy, bot,
     roles::{self, governance},
 };
 
@@ -71,8 +71,8 @@ fn workspace_with_bot(installer: &str, installer_role: Option<Role>) -> Workspac
     workspace
 }
 
-fn bot_of(workspace: WorkspacePolicy, installer: &str) -> Standing {
-    Standing::new(
+fn bot_of(workspace: WorkspacePolicy, installer: &str) -> MemberAccess {
+    MemberAccess::new(
         workspace,
         Acting::bot(BOT).acting_for(Acting::person(installer)),
     )
@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
                 Grantee::person(OWNER),
             ));
         }
-        let bob = Standing::person(workspace.clone(), EDITOR);
+        let bob = MemberAccess::person(workspace.clone(), EDITOR);
         let authority: Authority<'_> = bob.authority();
         assert!(matches!(
             workspace.check_action(&authority, governance::INSTALL_BOT, &cx(), true),

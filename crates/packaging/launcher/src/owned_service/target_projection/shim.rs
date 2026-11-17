@@ -173,7 +173,7 @@ impl RootTargetBootstrap {
             let mut ack = [0];
             self.ready.read_exact(&mut ack)?;
             if ack != [1] {
-                return Err(refused("Root target mount custody refused"));
+                return Err(refused("Root target mount ownership refused"));
             }
         }
         // Publish the actual root-created observed receipt to fixed SDK52.

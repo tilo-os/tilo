@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use tilo_action_policy::{Standing, WorkspacePolicy};
+use tilo_action_policy::{MemberAccess, WorkspacePolicy};
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_user_identity::DeviceCert;
 
@@ -276,7 +276,7 @@ async fn deliver(
         // Who wrote it was decided by the link: the store admits no write
         // whose certificate the person's root did not sign. What it changes,
         // it changes as theirs.
-        let author = Standing::person(WorkspacePolicy::new(&cluster, &person), person.clone());
+        let author = MemberAccess::person(WorkspacePolicy::new(&cluster, &person), person.clone());
         let delivered = collab_inbound::deliver(
             &channels,
             &fanout,

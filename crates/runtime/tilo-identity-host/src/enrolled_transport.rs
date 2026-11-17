@@ -2,7 +2,7 @@
 //!
 //! This is not a root-key backup or a new enrollment protocol. Only the exact
 //! member device seed, certificate and public projections from isolated future
-//! device custody travel. A privileged installer imports system custody before
+//! device identity store travel. A privileged installer imports system identity store before
 //! target-user activation; callers retain the staged device until handoff.
 use crate::device_fleet::DeviceFleet;
 use serde::{Deserialize, Serialize};
@@ -70,7 +70,7 @@ mod seed_serde {
 fn invalid() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
-        "enrolled device custody is invalid",
+        "enrolled device identity store is invalid",
     )
 }
 fn context(binding: &str) -> io::Result<Vec<u8>> {
@@ -240,7 +240,7 @@ pub struct TransportReceipt {
     pub sealed_bytes: u64,
 }
 /// Retained, immutable source material from a canonical personal-device approval.
-/// This object contains private seed custody and intentionally has no serializer.
+/// This object contains private seed identity store and intentionally has no serializer.
 pub struct EnrolledDevice {
     system: fs::Directory,
     system_directory: PathBuf,
@@ -249,7 +249,7 @@ pub struct EnrolledDevice {
     identity_directory: PathBuf,
     payload: Payload,
 }
-/// Canonical device custody permits the certified service group's 0640 key;
+/// Canonical device identity store permits the certified service group's 0640 key;
 /// the source root is separately held private. Its reader rejects every symlink,
 /// foreign key owner, extra hard link and insecure mode without changing files.
 fn read_source_device_seed(
@@ -269,7 +269,7 @@ fn read_source_device_seed(
 }
 
 impl EnrolledDevice {
-    /// Review the exact already enrolled device in isolated owner-private source custody.
+    /// Review the exact already enrolled device in isolated owner-private source identity store.
     pub fn review(
         system_root: &Path,
         identity_record: &Path,
@@ -277,7 +277,7 @@ impl EnrolledDevice {
         expected_device: [u8; 32],
         now_ns: u64,
     ) -> io::Result<Self> {
-        tilo_user_identity::persist::protect_private_custody()?;
+        tilo_user_identity::persist::protect_private_ownership()?;
         let system = fs::Directory::open(system_root)?;
         let identity = fs::Directory::open(identity_record.parent().ok_or_else(invalid)?)?;
         let record_name = identity_record
@@ -358,7 +358,7 @@ impl EnrolledDevice {
     /// Read the reviewed canonical public presentation.
     ///
     /// # Errors
-    /// Refuses changed source custody or invalid canonical public metadata.
+    /// Refuses changed source identity store or invalid canonical public metadata.
     pub fn metadata(&self) -> io::Result<runtime_identity::IdentityMetadata> {
         self.validate_source()?;
         runtime_identity::load_metadata_from_bytes(&self.payload.public_record)
@@ -469,7 +469,7 @@ impl EnrolledDevice {
     }
 }
 
-/// Password-authenticated, exact root/device-bound custody ready for privileged import.
+/// Password-authenticated, exact root/device-bound identity store ready for privileged import.
 pub struct AuthenticatedEnrolledDevice {
     payload: Payload,
 }
@@ -524,7 +524,7 @@ impl AuthenticatedEnrolledDevice {
         device: [u8; 32],
         now: u64,
     ) -> io::Result<Self> {
-        tilo_user_identity::persist::protect_private_custody()?;
+        tilo_user_identity::persist::protect_private_ownership()?;
         password_valid(password)?;
         if bytes.len() as u64 > MAX_BYTES + 256 {
             return Err(invalid());
@@ -596,7 +596,7 @@ impl TargetFile {
         {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                "destination identity custody conflicts",
+                "destination identity store conflicts",
             ));
         }
         Ok(())
@@ -674,14 +674,14 @@ impl AuthenticatedEnrolledDevice {
                 "home-peers.json",
                 serde_json::to_vec(&self.payload.home_peers).map_err(|_| invalid())?,
             ),
-            // Publish default certification last, after all projection/key custody.
+            // Publish default certification last, after all projection/key identity store.
             make(true, vec!["device".into()], "cert.bin", cert),
         ])
     }
-    /// Publish exact device custody under explicitly authorized private roots.
+    /// Publish exact device identity store under explicitly authorized private roots.
     /// System-root publication is a privileged installer operation, never a
     /// target-user privilege escalation. All existing files must match before
-    /// any write; exact partial retries resume without replacing other custody.
+    /// any write; exact partial retries resume without replacing other identity store.
     pub fn import_into(
         &self,
         system_root: &Path,
@@ -727,7 +727,7 @@ impl AuthenticatedEnrolledDevice {
             device_public_key: self.device_public_key(),
         })
     }
-    /// Verify public member identity against already installed machine custody.
+    /// Verify public member identity against already installed machine identity store.
     /// This read-only target-user operation neither imports a machine key nor
     /// generates one. Privileged import must have completed beforehand.
     pub fn verify_installed(
@@ -853,7 +853,7 @@ impl AuthenticatedEnrolledDevice {
         }
         system.validate()
     }
-    /// Import public member custody only after the privileged publisher has
+    /// Import public member identity store only after the privileged publisher has
     /// installed the exact public machine certificate. No machine-key read or
     /// write occurs here; the canonical broker proves device possession later.
     pub fn import_public_identity(

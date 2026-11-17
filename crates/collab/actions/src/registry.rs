@@ -1,7 +1,7 @@
 //! The [`ActionRegistry`]: `type_id` → decoder, so a replaying peer can
 //! turn an [`EncodedAction`] back into a live `Box<dyn Action>` without
 //! knowing the concrete type at the call site. An app registers each
-//! action type once; the registry is the same seam the OS-wide
+//! action type once; the registry is the same boundary the OS-wide
 //! global-search backend plugs into to enumerate action *types* across apps.
 
 use std::collections::HashMap;
@@ -142,7 +142,7 @@ impl ActionRegistry {
         self.decoders.contains_key(type_id)
     }
 
-    /// Every registered action type id (the general-scope enumeration seam).
+    /// Every registered action type id (the general-scope enumeration boundary).
     pub fn type_ids(&self) -> Vec<&str> {
         self.decoders.keys().map(String::as_str).collect()
     }

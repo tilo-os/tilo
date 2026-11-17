@@ -812,7 +812,7 @@ impl RetainedViewAdmission {
             let arguments = self
                 .alias_args
                 .lock()
-                .map_err(|_| refused("alias argument custody poisoned"))?;
+                .map_err(|_| refused("alias argument ownership poisoned"))?;
             arguments
                 .as_ref()
                 .ok_or_else(|| refused("alias arguments not prepared"))?
@@ -836,7 +836,7 @@ impl RetainedViewAdmission {
         let mut held_args = self
             .alias_args
             .lock()
-            .map_err(|_| refused("alias argument custody poisoned"))?;
+            .map_err(|_| refused("alias argument ownership poisoned"))?;
         if held_args.is_some() {
             return Err(refused("alias argv already prepared"));
         }
@@ -1239,7 +1239,7 @@ impl RootConsumerChannel {
             }
             let exposure = grant
                 .exposure
-                .ok_or_else(|| refused("Retained issue requires placed clone custody"))?;
+                .ok_or_else(|| refused("Retained issue requires placed clone ownership"))?;
             exposure.matches(observation)?;
 
             let receipt = ViewReceipt {

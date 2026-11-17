@@ -244,7 +244,7 @@ It unlocks like any other machine with a TPM.
   1. A remote admin's lease keeps device B awake past its idle timeout.
   2. Once the lease expires, B suspends.
   3. Device A invokes `device.wake` by B's name. The harness checks that the
-     magic packet for B's MAC was sent and resumes B, standing in for the NIC.
+     magic packet for B's MAC was sent and resumes B, access in for the NIC.
   4. A's action reaches B again without being reconfigured.
   5. B's link is cut and restored, and the action route reconnects.
 - On hardware, a board on Ethernet and a laptop on Wi-Fi each run a swap and a

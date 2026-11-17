@@ -1,4 +1,4 @@
-//! Process-local owner time custody, never admission or readiness authority.
+//! Process-local owner time ownership, never admission or readiness authority.
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},

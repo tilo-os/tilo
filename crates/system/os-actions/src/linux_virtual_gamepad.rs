@@ -1,4 +1,4 @@
-//! The Linux virtual gamepad behind the typed peripheral broker: the public seam
+//! The Linux virtual gamepad behind the typed peripheral broker: the public boundary
 //! accepts only [`ForwardedGamepadEvent`].
 
 use std::io;

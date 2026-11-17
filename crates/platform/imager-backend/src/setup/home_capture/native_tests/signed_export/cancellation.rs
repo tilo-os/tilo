@@ -2,7 +2,7 @@
 use super::super::super::{
     State,
     host_runner::Namespace,
-    process::{Custody, Incarnation},
+    process::{Incarnation, Ownership},
     store::Record,
 };
 use super::*;
@@ -74,13 +74,13 @@ fn in_namespace(pid: u32, namespace: Namespace, uid: u32) -> bool {
     owner.uid() == uid
         && (actual.dev(), actual.ino()) == (namespace.namespace_dev, namespace.namespace_ino)
 }
-fn pause_exporter(custody: &Custody, uid: u32) -> io::Result<Paused> {
-    if !custody.active_namespace()? {
+fn pause_exporter(ownership: &Ownership, uid: u32) -> io::Result<Paused> {
+    if !ownership.active_namespace()? {
         return Err(io::Error::other(
             "export namespace stopped before ciphertext milestone",
         ));
     }
-    let namespace = custody
+    let namespace = ownership
         .namespace
         .ok_or_else(|| io::Error::other("missing admitted namespace"))?;
     let own = std::fs::metadata("/proc/self/ns/pid")?;
@@ -120,7 +120,7 @@ fn pause_exporter(custody: &Custody, uid: u32) -> io::Result<Paused> {
         await_paused(before, uid)?;
         exporter |= pid != namespace.init_pid;
     }
-    if !exporter || !custody.active_namespace()? {
+    if !exporter || !ownership.active_namespace()? {
         return Err(io::Error::other(
             "actual exporter not observed in owned namespace",
         ));
@@ -132,7 +132,7 @@ fn protected_record(path: &Path) -> io::Result<Record> {
     if !facts.is_file() || facts.uid() != 0 || facts.mode() & 0o077 != 0 || facts.len() > 64 * 1024
     {
         return Err(io::Error::other(
-            "unsafe native qualification custody record",
+            "unsafe native qualification ownership record",
         ));
     }
     serde_json::from_slice(&std::fs::read(path)?).map_err(io::Error::other)
@@ -145,7 +145,7 @@ fn partial_bytes(media: &Path, uid: u32) -> io::Result<bool> {
         if name.starts_with(".tilo-home-") && name.ends_with(".partial") {
             let facts = std::fs::symlink_metadata(entry.path())?;
             if !facts.is_file() || facts.uid() != uid || facts.mode() & 0o077 != 0 {
-                return Err(io::Error::other("ciphertext partial has unsafe custody"));
+                return Err(io::Error::other("ciphertext partial has unsafe ownership"));
             }
             if facts.len() > 64 * 1024 {
                 return Ok(true);
@@ -167,7 +167,7 @@ fn milestone(
     media: &Path,
     uid: u32,
     finished: impl Fn() -> bool,
-) -> io::Result<(Custody, Paused)> {
+) -> io::Result<(Ownership, Paused)> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         if finished() {
@@ -183,14 +183,14 @@ fn milestone(
         }
         if partial_bytes(media, uid)? {
             let record = protected_record(record)?;
-            if let Some(custody) = record.worker
-                && custody.active_namespace()?
+            if let Some(ownership) = record.worker
+                && ownership.active_namespace()?
             {
-                let paused = pause_exporter(&custody, uid)?;
+                let paused = pause_exporter(&ownership, uid)?;
                 if !archive_pending(media)? {
                     return Err(io::Error::other("archive completed before exporter pause"));
                 }
-                return Ok((custody, paused));
+                return Ok((ownership, paused));
             }
         }
         std::thread::sleep(Duration::from_millis(2));
@@ -286,12 +286,12 @@ fn actual_export_cancellation_reaps_namespace_and_releases_epoch() {
     let released = broker.release();
     stopped.unwrap();
     released.unwrap();
-    let (custody, paused) = observed.unwrap();
+    let (ownership, paused) = observed.unwrap();
     assert!(
         result.unwrap().is_err(),
         "actual cancelled export must not report success"
     );
-    custody.require_stopped().unwrap();
+    ownership.require_stopped().unwrap();
     drop(paused);
     let record = protected_record(&record_path).unwrap();
     assert_eq!(record.state, State::Released);

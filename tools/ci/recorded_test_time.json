@@ -1,5 +1,5 @@
 {
- "account-custody": 1,
+ "account-credentials": 1,
  "accounts": 1,
  "agent": 72,
  "agent-provider-config": 1,

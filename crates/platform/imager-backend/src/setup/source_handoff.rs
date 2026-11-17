@@ -60,7 +60,7 @@ impl Handoff {
 }
 
 /// Test-only: serve a source the fixture already bound, without identity
-/// custody the test process does not have.
+/// ownership the test process does not have.
 #[cfg(all(unix, any(test, feature = "test-support")))]
 impl Handoff {
     pub fn from_source(source: tilo_handoff::Source, key: Zeroizing<String>) -> Self {

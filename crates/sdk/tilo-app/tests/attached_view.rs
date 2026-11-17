@@ -357,8 +357,8 @@ tilo_test_env::scenario! {
     // reply a worker owed the view is taken up and its change made before the
     // action answers, so the change is the action's, never the next one's.
     {
-        let app = TestApp::<LedgerApp>::new().unwrap();
-        let definition = definition::<LedgerApp>();
+        let app = TestApp::<LogApp>::new().unwrap();
+        let definition = definition::<LogApp>();
         let mut view = AttachedView::open(
             definition,
             TEST_WORKSPACE,
@@ -371,14 +371,14 @@ tilo_test_env::scenario! {
         .unwrap();
         let answer = |view: &AttachedView| {
             view.read(|doc| {
-                <Ledger as tilo_resource::Resource>::read(doc)
+                <Log as tilo_resource::Resource>::read(doc)
                     .unwrap()
                     .answer
             })
             .unwrap()
         };
         for entry in ["lamps", "chairs"] {
-            view.invoke_typed(&Ledger::ASK.with(entry), false).unwrap();
+            view.invoke_typed(&Log::ASK.with(entry), false).unwrap();
             assert_eq!(answer(&view), format!("{entry}: found"));
             let changed = view.take_changes().unwrap();
             assert!(changed.is_some(), "the ask and its answer leave together");
@@ -633,21 +633,21 @@ impl ResourceApp for BenchApp {
     }
 }
 
-/// A ledger whose view looks up what is asked for off the UI thread, as a
+/// A log whose view looks up what is asked for off the UI thread, as a
 /// viewer reads the markup a file already carries, and records the answer
 /// once it lands.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Ledger {
+pub struct Log {
     pub asked: String,
     pub answer: String,
 }
 
 #[resource(
-    kind = "test.ledger",
-    app = "so.tilo.test-ledger",
+    kind = "test.entries",
+    app = "so.tilo.test-entries",
     catalogue = "tests/locales"
 )]
-impl Ledger {
+impl Log {
     /// Ask for an entry.
     #[action]
     pub fn ask(&mut self, entry: String) {
@@ -661,10 +661,10 @@ impl Ledger {
     }
 }
 
-/// The ledger's view: asks a worker for each entry asked for, owing the
+/// The log's view: asks a worker for each entry asked for, owing the
 /// window its reply, and records the reply in the frame after it lands.
 struct Lookup {
-    dispatcher: tilo_app::framework::Dispatcher<Ledger>,
+    dispatcher: tilo_app::framework::Dispatcher<Log>,
     asked: String,
     replies: Option<std::sync::mpsc::Receiver<String>>,
     rect: Rect,
@@ -680,20 +680,20 @@ impl Widget for Lookup {
             .and_then(|replies| replies.try_recv().ok())
         {
             self.replies = None;
-            self.dispatcher.submit(Ledger::ANSWER.with(answer));
+            self.dispatcher.submit(Log::ANSWER.with(answer));
         }
         let (doc, _) = tilo_app::doc::document_ref(state, path);
-        let Ok(ledger) = <Ledger as tilo_resource::Resource>::read(doc) else {
+        let Ok(log) = <Log as tilo_resource::Resource>::read(doc) else {
             return;
         };
-        if ledger.asked == self.asked {
+        if log.asked == self.asked {
             return;
         }
-        self.asked.clone_from(&ledger.asked);
+        self.asked.clone_from(&log.asked);
         let (reply, replies) = tilo_app::wake::waking_channel();
         let owed = tilo_app::wake::WakeHandle::new().owe();
         std::thread::spawn(move || {
-            let _ = reply.send(format!("{}: found", ledger.asked));
+            let _ = reply.send(format!("{}: found", log.asked));
             drop(owed);
         });
         self.replies = Some(replies);
@@ -726,14 +726,14 @@ impl Widget for Lookup {
     }
 }
 
-pub struct LedgerApp;
+pub struct LogApp;
 
-impl ResourceApp for LedgerApp {
-    type Resource = Ledger;
-    const ID: &'static str = "so.tilo.test-ledger";
-    const TITLE: &'static str = "Ledger";
+impl ResourceApp for LogApp {
+    type Resource = Log;
+    const ID: &'static str = "so.tilo.test-entries";
+    const TITLE: &'static str = "Log";
 
-    fn view(cx: &mut ViewCx<Ledger>) -> Element {
+    fn view(cx: &mut ViewCx<Log>) -> Element {
         Box::new(Lookup {
             dispatcher: cx.dispatcher(),
             asked: String::new(),
@@ -742,7 +742,7 @@ impl ResourceApp for LedgerApp {
         })
     }
 
-    fn label(_: &Ledger) -> String {
-        "Ledger".into()
+    fn label(_: &Log) -> String {
+        "Log".into()
     }
 }

@@ -528,7 +528,7 @@ impl Link {
     }
 
     /// This session's health: its status, and this device's writes to each record as its
-    /// replica's custody keeps them.
+    /// replica's ownership keeps them.
     #[must_use]
     pub fn snapshot(&self) -> crate::health::PeerSnapshot {
         let owner = self.engine.owner();
@@ -665,7 +665,7 @@ impl Link {
     }
 
     /// How many of this device's writes its hosts have not admitted yet, as the session counted
-    /// them last: read without copying the status or reading what custody holds, so a caller
+    /// them last: read without copying the status or reading what ownership holds, so a caller
     /// may ask after every change it hears of.
     #[must_use]
     pub fn outgoing_pending(&self) -> usize {

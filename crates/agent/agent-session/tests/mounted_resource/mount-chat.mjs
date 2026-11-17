@@ -1,10 +1,10 @@
-/** Mount the real compiled Chat with existing certified fixture custody. */
+/** Mount the real compiled Chat with existing certified fixture device key. */
 export async function mountChat(tab) {
   return await tab.evaluate(`(async () => { try {
     const host = await import('/host.mjs');
     window.runtime = await host.loadRuntime();
     const {profileStore, profileDevice} = await import('/peer.mjs');
-    const {idbStorage} = await import('/device-custody.mjs');
+    const {idbStorage} = await import('/device-key.mjs');
     const storage = idbStorage();
     for (const [root, bytes] of [[fixture.root, fixture.accounts],
       [fixture.decoy, fixture.decoyAccounts]]) {
@@ -29,9 +29,9 @@ export async function mountChat(tab) {
     if (accounts.length !== 2) throw Error('two actual Settings account choices required');
     window.selected = accounts.find(account => account.userPublicKey === fixture.root);
     await currentBrowserAccount(selected, readAccounts);
-    const {connectPeer, withCustody} = await import('/peer.mjs');
-    const {openDeviceCustody} = await import('/device-custody.mjs');
-    const custody = await openDeviceCustody({profile:selected.profile, storage, requireExisting:true});
+    const {connectPeer, withDeviceKey} = await import('/peer.mjs');
+    const {openDeviceKey} = await import('/device-key.mjs');
+    const deviceKey = await openDeviceKey({profile:selected.profile, storage, requireExisting:true});
     window.mountDiagnostic = [];
     const desktop = {...host, mountDesktop:(target, options)=>host.mountDesktop(target, {...options,
       onStatus:status=>{if(status.catalogueError || status.clipboard) mountDiagnostic.push(status); options.onStatus?.(status);}})};
@@ -61,9 +61,9 @@ export async function mountChat(tab) {
         }});
       }}, onReport: report => voiceEvidence.reports.push(report.type)};
     }
-    window.peer = await withCustody(custody, () => connectPeer({origin:fixture.origin,
+    window.peer = await withDeviceKey(deviceKey, () => connectPeer({origin:fixture.origin,
       workspace:fixture.workspace, userPublicKey:selected.userPublicKey, profile:selected.profile,
-      device:selected.device, custody, runtime, desktop, voice:voiceOptions, live:false, requireExistingCertificate:true}));
+      device:selected.device, deviceKey, runtime, desktop, voice:voiceOptions, live:false, requireExistingCertificate:true}));
     await peer.whenReady();
     window.catalogueDiagnostic = {calls:0, replies:0};
     const catalogue = peer.actions.catalogue.bind(peer.actions);

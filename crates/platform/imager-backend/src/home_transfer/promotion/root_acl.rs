@@ -1,4 +1,4 @@
-//! Opt-in Home-root ACL intent and exact completion witness in the adoption journal.
+//! Opt-in Home-root ACL intent and exact completion proof in the adoption journal.
 use super::*;
 use crate::portable_transfer::acl;
 type Policy = [Option<Vec<u8>>; 2];

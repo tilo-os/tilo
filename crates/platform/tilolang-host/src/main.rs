@@ -215,11 +215,11 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
                         tracing::info!("the person's formats or language changed");
                     }
                 }
-                Ok(Some(Handed::Standing(standing))) => {
+                Ok(Some(Handed::Access(access))) => {
                     // A role was given or taken back: the app's windows offer what the person
                     // may do now.
-                    if host.set_standing(&standing.app, standing.standing.as_ref()) {
-                        tracing::info!(app = standing.app, "what the person may do changed");
+                    if host.set_access(&access.app, access.access.as_ref()) {
+                        tracing::info!(app = access.app, "what the person may do changed");
                     }
                 }
                 Ok(Some(Handed::Build(build, module))) => {

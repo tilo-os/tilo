@@ -263,7 +263,7 @@ tilo-engine-loader = { version = "0.1.0", path = "../../runtime/engine-loader", 
 # them is only needed by the `broker-transport` feature.
 runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false }
 # The collab client without the toolkit: record identities, the app surface,
-# the local identity seam and local action reports, under their toolkit paths.
+# the local identity boundary and local action reports, under their toolkit paths.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
 runtime-identity = { package = "tilo-identity-client", version = "0.1.0", path = "../../runtime/tilo-identity-client", optional = true }

@@ -75,7 +75,7 @@ impl HostModel {
     }
 }
 
-/// Stream output keeps the authenticated invoker for custody, but is not that
+/// Stream output keeps the authenticated invoker for ownership, but is not that
 /// person's speech. Appearance supplies only the model's display name.
 pub(crate) fn is_provider_output(message: &crate::model::Message) -> bool {
     message.author.is_person()

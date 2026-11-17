@@ -657,8 +657,8 @@ impl ui::widget::Decorator for Inspected {
             .for_each_child(&mut |child| inspect(child, &mut categories, &mut nav_id));
         // get_heads closes pending transactions. Only a disposable clone may
         // perform that operation: the original document stays untouched.
-        let mut witness = state.clone();
-        let mut heads = witness
+        let mut observation = state.clone();
+        let mut heads = observation
             .get_heads()
             .into_iter()
             .map(|head| head.to_string())
@@ -681,7 +681,7 @@ impl ui::widget::Decorator for Inspected {
             "sidebar_open": self.sidebar_open(),
             "document_root": format!("{path:?}"),
             "document_actor": state.get_actor().to_hex_string(),
-            "document_witness_kind": "effective_heads_on_disposable_clone",
+            "document_observation_kind": "effective_heads_on_disposable_clone",
             "effective_document_heads": heads,
             "original_pending_ops": state.pending_ops(),
         }))

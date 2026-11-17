@@ -289,7 +289,7 @@ try {
   stage('production-account-choice-and-resource-page-mount');
   await tab.navigate(origin + '/fixture.html');
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
-  stage('leaving-the-page-releases-mounted-app-and-device-custody');
+  stage('leaving-the-page-releases-mounted-app-and-device-key');
   await tab.navigate(link);
   await waitForAccounts();
   stage('page-navigation-reopens-existing-account-picker');

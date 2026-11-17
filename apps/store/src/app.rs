@@ -5178,7 +5178,7 @@ mod tests {
     }
 
     /// The `CardGrid` control test drains `take_control_invocation`, which the
-    /// harness's control custody would take first, so it lays out by hand.
+    /// harness's control ownership would take first, so it lays out by hand.
     fn layout_card_grid(widget: &mut CardGrid, width: f32) -> (TaffyTree<()>, NodeId) {
         let mut tree = TaffyTree::new();
         let mut map = HashMap::new();

@@ -3,12 +3,12 @@
 //! password.
 //!
 //! Mail owns none of the machinery: the client registration and mail scopes come from Tilo's
-//! one client table ([`account_custody::ClientTable`], `oauth-clients.toml`), the same
+//! one client table ([`account_credentials::ClientTable`], `oauth-clients.toml`), the same
 //! registration Settings signs in to Google Drive and `OneDrive` with. The grant is sealed in
-//! the account vault and refreshed by [`account_custody::Custodian`]; Mail holds only a current
+//! the account vault and refreshed by [`account_credentials::CredentialStore`]; Mail holds only a current
 //! access token, long enough to present it as `XOAUTH2`.
 
-use account_custody::{ClientTable, OAuthIssuer, OAuthUse};
+use account_credentials::{ClientTable, OAuthIssuer, OAuthUse};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OAuthProvider {
@@ -75,13 +75,13 @@ impl async_imap::Authenticator for XOAuth2 {
 }
 
 #[cfg(feature = "live")]
-fn custody_message(error: &account_custody::CustodyError) -> String {
-    use account_custody::CustodyError;
+fn ownership_message(error: &account_credentials::CredentialError) -> String {
+    use account_credentials::CredentialError;
     match error {
-        CustodyError::NeedsAuthentication => {
+        CredentialError::NeedsAuthentication => {
             "the OAuth sign-in is no longer valid; sign in again".into()
         }
-        CustodyError::NotConfigured { provider, .. } => {
+        CredentialError::NotConfigured { provider, .. } => {
             format!("{provider} sign-in isn’t available in this build")
         }
         other => other.to_string(),
@@ -90,19 +90,19 @@ fn custody_message(error: &account_custody::CustodyError) -> String {
 
 #[cfg(feature = "live")]
 pub fn access_token(
-    custodian: &account_custody::Custodian,
+    credential_store: &account_credentials::CredentialStore,
     account_id: &str,
     provider: OAuthProvider,
     force: bool,
 ) -> Result<String, String> {
-    custodian
+    credential_store
         .oauth_access_token(
             &accounts::AccountId::from(account_id.to_string()),
             provider.oauth_use(),
             force,
         )
         .map(|token| token.to_string())
-        .map_err(|error| custody_message(&error))
+        .map_err(|error| ownership_message(&error))
 }
 
 /// Run the browser sign-in for `provider`'s mail and seal the grant under
@@ -116,20 +116,20 @@ pub fn access_token(
 /// the vault cannot be written.
 #[cfg(feature = "live")]
 pub fn sign_in(
-    custodian: &account_custody::Custodian,
+    credential_store: &account_credentials::CredentialStore,
     account_id: &str,
     provider: OAuthProvider,
     login_hint: &str,
     open_browser: impl FnOnce(&str) -> Result<(), String>,
 ) -> Result<(), String> {
-    let authorization = custodian
+    let authorization = credential_store
         .begin_sign_in_for(provider.oauth_use(), Some(login_hint))
-        .map_err(|error| custody_message(&error))?;
+        .map_err(|error| ownership_message(&error))?;
     open_browser(authorization.url())
         .map_err(|error| format!("could not open sign-in browser: {error}"))?;
-    let tokens = account_custody::Custodian::finish_sign_in(authorization)
-        .map_err(|error| custody_message(&error))?;
-    custodian
+    let tokens = account_credentials::CredentialStore::finish_sign_in(authorization)
+        .map_err(|error| ownership_message(&error))?;
+    credential_store
         .seal_oauth(&accounts::AccountId::from(account_id.to_string()), &tokens)
         .map_err(|error| format!("could not save sign-in credentials: {error}"))
 }
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn authorization_reports_browser_failure_before_waiting_for_callback() {
         let root = tempfile::tempdir().unwrap();
-        let custodian = account_custody::Custodian::for_root(Some(root.path().to_path_buf()))
+        let credential_store = account_credentials::CredentialStore::for_root(Some(root.path().to_path_buf()))
             .with_client_table(
                 ClientTable::parse(
                     "[google]\nclient_id = \"test-client\"\n[google.scopes]\nmail = [\"https://mail.google.com/\"]\n",
@@ -150,7 +150,7 @@ mod tests {
                 .unwrap(),
             );
         let result = sign_in(
-            &custodian,
+            &credential_store,
             "fixture@example.invalid",
             OAuthProvider::Google,
             "fixture@example.invalid",

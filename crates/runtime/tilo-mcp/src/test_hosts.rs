@@ -132,8 +132,8 @@ impl StubHost {
 }
 
 /// The confirmation the person gives `request` on their device.
-pub fn witnessed(request: &InvokeRequest) -> tilo_actions::remote::Confirmation {
-    tilo_actions::remote::Confirmation::Witnessed(format!("person:{}", request.invocation.0))
+pub fn approved(request: &InvokeRequest) -> tilo_actions::remote::Confirmation {
+    tilo_actions::remote::Confirmation::Approved(format!("person:{}", request.invocation.0))
 }
 
 impl ActionHost for StubHost {
@@ -186,12 +186,12 @@ impl ActionHost for StubHost {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let invocation = request.invocation;
-        // Only the person's own answer, witnessed on their device, gets past
+        // Only the person's own answer, approved on their device, gets past
         // a contract that asks for a phrase.
         if matches!(
             self.confirmation,
             tilo_actions::ConfirmationPolicy::Phrase { .. }
-        ) && request.confirmation != Some(witnessed(&request))
+        ) && request.confirmation != Some(approved(&request))
         {
             return Pending::ready(Err(ActionHostError::confirmation_required()));
         }
@@ -212,7 +212,7 @@ impl ActionHost for StubHost {
         request: &InvokeRequest,
     ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
         Pending::ready(Ok(tilo_actions::remote::ConfirmedInvocation::unchanged(
-            witnessed(request),
+            approved(request),
         )))
     }
 

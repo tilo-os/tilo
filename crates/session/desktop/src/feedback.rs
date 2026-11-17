@@ -1,4 +1,4 @@
-//! Device-private feedback custody shared by native and browser desktops.
+//! Device-private feedback ownership shared by native and browser desktops.
 //! A host supplies an already-admitted destination and its existing adapter;
 //! neither a window, a URL nor a draft chooses transport authority.
 
@@ -15,13 +15,13 @@ pub mod recorder;
 
 pub const PACKAGE: &str = "so.tilo.feedback-composer";
 
-/// Install `startup` into the profile's feedback slot, the custody every
+/// Install `startup` into the profile's feedback slot, the ownership every
 /// composer window of the profile borrows. A profile holds one: a second
 /// startup is refused rather than replacing the authority reports go under.
 ///
 /// # Errors
 ///
-/// Refuses a second custody, changed authority and storage that cannot keep
+/// Refuses a second ownership, changed authority and storage that cannot keep
 /// the approved outbox.
 pub fn install(
     startup: tilo_feedback_transport::Startup,
@@ -289,10 +289,10 @@ mod install_tests {
         Startup::new(enrollment, Box::new(session), Box::new(NoCapture)).unwrap()
     }
 
-    /// The profile holds one custody: its composer mounts with the private report controls, and a
+    /// The profile holds one ownership: its composer mounts with the private report controls, and a
     /// second startup cannot replace the authority reports already go under.
     #[test]
-    fn a_profile_keeps_one_custody_and_its_composer_mounts_protected() {
+    fn a_profile_keeps_one_ownership_and_its_composer_mounts_protected() {
         let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
         let mut slot = None;
         install(startup(), store.clone(), &mut slot).unwrap();

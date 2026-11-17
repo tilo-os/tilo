@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 use tilo_actions::remote::host_account::{
     Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer,
-    Standing, Usage, WorkspaceUsage,
+    Subscription, Usage, WorkspaceUsage,
 };
 use tilo_actions::remote::mcp_server::{AgentSession, Grant, Server};
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
@@ -114,7 +114,7 @@ fn tilo_cloud(build_box: &str) -> HostAccount {
             price: Some("$20 a month".into()),
             limits: pro.clone(),
         }],
-        standing: Some(Standing {
+        subscription: Some(Subscription {
             account: "acct-ada".into(),
             plan: Some("pro".into()),
             payment_method: Some(PaymentMethod::default()),

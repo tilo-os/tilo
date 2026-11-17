@@ -19,7 +19,7 @@ use tilo_peer_state::join::{
     self, JoinTransportRequest, JoinTransportResponse, Role, TransportHint,
 };
 use tilo_peer_state::join_answer::{JoinAnswer, JoinWorkspaces, WorkspaceTxn};
-use tilo_peer_state::join_ledger::{GovernanceMessages, Governed, JoinError, JoinLedger, Signer};
+use tilo_peer_state::join_log::{GovernanceMessages, Governed, JoinError, JoinLog, Signer};
 use tilo_peer_state::owner::testing::{self, WORKSPACE};
 use tilo_peer_state::owner::{VerifiedNativeEnrollmentIntent, open_file};
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
@@ -40,7 +40,7 @@ struct HeldWorkspace {
     peer: Admitted,
     /// The device answering the join: the governor's own.
     host: DeviceCert,
-    ledger: JoinLedger,
+    log: JoinLog,
     generation: u64,
 }
 
@@ -65,29 +65,29 @@ impl WorkspaceTxn for HeldWorkspace {
         HeldWorkspace::governed(self)
     }
 
-    fn ledger(&self) -> &JoinLedger {
-        &self.ledger
+    fn log(&self) -> &JoinLog {
+        &self.log
     }
 
-    fn stage_ledger(&mut self, ledger: JoinLedger) {
-        self.ledger = ledger;
+    fn stage_log(&mut self, log: JoinLog) {
+        self.log = log;
     }
 
     fn commit_governance(
         &mut self,
         peer: StatePeer,
         _now: u64,
-        ledger: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLedger, JoinError>,
+        log: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLog, JoinError>,
     ) -> Result<(), JoinError> {
         let next = HeldWorkspace {
             peer: Admitted(peer),
             host: self.host.clone(),
-            ledger: JoinLedger::default(),
+            log: JoinLog::default(),
             generation: self.generation.saturating_add(1),
         };
-        let answered = ledger(&next.governed())?;
+        let answered = log(&next.governed())?;
         *self = HeldWorkspace {
-            ledger: answered,
+            log: answered,
             ..next
         };
         Ok(())
@@ -154,7 +154,7 @@ impl MemoryWorkspaces {
             workspace: Mutex::new(HeldWorkspace {
                 peer: Admitted(peer),
                 host: device.clone(),
-                ledger: JoinLedger::default(),
+                log: JoinLog::default(),
                 generation: 1,
             }),
         }
@@ -167,7 +167,7 @@ impl MemoryWorkspaces {
         now: SystemTime,
     ) -> IssuedInvitation {
         let mut workspace = self.workspace.lock().unwrap();
-        let mut ledger = workspace.ledger.clone();
+        let mut log = workspace.log.clone();
         let administrator = workspace
             .peer
             .0
@@ -175,7 +175,7 @@ impl MemoryWorkspaces {
             .into_iter()
             .next()
             .unwrap();
-        let issued = ledger
+        let issued = log
             .issue(
                 &workspace.governed(),
                 &administrator,
@@ -188,7 +188,7 @@ impl MemoryWorkspaces {
                 testing::ns(now).unwrap(),
             )
             .unwrap();
-        workspace.ledger = ledger;
+        workspace.log = log;
         issued
     }
 

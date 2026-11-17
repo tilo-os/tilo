@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use account_custody::TokenSet;
+use account_credentials::TokenSet;
 use glib::{Variant, VariantTy};
 use zeroize::Zeroizing;
 

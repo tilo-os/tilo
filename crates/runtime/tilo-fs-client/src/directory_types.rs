@@ -12,7 +12,7 @@ pub enum RecoveryKind {
     KnownStaged,
     UnknownNativeCommit,
     PublishedSourceRetained,
-    /// A namespace-only capture retained in independently admitted root custody.
+    /// A namespace-only capture retained in independently admitted root ownership.
     QuarantinedNative,
 }
 

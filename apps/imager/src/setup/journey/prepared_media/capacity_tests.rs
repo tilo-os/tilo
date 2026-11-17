@@ -69,7 +69,7 @@ fn shared_home_generations_rebuild_capacity_from_their_own_authenticated_artifac
         fresh.home.as_ref().unwrap()
     ));
     // Cached totals are observation, never authority. A different generation's
-    // lagging total must not influence recomputation from current held custody.
+    // lagging total must not influence recomputation from current held ownership.
     original.reserved_data_bytes.store(0, Ordering::Release);
     fresh.reserved_data_bytes.store(1, Ordering::Release);
     for generation in [&original, &fresh] {

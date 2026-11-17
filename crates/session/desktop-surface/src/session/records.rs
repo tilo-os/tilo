@@ -176,13 +176,13 @@ impl ResourceReads for Reads {
 struct Waiting {
     ask: RecordAsk,
     until: Instant,
-    /// What it was held at ([`witness`]): it is read again once this differs.
-    witness: (u64, String),
+    /// What it was held at ([`proof`]): it is read again once this differs.
+    proof: (u64, String),
 }
 
 /// What a read of `ask` is held at: who may read what, and the mark of every record it reads (a
 /// joined one's parts, as [`readings_of`] walks them). It differs whenever the readings may.
-fn witness(held: &dyn HeldRecords, ask: &RecordAsk) -> (u64, String) {
+fn proof(held: &dyn HeldRecords, ask: &RecordAsk) -> (u64, String) {
     let marks = readings_of(&asks_of(ask), |address| {
         Ok(held
             .mark(address)
@@ -257,7 +257,7 @@ impl RecordAnswers {
             if waiting.ask.answer.is_abandoned() {
                 continue;
             }
-            if waiting.until <= now || witness(held, &waiting.ask) != waiting.witness {
+            if waiting.until <= now || proof(held, &waiting.ask) != waiting.proof {
                 self.read(waiting.ask, Some(waiting.until), held, now);
             } else {
                 self.waiting.push(waiting);
@@ -330,16 +330,12 @@ impl RecordAnswers {
             now.checked_add(wait).unwrap_or(now)
         });
         // Marked before it is read: a write between the two is seen on the next pass.
-        let witness = witness(held, &ask);
+        let proof = proof(held, &ask);
         match readings_of(&asks_of(&ask), |address| held.read(&ask.caller, address)) {
             Ok(readings)
                 if now < until && ask.read.after.as_deref() == Some(readings.revision.as_str()) =>
             {
-                self.waiting.push(Waiting {
-                    ask,
-                    until,
-                    witness,
-                });
+                self.waiting.push(Waiting { ask, until, proof });
             }
             Ok(readings) => ask.answer.complete(
                 readings

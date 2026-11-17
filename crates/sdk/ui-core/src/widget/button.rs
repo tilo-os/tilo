@@ -2772,7 +2772,7 @@ impl crate::resources::PublishesResources for Button {
 }
 
 impl crate::widget::controls::ActionControls for Button {
-    crate::widget::controls::optional_emitter_controls!(custody);
+    crate::widget::controls::optional_emitter_controls!(ownership);
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         self.action
             .as_ref()

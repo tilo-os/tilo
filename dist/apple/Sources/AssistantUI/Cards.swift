@@ -55,7 +55,7 @@ struct SecretCard: View {
     var body: some View {
         Bubble { MarkdownText(text: request.text) }
         CardBox(name: request.name, note: AssistantWords.keptInVault.said) {
-            switch request.standing {
+            switch request.state {
             case .waiting:
                 HStack(spacing: 10) {
                     Glyph(.lock).foregroundStyle(Token.ink3)
@@ -132,7 +132,7 @@ struct ConnectionCard: View {
     var body: some View {
         Bubble { MarkdownText(text: offer.text) }
         CardBox(name: offer.name, note: offer.commands.map { AssistantWords.commandsAfter.said(["count": String($0)]) } ?? "") {
-            switch offer.standing {
+            switch offer.state {
             case .waiting:
                 Flow(spacing: 8, lineSpacing: 8) {
                     Button(AssistantWords.authenticate.said) {

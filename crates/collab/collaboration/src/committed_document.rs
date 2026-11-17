@@ -258,7 +258,7 @@ impl Reads {
     ) -> Result<(), String> {
         let rows = self.0.lock_recover();
         let Some(RouteState::Required(_, bound)) = rows.get(key) else {
-            return Err("private binding requires admitted native document custody".into());
+            return Err("private binding requires admitted native document ownership".into());
         };
         bound.store(instance.unwrap_or(0), Ordering::Release);
         Ok(())
@@ -1608,7 +1608,7 @@ impl NativeReadJoin {
             let binding = channel
                 .committed_document(&Request::PrivateWindowBinding)
                 .await
-                .map_err(|_| "renewed committed read custody unavailable")?;
+                .map_err(|_| "renewed committed read ownership unavailable")?;
             if binding
                 != (Reply::PrivateWindowBinding {
                     instance: expected_instance,
@@ -1710,7 +1710,7 @@ async fn until_merged(read: &CommittedDocument, reads: &Reads, live: impl Fn() -
 
 /// Whether a route joined as `member_kind` asks the broker for its
 /// committed document. The broker serves committed reads only to a process
-/// the launcher holds custody of for that app, which an agent never is, so it
+/// the launcher owns for that app, which an agent never is, so it
 /// refuses an agent's open. An agent works through the actions its session invokes, not
 /// its own document; asking would fail its whole connection in a native workspace.
 /// A headless service (`CollaborationManager::for_service`) holds no document

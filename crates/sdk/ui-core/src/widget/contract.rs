@@ -70,7 +70,7 @@ pub trait Widget {
         self.callback_binding().is_some()
     }
 
-    /// Opaque actual custody for framework History source registration.
+    /// Opaque actual ownership for framework History source registration.
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
         self.callback_binding()
             .map(crate::history_mode::HistoryOwner::component)

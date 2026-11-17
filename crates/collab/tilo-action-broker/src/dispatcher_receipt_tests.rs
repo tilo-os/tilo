@@ -65,7 +65,7 @@ async fn actor_only_local_dispatch_never_receives_certified_evidence() {
             let record = receipt_record(&rig, delivered.id);
             assert!(
                 record.admission.is_none(),
-                "an actor string is not authenticated custody"
+                "an actor string is not authenticated ownership"
             );
             assert!(record.terminal.is_none());
             drop(job);
@@ -117,7 +117,7 @@ async fn dispatch_receipt_read(rig: &Rig) -> (u64, DurableInvocation) {
         actor: delivered.actor,
         presence: None,
     })
-    .expect("the worker accepts the dispatcher's original custody");
+    .expect("the worker accepts the dispatcher's original ownership");
     lease.check().unwrap();
     (delivered.id, receipt_record(rig, delivered.id))
 }

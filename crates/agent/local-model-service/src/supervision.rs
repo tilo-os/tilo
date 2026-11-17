@@ -1,4 +1,4 @@
-//! Linux local runtime lifecycle; exact container custody is recorded before execution.
+//! Linux local runtime lifecycle; exact container ownership is recorded before execution.
 //! GUI/model callers select signed releases through the service, never raw commands.
 use crate::ownership::{ContainerOwnership, arguments_digest, verify_stopped_unit};
 use crate::{ProcessHandle, ProcessSupervisor, ServiceError, VllmCommand};
@@ -192,7 +192,7 @@ impl ProcessSupervisor for SystemdSupervisor {
             std::thread::sleep(Duration::from_millis(150));
         }
         Err(ServiceError::Backend(
-            "verified local model did not become healthy with exact custody".into(),
+            "verified local model did not become healthy with exact ownership".into(),
         ))
     }
 
@@ -308,7 +308,7 @@ fn parse_unit(
 }
 
 fn observed_payload(handle: &ProcessHandle) -> Result<u32, String> {
-    let owned = owned_container(handle).map_err(|_| "runtime custody unavailable")?;
+    let owned = owned_container(handle).map_err(|_| "runtime ownership unavailable")?;
     let mut command = Command::new("podman");
     command.args(["container", "inspect", &owned.container_id]);
     let output = bounded_command::run_prepared(command, None, 131_072, Duration::from_secs(3))
@@ -344,7 +344,7 @@ fn observe_owned_runtime(
     handle: &ProcessHandle,
 ) -> Result<crate::run_observation::RuntimeSample, String> {
     use crate::run_observation::{RuntimeSample, sample_process, verify_process};
-    owned_container(handle).map_err(|_| "runtime custody unavailable")?;
+    owned_container(handle).map_err(|_| "runtime ownership unavailable")?;
     let started = Instant::now();
     let captured_at_unix_ms =
         tilo_clock::try_unix_now_ms().ok_or("observation wall clock unavailable")?;
@@ -483,7 +483,7 @@ fn bounded_process(
 fn owned_container(handle: &ProcessHandle) -> Result<&ContainerOwnership, ServiceError> {
     let owned = handle.container.as_ref().ok_or_else(|| {
         ServiceError::Backend(
-            "legacy runtime has no exact container custody; cleanup cannot be certified".into(),
+            "legacy runtime has no exact container ownership; cleanup cannot be certified".into(),
         )
     })?;
     owned.validate().map_err(ServiceError::Backend)?;
@@ -566,8 +566,8 @@ pub struct DeveloperCleanupReceipt {
         std::collections::BTreeMap<String, crate::run_observation::RuntimeSample>,
 }
 
-struct FixtureCustody(Vec<ProcessHandle>);
-impl Drop for FixtureCustody {
+struct FixtureOwnership(Vec<ProcessHandle>);
+impl Drop for FixtureOwnership {
     fn drop(&mut self) {
         for handle in &self.0 {
             let _ = SystemdSupervisor.stop(handle);
@@ -631,7 +631,7 @@ fn verify_fixture_image(image: &str) -> Result<(), ServiceError> {
     Ok(())
 }
 
-fn publish_fixture_custody(
+fn publish_fixture_ownership(
     directory: &Path,
     name: &str,
     handle: &ProcessHandle,
@@ -691,8 +691,8 @@ fn fixture_observations(
 /// production model starts retain podman's usual signal forwarding.
 ///
 /// # Errors
-/// Refuses unavailable managers/images, mismatched custody, missing observations
-/// or failed cleanup. Best-effort cleanup retains exact custody on every exit.
+/// Refuses unavailable managers/images, mismatched ownership, missing observations
+/// or failed cleanup. Best-effort cleanup retains exact ownership on every exit.
 pub fn developer_cleanup_probe(
     image: &str,
     directory: &Path,
@@ -718,13 +718,13 @@ pub fn developer_cleanup_probe(
         },
         runtime_extension_id: "developer-fixture-no-extension-admission".into(),
     };
-    let mut custody = FixtureCustody(Vec::new());
+    let mut ownership = FixtureOwnership(Vec::new());
     let target = prepare_container(&command, true)?;
-    custody.0.push(target.clone());
-    publish_fixture_custody(directory, "prepared-target.json", &target)?;
+    ownership.0.push(target.clone());
+    publish_fixture_ownership(directory, "prepared-target.json", &target)?;
     let control = prepare_container(&command, true)?;
-    custody.0.push(control.clone());
-    publish_fixture_custody(directory, "prepared-control.json", &control)?;
+    ownership.0.push(control.clone());
+    publish_fixture_ownership(directory, "prepared-control.json", &control)?;
     for handle in [&target, &control] {
         owned_container(handle)?
             .verify_observation(&container_snapshot(&owned_container(handle)?.container_id)?)
@@ -766,7 +766,7 @@ pub fn developer_cleanup_probe(
             "control fixture cleanup is incomplete".into(),
         ));
     }
-    custody.0.clear();
+    ownership.0.clear();
     Ok(DeveloperCleanupReceipt {
         kind: "developer_fixed_process_cleanup_qualification",
         runtime_observations,

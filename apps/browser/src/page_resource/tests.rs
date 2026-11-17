@@ -1683,7 +1683,7 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
         "action": "fill_form", "ok": true, "message": "Answered 1 question", "url": PAGE,
         "answers": [{"name": "Email", "value": "ada@example.org"}]});
     engine.set_page_data(
-        "ledger",
+        "log",
         json!({"entries": [answered], "next": 1, "more": false, "dropped": 0, "waiting": 0}),
     );
     engine.push_page_reply(Ok(PageReply {

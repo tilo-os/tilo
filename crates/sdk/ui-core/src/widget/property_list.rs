@@ -1284,13 +1284,13 @@ impl PropertyList {
 }
 
 impl crate::widget::controls::ActionControls for PropertyList {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         for emitter in self.emitters_mut() {
-            let _ = emitter.install_custody(domain, attachment);
+            let _ = emitter.attach(domain, attachment);
         }
     }
 

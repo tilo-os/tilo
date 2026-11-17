@@ -109,9 +109,9 @@ pub enum OperatorCommand {
         confirm_sha256: String,
     },
     /// Where the entry whose removal secret hashes to `removal_sha256`
-    /// stands, for whoever left it. The child answers [`OperatorEvent::Standing`]
+    /// stands, for whoever left it. The child answers [`OperatorEvent::Status`]
     /// or [`OperatorEvent::WaitListFailed`] for the same `request`.
-    Standing {
+    Status {
         /// The service's name for this command's answer (hex).
         request: String,
         /// SHA-256 (hex) of the removal secret.
@@ -271,7 +271,7 @@ pub enum OperatorEvent {
         contact_sha256: Option<String>,
     },
     /// An [`OperatorCommand::Unlist`], [`OperatorCommand::Confirm`] or
-    /// [`OperatorCommand::Standing`] the workspace could not do.
+    /// [`OperatorCommand::Status`] the workspace could not do.
     WaitListFailed {
         /// The command's `request`.
         request: String,
@@ -286,11 +286,11 @@ pub enum OperatorEvent {
         request: String,
         confirmed: bool,
     },
-    /// The answer to an [`OperatorCommand::Standing`].
-    Standing {
+    /// The answer to an [`OperatorCommand::Status`].
+    Status {
         /// The command's `request`.
         request: String,
-        standing: WaitListStanding,
+        state: WaitListStatus,
     },
     /// Someone who may invite asked the workspace to mail an invitation to a
     /// confirmed wait-list entry: send it, from the workspace's entry.
@@ -336,7 +336,7 @@ impl std::fmt::Debug for WaitListMailbox {
 /// Where a request left at the entry stands, for whoever left it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum WaitListStanding {
+pub enum WaitListStatus {
     /// Left, its address not confirmed yet.
     Pending,
     /// On the list.
@@ -540,9 +540,9 @@ mod tests {
                 request: "12".repeat(32),
                 confirmed: true,
             },
-            OperatorEvent::Standing {
+            OperatorEvent::Status {
                 request: "12".repeat(32),
-                standing: WaitListStanding::Invited,
+                state: WaitListStatus::Invited,
             },
             OperatorEvent::InviteMail {
                 request: "ab".repeat(32),
@@ -671,7 +671,7 @@ mod tests {
             );
         }
 
-        phase wait_list_confirmations_and_standings_round_trip_and_name_no_address_in_a_log;
+        phase wait_list_confirmations_and_states_round_trip_and_name_no_address_in_a_log;
         {
             for command in [
                 OperatorCommand::InviteMailQueued {
@@ -686,7 +686,7 @@ mod tests {
                     request: "12".repeat(32),
                     confirm_sha256: "cd".repeat(32),
                 },
-                OperatorCommand::Standing {
+                OperatorCommand::Status {
                     request: "12".repeat(32),
                     removal_sha256: "ab".repeat(32),
                 },
@@ -697,9 +697,9 @@ mod tests {
                 );
             }
             assert_eq!(
-                OperatorEvent::Standing {
+                OperatorEvent::Status {
                     request: "12".repeat(32),
-                    standing: WaitListStanding::Pending,
+                    state: WaitListStatus::Pending,
                 }
                 .to_line(),
                 format!(

@@ -10,7 +10,7 @@ description = "The device's current certificate authority, as an app broker asks
 name = "tilo_identity_authority"
 path = "src/lib.rs"
 
-# The host's side of the broker's certificate seam. The broker checks the
+# The host's side of the broker's certificate boundary. The broker checks the
 # signature, the route and the workspace's policy itself; what it needs from
 # the host is who this device's identity is, which device certificates it
 # currently certifies, and the clock those decisions are taken at. Every

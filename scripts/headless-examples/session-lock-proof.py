@@ -14,7 +14,7 @@ from the thing that asked for it:
 
 The password check is a stand-in: a container has neither the installed
 helper's PAM stack nor a login to check, so the session is given one with the
-development-only `TILO_UNLOCK_HELPER` seam, which answers as the installed
+development-only `TILO_UNLOCK_HELPER` boundary, which answers as the installed
 helper does (0 for the person's password, 1 for another). It writes every
 password it was handed to a file, so the proof reads what the session actually
 asked it, not what the screen said it asked.

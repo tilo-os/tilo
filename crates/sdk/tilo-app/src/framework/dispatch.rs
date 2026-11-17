@@ -240,11 +240,11 @@ pub(crate) struct DispatchState {
     resource_label: LocalState<String>,
     /// Who edits through this dispatcher; `None` in a view of a past version.
     me: Option<MemberId>,
-    /// A dispatcher lent to an admitted effect keeps its original custody.
+    /// A dispatcher lent to an admitted effect keeps its original ownership.
     /// Clones cannot turn later work into the host member's invocation.
     /// Share the immutable scope rather than embedding its owner/lease in every
     /// view dispatcher: copying the full scope also inflates construction stacks.
-    custody: Option<Rc<ui_core::invocation_scope::ResourceInvocationScope>>,
+    ownership: Option<Rc<ui_core::invocation_scope::ResourceInvocationScope>>,
     /// Each queued invocation with the effect invocation it continues,
     /// when an effect's handler or completion queued it.
     queue: Rc<RefCell<VecDeque<Queued>>>,
@@ -320,7 +320,7 @@ impl Clone for DispatchCore {
             applied_as: self.applied_as,
             resource_label: self.resource_label.clone(),
             me: self.me.clone(),
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
             queue: self.queue.clone(),
             asking: self.asking.clone(),
             opener: self.opener.clone(),
@@ -411,7 +411,7 @@ impl DispatchCore {
             label,
             resource_label: LocalState::new(label.to_owned()),
             me: me.cloned(),
-            custody: None,
+            ownership: None,
             queue: Rc::default(),
             asking: Rc::default(),
             opener: super::reference::Opener::default(),
@@ -449,7 +449,7 @@ impl DispatchCore {
         Self::of(DispatchState {
             app_id: self.app_id,
             me: self.me.clone(),
-            custody: self.custody.clone(),
+            ownership: self.ownership.clone(),
             resource_id: Rc::from(id),
             record: Rc::from(""),
             kind,
@@ -501,13 +501,13 @@ impl DispatchCore {
     ) {
         #[cfg(debug_assertions)]
         not_painting();
-        let on_behalf_of = match &self.custody {
-            Some(custody) => {
-                if let Err(error) = custody.check() {
+        let on_behalf_of = match &self.ownership {
+            Some(ownership) => {
+                if let Err(error) = ownership.check() {
                     self.refuse(&address.action, error);
                     return;
                 }
-                Some(custody.invocation())
+                Some(ownership.invocation())
             }
             None => super::effect::acting_for(),
         };
@@ -541,11 +541,11 @@ impl DispatchCore {
         self.waits.borrow_mut().landed(invocation, landed);
     }
 
-    /// This core, lent to an admitted effect under `custody`.
+    /// This core, lent to an admitted effect under `ownership`.
     #[inline(never)]
-    fn for_custody(&self, custody: ui_core::invocation_scope::ResourceInvocationScope) -> Self {
+    fn for_ownership(&self, ownership: ui_core::invocation_scope::ResourceInvocationScope) -> Self {
         let mut core = self.clone();
-        core.custody = Some(Rc::new(custody));
+        core.ownership = Some(Rc::new(ownership));
         core
     }
 
@@ -783,7 +783,7 @@ impl DispatchCore {
 
     /// Why an invocation `id` submitted now is refused before its
     /// permission is asked: the record is unreadable (unless it is an
-    /// effect) or the effect lending this dispatcher lost its custody.
+    /// effect) or the effect lending this dispatcher lost its ownership.
     fn refusal(&self, id: &str, effect: bool) -> bool {
         if let Some(reason) = self.unreadable()
             && !effect
@@ -791,8 +791,8 @@ impl DispatchCore {
             self.refuse(id, reason);
             return true;
         }
-        if let Some(custody) = &self.custody
-            && let Err(error) = custody.check()
+        if let Some(ownership) = &self.ownership
+            && let Err(error) = ownership.check()
         {
             self.refuse(id, error);
             return true;
@@ -803,7 +803,7 @@ impl DispatchCore {
     /// Why nothing is applied now: an effect's dispatcher submits through
     /// the queue, and an unreadable record takes nothing.
     fn applies_now(&self) -> Result<(), ActionError> {
-        if self.custody.is_some() {
+        if self.ownership.is_some() {
             return Err(ActionError::Refused(
                 "caller-scoped effects submit document changes through queued actions".into(),
             ));
@@ -991,12 +991,12 @@ impl<R: Resource> Dispatcher<R> {
         self.core.applied_as_kind().unwrap_or(R::KIND)
     }
 
-    pub(crate) fn for_custody(
+    pub(crate) fn for_ownership(
         &self,
-        custody: ui_core::invocation_scope::ResourceInvocationScope,
+        ownership: ui_core::invocation_scope::ResourceInvocationScope,
     ) -> Self {
         Self {
-            core: self.core.for_custody(custody),
+            core: self.core.for_ownership(ownership),
             // An effect's group cannot absorb the person's unrelated input.
             group: Rc::default(),
             permission_of: Rc::clone(&self.permission_of),
@@ -1126,17 +1126,17 @@ impl<R: Resource> Dispatcher<R> {
         self.core.asked_state(Asked::Need(need))
     }
 
-    /// The member's standing in the workspace as the host keeps it when
+    /// The member's access in the workspace as the host keeps it when
     /// called: who they are, the workspace's policy and what bounds them. For a
     /// runtime that decides its own invocations (a tilolang program's) by
     /// the policy the API decides by. `None` outside a host.
-    pub fn standing_source(&self) -> impl Fn() -> Option<policy::Standing> + 'static {
+    pub fn access_source(&self) -> impl Fn() -> Option<policy::MemberAccess> + 'static {
         let permissions = Rc::clone(&self.core.permissions);
         move || {
             permissions
                 .borrow()
                 .as_ref()
-                .map(|live| live.current().standing().clone())
+                .map(|live| live.current().access().clone())
         }
     }
 
@@ -1266,11 +1266,11 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// Whether what runs now is the person's own gesture at this device,
-    /// not automation: no invocation, effect, custody or past version is
+    /// not automation: no invocation, effect, ownership or past version is
     /// acting.
     fn gesture_is_own(&self) -> bool {
         !(self.core.past
-            || self.core.custody.is_some()
+            || self.core.ownership.is_some()
             || super::effect::acting_for().is_some()
             || ui_core::invocation_scope::current_invoker().is_some())
     }
@@ -1455,8 +1455,8 @@ impl<R: Resource> Dispatcher<R> {
         if self.core.past {
             return Err("a past version calls nothing".into());
         }
-        if let Some(custody) = &self.core.custody {
-            custody.check()?;
+        if let Some(ownership) = &self.core.ownership {
+            ownership.check()?;
         }
         let (target, argument) = call.request()?;
         Ok(self.core.opener.call(parent, target, argument))
@@ -1472,8 +1472,8 @@ impl<R: Resource> Dispatcher<R> {
         if self.core.past {
             return Err("a past version reads nothing".into());
         }
-        if let Some(custody) = &self.core.custody {
-            custody.check()?;
+        if let Some(ownership) = &self.core.ownership {
+            ownership.check()?;
         }
         Ok(self.core.opener.read_resource(parent, read))
     }
@@ -1599,7 +1599,7 @@ impl<R: Resource> Dispatcher<R> {
     /// What has no way back (`#[action(irreversible)]`) is still asked first.
     /// The confirmation stays with the callers who supply the arguments
     /// themselves (the palette, a script, an agent): under any invocation,
-    /// an effect's handler, custody or a past version this is
+    /// an effect's handler, ownership or a past version this is
     /// [`Self::submit_now`], and the host asks as for any caller.
     ///
     /// # Errors
@@ -1969,7 +1969,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     fn capture_nonlocal(&self) -> Option<ui_core::local_document_action::Scope> {
-        (self.core.custody.is_some() || super::effect::acting_for().is_some())
+        (self.core.ownership.is_some() || super::effect::acting_for().is_some())
             .then(ui_core::local_document_action::suspend)
     }
 
@@ -1978,7 +1978,7 @@ impl<R: Resource> Dispatcher<R> {
         invoke: &Invoke<R>,
     ) -> Option<ui_core::local_document_action::InvocationScope> {
         if !ui_core::local_document_action::input_is_active()
-            || self.core.custody.is_some()
+            || self.core.ownership.is_some()
             || super::effect::acting_for().is_some()
             || ui_core::local_document_action::has_invocation()
         {

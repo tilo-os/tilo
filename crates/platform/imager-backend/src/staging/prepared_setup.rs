@@ -115,7 +115,7 @@ impl<E: super::browser::Expectation> PreparedArtifact<E> {
     #[cfg(not(unix))]
     pub fn read(&self, _caller: u32) -> io::Result<Vec<u8>> {
         Err(io::Error::other(
-            "Prepared direct staging requires supported private caller custody",
+            "Prepared direct staging requires supported private caller ownership",
         ))
     }
 }

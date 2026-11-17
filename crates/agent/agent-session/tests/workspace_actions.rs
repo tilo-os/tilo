@@ -555,7 +555,7 @@ impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryR
         }
         Some(tilo_agent_session::workspace_actions::ViewReadPolicy {
             workspace: self.route.cluster_id.clone(),
-            standing: ui::permissions::Standing::person(
+            access: ui::permissions::MemberAccess::person(
                 ui::permissions::policy::WorkspacePolicy::new(
                     &self.route.cluster_id,
                     hex::encode(self.user_public_key()),

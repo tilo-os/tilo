@@ -105,7 +105,7 @@ struct MediaRelease {
     image_sha256: String,
     image_size: u64,
     #[serde(default)]
-    account_custody: Option<imager_backend::account_admission::ConsumerCapability>,
+    account_credentials: Option<imager_backend::account_admission::ConsumerCapability>,
     #[serde(default)]
     home_archive: Option<imager_backend::home_admission::ConsumerCapability>,
     #[serde(default)]
@@ -353,7 +353,7 @@ fn parse_catalog(raw: &str) -> Result<Catalog, String> {
                 if media.purpose.is_some() != media.layout.is_some() {
                     return Err("Incomplete media purpose/layout.".into());
                 }
-                if let Some(proof) = &media.account_custody {
+                if let Some(proof) = &media.account_credentials {
                     proof
                         .validate()
                         .map_err(|_| "Invalid media account consumer proof.".to_string())?;
@@ -447,7 +447,7 @@ fn media_releases(catalog: Catalog, arch: &str) -> Vec<TiloRelease> {
                 archive_sha256: release.archive_sha256,
                 archive_size: release.archive_size,
                 image_sha256: release.image_sha256,
-                account_custody: release.account_custody,
+                account_credentials: release.account_credentials,
                 home_archive: release.home_archive,
                 applications: release.applications,
                 original_source: release.original_source,
@@ -1487,7 +1487,7 @@ mod tests {
                     archive_sha256: "a".repeat(64),
                     archive_size: 1,
                     image_sha256: "b".repeat(64),
-                    account_custody: None,
+                    account_credentials: None,
                     home_archive: None,
                 applications: None,
                     original_source: None,
@@ -1814,7 +1814,7 @@ mod internal_catalog_tests {
         phase media_catalog_retains_strict_account_consumer_proof_bound_to_image;
         {
             let mut value = media();
-            value["account_custody"] = json!({"schema":1,"protected_grant_protocol":1,
+            value["account_credentials"] = json!({"schema":1,"protected_grant_protocol":1,
                 "credential_helper_sha256":"1".repeat(64),"runtime_root_hash":"2".repeat(64),
                 "runtime_probe_sha256":"3".repeat(64),"runtime_library_sha256":"4".repeat(64),
                 "runtime_version":"test-1","runtime_library":"lib/libruntime_dylib.so"});
@@ -1826,7 +1826,7 @@ mod internal_catalog_tests {
             );
             assert_eq!(
                 selected[0]
-                    .account_custody
+                    .account_credentials
                     .as_ref()
                     .unwrap()
                     .protected_grant_protocol,
@@ -1839,12 +1839,12 @@ mod internal_catalog_tests {
                 ("unexpected", json!(true)),
             ] {
                 let mut altered = value.clone();
-                altered["account_custody"][key] = invalid;
+                altered["account_credentials"][key] = invalid;
                 assert!(parse_catalog(&catalog(altered)).is_err());
             }
             assert!(
                 media_releases(parse_catalog(&catalog(media())).unwrap(), "x86_64")[0]
-                    .account_custody
+                    .account_credentials
                     .is_none()
             );
         }

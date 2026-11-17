@@ -152,13 +152,13 @@ public final class AssistantModel {
         subAgents.first { $0.id == id }
     }
 
-    public func tasks(_ standing: AssistantTask.Standing) -> [AssistantTask] {
-        tasks.filter { $0.standing == standing }
+    public func tasks(_ state: AssistantTask.State) -> [AssistantTask] {
+        tasks.filter { $0.state == state }
     }
 
     /// How many things wait for the person: what is ready for review and what needs their input.
     public var waiting: Int {
-        tasks.filter { $0.standing == .readyForReview || $0.standing == .needsInput }.count
+        tasks.filter { $0.state == .readyForReview || $0.state == .needsInput }.count
     }
 
     public var showsPanel: Bool {

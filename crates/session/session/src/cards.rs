@@ -551,7 +551,7 @@ mod tests {
             );
         }
 
-        phase a_card_its_app_presents_again_after_standing_it_down_is_drawn_again;
+        phase a_card_its_app_presents_again_after_closing_it_is_drawn_again;
         {
             let cards = Cards::new();
             cards

@@ -17,7 +17,7 @@ pub use tilo_app_id::apps::SETTINGS as ACCOUNTS_OWNER;
 pub const ACCOUNTS_EDITORS: &[&str] = &["so.tilo.mail"];
 
 /// The app that keeps accounts of type `type_id` and is released their
-/// secrets by the session's custody: Mail for email. Settings, the keeper of
+/// secrets by the session's ownership: Mail for email. Settings, the keeper of
 /// every account, seals secrets and is released none.
 #[must_use]
 pub fn secret_keeper(type_id: &str) -> Option<&'static str> {

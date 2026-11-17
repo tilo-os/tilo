@@ -1259,7 +1259,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "one table proves the complete root callback ledger against a single mounted instance"
+    reason = "one table proves the complete root callback log against a single mounted instance"
 )]
 fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
     {
@@ -1364,7 +1364,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 ),
                 Callback::Control => {
                     // A tile with its own document owner is drained through that
-                    // owner's control custody, never by the generic outer drain.
+                    // owner's control ownership, never by the generic outer drain.
                     assert!(
                         tilo_ui::widget::controls::take_control_invocation(&mut tile).is_none()
                     );

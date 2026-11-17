@@ -447,7 +447,7 @@ tilo_test_env::scenario! {
         assert_eq!(started.len(), 1, "{started:?}");
         assert_eq!(
             started[0].confirmation,
-            Some(tilo_actions::remote::Confirmation::Witnessed(format!(
+            Some(tilo_actions::remote::Confirmation::Approved(format!(
                 "person:{}",
                 started[0].invocation.0
             )))

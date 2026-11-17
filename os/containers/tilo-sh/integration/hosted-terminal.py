@@ -76,7 +76,7 @@ AGENT_KEY_NAME = "Jane Doe's agent"
 CLI = os.environ.get("HOSTED_TERMINAL_CLI", "tilo")
 CLI_API_URL = os.environ.get("HOSTED_TERMINAL_API_URL", API_URL)
 # The person answering what the host asks before a command runs: a Terminal
-# run reaches outside the workspace's records, so a person's standing puts it
+# run reaches outside the workspace's records, so a person's access puts it
 # to them, and `tilo-approve` is the approving device that answers.
 APPROVER = os.environ.get("HOSTED_TERMINAL_APPROVER", "")
 PERSON_ROOT = os.environ.get("HOSTED_TERMINAL_ROOT", "")

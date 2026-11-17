@@ -3,28 +3,28 @@
 //! governance each of those is checked against.
 
 use super::{
-    ActionKind, AutoCommit, DeviceCert, GovernedIdentity, MembershipError, Role, Route, SignedOp,
-    Standing, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, document_surface, err,
-    held_units, now_ns, resource_type, workspace, workspace_host_actor,
+    ActionKind, AutoCommit, DeviceCert, GovernedIdentity, MemberAccess, MembershipError, Role,
+    Route, SignedOp, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, document_surface,
+    err, held_units, now_ns, resource_type, workspace, workspace_host_actor,
 };
 use collab_types::signer::DeviceSigner;
 
-/// `person`'s standing under `policy`, held to the foreign-device bound on a
+/// `person`'s access under `policy`, held to the foreign-device bound on a
 /// `foreign` device and to `delegate`'s bound on a delegate's.
-fn standing_of(
+fn access_of(
     policy: impl Into<std::sync::Arc<WorkspacePolicy>>,
     person: String,
     foreign: bool,
     delegate: Option<crate::state::ActingAs>,
-) -> Standing {
-    let mut standing = Standing::person(policy, person);
+) -> MemberAccess {
+    let mut access = MemberAccess::person(policy, person);
     if foreign {
-        standing = standing.on_foreign_device();
+        access = access.on_foreign_device();
     }
     if let Some(delegation) = delegate {
-        standing = standing.acting_as(delegation.actor, delegation.grants);
+        access = access.acting_as(delegation.actor, delegation.grants);
     }
-    standing
+    access
 }
 
 impl StatePeer {
@@ -72,7 +72,7 @@ impl StatePeer {
     }
 
     /// [`Self::require_member_writer`] of a device whose signature was made
-    /// elsewhere: a page signs with the key its custody holds.
+    /// elsewhere: a page signs with the key its ownership holds.
     pub(crate) fn require_member_device(
         &self,
         device: &[u8; 32],
@@ -322,7 +322,7 @@ impl StatePeer {
             ))
         )
     }
-    /// The standing of the device `source` now: its person, the workspace's
+    /// The access of the device `source` now: its person, the workspace's
     /// policy as admitted, the grants for its software, and whether it is held
     /// to the foreign-device bound or to a delegate's.
     ///
@@ -334,7 +334,7 @@ impl StatePeer {
         &self,
         source: [u8; 32],
         now: SystemTime,
-    ) -> Result<Standing, MembershipError> {
+    ) -> Result<MemberAccess, MembershipError> {
         // The workspace document read here is the one the policy is decided
         // against, and the peer holds it for its whole life.
         let policy = self
@@ -345,19 +345,19 @@ impl StatePeer {
             .workspace_policy(&self.core.workspace)
             .clone();
         let (person, foreign, delegate) = self.member_of(&source, now)?;
-        Ok(standing_of(policy, person, foreign, delegate))
+        Ok(access_of(policy, person, foreign, delegate))
     }
-    /// The standing of the device `source` under `policy`, the workspace's
-    /// own: [`Self::permissions`]'s standing, sharing the policy every
-    /// member device's standing holds.
+    /// The access of the device `source` under `policy`, the workspace's
+    /// own: [`Self::permissions`]'s access, sharing the policy every
+    /// member device's access holds.
     pub(crate) fn member_with(
         &self,
         source: [u8; 32],
         policy: std::sync::Arc<WorkspacePolicy>,
         now: SystemTime,
-    ) -> Result<Standing, MembershipError> {
+    ) -> Result<MemberAccess, MembershipError> {
         let (person, foreign, delegate) = self.member_of(&source, now)?;
-        Ok(standing_of(policy, person, foreign, delegate))
+        Ok(access_of(policy, person, foreign, delegate))
     }
     /// Who the device `source` is at `now`, apart from the workspace's policy:
     /// its person, whether its device is foreign, and the delegation it holds.
@@ -377,7 +377,11 @@ impl StatePeer {
     }
     /// [`Self::permissions`] as the text refusal the workspace's own write paths
     /// report to the app that asked.
-    pub(crate) fn membership(&self, device: [u8; 32], now: SystemTime) -> Result<Standing, String> {
+    pub(crate) fn membership(
+        &self,
+        device: [u8; 32],
+        now: SystemTime,
+    ) -> Result<MemberAccess, String> {
         self.permissions(device, now)
             .map_err(|error| error.to_string())
     }
@@ -583,7 +587,7 @@ impl StatePeer {
         record: &str,
         envelope: &SignedOp,
         authorization_time: SystemTime,
-    ) -> Result<Option<Standing>, String> {
+    ) -> Result<Option<MemberAccess>, String> {
         let member = self.membership(*source, authorization_time)?;
         // A change made with another version of the app than the workspace runs
         // is held: its author's desktop switches to the workspace's version, and

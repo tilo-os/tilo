@@ -131,7 +131,7 @@ impl NativeSignalAccount {
     /// private tmpfs runtime directory. Disk, links and permissive roots refuse
     /// before beginning use or exposing any profile bytes.
     /// # Errors
-    /// Refuses invalid RAM custody, original admission/grant, interrupted image
+    /// Refuses invalid RAM ownership, original admission/grant, interrupted image
     /// or file creation failure. Failed materialization leaves use interrupted.
     pub(crate) fn materialize_profile(
         &self,
@@ -432,7 +432,7 @@ pub(super) mod tests {
             output.status.success()
                 && stdout.contains("running 1 test")
                 && stdout.contains("test result: ok. 1 passed"),
-            "actual noswap custody qualification failed: {}\n{stdout}\n{stderr}",
+            "actual noswap ownership qualification failed: {}\n{stdout}\n{stderr}",
             output.status
         );
 

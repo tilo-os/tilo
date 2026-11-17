@@ -61,7 +61,7 @@ final class SourceTests: XCTestCase {
         let replies = try await source.replies(of: "maya", in: .main)
         XCTAssertEqual(replies, Drawing.mayaReplies)
         XCTAssertEqual(replies.count, 2, "as many as the task's line counts")
-        guard case .replies(let counted)? = Drawing.mainChat.first(where: { $0.id == "maya" })?.task?.standing else { return XCTFail() }
+        guard case .replies(let counted)? = Drawing.mainChat.first(where: { $0.id == "maya" })?.task?.state else { return XCTFail() }
         XCTAssertEqual(counted, replies.count)
         // They are no part of the conversation, and a task without any has none.
         XCTAssertFalse(source.items().contains { item in replies.contains { $0.id == item.id } })
@@ -205,7 +205,7 @@ final class SourceTests: XCTestCase {
         XCTAssertEqual(source.kept(for: "linkedin")?.handOver(), typed)
         // The conversation knows that it was kept, and holds no letter of it.
         let items = source.items()
-        XCTAssertEqual(items.first?.content.secret?.standing, .kept)
+        XCTAssertEqual(items.first?.content.secret?.state, .kept)
         var written = ""
         dump(items, to: &written)
         XCTAssertFalse(written.contains("correct"))
@@ -222,13 +222,13 @@ final class SourceTests: XCTestCase {
         let source = MemorySource(content)
         await refused { try await source.keep(Secret(""), for: "linkedin") }
         XCTAssertNil(source.kept(for: "linkedin"))
-        XCTAssertEqual(source.items()[0].content.secret?.standing, .waiting)
+        XCTAssertEqual(source.items()[0].content.secret?.state, .waiting)
         try await source.fetchSecret(for: "linkedin")
-        XCTAssertEqual(source.items()[0].content.secret?.standing, .kept)
+        XCTAssertEqual(source.items()[0].content.secret?.state, .kept)
         XCTAssertNil(source.kept(for: "linkedin"), "what the manager holds is fetched when needed, not kept here")
         await refused { try await source.fetchSecret(for: "no-manager") }
         try await source.decline(SecretRequest.ID("third"))
-        XCTAssertEqual(source.items()[2].content.secret?.standing, .declined)
+        XCTAssertEqual(source.items()[2].content.secret?.state, .declined)
     }
 
     func testAServiceIsSignedInToOrLeft() async throws {
@@ -237,11 +237,11 @@ final class SourceTests: XCTestCase {
         let source = MemorySource(content)
         let page = try await source.authenticate("linear")
         XCTAssertNil(page)
-        XCTAssertEqual(source.items()[1].content.connection?.standing, .connected)
+        XCTAssertEqual(source.items()[1].content.connection?.state, .connected)
         await refused { try await source.decline(ConnectionOffer.ID("linear")) }
         let other = MemorySource(content)
         try await other.decline(ConnectionOffer.ID("linear"))
-        XCTAssertEqual(other.items()[1].content.connection?.standing, .declined)
+        XCTAssertEqual(other.items()[1].content.connection?.state, .declined)
     }
 
     func testAnEventsCardIsAnsweredAsAQuestion() async throws {
@@ -263,7 +263,7 @@ final class SourceTests: XCTestCase {
         let made = agents[0]
         XCTAssertEqual(made.title, "Compare the two decks")
         XCTAssertEqual(made.startedBy, .person)
-        XCTAssertEqual(made.standing, .working)
+        XCTAssertEqual(made.state, .working)
         XCTAssertEqual(made.role, "", "the main agent picks the role, not the person")
         guard case .all(let pieces) = await first(source.conversation(.subAgent(made.id))),
               case .message(let job) = pieces.first?.content
@@ -279,7 +279,7 @@ final class SourceTests: XCTestCase {
 
         try await source.stop(made.id)
         let after = try await now(source.subAgents())
-        XCTAssertEqual(after[0].standing, .stopped)
+        XCTAssertEqual(after[0].state, .stopped)
         XCTAssertEqual(after[0].finished, Drawing.now)
         await refused { try await source.stop(made.id) }
         await refused { try await source.stop("data-room") }
@@ -288,7 +288,7 @@ final class SourceTests: XCTestCase {
 
     func testThePanelsGroupsAreTheDrawings() async throws {
         let tasks = try await now(Drawing.source().tasks())
-        func titles(_ standing: AssistantTask.Standing) -> [String] { tasks.filter { $0.standing == standing }.map(\.title) }
+        func titles(_ state: AssistantTask.State) -> [String] { tasks.filter { $0.state == state }.map(\.title) }
         XCTAssertEqual(titles(.readyForReview), ["Reply to Maya at Northwind", "Board deck for Friday: first draft"])
         XCTAssertEqual(titles(.needsInput), ["Find the Q3 board deck"])
         XCTAssertEqual(titles(.inProgress), ["Find out why usage dropped", "Shortlist the YC batch for the thesis"])
@@ -303,7 +303,7 @@ final class SourceTests: XCTestCase {
         try await source.addTask(" Finish the report ")
         let tasks = try await now(source.tasks())
         XCTAssertEqual(tasks.last?.title, "Finish the report")
-        XCTAssertEqual(tasks.last?.standing, .upNext)
+        XCTAssertEqual(tasks.last?.state, .upNext)
 
         try await source.setOn(false, for: "investor-writes")
         var automations = try await now(source.automations())

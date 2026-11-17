@@ -61,7 +61,7 @@ accounts = { path = "../../system/accounts" }
 # The source readers live in a crate a plain laptop can build, so the CLI can
 # drive the same code without this crate's desktop stack.
 migration-sources = { path = "../migration-sources" }
-account-custody = { path = "../../system/account-custody" }
+account-credentials = { path = "../../system/account-credentials" }
 zeroize.workspace = true
 block-devices = { path = "../../system/block-devices" }
 bounded-command = { path = "../../system/bounded-command" }

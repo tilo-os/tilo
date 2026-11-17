@@ -34,7 +34,7 @@ use super::trace_writer::TraceWriter;
 /// A profile's length when the admin names none.
 pub const DEFAULT_SECONDS: u64 = 30;
 /// The longest profile one request records. A profile is a deliberate
-/// window, not a standing trace (the session's rolling `frame-trace.csv` is
+/// window, not an access trace (the session's rolling `frame-trace.csv` is
 /// that); this bounds what a forgotten profile writes.
 pub const MAX_SECONDS: u64 = 600;
 /// Profiles kept under the profile directory; starting one removes the

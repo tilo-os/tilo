@@ -147,8 +147,8 @@ impl Holder for NativeHolder {
 pub(super) struct NativeLink {
     pub scope: Arc<Scope>,
     pub link: Arc<DirectSync>,
-    /// What this link sent of the device's custody of the workspace.
-    sending: tilo_session_client::custody::Sending,
+    /// What this link sent of the device's ownership of the workspace.
+    sending: tilo_session_client::membership_check::Sending,
     /// Held while the workspace's hold runs this link; let go with it.
     held: Option<tokio::sync::oneshot::Sender<()>>,
     pump: tokio::task::JoinHandle<()>,
@@ -253,7 +253,7 @@ impl ActorState {
 
     /// Tell the workspace on topic `ws`'s apps how many of this device's writes
     /// to it are not yet synced ([`crate::workspace_sync::unsynced`]): the
-    /// committed writes in its owner's outgoing custody, all of them while no
+    /// committed writes in its owner's outgoing ownership, all of them while no
     /// link of the workspace carries them. A write sent over a link up now is
     /// on its way, and says nothing.
     pub(super) fn tell_unsynced(&self, ws: WorkspaceId) {
@@ -399,7 +399,7 @@ impl ActorState {
         let Some(scope) = scope else {
             tracing::debug!(
                 ws = %ws,
-                "a member's frame reaches no app: this device holds no custody of the workspace"
+                "a member's frame reaches no app: this device holds no ownership of the workspace"
             );
             return;
         };
@@ -407,7 +407,7 @@ impl ActorState {
     }
 
     /// What this device's apps take the members' frames of `workspace` (on
-    /// topic `ws`) under while no link of it is up: this device's own custody
+    /// topic `ws`) under while no link of it is up: this device's own ownership
     /// of the workspace, as a link to it would hold it. `None` when this
     /// device holds none.
     fn member_scope(
@@ -496,7 +496,7 @@ impl ActorState {
     /// Publish what the workspace `ws`'s owner holds for its other devices over
     /// the link it holds now.
     /// Retirement commits to disk, so it runs off this actor.
-    /// Send this device's custody of the workspace on topic `ws` over its link up now, as far as
+    /// Send this device's ownership of the workspace on topic `ws` over its link up now, as far as
     /// the link takes it, then retire what the workspace receipted or refused.
     pub(super) fn drive_native_publication(&mut self, ws: WorkspaceId) {
         if let (Some(link), Some(route), Some(identity)) = (
@@ -514,15 +514,15 @@ impl ActorState {
                         postcard::from_bytes(write.bytes)
                             .map_err(|error| error.to_string())
                             .and_then(|message| link.link.send(message))
-                            .inspect_err(|error| tracing::debug!(%error, "native publication remains in durable custody"))
+                            .inspect_err(|error| tracing::debug!(%error, "native publication remains in durable ownership"))
                             .is_ok()
                     },
                 )
             });
             if let Err(error) = sent {
-                tracing::debug!(%error, "native publication remains in durable custody");
+                tracing::debug!(%error, "native publication remains in durable ownership");
             }
-            // A sealed write that waited in custody past its epoch leaves only renewed: the
+            // A sealed write that waited held past its epoch leaves only renewed: the
             // workspace's host refuses it as it was. Renewed, it goes on the next pass.
             if link.sending.held() > 0 {
                 let (owner, signer, tx) = (
@@ -556,13 +556,13 @@ impl ActorState {
                 ws = %ws,
                 linked = self.native_links.contains_key(&ws),
                 routed = self.native_routes.entries.contains_key(&ws),
-                "this device's custody of a workspace waits: it holds no link to send it on"
+                "this device's ownership of a workspace waits: it holds no link to send it on"
             );
         }
         self.tell_unsynced(ws);
     }
     /// The device workspace `ws`'s link reaches answered this device's writes `answers`: they
-    /// leave its custody as a relay host's answers do, a refused one with the verdict the workspace
+    /// leave its ownership as a relay host's answers do, a refused one with the verdict the workspace
     /// files for its writer, and what waited behind them goes out.
     pub(super) fn native_answered(
         &self,
@@ -593,14 +593,14 @@ impl ActorState {
                 let _ = tx.blocking_send(InternalEvent::NativeRetired { ws });
             }
             Err(error) => {
-                tracing::warn!(%error, ws = %ws, "answered writes stay in this device's custody");
+                tracing::warn!(%error, ws = %ws, "answered writes stay in this device's ownership");
             }
         });
     }
 
     pub(super) fn native_connect(&mut self, connect: Connect) {
         let ws = connect.workspace();
-        // The custody the members' frames were taken under is read again.
+        // The ownership the members' frames were taken under is read again.
         self.member_scopes.remove(&ws);
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
@@ -683,7 +683,7 @@ impl ActorState {
         for (&ws, route) in &mut self.native_routes.entries {
             let material = route.connect.material(identity);
             if let Err(error) = &material {
-                tracing::debug!(%error, ws = %ws, "native workspace custody unusable for its host");
+                tracing::debug!(%error, ws = %ws, "native workspace ownership unusable for its host");
             }
             route.local = material.as_ref().is_ok_and(|(hint, cert, ..)| {
                 tilo_peer_state::owner::session::hosted_by(hint, &cert.device_public_key)
@@ -767,7 +767,7 @@ impl ActorState {
             NativeLink {
                 scope,
                 link,
-                sending: tilo_session_client::custody::Sending::default(),
+                sending: tilo_session_client::membership_check::Sending::default(),
                 held: Some(held),
                 pump,
             },

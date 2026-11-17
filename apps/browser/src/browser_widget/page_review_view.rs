@@ -378,7 +378,7 @@ impl BrowserWidget {
         let since = self.page_review.record.since();
         let forms = self.ask_page_for_review(PageRequest::Forms { frame: None });
         let fields = self.ask_page_for_review(PageRequest::Fields { frame: None });
-        let record = self.ask_page_for_review(PageRequest::Ledger { since });
+        let record = self.ask_page_for_review(PageRequest::Log { since });
         self.page_review.round = Some(Round {
             forms: Some(forms),
             fields: Some(fields),

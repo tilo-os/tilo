@@ -89,7 +89,7 @@ impl SignerCache {
             self.entries.remove(&cache_key);
             return result.and_then(|_| Err("device trust changed while signing receipt".into()));
         }
-        // Drop stale custody before attempting a reload, including on error.
+        // Drop stale ownership before attempting a reload, including on error.
         self.entries.remove(&cache_key);
         #[cfg(test)]
         {
@@ -255,7 +255,7 @@ mod tests {
             assert!(sign(&fixture.workspace, b"host receipt").is_ok());
         }
 
-        phase revocation_evicts_custody_and_fails_even_after_files_settle;
+        phase revocation_evicts_ownership_and_fails_even_after_files_settle;
         {
             let fixture = Fixture::new();
             let mut cache = SignerCache::default();

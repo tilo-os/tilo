@@ -292,7 +292,7 @@ fn decide_by_governance(
     }
     let authority = member.authority();
     let cx = Context::at_time(system_time(now));
-    // No person witnessed an approval here: an answer that asks first is a
+    // No person observed an approval here: an answer that asks first is a
     // refusal, never a pass.
     let decided = match op {
         WorkspaceOp::Host(_) => return Err(CollaborationError::new(HOST_PERSON_ONLY)),
@@ -337,7 +337,7 @@ fn decide_by_governance(
 impl Workspaces {
     /// Whether `device` may give the member `request` names its new role in
     /// `workspace`: the workspace's set-role change. Setting a role also takes
-    /// back an administrator's standing, which the workspace's policy gives
+    /// back an administrator's access, which the workspace's policy gives
     /// only its owner and whom it is kept for
     /// ([`tilo_action_policy::WorkspacePolicy::may_unmake_administrators`]).
     ///

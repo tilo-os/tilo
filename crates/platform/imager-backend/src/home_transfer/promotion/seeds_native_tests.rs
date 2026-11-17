@@ -218,7 +218,7 @@ fn actual_firstboot_seeds_are_retained_only_while_unchanged() {
         .output_locked()
         .expect("actual firstboot producer starts");
     if !firstboot.status.success() {
-        // Only namespace/lock custody metadata is diagnostic. Never include
+        // Only namespace/lock ownership metadata is diagnostic. Never include
         // passwd/shadow contents, credentials, or the firstboot pipe input.
         for name in [
             "",
@@ -350,7 +350,7 @@ if result == 0:
     seeds::preserve(&pin, Path::new(".bashrc"), entry.seed.as_ref().unwrap()).unwrap();
     drop(log);
     let recovered = PromotionReview::recover(&imported, home, &journal).unwrap();
-    recovered.witness().unwrap();
+    recovered.proof().unwrap();
     let report = recovered.run(true, &AtomicBool::new(false)).unwrap();
     assert!(report.complete(), "{:?}", report.failed);
     recovered.verify_completed().unwrap();

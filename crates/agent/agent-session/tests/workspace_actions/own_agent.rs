@@ -275,7 +275,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         &own_word,
         &caller,
         InvokeRequest {
-            confirmation: Some(Confirmation::Witnessed("x".into())),
+            confirmation: Some(Confirmation::Approved("x".into())),
             ..remove()
         },
     )

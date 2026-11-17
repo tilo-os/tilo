@@ -29,9 +29,9 @@ assistant-start-sub-agent-message = Starte einen Unteragenten für diesen Auftra
 assistant-no-such-sub-agent = Diesen Unteragenten gibt es nicht
 assistant-sub-agent-conversation-not-here = Seine Unterhaltung ist hier nicht verfügbar
 assistant-sub-agent-cannot-read-main = Er kann den Hauptchat nicht lesen
-assistant-standing-working = Arbeitet
-assistant-standing-needs-you = Braucht dich
-assistant-standing-done = Fertig { $when }
+assistant-progress-working = Arbeitet
+assistant-progress-needs-you = Braucht dich
+assistant-progress-done = Fertig { $when }
 
 assistant-tasks = Aufgaben
 assistant-panel-views = Ansichten der Aufgaben

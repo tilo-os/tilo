@@ -132,24 +132,24 @@ class RuntimeSurfaceTests(unittest.TestCase):
         self.assertIn("reaches app-catalogue", found[0])
         self.assertIn("libtilo_app_host_engine.so", found[0])
 
-    def test_account_custody_or_the_zone_database_back_in_the_runtime_fails(self) -> None:
-        # Mail and Settings load account custody from
+    def test_account_credentials_or_the_zone_database_back_in_the_runtime_fails(self) -> None:
+        # Mail and Settings load account credentials from
         # libtilo_accounts_engine.so, Calendar and Clocks the zone database
         # from libtilo_timezone_engine.so; the runtime depending on either
         # again maps it into every app process, even though apps reach it.
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
-            "4serde v1.0.228\n2account-custody v0.1.0 (/repo/crates/system/account-custody)\n"
+            "4serde v1.0.228\n2account-credentials v0.1.0 (/repo/crates/system/account-credentials)\n"
             "2chrono-tz v0.10.4\n",
         ).replace(
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
-            "1account-custody v0.1.0 (/repo/crates/system/account-custody) (*)\n"
+            "1account-credentials v0.1.0 (/repo/crates/system/account-credentials) (*)\n"
             "1chrono-tz v0.10.4 (*)\n0store",
         )
         found = checker.violations(tree, ["notes", "store"], TARGET)
         self.assertEqual(len(found), 2, found)
-        self.assertIn("reaches account-custody", found[0])
+        self.assertIn("reaches account-credentials", found[0])
         self.assertIn("libtilo_accounts_engine.so", found[0])
         self.assertIn("reaches chrono-tz", found[1])
         self.assertIn("libtilo_timezone_engine.so", found[1])

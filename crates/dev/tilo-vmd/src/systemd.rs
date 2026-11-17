@@ -1043,7 +1043,7 @@ impl Apply for SystemdApply {
             .map_err(|_| DaemonError::InvalidParams("private control client failed".into()))?;
         if !output.status.success() {
             return Err(DaemonError::InvalidParams(
-                "private action was refused; inspect its declared parameters and custody state"
+                "private action was refused; inspect its declared parameters and ownership state"
                     .into(),
             ));
         }

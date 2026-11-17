@@ -1,4 +1,4 @@
-//! An enrollment whose proof carries a certificate custody has replaced
+//! An enrollment whose proof carries a certificate ownership has replaced
 //! since (renewed when it was due or ran out, or issued again when the
 //! person restored their identity) presents the new one: the host ends up
 //! holding the certificate the device presents from now on, not the one it
@@ -21,7 +21,7 @@ use tilo_peer_state::join::WorkspaceId;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity_host::identity_store::HostIdentity;
 use tilo_peer_state::join::{self, Role};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::IssueInvitationRequest;
@@ -51,7 +51,7 @@ fn certificate(
     cert
 }
 
-fn custody(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
+fn ownership(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
     HostIdentity::kept(cert.clone(), key.clone())
 }
 
@@ -129,7 +129,7 @@ impl Admitted {
         let client = WorkspaceJoinClient::new(endpoint(&device_key).await);
         let unanswered = tilo_peer_state::owner::enroll::prepare_and_complete(
             client.clone(),
-            custody(&held, &device_key),
+            ownership(&held, &device_key),
             workspace.workspace_id,
             None,
             invitation.clone(),
@@ -163,13 +163,13 @@ impl Admitted {
             .unwrap();
     }
 
-    /// Send the retained proof again with `custody`'s certificate, and take
+    /// Send the retained proof again with `ownership`'s certificate, and take
     /// the workspace in: the host must answer for `current` in place of
     /// `replaced`, and the device be the member it admitted.
     async fn retry(&self, current: &DeviceCert, replaced: &DeviceCert) {
         let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
             self.client.clone(),
-            custody(current, &self.device_key),
+            ownership(current, &self.device_key),
             self.workspace_id,
             None,
             self.invitation.clone(),
@@ -180,7 +180,7 @@ impl Admitted {
         assert_eq!(
             &enrollment.bootstrap().device_cert,
             current,
-            "the host answers for the certificate custody holds now"
+            "the host answers for the certificate ownership holds now"
         );
         assert!(
             enrollment.bootstrap().certified_roster.contains(current)
@@ -223,7 +223,7 @@ async fn a_retained_proof_with_a_certificate_due_for_renewal_presents_the_renewa
     })
     .await;
     let due = due.unwrap();
-    // Its custody renews the certificate before it tries again.
+    // Its ownership renews the certificate before it tries again.
     let bob = SigningKey::from_bytes(&[2; 32]);
     let renewed = certificate(
         &bob,
@@ -297,7 +297,7 @@ async fn a_lapsed_certificate_is_answered_by_the_renewal(process: tilo_clock::te
 }
 
 /// The person restored their identity while a join was in flight: the
-/// device keeps its key and its root, and custody holds a certificate
+/// device keeps its key and its root, and ownership holds a certificate
 /// issued again for it, which never expires like the one before. The
 /// retained proof is still this device's, and is answered for the new
 /// certificate. The laptop's Lounge (2026-10-23): admitted days before,

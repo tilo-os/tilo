@@ -113,8 +113,8 @@ impl AppBrokerState {
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let abandon = |error: ActionHostError| {
-            if let Ok(mut ledger) = self.remote_invocations.lock() {
-                ledger.abandon(&request.invocation);
+            if let Ok(mut log) = self.remote_invocations.lock() {
+                log.abandon(&request.invocation);
             }
             error
         };
@@ -140,9 +140,9 @@ impl AppBrokerState {
             .current_framework_authority(caller, origin, workspace_id)
             .map_err(abandon)?;
         // One answer covers both checks of this exact host invocation.
-        let witnessed = self.consume_answer(
+        let approved = self.consume_answer(
             request.confirmation.as_ref(),
-            &self.witness_binding(policy.member(), workspace_id, request),
+            &self.approval_binding(policy.member(), workspace_id, request),
         );
         // An agent takes a step as any of its steps: on the workspace's grants, in an agent
         // session that still goes. A step of the session's own, or of an agent session's, is no
@@ -163,7 +163,7 @@ impl AppBrokerState {
             (&workspace, &policy, now),
             (steps.app_id(), &descriptor),
             request.confirmation.as_ref(),
-            witnessed,
+            approved,
             false,
         )
         .map_err(abandon)?;
@@ -172,7 +172,7 @@ impl AppBrokerState {
             &descriptor,
             argument.as_deref(),
             request.confirmation.as_ref(),
-            witnessed,
+            approved,
         ) {
             return Err(abandon(ActionHostError::confirmation_required()));
         }
@@ -189,10 +189,10 @@ impl AppBrokerState {
             )
             .map_err(abandon)?;
         let id = admitted.id;
-        if let Ok(mut ledger) = self.remote_invocations.lock() {
-            ledger.complete(&request.invocation, id);
+        if let Ok(mut log) = self.remote_invocations.lock() {
+            log.complete(&request.invocation, id);
         }
-        // Signing and journalling may block. Resolve original custody and the
+        // Signing and journalling may block. Resolve original ownership and the
         // committed policy again for the effect, not the pre-admission actor.
         let policy = self.framework_effect_ready(&admitted, || {
             let (workspace, policy, now) =
@@ -202,7 +202,7 @@ impl AppBrokerState {
                 &descriptor,
                 argument.as_deref(),
                 request.confirmation.as_ref(),
-                witnessed,
+                approved,
             ) {
                 return Err(ActionHostError::confirmation_required());
             }
@@ -211,7 +211,7 @@ impl AppBrokerState {
                 steps.app_id(),
                 &descriptor,
                 (argument.as_deref(), request.confirmation.as_ref()),
-                witnessed,
+                approved,
             )?;
             Ok(policy)
         })?;
@@ -252,7 +252,7 @@ impl AppBrokerState {
                 workspace: workspace_id.to_owned(),
                 app_id: steps.app_id().to_owned(),
                 descriptor,
-                witnessed,
+                approved,
             };
             self.follow_live_view(admitted, following, view)
                 .map_err(|reason| ActionHostError::Refused { reason })?;
@@ -579,7 +579,7 @@ pub(crate) mod signed_test_support {
                         agent: None,
                     }
                 }
-                InvocationCaller::NativePerson { .. } => panic!("authenticated custody"),
+                InvocationCaller::NativePerson { .. } => panic!("authenticated ownership"),
             }
         }
 
@@ -835,11 +835,11 @@ mod identity_admin_tests {
             clippy::significant_drop_tightening,
             reason = "the test keeps its fixture and guards alive through its assertions"
         )]
-        fn host_steps_admit_only_certified_local_custody;
+        fn host_steps_admit_only_certified_local_ownership;
 
         phase a_keyless_agent_or_person_takes_no_host_step_on_a_native_host;
         // On a native host (one with the person's device), neither an agent nor a
-        // person that carries no retained custody takes a host step: an agent
+        // person that carries no retained ownership takes a host step: an agent
         // takes one only inside an agent session, a person only through the
         // device. Neither is taken as an actor-only caller.
         {
@@ -867,7 +867,7 @@ mod identity_admin_tests {
             let person = Caller::local_person(owner).in_workspace(workspace_id);
             assert!(
                 invoked(&state, &person, &request(identity_admin::LIST, None)).is_err(),
-                "a person reaches a native host's steps only with the device's custody"
+                "a person reaches a native host's steps only with the device's ownership"
             );
             assert!(host.started.lock().unwrap().is_empty());
         }
@@ -917,7 +917,7 @@ mod identity_admin_tests {
             );
         }
 
-        phase certified_host_steps_admit_only_nonforeign_local_custody;
+        phase certified_host_steps_admit_only_nonforeign_local_ownership;
         {
             for pairing in [false, true] {
                 for foreign in [false, true] {
@@ -965,7 +965,7 @@ mod identity_admin_tests {
                     }
                     assert!(
                         invoked(&f.state, &f.caller, &asked).is_err(),
-                        "device keys without certified local custody are not a local api"
+                        "device keys without certified local ownership are not a local api"
                     );
                     assert!(service.started.lock().unwrap().is_empty());
                     *service.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
@@ -1085,7 +1085,7 @@ mod identity_admin_tests {
                         worker.join().unwrap()
                     });
                     if change == "unchanged" {
-                        result.expect("unchanged custody must still start");
+                        result.expect("unchanged ownership must still start");
                         assert_eq!(host.started.lock().unwrap().len(), 1);
                         host.answers
                             .lock()
@@ -1296,7 +1296,7 @@ mod identity_admin_tests {
             }
         }
 
-        phase identity_admin_refuses_revoked_custody_and_missing_signer_before_start;
+        phase identity_admin_refuses_revoked_ownership_and_missing_signer_before_start;
         {
             for revoked in [false, true] {
                 let host = Arc::new(Host::default());

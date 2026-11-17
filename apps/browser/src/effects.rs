@@ -79,20 +79,20 @@ pub enum BrowserEffect {
     },
     /// Forget account on this device
     ///
-    /// Fences and removes the selected website profile before revoking custody.
+    /// Fences and removes the selected website profile before revoking ownership.
     #[effect(row, job, returns, destructive)]
     #[effect(label = "browser-service-forget")]
     ForgetServiceSession {
         #[param("Selected account")]
         session_id: String,
     },
-    /// Retry account deletion and custody revocation without resolving credentials
+    /// Retry account deletion and ownership revocation without resolving credentials
     #[effect(row, job, returns, destructive)]
     RetryForgetServiceSession {
         #[param("Selected account")]
         session_id: String,
     },
-    /// List accounts through fresh private custody
+    /// List accounts through fresh private ownership
     #[effect(row, job, returns, kind = "read")]
     ListServiceSessions,
     /// Read account connection
@@ -1353,7 +1353,7 @@ impl BrowserEffect {
             Self::ReadPageNetwork { since } => page(PageRequest::Network {
                 since: since.unwrap_or(0),
             }),
-            Self::ReadPageRecord { since } => page(PageRequest::Ledger {
+            Self::ReadPageRecord { since } => page(PageRequest::Log {
                 since: since.unwrap_or(0),
             }),
             Self::ReadPageFields { frame } => page(PageRequest::Fields {

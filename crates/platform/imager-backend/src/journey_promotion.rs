@@ -1,4 +1,4 @@
-//! Opaque home-adoption custody shared by setup frontends on every host.
+//! Opaque home-adoption ownership shared by setup frontends on every host.
 use serde_json::Value;
 pub struct PromotionReview {
     #[cfg(target_os = "linux")]

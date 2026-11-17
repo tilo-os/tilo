@@ -1,5 +1,5 @@
 use tilo_actions::remote::host_account::{
-    Entitlement, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, Standing, Usage,
+    Entitlement, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, Subscription, Usage,
     WorkspaceUsage,
 };
 use tilo_actions::remote::mcp_server::{AgentSession, Grant, Server};
@@ -50,7 +50,7 @@ fn tilo_cloud() -> HostAccount {
                 ..Limits::default()
             },
         }],
-        standing: Some(Standing {
+        subscription: Some(Subscription {
             account: "acct-1".into(),
             plan: Some("pro".into()),
             payment_method: Some(PaymentMethod::default()),
@@ -166,9 +166,9 @@ tilo_test_env::scenario! {
     {
         en();
         let mut host = tilo_cloud();
-        host.standing = Some(Standing {
+        host.subscription = Some(Subscription {
             account: "acct-1".into(),
-            ..Standing::default()
+            ..Subscription::default()
         });
         let rows = rows(&TiloOverview {
             hosts: vec![host],

@@ -133,7 +133,7 @@ impl PrivateHistory {
                 decode(&stored.bytes)?
             }
             // An obsolete slot (including the unbound legacy format) may be
-            // replaced, but its private contents never cross actor custody.
+            // replaced, but its private contents never cross actor ownership.
             _ => VecDeque::new(),
         };
         // Reads may include another live session's accepted writes. Ask the

@@ -324,7 +324,7 @@ pub(crate) fn issue(
     Ok((cert, projection))
 }
 
-/// Install the admitted member identity into the destination's own custody, never
+/// Install the admitted member identity into the destination's own ownership, never
 /// over an identity that already exists.
 pub(crate) fn install(
     identity_root: &Path,

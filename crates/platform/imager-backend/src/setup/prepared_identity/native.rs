@@ -1,4 +1,4 @@
-//! Durable installer identity custody, separate from the host's active persona; dropping a handle
+//! Durable installer identity storage, separate from the host's active persona; dropping a handle
 //! never deletes a prepared identity or its provider secret.
 use crate::{destination_security, migration::PinnedDirectory, migration_durability};
 use std::{
@@ -52,7 +52,7 @@ impl PreparedIdentity {
 
     /// Creates exclusively in a fresh private directory under a granted private parent. Neither the
     /// host's active identity nor an existing preparation is adopted or replaced, and a failed attempt
-    /// keeps custody for explicit recovery.
+    /// keeps ownership for explicit recovery.
     pub fn create(
         directory: &Path,
         name: &str,
@@ -62,7 +62,7 @@ impl PreparedIdentity {
         let parent = PinnedDirectory::open_absolute(directory.parent().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Identity custody requires a private parent",
+                "Identity ownership requires a private parent",
             )
         })?)?;
         parent.validate_destination()?;
@@ -70,7 +70,7 @@ impl PreparedIdentity {
         let pin = parent.create_child(directory.file_name().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Identity custody requires a new directory",
+                "Identity ownership requires a new directory",
             )
         })?)?;
         create_primary_identity(directory, name, color, storage)?;
@@ -98,14 +98,14 @@ impl PreparedIdentity {
         let parent = PinnedDirectory::open_absolute(
             directory
                 .parent()
-                .ok_or_else(|| io::Error::other("missing custody parent"))?,
+                .ok_or_else(|| io::Error::other("missing ownership parent"))?,
         )?;
         parent.validate_destination()?;
         destination_security::check_private_file(&parent.file)?;
         let pin = parent.create_child(
             directory
                 .file_name()
-                .ok_or_else(|| io::Error::other("missing custody name"))?,
+                .ok_or_else(|| io::Error::other("missing ownership name"))?,
         )?;
         runtime_identity::import_portable_backup_matching(
             backup,
@@ -144,14 +144,14 @@ impl PreparedIdentity {
         let parent = PinnedDirectory::open_absolute(
             directory
                 .parent()
-                .ok_or_else(|| io::Error::other("missing custody parent"))?,
+                .ok_or_else(|| io::Error::other("missing ownership parent"))?,
         )?;
         parent.validate_destination()?;
         destination_security::check_private_file(&parent.file)?;
         let pin = parent.create_child(
             directory
                 .file_name()
-                .ok_or_else(|| io::Error::other("missing custody name"))?,
+                .ok_or_else(|| io::Error::other("missing ownership name"))?,
         )?;
         let metadata = current.metadata()?;
         let bytes = runtime_identity::public_member_record_with_presentation(
@@ -261,7 +261,7 @@ impl PreparedIdentity {
         self.validate()?;
         self.current
             .as_ref()
-            .ok_or_else(|| io::Error::other("not current identity custody"))?
+            .ok_or_else(|| io::Error::other("not current identity storage"))?
             .export_password_sealed(destination, password, binding)
     }
     pub fn enrolled_device_public_key(&self) -> Option<[u8; 32]> {
@@ -277,7 +277,7 @@ impl PreparedIdentity {
     ) -> io::Result<tilo_identity_host::enrolled_transport::TransportReceipt> {
         self.enrolled
             .as_ref()
-            .ok_or_else(|| io::Error::other("identity is not enrolled custody"))?
+            .ok_or_else(|| io::Error::other("identity is not enrolled ownership"))?
             .export_password_sealed(destination, password, binding)
     }
 
@@ -310,7 +310,7 @@ impl PreparedIdentity {
         Ok(prepared)
     }
 
-    pub fn custody_directory(&self) -> &Path {
+    pub fn ownership_directory(&self) -> &Path {
         &self.directory
     }
 
@@ -489,7 +489,7 @@ impl PreparedIdentity {
         Ok(metadata)
     }
 
-    /// Seals a new installation transport artifact through canonical identity backup custody; this does
+    /// Seals a new installation transport artifact through canonical identity backup ownership; this does
     /// not mark first-login recovery backup complete.
     pub fn export(
         &self,
@@ -541,11 +541,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        let custody = root.join("prepared");
+        let ownership = root.join("prepared");
         let prepared =
-            PreparedIdentity::create(&custody, "Ada", [1, 2, 3], IdentityStorage::Files).unwrap();
+            PreparedIdentity::create(&ownership, "Ada", [1, 2, 3], IdentityStorage::Files).unwrap();
         let public_key = prepared.public_key();
-        let before = runtime_identity::load_from_path(custody.join("primary.json"))
+        let before = runtime_identity::load_from_path(ownership.join("primary.json"))
             .unwrap()
             .sign(b"proof")
             .unwrap();
@@ -557,7 +557,7 @@ mod tests {
             Some(photo.clone())
         );
         drop(prepared);
-        let prepared = PreparedIdentity::resume(&custody, public_key).unwrap();
+        let prepared = PreparedIdentity::resume(&ownership, public_key).unwrap();
         let artifact = root.join("identity.sealed");
         let password = "several unrelated installation words";
         assert_eq!(
@@ -568,10 +568,10 @@ mod tests {
             public_key
         );
         assert!(
-            PreparedIdentity::create(&custody, "Replacement", [0; 3], IdentityStorage::Files)
+            PreparedIdentity::create(&ownership, "Replacement", [0; 3], IdentityStorage::Files)
                 .is_err()
         );
-        assert!(PreparedIdentity::resume(&custody, [0; 32]).is_err());
+        assert!(PreparedIdentity::resume(&ownership, [0; 32]).is_err());
         assert!(
             prepared
                 .export(&artifact, Zeroizing::new(password.into()))
@@ -591,6 +591,6 @@ mod tests {
         assert_eq!(signer.avatar_color(), [4, 5, 6]);
         assert_eq!(signer.profile_photo(), Some(&photo));
         assert_eq!(signer.sign(b"proof").unwrap(), before);
-        assert!(custody.join("primary.json").exists());
+        assert!(ownership.join("primary.json").exists());
     }
 }

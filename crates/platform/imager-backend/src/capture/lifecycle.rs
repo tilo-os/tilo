@@ -8,7 +8,7 @@ use std::{
 };
 
 /// An already elevated helper and its private request directory. Dropping the
-/// handle revokes the helper's control pipe and reaps it before releasing custody.
+/// handle revokes the helper's control pipe and reaps it before releasing ownership.
 pub struct Capture {
     child: Child,
     input: Option<ChildStdin>,
@@ -84,7 +84,7 @@ impl Capture {
         })
     }
 
-    /// Closing the control pipe revokes custody even while an RPC is in flight.
+    /// Closing the control pipe revokes ownership even while an RPC is in flight.
     pub fn cancel_now(&mut self) {
         self.input = None;
     }

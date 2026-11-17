@@ -20,7 +20,7 @@ use super::files::Served;
 use super::firecracker::{self, Api, FirecrackerError, Machine, VmFiles};
 use super::jail::{Jail, JailDirs};
 use super::memory;
-use super::meter::{Ledger, Meter, RunEnd, UsageEntry, VmIdentity};
+use super::meter::{Log, Meter, RunEnd, UsageEntry, VmIdentity};
 use super::network::Endpoint;
 use super::size::VmSize;
 use crate::lifecycle::{Action, Lifecycle, LifecycleError, Phase};
@@ -161,7 +161,7 @@ struct ShareServer {
 pub struct HostedVm {
     files: VmFiles,
     settings: Arc<Settings>,
-    ledger: Option<Ledger>,
+    log: Option<Log>,
     clock: Clock,
     meter: Meter,
     life: Lifecycle,
@@ -186,13 +186,13 @@ impl HostedVm {
         identity: VmIdentity,
         files: VmFiles,
         settings: Arc<Settings>,
-        ledger: Option<Ledger>,
+        log: Option<Log>,
         clock: Clock,
     ) -> Result<Self, VmError> {
         std::fs::create_dir_all(&files.state)?;
         let mut meter = Meter::load(&files.meter()).unwrap_or_else(|| Meter::new(identity));
         kill_stray(&files, settings.jail.as_deref());
-        resource_in(ledger.as_ref(), meter.recover().as_ref())?;
+        resource_in(log.as_ref(), meter.recover().as_ref())?;
         meter.save(&files.meter())?;
         let mut life = Lifecycle::new(settings.idle_suspend.as_secs());
         let disk = files.disk().is_file();
@@ -208,7 +208,7 @@ impl HostedVm {
         Ok(Self {
             files,
             settings,
-            ledger,
+            log,
             clock,
             meter,
             life,
@@ -794,7 +794,7 @@ impl HostedVm {
         snapshot.complete()?;
         let now = (self.clock)();
         let record = self.meter.snapshot_taken(now, snapshot.bytes_on_disk());
-        resource_in(self.ledger.as_ref(), record.as_ref())?;
+        resource_in(self.log.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         self.life.suspended();
         self.link = None;
@@ -805,7 +805,7 @@ impl HostedVm {
         let _ = std::fs::remove_file(self.pid_file());
         self.link = None;
         let record = self.meter.stopped((self.clock)(), how);
-        resource_in(self.ledger.as_ref(), record.as_ref())?;
+        resource_in(self.log.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         Ok(record)
     }
@@ -813,7 +813,7 @@ impl HostedVm {
     fn drop_snapshot(&mut self) -> Result<(), VmError> {
         self.files.snapshot().discard()?;
         let record = self.meter.snapshot_dropped((self.clock)());
-        resource_in(self.ledger.as_ref(), record.as_ref())?;
+        resource_in(self.log.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         Ok(())
     }
@@ -959,9 +959,9 @@ pub fn forget_source_argv() -> Vec<String> {
         .to_vec()
 }
 
-fn resource_in(ledger: Option<&Ledger>, record: Option<&UsageEntry>) -> Result<(), VmError> {
-    match (ledger, record) {
-        (Some(ledger), Some(record)) => Ok(ledger.append(record)?),
+fn resource_in(log: Option<&Log>, record: Option<&UsageEntry>) -> Result<(), VmError> {
+    match (log, record) {
+        (Some(log), Some(record)) => Ok(log.append(record)?),
         _ => Ok(()),
     }
 }

@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
         let denied_with_admin_grant = || {
             let ctx = PermissionContext::member(&tilo_ui::permissions::MemberId::person("mallory"), Role::Editor);
             let block = ctx
-                .standing()
+                .access()
                 .policy
                 .block("mallory", policy::Grantee::person("owner"));
             ctx.with_grant(block).with_grant(policy::Grant::new(

@@ -120,7 +120,7 @@ pub fn device_builder() -> anyhow::Result<Builder<PackageStoreTools, Option<Cata
     ))
 }
 
-/// [`device_builder`] as the environment record's seam, or a builder that
+/// [`device_builder`] as the environment record's boundary, or a builder that
 /// says why this device can't build tools.
 pub fn device_tool_builder() -> std::sync::Arc<dyn tilo_environment::ToolBuilder> {
     match device_builder() {

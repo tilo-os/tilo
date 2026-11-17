@@ -6,7 +6,7 @@
 //! for decide one invocation, and every host decides it the same way — the
 //! Linux broker over its app sockets and the page over the apps it runs.
 
-use tilo_action_policy::{Acting, ActionKind, Answer, Authority, MemberId, Standing, TreePath};
+use tilo_action_policy::{Acting, ActionKind, Answer, Authority, MemberAccess, MemberId, TreePath};
 use tilo_actions::remote::Caller;
 use tilo_app_id::AppId;
 use tilo_desktop_model::Workspace;
@@ -313,27 +313,27 @@ impl BrokerActor {
     /// Who this actor's invocation in `workspace` is decided for, with the
     /// grants the workspace's policy does not hold ([`Self::granted`]).
     #[must_use]
-    pub fn standing_in(&self, workspace: &Workspace) -> Standing {
-        let mut standing = Standing::new(workspace.policy.clone(), self.acting())
+    pub fn access_in(&self, workspace: &Workspace) -> MemberAccess {
+        let mut access = MemberAccess::new(workspace.policy.clone(), self.acting())
             .granted(self.granted(&workspace.policy.workspace));
         if let Some(kinds) = &self.app_kinds {
-            standing = standing.in_app(kinds.clone());
+            access = access.in_app(kinds.clone());
         }
         if self.capped {
-            standing.on_foreign_device()
+            access.on_foreign_device()
         } else {
-            standing
+            access
         }
     }
 
-    /// What this actor may do in `workspace` ([`Self::standing_in`]).
+    /// What this actor may do in `workspace` ([`Self::access_in`]).
     pub fn with_authority_in<T>(
         &self,
         workspace: &Workspace,
         decide: impl FnOnce(&Authority<'_>) -> T,
     ) -> T {
-        let standing = self.standing_in(workspace);
-        decide(&standing.authority())
+        let access = self.access_in(workspace);
+        decide(&access.authority())
     }
 
     /// Whether this actor is a person acting from their own device: the one
@@ -427,11 +427,11 @@ impl BrokerActor {
                 &record,
             )
         });
-        let standing = actor.standing_in(workspace);
+        let access = actor.access_in(workspace);
         // The broker reaches the person on their own device to ask them.
         let (admission, spent) = tilo_action_policy::admit_invocation(
-            &standing.authority(),
-            standing.asker(true),
+            &access.authority(),
+            access.asker(true),
             tilo_action_policy::Invocation {
                 node: &node,
                 kind: need.kind,

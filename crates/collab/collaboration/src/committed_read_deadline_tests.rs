@@ -83,8 +83,8 @@ fn a_second_committed_capture_deadline_closes_the_original_root() {
     held_capture_acknowledgement(AcknowledgementOutcome::RepeatedDeadline);
 }
 #[test]
-fn committed_capture_deadline_renewal_rejects_changed_private_custody() {
-    held_capture_acknowledgement(AcknowledgementOutcome::ChangedCustody);
+fn committed_capture_deadline_renewal_rejects_changed_private_ownership() {
+    held_capture_acknowledgement(AcknowledgementOutcome::ChangedOwnership);
 }
 #[test]
 fn committed_capture_broker_refusal_never_renews_when_named_as_a_deadline() {
@@ -98,7 +98,7 @@ fn committed_capture_invalid_acknowledgement_never_renews() {
 enum AcknowledgementOutcome {
     Renew,
     RepeatedDeadline,
-    ChangedCustody,
+    ChangedOwnership,
     BrokerRefusal,
     InvalidReply,
 }
@@ -196,7 +196,7 @@ fn held_capture_acknowledgement(outcome: AcknowledgementOutcome) {
             captures.lock().unwrap().committed_ack_hold = Some((entered, hold));
             Some((release, observed))
         }
-        AcknowledgementOutcome::ChangedCustody => {
+        AcknowledgementOutcome::ChangedOwnership => {
             captures.lock().unwrap().committed_private_binding = Some(42);
             None
         }
@@ -265,7 +265,7 @@ fn held_capture_acknowledgement(outcome: AcknowledgementOutcome) {
             );
         }
         AcknowledgementOutcome::RepeatedDeadline
-        | AcknowledgementOutcome::ChangedCustody
+        | AcknowledgementOutcome::ChangedOwnership
         | AcknowledgementOutcome::BrokerRefusal
         | AcknowledgementOutcome::InvalidReply => {
             if matches!(outcome, AcknowledgementOutcome::RepeatedDeadline) {
@@ -277,11 +277,11 @@ fn held_capture_acknowledgement(outcome: AcknowledgementOutcome) {
             }
             assert!(
                 !connected,
-                "a second deadline or changed private custody must close the root"
+                "a second deadline or changed private ownership must close the root"
             );
             assert_eq!(
                 verified, 0,
-                "no unacknowledged or changed-custody capture reaches the owner"
+                "no unacknowledged or changed-ownership capture reaches the owner"
             );
         }
     }

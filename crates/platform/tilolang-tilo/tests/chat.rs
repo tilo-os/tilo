@@ -1123,11 +1123,11 @@ tilo_test_env::scenario! {
         policy
             .members
             .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
-        let (mut ada, loaded) = Replica::standing(
+        let (mut ada, loaded) = Replica::access(
             "ada",
             AutoCommit::new(),
             &[(CHAT, CHAT_IDS)],
-            Some(tilo_action_policy::Standing::person(policy, "ada")),
+            Some(tilo_action_policy::MemberAccess::person(policy, "ada")),
         );
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
@@ -1277,11 +1277,11 @@ tilo_test_env::scenario! {
         policy
             .members
             .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
-        let (mut ada, _loaded) = Replica::standing(
+        let (mut ada, _loaded) = Replica::access(
             "ada",
             AutoCommit::new(),
             &[(CHAT, CHAT_IDS)],
-            Some(tilo_action_policy::Standing::person(policy, "ada")),
+            Some(tilo_action_policy::MemberAccess::person(policy, "ada")),
         );
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();

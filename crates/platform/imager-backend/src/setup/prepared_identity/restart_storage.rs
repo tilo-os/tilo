@@ -1,4 +1,4 @@
-//! Private restart-index storage. A public path or decoded record is not custody.
+//! Private restart-index storage. A public path or decoded record is not ownership.
 use super::{DraftLock, ensure_private_tree, require_supported};
 use crate::{destination_security, migration::PinnedDirectory, migration_durability};
 use std::{ffi::OsStr, io, path::Path, sync::Arc};

@@ -372,12 +372,12 @@ impl ActionControls for MusicApp {
         self.lend(|music| music.on_control_invocation_result(address, result));
     }
 
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
+        attachment: ui::control_domain::DomainAttachment,
     ) {
-        self.lend(|music| music.install_control_custody(domain, attachment));
+        self.lend(|music| music.attach_controls(domain, attachment));
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

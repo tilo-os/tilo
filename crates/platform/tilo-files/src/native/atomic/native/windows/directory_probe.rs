@@ -460,10 +460,10 @@ fn relative_observed(
         Buffer: units.as_mut_ptr(),
     });
     // Duplicate only existing authority; never reopen a path for stronger rights.
-    let parent_custody = parent.try_clone()?;
+    let parent_ownership = parent.try_clone()?;
     let attrs = Box::new(OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-        RootDirectory: parent_custody.as_raw_handle(),
+        RootDirectory: parent_ownership.as_raw_handle(),
         ObjectName: &raw mut *unicode,
         Attributes: 0,
         SecurityDescriptor: descriptor
@@ -519,7 +519,7 @@ fn relative_observed(
         let _ = Box::leak(attrs);
         std::mem::forget(units);
         std::mem::forget(descriptor);
-        std::mem::forget(parent_custody);
+        std::mem::forget(parent_ownership);
     }
     log.event(
         if create { "create" } else { "open" },

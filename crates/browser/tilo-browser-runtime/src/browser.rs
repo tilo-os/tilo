@@ -875,7 +875,7 @@ impl Desktop {
         let opens = !in_workspace
             || self
                 .shared
-                .standing
+                .access
                 .role()
                 .is_none_or(|role| role.includes(tilo_action_policy::Role::Editor));
         let opened = self.handle.set_opens(opens);
@@ -1143,7 +1143,7 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
 
 fn admit_runtime() -> Result<(), JsValue> {
     SERVICING
-        .with(crate::mount_service_custody::reject_reentry)
+        .with(crate::mount_service_lease::reject_reentry)
         .map_err(|_| error("the runtime is busy (an owned mount callback)"))
 }
 
@@ -1184,7 +1184,7 @@ fn with_mount_quietly<R>(
     }
     SERVICING.with(|servicing| {
         MOUNTS.with(|mounts| {
-            let mut lease = crate::mount_service_custody::Lease::take(mounts, servicing, id)
+            let mut lease = crate::mount_service_lease::Lease::take(mounts, servicing, id)
                 .map_err(|_| error("the runtime is busy (an owned mount callback)"))?
                 .ok_or_else(|| error("closed mount"))?;
             let mount = lease.mount().map_err(|_| error("closed mount"))?;
@@ -1198,7 +1198,7 @@ fn with_mount_quietly<R>(
 fn defer_event(event: DeferredEvent) -> Option<DeferredEvent> {
     SERVICING.with(|servicing| {
         DEFERRED_EVENTS
-            .with(|events| crate::mount_service_custody::admit_or_defer(servicing, events, event))
+            .with(|events| crate::mount_service_lease::admit_or_defer(servicing, events, event))
     })
 }
 #[derive(Clone)]
@@ -1287,7 +1287,7 @@ pub async fn load_application(app: String) -> bool {
 pub fn close(id: u64) -> Result<JsValue, JsValue> {
     admit_runtime()?;
     SERVICING.with(|servicing| MOUNTS.with(|mounts| {
-        let mut lease = crate::mount_service_custody::Lease::take(mounts, servicing, id)
+        let mut lease = crate::mount_service_lease::Lease::take(mounts, servicing, id)
             .map_err(|_| error("the runtime is busy (an owned mount callback)"))?;
         REQUESTS.with_borrow_mut(|r| r.remove(&id));
         DESKTOPS.with_borrow_mut(|desktops| desktops.remove(&id));
@@ -1705,7 +1705,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .unwrap_or(profile);
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
     // In a workspace, the page's apps may only read until the workspace says what
-    // its person may do there (`Joined::follow_standing`): a change they make
+    // its person may do there (`Joined::follow_access`): a change they make
     // before that the workspace may refuse, and a write queued under a role the
     // page only assumed would be refused at the API once the workspace's answer
     // arrives, over the window, though the person never asked for it.

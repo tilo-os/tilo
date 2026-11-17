@@ -46,7 +46,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// Show `source` being dragged to just before `before`, for a capture: the row lifts under
-    /// a pointer resting on the seam above `before` and the drop line shows. Nothing moves
+    /// a pointer resting on the boundary above `before` and the drop line shows. Nothing moves
     /// unless a real release follows. Whether both rows stand placed, so it showed.
     pub fn stage_reorder(&mut self, source: &M::Key, before: &M::Key) -> bool {
         if self.rect.is_zero_area() {

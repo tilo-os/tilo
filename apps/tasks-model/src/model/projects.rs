@@ -178,7 +178,7 @@ impl Tracker {
     }
 
     /// Say whether the project or area `area` reaches an end or goes on: a
-    /// project with a goal, or an area that is a standing responsibility.
+    /// project with a goal, or an area that is an access responsibility.
     #[action(item = areas, step = "edit", writes = areas)]
     pub fn set_kind(
         &mut self,

@@ -150,14 +150,14 @@ private struct AgentRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .contextMenu {
-            if agent.standing == .working || agent.standing == .needsYou {
+            if agent.state == .working || agent.state == .needsYou {
                 Button(AssistantWords.stop.said, role: .destructive) { model.stop(agent.id) }
             }
         }
     }
 
     private var dot: Token {
-        switch agent.standing {
+        switch agent.state {
         case .working: .asst
         case .needsYou: .you
         case .done: .on

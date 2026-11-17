@@ -4,7 +4,7 @@
 //!
 //! A connector is the app's own launch with no window (`tilo-launcher run
 //! --tilolang-connector <origin>`): the launcher gives it exactly the sandbox its signed
-//! manifest declares for that origin — the network and the custody the tilolang host that runs
+//! manifest declares for that origin — the network and the ownership the tilolang host that runs
 //! its instances never has — and the app's runtime runs its origin's connector there
 //! (`tilolang_mail::run_connector`, `tilolang_youtube::connector::run`).
 //!
@@ -66,7 +66,7 @@ impl ConnectorHost {
 
     /// Stop the connector of `app`'s `origin` in `workspace` when one runs: nothing of that app
     /// in that workspace reads the service any more, so what the service says next waits nowhere
-    /// and the process, with the network and custody its sandbox gave it, ends. Whether one ran.
+    /// and the process, with the network and ownership its sandbox gave it, ends. Whether one ran.
     ///
     /// The child is reaped on a thread of its own, never here: this runs on the loop's pass, and
     /// a killed process can take a moment to end (a kernel wait, a file it is writing), which on
@@ -217,7 +217,7 @@ pub(crate) fn reap(child: Child) {
 /// whose package declares it, in the sandbox its signed manifest gives that origin, and the service
 /// reached through it.
 /// A connector is the app's own launch with no window (`--tilolang-connector <origin>`): it holds
-/// the network and the custody the session and the tilolang host never have. A session that
+/// the network and the ownership the session and the tilolang host never have. A session that
 /// cannot start one says why and goes on: the app's records then stand as they are, and its
 /// views show what they last held.
 ///

@@ -211,7 +211,7 @@ fn empty(file: &File) -> io::Result<()> {
     }
     Ok(())
 }
-/// Only the private exclusive-mkdir custody may call this; never an adopted FD.
+/// Only the private exclusive-mkdir ownership may call this; never an adopted FD.
 pub(crate) fn normalize_fresh_empty(file: &File) -> io::Result<()> {
     let metadata = file.metadata()?;
     if !metadata.is_dir() || !crate::native::private::owned_by_me(&metadata) {

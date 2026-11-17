@@ -2219,7 +2219,7 @@ mod tests {
         assert_eq!(
             joined(),
             1,
-            "package-primary is a local custody key, never a second wire route"
+            "package-primary is a local ownership key, never a second wire route"
         );
     }
 
@@ -2520,7 +2520,7 @@ mod tests {
         );
         assert!(
             !directory.exists(),
-            "no default graph, writer, or custody file before governor creation admission"
+            "no default graph, writer, or ownership file before governor creation admission"
         );
         assert!(!records.is_ready(&want.id));
     }

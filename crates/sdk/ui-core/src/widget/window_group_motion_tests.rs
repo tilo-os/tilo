@@ -88,13 +88,13 @@ fn a_new_tab_shows_the_tab_before_it_until_it_draws_then_cross_fades() {
         assert_eq!(g.active_tab_id(), 42, "the new tab is shown at once");
         g.advance_tab_handover(&theme);
         assert_eq!(
-            g.tab_standing_in(),
+            g.stand_in_tab(),
             Some(1),
             "until it draws, the tab shown before stands in"
         );
         drawn.set(true);
         g.advance_tab_handover(&theme);
-        assert_eq!(g.tab_standing_in(), None, "it has drawn");
+        assert_eq!(g.stand_in_tab(), None, "it has drawn");
         let now = crate::motion::frame_now();
         let fade = g.tab_fade.as_ref().expect("the two cross-fade");
         assert_eq!(

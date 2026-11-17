@@ -431,7 +431,7 @@ fn record_health(
 
 impl PeerSnapshot {
     /// Derive the snapshot from a session status and this device's `writes` to each record, as
-    /// its replica's custody keeps them.
+    /// its replica's ownership keeps them.
     pub fn from_status(
         status: &PeerStatus,
         writes: &BTreeMap<DocumentRoute, DocumentWrites>,

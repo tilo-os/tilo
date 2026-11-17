@@ -77,7 +77,7 @@ tilo_test_env::scenario! {
         assert!(!metadata.contains("PRIVATE_APP_PASSWORD"));
         let vault = SecretVault::open_in(&root);
         assert_eq!(
-            account_custody::password_credential(&vault.get(&id).unwrap()).to_string(),
+            account_credentials::password_credential(&vault.get(&id).unwrap()).to_string(),
             "PRIVATE_APP_PASSWORD"
         );
         let encrypted = std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).unwrap();
@@ -104,15 +104,15 @@ tilo_test_env::scenario! {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("target");
         let server = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let custodian = account_custody::Custodian::for_root(Some(root.clone())).with_provider(
-            account_custody::OAuthCloud::GoogleDrive,
+        let credential_store = account_credentials::CredentialStore::for_root(Some(root.clone())).with_provider(
+            account_credentials::OAuthCloud::GoogleDrive,
             server.provider(),
             "tilo-client",
         );
-        let connector = Connector::with_custodian(root.clone(), custodian);
+        let connector = Connector::with_credential_store(root.clone(), credential_store);
         let authorization = connector
             .begin_oauth(
-                account_custody::OAuthCloud::GoogleDrive,
+                account_credentials::OAuthCloud::GoogleDrive,
                 Some("ada@example.test"),
             )
             .unwrap();
@@ -120,7 +120,7 @@ tilo_test_env::scenario! {
         let browser = std::thread::spawn(move || tilo_oauth::fake::browse(&url));
         let id = connector
             .finish_oauth(
-                account_custody::OAuthCloud::GoogleDrive,
+                account_credentials::OAuthCloud::GoogleDrive,
                 "My Drive",
                 authorization,
             )
@@ -200,12 +200,12 @@ tilo_test_env::scenario! {
         std::fs::create_dir_all(&target_home).unwrap();
         let root = target_home.join(".config/tilo");
         let server = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let custodian = account_custody::Custodian::for_root(Some(root.clone())).with_provider(
-            account_custody::OAuthCloud::GoogleDrive,
+        let credential_store = account_credentials::CredentialStore::for_root(Some(root.clone())).with_provider(
+            account_credentials::OAuthCloud::GoogleDrive,
             server.provider(),
             "tilo-client",
         );
-        let mut actions = actions::AccountActions::default().with_custodian(custodian);
+        let mut actions = actions::AccountActions::default().with_credential_store(credential_store);
         let consent = actions
             .begin(actions::ConnectionProvider::GoogleDrive, None, &target_home)
             .unwrap();
@@ -354,7 +354,7 @@ tilo_test_env::scenario! {
             "https://cloud.example.test/remote.php/dav/files/ada"
         );
         assert_eq!(
-            account_custody::password_credential(&SecretVault::open_in(&target).get(&id).unwrap())
+            account_credentials::password_credential(&SecretVault::open_in(&target).get(&id).unwrap())
                 .to_string(),
             "fixture-app-password"
         );
@@ -379,12 +379,12 @@ tilo_test_env::scenario! {
 
     phase source_native_tilo_spotify_grants_remain_usable_in_both_canonical_music_slots;
     {
-        use account_custody::{Capability, Custodian, OAuthIssuer, OAuthUse, TokenSet};
+        use account_credentials::{Capability, CredentialStore, OAuthIssuer, OAuthUse, TokenSet};
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source");
         let target = root.path().join("target");
         let mut store = AccountStore::new();
-        let source_custody = Custodian::for_root(Some(source.clone()));
+        let source_ownership = CredentialStore::for_root(Some(source.clone()));
         for (slot, scope, token) in [
             (
                 "music.spotify",
@@ -403,7 +403,7 @@ tilo_test_env::scenario! {
             account.config = serde_json::json!({"provider":"spotify"});
             store.upsert(account);
             store.save_in(&source).unwrap();
-            source_custody
+            source_ownership
                 .seal_oauth(
                     &id,
                     &TokenSet {
@@ -421,7 +421,7 @@ tilo_test_env::scenario! {
         let original_vault = std::fs::read(&source_vault).unwrap();
         let original_store = std::fs::read(accounts::store_path_in(&source)).unwrap();
         let connector = Connector::new(target.clone());
-        let target_custody = Custodian::for_root(Some(target.clone()));
+        let target_ownership = CredentialStore::for_root(Some(target.clone()));
         for (slot, capability, token) in [
             (
                 "music.spotify",
@@ -436,7 +436,7 @@ tilo_test_env::scenario! {
         ] {
             let id = AccountId::new(slot);
             assert_eq!(connector.import_tilo(&source, &id).unwrap(), id);
-            let usable = target_custody
+            let usable = target_ownership
                 .oauth_access_token(&id, OAuthUse::new(OAuthIssuer::Spotify, capability), false)
                 .unwrap();
             assert_eq!(usable.as_str(), token);
@@ -591,7 +591,7 @@ fn connect_spotify_test_slots(connector: &Connector) -> Vec<AccountId> {
 
 #[test]
 fn spotify_library_and_playback_use_distinct_pkce_grants_and_survive_prepared_export() {
-    use account_custody::{Capability, ClientTable, Custodian, OAuthIssuer, OAuthUse};
+    use account_credentials::{Capability, ClientTable, CredentialStore, OAuthIssuer, OAuthUse};
     let temp = tempfile::tempdir().unwrap();
     let stage = temp.path().join("stage");
     let destination = temp.path().join("destination");
@@ -606,14 +606,14 @@ music_streaming = ["streaming", "user-read-private"]
 "#,
     )
     .unwrap();
-    let custodian = Custodian::for_root(Some(stage.clone()))
+    let credential_store = CredentialStore::for_root(Some(stage.clone()))
         .with_client_table(table)
         .with_issuer_endpoints(OAuthIssuer::Spotify, server.provider());
     let profile =
         serde_json::json!({"id":"ada-spotify","account_id":"stable-ada","display_name":"Ada"});
     let (endpoint, api) =
         super::spotify_identity::profile_server(vec![profile.clone(), profile.clone(), profile]);
-    let mut connector = Connector::with_custodian(stage.clone(), custodian);
+    let mut connector = Connector::with_credential_store(stage.clone(), credential_store);
     connector.spotify_api = Some(endpoint);
     let selected = connect_spotify_test_slots(&connector);
     api.join().unwrap();
@@ -637,7 +637,7 @@ music_streaming = ["streaming", "user-read-private"]
     target
         .import_password_sealed_accounts_matching(&sealed, password, b"music-setup", &selected)
         .unwrap();
-    let imported = Custodian::for_root(Some(destination.clone()));
+    let imported = CredentialStore::for_root(Some(destination.clone()));
     let [library, playback] = selected.as_slice() else {
         panic!("both independently consented Spotify slots must be present");
     };
@@ -675,7 +675,7 @@ music_streaming = ["streaming", "user-read-private"]
 
 #[test]
 fn spotify_playback_is_available_only_with_its_canonical_configured_scopes() {
-    use account_custody::{ClientTable, Custodian};
+    use account_credentials::{ClientTable, CredentialStore};
     let no_playback = ClientTable::parse(
         r#"
 [spotify]
@@ -686,7 +686,7 @@ music = ["user-read-private", "user-library-read"]
     )
     .unwrap();
     let actions = AccountActions::default()
-        .with_custodian(Custodian::for_root(None).with_client_table(no_playback));
+        .with_credential_store(CredentialStore::for_root(None).with_client_table(no_playback));
     assert!(!actions.connection_available(ConnectionProvider::SpotifyStreaming));
     assert!(actions.connection_available(ConnectionProvider::Spotify));
 }
@@ -702,11 +702,11 @@ tilo_test_env::scenario! {
         let id = AccountId::new("source-google");
         let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
         issuer.accept_refresh_token("source-refresh");
-        let tokens = account_custody::TokenSet {
+        let tokens = account_credentials::TokenSet {
             refresh_token: "source-refresh".into(),
             ..Default::default()
         };
-        let original_secret = account_custody::oauth_secret(&tokens);
+        let original_secret = account_credentials::oauth_secret(&tokens);
         let mut vault = SecretVault::open_in(&source);
         vault.put(&id, &original_secret);
         vault.try_save().unwrap();
@@ -720,22 +720,22 @@ tilo_test_env::scenario! {
         let imported_secret = SecretVault::open_in(&target).get(&id).unwrap();
         assert_eq!(
             imported_secret,
-            account_custody::copied_secret(source_store.get(&id).unwrap(), &original_secret)
+            account_credentials::copied_secret(source_store.get(&id).unwrap(), &original_secret)
         );
-        assert!(account_custody::is_copied_secret(&imported_secret));
-        let custodian = account_custody::Custodian::for_root(Some(target.clone())).with_provider(
-            account_custody::OAuthCloud::GoogleDrive,
+        assert!(account_credentials::is_copied_secret(&imported_secret));
+        let credential_store = account_credentials::CredentialStore::for_root(Some(target.clone())).with_provider(
+            account_credentials::OAuthCloud::GoogleDrive,
             issuer.provider(),
             "tilo-client",
         );
-        custodian
+        credential_store
             .oauth_access_token(
                 &id,
-                account_custody::OAuthCloud::GoogleDrive.oauth_use(),
+                account_credentials::OAuthCloud::GoogleDrive.oauth_use(),
                 true,
             )
             .unwrap();
-        assert!(account_custody::is_copied_secret(
+        assert!(account_credentials::is_copied_secret(
             &SecretVault::open_in(&target).get(&id).unwrap()
         ));
         assert_eq!(connector.import_tilo(&source, &id).unwrap(), id);
@@ -748,12 +748,12 @@ tilo_test_env::scenario! {
             .import_sealed_accounts(&sealed, &key, b"source-copy")
             .unwrap();
         let restored_secret = SecretVault::open_in(&restored_root).get(&id).unwrap();
-        assert!(account_custody::is_copied_secret(&restored_secret));
+        assert!(account_credentials::is_copied_secret(&restored_secret));
         let account = AccountStore::load_in(&restored_root)
             .get(&id)
             .cloned()
             .unwrap();
-        custodian.revoke(&account, &restored_secret);
+        credential_store.revoke(&account, &restored_secret);
         assert!(issuer.revoked().is_empty());
         assert_eq!(
             std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap(),
@@ -770,8 +770,8 @@ tilo_test_env::scenario! {
             .unwrap();
         let handed_off = SecretVault::open_in(&fresh_target).get(&id).unwrap();
         assert_eq!(handed_off, original_secret);
-        assert!(!account_custody::is_copied_secret(&handed_off));
-        custodian.revoke(&account, &handed_off);
+        assert!(!account_credentials::is_copied_secret(&handed_off));
+        credential_store.revoke(&account, &handed_off);
         assert!(!issuer.revoked().is_empty());
     }
 
@@ -815,12 +815,12 @@ tilo_test_env::scenario! {
             source_bytes
         );
         // Even an unknown future tagged grant with an outer password cannot be
-        // mistaken for a fresh Nextcloud app password by the current custodian.
+        // mistaken for a fresh Nextcloud app password by the current credential store.
         let mut unknown = secret.clone();
         unknown.token = Some(serde_json::json!({"kind":"future_protected_password"}).to_string());
         let account = AccountStore::load_in(&source).get(&id).cloned().unwrap();
-        assert!(account_custody::password_credential(&unknown).is_empty());
-        account_custody::Custodian::for_root(Some(source.clone())).revoke(&account, &unknown);
+        assert!(account_credentials::password_credential(&unknown).is_empty());
+        account_credentials::CredentialStore::for_root(Some(source.clone())).revoke(&account, &unknown);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         let fresh = Connector::new(temporary.path().join("fresh-prepared"));
         fresh.handoff_prepared(&source, &id).unwrap();
@@ -850,7 +850,7 @@ tilo_test_env::scenario! {
         grant["password"] = "edited-target-password".into();
         changed.token = Some(serde_json::to_string(&grant).unwrap());
         assert_eq!(
-            account_custody::password_credential(&changed).as_str(),
+            account_credentials::password_credential(&changed).as_str(),
             "edited-target-password"
         );
         target_vault.put(&id, &changed);
@@ -865,7 +865,7 @@ tilo_test_env::scenario! {
             original_bytes
         );
         assert_eq!(
-            account_custody::password_credential(
+            account_credentials::password_credential(
                 &SecretVault::open_read_only_in(&source).get(&id).unwrap()
             )
             .to_string(),

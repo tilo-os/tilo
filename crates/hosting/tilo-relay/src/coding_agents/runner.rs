@@ -11,7 +11,7 @@
 //! the harness's own id for it. Many run at once, each in its own run.
 //!
 //! Starting one costs its person money and may change a repository, so a
-//! start that nobody was asked about happens only where a standing yes of
+//! start that nobody was asked about happens only where a lasting yes of
 //! its person covers it ([`Permits`]); everywhere else the keeper says that
 //! it needs their yes ([`NotTold::NeedsYes`]) and starts nothing.
 //!
@@ -82,7 +82,7 @@ pub trait Permits: Send + Sync {
     fn stands(&self, agent: &CodingAgent) -> bool;
 }
 
-/// A host that keeps no standing yes of anybody: nothing starts unasked.
+/// A host that keeps no lasting yes of anybody: nothing starts unasked.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoPermit;
 
@@ -95,8 +95,8 @@ impl Permits for NoPermit {
 /// What lets a coding agent start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Permit {
-    /// Its person's standing yes for the workspace, where one stands.
-    Standing,
+    /// Its person's lasting yes for the workspace, where one stands.
+    Lasting,
     /// Its person's yes to this one start.
     Once,
 }
@@ -196,7 +196,7 @@ impl CodingAgents {
     /// its next one; otherwise its harness is started, taking its
     /// conversation up where it stood, with `serves` behind its endpoints
     /// and what it says written to `conversation`. A start is let by
-    /// `permit`: its person's yes to this one, or their standing yes where
+    /// `permit`: its person's yes to this one, or their lasting yes where
     /// one stands. Its host hands it words one turn at a time, so no two
     /// starts of one agent meet.
     ///
@@ -234,7 +234,7 @@ impl CodingAgents {
         if taken {
             return Ok(());
         }
-        if permit == Permit::Standing && !self.permits.stands(agent) {
+        if permit == Permit::Lasting && !self.permits.stands(agent) {
             return Err(NotTold::NeedsYes);
         }
         let harness = self.harnesses.named(&agent.harness).ok_or_else(|| {

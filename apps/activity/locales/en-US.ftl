@@ -73,7 +73,7 @@ activity-replay-window = { $window }, { $share }% of the width
 activity-presence-trail = Present
 
 # What the system did, beside the workspace's changes.
-activity-ledger-heading = What this device did
+activity-log-heading = What this device did
 # How a changed field reads: its name, and what it was before.
 activity-was = Was { $before }
 

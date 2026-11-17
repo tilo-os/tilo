@@ -158,7 +158,7 @@ impl Runner {
             .with(|active| {
                 SERVICING.with(|servicing| {
                     DEFERRED_EVENTS.with(|events| {
-                        crate::mount_service_custody::replay_snapshot(
+                        crate::mount_service_lease::replay_snapshot(
                             active,
                             servicing,
                             events,
@@ -198,7 +198,7 @@ impl ApplicationHandler<u64> for Runner {
         }
         if REQUESTS.with_borrow(|requests| requests.contains_key(&id)) {
             let result = SERVICING.with(|servicing| {
-                let _construction = crate::mount_service_custody::Construction::enter(servicing, id)
+                let _construction = crate::mount_service_lease::Construction::enter(servicing, id)
                     .map_err(|_| error("the runtime is busy (mount construction)"))?;
                 let Some(request) = REQUESTS.with_borrow_mut(|requests| requests.remove(&id)) else { return Ok(()); };
                 let status = request.status.clone();

@@ -2446,7 +2446,7 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
                     .map(Some)
             }
             None => match &self.run.folder_history {
-                // The folder History lists is the window's own: the root witnesses the
+                // The folder History lists is the window's own: the root observations the
                 // source its runner registered.
                 Some((source, definition)) => {
                     let scopes = definition.scopes.iter().map(|scope| {

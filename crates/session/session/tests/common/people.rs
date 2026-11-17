@@ -1321,7 +1321,7 @@ impl Device {
                 SESSION_LOG.get().map_or(
                     "info,tilo_peer_state::direct=debug,tilo_peer_state::join_transport=debug,\
                      tilo_session::layout=debug,tilo_network_actor::native_ingress=debug,\
-                     tilo_peer_state::owner::publication=debug,tilo_session_client::custody=debug",
+                     tilo_peer_state::owner::publication=debug,tilo_session_client::ownership=debug",
                     String::as_str,
                 ),
             )

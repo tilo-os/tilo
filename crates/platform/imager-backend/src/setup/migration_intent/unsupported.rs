@@ -1,4 +1,4 @@
-//! No source permission can be minted without the native source custodian.
+//! No source permission can be minted without the native source owner.
 use crate::setup::{
     flatpak_transfer::InstalledRef,
     migration::PinnedDirectory,

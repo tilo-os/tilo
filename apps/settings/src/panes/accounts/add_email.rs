@@ -1,5 +1,5 @@
 //! Adding an email account with its secret, the published `add-email-account`
-//! effect: the secret goes to the session's account custody first (outside a
+//! effect: the secret goes to the session's account credentials first (outside a
 //! session, to an explicit root's own vault), then the account joins the
 //! person's accounts, with the other names and addresses it sends as. An
 //! account given no secret joins waiting for the person to sign it in.
@@ -11,7 +11,7 @@ use crate::accounts::AccountRoot;
 use crate::resource::Settings;
 
 pub(super) enum Sealing {
-    Custody(ui::collaboration::browser_service_sessions::Pending),
+    Session(ui::collaboration::browser_service_sessions::Pending),
     /// Sealed already, in an explicit root's own vault.
     Done,
 }
@@ -25,17 +25,17 @@ pub(super) struct AddingEmail {
 }
 
 impl AddingEmail {
-    /// The outcome once custody answered: the secret sealed, or why not.
+    /// The outcome once ownership answered: the secret sealed, or why not.
     pub(super) fn poll(&mut self) -> Option<Result<(), String>> {
         match &mut self.sealing {
             Sealing::Done => Some(Ok(())),
-            Sealing::Custody(pending) => pending.poll().map(|reply| match reply {
+            Sealing::Session(pending) => pending.poll().map(|reply| match reply {
                 Ok(ui::collaboration::browser_service_sessions::BrowserServiceSessionReply::AccountSecretStored { account })
                     if account == self.config.email =>
                 {
                     Ok(())
                 }
-                Ok(_) => Err("Account custody answered something else".into()),
+                Ok(_) => Err("Account credentials answered something else".into()),
                 Err(error) => Err(error),
             }),
         }
@@ -96,7 +96,7 @@ pub(super) fn answer(
 
 impl AccountsArea {
     /// Add the email account `config` with `password`: the secret first, to
-    /// the session's custody (or, outside a session, the explicit root's
+    /// the session's ownership (or, outside a session, the explicit root's
     /// vault), then the account into the person's accounts, so an account
     /// never shows without the secret it signs in with.
     pub(super) fn add_email_account(
@@ -133,7 +133,7 @@ impl AccountsArea {
         Ok(Effected::Pending)
     }
 
-    /// Seal `password` for the account `config`: in the session's custody,
+    /// Seal `password` for the account `config`: in the session's ownership,
     /// or, outside a session, in the explicit root's own vault.
     fn seal(
         &self,
@@ -141,8 +141,8 @@ impl AccountsArea {
         config: &accounts::email::AccountConfig,
         password: zeroize::Zeroizing<String>,
     ) -> Result<Sealing, String> {
-        Ok(if let Some(custody) = &self.custody {
-            Sealing::Custody(custody.request(
+        Ok(if let Some(session_secrets) = &self.session_secrets {
+            Sealing::Session(session_secrets.request(
                 ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::StoreAccountSecret {
                     account: config.email.clone(),
                     password,
@@ -156,7 +156,7 @@ impl AccountsArea {
             Sealing::Done
         } else {
             return Err(
-                "This device's account custody is unavailable, so the account's password cannot be kept"
+                "This device's account credentials is unavailable, so the account's password cannot be kept"
                     .into(),
             );
         })

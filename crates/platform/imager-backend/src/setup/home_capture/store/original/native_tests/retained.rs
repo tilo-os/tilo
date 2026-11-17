@@ -659,7 +659,7 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
         installed_authority
             .revalidate(&AtomicBool::new(false))
             .is_err(),
-        "live source lease retains exact installed continuation inode custody"
+        "live source lease retains exact installed continuation inode ownership"
     );
     std::fs::remove_file(&installed_record).unwrap();
     std::fs::rename(&saved_installed, &installed_record).unwrap();
@@ -705,7 +705,7 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
         )
     );
     // Root fixture mutates only its own protected source record. A matching
-    // replacement cannot preserve an already issued lease's inode custody.
+    // replacement cannot preserve an already issued lease's inode ownership.
     let mounted_record = PathBuf::from(format!(
         "/proc/self/fd/{}/../var/lib/tilo-imager/home-capture/records/{operation}.retained-caller.json",
         projection.directory().as_raw_fd(),
@@ -716,7 +716,7 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
     std::fs::set_permissions(&mounted_record, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert!(
         authority.revalidate(&AtomicBool::new(false)).is_err(),
-        "matching bytes in a different root-owned inode cannot replace active record custody"
+        "matching bytes in a different root-owned inode cannot replace active record ownership"
     );
     std::fs::remove_file(&mounted_record).unwrap();
     std::fs::rename(&saved_record, &mounted_record).unwrap();
@@ -724,7 +724,7 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
         authority.revalidate(&AtomicBool::new(false)).is_err(),
         "a restored inode cannot revive an observed revoked source epoch"
     );
-    // This proves custody, not old-group app operations (increment B/C).
+    // This proves ownership, not old-group app operations (increment B/C).
     assert!(
         authority.clone().retire().is_err(),
         "live projection prevents positive mount retirement"

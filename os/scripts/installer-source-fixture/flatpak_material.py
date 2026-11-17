@@ -42,7 +42,7 @@ def held_bytes(path, limit, uid, mode):
         before = os.fstat(fd)
         require(stat.S_ISREG(before.st_mode) and before.st_uid == uid
                 and before.st_mode & 0o7777 == mode and before.st_nlink == 1
-                and 0 < before.st_size <= limit, 'runnable material file custody refused')
+                and 0 < before.st_size <= limit, 'runnable material file ownership refused')
         data = bytearray()
         end = time.monotonic() + 5
         while len(data) <= limit:
@@ -62,7 +62,7 @@ def private(path):
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.lstat()
     require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
-            and info.st_mode & 0o7022 == 0, 'source material directory custody refused')
+            and info.st_mode & 0o7022 == 0, 'source material directory ownership refused')
 
 
 def write_new(path, data, mode=0o600):
@@ -107,7 +107,7 @@ def install(home, deadline, owned_runner=bounded):
     require(home.is_absolute() and home.resolve(strict=True) == home, 'actual source Home path refused')
     info = home.lstat()
     require(stat.S_ISDIR(info.st_mode) and info.st_uid == 1000 and info.st_mode & 0o7022 == 0,
-            'actual source Home custody refused')
+            'actual source Home ownership refused')
     installation = home / '.local/share/flatpak'
     require(not os.path.lexists(installation), 'fresh isolated user Flatpak installation required')
     root = home / '.cache/tilo-native-flatpak-material'
@@ -134,7 +134,7 @@ def install(home, deadline, owned_runner=bounded):
     agent = None
     try:
         # The signing agent is our actual foreground Child, not an autostarted
-        # daemon. Keep its custody through every export and retire it before capture.
+        # daemon. Keep its ownership through every export and retire it before capture.
         agent = subprocess.Popen(['/usr/bin/gpg-agent', '--homedir', str(gnupg),
                                   '--daemon', '--no-detach', '--disable-scdaemon'],
                                  env={'PATH': '/usr/bin', 'HOME': str(home), 'LC_ALL': 'C',

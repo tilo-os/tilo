@@ -128,8 +128,8 @@ class ActionConfirmationTests(unittest.TestCase):
 
     # Undo is a system service: a deletion it takes back runs at once, so a
     # destructive action that is not undoable says why in a tag or in the
-    # ledger, where a reviewer reads the reason beside it.
-    LEDGER = [
+    # manifest, where a reviewer reads the reason beside it.
+    MANIFEST = [
         {
             "action": "erase",
             "file": "apps/disks/src/resource.rs",
@@ -203,7 +203,7 @@ class ActionConfirmationTests(unittest.TestCase):
         """
         self.assertEqual(check.check_source("apps/accounts/src/resource.rs", source), [])
 
-    def test_allows_a_deletion_the_ledger_names_at_its_site(self):
+    def test_allows_a_deletion_the_manifest_names_at_its_site(self):
         source = """
         fn erase(device: &str) -> ActionSpec {
             ActionSpec::operation("erase", "Erase drive", OperationKind::Effect, OP, &"erase")
@@ -212,7 +212,7 @@ class ActionConfirmationTests(unittest.TestCase):
         }
         """
         self.assertEqual(
-            check.check_source("apps/disks/src/resource.rs", source, self.LEDGER), []
+            check.check_source("apps/disks/src/resource.rs", source, self.MANIFEST), []
         )
 
     def test_an_entry_covers_one_site(self):
@@ -223,7 +223,7 @@ class ActionConfirmationTests(unittest.TestCase):
                 .destructive()
         }
         """
-        errors = check.check_source("apps/other/src/resource.rs", source, self.LEDGER)
+        errors = check.check_source("apps/other/src/resource.rs", source, self.MANIFEST)
         self.assertEqual(len(errors), 1, errors)
 
     def test_sees_a_deletion_that_closes_a_declaration_builder(self):
@@ -264,7 +264,7 @@ class ActionConfirmationTests(unittest.TestCase):
         """
         self.assertEqual(check.check_source("apps/chat/src/window_bar.rs", source), [])
 
-    def test_a_ledger_file_covers_the_files_its_pattern_holds(self):
+    def test_a_manifest_file_covers_the_files_its_pattern_holds(self):
         source = """
         fn erase(device: &str) -> ActionSpec {
             ActionSpec::operation("erase", "Erase drive", OperationKind::Effect, OP, &"erase")
@@ -272,7 +272,7 @@ class ActionConfirmationTests(unittest.TestCase):
                 .destructive()
         }
         """
-        entries = [dict(self.LEDGER[0], file="apps/disks/src/*.rs")]
+        entries = [dict(self.MANIFEST[0], file="apps/disks/src/*.rs")]
         self.assertEqual(
             check.check_source("apps/disks/src/resource.rs", source, entries), []
         )
@@ -328,17 +328,17 @@ class ActionConfirmationTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("a deletion the code does not name", errors[0])
 
-    def test_refuses_a_ledger_entry_without_a_reason(self):
+    def test_refuses_a_manifest_entry_without_a_reason(self):
         errors = []
-        kept = check.ledger_entries(
+        kept = check.manifest_entries(
             [{"action": "erase", "file": "apps/x/src/resource.rs"}], errors
         )
         self.assertEqual(kept, [])
         self.assertTrue(any("gives no reason" in error for error in errors), errors)
 
-    def test_refuses_a_ledger_entry_that_pins_nothing(self):
+    def test_refuses_a_manifest_entry_that_pins_nothing(self):
         errors = []
-        kept = check.ledger_entries(
+        kept = check.manifest_entries(
             [
                 {
                     "action": "erase",
@@ -350,9 +350,9 @@ class ActionConfirmationTests(unittest.TestCase):
         self.assertEqual(kept, [])
         self.assertTrue(any("pins the site" in error for error in errors), errors)
 
-    def test_refuses_a_ledger_entry_nothing_builds(self):
+    def test_refuses_a_manifest_entry_nothing_builds(self):
         errors = check.unbuilt(
-            [dict(self.LEDGER[0], action="forget")],
+            [dict(self.MANIFEST[0], action="forget")],
             [("apps/disks/src/resource.rs", "erase", set())],
         )
         self.assertEqual(len(errors), 1, errors)

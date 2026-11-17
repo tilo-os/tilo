@@ -179,7 +179,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     }
     observer_session.close().await;
 
-    // The browser joins the workspace and opens the note, its key in custody:
+    // The browser joins the workspace and opens the note, its key held:
     // every signature it asks for answers later, as a `WebCrypto` key's does.
     let store = std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default());
     let page = || {

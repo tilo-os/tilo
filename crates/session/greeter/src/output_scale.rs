@@ -10,7 +10,7 @@
 //!   beside it. Every configuration therefore packs the enabled heads again,
 //!   left to right in their existing order, at their new logical widths.
 //! - The window spans every output, so a centred sign-in card lands on the
-//!   seam between two displays, or in a gap where no display shows it. The
+//!   boundary between two displays, or in a gap where no display shows it. The
 //!   greeter reads [`Displays::layout`] and places the card on the
 //!   primary output; the backdrop covers each output.
 //!

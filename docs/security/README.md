@@ -19,14 +19,14 @@ specific areas.
 | [composefs-decision.md](composefs-decision.md) | Why Tilo is on bootc's composefs backend rather than ostree, with the evidence. Records that formal stabilisation is unlikely soon and why waiting was the worse risk. | Questioning the backend choice |
 | [fuzzing.md](fuzzing.md) | Coverage-guided fuzz targets, CI cadence, and crash-handling policy for hostile package, collaboration, and identity inputs. | Adding an untrusted parser or triaging a fuzz finding |
 | [tinkering.md](tinkering.md) | How a power user gets root-shaped freedom without ambient root: work layers and capability leases. | Working on privilege or the app sandbox |
-| [defects.md](defects.md) | The as-built ledger. Every known defect with file:line, severity, and the check that catches a regression. Deliberately separate from the design. | Before claiming something works |
+| [defects.md](defects.md) | The as-built list. Every known defect with file:line, severity, and the check that catches a regression. Deliberately separate from the design. | Before claiming something works |
 
 ## Two conventions that matter
 
-**The design describes the next version; the ledger describes this one.** If
+**The design describes the next version; the list describes this one.** If
 `architecture.md` says something the code does not do, that is intentional — it
 is a target. What the code actually does, and where it falls short, lives in
-`defects.md`. Do not annotate the design with current-code caveats; add a ledger
+`defects.md`. Do not annotate the design with current-code caveats; add a list
 entry instead.
 
 **A check that cannot observe its subject must fail, not pass.** Five separate

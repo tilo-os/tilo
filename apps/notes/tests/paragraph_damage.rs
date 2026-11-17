@@ -10,11 +10,11 @@ use std::{cell::RefCell, rc::Rc};
 use ui::{Widget, headless::FrameHarness};
 use vello::{Scene, kurbo::Rect, peniko::Color};
 
-struct DamageWitness {
+struct DamageObservation {
     inner: Box<dyn Widget>,
     damage: Rc<RefCell<Vec<Rect>>>,
 }
-impl ui::widget::Decorator for DamageWitness {
+impl ui::widget::Decorator for DamageObservation {
     type Inner = dyn Widget;
     fn inner(&self) -> &Self::Inner {
         self.inner.as_ref()
@@ -71,7 +71,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     f.write_page(f.child, body.as_bytes());
     let checkout = notebook(&f);
     let damage = Rc::new(RefCell::new(Vec::new()));
-    let witness = Rc::clone(&damage);
+    let observation = Rc::clone(&damage);
     let mut inputs = runner_inputs();
     inputs.theme.reduce_motion = reduce_motion;
     let background = inputs.theme.tokens.colors.surfaces.content;
@@ -80,9 +80,9 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
         (1200, 900),
         inputs,
         move |inner| {
-            Box::new(DamageWitness {
+            Box::new(DamageObservation {
                 inner,
-                damage: witness,
+                damage: observation,
             })
         },
     )

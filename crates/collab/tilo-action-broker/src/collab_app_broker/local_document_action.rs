@@ -103,29 +103,29 @@ impl ReceiptCache {
 }
 
 /// Recovery provenance must match the live authenticated channel, not replace it.
-fn validate_report_custody(
+fn validate_report_ownership(
     request: &Request,
     route: &CrdtRoute,
     current: &AdmittedJoinIdentity,
 ) -> Result<(), BrokerError> {
-    let custody = request
-        .custody
+    let ownership = request
+        .ownership
         .as_ref()
-        .ok_or_else(|| rejected("local report authenticated custody missing".into()))?;
+        .ok_or_else(|| rejected("local report authenticated ownership missing".into()))?;
     let certificate = current
         .certificate
         .as_ref()
         .ok_or_else(|| rejected("original SDK caller certificate missing".into()))?;
-    if !custody.valid()
-        || custody.root != certificate.user_public_key
-        || custody.device != certificate.device_public_key
-        || custody.agent != current.agent_id
-        || custody.app_id != route.app_id
-        || custody.workspace != route.cluster_id
-        || custody.document != route.document_id
+    if !ownership.valid()
+        || ownership.root != certificate.user_public_key
+        || ownership.device != certificate.device_public_key
+        || ownership.agent != current.agent_id
+        || ownership.app_id != route.app_id
+        || ownership.workspace != route.cluster_id
+        || ownership.document != route.document_id
     {
         return Err(rejected(
-            "local report authenticated custody changed".into(),
+            "local report authenticated ownership changed".into(),
         ));
     }
     Ok(())
@@ -145,7 +145,7 @@ fn cached_receipt(
         return Err(BrokerError::failed("invocation broker retired".into()));
     }
     let current = state.revalidate_admission(route, &channel.verified_identity)?;
-    validate_report_custody(request, route, &current)?;
+    validate_report_ownership(request, route, &current)?;
     // A worker is registered on a route when its connection joins it, for
     // as long as the connection lives, so a connection that is no worker
     // here never was: nothing reported on it can have been admitted, and
@@ -303,7 +303,7 @@ pub(super) fn admit(
         let admitted = channel
             .state
             .revalidate_admission(&route, &channel.verified_identity)?;
-        validate_report_custody(&request, &route, &admitted)?;
+        validate_report_ownership(&request, &route, &admitted)?;
         Ok((request, route, admitted))
     })();
     async move {
@@ -349,7 +349,7 @@ pub(super) fn admit(
             .checked_policy_time(Some(&time))
             .map_err(BrokerError::failed)?;
         let current = state.revalidate_admission(&route, &admitted)?;
-        validate_report_custody(&request, &route, &current)?;
+        validate_report_ownership(&request, &route, &current)?;
         offer
             .check_registration(state, &channel.directories, peer)
             .map_err(rejected)?;

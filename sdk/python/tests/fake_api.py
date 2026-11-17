@@ -243,7 +243,7 @@ class FakeApi:
                 200,
                 {
                     "host": "api.test",
-                    "standing": {
+                    "subscription": {
                         "plan": "free",
                         "account": "ab" * 32,
                         "usage": {

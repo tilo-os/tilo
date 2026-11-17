@@ -1111,7 +1111,7 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
         assert!(
             drawn.get(),
             "an app with a frame that fits its tab must be what the tile \
-         paints; anything else is a placeholder standing in front of a \
+         paints; anything else is a placeholder access in front of a \
          window that is already there",
         );
     }

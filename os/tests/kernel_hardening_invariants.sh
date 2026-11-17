@@ -309,7 +309,7 @@ for required in \
   "device_key_meta=\"\$(stat -c '%u:%G:%a:%h:%s' \"\$device_key\" 2>/dev/null || echo invalid)\"" \
   "[ \"\$device_key_meta\" = '0:tilo-identity:640:1:32' ]"; do
   grep -Fq "$required" "$audit" \
-    || bad "installed audit does not prove device-key custody: $required"
+    || bad "installed audit does not prove device-key storage: $required"
 done
 
 arm64_missing=0
@@ -1076,7 +1076,7 @@ for sealed_key_control in \
 done
 grep -Fq '|| secureboot_artifact_present /var/lib/tilo/secureboot/db.key.cred' "$audit" \
   || bad 'security audit mistakes TPM-sealed Secure Boot authority for missing keys'
-for custody_check in \
+for ownership_check in \
   "stat -c '%u:%a:%h:%s'" \
   '[ -e "$1" ] || [ -L "$1" ]' \
   'secureboot_dir_meta" != 0:700' \
@@ -1084,8 +1084,8 @@ for custody_check in \
   'secureboot_public_file_safe /var/lib/tilo/secureboot/db.crt' \
   'secureboot_private_file_safe /var/lib/tilo/secureboot/db.key.cred' \
   'secureboot_private_file_safe /var/lib/tilo/secureboot/db.key'; do
-  grep -Fq "$custody_check" "$audit" \
-    || bad "installed audit does not continuously verify Secure Boot key custody: $custody_check"
+  grep -Fq "$ownership_check" "$audit" \
+    || bad "installed audit does not continuously verify Secure Boot key storage: $ownership_check"
 done
 for firmware_chain_check in \
   'tilo-crypto firmware-read-esl /sys/firmware/efi/efivars' \

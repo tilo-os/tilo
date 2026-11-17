@@ -1829,7 +1829,7 @@ fn a_task_opened_from_search_shows_its_page(seeded: &Chunks) {
     }
 }
 
-/// The row standing open into its item where it stands: the page a person reads there, and the
+/// The row held open into its item where it stands: the page a person reads there, and the
 /// field they type the item's title into. `None` while no row stands open.
 fn opened_title_field(session: &mut Session) -> Option<String> {
     let view = session.hosted().view()?;

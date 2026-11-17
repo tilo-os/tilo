@@ -133,7 +133,7 @@ impl BrowserWidget {
             uri: self.current_uri.clone(),
             navigation: self.bar_navigation(),
             actions: self.bar_actions(),
-            leading: self.custody_leading(),
+            leading: self.ownership_leading(),
             favicon: self.favicon_png.clone(),
             suggestions: self.bar_suggestions(),
             library: self.show_library.then(|| self.library_segments()),
@@ -332,7 +332,7 @@ impl BrowserWidget {
             navigation: Some(self.bar_navigation()),
             location: Some(location),
             actions: self.bar_actions(),
-            leading: self.custody_leading(),
+            leading: self.ownership_leading(),
             ..WindowToolbar::default()
         }
     }
@@ -341,7 +341,7 @@ impl BrowserWidget {
     /// and browses as a visitor: a button whose menu opens the page in a window of the
     /// person's own. Their own window says nothing, nor does a visitor's once a credential
     /// was entered in it.
-    pub(super) fn custody_leading(&self) -> Vec<ToolbarAction> {
+    pub(super) fn ownership_leading(&self) -> Vec<ToolbarAction> {
         if self.browsing_mode != crate::browsing_mode::BrowsingMode::Visitor
             || self.page_holds_sign_in()
         {
@@ -349,7 +349,7 @@ impl BrowserWidget {
         }
         let page = super::is_supported_web_url(&self.current_uri);
         vec![
-            ToolbarAction::new("custody", "bot", t("browser-visitor-window"))
+            ToolbarAction::new("ownership", "bot", t("browser-visitor-window"))
                 .labelled()
                 .with_items(vec![
                     self.bar_entries

@@ -60,7 +60,7 @@ impl CredentialOwner {
     /// `admitted` retains and checks the original native execution, not a
     /// copied boolean. Apps are never lent this owner handle.
     /// # Errors
-    /// Refuses foreign scope, invalid origin, unavailable custody, duplicate
+    /// Refuses foreign scope, invalid origin, unavailable ownership, duplicate
     /// proposals or a full bounded queue. Authority runs outside all mutexes.
     pub fn propose_scoped(
         &self,
@@ -137,7 +137,7 @@ impl CredentialOwner {
     /// Review the current original-owner proposals. Stale authority, expiry
     /// and vault changes remove them; no background decision creates access.
     /// # Errors
-    /// Refuses poisoned original custody. Checks never run under its mutexes.
+    /// Refuses poisoned original ownership. Checks never run under its mutexes.
     pub fn proposals(&self) -> Result<Vec<CredentialProposal>, BrokerError> {
         let broker = self.broker()?;
         let revision = broker.lock().map_err(|_| BrokerError::Denied)?.revision;
@@ -199,7 +199,7 @@ impl CredentialOwner {
     /// and returns permission metadata only. A one-shot credential read cannot
     /// authorize persistent provider startup and is deliberately refused here.
     /// # Errors
-    /// Refuses replay, expiry, changed custody or retired admission. Failed
+    /// Refuses replay, expiry, changed ownership or retired admission. Failed
     /// post-decision authority revokes only the new exact permission ID.
     pub fn decide_proposal(
         &self,

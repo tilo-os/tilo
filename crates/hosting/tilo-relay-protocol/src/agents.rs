@@ -23,7 +23,7 @@
 //!
 //! Every request is an invocation with the caller's own id. The supervisor
 //! retains the last 1024 invocations (including status polls) in its shared
-//! in-memory ledger. While retained, a resent spawn or message returns the
+//! in-memory log. While retained, a resent spawn or message returns the
 //! first answer and conflicting input is refused. Eviction or host restart
 //! ends that retry window; this is not a durable exactly-once guarantee.
 //!

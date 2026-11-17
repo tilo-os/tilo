@@ -39,7 +39,7 @@ pub struct Assembly {
     pub journal: EncryptedJournal,
 }
 impl NativeBroker {
-    /// Receives already approved key custody; never creates keys or grants.
+    /// Receives already approved key storage; never creates keys or grants.
     pub fn new(assembly: Assembly) -> Result<Self, SendError> {
         let owner = assembly.journal.owner().clone();
         let canonical = uuid::Uuid::parse_str(&owner.account)

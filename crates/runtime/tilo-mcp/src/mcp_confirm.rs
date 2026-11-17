@@ -40,7 +40,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             request.revision = Some(self.current_revision(&request.target.provider).await?);
         }
         let asked = request.clone();
-        let witnessed = tokio::time::timeout(
+        let approved = tokio::time::timeout(
             CONFIRMATION_PATIENCE,
             self.at_host(false, move |host, caller| host.confirm(caller, &asked)),
         )
@@ -50,8 +50,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         })?
         .ok_or_else(|| BridgeError::from("Unavailable"))?
         .map_err(BridgeError::Host)?;
-        edited.clone_from(&witnessed.arguments);
-        witnessed.apply(request);
+        edited.clone_from(&approved.arguments);
+        approved.apply(request);
         self.start(request.clone(), wait, record).await
     }
 }

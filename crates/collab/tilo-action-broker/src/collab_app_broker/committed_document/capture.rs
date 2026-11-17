@@ -1,4 +1,4 @@
-//! Byte custody for immutable native reads. Reservations precede capture work:
+//! Byte ownership for immutable native reads. Reservations precede capture work:
 //! each capture reserves the most a native save may produce before it runs,
 //! and keeps only what the save produced for as long as the capture lives.
 //!

@@ -349,7 +349,7 @@ pub struct Reading<'a> {
     pub chat: &'a tilo::ChatRead,
     pub context: &'a Context,
     /// The workspace's members with their roles (`{"members": [{"person",
-    /// "role"}]}`), for a Discord-side moderator's standing in Tilo; `null`
+    /// "role"}]}`), for a Discord-side moderator's access in Tilo; `null`
     /// when the host binds none, which treats nobody as a moderator.
     pub workspace: &'a Value,
     /// The workspace's emoji as the host hands them (`{"emoji": [{"name",

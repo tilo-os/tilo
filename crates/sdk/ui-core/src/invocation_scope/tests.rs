@@ -395,7 +395,7 @@ tilo_test_env::scenario! {
         restore.store(false, Ordering::Release);
         assert!(
             job.check().is_err(),
-            "retired original custody cannot revive"
+            "retired original ownership cannot revive"
         );
     }
 }

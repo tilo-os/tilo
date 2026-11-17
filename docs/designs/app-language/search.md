@@ -153,7 +153,7 @@ known by (the registry's keywords: "youtube" for an app called Tube) are not par
   same layout, so nothing shifts.
 - **Ranking is the system's:** text match and field weight first, then what the person opened
   or wrote recently, then recency. A chosen sort replaces the last two.
-- **A saved query is a resource:** a smart folder, a "due this week" list, an agent's standing
+- **A saved query is a resource:** a smart folder, a "due this week" list, an agent's access
   "watch for mail from the school". Synced and shareable like anything else.
 
 ## 6. Where search appears

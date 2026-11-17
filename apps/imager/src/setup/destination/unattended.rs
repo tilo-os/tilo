@@ -404,7 +404,7 @@ impl Recipe {
         }
         if !self.acknowledge_recovery_key {
             return Err(
-                "The unattended recipe must acknowledge that its operator will take custody of \
+                "The unattended recipe must acknowledge that its operator will take over \
                  the one-time recovery key"
                     .into(),
             );

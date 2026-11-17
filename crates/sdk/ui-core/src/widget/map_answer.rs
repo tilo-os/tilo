@@ -45,7 +45,7 @@ impl Map {
 
     /// Take up the answer the map built before this one kept (`held` its pins, `answer` its
     /// answer), and choose it again among the places that arrived since: of those that grow from
-    /// where the person pointed, the one standing nearest the point is the answer (the turn at
+    /// where the person pointed, the one access nearest the point is the answer (the turn at
     /// the caret, a thing found at a click), unless the answer kept stands nearer.
     pub(super) fn take_answer(&mut self, held: &[String], answer: Option<String>) {
         let Some(asked) = self.asked else {

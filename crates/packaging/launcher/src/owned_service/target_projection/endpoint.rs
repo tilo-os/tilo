@@ -15,7 +15,7 @@ pub struct TargetProjectionEndpoint {
     mount_namespace: File,
     view: File,
     detached_view: std::sync::Mutex<Option<File>>,
-    exposure: Arc<super::exposure::ExposureCustody>,
+    exposure: Arc<super::exposure::ExposureOwnership>,
     pub(super) record: Record,
     ready: std::sync::Mutex<Option<UnixStream>>,
     initialized: std::sync::atomic::AtomicBool,
@@ -29,13 +29,13 @@ impl TargetProjectionEndpoint {
         admission: &TargetProjectionAdmission,
     ) -> io::Result<Self> {
         admission.check()?;
-        service.custody()?;
+        service.ownership()?;
         let mut stream = admission
             .receiver
             .lock()
-            .map_err(|_| io::Error::other("Target ready custody poisoned"))?
+            .map_err(|_| io::Error::other("Target ready ownership poisoned"))?
             .take()
-            .ok_or_else(|| refused("Target ready custody already taken"))?;
+            .ok_or_else(|| refused("Target ready ownership already taken"))?;
         bounded(&stream)?;
         let peer = authenticate(&mut stream, 0)?;
         if peer.pid() != service.init_pid {
@@ -99,7 +99,7 @@ impl TargetProjectionEndpoint {
             return Err(refused("Root ready kernel endpoint differs"));
         }
         admission.check()?;
-        service.custody()?;
+        service.ownership()?;
         Ok(Self {
             service,
             authority: admission.authority.clone(),
@@ -143,14 +143,14 @@ impl TargetProjectionEndpoint {
         {
             return Err(refused("Target endpoint authority binding differs"));
         }
-        self.service.custody()?;
+        self.service.ownership()?;
         let m = self.mount_namespace.metadata()?;
         if Some(&(m.dev(), m.ino())) != self.record.namespaces.first()
             || mount_id(&self.view)? != self.record.mount_id.ok_or(io::ErrorKind::InvalidData)?
         {
-            return Err(refused("Target projection mount custody differs"));
+            return Err(refused("Target projection mount ownership differs"));
         }
-        self.service.custody().map(|_| ())
+        self.service.ownership().map(|_| ())
     }
     /// Available before FUSE initialization.
     pub fn connect_control(&self) -> io::Result<UnixStream> {
@@ -190,7 +190,7 @@ impl TargetProjectionEndpoint {
         let mut slot = self
             .ready
             .lock()
-            .map_err(|_| io::Error::other("Target ready custody poisoned"))?;
+            .map_err(|_| io::Error::other("Target ready ownership poisoned"))?;
         let stream = slot
             .as_mut()
             .ok_or_else(|| refused("Target ready already observed"))?;
@@ -324,7 +324,7 @@ impl TargetProjectionEndpoint {
         self.check_lookup_session()?;
         self.detached_view
             .lock()
-            .map_err(|_| io::Error::other("Exposure custody poisoned"))?
+            .map_err(|_| io::Error::other("Exposure ownership poisoned"))?
             .take()
             .ok_or_else(|| io::ErrorKind::AlreadyExists.into())
     }
@@ -343,7 +343,7 @@ impl TargetProjectionEndpoint {
             return Err(refused("Target observation worker retired or differs"));
         }
         drop(slot);
-        self.service.custody().map(|_| ())
+        self.service.ownership().map(|_| ())
     }
     fn fail_observation(&self, stream: &UnixStream) {
         self.observation_failed

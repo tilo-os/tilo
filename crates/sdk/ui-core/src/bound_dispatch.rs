@@ -174,7 +174,7 @@ impl BoundActionTarget {
 
 pub(crate) fn has_matching_broker_component(
     root: &dyn Widget,
-    route: Option<&crate::collaboration::PrimaryRouteWitness>,
+    route: Option<&crate::collaboration::AcceptedRoute>,
 ) -> bool {
     if root
         .callback_binding()
@@ -247,7 +247,7 @@ pub(crate) fn component_controls_allowed(
         (Some(only), None) => Some(only),
         _ => None,
     };
-    let permissions = binding.permissions.borrow().directory_witness().ok();
+    let permissions = binding.permissions.borrow().directory_observation().ok();
     if let (Some(snapshot), Some(permissions)) = (only, permissions)
         && let Some(forest) = snapshot.shared_forest()
     {
@@ -280,7 +280,7 @@ impl ControlAvailability {
     fn derive(
         binding: &CallbackBinding,
         forest: &Rc<[SharedResource]>,
-        permissions: crate::permissions::DirectoryPermissionWitness,
+        permissions: crate::permissions::DirectoryPermissionObservation,
         addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     ) -> Self {
         let mut derived = Self {
@@ -429,7 +429,7 @@ pub(crate) fn capture_control_invocations(root: &mut dyn Widget) -> BoundControl
     visit_control_queues(root, true)
 }
 
-/// Retry custody traversal without opening any live queue after History entry.
+/// Retry ownership traversal without opening any live queue after History entry.
 pub(crate) fn inspect_control_owners(root: &mut dyn Widget) -> BoundControlBatch {
     visit_control_queues(root, false)
 }
@@ -706,7 +706,7 @@ impl BoundResourceSnapshot {
 /// and the APIs its host offers.
 pub(crate) struct ControlAvailability {
     forest: Rc<[SharedResource]>,
-    permissions: crate::permissions::DirectoryPermissionWitness,
+    permissions: crate::permissions::DirectoryPermissionObservation,
     addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     /// How many available, permitted actions of `forest` have each address.
     counts: HashMap<tilo_actions::ActionAddress, usize>,
@@ -899,7 +899,7 @@ pub(crate) fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::
     )
 }
 
-/// [`search_providers`] as the action directory's witness reads them: the
+/// [`search_providers`] as the action directory's observation reads them: the
 /// same providers in the same order, described without being made, so a
 /// source that indexes to answer builds nothing until someone searches.
 pub(crate) fn search_provider_descriptors(
@@ -1191,14 +1191,14 @@ pub(crate) fn activate_bound_search(
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct BoundDirectoryWitness {
+pub(crate) struct BoundDirectoryObservation {
     owner: uuid::Uuid,
     pub(crate) generation: Option<u64>,
-    permissions: crate::permissions::DirectoryPermissionWitness,
+    permissions: crate::permissions::DirectoryPermissionObservation,
     revisions: Vec<Option<String>>,
     domains: Vec<crate::widget::ActionDirectoryInvocationDomain>,
 }
-impl BoundDirectoryWitness {
+impl BoundDirectoryObservation {
     pub(crate) fn supports_model_refresh(&self) -> bool {
         self.generation.is_some_and(|value| value != u64::MAX)
             && !self.domains.is_empty()
@@ -1216,15 +1216,15 @@ impl BoundDirectoryWitness {
             && matches!((before.generation, self.generation), (Some(old), Some(new)) if new >= old)
     }
 }
-pub(crate) fn directory_witness(
+pub(crate) fn directory_observation(
     root: &dyn Widget,
     doc: &AutoCommit,
-) -> Result<Vec<BoundDirectoryWitness>, String> {
+) -> Result<Vec<BoundDirectoryObservation>, String> {
     fn visit(
         widget: &dyn Widget,
         doc: &AutoCommit,
         inherited: Option<CallbackBinding>,
-        witnesses: &mut Vec<BoundDirectoryWitness>,
+        observations: &mut Vec<BoundDirectoryObservation>,
     ) -> Result<(), String> {
         let boundary = widget.callback_binding();
         let binding = boundary.clone().or(inherited);
@@ -1240,29 +1240,29 @@ pub(crate) fn directory_witness(
             .transpose()
             .map_err(|error| format!("{error:?}"))?;
         if let Some(binding) = &binding {
-            let permissions = binding.permissions.borrow().directory_witness()?;
-            let index = witnesses
+            let permissions = binding.permissions.borrow().directory_observation()?;
+            let index = observations
                 .iter()
-                .position(|witness| witness.owner == binding.lifetime_id)
+                .position(|observation| observation.owner == binding.lifetime_id)
                 .unwrap_or_else(|| {
-                    witnesses.push(BoundDirectoryWitness {
+                    observations.push(BoundDirectoryObservation {
                         owner: binding.lifetime_id,
                         generation: None,
                         permissions: permissions.clone(),
                         revisions: Vec::new(),
                         domains: Vec::new(),
                     });
-                    witnesses.len().saturating_sub(1)
+                    observations.len().saturating_sub(1)
                 });
-            let witness = witnesses
+            let observation = observations
                 .get_mut(index)
                 .ok_or_else(|| "directory owner disappeared".to_string())?;
-            if witness.permissions != permissions {
+            if observation.permissions != permissions {
                 return Err("directory owner policy changed during traversal".into());
             }
-            witness.generation = binding.generation().map_err(|error| format!("{error:?}"))?;
+            observation.generation = binding.generation().map_err(|error| format!("{error:?}"))?;
             if boundary.is_some() {
-                witness.domains.push(
+                observation.domains.push(
                     binding
                         .read_document(doc, |doc, _| {
                             crate::resources::action_directory_invocation_domain(widget, doc)
@@ -1271,7 +1271,7 @@ pub(crate) fn directory_witness(
                 );
             }
             if boundary.is_none() {
-                witness.revisions.push(
+                observation.revisions.push(
                     binding
                         .read_document(doc, |doc, _| {
                             crate::resources::action_directory_revision(widget, doc)
@@ -1283,14 +1283,14 @@ pub(crate) fn directory_witness(
         let mut result = Ok(());
         widget.for_each_child(&mut |child| {
             if result.is_ok() {
-                result = visit(child, doc, binding.clone(), witnesses);
+                result = visit(child, doc, binding.clone(), observations);
             }
         });
         result
     }
-    let mut witnesses = Vec::new();
-    visit(root, doc, None, &mut witnesses)?;
-    Ok(witnesses)
+    let mut observations = Vec::new();
+    visit(root, doc, None, &mut observations)?;
+    Ok(observations)
 }
 
 #[derive(Default)]
@@ -1341,23 +1341,23 @@ impl UndoStatusCache {
 }
 
 /// One bound owner's admission generation and record frontier, read on each side of an input dispatch
-/// (the native App) or of a frame (the frame harness, which also reads the owner's standing:
-/// [`bound_owner_standing`]).
+/// (the native App) or of a frame (the frame harness, which also reads the owner's inputs:
+/// [`bound_owner_inputs`]).
 pub(crate) struct BoundOwnerMark {
     binding: CallbackBinding,
     /// Only the native input path has snapshots across generations.
     #[cfg(feature = "native")]
     generation: Option<u64>,
     document: Option<(Vec<automerge::ChangeHash>, usize)>,
-    standing: Option<OwnerStanding>,
+    inputs: Option<OwnerInputs>,
 }
 
 /// What an owner's published controls and synced root read besides its record and its widgets: what its
 /// permissions mean now (a grant expires with time) and its record's durability, which its root shows
 /// once synced.
 #[derive(PartialEq)]
-pub(crate) struct OwnerStanding {
-    pub(crate) permissions: Result<crate::permissions::DirectoryPermissionWitness, String>,
+pub(crate) struct OwnerInputs {
+    pub(crate) permissions: Result<crate::permissions::DirectoryPermissionObservation, String>,
     pub(crate) save: Result<crate::resource::ResourceSaveStatus, String>,
 }
 
@@ -1375,16 +1375,16 @@ pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<Bo
     owner_marks(root, outer, false)
 }
 
-/// [`bound_owner_marks`] with each owner's standing.
-pub(crate) fn bound_owner_standing(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
+/// [`bound_owner_marks`] with each owner's inputs.
+pub(crate) fn bound_owner_inputs(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
     owner_marks(root, outer, true)
 }
 
-fn owner_marks(root: &dyn Widget, outer: &AutoCommit, standing: bool) -> Vec<BoundOwnerMark> {
+fn owner_marks(root: &dyn Widget, outer: &AutoCommit, inputs: bool) -> Vec<BoundOwnerMark> {
     fn visit(
         widget: &dyn Widget,
         outer: &AutoCommit,
-        standing: bool,
+        inputs: bool,
         marks: &mut Vec<BoundOwnerMark>,
     ) {
         if let Some(binding) = widget.callback_binding()
@@ -1400,8 +1400,8 @@ fn owner_marks(root: &dyn Widget, outer: &AutoCommit, standing: bool) -> Vec<Bou
             let document = binding
                 .read_document(outer, |doc, _| crate::doc::settle_mark(doc))
                 .ok();
-            let standing = standing.then(|| OwnerStanding {
-                permissions: binding.permissions.borrow().directory_witness(),
+            let inputs = inputs.then(|| OwnerInputs {
+                permissions: binding.permissions.borrow().directory_observation(),
                 save: binding
                     .records
                     .save_status(&binding.checkout.id)
@@ -1413,26 +1413,26 @@ fn owner_marks(root: &dyn Widget, outer: &AutoCommit, standing: bool) -> Vec<Bou
                 #[cfg(feature = "native")]
                 generation,
                 document,
-                standing,
+                inputs,
             });
         }
-        widget.for_each_child(&mut |child| visit(child, outer, standing, marks));
+        widget.for_each_child(&mut |child| visit(child, outer, inputs, marks));
     }
     let mut marks = Vec::new();
-    visit(root, outer, standing, &mut marks);
+    visit(root, outer, inputs, &mut marks);
     marks
 }
 
-/// Whether two [`bound_owner_standing`] reads name the same owners, each with its record committed and
-/// unmoved and with the same standing.
-pub(crate) fn same_owner_standing(before: &[BoundOwnerMark], after: &[BoundOwnerMark]) -> bool {
+/// Whether two [`bound_owner_inputs`] reads name the same owners, each with its record committed and
+/// unmoved and with the same inputs.
+pub(crate) fn same_owner_inputs(before: &[BoundOwnerMark], after: &[BoundOwnerMark]) -> bool {
     before.len() == after.len()
         && before.iter().zip(after).all(|(before, after)| {
             before.binding.same_component(&after.binding)
                 && before.is_committed()
                 && before.document == after.document
-                && before.standing.is_some()
-                && before.standing == after.standing
+                && before.inputs.is_some()
+                && before.inputs == after.inputs
         })
 }
 
@@ -1479,7 +1479,7 @@ struct CachedBoundResources {
     /// ([`crate::component_inputs`]); the host's frame count for an owner without one.
     local: LocalInputs,
     locale: u64,
-    permissions: crate::permissions::DirectoryPermissionWitness,
+    permissions: crate::permissions::DirectoryPermissionObservation,
     revisions: Vec<Option<String>>,
     filter_token: u64,
 }
@@ -1570,7 +1570,7 @@ pub(crate) fn discover_cached_bound_resources(
                 .any(|snapshot| snapshot.binding.same_component(binding))
         {
             let generation = binding.generation().map_err(|error| format!("{error:?}"))?;
-            let permissions = match binding.permissions.borrow().directory_witness() {
+            let permissions = match binding.permissions.borrow().directory_observation() {
                 Ok(permissions) => permissions,
                 Err(error) => {
                     cache
@@ -1662,7 +1662,7 @@ pub(crate) fn discover_cached_bound_resources(
                     });
                 let resources = resources.map_err(|error| format!("{error:?}"))?;
                 let revision = binding.lifetime.revision();
-                if binding.permissions.borrow().directory_witness()? != permissions {
+                if binding.permissions.borrow().directory_observation()? != permissions {
                     return Err("owner policy changed while filtering resources".into());
                 }
                 let snapshot = BoundResourceSnapshot::shared(binding.clone(), resources, controls);
@@ -2109,7 +2109,7 @@ pub(crate) struct OrdinaryConfirmation {
     pub(crate) target: local_target::LocalResourceTarget,
     pub(crate) address: tilo_actions::ActionAddress,
     pub(crate) arguments: ControlContinuationArguments,
-    domain: crate::control_custody::WeakControlDomain,
+    domain: crate::control_domain::WeakControlDomain,
     snapshot: OrdinaryConfirmationSnapshot,
     pub(crate) context: tilo_actions::ActionContext,
     /// Why the person is asked when the action declares no confirmation of it: the workspace's grants
@@ -2139,7 +2139,7 @@ fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface
 }
 
 #[derive(Clone)]
-pub(crate) struct ControlWitness {
+pub(crate) struct ControlObservation {
     identity: ControlIdentity,
     intent: PreparedActionIntent,
     confirmation: tilo_actions::ConfirmationPolicy,
@@ -2148,7 +2148,7 @@ pub(crate) struct ControlWitness {
     label: String,
 }
 
-impl PartialEq for ControlWitness {
+impl PartialEq for ControlObservation {
     fn eq(&self, other: &Self) -> bool {
         self.identity == other.identity
             && self.intent == other.intent
@@ -2184,7 +2184,7 @@ pub(crate) struct ControlIdentity {
     input_surface: ControlInputSurface,
 }
 
-impl ControlWitness {
+impl ControlObservation {
     pub(crate) fn confirmation(&self) -> &tilo_actions::ConfirmationPolicy {
         &self.confirmation
     }
@@ -2225,15 +2225,15 @@ impl ControlContinuationArguments {
     }
 }
 
-/// Re-resolve one exact custody target and derive inert comparison data.
+/// Re-resolve one exact ownership target and derive inert comparison data.
 /// The returned encoding is never executed.
-pub(crate) fn control_witness(
+pub(crate) fn control_observation(
     root: &dyn Widget,
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,
     invocation: &tilo_actions::ControlInvocation,
-) -> Result<ControlWitness, tilo_actions::ApiError> {
-    control_witness_with_arguments(
+) -> Result<ControlObservation, tilo_actions::ApiError> {
+    control_observation_with_arguments(
         root,
         doc,
         target,
@@ -2242,13 +2242,13 @@ pub(crate) fn control_witness(
     )
 }
 
-pub(crate) fn control_witness_with_arguments(
+pub(crate) fn control_observation_with_arguments(
     root: &dyn Widget,
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,
     invocation: &tilo_actions::ControlInvocation,
     original_arguments: &ControlContinuationArguments,
-) -> Result<ControlWitness, tilo_actions::ApiError> {
+) -> Result<ControlObservation, tilo_actions::ApiError> {
     let resources = resources_for_control_target(root, doc, target, &invocation.address)?;
     let (resource, spec) = unique_control_spec(&resources, &invocation.address)?;
     let (argument, arguments) = match original_arguments {
@@ -2277,7 +2277,7 @@ pub(crate) fn control_witness_with_arguments(
                 })?;
             (PreparedActionIntent::Encoded(encoded), continuation)
         };
-    Ok(ControlWitness {
+    Ok(ControlObservation {
         identity: control_identity_from_spec(resource, spec, continuation),
         intent,
         confirmation: spec.contract.confirmation.clone(),
@@ -3255,7 +3255,7 @@ pub(crate) fn invoke_resource_action(
                 .and_then(std::convert::identity),
         );
         // Even a post-delivery contract fault must retain Accepted lifecycle
-        // custody for the component's existing CLOSED cancellation/cleanup path.
+        // ownership for the component's existing CLOSED cancellation/cleanup path.
         accepted.then_some((invocation, true))
     };
     root.visit_components(&mut ComponentRequest {
@@ -3470,7 +3470,7 @@ pub struct CallbackBinding {
     pub(crate) closing: Rc<Cell<bool>>,
     pub(crate) registry_owner: std::rc::Weak<()>,
     pub(crate) lifetime_id: uuid::Uuid,
-    pub(crate) control_domain: crate::control_custody::WeakControlDomain,
+    pub(crate) control_domain: crate::control_domain::WeakControlDomain,
     pub(crate) queued_controls:
         Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
     /// Searches the component asked the host to open, drained as host intents by the shell that
@@ -3814,8 +3814,8 @@ struct OperationSpan {
 
 fn operation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
     ACTIVE.with_borrow(|active| {
-        let (_, _, witness, handle) = active.as_ref()?;
-        if !std::ptr::eq(*witness, doc) {
+        let (_, _, observation, handle) = active.as_ref()?;
+        if !std::ptr::eq(*observation, doc) {
             return None;
         }
         let handle = handle.as_ref()?;
@@ -3838,8 +3838,8 @@ fn mutation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
         return Some(handle);
     }
     ACTIVE.with_borrow(|active| {
-        let (_, _, witness, handle) = active.as_ref()?;
-        if !std::ptr::eq(*witness, doc) {
+        let (_, _, observation, handle) = active.as_ref()?;
+        if !std::ptr::eq(*observation, doc) {
             return None;
         }
         let handle = handle.as_ref()?;
@@ -4504,9 +4504,9 @@ impl CallbackBinding {
     }
     pub(crate) fn matches_broker_route(
         &self,
-        witness: Option<&crate::collaboration::PrimaryRouteWitness>,
+        observation: Option<&crate::collaboration::AcceptedRoute>,
     ) -> bool {
-        witness.is_some_and(|witness| self.matches_route(witness.route()))
+        observation.is_some_and(|observation| self.matches_route(observation.route()))
     }
     /// Whether `route` is the broker route this binding names.
     pub(crate) fn matches_route(&self, route: &crate::collaboration::RouteSpec) -> bool {
@@ -5099,7 +5099,7 @@ struct BoundNode {
     inactive: bool,
 }
 
-/// Record owners outside a component (person records, routed records) keep their real record custody;
+/// Record owners outside a component (person records, routed records) keep their real record ownership;
 /// they do not impersonate a canonical component.
 pub(crate) fn restore_resource_history(
     store: &ResourceStore,

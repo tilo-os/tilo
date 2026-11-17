@@ -1,7 +1,7 @@
 //! Who an account belongs to, and what it was granted.
 //!
 //! An [`Identity`] is an account owner admitted under the person's current
-//! device custody while their session is usable. A [`Credential`] binds one
+//! device identity while their session is usable. A [`Credential`] binds one
 //! vault item Messages was granted to exactly that owner. A [`Permission`]
 //! is the request Passwords answers before a new account gets its key.
 
@@ -9,12 +9,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use accounts::{AccessDecision, AccessRequest, CredentialBroker, CredentialOwner, CredentialScope};
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity_host::identity_store::HostIdentity;
 use tilo_messaging::SendError;
 use tilo_messaging_protocol::journal::Owner;
 
-/// The person's device custody and whether their session is usable now.
-pub(crate) struct Custody {
+/// The person's device identity and whether their session is usable now.
+pub(crate) struct Ownership {
     host: HostIdentity,
     actor: String,
     device: String,
@@ -23,8 +23,8 @@ pub(crate) struct Custody {
     generation: AtomicU64,
 }
 
-impl Custody {
-    /// The device custody of `actor` as this device holds it, on SDK
+impl Ownership {
+    /// The device identity of `actor` as this device holds it, on SDK
     /// device `device`.
     ///
     /// # Errors
@@ -42,7 +42,7 @@ impl Custody {
             HostIdentity::held(
                 cert,
                 key,
-                std::sync::Arc::new(tilo_identity_host::custody::files::Files::new(paths)),
+                std::sync::Arc::new(tilo_identity_host::identity_store::files::Files::new(paths)),
             ),
             actor,
             device,
@@ -91,14 +91,14 @@ impl Custody {
     /// Admit `owner` of this person and SDK device now.
     ///
     /// # Errors
-    /// Another person or device, an inactive session or changed custody.
+    /// Another person or device, an inactive session or changed ownership.
     pub(crate) fn admit(self: &Arc<Self>, owner: Owner) -> Result<Identity, SendError> {
         if owner.actor != self.actor || owner.device != self.device {
             return Err(SendError::Revoked);
         }
         let identity = Identity {
             owner,
-            custody: self.clone(),
+            ownership: self.clone(),
             generation: Some(self.generation()),
         };
         identity.check()?;
@@ -118,11 +118,11 @@ impl Custody {
     }
 }
 
-/// An account owner admitted under the person's current custody.
+/// An account owner admitted under the person's current ownership.
 #[derive(Clone)]
 pub(crate) struct Identity {
     pub(crate) owner: Owner,
-    custody: Arc<Custody>,
+    ownership: Arc<Ownership>,
     /// The session generation an enrollment was admitted under; `None` for a
     /// running account, which is usable again once the session is.
     generation: Option<u64>,
@@ -133,20 +133,20 @@ impl Identity {
     /// The session is not usable, the enrollment's session ended, or the
     /// device's certificate no longer names this person and device.
     pub(crate) fn check(&self) -> Result<(), SendError> {
-        if !self.custody.active()
+        if !self.ownership.active()
             || self
                 .generation
-                .is_some_and(|generation| generation != self.custody.generation())
+                .is_some_and(|generation| generation != self.ownership.generation())
         {
             return Err(SendError::Revoked);
         }
         let (certificate, _) = self
-            .custody
+            .ownership
             .host
-            .current_material(self.custody.workspace)
+            .current_material(self.ownership.workspace)
             .map_err(|_| SendError::Revoked)?;
-        if self.owner.actor != self.custody.actor
-            || self.owner.device != self.custody.device
+        if self.owner.actor != self.ownership.actor
+            || self.owner.device != self.ownership.device
             || hex::encode(certificate.user_public_key) != self.owner.actor
             || certificate.capabilities.foreign
         {
@@ -268,7 +268,7 @@ impl Permission {
     /// use it. When the request cannot be made, the key is removed again.
     ///
     /// # Errors
-    /// Retired admission, weaker custody, an occupied scope or a full queue.
+    /// Retired admission, weaker ownership, an occupied scope or a full queue.
     pub(crate) fn ask(
         vault: &CredentialOwner,
         identity: &Identity,

@@ -287,10 +287,10 @@ impl Shared {
 }
 
 fn connection() -> Result<(SessionConfig, Credentials), String> {
-    let registration = account_custody::ClientTable::defaults()
-        .client_registration(account_custody::OAuthIssuer::Spotify)
+    let registration = account_credentials::ClientTable::defaults()
+        .client_registration(account_credentials::OAuthIssuer::Spotify)
         .ok_or_else(|| "Spotify streaming requires Tilo's own client registration".to_string())?;
-    let token = account_custody::Custodian::live()
+    let token = account_credentials::CredentialStore::live()
         .oauth_access_token(
             &accounts::AccountId::from(STREAMING_ACCOUNT.to_string()),
             STREAMING_USE,
@@ -607,7 +607,7 @@ async fn connect_session(
     let session = Session::new(config, None); // No disk credential or audio cache.
     session.login5().set_external_token_provider(Arc::new(|| {
         Box::pin(async {
-            tokio::task::spawn_blocking(custody_streaming_bearer)
+            tokio::task::spawn_blocking(ownership_streaming_bearer)
                 .await
                 .map_err(|_| {
                     librespot::core::Error::unavailable("Spotify credential worker stopped")
@@ -629,8 +629,8 @@ async fn connect_session(
     Ok(session)
 }
 
-fn custody_streaming_bearer() -> Result<librespot::core::token::Token, librespot::core::Error> {
-    let (token, expires) = account_custody::Custodian::live()
+fn ownership_streaming_bearer() -> Result<librespot::core::token::Token, librespot::core::Error> {
+    let (token, expires) = account_credentials::CredentialStore::live()
         .oauth_access_token_with_expiry(
             &accounts::AccountId::from(STREAMING_ACCOUNT.to_string()),
             STREAMING_USE,

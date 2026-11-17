@@ -9,8 +9,8 @@
 //! A host answers [`ACCOUNT`] under [`PROVIDER`] with a [`HostAccount`]:
 //!
 //! - the plans it offers ([`PlanOffer`]); a host that sells nothing offers
-//!   none and answers no [`Standing`];
-//! - the account's [`Standing`]: its plan, whether a payment method is on
+//!   none and answers no [`Subscription`];
+//! - the account's [`Subscription`]: its plan, whether a payment method is on
 //!   file, what it is entitled to, its usage (Linux VM seconds and bytes
 //!   stored per workspace) and its limits, and its invoices;
 //! - where the person manages billing ([`HostAccount::manage_billing`]): the
@@ -34,9 +34,9 @@
 //!
 //! Payment itself (checkout, prices, webhooks, credit, rate limits, fraud
 //! checks) is the provider's. All it does here is answer this contract:
-//! write the account's standing where its host reads it, and name its pages.
+//! write the account's subscription where its host reads it, and name its pages.
 //! The account is the person's: their Tilo identity carries it to every
-//! device, so Settings and the overview of their Tilo show the same standing.
+//! device, so Settings and the overview of their Tilo show the same subscription.
 
 use serde::{Deserialize, Serialize};
 
@@ -100,7 +100,7 @@ pub struct Limits {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlanOffer {
-    /// What [`Standing::plan`] names it by.
+    /// What [`Subscription::plan`] names it by.
     pub id: String,
     /// Its name, in the provider's words ("Pro").
     pub name: String,
@@ -214,10 +214,10 @@ pub struct PaymentMethod {
     pub last4: Option<String>,
 }
 
-/// The account's standing with a host that sells something.
+/// The account's subscription with a host that sells something.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Standing {
+pub struct Subscription {
     /// The account's id with the host.
     pub account: String,
     /// The [`PlanOffer::id`] it is on; `None` before it chose one.
@@ -235,7 +235,7 @@ pub struct Standing {
     pub invoices: Vec<Invoice>,
 }
 
-impl Standing {
+impl Subscription {
     #[must_use]
     pub fn entitled(&self, entitlement: Entitlement) -> bool {
         self.entitlements.contains(&entitlement)
@@ -252,8 +252,8 @@ pub struct HostAccount {
     pub kind: HostKind,
     /// The plans it offers; none when it sells nothing.
     pub plans: Vec<PlanOffer>,
-    /// The account's standing; `None` on a host that sells nothing.
-    pub standing: Option<Standing>,
+    /// The account's subscription; `None` on a host that sells nothing.
+    pub subscription: Option<Subscription>,
     /// The provider's page where the person manages billing: payment
     /// methods, plan and invoices.
     pub manage_billing: Option<String>,
@@ -280,7 +280,7 @@ impl HostAccount {
     /// The plan the account is on.
     #[must_use]
     pub fn plan(&self) -> Option<&PlanOffer> {
-        let id = self.standing.as_ref()?.plan.as_deref()?;
+        let id = self.subscription.as_ref()?.plan.as_deref()?;
         self.plans.iter().find(|plan| plan.id == id)
     }
 }
@@ -360,7 +360,7 @@ impl Refusal {
         self.next.iter().find(|step| step.kind == kind)
     }
 
-    /// Whether the account's standing changing on the host is what would let
+    /// Whether the account's subscription changing on the host is what would let
     /// the action through, so whoever ran it can wait for that rather than
     /// run it again.
     #[must_use]
@@ -398,7 +398,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_host_account_answers_plans_and_typed_refusals;
 
-        phase a_host_that_sells_nothing_answers_no_plans_and_no_standing;
+        phase a_host_that_sells_nothing_answers_no_plans_and_no_subscription;
         {
             let host = HostAccount::sells_nothing("Ada's server", HostKind::SelfHosted);
             assert!(!host.sells());
@@ -410,7 +410,7 @@ mod tests {
                     "host": "Ada's server",
                     "kind": "self-hosted",
                     "plans": [],
-                    "standing": null,
+                    "subscription": null,
                     "manage_billing": null
                 })
             );
@@ -514,7 +514,7 @@ mod tests {
                     name: "Pro".into(),
                     ..PlanOffer::default()
                 }],
-                standing: Some(Standing {
+                subscription: Some(Subscription {
                     plan: Some("pro".into()),
                     usage: Usage {
                         workspaces: vec![
@@ -531,7 +531,7 @@ mod tests {
                         ],
                         ..Usage::default()
                     },
-                    ..Standing::default()
+                    ..Subscription::default()
                 }),
                 manage_billing: Some("https://billing.example".into()),
             };
@@ -539,7 +539,7 @@ mod tests {
             let bytes = postcard::to_allocvec(&host).unwrap();
             assert_eq!(postcard::from_bytes::<HostAccount>(&bytes).unwrap(), host);
             assert_eq!(host.plan().map(|plan| plan.name.as_str()), Some("Pro"));
-            let usage = &host.standing.as_ref().unwrap().usage;
+            let usage = &host.subscription.as_ref().unwrap().usage;
             assert_eq!(usage.vm_seconds(), 90);
             assert_eq!(usage.of("b").map(|usage| usage.vm_seconds), Some(30));
         }

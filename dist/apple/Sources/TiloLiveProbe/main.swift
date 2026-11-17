@@ -69,7 +69,7 @@ final class Probe {
     }
 
     func run() {
-        Task { for await standing in engine.standings() { stood(standing) } }
+        Task { for await state in engine.states() { stood(state) } }
         Task {
             for await _ in engine.changes() {
                 signals += 1
@@ -78,27 +78,27 @@ final class Probe {
         }
     }
 
-    private func stood(_ standing: TiloEngine.Standing) {
+    private func stood(_ state: TiloEngine.State) {
         let seconds = JSON.number((Date().timeIntervalSince(began) * 10).rounded() / 10)
-        switch standing {
+        switch state {
         case .away: break
         case .arriving(let step):
             // A page that stopped on its way in and is loaded once more says why it stopped.
-            var line: [String: JSON] = ["standing": "arriving", "step": .string(step), "s": seconds]
+            var line: [String: JSON] = ["state": "arriving", "step": .string(step), "s": seconds]
             if step == "load", let why = engine.lastStop { line["stoppedBefore"] = .string(String(why.prefix(300))) }
             say(.object(line))
         case .pairing(let code):
             if let codeFile { keep(code, in: codeFile) }
-            say(["standing": "pairing", "s": seconds])
+            say(["state": "pairing", "s": seconds])
         case .open(let route):
             if let routeFile { keep(route, in: routeFile) }
             // The workspace by the start of its id: enough to tell two apart, and no address.
             let workspace = EngineAddress.workspace(of: route)?.split(separator: "/").last.map { String($0.prefix(8)) } ?? ""
-            say(["standing": "open", "app": .string(route.split(separator: "/").last.map(String.init) ?? ""),
+            say(["state": "open", "app": .string(route.split(separator: "/").last.map(String.init) ?? ""),
                  "workspace": .string(workspace), "s": seconds])
             Task { await look(after: "getting in") }
-        case .refused(let why): say(["standing": "refused", "why": .string(why), "s": seconds])
-        case .failed(let why): say(["standing": "failed", "why": .string(why), "s": seconds])
+        case .refused(let why): say(["state": "refused", "why": .string(why), "s": seconds])
+        case .failed(let why): say(["state": "failed", "why": .string(why), "s": seconds])
         }
     }
 
@@ -107,7 +107,7 @@ final class Probe {
     /// what really started the read that found it. After every read it says so (`looked`): a
     /// check then knows the program has caught up with what was there.
     private func look(after why: String) async {
-        guard case .open = engine.standing else { return }
+        guard case .open = engine.state else { return }
         guard !looking else { again = why; return }
         looking = true
         defer { looking = false }

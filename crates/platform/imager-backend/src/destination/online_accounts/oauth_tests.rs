@@ -25,7 +25,7 @@ fn consent(provider: Provider, calendar: bool) -> Vec<String> {
     let mut controller = AccountsController::fixture(
         directory.path(),
         Arc::new(CaptureBrowser(sender)),
-        |custody| custody.with_issuer_endpoints(issuer, server.provider()),
+        |ownership| ownership.with_issuer_endpoints(issuer, server.provider()),
     )
     .unwrap();
     controller

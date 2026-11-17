@@ -653,7 +653,7 @@ session's own runs are search entries of the session whose `open` shows it.
 
 `pkg install pandoc` inside a guest asks the broker (`Request::AddTool`). The
 broker builds a `tool` image for the environment's runtime through the
-[`ToolBuilder`](../../crates/runtime/environment/src/lib.rs) seam — the build
+[`ToolBuilder`](../../crates/runtime/environment/src/lib.rs) boundary — the build
 runs `dnf` as uid 0 in its own build sandbox, never in your guest — and appends
 it to the record with `add-tool`. Running sessions pick it up on `restart`; new
 sessions have it immediately. A package another tool already provides is not

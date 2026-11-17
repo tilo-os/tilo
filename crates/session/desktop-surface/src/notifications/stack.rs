@@ -89,7 +89,7 @@ pub fn banner_span(viewport: Rect) -> (f64, f64) {
 const CARD_PADDING_X: f64 = 14.0;
 /// Least height of the "more" card: a Regular control's target.
 const MORE_HEIGHT: f64 = 40.0;
-/// Banners standing in the corner at once. Further arrivals fold into the last one's caption as "+N
+/// Banners shown in the corner at once. Further arrivals fold into the last one's caption as "+N
 /// more", opening the centre.
 const MOST_BANNERS: usize = 3;
 
@@ -184,7 +184,7 @@ pub enum BannerAsk {
         on_screen: Vec<u64>,
         held: bool,
     },
-    /// The card standing in for the banners that did not fit was chosen.
+    /// The card shown in for the banners that did not fit was chosen.
     OpenCenter,
     /// The person selected banner `id` (not its close button).
     Activate(u64),
@@ -234,7 +234,7 @@ enum BannerTarget {
     Action(u64, String),
     /// The inline reply field of banner `id` .
     Reply(u64),
-    /// The card standing in for the banners that did not fit: opens the notification centre.
+    /// The card shown in for the banners that did not fit: opens the notification centre.
     More,
 }
 
@@ -1183,7 +1183,7 @@ impl NotificationStack {
         (label, height, f64::from(label_h))
     }
 
-    /// The caption of the last standing banner for the banners beyond the corner's three: "+2 more
+    /// The caption of the last shown banner for the banners beyond the corner's three: "+2 more
     /// from Notes" when they share an app, else just "2 more".
     fn fold_label(folded: &[&Banner]) -> Option<String> {
         let count = folded.len();
@@ -1205,7 +1205,7 @@ impl NotificationStack {
         })
     }
 
-    /// The card standing in for `count` banners that did not fit: one line,
+    /// The card shown in for `count` banners that did not fit: one line,
     /// the same floating card, opening the notification centre.
     fn draw_more_card(&mut self, ctx: &mut PaintCtx, rect: Rect, label: &str, label_h: f64) {
         let style = ctx.theme.text(TextRole::Label);
@@ -1345,9 +1345,9 @@ impl NotificationStack {
         // The corner stands at most three banners; the rest fold into the last one's caption, which
         // opens the centre.
         let total = banners.len();
-        let standing = total.min(MOST_BANNERS);
-        let fold = Self::fold_label(banners.get(standing..).unwrap_or_default());
-        for (index, banner) in banners.iter().take(standing).enumerate() {
+        let shown = total.min(MOST_BANNERS);
+        let fold = Self::fold_label(banners.get(shown..).unwrap_or_default());
+        for (index, banner) in banners.iter().take(shown).enumerate() {
             let n = &banner.notification;
             let actions = &banner.actions;
             let time = relative_time(n, now);
@@ -1357,7 +1357,7 @@ impl NotificationStack {
                 reply_text.clone_from(&draft.text);
             }
             let mut card = self.banner_card(n, actions, &time, &reply_text, draft.is_some());
-            let folded = index.saturating_add(1) == standing && fold.is_some();
+            let folded = index.saturating_add(1) == shown && fold.is_some();
             if folded && let Some(label) = fold.as_deref() {
                 card.caption = label;
             }

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::secrets::{BrokerError, canonical_origin};
-use crate::{AccountId, Secret, SecretCustody, SecretVault};
+use crate::{AccountId, Secret, SecretVault, VaultBackend};
 
 const PREFIX: &str = "tilo-service-credential:";
 
@@ -62,7 +62,7 @@ struct Entry {
     value: String,
 }
 
-/// Trusted account custody over the shared sealed vault.
+/// Trusted account credentials over the shared sealed vault.
 ///
 /// Adopts existing account-ID password and OAuth entries in place: keeping the
 /// canonical key preserves Settings edits, removal and token revocation. Unlike
@@ -74,18 +74,18 @@ pub struct AccountCredentials {
 }
 
 impl AccountCredentials {
-    /// Open signed-in user custody, refusing an unreadable or unavailable vault.
+    /// Open signed-in user ownership, refusing an unreadable or unavailable vault.
     pub fn open() -> Result<Self, String> {
         Self::open_person(None)
     }
 
     /// Open the credentials kept under the config root `root`; see
-    /// [`SecretVault::open_person`] for what each root's custody is.
+    /// [`SecretVault::open_person`] for what each root's ownership is.
     pub fn open_in(root: &Path) -> Result<Self, String> {
         Self::open_person(Some(root))
     }
 
-    /// Open the person's custody under `config_root` (their own when `None`):
+    /// Open the person's ownership under `config_root` (their own when `None`):
     /// the keyring where it answers, otherwise an owner-only key file.
     pub fn open_person(config_root: Option<&Path>) -> Result<Self, String> {
         Self::from_vault(SecretVault::open_person(config_root))
@@ -142,8 +142,8 @@ impl ServiceCredentials {
         Ok(vault)
     }
 
-    pub fn custody(&self) -> Result<SecretCustody, BrokerError> {
-        Ok(self.vault()?.custody())
+    pub fn backend(&self) -> Result<VaultBackend, BrokerError> {
+        Ok(self.vault()?.backend())
     }
 
     fn key(reference: &CredentialRef) -> AccountId {
@@ -311,16 +311,16 @@ mod tests {
     use super::*;
 
     /// The person's vault opened by its root is the person's vault opened
-    /// from the environment: the same custody, opened alike, and never read
+    /// from the environment: the same ownership, opened alike, and never read
     /// under a key file of its own.
     #[test]
-    fn the_persons_root_opens_under_the_persons_custody() {
+    fn the_persons_root_opens_under_the_persons_ownership() {
         let Some(root) = crate::config_root() else {
             return;
         };
         let by_root =
-            AccountCredentials::open_in(&root).map(|credentials| credentials.vault.custody());
-        let session = AccountCredentials::open().map(|credentials| credentials.vault.custody());
+            AccountCredentials::open_in(&root).map(|credentials| credentials.vault.backend());
+        let session = AccountCredentials::open().map(|credentials| credentials.vault.backend());
         assert_eq!(by_root, session);
     }
 }

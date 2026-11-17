@@ -40,7 +40,7 @@ use tilo_desktop::profile_card::{
 };
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::Layout;
-use tilo_desktop_model::commands::Standing;
+use tilo_desktop_model::commands::Requester;
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
 use tilo_desktop_surface::navigation::{ChromeEffect, Verb};
@@ -244,12 +244,12 @@ impl ChromeSource for PageChrome {
         tilo_desktop::here::place_here(tree, &people, following.as_deref());
     }
 
-    fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R {
+    fn with_requester<R>(&self, answer: impl FnOnce(&Requester<'_>) -> R) -> R {
         let members = self.shared.members.borrow();
-        let standing = self
+        let requester = self
             .shared
-            .standing_of(&self.authorship.author, members.as_ref());
-        answer(&standing)
+            .requester_of(&self.authorship.author, members.as_ref());
+        answer(&requester)
     }
 
     fn with_authors<R>(&self, answer: impl FnOnce(&mut Authors) -> R) -> R {
@@ -295,7 +295,7 @@ impl ChromeSource for PageChrome {
     fn facts(&self, facts: &mut Facts) {
         facts.number(self.here.borrow().revision());
         facts.number(self.notifications.revision());
-        facts.number(u64::from(self.shared.standing.code()));
+        facts.number(u64::from(self.shared.requester.code()));
         facts.number(tilo_session::platform::readings::Machine::revision(
             &*self.machine,
         ));
@@ -2368,7 +2368,7 @@ mod tests {
     use std::collections::BTreeMap;
     use tilo_action_policy::Role;
     use tilo_desktop_model::IdMinter;
-    use tilo_desktop_model::commands::{DesktopCommand, Standing};
+    use tilo_desktop_model::commands::{DesktopCommand, Requester};
 
     const GUEST: &str = "guest";
     const OTHER_GUEST: &str = "other-guest";
@@ -2408,11 +2408,11 @@ mod tests {
         add_strip: bool,
     }
 
-    /// What `standing` may change about `tree`'s active workspace, whose
+    /// What `requester` may change about `tree`'s active workspace, whose
     /// strips and windows `authors` made, as the desktop's one policy
     /// answers the menu.
     fn offered_edits(
-        standing: &Standing<'_>,
+        requester: &Requester<'_>,
         authors: &BTreeMap<u64, String>,
         tree: &Layout,
     ) -> OfferedEdits {
@@ -2420,7 +2420,7 @@ mod tests {
             return OfferedEdits::default();
         };
         let may = |command: DesktopCommand| {
-            tilo_desktop_model::commands::may_command(standing, authors, workspace, &command)
+            tilo_desktop_model::commands::may_command(requester, authors, workspace, &command)
                 .is_ok()
         };
         OfferedEdits {
@@ -2433,8 +2433,8 @@ mod tests {
         }
     }
 
-    fn standing(person: &str, role: Option<Role>) -> Standing<'_> {
-        Standing {
+    fn requester(person: &str, role: Option<Role>) -> Requester<'_> {
+        Requester {
             person,
             role,
             members: None,
@@ -2460,7 +2460,7 @@ mod tests {
     #[test]
     fn the_workspace_menu_offers_rename_and_new_strip_only_to_who_governs() {
         let (tree, authors) = lounge();
-        let offers = |person, role| offered_edits(&standing(person, role), &authors, &tree);
+        let offers = |person, role| offered_edits(&requester(person, role), &authors, &tree);
         let none = OfferedEdits {
             rename: false,
             add_strip: false,
@@ -2477,7 +2477,7 @@ mod tests {
         assert_eq!(offers("owner", Some(Role::Owner)), all);
         // Until the workspace has answered, nothing is offered to take back.
         assert_eq!(offers(GUEST, None), none);
-        let own = crate::desktop::Standing::default();
+        let own = crate::desktop::Requester::default();
         assert_eq!(offered_edits(&own.of(GUEST), &authors, &tree), all);
     }
 
@@ -2493,7 +2493,7 @@ mod tests {
             .map(|(id, _)| *id)
             .unwrap();
         for role in [Role::Editor, Role::Moderator] {
-            shared.standing.set(Some(role));
+            shared.requester.set(Some(role));
             let held = shared.holders(&tree, GUEST, "Lounge", &mut person);
             if role == Role::Moderator {
                 assert!(held.is_empty(), "a moderator closes anyone's window");
@@ -2513,7 +2513,7 @@ mod tests {
         let (tree, authors) = lounge();
         let shared = crate::desktop::Shared::default();
         shared.authors.borrow_mut().clone_from(&authors);
-        shared.standing.set(Some(Role::Editor));
+        shared.requester.set(Some(Role::Editor));
         let mut person = |id: &str| (id.to_owned(), (1, 2, 3));
         shared
             .members

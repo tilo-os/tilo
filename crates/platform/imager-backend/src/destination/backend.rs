@@ -1,4 +1,4 @@
-//! The installer's side-effecting seam: disk discovery, the privileged
+//! The installer's side-effecting boundary: disk discovery, the privileged
 //! install and preflight helpers, and the power helper.
 //!
 //! The live medium uses [`SystemBackend`], which runs the real

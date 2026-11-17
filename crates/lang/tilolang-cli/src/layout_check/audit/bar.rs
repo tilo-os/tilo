@@ -160,7 +160,7 @@ pub fn stacked_header_rows(bar_height: f64, header_row: f64) -> Vec<Problem> {
         detail: format!(
             "the window shows a bar {bar_height:.0}px tall and, under it, a header row of its \
              own {header_row:.0}px tall: one bar per window, with the app's title, navigation \
-             and actions standing in it and the window's controls at its trailing end",
+             and actions state in it and the window's controls at its trailing end",
         ),
     }]
 }

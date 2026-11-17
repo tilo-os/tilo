@@ -122,14 +122,14 @@ impl Checked {
     /// The request the other device is sent: the application's action in
     /// workspace `workspace`, which both devices share, under the original
     /// invocation's id so a retry there observes the first run. A
-    /// confirmation this device witnessed names an answer only this device
+    /// confirmation this device approved names an answer only this device
     /// knows, so it is not carried; a person's own word is.
     #[must_use]
     pub fn forwarded(&self, workspace: &str, original: &InvokeRequest) -> InvokeRequest {
         let confirmation = original
             .confirmation
             .clone()
-            .filter(|confirmation| !matches!(confirmation, super::Confirmation::Witnessed(_)));
+            .filter(|confirmation| !matches!(confirmation, super::Confirmation::Approved(_)));
         InvokeRequest {
             on_behalf_of: None,
             invocation: original.invocation,
@@ -248,7 +248,7 @@ mod tests {
                 target: target(),
                 argument: InvokeArgument::None,
                 context: None,
-                confirmation: Some(Confirmation::Witnessed("local-token".into())),
+                confirmation: Some(Confirmation::Approved("local-token".into())),
                 revision: None,
                 wait_ms: Some(1),
                 appearance: None,

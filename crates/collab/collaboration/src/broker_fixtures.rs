@@ -205,7 +205,7 @@ impl CollaborationManager {
                 join_holds: std::collections::VecDeque::from([hold]),
                 workspace_status: Some(status),
                 // The session's answer to the app's private requests, as the
-                // custodian gives it: sealing stores, release answers with
+                // owner gives it: sealing stores, release answers with
                 // the secret, anything else is not the session's.
                 service_sessions: Some(Arc::new(|command| match command {
                     runtime_collab::BrowserServiceSessionCommand::StoreAccountSecret {

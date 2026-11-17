@@ -131,7 +131,7 @@ impl VerifiedSignalEnrollment {
     }
     /// Consume once after the native host's confirmed identity review. The
     /// host still owns canonical account publication, protected credential
-    /// custody, a fresh scoped grant and independently verified activation.
+    /// ownership, a fresh scoped grant and independently verified activation.
     /// # Errors
     /// Refuses cancelled/retired evidence or an already accepted generation.
     pub fn accept(self) -> Result<(Owner, crate::signal_setup::SignalAccount), SendError> {

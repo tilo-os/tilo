@@ -573,7 +573,7 @@ tilo_test_env::scenario! {
         use crate::output_scale::{Layout, Display, Displays};
         // The reported laptop: its 2944x1840 panel at scale 2 beside a 1080p
         // monitor. `cage` stretches the one window over both, so a card
-        // centred in the window straddled the seam between the displays.
+        // centred in the window straddled the boundary between the displays.
         let panel = Rect::new(0.0, 0.0, 1472.0, 920.0);
         let monitor = Rect::new(1472.0, 0.0, 3392.0, 1080.0);
         let displays = Displays::fixed(Layout {

@@ -912,7 +912,7 @@ pub fn answer(
 }
 
 /// The root keys `patches` put (`true`) or delete under `prefix`, without it.
-fn ledger(patches: &[Patch], prefix: &str, put: bool) -> Vec<String> {
+fn log(patches: &[Patch], prefix: &str, put: bool) -> Vec<String> {
     patches
         .iter()
         .filter(|patch| patch.path.is_empty())
@@ -993,14 +993,14 @@ pub fn result(
     };
     let value = match action {
         "undo" => {
-            json!({"undone": described(ledger(patches, steps::UNDONE_KEY, true), &mut doc), "now": now})
+            json!({"undone": described(log(patches, steps::UNDONE_KEY, true), &mut doc), "now": now})
         }
         "redo" => {
-            json!({"redone": described(ledger(patches, steps::UNDONE_KEY, false), &mut doc), "now": now})
+            json!({"redone": described(log(patches, steps::UNDONE_KEY, false), &mut doc), "now": now})
         }
         "restore" | "restore-reviewed" => json!({"restored": items(patches), "now": now}),
         "checkpoint" => {
-            let name = ledger(patches, steps::CHECKPOINT_KEY, true);
+            let name = log(patches, steps::CHECKPOINT_KEY, true);
             let version = steps::checkpoints(&doc)
                 .into_iter()
                 .find(|checkpoint| name.contains(&checkpoint.name))

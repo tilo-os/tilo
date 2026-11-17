@@ -118,7 +118,7 @@ async fn configure(
             .kind,
         ErrorKind::Conflict
     );
-    // Establish test-only custody, never consult an ambient keyring.
+    // Establish test-only ownership, never consult an ambient keyring.
     let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
     let (reference, authorization) = credential_binding(&profile).unwrap();
     ServiceCredentials::open_in(&root)

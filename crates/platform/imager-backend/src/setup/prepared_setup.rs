@@ -1,4 +1,4 @@
-//! Authenticated prepared setup custody. Import is explicit and runs as the
+//! Authenticated prepared setup ownership. Import is explicit and runs as the
 //! target user; this never activates an identity or writes another user's vault.
 use super::{
     account_transfer::{Connector, PasswordSealedAccounts},
@@ -129,7 +129,7 @@ pub struct Manifest {
     pub identity_kind: IdentityKind,
     pub account_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_custody_protocol: Option<u32>,
+    pub account_credentials_protocol: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_profile: Option<PublicInstallProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,9 +202,9 @@ pub struct OfflineHomePlan {
     caller: super::home_capture::OriginalCallerFacts,
     sealed_reservation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    source_witness: Option<super::home_capture::SourceWitness>,
+    source_proof: Option<super::home_capture::SourceProof>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    mounted_witness: Option<super::home_capture::MountedWitness>,
+    mounted_proof: Option<super::home_capture::MountedProof>,
 }
 impl OfflineHomePlan {
     pub fn new(
@@ -224,44 +224,44 @@ impl OfflineHomePlan {
             media,
             caller,
             sealed_reservation,
-            source_witness: None,
-            mounted_witness: None,
+            source_proof: None,
+            mounted_proof: None,
         };
         value.validate()?;
         Ok(value)
     }
-    pub fn with_source_witness(
+    pub fn with_source_proof(
         mut self,
-        witness: super::home_capture::SourceWitness,
+        proof: super::home_capture::SourceProof,
     ) -> io::Result<Self> {
-        witness.validate_plan(&self.source)?;
-        self.source_witness = Some(witness);
+        proof.validate_plan(&self.source)?;
+        self.source_proof = Some(proof);
         self.validate()?;
         Ok(self)
     }
-    pub fn source_witness(&self) -> Option<&super::home_capture::SourceWitness> {
-        self.source_witness.as_ref()
+    pub fn source_proof(&self) -> Option<&super::home_capture::SourceProof> {
+        self.source_proof.as_ref()
     }
-    pub fn with_mounted_witness(
+    pub fn with_mounted_proof(
         mut self,
-        witness: super::home_capture::MountedWitness,
+        proof: super::home_capture::MountedProof,
     ) -> io::Result<Self> {
-        witness.matches_source(self.source_witness.as_ref().ok_or_else(invalid)?)?;
-        self.mounted_witness = Some(witness);
+        proof.matches_source(self.source_proof.as_ref().ok_or_else(invalid)?)?;
+        self.mounted_proof = Some(proof);
         self.validate()?;
         Ok(self)
     }
-    pub fn mounted_witness(&self) -> Option<&super::home_capture::MountedWitness> {
-        self.mounted_witness.as_ref()
+    pub fn mounted_proof(&self) -> Option<&super::home_capture::MountedProof> {
+        self.mounted_proof.as_ref()
     }
     fn validate(&self) -> io::Result<()> {
         self.source.validate()?;
         self.caller.validate(self.source.home.original_uid())?;
-        if let Some(witness) = &self.source_witness {
-            witness.validate_plan(&self.source)?;
+        if let Some(proof) = &self.source_proof {
+            proof.validate_plan(&self.source)?;
         }
-        if let Some(witness) = &self.mounted_witness {
-            witness.matches_source(self.source_witness.as_ref().ok_or_else(invalid)?)?;
+        if let Some(proof) = &self.mounted_proof {
+            proof.matches_source(self.source_proof.as_ref().ok_or_else(invalid)?)?;
         }
         let uuid = |value: &str| {
             uuid::Uuid::parse_str(value).is_ok_and(|id| !id.is_nil() && id.to_string() == value)
@@ -299,31 +299,31 @@ impl OfflineHomePlan {
         &self.media
     }
     /// Reconstruct the producer's complete geometry from the authenticated
-    /// declaration and, for selected installations, its genuine source custody.
+    /// declaration and, for selected installations, its genuine source ownership.
     /// Protected marker JSON alone never supplies an installation inventory.
     #[cfg(target_os = "linux")]
     pub fn authenticated_source_plans(&self) -> io::Result<Vec<Vec<u8>>> {
         let geometry = crate::setup::source_geometry::original_source_plans;
-        if !self.source.categories.flatpak && self.mounted_witness.is_none() {
+        if !self.source.categories.flatpak && self.mounted_proof.is_none() {
             return geometry(&self.source);
         }
         if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "Original installation geometry requires root custody",
+                "Original installation geometry requires root ownership",
             ));
         }
-        let witness = self.source_witness().ok_or_else(|| {
+        let proof = self.source_proof().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "Original installation geometry lacks source witness",
+                "Original installation geometry lacks source proof",
             )
         })?;
         let source = super::migration_handoff::mount_read_only(&self.source)?;
         // Retain the actual owned resolver while record authentication runs:
         // a construction error must not fall through an unobserved mount Drop.
         let original =
-            match super::home_capture::SourceReadContext::review_witness(source.clone(), witness) {
+            match super::home_capture::SourceReadContext::review_proof(source.clone(), proof) {
                 Ok(original) => {
                     drop(source);
                     original
@@ -334,7 +334,7 @@ impl OfflineHomePlan {
                 }
             };
         let result = (|| {
-            original.verify_requested(&self.source, witness, &self.caller)?;
+            original.verify_requested(&self.source, proof, &self.caller)?;
             let mut plans = if self.source.categories.flatpak {
                 let inventory =
                     super::flatpak_transfer::offline_original::OriginalInventoryGrant::review(
@@ -355,13 +355,13 @@ impl OfflineHomePlan {
             } else {
                 geometry(&self.source)?
             };
-            if let Some(mounted) = self.mounted_witness() {
+            if let Some(mounted) = self.mounted_proof() {
                 // This API is a bounded metadata-only review with no job token.
                 // The export path uses its live token and retained epoch instead.
                 let cancel = std::sync::atomic::AtomicBool::new(false);
                 original.append_mounted_source_geometry(mounted, &mut plans, &cancel)?;
             }
-            original.verify_requested(&self.source, witness, &self.caller)?;
+            original.verify_requested(&self.source, proof, &self.caller)?;
             Ok(plans)
         })();
         // All borrowed inventory descriptors are gone before mount retirement.
@@ -385,7 +385,7 @@ impl Manifest {
             identity_public_key,
             identity_kind: IdentityKind::SingleDeviceBackup,
             account_ids,
-            account_custody_protocol: None,
+            account_credentials_protocol: None,
             install_profile: None,
             planned_btrfs_resize: None,
             units: Units::default(),
@@ -527,7 +527,7 @@ impl Manifest {
             self.schema,
             &self.setup_binding,
             &self.account_ids,
-            self.account_custody_protocol,
+            self.account_credentials_protocol,
         )
     }
     /// Create a fresh private manifest in an explicitly granted staging root.
@@ -564,7 +564,7 @@ fn now_ns() -> io::Result<u64> {
 }
 
 fn invalid() -> io::Error {
-    io::Error::other("Prepared setup custody is invalid or changed")
+    io::Error::other("Prepared setup ownership is invalid or changed")
 }
 fn bounded_file(pin: &Arc<PinnedDirectory>, name: &str, limit: u64) -> io::Result<Vec<u8>> {
     pin.validate()?;
@@ -697,7 +697,7 @@ impl PreparedSetupReview {
                     &manifest.ids(),
                 )
                 .map_err(|_| invalid())?;
-            if protected != manifest.account_custody_protocol.is_some() {
+            if protected != manifest.account_credentials_protocol.is_some() {
                 return Err(invalid());
             }
             Some(artifact)
@@ -746,10 +746,10 @@ impl PreparedSetupReview {
     pub fn pending_offline_declaration(&self) -> io::Result<OfflineHomePlan> {
         self.validate()?;
         let declaration = self.manifest.units.offline_home().ok_or_else(invalid)?;
-        if declaration.source_witness().is_none() {
+        if declaration.source_proof().is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "Pending export has no independently reopenable source witness",
+                "Pending export has no independently reopenable source proof",
             ));
         }
         Ok(declaration.clone())
@@ -764,7 +764,7 @@ impl PreparedSetupReview {
             (Some(_), None) => Ok(OriginalSelectionPlan::Home(
                 self.pending_offline_declaration()?,
             )),
-            (None, Some(plan)) if plan.source_witness().is_some() => {
+            (None, Some(plan)) if plan.source_proof().is_some() => {
                 plan.validate()?;
                 Ok(OriginalSelectionPlan::Applications(plan.clone()))
             }
@@ -774,7 +774,7 @@ impl PreparedSetupReview {
     /// Pending offline declarations are reviewable, but the ordinary native
     /// installer/first-use importer cannot treat them as finished. There is
     /// deliberately no public-JSON receipt bypass: a future offline consumer
-    /// must authenticate the actual completed Home before admitting custody.
+    /// must authenticate the actual completed Home before admitting ownership.
     pub fn require_completed_export(&self) -> io::Result<()> {
         self.validate()?;
         if self.manifest.units.offline_home().is_some() || self.pending_applications_export() {
@@ -867,7 +867,7 @@ impl PreparedSetupReview {
         }
         Ok(())
     }
-    /// Check both explicit grants before accepting any identity/account custody.
+    /// Check both explicit grants before accepting any identity/account credentials.
     pub fn validate_destinations(&self, identity: &Path, accounts: &Path) -> io::Result<()> {
         self.require_completed_export()?;
         self.target(identity)?;
@@ -890,7 +890,7 @@ impl PreparedSetupReview {
             now_ns()?,
         )
     }
-    /// Resolve exact existing current-owner custody without importing or replacing it.
+    /// Resolve exact existing current-owner ownership without importing or replacing it.
     pub fn resolve_current_identity(
         &self,
         system: &Path,
@@ -950,11 +950,11 @@ impl PreparedSetupReview {
         Ok(())
     }
 
-    /// Import joined-device custody for a host Desktop login into its configured
+    /// Import joined-device identity for a host Desktop login into its configured
     /// private device tree. This never publishes the OS-wide device namespace.
     /// # Errors
     /// Refuses non-enrolled or OS-only payloads, insecure or overlapping grants,
-    /// conflicting existing device/persona files, and invalid encrypted custody.
+    /// conflicting existing device/persona files, and invalid encrypted ownership.
     pub fn import_host_identity(
         &self,
         system: &Path,
@@ -990,7 +990,7 @@ impl PreparedSetupReview {
         self.validate()?;
         Ok(imported.identity_record)
     }
-    /// Import into explicit target-user custody; no active persona is switched.
+    /// Import into explicit target-user ownership; no active persona is switched.
     pub fn import_identity(&self, target: &Path, password: &[u8]) -> io::Result<PathBuf> {
         self.require_completed_export()?;
         self.target(target)?;
@@ -1000,7 +1000,7 @@ impl PreparedSetupReview {
         ) {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "Current device identity requires retained activation custody",
+                "Current device identity requires retained activation ownership",
             ));
         }
         if matches!(
@@ -1022,7 +1022,7 @@ impl PreparedSetupReview {
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 // The canonical importer already authenticated this password
                 // before refusing the existing id. Resume only the same usable
-                // signing custody; never replace another persona or remint it.
+                // signing ownership; never replace another persona or remint it.
                 let target_pin = PinnedDirectory::open_absolute(target)?;
                 target_pin.validate_destination()?;
                 destination_security::check_private_file(&target_pin.file)?;
@@ -1120,7 +1120,7 @@ impl PreparedSetupReview {
                     )
                     .map_err(|_| invalid())?;
                 // Canonical account storage may create a publicly searchable
-                // config root. Preparation promises private target custody,
+                // config root. Preparation promises private target ownership,
                 // including verified retries, so create only this fresh grant
                 // privately after authentication and retain its descriptor.
                 let target = match std::fs::symlink_metadata(config_root) {

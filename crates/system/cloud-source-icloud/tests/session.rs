@@ -1,4 +1,4 @@
-//! The stored form of an iCloud session: what custody seals in the vault.
+//! The stored form of an iCloud session: what ownership seals in the vault.
 
 use base64::Engine as _;
 use cloud_source_icloud::auth::StoredSession;
@@ -20,7 +20,7 @@ fn stored_sessions_round_trip_and_never_print_secrets() {
     assert!(StoredSession::from_json("not a session").is_err());
 }
 
-/// Sessions sealed before sign-in moved to custody still open, and
+/// Sessions sealed before sign-in moved to ownership still open, and
 /// serialize back byte for byte.
 #[test]
 fn the_sealed_format_is_unchanged() {

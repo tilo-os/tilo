@@ -6,7 +6,7 @@ use whatsapp_rust::wacore::types::{
 };
 use zeroize::Zeroize;
 
-/// Current host custody and reviewed direct route; never supplied by an app.
+/// Current host ownership and reviewed direct route; never supplied by an app.
 pub struct IncomingContext<'a> {
     pub accounts: &'a accounts::AccountStore,
     pub binding: &'a LiveBinding,

@@ -48,7 +48,7 @@ Keep the caller, workspace and resource fixed.
   production view. Wait boundedly for cold publication; the first empty
   listing is inconclusive. Use the returned resource id, not its title.
 - **Missing actions:** if an opted-in `native_admission` checkpoint exists,
-  inspect `manager_connected`, `custody_reconciled`, `action_history_ready`,
+  inspect `manager_connected`, `ownership_reconciled`, `action_history_ready`,
   `directory_enqueued` and directory RPC counters to distinguish connection,
   applied history and publication. A painted window proves no action readiness.
   A missing snapshot is inconclusive; ordinary dev slots need not serve the

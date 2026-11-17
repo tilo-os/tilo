@@ -164,7 +164,7 @@ impl Drop for CaptureClaim {
 }
 /// Actual native replacement observation and protected victim pin. Holding it
 /// prevents public restore while the canonical daemon commits signed ownership.
-/// Inode identity proves namespace custody, never immutable historical bytes.
+/// Inode identity proves namespace ownership, never immutable historical bytes.
 pub struct NativeReplacementPin {
     claim: Arc<CaptureClaim>,
     operation: OperationId,
@@ -938,7 +938,7 @@ impl OperationOwner {
                     return Err(FsError::Denied);
                 }
                 let stage = step.stage.as_ref().ok_or(FsError::StaleEntry)?;
-                current.recovery_custody(&parent, stage)?;
+                current.recovery_ownership(&parent, stage)?;
                 if step.phase == "ReplaceHistoryOwned" {
                     return Err(FsError::Denied);
                 }

@@ -425,7 +425,7 @@ impl DateIndexedScrollbar {
     /// Translate a winit event for immediate-mode hosts.  This deliberately
     /// does not consume pinch gestures: the collection needs the raw pinch
     /// anchor to keep the same item under a user's fingers while density
-    /// changes, so `PinchGesture` is exposed as an integration seam instead.
+    /// changes, so `PinchGesture` is exposed as an integration boundary instead.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,

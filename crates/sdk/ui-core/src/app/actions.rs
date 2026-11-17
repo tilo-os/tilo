@@ -367,7 +367,7 @@ impl App {
         )
     }
 
-    fn bound_broker_route(&self) -> Option<&crate::collaboration::PrimaryRouteWitness> {
+    fn bound_broker_route(&self) -> Option<&crate::collaboration::AcceptedRoute> {
         #[cfg(test)]
         if let Some(route) = &self.actions.bound_broker_route_for_test {
             return Some(route);
@@ -378,9 +378,9 @@ impl App {
         if crate::bound_dispatch::has_matching_broker_component(
             self.root_widget.as_ref(),
             self.bound_broker_route(),
-        ) && let Some(witness) = self.bound_broker_route()
+        ) && let Some(observation) = self.bound_broker_route()
         {
-            return witness.route().app_id.clone();
+            return observation.route().app_id.clone();
         }
         crate::collaboration::local_app_id()
     }
@@ -536,18 +536,18 @@ impl App {
         // publish the same surface, so the route carries it already. Each
         // keystroke begins by publishing (an input's edits are attributed
         // to the surface on the route); this keeps that to a comparison.
-        let witness = tilo_resource::profiling::Phase::start("ui.publish.witness");
+        let observation = tilo_resource::profiling::Phase::start("ui.publish.observation");
         let stamp = self.publication_stamp();
         let unchanged = stamp.as_ref().is_some_and(|stamp| {
             Some(stamp) == self.actions.published_stamp.as_ref()
-                // The directory's own witness (the bound owners' generations
+                // The directory's own observation (the bound owners' generations
                 // and permissions), taken now: a grant revoked in place is a
                 // change though no generation moved.
                 && self
                     .try_action_directory_revision()
                     .is_ok_and(|now| now == stamp.revision())
         });
-        drop(witness);
+        drop(observation);
         if unchanged {
             self.settle_held_own_invocations(true);
             return;
@@ -674,11 +674,11 @@ impl App {
             return;
         }
         // A surface's actions belong to the shell that placed it, not to a
-        // document: there is no history to custody them, and no route to
-        // witness.
+        // document: there is no history to ownership them, and no route to
+        // observation.
         if !self.collaboration.manager.hosts_surface() && !self.published_action_history_ready() {
             // An already accepted delivery lost its original owner-history
-            // custody. Run no handler; disconnect retains admitted uncertainty.
+            // ownership. Run no handler; disconnect retains admitted uncertainty.
             self.action_publication_failure = Some(
                 "Original document history is unavailable; action outcome unknown. Reconnect and reconcile before retrying.".into(),
             );
@@ -783,7 +783,7 @@ impl App {
             self.dispatch_control_invocations();
             if let Some(scope) = &authorization {
                 // Submitted continuations already carry their original broker
-                // custody. A retained handler clone must not submit more work
+                // ownership. A retained handler clone must not submit more work
                 // once this handler has answered, even while those edits settle.
                 scope.cancel();
             }
@@ -909,7 +909,7 @@ impl App {
         self.collaboration
             .manager
             .primary_route()
-            .map(|witness| witness.route().clone())
+            .map(|observation| observation.route().clone())
     }
 
     fn encode_resource_action(
@@ -2692,7 +2692,7 @@ impl App {
             return;
         }
         // SAFETY: the layout solve has settled the exclusively owned tree and
-        // its current custody map. Removed or ambiguous openers cannot match.
+        // its current ownership map. Removed or ambiguous openers cannot match.
         self.focused_node = unsafe {
             focus.restore(
                 &self.layout.node_map,
@@ -2896,7 +2896,7 @@ impl App {
             .as_deref()
             .and_then(crate::action_palette::ActionPalette::history_exact_capture_request);
         if let Some((target, invocation, original_arguments)) = exact_capture {
-            let witness = crate::bound_dispatch::control_witness_with_arguments(
+            let observation = crate::bound_dispatch::control_observation_with_arguments(
                 self.root_widget.as_ref(),
                 &self.state.doc,
                 &target,
@@ -2905,7 +2905,7 @@ impl App {
             )
             .map_err(|error| error.to_string());
             if let Some(palette) = self.actions.action_palette.as_deref_mut() {
-                palette.retain_history_exact_witness(witness);
+                palette.retain_history_exact_observation(observation);
             }
         }
         // An operation row may have fired. Document mutations go through the
@@ -2976,7 +2976,7 @@ impl App {
                                 reason,
                             })
                     });
-                let current = if pending.history_witness.is_some() {
+                let current = if pending.history_seen.is_some() {
                     pending
                         .history_identity
                         .as_ref()
@@ -3000,7 +3000,7 @@ impl App {
                         &pending.address,
                     )
                 };
-                let witness = match pending.history_witness.as_ref() {
+                let observation = match pending.history_seen.as_ref() {
                     Some(Ok(captured)) => pending.control_invocation().ok_or_else(|| {
                         tilo_actions::ApiError::InvalidArguments(
                             "The retained palette arguments are incomplete".into(),
@@ -3011,7 +3011,7 @@ impl App {
                                 "The retained palette argument representation is invalid".into(),
                             )
                         })?;
-                        crate::bound_dispatch::control_witness_with_arguments(
+                        crate::bound_dispatch::control_observation_with_arguments(
                             self.root_widget.as_ref(), &self.state.doc, &target, &invocation,
                             original_arguments,
                         ).and_then(|current| {
@@ -3037,13 +3037,13 @@ impl App {
                                 "The retained palette argument representation is invalid".into(),
                             )
                         })?;
-                        crate::bound_dispatch::control_witness_with_arguments(
+                        crate::bound_dispatch::control_observation_with_arguments(
                             self.root_widget.as_ref(), &self.state.doc, &target, &invocation,
                             original_arguments,
                         ).map(|_| ())
                     }),
                 };
-                match (draft, captured, current, witness) {
+                match (draft, captured, current, observation) {
                     (Ok(()), Ok(captured), Ok(current), Ok(())) if captured == current => match target {
                         crate::bound_dispatch::local_target::LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(&target, &palette_request, None),
                         crate::bound_dispatch::local_target::LocalResourceTarget::Outer => self.invoke_unbound_resource_action(&palette_request),
@@ -3215,7 +3215,7 @@ impl crate::session_api::SessionApi for BrokerApi<'_> {
     fn workspace(&self) -> Option<String> {
         self.manager
             .primary_route()
-            .map(|witness| witness.route().cluster_id.to_string())
+            .map(|observation| observation.route().cluster_id.to_string())
     }
 
     fn invoke(
@@ -3333,7 +3333,7 @@ impl crate::host_core::ControlHost for App {
         true
     }
 
-    fn control_domain(&self) -> &crate::control_custody::ControlDomain {
+    fn control_domain(&self) -> &crate::control_domain::ControlDomain {
         &self.control_domain
     }
 

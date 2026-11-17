@@ -55,11 +55,11 @@ fn setup(
         closes: AtomicUsize::new(0),
     });
     let provider = server.provider();
-    let controller = AccountsController::fixture(directory.path(), opener.clone(), |custody| {
-        custody.with_provider(
+    let controller = AccountsController::fixture(directory.path(), opener.clone(), |ownership| {
+        ownership.with_provider(
             OAuthCloud::GoogleDrive,
             provider,
-            account_custody::Registration::public("installer-fixture"),
+            account_credentials::Registration::public("installer-fixture"),
         )
     })
     .unwrap();
@@ -87,8 +87,8 @@ pub fn mail_fixture() -> (
         let body = r#"{"emailAddress":"personal@example.org"}"#;
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     });
-    controller.custody = Arc::new(
-        Custodian::for_root(Some(controller.root.clone()))
+    controller.ownership = Arc::new(
+        CredentialStore::for_root(Some(controller.root.clone()))
             .with_issuer_endpoints(OAuthIssuer::Google, server.provider())
             .with_gmail_profile_endpoint(endpoint),
     );
@@ -172,7 +172,7 @@ fn until(predicate: impl FnMut() -> bool) {
 tilo_test_env::scenario! {
     fn an_authorization_is_kept_only_when_completed_and_wanted;
 
-    phase local_pkce_callback_saves_only_private_canonical_custody_and_stages_selection;
+    phase local_pkce_callback_saves_only_private_canonical_ownership_and_stages_selection;
     {
         let (_directory, server, opener, urls, mut controller) = setup(true);
         controller.command(AccountsCommand::Add(request())).unwrap();
@@ -296,7 +296,7 @@ tilo_test_env::scenario! {
         assert!(!accounts::store_path_in(&controller.root).exists());
     }
 
-    phase dropping_a_pending_authorization_closes_the_listener_and_removes_custody;
+    phase dropping_a_pending_authorization_closes_the_listener_and_removes_ownership;
     {
         let (_directory, _server, opener, urls, mut controller) = setup(false);
         controller.command(AccountsCommand::Add(request())).unwrap();

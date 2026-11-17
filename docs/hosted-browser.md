@@ -250,7 +250,7 @@ from, what it sends and where (`send the form to https://visa.example
 (POST)`), and the filled page as a picture the window kept in the workspace's
 content store, which the person's device draws before they allow it. The relay
 puts it to the person as it puts any page action, and their answer comes back
-to the session as the confirmation their allow runs it with: the same witness
+to the session as the confirmation their allow runs it with: the same approval
 the relay signs for a page action, for that one request. Denied or unanswered,
 the session runs `keep-held-request` instead and the page stays as it was
 filled. A person's own window holds none of this: what they click leaves as
@@ -268,7 +268,7 @@ minted from a key keeps its answer), and the key's certificate carries it.
 Holding it, the relay answers for the person on the page actions that
 operating a page is — `navigate`, `fill-page`, `select-page`, `click-page`,
 `press-page`, `scroll-page`, `drag-page` and `pointer-path`/`pointer-page` —
-signing the same witness a person's own answer would, so the window runs one
+signing the same approval a person's own answer would, so the window runs one
 at once, as that key's agent, and counts it. A hold is untouched by it: the
 engine still stops the page where it was about to send something, answers
 that invocation that it needs the person, and only their own answer releases
@@ -299,7 +299,7 @@ video is streamed.
 Per action, not per VM:
 
 - **Browser actions** are counted per account and billing period in the
-  relay's ledger. The plans file sets the free allowance
+  relay's log. The plans file sets the free allowance
   (`sells.browser_free_actions`: 300 a month on tilo.sh). Past it, an account
   without a card is refused with `no_payment_method` and one next step,
   `add_payment_method`. An action the person did not allow is never counted.
@@ -358,7 +358,7 @@ A host that places workspaces (`tilo-relay workspace … --workspace-documents`)
 their Browser with `TILO_HOSTED_PLACER`, `TILO_HOSTED_MEMBERS`,
 `TILO_HOSTED_ACCOUNT` and `TILO_HOSTED_VM_SIZE` (as for shells), plus
 `TILO_HOSTED_BROWSER_RELAY` (`KEY@HOST:PORT`, the public address sessions
-reach it at), `TILO_HOSTED_BROWSER_ACTIONS` (the action ledger) and
+reach it at), `TILO_HOSTED_BROWSER_ACTIONS` (the action log) and
 `TILO_HOSTED_PLANS`. A host that holds its person's root makes itself their
 stand-in from it at start (`workspace --root-file`), and keeps it in its state.
 A VM host serves Browser in its VMs when `TILO_VM_RELAY_ENDPOINT` is set; it

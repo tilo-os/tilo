@@ -1,6 +1,6 @@
 //! The rows of a window's virtual lists (`ui.VirtualList`, a `list` of any length), as the app
 //! renders them for what each list shows. The list asks for a range ([`RowSource::request_range`]),
-//! with the row standing open into its item, and the app answers with the keys of those rows and
+//! with the row held open into its item, and the app answers with the keys of those rows and
 //! the rows it rendered for them, the open row's document among them; until they arrive a row is
 //! not shown. The app sends each change of the rows as it happens, and a shown row that changed is
 //! sent again alone. Each row is read through the one adapter, as the list's item component
@@ -56,7 +56,7 @@ pub struct RemoteRows {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Asked {
     pub range: Range<usize>,
-    /// The row standing open into its item, by key: the app renders its document, and no closed
+    /// The row held open into its item, by key: the app renders its document, and no closed
     /// row's.
     pub open: Option<String>,
 }
@@ -721,7 +721,7 @@ mod tests {
         );
     }
 
-    /// The row standing open into its item is the one whose document the app renders: the list asks
+    /// The row held open into its item is the one whose document the app renders: the list asks
     /// again when it opens, in or out of the range it shows, and once for each.
     #[test]
     fn the_row_that_opens_is_asked_for_with_the_range() {

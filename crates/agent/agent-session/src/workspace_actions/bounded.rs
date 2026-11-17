@@ -3,9 +3,9 @@
 //! included (`tilo mcp` on a computer `tilo login` made a device of theirs).
 //!
 //! Such a caller's record actions run in a confined replica of their own,
-//! opened as them ([`crate::ReplicaActor::Member`]): the person's standing as
+//! opened as them ([`crate::ReplicaActor::Member`]): the person's access as
 //! the workspace's policy gives it now and the sandbox its governance names,
-//! and for an agent that standing bounded as every agent's is. What that
+//! and for an agent that access bounded as every agent's is. What that
 //! replica surveys is the one answer to both what the caller's listing shows
 //! and what the host runs for them: an action it does not offer is refused,
 //! as not permitted when the record publishes it to someone else.
@@ -15,7 +15,7 @@
 //! action asks first, the host puts it to the person on their own devices
 //! ([`WorkspaceDocumentsLink::ask_person`]) and runs it on their answer, which
 //! it keeps as a token bound to that one invocation, its target and its
-//! arguments ([`Witnesses`]). A confirmation the host did not issue for the
+//! arguments ([`Approvals`]). A confirmation the host did not issue for the
 //! invocation is refused.
 //!
 //! Before what such an action changed is saved, the host reads the caller's
@@ -39,13 +39,13 @@ use tilo_relay_protocol::live::LiveAnchor;
 use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 
 /// How long the person's answer to one invocation stays good for running it.
-const WITNESS_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+const APPROVAL_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// How long a caller's replica is kept on the standing it was opened with
-/// before the host reads their standing again for it.
-const STANDING_FRESHNESS_SECS: u64 = 30;
+/// before the host reads their access again for it.
+const ACCESS_FRESHNESS_SECS: u64 = 30;
 
-/// Who a bounded caller is: the person whose standing bounds them, as that
+/// Who a bounded caller is: the person whose access bounds them, as that
 /// person's device is admitted, and the agent acting for them, if one is.
 #[derive(Clone)]
 pub(super) struct Bounded {
@@ -73,7 +73,7 @@ pub(super) type BoundedKey = (
 /// A caller's replica of one record, and the standing it was opened with.
 pub(super) struct BoundedReplica {
     pub(super) held: Mounted,
-    standing: policy::Standing,
+    access: policy::MemberAccess,
     sandbox: Vec<collab_types::caps::CapOverride>,
     unix_time: u64,
 }
@@ -136,7 +136,7 @@ impl<T> Parked<T> {
 /// target with exactly these arguments ([`tilo_actions::remote::argument_digest`]),
 /// as the broker binds the answers it hands an agent.
 #[derive(Clone, PartialEq, Eq)]
-pub(super) struct WitnessBinding {
+pub(super) struct ApprovalBinding {
     caller: Caller,
     workspace_id: WorkspaceId,
     invocation: InvocationId,
@@ -146,7 +146,7 @@ pub(super) struct WitnessBinding {
     argument_digest: [u8; 32],
 }
 
-impl WitnessBinding {
+impl ApprovalBinding {
     pub(super) fn of(workspace_id: WorkspaceId, caller: &Caller, request: &InvokeRequest) -> Self {
         Self {
             caller: caller.clone(),
@@ -164,11 +164,11 @@ impl WitnessBinding {
 
 /// The answers the host holds for invocations people allowed, by token.
 #[derive(Default)]
-pub(super) struct Witnesses(Mutex<HashMap<String, (WitnessBinding, Instant)>>);
+pub(super) struct Approvals(Mutex<HashMap<String, (ApprovalBinding, Instant)>>);
 
-impl Witnesses {
+impl Approvals {
     /// Keep the person's answer for `binding`, naming it by a new token.
-    pub(super) fn issue(&self, binding: WitnessBinding) -> Result<String, String> {
+    pub(super) fn issue(&self, binding: ApprovalBinding) -> Result<String, String> {
         let mut id = [0_u8; 32];
         getrandom::fill(&mut id).map_err(|error| error.to_string())?;
         let token = hex::encode(id);
@@ -177,7 +177,7 @@ impl Witnesses {
         held.retain(|_, (_, until)| *until > now);
         held.insert(
             token.clone(),
-            (binding, now.checked_add(WITNESS_LIFETIME).unwrap_or(now)),
+            (binding, now.checked_add(APPROVAL_LIFETIME).unwrap_or(now)),
         );
         drop(held);
         Ok(token)
@@ -185,7 +185,7 @@ impl Witnesses {
 
     /// Whether `token` names an answer the host issued for exactly
     /// `binding`, still good; it is spent either way it matches.
-    pub(super) fn take(&self, token: &str, binding: &WitnessBinding) -> bool {
+    pub(super) fn take(&self, token: &str, binding: &ApprovalBinding) -> bool {
         let mut held = self.0.lock_recover();
         let matches = held
             .get(token)
@@ -199,12 +199,12 @@ impl Witnesses {
 
 /// Whether `given` is the person's own answer to this invocation: a token the
 /// host issued for `binding`. Nothing else confirms for a bounded caller.
-pub(super) fn witnessed(
-    witnesses: &Witnesses,
+pub(super) fn approved(
+    approvals: &Approvals,
     given: Option<&Confirmation>,
-    binding: &WitnessBinding,
+    binding: &ApprovalBinding,
 ) -> bool {
-    matches!(given, Some(Confirmation::Witnessed(token)) if witnesses.take(token, binding))
+    matches!(given, Some(Confirmation::Approved(token)) if approvals.take(token, binding))
 }
 
 /// The refusal of a confirmation a bounded caller gave by its own word.
@@ -361,44 +361,44 @@ pub(super) fn question(
     })
 }
 
-/// `who`'s standing as the host decides for them: the person's standing as
+/// `who`'s access as the host decides for them: the person's access as
 /// `policy` gives it now, held to the bounds the one reading of a caller
 /// gives ([`Caller::acting`]): for an agent, the grants the caller carries
 /// ([`Caller::granted`]) as the broker gives them. Refused when the policy is
 /// someone else's.
-pub(super) fn bounded_standing(
+pub(super) fn bounded_access(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
-) -> Result<policy::Standing, ActionHostError> {
+) -> Result<policy::MemberAccess, ActionHostError> {
     let granted = who.caller.granted(&policy.workspace);
     policy
-        .standing
+        .access
         .clone()
         .as_acting(who.caller.acting().clone())
-        .map(|standing| standing.granted(granted))
+        .map(|access| access.granted(granted))
         .ok_or(ActionHostError::NotPermitted)
 }
 
-/// `who`'s permissions under `policy` ([`bounded_standing`]).
+/// `who`'s permissions under `policy` ([`bounded_access`]).
 pub(super) fn bounded_permissions(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
 ) -> Result<ui::permissions::PermissionContext, ActionHostError> {
     Ok(super::ViewReadPolicy {
-        standing: bounded_standing(policy, who)?,
+        access: bounded_access(policy, who)?,
         ..policy.clone()
     }
     .permissions())
 }
 
-/// The replica actor the host runs `who`'s actions as, on their standing
-/// under `policy` ([`bounded_standing`]).
+/// The replica actor the host runs `who`'s actions as, on their access
+/// under `policy` ([`bounded_access`]).
 pub(super) fn member_actor(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
 ) -> Result<crate::ReplicaActor, ActionHostError> {
     Ok(crate::ReplicaActor::Member {
-        standing: bounded_standing(policy, who)?,
+        access: bounded_access(policy, who)?,
         sandbox: policy.sandbox.clone(),
         unix_time: policy.unix_time,
         agent: who.agent.clone(),
@@ -453,7 +453,7 @@ impl Worker {
         })
     }
 
-    /// The person's standing in the workspace `cluster` as its policy gives
+    /// The person's access in the workspace `cluster` as its policy gives
     /// it now, where they may read `record` (an app and its record) when one
     /// is named: refused for a person it does not admit (a removed member, a
     /// revoked device). The host's own person, in a workspace no governance
@@ -474,7 +474,7 @@ impl Worker {
         match governed {
             Some(policy)
                 if policy.workspace == cluster
-                    && policy.standing.person_id().unwrap_or_default() == who.person.as_str() =>
+                    && policy.access.person_id().unwrap_or_default() == who.person.as_str() =>
             {
                 Ok(policy)
             }
@@ -486,7 +486,7 @@ impl Worker {
                 );
                 Ok(super::ViewReadPolicy {
                     workspace: cluster.to_owned(),
-                    standing: owner.standing().clone(),
+                    access: owner.access().clone(),
                     sandbox: Vec::new(),
                     unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
                 })
@@ -554,8 +554,8 @@ impl Worker {
     }
 
     /// `who`'s replica of the record at `route` (a part: of the record it is
-    /// held beside), opened as them on their standing now, or the one held
-    /// for them while that standing is unchanged.
+    /// held beside), opened as them on their access now, or the one held
+    /// for them while that access is unchanged.
     pub(super) fn bounded_replica(
         &mut self,
         workspace_id: WorkspaceId,
@@ -580,12 +580,12 @@ impl Worker {
         let same = self
             .bounded
             .get(&key)
-            .is_some_and(|held| held.standing == policy.standing && held.sandbox == policy.sandbox);
+            .is_some_and(|held| held.access == policy.access && held.sandbox == policy.sandbox);
         let mut current = same
             && self.bounded.get(&key).is_some_and(|held| {
-                policy.unix_time.saturating_sub(held.unix_time) < STANDING_FRESHNESS_SECS
+                policy.unix_time.saturating_sub(held.unix_time) < ACCESS_FRESHNESS_SECS
             });
-        // The same standing read again later: the replica takes the new time
+        // The same access read again later: the replica takes the new time
         // in place rather than being opened again over the whole record.
         if same
             && !current
@@ -632,7 +632,7 @@ impl Worker {
                         foreign: std::collections::HashSet::new(),
                         used: clock,
                     },
-                    standing: policy.standing,
+                    access: policy.access,
                     sandbox: policy.sandbox,
                     unix_time: policy.unix_time,
                 },
@@ -739,7 +739,7 @@ impl Worker {
             .and_then(|workspace| workspace.cluster_id(workspace_id))?;
         let question = question(caller, &workspace, request, about).ok()?;
         if self
-            .ledger()
+            .log()
             .entries
             .get_mut(&invocation)
             .is_none_or(|entry| std::mem::replace(&mut entry.asked, true))
@@ -752,7 +752,7 @@ impl Worker {
             .get()
             .and_then(|link| link.ask_person(workspace_id, &who.person_caller, question))
         else {
-            if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
+            if let Some(entry) = self.log().entries.get_mut(&invocation) {
                 entry.asked = false;
             }
             return None;
@@ -761,7 +761,7 @@ impl Worker {
         let asking = Asking {
             workspace_id,
             invocation,
-            binding: WitnessBinding::of(workspace_id, caller, request),
+            binding: ApprovalBinding::of(workspace_id, caller, request),
         };
         asked.then(move |reply| shared.answered(asking, reply.as_ref()));
         Some(InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt())
@@ -769,7 +769,7 @@ impl Worker {
 
     /// `invocation` waits for the person's answer, asked as `about` says.
     fn waits_for_person(&self, invocation: InvocationId, about: About) -> Outcome {
-        if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
+        if let Some(entry) = self.log().entries.get_mut(&invocation) {
             entry.about = Some(Box::new(about));
         }
         Outcome::Rejected(ActionHostError::confirmation_required())
@@ -795,7 +795,7 @@ impl Worker {
 
     /// Run `request` on the record at `route` for `who`, in their replica:
     /// only what it offers them, confirmed only by the person's answer the
-    /// host holds for it, and saved only once their standing, read again,
+    /// host holds for it, and saved only once their access, read again,
     /// lets them write every field it changed. `published` is what the record
     /// publishes to its owner, which tells an action not offered to `who`
     /// from one that does not exist.
@@ -848,15 +848,15 @@ impl Worker {
         };
         let arguments = descriptor.bind_prompt_text(arguments);
         let declared = descriptor.contract.need().field;
-        let witness = self
-            .ledger()
+        let approval = self
+            .log()
             .entries
             .get(&request.invocation)
-            .and_then(|entry| entry.witness.clone())
-            .map(Confirmation::Witnessed);
-        let given = witness.as_ref().or(request.confirmation.as_ref());
-        let binding = WitnessBinding::of(workspace_id, caller, request);
-        let confirmed = witnessed(&self.shared.witnesses, given, &binding);
+            .and_then(|entry| entry.approval.clone())
+            .map(Confirmation::Approved);
+        let given = approval.as_ref().or(request.confirmation.as_ref());
+        let binding = ApprovalBinding::of(workspace_id, caller, request);
+        let confirmed = approved(&self.shared.approvals, given, &binding);
         let context = super::caller_context(caller, request);
         let output = match app.invoke_in(
             context.as_ref(),
@@ -890,7 +890,7 @@ impl Worker {
     }
 
     /// Save what an action changed for `who`: every field of every change
-    /// checked against their standing read now, so that a member removed or
+    /// checked against their access read now, so that a member removed or
     /// narrowed since their replica opened writes nothing, and only then
     /// applied here and handed to the session: the action is done once the
     /// host holds it ([`Worker::saving`]).
@@ -978,7 +978,7 @@ pub(super) fn placed((anchor, head): (LiveAnchor, LiveAnchor)) -> ActorPlace {
 pub(super) struct Asking {
     pub(super) workspace_id: WorkspaceId,
     pub(super) invocation: InvocationId,
-    pub(super) binding: WitnessBinding,
+    pub(super) binding: ApprovalBinding,
 }
 
 impl super::Shared {
@@ -1007,10 +1007,10 @@ impl super::Shared {
             },
         };
         let update = match reply {
-            Some(Ok(ConfirmationReply::AllowOnce)) => match self.witnesses.issue(binding) {
+            Some(Ok(ConfirmationReply::AllowOnce)) => match self.approvals.issue(binding) {
                 Ok(token) => {
-                    if let Some(entry) = self.ledger.lock_recover().entries.get_mut(&invocation) {
-                        entry.witness = Some(token);
+                    if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation) {
+                        entry.approval = Some(token);
                     }
                     let (done, _) = tilo_actions::remote::pending();
                     let job = super::Job::Invoke {
@@ -1033,7 +1033,7 @@ impl super::Shared {
             Some(Ok(ConfirmationReply::Deny)) => failed("the person did not allow it"),
             Some(Err(_)) | None => failed("the person did not answer in time"),
         };
-        if let Some(entry) = self.ledger.lock_recover().entries.get_mut(&invocation)
+        if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation)
             && !entry.update.is_terminal()
         {
             entry.update = update;

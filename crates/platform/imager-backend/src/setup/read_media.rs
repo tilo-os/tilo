@@ -1,4 +1,4 @@
-//! Exact selected-medium read-only custody before original-source registration.
+//! Exact selected-medium read-only ownership before original-source registration.
 use super::{
     home_capture::{MediaReadSession, Rendezvous, RootMediaReadSession},
     migration_handoff,
@@ -295,7 +295,7 @@ impl Drop for ReadOnlyMediaGrant {
     }
 }
 
-// The registry owns abandoned native custody; frontends observe readiness on their runtime and
+// The registry owns abandoned native ownership; frontends observe readiness on their runtime and
 // may call finish off-thread.
 struct RetiredMedia {
     key: String,
@@ -688,7 +688,7 @@ pub(crate) fn run_helper_with_boot(
 fn target_eligible(selected: &TargetDrive, purpose: ReadMediaPurpose) -> bool {
     match purpose {
         ReadMediaPurpose::OriginalRegistration => selected.is_media_target(),
-        // The medium may now host the booted system: that permits read custody only.
+        // The medium may now host the booted system: that permits read ownership only.
         ReadMediaPurpose::BootPending => {
             selected.kind.is_removable_class()
                 && (selected.removable
@@ -764,7 +764,7 @@ mod tests {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
-    fn dropped_grant_retains_native_custody_until_confirmed_child_exit() {
+    fn dropped_grant_retains_native_ownership_until_confirmed_child_exit() {
         use std::{io::Write, os::unix::net::UnixStream};
         let request = tempfile::tempdir().unwrap();
         let root = request.path().to_path_buf();

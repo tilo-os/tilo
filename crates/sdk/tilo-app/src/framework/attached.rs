@@ -59,7 +59,7 @@ impl ActionTransport for Landed {
 /// The tree an [`AttachedView`] published, and the state it was published
 /// in: kept until that state moves.
 struct Published {
-    at: Standing,
+    at: TreeInputs,
     /// The tree as the view's frame publishes it.
     tree: Rc<Vec<tilo_actions::ResourceSpec>>,
     /// The tree as the member may reach it, made from `tree` the first
@@ -69,10 +69,10 @@ struct Published {
 
 /// What a published tree is read from: what the view was asked to do, the
 /// record it holds, the input and models the toolkit was handed, and the
-/// permissions in force. A tree published at one standing is the tree at an
+/// permissions in force. A tree published at one inputs is the tree at an
 /// equal one.
 #[derive(PartialEq, Eq)]
-struct Standing {
+struct TreeInputs {
     moves: u64,
     heads: Vec<ui_core::automerge::ChangeHash>,
     input: u64,
@@ -97,7 +97,7 @@ pub struct AttachedView {
     /// what it offers against the same tree, built once.
     published: RefCell<Option<Published>>,
     /// Counts what the view was asked to do that may change what it
-    /// publishes: a frame, an invocation, a merge, a new standing.
+    /// publishes: a frame, an invocation, a merge, a new inputs.
     moves: Cell<u64>,
     /// The record store the view reads and writes.
     records: ResourceStore,
@@ -413,9 +413,9 @@ impl AttachedView {
         self.moves.set(self.moves.get().wrapping_add(1));
     }
 
-    /// Where the view stands now ([`Standing`]).
-    fn standing(&self) -> Standing {
-        Standing {
+    /// Where the view stands now ([`TreeInputs`]).
+    fn inputs(&self) -> TreeInputs {
+        TreeInputs {
             moves: self.moves.get(),
             heads: self
                 .records
@@ -434,7 +434,7 @@ impl AttachedView {
     fn frame_tree(&self) -> Rc<Vec<tilo_actions::ResourceSpec>> {
         let frame = self.frame();
         if let Some(published) = self.published.borrow().as_ref()
-            && published.at == self.standing()
+            && published.at == self.inputs()
         {
             return Rc::clone(&published.tree);
         }
@@ -443,7 +443,7 @@ impl AttachedView {
         // Read after building: what building took in (a worker's reply that
         // had landed) is part of the standing the tree was published at.
         *self.published.borrow_mut() = Some(Published {
-            at: self.standing(),
+            at: self.inputs(),
             tree: Rc::clone(&tree),
             permitted: None,
         });

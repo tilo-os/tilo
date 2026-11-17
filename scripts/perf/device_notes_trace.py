@@ -32,8 +32,8 @@ identities = {row.get("id") for row in inputs}
 serials = {row.get("wayland_serial") for row in inputs}
 # The controller collects and validates each key before sending the next one.
 # Keep overlapping input metadata to detect conflicting identities, but transfer
-# the current key's complete witness family only: completed families are already
-# retained by collect_trace on the controller. Thirty-two witnesses per key must
+# the current key's complete proof family only: completed families are already
+# retained by collect_trace on the controller. Thirty-two proofs per key must
 # not multiply the RPC payload by thirty-two historical keys.
 latest = {(row.get("process_id"), row.get("observer_session"), row.get("id"))
           for row in inputs[-1:]}

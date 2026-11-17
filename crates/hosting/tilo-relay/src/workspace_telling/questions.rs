@@ -25,7 +25,7 @@ use crate::workspaces::{ToTell, Workspaces};
 const CHAT: &str = "so.tilo.chat";
 
 /// What one question of Chat's means for the log of the person it asks.
-pub(super) enum Standing {
+pub(super) enum QuestionUpdate {
     /// It waits: told under its id, once.
     Waits(Box<ToTell>),
     /// Its person answered it, on this device of theirs.
@@ -53,7 +53,7 @@ pub(super) fn questions(
     workspace: &str,
     record: &str,
     part: &chat::parts::ChatPart,
-) -> Vec<([u8; 32], Standing)> {
+) -> Vec<([u8; 32], QuestionUpdate)> {
     let mut found = Vec::new();
     for (id, message) in part.messages.iter() {
         let Some(question) = &message.question else {
@@ -63,26 +63,26 @@ pub(super) fn questions(
             continue;
         };
         let told = told_id(workspace, id);
-        let standing = match question.standing() {
-            chat::question::Standing::Waiting => {
+        let update = match question.state() {
+            chat::question::QuestionState::Waiting => {
                 if message.text.trim().is_empty() {
                     continue;
                 }
-                Standing::Waits(Box::new(telling(
+                QuestionUpdate::Waits(Box::new(telling(
                     (workspace, record),
                     (id, message),
                     question,
                     told,
                 )))
             }
-            chat::question::Standing::Withdrawn(_) => Standing::TakenBack { id: told },
-            chat::question::Standing::Answered(answered)
-            | chat::question::Standing::Settled(answered, _) => Standing::Answered {
+            chat::question::QuestionState::Withdrawn(_) => QuestionUpdate::TakenBack { id: told },
+            chat::question::QuestionState::Answered(answered)
+            | chat::question::QuestionState::Settled(answered, _) => QuestionUpdate::Answered {
                 id: told,
                 device: answered.device.0.clone(),
             },
         };
-        found.push((person, standing));
+        found.push((person, update));
     }
     found
 }
@@ -253,7 +253,7 @@ impl Feeder {
         };
         // What waits in each person's log, read once a person.
         let mut waiting: BTreeMap<[u8; 32], BTreeSet<String>> = BTreeMap::new();
-        for (person, standing) in found {
+        for (person, update) in found {
             let waits = |waiting: &mut BTreeMap<[u8; 32], BTreeSet<String>>, id: &str| {
                 waiting
                     .entry(person)
@@ -268,16 +268,18 @@ impl Feeder {
                     })
                     .contains(id)
             };
-            let kept = match standing {
-                Standing::Waits(telling) => self.workspaces.tell(&person, *telling).await.map(drop),
-                Standing::Answered { id, device } if waits(&mut waiting, &id) => self
+            let kept = match update {
+                QuestionUpdate::Waits(telling) => {
+                    self.workspaces.tell(&person, *telling).await.map(drop)
+                }
+                QuestionUpdate::Answered { id, device } if waits(&mut waiting, &id) => self
                     .workspaces
                     .acknowledge_told(&person, &id, &device, BY_ANSWERED)
                     .map(drop),
-                Standing::TakenBack { id } if waits(&mut waiting, &id) => {
+                QuestionUpdate::TakenBack { id } if waits(&mut waiting, &id) => {
                     self.workspaces.withdraw_told(&person, &id).map(drop)
                 }
-                Standing::Answered { .. } | Standing::TakenBack { .. } => Ok(()),
+                QuestionUpdate::Answered { .. } | QuestionUpdate::TakenBack { .. } => Ok(()),
             };
             if let Err(error) = kept {
                 tracing::debug!(%workspace, %error, "a question was not kept in its person's log");
@@ -342,7 +344,7 @@ mod tests {
     #[test]
     #[expect(
         clippy::too_many_lines,
-        reason = "one part with a question in each standing, read once"
+        reason = "one part with a question in each state, read once"
     )]
     fn a_parts_questions_are_read_as_they_stand() {
         let decks = [("march", "The March one"), ("june", "The June one")];
@@ -385,7 +387,7 @@ mod tests {
         assert_eq!(found.len(), 4, "the plain message asks nobody");
         assert!(found.iter().all(|(person, _)| *person == ADA));
 
-        let Standing::Waits(waits) = &found[0].1 else {
+        let QuestionUpdate::Waits(waits) = &found[0].1 else {
             panic!("the first question waits");
         };
         assert_eq!(
@@ -449,11 +451,11 @@ mod tests {
 
         assert!(matches!(
             &found[1].1,
-            Standing::Answered { id, device }
+            QuestionUpdate::Answered { id, device }
                 if id.ends_with(":m2") && device == "Ada's phone"
         ));
-        assert!(matches!(&found[2].1, Standing::TakenBack { id } if id.ends_with(":m3")));
-        let Standing::Waits(secret) = &found[3].1 else {
+        assert!(matches!(&found[2].1, QuestionUpdate::TakenBack { id } if id.ends_with(":m3")));
+        let QuestionUpdate::Waits(secret) = &found[3].1 else {
             panic!("what asks for a secret waits");
         };
         assert!(secret.words_stay && secret.tell.actions.is_empty());

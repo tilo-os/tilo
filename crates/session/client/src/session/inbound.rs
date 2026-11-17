@@ -148,7 +148,7 @@ impl Task {
         // The workspace is ready once what the host replayed before it is in the replica:
         // whoever waits for it reads every write the replay carried.
         self.keep_arrived();
-        // What the host was not ready for before goes on the next pass of custody.
+        // What the host was not ready for before goes on the next pass of ownership.
         if let Some(sending) = self.sending.get_mut(&workspace_id) {
             sending.ready();
         }

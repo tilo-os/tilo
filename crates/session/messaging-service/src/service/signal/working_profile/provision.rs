@@ -75,7 +75,7 @@ pub(crate) fn provision(
     let runtime = tokio::runtime::Handle::try_current().map_err(|_| SendError::Unavailable)?;
     drop(runtime.spawn_blocking(move || {
         let result = (|| {
-            let witness = launcher::owned_service::run_connected(
+            let proof = launcher::owned_service::run_connected(
                 launch,
                 authority,
                 service,
@@ -89,7 +89,7 @@ pub(crate) fn provision(
                 })),
             )
             .map_err(|_| SendError::Unavailable)?;
-            if !witness.matches(&key, &ram.source(), super::SERVICE_PACKAGE) {
+            if !proof.matches(&key, &ram.source(), super::SERVICE_PACKAGE) {
                 return Err(SendError::Revoked);
             }
             let files = ram.collect_profile().map_err(|_| SendError::Unavailable)?;

@@ -698,7 +698,7 @@ fn assert_archived_file_layout(path: &std::path::Path) {
 }
 
 #[test]
-fn effect_archive_io_and_root_publication_failure_preserve_active_custody() {
+fn effect_archive_io_and_root_publication_failure_preserve_active_ownership() {
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let fixture = fixture();
     let first = request(&fixture.certificate, EffectReceiptStatus::Succeeded);

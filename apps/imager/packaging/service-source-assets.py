@@ -25,7 +25,7 @@ FIXTURE_ROOT = Path(__file__).resolve().parents[3] / 'os/scripts/service-session
 MAXIMUM = 512 * 1024 * 1024
 TOTAL = 1024 * 1024 * 1024
 # Canonical identity includes archives, every extracted file fact and fixed endpoints;
-# only source_root/source_path locators are excluded. The checked-in subject ledger
+# only source_root/source_path locators are excluded. The checked-in subject manifest
 # is measured public bytes, not evidence that any native runtime/session worked.
 ASSET_MANIFEST_SHA256 = 'f088c5f9dec427570879bdf6c4e1582adb7722c242a4907c6552e2c8f196cd4e'
 
@@ -51,7 +51,7 @@ def subject(assets):
     for group, row in assets['assets'].items():
         require(type(row) is dict and set(row) in ({'files'}, {'source_root', 'files'})
                 and type(row['files']) is dict and 0 < len(row['files']) <= 4096,
-                'official public asset manifest file ledger differs')
+                'official public asset manifest file manifest differs')
         result['assets'][group] = {'files': row['files']}
     for key, row in assets['archives'].items():
         require(type(row) is dict and set(row) in (
@@ -295,7 +295,7 @@ def stage(assets, candidate):
                 'candidate public staging owner differs')
         # Verify archive subjects too; neither a pathname nor old saved receipt
         # certifies the supplied distribution. Complete extracted trees below
-        # remain independently bound to their exact frozen file ledger.
+        # remain independently bound to their exact frozen file manifest.
         for key in ('electron_archive', 'slack_archive'):
             row = dict(assets['archives'][key])
             path = Path(row.pop('source_path'))
@@ -457,7 +457,7 @@ def recover(root):
                     destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
                     with archive.open(entry) as source, destination.open('xb') as target:
                         shutil.copyfileobj(source, target)
-                    # ZIP extraction mode policy is frozen by the measured ledger.
+                    # ZIP extraction mode policy is frozen by the measured manifest.
                     destination.chmod(files[entry.filename]['mode'])
             verify_tree(electron, files)
         except BaseException:

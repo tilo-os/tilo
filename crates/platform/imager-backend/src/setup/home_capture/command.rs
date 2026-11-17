@@ -1,6 +1,6 @@
 //! Privileged synchronous command core; the app-facing actor runs it off UI.
 use super::{
-    Broker, Command, Response, Worker, failure, host_runner::Event, process::Custody, worker,
+    Broker, Command, Response, Worker, failure, host_runner::Event, process::Ownership, worker,
 };
 use crate::capture::host_session::{HostProcess, HostSession};
 use std::{
@@ -84,7 +84,7 @@ impl Broker {
                 }
             };
         let process = session.process();
-        let custody = Custody {
+        let ownership = Ownership {
             host: session.identity(),
             namespace: None,
             projection: Some(session.projection_receipt()),
@@ -92,7 +92,7 @@ impl Broker {
             inventory_scratch: Some(scratch.receipt.clone()),
         };
         // Durable BEFORE any approved subtree or secret crosses into the host.
-        self.record.worker = Some(custody.clone());
+        self.record.worker = Some(ownership.clone());
         if let Err(error) = self.store.save(&self.record, false) {
             process.abort_unlaunched()?;
             session.projection_receipt().cleanup()?;
@@ -101,7 +101,7 @@ impl Broker {
         }
         let owned = Arc::new(Process {
             process,
-            custody: Mutex::new(custody),
+            ownership: Mutex::new(ownership),
             complete: AtomicBool::new(false),
             inventory_scratch: scratch,
         });
@@ -197,7 +197,7 @@ impl Broker {
                         .record
                         .worker
                         .clone()
-                        .ok_or_else(|| failure("capture host custody lost"))?;
+                        .ok_or_else(|| failure("capture host ownership lost"))?;
                     if protected.launch_acknowledged {
                         return Err(failure("capture launch was declared twice"));
                     }
@@ -205,30 +205,30 @@ impl Broker {
                     self.record.worker = Some(protected.clone());
                     self.store.save(&self.record, false)?;
                     *owned
-                        .custody
+                        .ownership
                         .lock()
-                        .map_err(|_| failure("capture custody poisoned"))? = protected;
+                        .map_err(|_| failure("capture ownership poisoned"))? = protected;
                     session.acknowledge()?;
                 }
                 Ok(Ok(Event::Namespace {
                     operation: actual,
-                    custody,
+                    ownership,
                 })) if actual == operation => {
                     let mut protected = self
                         .record
                         .worker
                         .clone()
-                        .ok_or_else(|| failure("capture host custody lost"))?;
+                        .ok_or_else(|| failure("capture host ownership lost"))?;
                     if protected.namespace.is_some() {
                         return Err(failure("capture namespace was declared twice"));
                     }
-                    protected.admit_namespace(custody)?;
+                    protected.admit_namespace(ownership)?;
                     self.record.worker = Some(protected.clone());
                     self.store.save(&self.record, false)?;
                     *owned
-                        .custody
+                        .ownership
                         .lock()
-                        .map_err(|_| failure("capture custody poisoned"))? = protected;
+                        .map_err(|_| failure("capture ownership poisoned"))? = protected;
                     session.acknowledge()?;
                 }
                 Ok(Ok(Event::Response {
@@ -262,9 +262,9 @@ impl Broker {
                         return Err(failure("capture native host exited unsuccessfully"));
                     }
                     owned
-                        .custody
+                        .ownership
                         .lock()
-                        .map_err(|_| failure("capture custody poisoned"))?
+                        .map_err(|_| failure("capture ownership poisoned"))?
                         .require_stopped()?;
                     owned.complete.store(true, Ordering::Release);
                     self.record.worker = None;
@@ -289,7 +289,7 @@ impl Broker {
 
 struct Process {
     process: HostProcess,
-    custody: Mutex<Custody>,
+    ownership: Mutex<Ownership>,
     complete: AtomicBool,
     inventory_scratch: super::store::ScratchLease,
 }
@@ -297,11 +297,11 @@ impl Drop for Process {
     fn drop(&mut self) {
         if !self.complete.load(Ordering::Acquire)
             && self
-                .custody
+                .ownership
                 .get_mut()
                 .map_or_else(
                     |_| Err(io::ErrorKind::Other.into()),
-                    |custody| custody.require_stopped(),
+                    |ownership| ownership.require_stopped(),
                 )
                 .is_err()
         {
@@ -323,18 +323,18 @@ impl Worker for Arc<Process> {
                 break;
             }
             if Instant::now() >= deadline {
-                self.custody
+                self.ownership
                     .lock()
-                    .map_err(|_| failure("capture custody poisoned"))?
+                    .map_err(|_| failure("capture ownership poisoned"))?
                     .stop_and_observe()?;
                 self.process.wait()?;
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        self.custody
+        self.ownership
             .lock()
-            .map_err(|_| failure("capture custody poisoned"))?
+            .map_err(|_| failure("capture ownership poisoned"))?
             .require_stopped()
     }
 }

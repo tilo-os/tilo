@@ -16,7 +16,7 @@ There are two ways to run them:
   is the everyday loop.
 - **In a real session.** `tilolang dev DIR --session SESSION` develops the package inside
   a running nested session, where it runs as an installed app: launched by the launcher,
-  in its sandbox, under its own id and custody. Use it to test a change against a real
+  in its sandbox, under its own id and ownership. Use it to test a change against a real
   session.
 
 ## On this desktop
@@ -179,7 +179,7 @@ record, unread. Renaming keeps state too, because the ids lock keeps each id
 (`tilolang ids --rename`). tilolang has no migration rules yet. When it does, this is
 where they run.
 
-### How the swap stays inside custody in a session
+### How the swap stays inside ownership in a session
 
 A dev-mode swap installs a package exactly as any install does: verified by
 `tilo-install`, its old version kept while it runs. Then the session hands the new

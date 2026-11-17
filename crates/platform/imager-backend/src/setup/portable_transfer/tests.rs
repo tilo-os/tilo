@@ -468,7 +468,7 @@ fn assert_mid_import_cancelled(package: &Path, root: &Path, cancel: &Arc<AtomicB
     // SAFETY: signal zero observes only the recorded, owned extraction child.
     assert_eq!(unsafe { libc::kill(child, 0) }, -1);
     assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
-    // Interrupted custody has no completed name. Its exact private attempt is
+    // Interrupted ownership has no completed name. Its exact private attempt is
     // retained; retry uses the same requested quarantine, never an overwrite.
     assert!(!interrupted.exists());
     let attempts: Vec<_> = fs::read_dir(root)
@@ -546,7 +546,7 @@ fn allocation_bound_and_existing_destination_are_enforced() {
 }
 
 #[test]
-fn protected_private_custody_keeps_descriptor_bound_archive_export_and_import_working() {
+fn protected_private_ownership_keeps_descriptor_bound_archive_export_and_import_working() {
     let temporary = tempfile::tempdir().unwrap();
     let base = temporary.path().canonicalize().unwrap();
     let source = base.join("source");
@@ -562,7 +562,7 @@ fn protected_private_custody_keeps_descriptor_bound_archive_export_and_import_wo
     .unwrap();
     let source_pin = PinnedDirectory::open_absolute(&source).unwrap();
     let target_pin = PinnedDirectory::open_absolute(&target).unwrap();
-    tilo_user_identity::persist::protect_private_custody().unwrap();
+    tilo_user_identity::persist::protect_private_ownership().unwrap();
     // SAFETY: PR_GET_DUMPABLE reads this test process's current privacy mode.
     assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE) }, 0);
     let cancel = AtomicBool::new(false);

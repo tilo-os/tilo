@@ -581,7 +581,7 @@ impl Apps {
             Err(error) => return refused(format!("the identity service: {error}")),
         };
         // An app whose types hold an outside service's resources reaches its connector, which
-        // holds the network and custody the host has none of.
+        // holds the network and ownership the host has none of.
         let origin = match tilo_app_launch::tilolang_hosts::origin_of(&hosted.app) {
             Ok(None) => None,
             Ok(Some(origin)) => {
@@ -600,12 +600,12 @@ impl Apps {
         };
         // What the person may do in the app, as a launched app of it reads it: the instance's
         // views offer and refuse by it.
-        let standing = tilo_app_launch::authority::standing(
+        let access = tilo_app_launch::authority::access(
             &self.workspace_named(&hosted.workspace),
             &hosted.app,
         );
         hosts.hand_over(tilo_app_launch::tilolang_hosts::Instance {
-            standing,
+            access,
             app: hosted.app,
             workspace: hosted.workspace,
             instance: hosted.instance,

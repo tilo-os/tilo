@@ -40,9 +40,9 @@ pub use many::{ListedIssue, MAX_MANY};
 pub use projects::{Tracker, tracker};
 pub use tracker_area::{Kind, Person, TrackerArea};
 pub use work::{
-    BudgetBy, MAX_ADDRESS_CHARS, MAX_LINE_CHARS, MAX_WAITS, MOST_LOST_RUNS, Resumed, Standing,
-    Stopped, StoppedWhy, WaitFor, WaitKind, Work, checked_address, checked_folder, checked_line,
-    checked_waits, standing,
+    BudgetBy, MAX_ADDRESS_CHARS, MAX_LINE_CHARS, MAX_WAITS, MOST_LOST_RUNS, Resumed, Stopped,
+    StoppedWhy, TaskState, WaitFor, WaitKind, Work, checked_address, checked_folder, checked_line,
+    checked_waits, task_state,
 };
 
 /// The kind of the tracker's own document, which keeps its projects and areas.

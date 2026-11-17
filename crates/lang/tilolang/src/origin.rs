@@ -407,7 +407,7 @@ pub const KINDS: &[OriginKind] = &[
         name: "imap.account",
         doc: "What the IMAP server of one of the workspace's mail accounts holds. The account itself \
               (its address, servers and signature) is the settings', and its credentials stay in \
-              custody: `key` names it.",
+              ownership: `key` names it.",
         derived: false,
         fields: &[
             field("key", "Text", "The settings account it mirrors, by its id."),

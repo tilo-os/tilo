@@ -2,7 +2,7 @@
 
 impl App {
     /// Prepare and mount an application on its already admitted collaboration manager.
-    /// Host preparation runs inside the existing native read custody. The original
+    /// Host preparation runs inside the existing native read ownership. The original
     /// record binding is checked before the component factory runs, and the same
     /// manager and wake scope transfer into the mounted application exactly once.
     /// Construct the host and its record owners inside `prepare_host`, where
@@ -577,7 +577,7 @@ impl App {
         };
         let Some(route) = manager
             .primary_route()
-            .map(|witness| witness.route().clone())
+            .map(|observation| observation.route().clone())
         else {
             return false;
         };
@@ -694,7 +694,7 @@ impl App {
             // it will not produce a new connection-state transition.
             // Query/resolve remain bounded reads; this refresh runs even with
             // no directory requests or inbound events, and skips stable idle.
-            // The same pump already reconciled custody for its document drain.
+            // The same pump already reconciled ownership for its document drain.
             self.publish_action_surface_after_refresh();
         }
         // Before-action diagnostics use the existing launcher-owned startup
@@ -850,7 +850,7 @@ impl App {
             .collaboration
             .manager
             .primary_route()
-            .map(|witness| witness.route().clone())
+            .map(|observation| observation.route().clone())
         else {
             return;
         };

@@ -1,4 +1,4 @@
-//! The storage seam behind a Tilo application's records and local views.
+//! The storage boundary behind a Tilo application's records and local views.
 
 use std::any::Any;
 use std::fmt;
@@ -306,10 +306,10 @@ pub trait DurableStore {
         false
     }
 
-    /// Grant custody of `key` to exactly one `claimant`, durably: the first claim
+    /// Grant ownership of `key` to exactly one `claimant`, durably: the first claim
     /// wins, and the same claimant may claim again to resume after a crash. Lets one
     /// successor adopt a workspace record under a new identity. Answers `true` when
-    /// `claimant` holds custody.
+    /// `claimant` holds ownership.
     ///
     /// # Errors
     /// A key the store cannot claim, or a failure recording the claim.

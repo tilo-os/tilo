@@ -1,4 +1,4 @@
-"""The one seam every call goes through: a request in, an answer out.
+"""The one boundary every call goes through: a request in, an answer out.
 
 `HttpTransport` sends the calls of Tilo's `/v1` to an API server or to a host
 over HTTP. `NativeTransport` sends the very same calls to a Tilo host in
@@ -73,7 +73,7 @@ class Response:
 class Transport:
     """What a client sends its calls through.
 
-    `request` is the whole seam: a method, a path, and the body it carries,
+    `request` is the whole boundary: a method, a path, and the body it carries,
     answered by a status, headers and a body (or, for a stream of server-sent
     events, an async iterator of its bytes).
     """

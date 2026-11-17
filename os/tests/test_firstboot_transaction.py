@@ -481,7 +481,7 @@ fail('seeds-after')
         self.assertTrue(self.credential.exists())
         self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
 
-    def test_attested_output_tampering_blocks_retry_before_custody_or_unlock(self):
+    def test_attested_output_tampering_blocks_retry_before_ownership_or_unlock(self):
         result = self.run_boot('plan')
         self.assertNotEqual(result.returncode, 0)
         receipt = self.root / 'state/seeds' / (str(os.getuid()) + '.json')
@@ -692,7 +692,7 @@ class HomeSeedTests(unittest.TestCase):
         body = self.seed()
         self.assertEqual([entry['path'] for entry in body['files']], ['default'])
         before = (self.proofs / (str(os.getuid()) + '.json')).read_bytes()
-        # The same ownership pass used by firstboot must not change witnesses.
+        # The same ownership pass used by firstboot must not change proofs.
         fd = os.open(self.home, self.helper.atomic.DIR)
         try:
             self.helper.atomic.ownership(fd, os.getuid(), os.getgid())

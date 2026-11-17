@@ -10,7 +10,7 @@
 //!   and every role's preset grants, no one else;
 //! - the operations are applied in one deterministic order: no operation
 //!   before one it was written on top of, and operations written concurrently
-//!   ordered by their author's standing in the workspace as it stands when
+//!   ordered by their author's access in the workspace as it stands when
 //!   they are reached — the owner's first, then an administrator's, then
 //!   everyone else's — and, among equals, by id;
 //! - each is decided against the membership at the point it is reached
@@ -141,7 +141,7 @@ pub(crate) fn carry(
     changes: &[automerge::Change],
     workspace: &str,
 ) {
-    use crate::state::invitation_ledger::{PARTS_KEY, RECEIPTS_KEY};
+    use crate::state::invitation_receipts::{PARTS_KEY, RECEIPTS_KEY};
     if after.pending_ops() > 0 {
         return;
     }
@@ -183,7 +183,7 @@ pub(crate) fn carry(
             added.insert(id, op);
         }
     }
-    let mut ledger = Ledger::new(after, workspace);
+    let mut log = Log::new(after, workspace);
     while !added.is_empty() {
         let Some(id) = added
             .iter()
@@ -195,7 +195,7 @@ pub(crate) fn carry(
         let Some(op) = added.remove(&id) else {
             return;
         };
-        replayed.unadmitted |= !op_effect(&mut replayed.policy, &op, &mut ledger);
+        replayed.unadmitted |= !op_effect(&mut replayed.policy, &op, &mut log);
         replayed.heads = BTreeSet::from([id]);
     }
     // Every carry a test makes is checked against replaying the state.
@@ -280,7 +280,7 @@ pub(super) fn start(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
 fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspacePolicy, bool) {
     let mut policy = start(doc, workspace);
     order(&mut policy);
-    let mut ledger = Ledger::new(doc, workspace);
+    let mut log = Log::new(doc, workspace);
     let mut unadmitted = false;
     // Each operation waits for the parents it was written on top of; one
     // whose parents are all applied is ready. Of the ready ones the next is
@@ -308,7 +308,7 @@ fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspaceP
     {
         ready.remove(&next);
         if let Some(op) = held.get(&next) {
-            unadmitted |= !op_effect(&mut policy, op, &mut ledger);
+            unadmitted |= !op_effect(&mut policy, op, &mut log);
         }
         for child in children.remove(&next).unwrap_or_default() {
             if let Some(count) = waiting.get_mut(&child) {
@@ -331,15 +331,15 @@ pub(super) fn order(policy: &mut WorkspacePolicy) {
         .sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
 }
 
-/// The invitation ledger of the document a replay reads, its parts read once
+/// The invitation log of the document a replay reads, its parts read once
 /// and only when an admission needs them.
-struct Ledger<'a> {
+struct Log<'a> {
     doc: &'a AutoCommit,
     workspace: &'a str,
     parts: Option<BTreeMap<String, Vec<Vec<u8>>>>,
 }
 
-impl<'a> Ledger<'a> {
+impl<'a> Log<'a> {
     const fn new(doc: &'a AutoCommit, workspace: &'a str) -> Self {
         Self {
             doc,
@@ -349,7 +349,7 @@ impl<'a> Ledger<'a> {
     }
 
     /// Admit `person` into `policy` by the invitation `invite`, as recorded at
-    /// `at_ns`: the ledger holds their receipt for it, the invitation it names
+    /// `at_ns`: the log holds their receipt for it, the invitation it names
     /// admits them as `policy` stands ([`crate::workspace::membership::invitation_admits`]),
     /// and they are neither its owner nor banned. Someone already a member
     /// keeps the role they hold: a redemption is how someone entered, not the
@@ -362,7 +362,7 @@ impl<'a> Ledger<'a> {
         at_ns: u64,
     ) -> bool {
         let Ok(values) = tilo_failure::ignored!(
-            "a ledger this device cannot read admits no one",
+            "a log this device cannot read admits no one",
             crate::workspace::invitation_receipts_of(self.doc, &hex::encode(invite))
         ) else {
             return false;
@@ -370,15 +370,15 @@ impl<'a> Ledger<'a> {
         let parts = self.parts.get_or_insert_with(|| {
             tilo_failure::ignored!(
                 "parts this device cannot read complete no receipt",
-                crate::state::invitation_ledger::parts(self.doc).unwrap_or_default()
+                crate::state::invitation_receipts::parts(self.doc).unwrap_or_default()
             )
         });
         let Some(signed) = values.iter().find_map(|value| {
-            let ledgered = crate::state::LedgerReceipt::decode(value).ok()?;
-            (ledgered.receipt.user_public_key == person && ledgered.receipt.invite_id == invite)
+            let logged = crate::state::StoredReceipt::decode(value).ok()?;
+            (logged.receipt.user_public_key == person && logged.receipt.invite_id == invite)
                 .then(|| {
-                    ledgered.invitation(|digest| {
-                        crate::state::invitation_ledger::part_in(parts, digest)
+                    logged.invitation(|digest| {
+                        crate::state::invitation_receipts::part_in(parts, digest)
                     })
                 })
                 .flatten()
@@ -426,7 +426,7 @@ impl<'a> Ledger<'a> {
     }
 }
 
-/// An author's standing in the workspace as the order reaches them: an owner
+/// An author's access in the workspace as the order reaches them: an owner
 /// first, then an administrator, then everyone else. Operations written
 /// concurrently are applied in this order, so two devices that wrote without
 /// seeing each other resolve the same way on every device.
@@ -450,11 +450,11 @@ fn tier(policy: &WorkspacePolicy, person: &str) -> u8 {
 /// one refused step takes the whole operation with it, so a writer cannot slip
 /// a change past the membership by putting an allowed one in front of it.
 /// False when it was an admission that admitted no one.
-fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp, ledger: &mut Ledger) -> bool {
+fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp, log: &mut Log) -> bool {
     match &op.command {
         MembershipOpCommand::Governance { .. } => {}
         MembershipOpCommand::Admit { invite, person } => {
-            if !ledger.admit(policy, *invite, *person, op.at_ns) {
+            if !log.admit(policy, *invite, *person, op.at_ns) {
                 return false;
             }
             order(policy);
@@ -462,7 +462,7 @@ fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp, ledger: &mut
         MembershipOpCommand::Project { .. } => {
             if let Ok(next) = tilo_failure::ignored!(
                 "a change this author's grants do not allow takes the whole operation with it",
-                effect(ledger.doc, policy, op)
+                effect(log.doc, policy, op)
             ) {
                 *policy = next;
                 order(policy);

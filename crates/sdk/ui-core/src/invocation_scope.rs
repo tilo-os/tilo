@@ -1,4 +1,4 @@
-//! Host-local invocation custody. No wire caller can manufacture these checks.
+//! Host-local invocation ownership. No wire caller can manufacture these checks.
 
 pub use runtime_collab::approved_checks::{
     Receipt as ApprovedCheckReceipt, ReportObservation as ApprovedCheckReportObservation,
@@ -419,7 +419,7 @@ const MAX_LOCUS_HEADS: usize = 128;
 const MAX_LOCUS_FIELD_BYTES: usize = 4096;
 const MAX_LOCUS_BASIS_BYTES: usize = 16 * 1024;
 
-/// Immutable job custody, constructed only from an actual admitted invocation and the exact mounted
+/// Immutable job ownership, constructed only from an actual admitted invocation and the exact mounted
 /// record owner. InvocationId alone cannot construct it.
 #[derive(Clone)]
 pub struct ResourceInvocationScope {
@@ -439,7 +439,7 @@ impl ResourceInvocationScope {
     ) -> Result<Self, String> {
         owner.validate().map_err(|error| error.to_string())?;
         if lease.owner_token.is_none() {
-            return Err("required invocation has no concrete final-owner custody token".into());
+            return Err("required invocation has no concrete final-owner ownership token".into());
         }
         if owner.broker_route().as_ref() != Some(&lease.route) {
             return Err("invocation belongs to a different canonical record route".into());
@@ -488,7 +488,7 @@ impl ResourceInvocationScope {
         Ok(scope)
     }
 
-    /// Read the immutable pre-execution observation while original custody is live. This never commits,
+    /// Read the immutable pre-execution observation while original ownership is live. This never commits,
     /// borrows a document, refreshes timestamps or executes.
     pub fn locus_basis(&self) -> Result<Option<InvocationLocusBasis>, String> {
         self.check()?;
@@ -748,7 +748,7 @@ impl ResourceInvocationScope {
         &self.lease.route
     }
 
-    /// Irreversibly retire this job and all derived worker-effect custody. Cancellation grants no
+    /// Irreversibly retire this job and all derived worker-effect ownership. Cancellation grants no
     /// authority and cannot affect another job.
     pub fn cancel(&self) {
         self.retired.store(true, Ordering::Release);
@@ -781,7 +781,7 @@ impl ResourceInvocationScope {
         effect()
     }
 
-    /// Derive worker-thread effect custody from this actual admitted scope. This carries no record loan
+    /// Derive worker-thread effect ownership from this actual admitted scope. This carries no record loan
     /// and cannot mutate a Doc.
     pub fn effect_scope(&self) -> Result<ResourceEffectScope, String> {
         self.check()?;
@@ -1105,7 +1105,7 @@ impl std::fmt::Debug for DocumentAuthorization {
         f.write_str("DocumentAuthorization(..)")
     }
 }
-impl ::collaboration::DocumentCustody for DocumentAuthorization {
+impl ::collaboration::DocumentAuthority for DocumentAuthorization {
     fn check(
         &self,
         route: &RouteSpec,
@@ -1182,7 +1182,7 @@ impl DocumentAuthorization {
         Ok(())
     }
 
-    /// The final owner validates each ORIGINAL private token against its already-held peer/ledger/time,
+    /// The final owner validates each ORIGINAL private token against its already-held peer/log/time,
     /// including these exact delivery inputs and route. A successful downcast alone must never return
     /// authorization.
     pub fn validate_owner_contributors(
@@ -1201,7 +1201,7 @@ impl DocumentAuthorization {
                 .lease
                 .owner_token
                 .as_ref()
-                .ok_or("required contributor has no final-owner custody token")?;
+                .ok_or("required contributor has no final-owner ownership token")?;
             validate(&group.lease.request, &group.lease.route, token.as_ref())?;
         }
         Ok(())

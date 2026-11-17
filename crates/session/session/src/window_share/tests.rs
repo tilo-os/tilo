@@ -1240,8 +1240,8 @@ fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
         "the device sharing it"
     );
     assert_eq!(
-        read.standing,
-        tilo_desktop_surface::Standing::Pictured,
+        read.state,
+        tilo_desktop_surface::StreamState::Pictured,
         "the tile reads as a picture of the window"
     );
     let (width, height, bytes) = read.picture.expect("the picture the tile decoded");

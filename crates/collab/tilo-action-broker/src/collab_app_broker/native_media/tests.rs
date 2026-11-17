@@ -130,7 +130,7 @@ os._exit(0)
     assert_eq!(stopped.load(Ordering::SeqCst), 1);
     assert!(
         !process.alive(),
-        "the launcher's live pidfd cannot revive executing custody"
+        "the launcher's live pidfd cannot revive executing ownership"
     );
     assert!(launcher.alive(), "the original launcher remains alive");
     let mut byte = [0];

@@ -5,7 +5,7 @@ use crate::setup::home_capture as capture;
 use crate::setup::prepared_setup::OriginalSelectionPlan;
 // Closed borrowed adapters preserve the distinct live-token and reopened-Store
 // types. Neither serializable fields nor a caller-defined implementation can
-// supply facts; all variants require an existing genuine private custody value.
+// supply facts; all variants require an existing genuine private ownership value.
 pub(super) enum HomeFacts<'a> {
     Store(&'a capture::CommittedOriginalSelection),
     Output(&'a capture::offline_output::CommittedOriginalSelection),

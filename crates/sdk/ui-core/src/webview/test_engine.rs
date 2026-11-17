@@ -360,7 +360,7 @@ impl TestEngine {
     }
 
     /// Answer every later page read of the kind `action` names
-    /// ([`PageRequest::action`]: `fields`, `forms`, `ledger`) with `data`,
+    /// ([`PageRequest::action`]: `fields`, `forms`, `log`) with `data`,
     /// as a page that holds this state answers however often it is read,
     /// until a test sets another. A reply queued with
     /// [`Self::push_page_reply`] still answers first.
@@ -392,7 +392,7 @@ impl TestEngine {
                 }
                 // A tab nothing has operated yet has an empty record, and a
                 // test page has no fields.
-                PageRequest::Ledger { since } => Some(serde_json::json!({
+                PageRequest::Log { since } => Some(serde_json::json!({
                     "entries": [], "next": since, "more": false, "dropped": 0, "waiting": 0,
                 })),
                 PageRequest::Fields { .. } => Some(serde_json::json!({"fields": []})),

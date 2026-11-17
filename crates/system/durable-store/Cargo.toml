@@ -17,7 +17,7 @@ path = "src/lib.rs"
 # Enabled by implementations' dev-dependencies, never by production builds.
 conformance = []
 
-# Deliberately no filesystem, thread or CRDT dependencies: the seam must be
+# Deliberately no filesystem, thread or CRDT dependencies: the boundary must be
 # implementable by any host, including ones that persist through something
 # other than a local filesystem.
 [dependencies]

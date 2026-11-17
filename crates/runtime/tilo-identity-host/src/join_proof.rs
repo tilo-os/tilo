@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use ed25519_dalek::Signer as _;
-use tilo_user_identity::persist::DeviceKeyCustody;
+use tilo_user_identity::persist::DeviceKeyOwnership;
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 use crate::device_fleet::{DeviceFleetStore, FileStamp, FleetStamps};
@@ -185,11 +185,11 @@ impl Files {
         let device = match selected {
             None => None,
             Some(selected) => Some(DeviceStamp {
-                key: match self.paths.device_key_custody {
-                    DeviceKeyCustody::File => FileStamp::of(&self.paths.device_privkey).ok()?,
+                key: match self.paths.device_key_ownership {
+                    DeviceKeyOwnership::File => FileStamp::of(&self.paths.device_privkey).ok()?,
                     // A key with no file has no stamp to follow.
                     #[cfg(target_os = "macos")]
-                    DeviceKeyCustody::Keychain => return None,
+                    DeviceKeyOwnership::Keychain => return None,
                 },
                 cert: FileStamp::of(&self.paths.device_cert_for_user(&selected.user_public_key))
                     .ok()?,

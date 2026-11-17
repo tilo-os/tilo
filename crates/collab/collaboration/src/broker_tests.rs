@@ -148,7 +148,7 @@ pub struct Captures {
     /// Refuse every committed Open, as a broker does for a revoked peer.
     pub committed_open_failure: Option<String>,
     /// Refuse committed Opens on these channels only, as the session
-    /// host does for a route this connection holds no read custody of.
+    /// host does for a route this connection holds no read ownership of.
     pub committed_open_refused_channels: Vec<String>,
     /// Answer a committed Open on these channels `Absent`, and hold
     /// their `Await`s, as the session host does for an on-demand record
@@ -240,7 +240,7 @@ pub struct Captures {
     pub key_changes: Option<Arc<tokio::sync::watch::Sender<u64>>>,
     /// Answers this channel's private service requests, as the session
     /// does on an app's route; without one the call is unimplemented,
-    /// as on a broker with no custodian behind it.
+    /// as on a broker with no owner behind it.
     #[allow(clippy::type_complexity, reason = "one fixture hook")]
     pub service_sessions: Option<
         Arc<
@@ -344,7 +344,7 @@ fn committed_answer(
                 .iter()
                 .any(|held| held == channel_id)
             {
-                return Err("committed read custody refused for this route".into());
+                return Err("committed read ownership refused for this route".into());
             }
         }
         let busy = opens && captures.committed_busy;
@@ -1126,11 +1126,11 @@ impl FakeHost {
     /// the surface it published offers it, as the session action host
     /// does: anything else is refused as unknown. Admitted ones are
     /// accepted and never run.
-    /// A private service request, answered as the session's custodian
+    /// A private service request, answered as the session's owner
     /// would through `service_sessions`; refused without one.
     fn browser_service_session(&self, body: &[u8]) -> Result<Reply, String> {
         let Some(serve) = self.captures().service_sessions.clone() else {
-            return Err("fixture has no custodian".into());
+            return Err("fixture has no owner".into());
         };
         let command =
             runtime_collab::BrowserServiceSessionCommand::decode(body).map_err(str::to_owned)?;
@@ -1856,7 +1856,7 @@ fn a_primary_join_waits_for_a_late_broker_answer() {
         let _ = result_tx.send(result.map(|manager| {
             manager
                 .primary_route()
-                .map(|witness| witness.route.document.clone())
+                .map(|observation| observation.route.document.clone())
         }));
     });
     assert_eq!(
@@ -2148,7 +2148,7 @@ fn a_refused_route_join_says_why() {
     });
     let reason = manager.route_join_failure(&beside).unwrap();
     assert!(
-        reason.contains("committed read custody refused for this route"),
+        reason.contains("committed read ownership refused for this route"),
         "{reason}"
     );
     assert_eq!(
@@ -4020,7 +4020,7 @@ include!("native_media_tests.rs");
 /// A captured local edit reported as `invocation`.
 fn report_capture(invocation: u128) -> crate::local_document_action::CapturedAction {
     crate::local_document_action::CapturedAction {
-        custody: None,
+        ownership: None,
         invocation: Uuid::from_u128(invocation),
         capture_id: Uuid::from_u128(invocation + 100),
         revision: "surface".into(),
@@ -4207,14 +4207,14 @@ async fn native_invocation_delivery_turn_rejects_original_generation_retirement(
     );
     assert_eq!(
         result.unwrap_err(),
-        "original invocation document custody was retired"
+        "original invocation document ownership was retired"
     );
     assert!(!original.load(Ordering::Acquire));
     assert!(!state.document_reads.publishable("original-route"));
 }
 
 #[tokio::test]
-async fn native_invocation_delivery_turn_timeout_preserves_unapplied_original_custody() {
+async fn native_invocation_delivery_turn_timeout_preserves_unapplied_original_ownership() {
     let state = BridgeState::new();
     let original = state.document_reads.close_for_test("original-route");
     let result = native_invocation_delivery_turn("original-route", &state).await;
@@ -4423,7 +4423,7 @@ tilo_test_env::scenario! {
         assert_eq!(settled, CollaborationState::Ready);
         assert!(mgr.is_connected());
         assert_eq!(
-            mgr.primary_route().map(crate::PrimaryRouteWitness::route),
+            mgr.primary_route().map(crate::AcceptedRoute::route),
             Some(&route)
         );
         assert_eq!(mgr.take_state_change(), Some(CollaborationState::Ready));

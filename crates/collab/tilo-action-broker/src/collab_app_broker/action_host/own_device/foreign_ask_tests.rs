@@ -3,7 +3,7 @@
 //! The host admits the person — their root and their device are proven by
 //! the certificate the foreign device presented — but asking them there asks
 //! nobody: the question travels to the person's own devices, and only an
-//! answer to that question can witness this one invocation.
+//! answer to that question can approval this one invocation.
 
 use crate::collab_app_broker::AppBrokerState;
 use crate::collab_app_broker::host_steps::signed_test_support::Fixture;
@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
         );
         let waiting = fixture
             .state
-            .request_witness(&fixture.caller, None, &request());
+            .request_approval(&fixture.caller, None, &request());
         let asked = own_devices.asked_about();
         assert_eq!(asked.len(), 1, "one question names one invocation");
         assert_eq!(
@@ -193,11 +193,11 @@ tilo_test_env::scenario! {
             ("Remove", "Identities"),
             "named as this host names the action"
         );
-        own_devices.answer(Ok(Confirmation::Witnessed("allowed".into())));
+        own_devices.answer(Ok(Confirmation::Approved("allowed".into())));
         let answered = waiting.wait_timeout(Duration::from_secs(30));
         assert!(
-            matches!(answered, Ok(Some(Ok(tilo_actions::remote::ConfirmedInvocation { confirmation: Confirmation::Witnessed(ref token), arguments: None }))) if token != "allowed"),
-            "the host answers with its own witness, not the device's word"
+            matches!(answered, Ok(Some(Ok(tilo_actions::remote::ConfirmedInvocation { confirmation: Confirmation::Approved(ref token), arguments: None }))) if token != "allowed"),
+            "the host answers with its own approval, not the device's word"
         );
         drop(fixture);
     }
@@ -208,7 +208,7 @@ tilo_test_env::scenario! {
         let fixture = asked_there(&own_devices);
         let waiting = fixture
             .state
-            .request_witness(&fixture.caller, None, &request());
+            .request_approval(&fixture.caller, None, &request());
         own_devices.answer(Err(ActionHostError::NotPermitted));
         assert!(matches!(
             waiting.wait_timeout(Duration::from_secs(30)),
@@ -235,7 +235,7 @@ tilo_test_env::scenario! {
         assert!(matches!(
             fixture
                 .state
-                .request_witness(&fixture.caller, None, &request())
+                .request_approval(&fixture.caller, None, &request())
                 .wait_timeout(Duration::from_secs(5)),
             Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
         ));
@@ -249,12 +249,12 @@ tilo_test_env::scenario! {
         let request = request();
         let binding = fixture
             .state
-            .witness_binding(&tilo_actions::MemberId::person("person"), &fixture.workspace, &request);
+            .approval_binding(&tilo_actions::MemberId::person("person"), &fixture.workspace, &request);
         // Nobody answers on the person's own device: what comes back to the
         // foreign device is a refusal, never a confirmation.
         let answered = fixture
             .state
-            .own_device_witness_within(
+            .own_device_approval_within(
                 &fixture.caller,
                 &binding,
                 &request,
@@ -285,7 +285,7 @@ tilo_test_env::scenario! {
         assert!(matches!(
             fixture
                 .state
-                .request_witness(&fixture.caller, None, &request())
+                .request_approval(&fixture.caller, None, &request())
                 .wait_timeout(Duration::from_secs(5)),
             Ok(Some(Err(ActionHostError::Unavailable { .. })))
         ));

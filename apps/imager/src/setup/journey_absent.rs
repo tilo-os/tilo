@@ -34,7 +34,7 @@ pub mod prepared_media {
         pub fn expectation(&self) -> &PreparedSetupExpectation {
             match self.0 {}
         }
-        pub fn account_custody_protocol(&self) -> Option<u32> {
+        pub fn account_credentials_protocol(&self) -> Option<u32> {
             match self.0 {}
         }
         pub fn service_session_protocol(&self) -> Option<u32> {

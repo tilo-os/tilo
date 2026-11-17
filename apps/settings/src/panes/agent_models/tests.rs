@@ -367,11 +367,12 @@ fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
 
 #[test]
 fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
-    use account_custody::TokenSet;
-    use account_custody::cloud_projects::CloudProject;
+    use account_credentials::TokenSet;
+    use account_credentials::cloud_projects::CloudProject;
     let vault = tempfile::tempdir().unwrap();
     let (_app, mut pane) = hosted_model(mock(snapshot(None)));
-    pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
+    pane.credential_store =
+        account_credentials::CredentialStore::for_root(Some(vault.path().to_path_buf()));
     let grant = |refresh: &str| TokenSet {
         access_token: "access".into(),
         scope: Some("https://www.googleapis.com/auth/cloud-platform".into()),
@@ -380,7 +381,7 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
         obtained_at: 0,
     };
     let mail = accounts::AccountId::new("ada@example.com");
-    pane.custodian
+    pane.credential_store
         .seal_oauth(&mail, &grant("mail-refresh"))
         .unwrap();
 
@@ -397,7 +398,7 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
         Err(t("agent-vertex-sign-in-first")),
         "nothing is saved before the sign-in"
     );
-    pane.custodian
+    pane.credential_store
         .seal_oauth(&agent_vertex::grant_id(&id), &grant("vertex-refresh"))
         .unwrap();
     pane.vertex
@@ -447,7 +448,7 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
     id: &str,
     mail: &accounts::AccountId,
 ) {
-    use account_custody::GrantState;
+    use account_credentials::GrantState;
     let id = id.to_string();
     pane.vertex_keys.insert(id.clone(), Ok(false));
     let text = announced(pane);
@@ -489,13 +490,13 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
     assert!(pane.providers.config().profiles.is_empty());
     forgotten(pane);
     assert_eq!(
-        pane.custodian
+        pane.credential_store
             .oauth_grant_state(&agent_vertex::grant_id(&id))
             .unwrap(),
         GrantState::Missing
     );
     assert_eq!(
-        pane.custodian.oauth_grant_state(mail).unwrap(),
+        pane.credential_store.oauth_grant_state(mail).unwrap(),
         GrantState::Usable,
         "Mail's grant of the same person is untouched"
     );
@@ -510,13 +511,13 @@ tilo_test_env::scenario! {
         let root = vault.path().to_path_buf();
         let window = std::thread::spawn(move || {
             let mut pane = model_over(mock(snapshot(None)));
-            pane.custodian = account_custody::Custodian::for_root(Some(root));
+            pane.credential_store = account_credentials::CredentialStore::for_root(Some(root));
             pane.vertex = Some(VertexSetup::adding());
             let id = pane.vertex.as_ref().unwrap().profile_id.clone();
-            pane.custodian
+            pane.credential_store
                 .seal_oauth(
                     &agent_vertex::grant_id(&id),
-                    &account_custody::TokenSet {
+                    &account_credentials::TokenSet {
                         access_token: "a".into(),
                         scope: None,
                         refresh_token: "r".into(),
@@ -538,8 +539,8 @@ tilo_test_env::scenario! {
         let id = window
             .join()
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-        let custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
-        assert!(!agent_vertex::signed_in(&custodian, &id));
+        let credential_store = account_credentials::CredentialStore::for_root(Some(vault.path().to_path_buf()));
+        assert!(!agent_vertex::signed_in(&credential_store, &id));
     }
 
     phase local_model_lifecycle_exposes_only_safe_controls;

@@ -324,7 +324,7 @@ impl ViewInstance {
         Ok(key.and_then(|key| self.live.find(&key)))
     }
 
-    /// The host shows the row at `open` of `list` standing open into its item: its document is
+    /// The host shows the row at `open` of `list` held open into its item: its document is
     /// built with it, the row that stood open before drops its own, and both render again.
     pub fn open_row(&mut self, list: &str, open: Option<&str>) {
         self.live.open_row(list, open);

@@ -200,7 +200,7 @@ chip-value-no = Nein
 
 chip-flow-disclaimer = Nur gemeldete Nachweise. Artefakte werden weder authentifiziert noch ausgeführt. Schätzungen der Bibliothek sind keine Siliziummessungen, Freigabe, Fertigungsgenehmigung oder Modellqualität.
 chip-flow-artifacts = Referenzen auf die Originalartefakte
-chip-flow-custody = Verwahrung
+chip-flow-source = Herkunft
 chip-flow-unverified = Ungeprüft
 chip-flow-receipt = Originalbeleg-Artefakt
 chip-flow-producer = Angegebener Hersteller SHA-256

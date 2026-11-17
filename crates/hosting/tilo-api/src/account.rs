@@ -527,7 +527,7 @@ impl Server {
         };
         let mut text = format!("{path}:");
         for row in fields
-            .pointer("/standing/usage/workspaces")
+            .pointer("/subscription/usage/workspaces")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()

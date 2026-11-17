@@ -2,7 +2,7 @@ app so.tilo.lang.mail "Mail" (icon: .mail, category: .office, resources: .own)
 
 /// What the server of one of the workspace's mail accounts holds. The account itself, its
 /// address, servers and signature, is the workspace settings', and its credentials stay in
-/// custody; the system keeps this in step with the server.
+/// ownership; the system keeps this in step with the server.
 type Account (origin: imap.account) {
     key: Text merge register
     address: Text

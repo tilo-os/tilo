@@ -192,7 +192,7 @@ pub enum Reply {
     },
 }
 
-/// The socket's frames are postcard, which encodes neither the ledger's
+/// The socket's frames are postcard, which encodes neither the log's
 /// flattened identity nor its skipped empty fields: on the socket a record
 /// travels field by field, every field always present.
 mod usage_on_the_wire {

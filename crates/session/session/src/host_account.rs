@@ -3,7 +3,7 @@
 //!
 //! On a host that serves workspaces ([`tilo_host_account::HostedAccount`]),
 //! the answer is what the host offers the session's account: its plans, the
-//! account's standing, usage and invoices, read from the host's plans file
+//! account's subscription, usage and invoices, read from the host's plans file
 //! and its hosted-VM service, and sent again whenever the plans file
 //! changes (a card added, a plan changed). Anywhere else the session runs on
 //! one of the person's own devices, which sells nothing.

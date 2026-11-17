@@ -1,5 +1,5 @@
 //! Syntax and authenticated image carriage for original-source consumer proofs.
-//! These records alone neither qualify a worker nor admit source/output custody.
+//! These records alone neither qualify a worker nor admit source/output ownership.
 use serde::{Deserialize, Serialize};
 use std::io;
 

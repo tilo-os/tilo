@@ -86,7 +86,7 @@ fn provision_device(
     directory(&config);
     environment.set("XDG_CONFIG_HOME", &config);
     environment.set("TILO_IDENTITY_ROOT", root.join("system"));
-    let record = identity.custody_directory().join("primary.json");
+    let record = identity.ownership_directory().join("primary.json");
     let mut registry = tilo_identity_host::registry::IdentityRegistry::default();
     let id = registry.register_record(&record).unwrap().id.clone();
     tilo_identity_host::registry::IdentityRegistryStore::from_env()
@@ -420,7 +420,7 @@ fn prepared_identity_import_returns_the_authenticated_browser_declaration() {
 }
 
 #[test]
-fn missing_certified_device_custody_cannot_publish_success_or_a_completion_signature() {
+fn missing_certified_device_ownership_cannot_publish_success_or_a_completion_signature() {
     let fixture = Fixture::new();
     let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
     let key = fs::read(&paths.device_privkey).unwrap();

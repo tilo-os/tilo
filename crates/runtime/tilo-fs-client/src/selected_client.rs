@@ -34,7 +34,7 @@ pub struct SelectedFileConnection(Bridge<Request, Response>);
 
 impl SelectedFileConnection {
     /// Close the queue and observe the exact RPC worker and transport outcome.
-    /// Requires sole custody after all FUSE callbacks and handles have retired.
+    /// Requires sole ownership after all FUSE callbacks and handles have retired.
     pub fn retire(self) -> io::Result<()> {
         self.0.retire()
     }

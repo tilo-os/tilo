@@ -4030,7 +4030,7 @@ async fn drive_shovel(
                     request,
                     CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
                 ) {
-                    // Document custody fails closed without a joined primary.
+                    // Document ownership fails closed without a joined primary.
                     inbound_tx
                         .state
                         .fail_closed("document primary route unavailable");
@@ -5016,7 +5016,7 @@ async fn native_invocation_delivery_turn(
         // Enabled before the checks: a change between them still wakes it.
         let changed = state.document_reads.reader_wake();
         if !state.is_healthy() || !state.document_reads.current(key, &generation) {
-            return Err("original invocation document custody was retired".into());
+            return Err("original invocation document ownership was retired".into());
         }
         if crate::time::now() >= deadline {
             return Err("original invocation capture did not become current".into());
@@ -5033,7 +5033,7 @@ async fn native_invocation_delivery_turn(
             turns.push(turn);
         }
         if !state.is_healthy() || !state.document_reads.current(key, &generation) {
-            return Err("original invocation document custody was retired".into());
+            return Err("original invocation document ownership was retired".into());
         }
         if crate::time::now() >= deadline {
             return Err("original invocation capture did not become current".into());
@@ -5058,7 +5058,7 @@ async fn native_invocation_delivery_turn(
 }
 
 // This existing host verb rechecks the original channel's current read
-// custody and exact pending job. A waited delivery cannot reuse stale authority.
+// ownership and exact pending job. A waited delivery cannot reuse stale authority.
 #[allow(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
@@ -5786,7 +5786,7 @@ async fn send_document_mutation(
     route: &DocumentRoute,
     signer: &mut LocalSdkDocumentSigner,
     mutation: collab_types::DocumentMutation,
-    authorization: Option<std::sync::Arc<dyn crate::DocumentCustody>>,
+    authorization: Option<std::sync::Arc<dyn crate::DocumentAuthority>>,
     commit: Option<collab_types::WorkspaceCommit>,
     inbound: &InboundBridge,
 ) -> Result<(), DocumentPublicationError> {
@@ -5802,7 +5802,7 @@ async fn send_document_mutation(
     if authorization.is_some() {
         return Err(inbound.state.publication_failed(
             "scoped document evaluator unavailable",
-            "original custody requires the actual final owner",
+            "original ownership requires the actual final owner",
             true,
         ));
     }

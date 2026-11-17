@@ -8,7 +8,7 @@
 //! `commit_string` + `commit` — no synthetic key events, no guessing the host's
 //! keymap.
 //!
-//! ## Two halves, one seam
+//! ## Two halves, one boundary
 //!
 //! * **Pure logic** — the wire-`content_purpose` → [`InputPurpose`] mapping and
 //!   the show/hide/purpose [`ImState`] reducer. Both are unit-tested here; they
@@ -28,7 +28,7 @@
 //! designed for input methods and works regardless of the host's keymap. The
 //! older [`crate::inject::VirtualKeyboardInjector`] stays as a fallback for
 //! compositors that expose `virtual-keyboard-v1` but not `input-method-v2`, kept
-//! behind the existing [`crate::inject::TextInjector`] seam.
+//! behind the existing [`crate::inject::TextInjector`] boundary.
 //!
 //! ## Manual verification
 //!

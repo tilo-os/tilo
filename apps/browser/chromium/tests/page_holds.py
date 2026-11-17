@@ -178,7 +178,7 @@ class PageHolds(unittest.TestCase):
 
     def record(self, host):
         """The tab's record as its engine lists it."""
-        return self.page(host, 'ledger', since=0)['data']['entries']
+        return self.page(host, 'log', since=0)['data']['entries']
 
     def told(self, host):
         """Everything the host said of the tab's record, as one text."""

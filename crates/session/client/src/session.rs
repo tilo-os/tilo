@@ -32,7 +32,7 @@ use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::custody::{PeerEntry, PeerStore};
+use crate::membership_check::{PeerEntry, PeerStore};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::LinkError;
@@ -128,8 +128,8 @@ impl PeerConfig {
     }
 }
 
-/// A write in this device's custody: its id, bytes, channel and retention.
-type CustodyEntry = ([u8; 32], Vec<u8>, [u8; 32], neighbour_wire::Retention);
+/// A write in this device's ownership: its id, bytes, channel and retention.
+type OwnershipEntry = ([u8; 32], Vec<u8>, [u8; 32], neighbour_wire::Retention);
 
 /// The workspace id a session asks the host's own operations under: none of its workspaces, the
 /// host itself (creating, listing and entering the person's workspaces). Its answers come back
@@ -278,7 +278,7 @@ fn session_task(
     let record = store.load().unwrap_or_default();
     let vault = store.channel_vault().unwrap_or_else(rand::random);
     let replicas = crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store));
-    let key_state = crate::custody::StoredKeys::load(store.as_ref());
+    let key_state = crate::membership_check::StoredKeys::load(store.as_ref());
     // The transport this session settles its own keys over; none when the device's service does.
     let governance = keys.is_none().then(HostGovernance::default);
     let workspace_keys = keys.unwrap_or_else(|| {
@@ -292,8 +292,11 @@ fn session_task(
     let engine = Arc::new(crate::engine::Engine::holding(
         replicas.owner(),
         Arc::default(),
-        tilo_identity_host::custody::HostIdentity::kept(config.cert.clone(), Arc::clone(&signer)),
-        Arc::new(crate::custody::SessionCustody),
+        tilo_identity_host::identity_store::HostIdentity::kept(
+            config.cert.clone(),
+            Arc::clone(&signer),
+        ),
+        Arc::new(crate::membership_check::SessionMembership),
     ));
     engine.keys().set(Some(workspace_keys.clone()));
     engine.held_writes().lock().extend(key_state.held());
@@ -391,10 +394,10 @@ enum Exit {
     Unproved(LinkError),
 }
 
-/// The host's answer to a write in custody, waiting to retire from it.
+/// The host's answer to a write held, waiting to retire from it.
 struct Answered {
     workspace: tilo_desktop_model::WorkspaceId,
-    /// The custody entry.
+    /// The ownership entry.
     id: [u8; 32],
     /// Durable at this order, or refused, and why.
     outcome: Result<u64, tilo_relay_protocol::refusal::Refusal>,
@@ -455,7 +458,7 @@ struct Task {
     /// settles [`Self::workspace_keys`] ([`start_session_lent`]).
     governance: Option<HostGovernance>,
     /// The channels' state and the writes held for their keys, in the store.
-    key_state: crate::custody::StoredKeys,
+    key_state: crate::membership_check::StoredKeys,
     /// Every route this session opened, and the keys it holds for it.
     route_keys: BTreeMap<DocumentRoute, RouteKeys>,
     /// Routes whose keys arrived since the session last acted on them.
@@ -469,7 +472,7 @@ struct Task {
     surface_wants: neighbour_wire::content::ContentWants<()>,
     /// Live frames waiting for their record's keys.
     held_live: crate::held_live::HeldLive,
-    /// Writes were published, or the host answered writes in custody, since held writes were
+    /// Writes were published, or the host answered writes held, since held writes were
     /// last committed: what waits may commit ([`Self::commit_held`]).
     outbound_due: bool,
     /// Documents the host delivered that the replica decides together ([`Self::keep_arrived`]).
@@ -477,8 +480,8 @@ struct Task {
     /// Records of writes the replica let go undecided, its queue of undecided writes full: the
     /// host replays them once what they waited for landed.
     let_go: BTreeSet<DocumentRoute>,
-    /// What the host answered of the writes this connection sent, retired from custody
-    /// together: the workspace, the custody entry, the answer and what a refusal withdraws.
+    /// What the host answered of the writes this connection sent, retired from ownership
+    /// together: the workspace, the ownership entry, the answer and what a refusal withdraws.
     answered: Vec<Answered>,
     /// The records whose last write the replica did not take in, and why.
     held_inbound: BTreeMap<DocumentRoute, String>,
@@ -497,11 +500,11 @@ struct Task {
     opened_routes: BTreeSet<DocumentRoute>,
     /// The workspaces whose host said they send records only when opened.
     when_opened: BTreeSet<WorkspaceId>,
-    /// Each waits for the writes that were in this device's custody when it was called, and
+    /// Each waits for the writes that were in this device's ownership when it was called, and
     /// completes with the host's refusal of any of them.
     barriers: Vec<(BTreeSet<[u8; 32]>, Option<String>, Completion)>,
-    /// What this connection sent its host of each workspace's custody.
-    sending: BTreeMap<tilo_desktop_model::WorkspaceId, crate::custody::Sending>,
+    /// What this connection sent its host of each workspace's ownership.
+    sending: BTreeMap<tilo_desktop_model::WorkspaceId, crate::membership_check::Sending>,
     /// The writes the host was not ready for: each is sent again once the host says the
     /// workspace is ready, and refused if the host turns it away again.
     not_ready: BTreeSet<[u8; 32]>,
@@ -513,7 +516,7 @@ struct Task {
     /// Compactions the host asked for and this session has not answered yet.
     compactions: Vec<(WorkspaceId, [u8; 16], DocumentRoute)>,
     /// Compactions committed for the host's requests, each with the entries delivered before
-    /// it, answered once custody sends them ([`Self::answer_compactions`]).
+    /// it, answered once ownership sends them ([`Self::answer_compactions`]).
     answering: Vec<Answering>,
     /// Records whose writes the replica asked to hear again, replayed by the host.
     replays: BTreeSet<DocumentRoute>,
@@ -715,7 +718,7 @@ impl Task {
 
     /// Compact `route`'s sealed history as this device's replica holds it for request `request`:
     /// the compaction is the record's checkpoint, which every replica takes in place of exactly
-    /// the writes it folds. It is answered once custody sends it ([`Self::answer_compactions`]).
+    /// the writes it folds. It is answered once ownership sends it ([`Self::answer_compactions`]).
     async fn compact(
         &mut self,
         (workspace_id, request, route): (WorkspaceId, [u8; 16], DocumentRoute),
@@ -754,7 +757,7 @@ impl Task {
         }
     }
 
-    /// Send the signed statement of each compaction custody sent, of what it covers: every entry
+    /// Send the signed statement of each compaction ownership sent, of what it covers: every entry
     /// delivered for its record before it was asked. Returns `false` when the session could not
     /// take an envelope.
     async fn answer_compactions(&mut self, client: &RelayClient) -> bool {
@@ -804,7 +807,7 @@ impl Task {
         true
     }
 
-    /// The heads of the record `entry`, custody's compaction of `route`, holds.
+    /// The heads of the record `entry`, ownership's compaction of `route`, holds.
     fn compaction_heads(&self, route: &DocumentRoute, entry: &[u8]) -> Option<Vec<[u8; 32]>> {
         let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(entry).ok()?;
         let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
@@ -1125,7 +1128,7 @@ impl Task {
     }
 
     /// Hand the host what this session owes it before waiting for the next event: its live sessions,
-    /// the app surfaces it asks for, the compactions it was asked for and its custody. Returns
+    /// the app surfaces it asks for, the compactions it was asked for and its ownership. Returns
     /// `false` when the session could not take an envelope.
     async fn settle_owed(&mut self, client: &RelayClient) -> bool {
         self.settle_live_sessions();
@@ -1155,16 +1158,16 @@ impl Task {
                 tracing::warn!(%error, "sealed histories stay uncompacted");
             }
         }
-        self.renew_custody().await;
-        // What this device's custody still owes the host goes as its queue takes it:
+        self.renew_ownership().await;
+        // What this device's ownership still owes the host goes as its queue takes it:
         // every answer from the host, every command, every tick is a
         // chance to hand it more.
         for workspace_id in self.workspaces.clone() {
-            if !self.send_custody(workspace_id, client) {
+            if !self.send_ownership(workspace_id, client) {
                 return true;
             }
         }
-        // A compaction is answered once custody sent it.
+        // A compaction is answered once ownership sent it.
         self.answer_compactions(client).await
     }
 
@@ -1591,7 +1594,7 @@ impl Task {
                 let held: BTreeSet<DocumentRoute> =
                     self.engine.held_writes().lock().keys().cloned().collect();
                 if held.is_empty() {
-                    self.await_custody(done, None);
+                    self.await_ownership(done, None);
                 } else {
                     self.held_barriers.push((held, done));
                 }
@@ -1790,10 +1793,10 @@ impl Task {
         sent_ok &= self.reopen_records(client);
         // What this page recorded while it was away is owed again, oldest
         // first: as much as the transport takes now, the rest as the host's
-        // answers make room ([`Self::send_custody`]).
+        // answers make room ([`Self::send_ownership`]).
         self.sending.clear();
         for workspace_id in self.workspaces.clone() {
-            if !self.send_custody(workspace_id, client) {
+            if !self.send_ownership(workspace_id, client) {
                 break;
             }
         }
@@ -2149,7 +2152,7 @@ impl Task {
         }
     }
 
-    /// Act on channel changes: await what the device's custody signs, send
+    /// Act on channel changes: await what the device's ownership signs, send
     /// the governance the channels said, install new keys, open what waited
     /// for them, and seal and commit what was held. Returns `false` when the
     /// session could not take an envelope.
@@ -2224,10 +2227,10 @@ impl Task {
 }
 
 /// This device's channels as a reader: its state in `state`, sealed under
-/// `vault`, signed by its custody, and their readers its workspaces'.
+/// `vault`, signed by its ownership, and their readers its workspaces'.
 fn open_keys(
     replicas: &crate::replica::Replicas,
-    state: &crate::custody::StoredKeys,
+    state: &crate::membership_check::StoredKeys,
     vault: [u8; 32],
     signer: &Arc<dyn DeviceSigner>,
     checks: &Arc<tilo_workspace_keys::SealChecks>,

@@ -2321,22 +2321,22 @@ fn a_change_the_workspace_refuses_is_never_kept() {
 /// person reads, from the moment the app keeps.
 const CLOCKED: &str = "so.tilo.lang.clocked";
 
-/// The text of the clocked package: a ledger whose one moment its window writes as a clock.
+/// The text of the clocked package: a log whose one moment its window writes as a clock.
 const CLOCKED_SOURCE: &str = r#"app so.tilo.lang.clocked "Clocked" (icon: .hash, category: .utility)
 
 /// Something read at a moment.
-type Ledger {
+type Log {
     key: Text merge register
     /// When it was read, as the clock the person read it at.
     at: Time = Time("1970-01-01T00:00:00Z")
 }
 
-root Ledger
+root Log
 
-default view ledger for Ledger
+default view log for Log
 
-/// The window: when the ledger was read, as the person reads a clock.
-view ledger(l: Ledger) {
+/// The window: when the log was read, as the person reads a clock.
+view log(l: Log) {
     std.page(l) {
         section("Fetched") {
             ui.Text("{l.at.clock()}")
@@ -2344,9 +2344,9 @@ view ledger(l: Ledger) {
     }
 }
 
-/// A ledger read at 10:41.
+/// A log read at 10:41.
 scenario "fetched" {
-    let l = root Ledger
+    let l = root Log
     l.at = Time("2026-06-30T10:41:00Z")
 }
 "#;
@@ -2568,22 +2568,22 @@ tilo_test_env::scenario! {
 /// starts its week: the "this week" a view reads.
 const WEEKS: &str = "so.tilo.lang.week";
 
-/// The text of the week package: a ledger whose window writes the day this week began on.
+/// The text of the week package: a log whose window writes the day this week began on.
 const WEEKS_SOURCE: &str = r#"app so.tilo.lang.week "Week" (icon: .hash, category: .utility)
 
 /// Something the person looks at this week.
-type Ledger {
+type Log {
     key: Text merge register
     /// When it was read.
     at: Date = Date("2026-10-29")
 }
 
-root Ledger
+root Log
 
-default view ledger for Ledger
+default view log for Log
 
 /// The window: the day this week began on, as the person's region starts a week.
-view ledger(l: Ledger) {
+view log(l: Log) {
     std.page(l) {
         section("This week") {
             ui.Text("{l.at.start_of_week()}")
@@ -2591,9 +2591,9 @@ view ledger(l: Ledger) {
     }
 }
 
-/// A ledger read on the 29th of October.
+/// A log read on the 29th of October.
 scenario "this week" {
-    let l = root Ledger
+    let l = root Log
     l.at = Date("2026-10-29")
 }
 "#;

@@ -5,7 +5,7 @@
 //! itself and holds the records they read: the ones its replication took in from the workspace, or
 //! the ones of a desktop of the person's own. So the page answers
 //! ([`tilo_desktop_surface::session::RecordAnswers`]), from what it holds, as the same policy
-//! decides it: the person's standing at the record's node, a member's own record theirs alone
+//! decides it: the person's access at the record's node, a member's own record theirs alone
 //! ([`ui::permissions::PermissionContext::answer`]). A read the broker would refuse is refused
 //! here; one of a record still arriving, or asked before the workspace said what this person may
 //! do, waits for it.
@@ -173,7 +173,7 @@ impl HeldRecords for Held<'_> {
         let hosted = desktop.asks.peer().is_some();
         // What this person may read is the workspace's to say: until it has, nothing is read on a
         // guess, and the read waits as for a record still arriving.
-        if hosted && desktop.shared.standing.role().is_none() {
+        if hosted && desktop.shared.role.role().is_none() {
             return Err(ActionHostError::Unavailable {
                 reason: "the workspace has not said yet what you may read here".into(),
             });
@@ -231,7 +231,7 @@ impl HeldRecords for Held<'_> {
     fn authority(&self) -> u64 {
         ui::permissions::shared_revision()
             .wrapping_mul(8)
-            .wrapping_add(u64::from(self.desktop.shared.standing.code()))
+            .wrapping_add(u64::from(self.desktop.shared.role.code()))
     }
 
     fn moved(&self) -> u64 {

@@ -169,12 +169,12 @@ fn projection(workspace: &Workspace, app: &str) -> Option<AppActionAuthorityProj
         .then(|| AppActionAuthorityProjection::project(policy, app, &workspace.person, false))
 }
 
-/// The person's standing in `workspace` as `app` sees it, the projection a launched app reads,
+/// The person's access in `workspace` as `app` sees it, the projection a launched app reads,
 /// for an app whose instance a tilolang host runs: what its views offer and refuse by. `None`
 /// where no projection would be published.
 #[must_use]
-pub fn standing(workspace: &Workspace, app: &str) -> Option<tilo_action_policy::Standing> {
-    projection(workspace, app).map(|projection| projection.standing())
+pub fn access(workspace: &Workspace, app: &str) -> Option<tilo_action_policy::MemberAccess> {
+    projection(workspace, app).map(|projection| projection.access())
 }
 
 /// Where an app's projection of `workspace` is published.

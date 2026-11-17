@@ -321,7 +321,7 @@ mod tests {
         /// Each phase was a test of its own and builds its own fixture.
         fn a_drag_session_snaps_reflows_and_drops;
 
-        phase insertion_snaps_to_seams_with_an_own_slot_dead_zone;
+        phase insertion_snaps_to_borders_with_an_own_slot_dead_zone;
         {
             fn nudge_within_own_slot_is_a_dead_zone_no_gap_no_reflow() {
                 let m = m4();

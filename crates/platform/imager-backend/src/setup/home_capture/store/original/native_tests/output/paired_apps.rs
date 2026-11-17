@@ -59,7 +59,7 @@ fn verify_selected_state(home: &Path, root: &Path) {
         serde_json::from_slice(&fs::read(root.join("source-state-sha256.json")).unwrap()).unwrap();
     assert_eq!(expected.len(), STATE_PATHS.len());
     for ((name, hash), exact) in expected.iter().zip(STATE_PATHS) {
-        assert_eq!(name, exact, "source witness names must remain exact");
+        assert_eq!(name, exact, "source proof names must remain exact");
         if matches!(exact, EXCLUDED_DATA | EXCLUDED_OVERRIDE) {
             assert!(
                 !home.join(name).exists(),

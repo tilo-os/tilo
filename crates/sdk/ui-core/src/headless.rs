@@ -429,7 +429,7 @@ pub struct FrameHarness {
     framework_input: std::rc::Rc<std::cell::Cell<bool>>,
     /// Whether the window's History still has the owners it registered, as this frame last asked; the
     /// answer moves only with the composition.
-    history_standing: std::cell::Cell<Option<bool>>,
+    history_inputs: std::cell::Cell<Option<bool>>,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
     /// Which `node_map` pointers were taken from the live tree ([`retained_layout`]).
@@ -488,12 +488,12 @@ pub struct FrameHarness {
     /// ([`Self::invalidate_local`]).
     local_epoch: u64,
     /// What the last complete frame's bookkeeping read.
-    frame_witness: Option<FrameWitness>,
+    frame_observation: Option<FrameObservation>,
     /// The document the last sync read.
     synced_document: Option<(Vec<automerge::ChangeHash>, usize)>,
     /// Frames that skipped sync and publication as quiet, since construction.
     quiet_frames: u64,
-    /// The last frame was quiet and nothing its witness reads moved, so the next one need not ask the
+    /// The last frame was quiet and nothing its observation reads moved, so the next one need not ask the
     /// History surfaces what only those inputs answer.
     history_settled: bool,
     /// Quiet frames that took that answer from the frame before them.
@@ -517,7 +517,7 @@ pub struct FrameHarness {
     pan_replay_allowed: bool,
     /// Frames drawn, numbered for [`crate::retained_present::PanReplay`].
     pan_frames: u64,
-    /// The host drives frames through [`Self::poll_frame`], so a witness can make one quiet; a host
+    /// The host drives frames through [`Self::poll_frame`], so an observation can make one quiet; a host
     /// that only calls [`Self::relayout`] never reads one.
     polls_frames: bool,
     text: Box<TextRenderer>,
@@ -690,16 +690,16 @@ struct HostLayout {
 /// only when something set `needs_sync` in the same way). Anything this does
 /// not follow keeps every frame loud: framework History, palettes and search
 /// presented, record owners outside a component, uncommitted documents.
-struct FrameWitness {
+struct FrameObservation {
     local_epoch: u64,
     document: (Vec<automerge::ChangeHash>, usize),
     presentation: u64,
     focused: Option<NodeId>,
-    permissions: Result<crate::permissions::DirectoryPermissionWitness, String>,
+    permissions: Result<crate::permissions::DirectoryPermissionObservation, String>,
     owners: Vec<crate::bound_dispatch::BoundOwnerMark>,
 }
 
-impl FrameWitness {
+impl FrameObservation {
     fn same_as(&self, other: &Self) -> bool {
         self.local_epoch == other.local_epoch
             && self.focused == other.focused
@@ -707,7 +707,7 @@ impl FrameWitness {
             && self.document.1 == 0
             && self.document == other.document
             && self.permissions == other.permissions
-            && crate::bound_dispatch::same_owner_standing(&self.owners, &other.owners)
+            && crate::bound_dispatch::same_owner_inputs(&self.owners, &other.owners)
     }
 }
 
@@ -1195,7 +1195,7 @@ impl FrameHarness {
     }
 
     /// Stand the app up and resolve its first observable layout with responsive structure settled.
-    /// # Errors Refuses invalid scope metadata or unavailable mounted document custody.
+    /// # Errors Refuses invalid scope metadata or unavailable mounted document ownership.
     pub fn from_managed_root(
         state: State,
         root: crate::history_mode::ManagedRoot,
@@ -1218,7 +1218,7 @@ impl FrameHarness {
     }
 
     /// Construct a managed root with caller-owned fonts and identity. # Errors Refuses invalid
-    /// scope metadata or unavailable mounted document custody.
+    /// scope metadata or unavailable mounted document ownership.
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn from_managed_root_with_controlled_inputs(
@@ -1349,7 +1349,7 @@ impl FrameHarness {
     }
 
     fn invalidate_unsupported_history_owner(&mut self) -> bool {
-        if !self.history_owner_standing() {
+        if !self.history_owner_inputs() {
             return self
                 .history
                 .as_mut()
@@ -1452,12 +1452,12 @@ impl FrameHarness {
             text.set_text_scale(theme.text_scale);
         }
         text.apply_typography(&theme.tokens.typography);
-        let control_domain = crate::control_custody::ControlDomain::outer();
+        let control_domain = crate::control_domain::ControlDomain::outer();
         let mut root = root;
-        crate::widget::controls::install_control_custody(
+        crate::widget::controls::attach_controls(
             root.as_mut(),
             &control_domain,
-            crate::control_custody::CustodyAttachment::Initial,
+            crate::control_domain::DomainAttachment::Initial,
         );
         control_domain.finish_initial_installation();
         let mut d = Self {
@@ -1495,7 +1495,7 @@ impl FrameHarness {
             search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
-            history_standing: std::cell::Cell::new(None),
+            history_inputs: std::cell::Cell::new(None),
             component_close_reports: vec![],
             root_node: NodeId::from(0usize),
             shown_a_frame: false,
@@ -1515,7 +1515,7 @@ impl FrameHarness {
             bound_resource_key: None,
             local_changes: 0,
             local_epoch: 0,
-            frame_witness: None,
+            frame_observation: None,
             synced_document: None,
             quiet_frames: 0,
             history_settled: false,
@@ -1952,7 +1952,7 @@ impl FrameHarness {
         self.local_epoch = self.local_epoch.wrapping_add(1);
     }
 
-    /// Frames that found nothing new to sync or publish (`FrameWitness`) since construction.
+    /// Frames that found nothing new to sync or publish (`FrameObservation`) since construction.
     #[must_use]
     pub fn quiet_frames(&self) -> u64 {
         self.quiet_frames
@@ -2032,7 +2032,7 @@ impl FrameHarness {
             && self.is_view_only_scroll(event)
     }
 
-    /// Whether the witness covers everything this frame's bookkeeping would read; presentations and
+    /// Whether the observation covers everything this frame's bookkeeping would read; presentations and
     /// owners it does not follow keep every frame loud.
     fn bookkeeping_followed(&self) -> bool {
         !self.layout_requested
@@ -2051,37 +2051,34 @@ impl FrameHarness {
     }
 
     /// What this frame's bookkeeping reads that no frame sees change.
-    fn read_witness(&self) -> FrameWitness {
-        FrameWitness {
+    fn read_observation(&self) -> FrameObservation {
+        FrameObservation {
             local_epoch: self.local_epoch,
             document: crate::doc::settle_mark(&self.state.doc),
             presentation: crate::widget::resource_presentation_epoch(),
             focused: self.focused,
-            permissions: self.permissions.directory_witness(),
-            owners: crate::bound_dispatch::bound_owner_standing(
-                self.root.as_ref(),
-                &self.state.doc,
-            ),
+            permissions: self.permissions.directory_observation(),
+            owners: crate::bound_dispatch::bound_owner_inputs(self.root.as_ref(), &self.state.doc),
         }
     }
 
-    fn witness_moved(&self, witness: &FrameWitness) -> Option<&'static str> {
-        if self.witness_holds(witness) {
+    fn observation_moved(&self, observation: &FrameObservation) -> Option<&'static str> {
+        if self.observation_holds(observation) {
             return None;
         }
-        Some(if witness.local_epoch != self.local_epoch {
+        Some(if observation.local_epoch != self.local_epoch {
             "ui.loud.entry_point"
-        } else if witness.focused != self.focused {
+        } else if observation.focused != self.focused {
             "ui.loud.focus"
-        } else if witness.presentation != crate::widget::resource_presentation_epoch() {
+        } else if observation.presentation != crate::widget::resource_presentation_epoch() {
             "ui.loud.presentation"
-        } else if witness.document.1 != 0 {
+        } else if observation.document.1 != 0 {
             "ui.loud.uncommitted"
         } else if !self.bookkeeping_followed() {
             self.unfollowed_bookkeeping()
-        } else if witness.document != crate::doc::settle_mark(&self.state.doc) {
+        } else if observation.document != crate::doc::settle_mark(&self.state.doc) {
             "ui.loud.document"
-        } else if witness.permissions != self.permissions.directory_witness() {
+        } else if observation.permissions != self.permissions.directory_observation() {
             "ui.loud.permissions"
         } else {
             "ui.loud.owners"
@@ -2095,7 +2092,7 @@ impl FrameHarness {
             !history.captures_input()
                 && !history.returning_live()
                 && !history.has_settled_control_return()
-                && self.history_owner_standing()
+                && self.history_owner_inputs()
                 && !history.needs_refresh(&self.state.doc, f64::from(self.viewport.0))
         })
     }
@@ -2103,17 +2100,17 @@ impl FrameHarness {
     /// Whether the window's History still has the owners it registered against the live root,
     /// asked at most once a frame: the answer moves only when the composition does
     /// ([`Self::discard_layout_tree`]).
-    fn history_owner_standing(&self) -> bool {
-        if let Some(standing) = self.history_standing.get() {
-            return standing;
+    fn history_owner_inputs(&self) -> bool {
+        if let Some(inputs) = self.history_inputs.get() {
+            return inputs;
         }
-        let standing = self.history_settled
+        let inputs = self.history_settled
             || self
                 .history
                 .as_ref()
                 .is_none_or(|history| history.validate_root(self.root.as_ref()).is_ok());
-        self.history_standing.set(Some(standing));
-        standing
+        self.history_inputs.set(Some(inputs));
+        inputs
     }
 
     fn unfollowed_bookkeeping(&self) -> &'static str {
@@ -2140,26 +2137,26 @@ impl FrameHarness {
         }
     }
 
-    fn witness_holds(&self, witness: &FrameWitness) -> bool {
-        witness.local_epoch == self.local_epoch
-            && witness.focused == self.focused
-            && witness.presentation == crate::widget::resource_presentation_epoch()
-            && witness.document.1 == 0
+    fn observation_holds(&self, observation: &FrameObservation) -> bool {
+        observation.local_epoch == self.local_epoch
+            && observation.focused == self.focused
+            && observation.presentation == crate::widget::resource_presentation_epoch()
+            && observation.document.1 == 0
             && self.bookkeeping_followed()
-            && witness.document == crate::doc::settle_mark(&self.state.doc)
-            && witness.permissions == self.permissions.directory_witness()
-            && crate::bound_dispatch::same_owner_standing(
-                &witness.owners,
-                &crate::bound_dispatch::bound_owner_standing(self.root.as_ref(), &self.state.doc),
+            && observation.document == crate::doc::settle_mark(&self.state.doc)
+            && observation.permissions == self.permissions.directory_observation()
+            && crate::bound_dispatch::same_owner_inputs(
+                &observation.owners,
+                &crate::bound_dispatch::bound_owner_inputs(self.root.as_ref(), &self.state.doc),
             )
     }
 
     /// Whether a polled frame's host tick would find nothing: no entry point since the last complete
     /// frame, and nothing in flight that a tick advances.
     fn tick_is_idle(&self) -> bool {
-        self.frame_witness
+        self.frame_observation
             .as_ref()
-            .is_some_and(|witness| witness.local_epoch == self.local_epoch)
+            .is_some_and(|observation| observation.local_epoch == self.local_epoch)
             && self.bound_invocations.is_empty()
             && self.pending_control_invocations.is_empty()
             && !crate::widget::press_waiting()
@@ -2251,7 +2248,7 @@ impl FrameHarness {
     fn verify_quiet_frame(&mut self, history_settled: bool) {
         /// Run `verify` with the clocks standing still: a frame that redraws the time it shows
         /// because a minute turned changed what the wall clock says, not what it publishes.
-        fn standing_clock<T>(verify: impl FnOnce() -> T) -> T {
+        fn fixed_clock<T>(verify: impl FnOnce() -> T) -> T {
             #[cfg(feature = "test-support")]
             {
                 crate::time::testing::with_wall(crate::time::wall(), || {
@@ -2272,7 +2269,7 @@ impl FrameHarness {
         };
         let locale = crate::i18n::I18nManager::revision();
         let (before, after, replaced, resting) = tilo_resource::profiling::unobserved(|| {
-            standing_clock(|| {
+            fixed_clock(|| {
                 let width = f64::from(self.viewport.0);
                 let resting = crate::history_mode::embedded::surfaces_at_rest(
                     self.root.as_ref(),
@@ -2287,7 +2284,7 @@ impl FrameHarness {
                             &self.state.doc,
                             width,
                         ));
-                let standing = self
+                let inputs = self
                     .history
                     .as_ref()
                     .is_none_or(|history| history.validate_root(self.root.as_ref()).is_ok());
@@ -2298,7 +2295,7 @@ impl FrameHarness {
                     self.publish_undo_status();
                 });
                 let replaced = self.composition_changed();
-                (before, shown(self), replaced, resting && standing)
+                (before, shown(self), replaced, resting && inputs)
             })
         });
         let consistent = before == after && !replaced && resting;
@@ -3049,8 +3046,8 @@ impl FrameHarness {
     }
 
     /// The frame an event or an idle pass asks for, as the live window runs
-    /// it: it syncs and publishes only when something its witness follows
-    /// moved since the last one ([`FrameWitness`]), unlike
+    /// it: it syncs and publishes only when something its observation follows
+    /// moved since the last one ([`FrameObservation`]), unlike
     /// [`Self::relayout`], which a caller asks for after changing anything.
     fn run_frame(&mut self) {
         self.poll_touch_hold(crate::time::now());
@@ -3283,7 +3280,7 @@ impl FrameHarness {
 
     fn try_relayout_content(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         let _carets = crate::caret_owner::holding(self.keyboard_held);
-        self.history_standing.set(None);
+        self.history_inputs.set(None);
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
@@ -3309,20 +3306,20 @@ impl FrameHarness {
             // SAFETY: no structural mutation since these maps were admitted.
             unsafe { CompositionFocus::capture(self.focused, &self.node_map, &self.bindings) }
         };
-        let last_witness = self.frame_witness.take();
-        let unwitnessed = match &last_witness {
-            None => Some("ui.loud.unwitnessed"),
-            Some(witness) => self.witness_moved(witness),
+        let last_observation = self.frame_observation.take();
+        let unobserved = match &last_observation {
+            None => Some("ui.loud.unobserved"),
+            Some(observation) => self.observation_moved(observation),
         };
-        let held = last_witness.filter(|_| unwitnessed.is_none());
-        let witnessed = held.is_some();
+        let held = last_observation.filter(|_| unobserved.is_none());
+        let observed = held.is_some();
         let focused_at_start = self.focused;
         let epoch_at_start = self.local_epoch;
         self.drain_component_wakes();
         let woken = self.take_wake();
         let history_settled =
-            std::mem::take(&mut self.history_settled) && witnessed && !woken && !structure_changed;
-        let history_at_rest = (witnessed && !woken)
+            std::mem::take(&mut self.history_settled) && observed && !woken && !structure_changed;
+        let history_at_rest = (observed && !woken)
             .then(|| {
                 crate::history_mode::embedded::surfaces_at_rest(
                     self.root.as_ref(),
@@ -3384,7 +3381,7 @@ impl FrameHarness {
             self.quiet_frames = self.quiet_frames.saturating_add(1);
         } else {
             drop(tilo_resource::profiling::Phase::start(
-                unwitnessed.unwrap_or(if woken {
+                unobserved.unwrap_or(if woken {
                     "ui.loud.wake"
                 } else if !synced {
                     "ui.loud.document"
@@ -4181,21 +4178,21 @@ impl FrameHarness {
                 self.unfollowed_bookkeeping(),
             ));
         }
-        let witness = followed.then(|| self.read_witness());
+        let observation = followed.then(|| self.read_observation());
         self.history_settled = quiet
             && !stats.rebuilt
-            && witness
+            && observation
                 .as_ref()
                 .zip(held.as_ref())
                 .is_some_and(|(now, then)| now.same_as(then));
-        self.frame_witness = witness;
+        self.frame_observation = observation;
         Ok(())
     }
 
     /// Drive production-equivalent frames until `condition` becomes true or
     /// `timeout` expires.
     ///
-    /// This is the deterministic test seam for worker completions and
+    /// This is the deterministic test border for worker completions and
     /// asynchronous model notifications. Each attempt runs update, sync,
     /// layout, and draw. Between attempts the thread parks on the
     /// current [`crate::background::Background`]: a pumped executor runs its queue and
@@ -6225,7 +6222,7 @@ impl FrameHarness {
                 crate::doc::settle_mark(&self.state.doc),
                 crate::widget::resource_presentation_epoch(),
                 self.focused,
-                crate::bound_dispatch::bound_owner_standing(self.root.as_ref(), &self.state.doc),
+                crate::bound_dispatch::bound_owner_inputs(self.root.as_ref(), &self.state.doc),
             )
         });
         let detected = self
@@ -6332,9 +6329,9 @@ impl FrameHarness {
                     && before.0 == crate::doc::settle_mark(&self.state.doc)
                     && before.1 == crate::widget::resource_presentation_epoch()
                     && before.2 == self.focused
-                    && crate::bound_dispatch::same_owner_standing(
+                    && crate::bound_dispatch::same_owner_inputs(
                         &before.3,
-                        &crate::bound_dispatch::bound_owner_standing(
+                        &crate::bound_dispatch::bound_owner_inputs(
                             self.root.as_ref(),
                             &self.state.doc,
                         ),
@@ -7258,7 +7255,7 @@ impl FrameHarness {
                 request.validate(self.root.as_ref(), &self.state.doc, &self.control_domain)?;
                 if let Some(target) = &pending.history_target {
                     let captured = pending
-                        .history_witness
+                        .history_seen
                         .as_ref()
                         .and_then(|w| w.as_ref().ok())
                         .ok_or_else(|| tilo_actions::ApiError::Unavailable {
@@ -7268,7 +7265,7 @@ impl FrameHarness {
                     let invocation = pending.control_invocation().ok_or_else(|| {
                         tilo_actions::ApiError::InvalidArguments("Invalid retained request".into())
                     })?;
-                    let current = crate::bound_dispatch::control_witness_with_arguments(
+                    let current = crate::bound_dispatch::control_observation_with_arguments(
                         self.root.as_ref(),
                         &self.state.doc,
                         target,
@@ -7371,7 +7368,7 @@ impl FrameHarness {
         let Some(request) = self
             .action_palette
             .as_deref()
-            .filter(|p| !p.history_has_custody())
+            .filter(|p| !p.history_has_ownership())
             .and_then(|p| p.ordinary_request())
             .cloned()
         else {
@@ -7384,10 +7381,10 @@ impl FrameHarness {
                 _ => serde_json::Map::new(),
             },
         };
-        let witness = request
+        let observation = request
             .validate_owner(&self.control_domain)
             .and_then(|()| {
-                crate::bound_dispatch::control_witness_with_arguments(
+                crate::bound_dispatch::control_observation_with_arguments(
                     self.root.as_ref(),
                     &self.state.doc,
                     &request.target,
@@ -7397,7 +7394,7 @@ impl FrameHarness {
             })
             .map_err(|e| e.to_string());
         let identity = Some(
-            witness
+            observation
                 .as_ref()
                 .map(|w| w.identity().clone())
                 .map_err(Clone::clone),
@@ -7406,7 +7403,7 @@ impl FrameHarness {
         self.focused = None;
         if let Some(palette) = self.action_palette.as_deref_mut() {
             palette.suspend_for_history();
-            palette.retain_history_custody(request.target, identity, Some(witness));
+            palette.retain_history_ownership(request.target, identity, Some(observation));
         }
     }
 
@@ -8888,7 +8885,7 @@ impl crate::host_core::ControlHost for FrameHarness {
         Ok(started)
     }
 
-    fn control_domain(&self) -> &crate::control_custody::ControlDomain {
+    fn control_domain(&self) -> &crate::control_domain::ControlDomain {
         &self.control_domain
     }
 
@@ -12777,7 +12774,7 @@ mod ordinary_confirmation_owner_tests {
     #[test]
     fn ordinary_confirmation_driver_closed_or_replaced_outer_domain_refuses() {
         for replacement in [false, true] {
-            let (root, ledger, _) = crate::app::ordinary_confirmation_tests::fixture(
+            let (root, log, _) = crate::app::ordinary_confirmation_tests::fixture(
                 tilo_actions::ConfirmationPolicy::Confirm,
             );
             let mut driver = super::FrameHarness::from_managed_root_with_controlled_inputs(
@@ -12803,7 +12800,7 @@ mod ordinary_confirmation_owner_tests {
             driver
                 .perform_a11y_action(submit, &crate::a11y::Action::Activate)
                 .unwrap();
-            assert!(ledger.borrow().is_empty());
+            assert!(log.borrow().is_empty());
         }
     }
 }
@@ -12841,8 +12838,8 @@ mod owner_fifo_tests;
 mod retained_damage_tests;
 
 #[cfg(test)]
-#[path = "headless/owner_layout_custody_tests.rs"]
-mod owner_layout_custody_tests;
+#[path = "headless/owner_layout_ownership_tests.rs"]
+mod owner_layout_ownership_tests;
 
 #[cfg(test)]
 #[path = "headless/owner_layout_demand_tests.rs"]
@@ -12865,8 +12862,8 @@ mod undrawn_measure_tests;
 #[path = "../../../browser/tilo-browser-runtime/src/background_work.rs"]
 mod owner_background_work;
 #[cfg(test)]
-#[path = "../../../browser/tilo-browser-runtime/src/mount_service_custody.rs"]
-mod owner_mount_service_custody;
+#[path = "../../../browser/tilo-browser-runtime/src/mount_service_lease.rs"]
+mod owner_mount_service_lease;
 
 #[cfg(test)]
 #[path = "headless/activation_scene_consistency_tests.rs"]

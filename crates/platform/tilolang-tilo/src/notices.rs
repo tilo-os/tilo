@@ -84,21 +84,21 @@ impl Notices {
         }
         let newest = held.iter().map(|notice| notice.at).max();
         let from = *self.from.get_or_insert_with(|| newest.unwrap_or(i64::MIN));
-        let standing: Vec<&Held> = held
+        let access: Vec<&Held> = held
             .iter()
             .filter(|notice| !notice.seen && notice.at > from)
             .collect();
-        let standing_ids: BTreeSet<&str> = standing.iter().map(|n| n.id.as_str()).collect();
+        let access_ids: BTreeSet<&str> = access.iter().map(|n| n.id.as_str()).collect();
         let withdraw: Vec<String> = self
             .showing
             .iter()
-            .filter(|(id, _)| !standing_ids.contains(id.as_str()))
+            .filter(|(id, _)| !access_ids.contains(id.as_str()))
             .map(|(_, tag)| tag.clone())
             .collect();
         self.showing
-            .retain(|id, _| standing_ids.contains(id.as_str()));
+            .retain(|id, _| access_ids.contains(id.as_str()));
         let mut show: Vec<Notice> = Vec::new();
-        for notice in standing {
+        for notice in access {
             if self.told.contains(&notice.id) || self.showing.contains_key(&notice.id) {
                 continue;
             }

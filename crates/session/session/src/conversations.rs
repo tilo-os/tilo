@@ -132,11 +132,11 @@ impl Conversations {
         if !held {
             return None;
         }
-        let standing = tilo_action_policy::Standing::new(
+        let access = tilo_action_policy::MemberAccess::new(
             opened.policy.clone(),
             tilo_action_policy::Acting::member(opened.records.author().clone()),
         );
-        let permissions = PermissionContext::from_standing(standing)
+        let permissions = PermissionContext::from_access(access)
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         WorkspaceResource::<tilo_app::tilo_workspace_agent::learned::Learned>::open_at(
             &opened.records,
@@ -177,11 +177,11 @@ impl Conversations {
         if !held {
             return None;
         }
-        let standing = tilo_action_policy::Standing::new(
+        let access = tilo_action_policy::MemberAccess::new(
             opened.policy.clone(),
             tilo_action_policy::Acting::member(opened.records.author().clone()),
         );
-        let permissions = PermissionContext::from_standing(standing)
+        let permissions = PermissionContext::from_access(access)
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         WorkspaceResource::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::open(
             &opened.records,
@@ -333,11 +333,11 @@ impl Conversations {
                         .to_owned(),
                 });
             }
-            let standing = tilo_action_policy::Standing::new(
+            let access = tilo_action_policy::MemberAccess::new(
                 opened.policy.clone(),
                 tilo_action_policy::Acting::member(opened.records.author().clone()),
             );
-            let permissions = PermissionContext::from_standing(standing)
+            let permissions = PermissionContext::from_access(access)
                 .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
             let record = WorkspaceResource::<Learned>::open_at(
                 &opened.records,
@@ -546,7 +546,7 @@ impl Conversations {
             chat: None,
             part: None,
         });
-        let permissions = PermissionContext::from_standing(tilo_action_policy::Standing::person(
+        let permissions = PermissionContext::from_access(tilo_action_policy::MemberAccess::person(
             workspace.policy.clone(),
             person.to_owned(),
         ))

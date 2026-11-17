@@ -240,7 +240,7 @@ pub(super) fn verify_bundle(
     )
 }
 
-/// Inputs of one producer or check run; `root` is a fixture seam only.
+/// Inputs of one producer or check run; `root` is a fixture boundary only.
 pub struct Produce<'a> {
     pub root: &'a Path,
     pub runner: &'a mut Runner<'a>,

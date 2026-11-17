@@ -9,9 +9,9 @@ use crate::widget::capability::{capability, capability_mut};
 
 /// A widget that owns a document's History: its registration, restore readiness and presentation.
 pub trait DocumentHistory {
-    /// Explicit root-owned History custody, including selected external resources. Runners consume this
+    /// Explicit root-owned History ownership, including selected external resources. Runners consume this
     /// bundle; preview renderers never receive the root. # Errors Returns a registration error when the
-    /// root cannot provide valid History custody.
+    /// root cannot provide valid History ownership.
     fn history_registration(
         &self,
     ) -> Result<Option<super::HistoryRegistration>, super::HistoryRegistrationError> {

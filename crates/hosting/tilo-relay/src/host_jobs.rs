@@ -4,7 +4,7 @@
 //!
 //! This is the host's own side of the offer round
 //! ([`tilo_workspace_host::workspaces::HostJobs`]). A device of a workspace the host
-//! governs offers it a transform; the host answers with its standing and the
+//! governs offers it a transform; the host answers with its access and the
 //! inputs it already keeps, and the device that decides sends the invocation
 //! to whichever device wins. When that is this host, the invocation runs here
 //! as a signed package's entrypoint under the launcher sandbox, reading only

@@ -570,13 +570,13 @@ impl KeyLink {
         }
     }
 
-    /// Send this device's owner's outgoing custody of `workspace` to its peers: what the owner
+    /// Send this device's owner's outgoing ownership of `workspace` to its peers: what the owner
     /// committed leaves this device on the peer network's session with the workspace's host, as every
     /// other change of the workspace does.
-    pub fn publish_custody(&self, workspace: ModelWorkspaceId) {
+    pub fn publish_ownership(&self, workspace: ModelWorkspaceId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
-            let _ = outgoing.send(Cmd::PublishCustody(topic_of(workspace)));
+            let _ = outgoing.send(Cmd::PublishOwnership(topic_of(workspace)));
         }
     }
 

@@ -44,7 +44,7 @@ function answeredWithError(error) {
  * - `gone`, `deleted`, `no-access`, `refused`: the workspace is not there
  *   for this browser any more, or the link or invitation could not be used
  *   (`refused` says the page's own words for it);
- * - `custody-busy`: every device this browser keeps is open in other tabs;
+ * - `device-key-busy`: every device this browser keeps is open in other tabs;
  * - `offline`: the browser itself is offline;
  * - `unreachable`: the host never answered, while this site does (so the
  *   connection works: the host is down, or, for a host on a machine's own
@@ -70,7 +70,7 @@ export function failureCause(error, {settled = null, admitted = false, drawn = f
   const fromEntry = ['AdmissionError', 'HostAdmissionError'].includes(error?.name);
   if (fromEntry && ['removed', 'invitation-only', 'cooling-down'].includes(code)) return code;
   if (error?.name === 'AdmissionError') return code === 'no-access' ? 'no-access' : 'refused';
-  if (error?.name === 'CustodyError' && code === 'custody-busy') return 'custody-busy';
+  if (error?.name === 'DeviceKeyError' && code === 'device-key-busy') return 'device-key-busy';
   if (drawn) return 'stopped';
   // Connected, and the host said no, with its reason.
   if (error?.code === 'not-let-in' && error.sessionErrorCode === 'permission-required') return 'host-refused';
@@ -110,7 +110,7 @@ export const SCREENS = {
   'no-access': ['{ $workspace } didn’t let this browser in', 'This workspace didn’t let this browser in',
     'You may have been removed from it, or it no longer exists.'],
   refused: ['Couldn’t open { $workspace }', 'Couldn’t open this workspace', '{ $reason }'],
-  'custody-busy': ['{ $workspace } is open in your other tabs', 'This workspace is open in your other tabs',
+  'device-key-busy': ['{ $workspace } is open in your other tabs', 'This workspace is open in your other tabs',
     'This browser can open it in only so many tabs at once. Close one of the others, then try again.'],
   offline: ['You’re offline', 'You’re offline',
     'The workspace opens here as soon as you’re back online.'],

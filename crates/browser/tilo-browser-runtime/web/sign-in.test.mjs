@@ -255,8 +255,8 @@ function page({
     local,
     identity,
     loadRuntime: async () => runtime,
-    openCustody: async request => {
-      posted.push({custody: request});
+    openDeviceKey: async request => {
+      posted.push({deviceKey: request});
       return {kind: 'webcrypto-ed25519', close: async () => {}};
     },
   });
@@ -309,8 +309,8 @@ test('allow signs what the link asked for and posts it to the service', async ()
     serverKey: false,
     operateBrowserPages: false,
   });
-  const custody = posted.find(entry => entry.custody)?.custody;
-  assert.equal(custody.profile, `tilo-identity:${ROOT}@entry.example`);
+  const deviceKey = posted.find(entry => entry.deviceKey)?.deviceKey;
+  assert.equal(deviceKey.profile, `tilo-identity:${ROOT}@entry.example`);
 });
 
 test('a link that asks for no grant proves the person and posts no grant', async () => {

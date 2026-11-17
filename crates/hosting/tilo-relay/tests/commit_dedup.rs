@@ -84,7 +84,7 @@ async fn resent_commits_keep_their_host_order_and_are_not_fanned_out_again() {
     ));
     no_delta(&b_client).await;
 
-    // The ledger is durable: after a restart the resend is still recognised.
+    // The log is durable: after a restart the resend is still recognised.
     a_client.close().await;
     b_client.close().await;
     host.endpoint.close().await;

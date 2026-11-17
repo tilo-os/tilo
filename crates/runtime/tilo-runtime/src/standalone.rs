@@ -75,7 +75,7 @@ const HOST_STORE: &str = "workspace-host";
 
 /// A standalone service session over one profile. Drop applications first.
 pub struct Standalone {
-    // Retired before broker fields: retained original custody cannot survive
+    // Retired before broker fields: retained original ownership cannot survive
     // replacement of the runtime that supplied its policy time.
     policy_origin: tilo_action_broker::policy_clock::PolicyOrigin,
     broker: BrokerHandle,
@@ -569,7 +569,7 @@ pub struct RuntimeActionHost {
     /// before it opens. `None` for a host that serves only the person's
     /// other devices.
     apps: Option<Arc<apps::Apps>>,
-    // Retains original custody for both owner/search and MCP callers. An
+    // Retains original ownership for both owner/search and MCP callers. An
     // owner projection is not the local person and never acquires the local person's authority.
     session: Option<Arc<AdmittedRuntimeSession>>,
 }
@@ -730,7 +730,7 @@ impl RuntimeActionHost {
 }
 
 // These existing alias forms may eventually dispatch into a published app.
-// Keep original certified custody through the broker's deferred launch path.
+// Keep original certified ownership through the broker's deferred launch path.
 fn certified_provider(provider: &str) -> bool {
     provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
@@ -774,7 +774,7 @@ impl ActionHost for RuntimeActionHost {
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         if let Some(session) = &self.session {
             // Owner discovery remains the ordinary read path: no per-query
-            // identity-store resolution. Opening a result uses retained custody.
+            // identity-store resolution. Opening a result uses retained ownership.
             if session.projection.as_ref() == Some(caller) {
                 if !self.admitted(caller) {
                     return Pending::ready(Err(ActionHostError::NotPermitted));
@@ -795,7 +795,7 @@ impl ActionHost for RuntimeActionHost {
                 return session.host.query(caller, query);
             }
             // Existing general catalogue/builtin APIs retain the exact
-            // authenticated run. They make no SDK original-custody claim.
+            // authenticated run. They make no SDK original-ownership claim.
             let answer = self.broker.state().action_query(&session.acting(), &query);
             return session.guarded(Arc::clone(&self.joined), caller.clone(), answer);
         }
@@ -953,11 +953,11 @@ struct Certificates {
 }
 
 impl Certificates {
-    fn check_registered_custody(&self, workspace: uuid::Uuid) -> Result<(), String> {
+    fn check_registered_ownership(&self, workspace: uuid::Uuid) -> Result<(), String> {
         let joined = self
             .joined
             .upgrade()
-            .ok_or("runtime custody owner unavailable")?;
+            .ok_or("runtime ownership owner unavailable")?;
         let workspace =
             WorkspaceId::parse(&workspace.to_string()).ok_or("invalid exact workspace")?;
         joined.recheck_mcp_executions(workspace)
@@ -982,7 +982,7 @@ impl tilo_action_broker::certificate_authority::CertificateAuthority for Certifi
             return Err("original runtime policy origin changed".into());
         }
         let now = time.now_ns().map_err(|error| error.to_string())?;
-        self.check_registered_custody(workspace)?;
+        self.check_registered_ownership(workspace)?;
         tilo_user_identity::verify_device_cert_at(cert, now).map_err(|error| error.to_string())?;
         // This store check is conservative: known revocations are refused even
         // before their effective instant. It never extends a credential lease.
@@ -1006,7 +1006,7 @@ impl tilo_action_broker::certificate_authority::CertificateAuthority for Certifi
             .now_ns()
             .map_err(|error| error.to_string())?;
         tilo_user_identity::verify_device_cert_at(cert, now).map_err(|error| error.to_string())?;
-        self.check_registered_custody(workspace)?;
+        self.check_registered_ownership(workspace)?;
         tilo_identity_host::certificates::authorize_join(&workspace.to_string(), cert)
     }
     fn governs(&self, workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
@@ -1413,7 +1413,7 @@ fn serve_key_sessions(
 }
 
 /// The joined workspaces and this device's channel keys for them, under the
-/// device's trusted custody. `workspace` is the profile's own, which it governs
+/// device's trusted ownership. `workspace` is the profile's own, which it governs
 /// unless the desktop session does. `listen` is the UDP port the endpoint
 /// binds when a relay must reach it, and the machine's own choice otherwise.
 fn joined_workspaces_and_keys(
@@ -1423,12 +1423,12 @@ fn joined_workspaces_and_keys(
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
     listen: Option<u16>,
 ) -> io::Result<(Arc<Joined>, workspace_keys::KeyService)> {
-    let custody = tilo_identity_host::broker::trusted_current_device(workspace)?;
+    let ownership = tilo_identity_host::broker::trusted_current_device(workspace)?;
     let channels = Arc::clone(&broker.0);
     let joined = joined_workspaces(
         profile,
         (workspace, governs),
-        custody.clone(),
+        ownership.clone(),
         broker,
         listen,
     )?;
@@ -1437,7 +1437,7 @@ fn joined_workspaces_and_keys(
         WorkspaceId::parse(workspace)
             .ok_or_else(|| io::Error::other("invalid runtime workspace"))?,
         storage,
-        custody.0,
+        ownership.0,
         Arc::clone(&joined),
         channels,
     )?;
@@ -1455,10 +1455,10 @@ fn joined_workspaces(
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
     listen: Option<u16>,
 ) -> io::Result<Arc<Joined>> {
-    let custody = tilo_identity_host::custody::HostIdentity::held(
+    let ownership = tilo_identity_host::identity_store::HostIdentity::held(
         cert,
         key.clone(),
-        std::sync::Arc::new(tilo_identity_host::custody::files::Files::new(
+        std::sync::Arc::new(tilo_identity_host::identity_store::files::Files::new(
             tilo_identity_host::provisioning::collaboration_identity_paths(),
         )),
     );
@@ -1467,7 +1467,7 @@ fn joined_workspaces(
     if !governs {
         refused.extend(WorkspaceId::parse(workspace));
     }
-    Joined::open(profile, custody, endpoint, refused, broker)
+    Joined::open(profile, ownership, endpoint, refused, broker)
 }
 
 /// This device's endpoint, keyed by its device key: bound to `listen` on

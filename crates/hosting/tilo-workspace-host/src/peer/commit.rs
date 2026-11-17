@@ -1,30 +1,30 @@
 //! `Commit`: a delta whose author waits for its host order, with the
-//! per-member change budget and the commit ledger.
+//! per-member change budget and the commit log.
 
 use super::{
     AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace, authorized_state_source,
     desktop_refusal, enqueue_state_inner, file_refusal_of, governor_notice, resume_document,
     unix_now_ns, unpublished,
 };
-use crate::member_limits::Standing;
+use crate::member_limits::Ownership;
 use crate::workspace_access::WorkspaceOperation;
 use tilo_relay_protocol::WorkspaceId;
 use tilo_relay_protocol::refusal::Refusal;
 
-/// Spends `peer`'s budget for one change as its `standing` is, unless the
+/// Spends `peer`'s budget for one change as its `ownership` is, unless the
 /// relay's own user sent it: the host device and the bots a host-held root
 /// delegated must never turn a burst into refusals.
 pub(super) fn over_change_limit(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    standing: Standing,
+    ownership: Ownership,
 ) -> Option<crate::member_limits::Limited> {
     let limits = session.member_limits?;
     if peer.user_public_key == *session.own_user_public_key {
         return None;
     }
     limits
-        .admit_change(&peer.user_public_key, standing, tilo_clock::now())
+        .admit_change(&peer.user_public_key, ownership, tilo_clock::now())
         .err()
 }
 
@@ -45,10 +45,10 @@ pub(super) fn of_backend(cert: &tilo_user_identity::DeviceCert) -> bool {
 /// How the change budget sees `peer` in `runtime`'s workspace: as an owner
 /// when it is their person's backend ([`of_backend`]), or when the workspace is their person's own; as a guest
 /// everywhere else.
-pub(super) fn change_standing(
+pub(super) fn change_ownership(
     peer: &AuthenticatedPeer,
     runtime: &crate::workspace::WorkspaceRuntime,
-) -> Standing {
+) -> Ownership {
     let own = of_backend(&peer.cert)
         || runtime
             .workspace_authority
@@ -58,9 +58,9 @@ pub(super) fn change_standing(
                 workspaces.owns(&peer.user_public_key, workspace)
             });
     if own {
-        Standing::Owner
+        Ownership::Owner
     } else {
-        Standing::Guest
+        Ownership::Guest
     }
 }
 
@@ -95,7 +95,7 @@ pub(super) async fn over_storage(
 /// waits until the host persisted it), then tell the author its host order.
 /// A commit the host cannot admit is refused to the author without closing
 /// the session. A resent commit the host already admitted is answered with
-/// its original order from the workspace's commit ledger and neither
+/// its original order from the workspace's commit log and neither
 /// persisted nor fanned out again.
 pub(super) async fn handle_commit(
     peer: &AuthenticatedPeer,
@@ -156,7 +156,7 @@ pub(super) const fn commit_run_key(env: &Envelope) -> Option<([u8; 32], [u8; 16]
 /// A `Commit` after its admission.
 enum CommitAdmission {
     /// Answered without persisting: refused, or resent and found in the
-    /// ledger.
+    /// log.
     Answered(Option<Envelope>),
     /// Queued with the workspace's owner.
     Admitted(Box<AdmittedCommit>),
@@ -174,7 +174,7 @@ struct AdmittedCommit {
     observed: Option<crate::compaction::Observed>,
     admitting: Option<crate::compaction::Admitting>,
     /// Held until the commit is recorded: a copy of it (a resend after a
-    /// reconnect) waits for this one, then is answered from the ledger.
+    /// reconnect) waits for this one, then is answered from the log.
     claim: crate::workspace::CommitClaim,
     committing: Option<std::time::Instant>,
 }
@@ -242,8 +242,8 @@ async fn admit_commit(
             "author does not match authenticated device".into(),
         ));
     }
-    let standing = change_standing(peer, &*ws.lock().await);
-    if let Some(limited) = over_change_limit(peer, session, standing) {
+    let ownership = change_ownership(peer, &*ws.lock().await);
+    if let Some(limited) = over_change_limit(peer, session, ownership) {
         return refused(limited.refusal());
     }
     if over_storage(peer, session, &ws).await {
@@ -374,12 +374,12 @@ async fn commit_refusal(
     let Envelope::Delta { delta: bytes, .. } = delta else {
         return None;
     };
-    let (standings, payloads) =
-        crate::workspace::standings_deciding(ws, author, |standings, payloads| {
-            crate::surfaces::refusal(payloads, bytes, standings).is_some()
+    let (device_access, payloads) =
+        crate::workspace::access_deciding(ws, author, |device_access, payloads| {
+            crate::surfaces::refusal(payloads, bytes, device_access).is_some()
         })
         .await;
-    if let Some(refusal) = crate::surfaces::refusal(&*payloads, bytes, standings.as_deref()) {
+    if let Some(refusal) = crate::surfaces::refusal(&*payloads, bytes, device_access.as_deref()) {
         tracing::warn!(%refusal, device = %hex::encode(author), "refused a document change");
         file_refusal_of(ws, delta, &refusal.to_string()).await;
         return Some(refusal);
@@ -387,7 +387,7 @@ async fn commit_refusal(
     if let Some(refusal) = desktop_refusal(ws, author, delta).await {
         return Some(refusal);
     }
-    if let Some(refusal) = crate::surfaces::role_refusal(bytes, standings.as_deref(), author) {
+    if let Some(refusal) = crate::surfaces::role_refusal(bytes, device_access.as_deref(), author) {
         tracing::warn!(%refusal, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
         file_refusal_of(ws, delta, &refusal.to_string()).await;
         return Some(refusal);
@@ -416,7 +416,7 @@ async fn tell_governor(ws: &SharedWorkspace, delta: &Envelope) {
 /// Claim `author`'s commit `op` for admission in `ws`
 /// ([`crate::workspace::WorkspaceRuntime::claim_commit`]), first waiting for
 /// a copy of it already being admitted. `Err` with its record when the
-/// ledger holds it.
+/// log holds it.
 async fn claim(
     ws: &SharedWorkspace,
     author: [u8; 32],
@@ -437,7 +437,7 @@ async fn claim(
     }
 }
 
-/// The answer to a resent commit the ledger already holds: its original
+/// The answer to a resent commit the log already holds: its original
 /// host order, or a refusal when the same operation id carries other content.
 fn resent_commit(
     workspace_id: WorkspaceId,
@@ -454,7 +454,7 @@ fn resent_commit(
     tracing::debug!(
         workspace_id = %workspace_id,
         seq = admitted.seq,
-        "resent commit answered from the ledger"
+        "resent commit answered from the log"
     );
     Envelope::Committed {
         workspace_id,
@@ -463,7 +463,7 @@ fn resent_commit(
     }
 }
 
-/// Record an admitted commit in the workspace's commit ledger and return the
+/// Record an admitted commit in the workspace's commit log and return the
 /// host order it is acknowledged at: the durable sequence it was published
 /// in (`record.seq`), or the next one when persistence assigned none. Every
 /// member then receives commits in the order their authors were told.
@@ -471,17 +471,17 @@ async fn remember_commit(
     ws: &SharedWorkspace,
     mut record: crate::store::CommitEntry,
 ) -> Result<u64, PeerError> {
-    let lane = ws.lock().await.commit_ledger_lane.clone();
+    let lane = ws.lock().await.commit_log_lane.clone();
     let _writing = lane.lock().await;
-    let (ledger, store) = {
+    let (log, store) = {
         let mut runtime = ws.lock().await;
         if record.seq == 0 {
             record.seq = runtime.next_seq(unix_now_ns());
         }
         (runtime.remember_commit(record), runtime.store.clone())
     };
-    tokio::task::spawn_blocking(move || ledger.persist(&store))
+    tokio::task::spawn_blocking(move || log.persist(&store))
         .await
-        .map_err(|_| PeerError::Io(std::io::Error::other("commit ledger write panicked")))?;
+        .map_err(|_| PeerError::Io(std::io::Error::other("commit log write panicked")))?;
     Ok(record.seq)
 }

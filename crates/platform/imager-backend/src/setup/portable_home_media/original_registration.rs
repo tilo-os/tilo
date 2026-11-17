@@ -2,7 +2,7 @@
 //! locally sampled NSS facts or a fabricated immutable content epoch.
 use super::*;
 use crate::setup::{
-    home_capture::{Rendezvous, RpcReply, SourceWitness, State, controller::Controller},
+    home_capture::{Rendezvous, RpcReply, SourceProof, State, controller::Controller},
     home_capture_helper::{OriginalRequest, publish_original_request},
     migration_handoff::Plan,
 };
@@ -10,8 +10,8 @@ use std::os::unix::fs::MetadataExt as _;
 use std::{process::Stdio, time::Duration};
 
 pub struct Registered {
-    pub witness: SourceWitness,
-    pub mounted: Option<crate::setup::home_capture::MountedWitness>,
+    pub proof: SourceProof,
+    pub mounted: Option<crate::setup::home_capture::MountedProof>,
     pub plan: Plan,
     pub original_caller: crate::setup::home_capture::OriginalCallerFacts,
 }
@@ -153,32 +153,32 @@ fn wait_registration(
         }
         if registered.is_none() {
             if let Some(reply) = ticket.poll()? {
-                let (witness, original_caller, mounted) = match (roots, reply) {
+                let (proof, original_caller, mounted) = match (roots, reply) {
                     (
                         None,
                         RpcReply::OriginalRegistered {
-                            witness,
+                            proof,
                             original_caller,
                         },
-                    ) => (witness, original_caller, None),
+                    ) => (proof, original_caller, None),
                     (
                         Some(roots),
                         RpcReply::MountedOriginalRegistered {
                             generation,
-                            witness,
+                            proof,
                             original_caller,
                         },
                     ) if generation == roots.generation() => {
                         roots.validate(cancel)?;
-                        (witness.primary().clone(), original_caller, Some(witness))
+                        (proof.primary().clone(), original_caller, Some(proof))
                     }
                     _ => return Err(changed("Original registration was not acknowledged")),
                 };
-                witness.validate_plan(plan)?;
+                proof.validate_plan(plan)?;
                 original_caller.validate(plan.home_uid())?;
                 registered = Some(Registered {
                     plan: plan.clone(),
-                    witness,
+                    proof,
                     original_caller,
                     mounted,
                 });

@@ -19,7 +19,7 @@ use tilo_action_broker::services::{
     AwaitingDocument, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
     NativeDocumentReadContext, NativeDocumentReads, ResourceRead,
 };
-use tilo_broker_core::custody::OwnerCustody as _;
+use tilo_broker_core::owner_service::OwnerService as _;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner::Holding;
 use tilo_session_client::DocumentAnswer;
@@ -368,10 +368,10 @@ mod tests {
         let cert = testing::member_certificate(&root, &key, "Laptop");
         let engine = Arc::new(
             Engine::open(
-                tilo_identity_host::custody::HostIdentity::kept(cert.clone(), key.clone()),
+                tilo_identity_host::identity_store::HostIdentity::kept(cert.clone(), key.clone()),
                 Some(state),
                 std::iter::empty(),
-                crate::platform::custody::of_this_session(),
+                crate::platform::membership_check::of_this_session(),
             )
             .expect("this device's engine opens"),
         );
@@ -686,13 +686,13 @@ mod tests {
         let state = tempfile::TempDir::new().expect("the host's state directory");
         let host = Arc::new(
             Engine::open(
-                tilo_identity_host::custody::HostIdentity::kept(
+                tilo_identity_host::identity_store::HostIdentity::kept(
                     host_cert.clone(),
                     host_key.clone(),
                 ),
                 Some(state.path()),
                 std::iter::empty(),
-                crate::platform::custody::of_this_session(),
+                crate::platform::membership_check::of_this_session(),
             )
             .expect("the host's engine opens"),
         );

@@ -41,7 +41,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unsupported_host_cannot_mint_namespace_custody() {
+    fn unsupported_host_cannot_mint_namespace_ownership() {
         let error = ManagedConsumerNamespace::isolate().err().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert!(

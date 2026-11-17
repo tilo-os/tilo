@@ -640,7 +640,7 @@ impl HostAgents {
     }
 
     /// Whom `turn`'s agent acts for in `workspace`, and through what.
-    async fn standing(&self, workspace: &str, turn: &Turn) -> Result<Standing, String> {
+    async fn scope(&self, workspace: &str, turn: &Turn) -> Result<TurnScope, String> {
         let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
         let person: [u8; 32] = hex::decode(&turn.person)
             .ok()
@@ -651,7 +651,7 @@ impl HostAgents {
             .person_device(workspace_id, person)
             .await
             .ok_or("the person who asked is admitted here on no device")?;
-        Ok(Standing {
+        Ok(TurnScope {
             host: WorkspaceActionHost::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone()),
             person: Caller::authenticated(person, device).in_workspace(workspace),
@@ -662,7 +662,7 @@ impl HostAgents {
 
     /// End `turn` as `outcome` without working on it: its reply says how it ended.
     async fn end(&self, workspace: &str, turn: &Turn, outcome: &Outcome) -> Result<(), String> {
-        self.standing(workspace, turn)
+        self.scope(workspace, turn)
             .await?
             .reply(turn)
             .finished(outcome)
@@ -697,12 +697,12 @@ impl HostAgents {
         turn: &Turn,
         going: &going::Going,
     ) -> (Ask, Result<(), String>) {
-        let standing = match self.standing(workspace, turn).await {
-            Ok(standing) => standing,
+        let scope = match self.scope(workspace, turn).await {
+            Ok(scope) => scope,
             Err(error) => return (turn.ask.clone(), Err(error)),
         };
         let mut turn = turn.clone();
-        let mut reply = standing.reply(&turn);
+        let mut reply = scope.reply(&turn);
         if self.left_begun(workspace, &turn).await {
             // Its steps may have changed things already, and nothing says which: starting over
             // would do them twice. It ends here, and asking again is the person's to do.
@@ -717,7 +717,7 @@ impl HostAgents {
         let spent_before = turn.agent.spent_on(&day);
         let asked = self
             .model_for_turn(
-                (workspace, standing.workspace_id),
+                (workspace, scope.workspace_id),
                 &turn,
                 &day,
                 going.stop_flag(),
@@ -734,7 +734,7 @@ impl HostAgents {
             (Err(why), _) => (Outcome::Failed(why), 0),
             (Ok(model), _) => {
                 let budget = limit.map(|limit| limit.saturating_sub(spent_before));
-                work(model, &standing, &mut turn, budget, &mut reply, going).await
+                work(model, &scope, &mut turn, budget, &mut reply, going).await
             }
         };
         if cost > 0 {
@@ -742,7 +742,7 @@ impl HostAgents {
         }
         if let Outcome::Answered(words) = &outcome {
             self.keep_summary(
-                (workspace, standing.workspace_id),
+                (workspace, scope.workspace_id),
                 &turn,
                 (&reply, words),
                 &day,
@@ -926,7 +926,7 @@ pub enum Outcome {
 
 /// Whom a turn's agent acts for in a workspace, and through what: the same for every ask the
 /// turn goes on with.
-struct Standing {
+struct TurnScope {
     host: WorkspaceActionHost,
     /// The person, as their own device is admitted here.
     person: Caller,
@@ -934,7 +934,7 @@ struct Standing {
     workspace_id: WorkspaceId,
 }
 
-impl Standing {
+impl TurnScope {
     /// Where `turn`'s answer is written, as its agent acting for the person inside that turn.
     fn reply(&self, turn: &Turn) -> Reply {
         let session = format!(
@@ -1184,7 +1184,7 @@ pub async fn invoke_named(
 /// `reply` are then the newest of it, where the answer goes.
 async fn work(
     model: Model,
-    standing: &Standing,
+    scope: &TurnScope,
     turn: &mut Turn,
     budget: Option<u64>,
     reply: &mut Reply,
@@ -1204,7 +1204,7 @@ async fn work(
         );
     };
     let turns = Arc::new(Mutex::new(turns));
-    let mut server = match McpServer::for_turn(standing.host.clone(), reply.caller.clone()) {
+    let mut server = match McpServer::for_turn(scope.host.clone(), reply.caller.clone()) {
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0),
     };
@@ -1222,7 +1222,7 @@ async fn work(
         if going.stopped() {
             return (Outcome::Cancelled, cost);
         }
-        match go_on(standing, going, &mut messages, turn, reply).await {
+        match go_on(scope, going, &mut messages, turn, reply).await {
             Ok(Some(tools_of_next)) => server = tools_of_next,
             Ok(None) => {}
             Err(why) => return (Outcome::Failed(why), cost),
@@ -1285,7 +1285,7 @@ async fn work(
 /// # Errors
 /// The agent's tools could not be had for the ask it goes on with.
 async fn go_on(
-    standing: &Standing,
+    scope: &TurnScope,
     going: &going::Going,
     messages: &mut Vec<Message>,
     turn: &mut Turn,
@@ -1297,7 +1297,7 @@ async fn go_on(
     };
     reply.went_on().await;
     for between in passed {
-        standing.reply(between).went_on().await;
+        scope.reply(between).went_on().await;
     }
     let mut told = String::from(CAME_SINCE);
     for next in &came {
@@ -1311,9 +1311,9 @@ async fn go_on(
         _ => messages.push(Message::text(Role::User, told)),
     }
     *turn = newest.clone();
-    *reply = standing.reply(turn);
+    *reply = scope.reply(turn);
     reply.taken().await;
-    McpServer::for_turn(standing.host.clone(), reply.caller.clone())
+    McpServer::for_turn(scope.host.clone(), reply.caller.clone())
         .map(Some)
         .map_err(|error| error.to_string())
 }

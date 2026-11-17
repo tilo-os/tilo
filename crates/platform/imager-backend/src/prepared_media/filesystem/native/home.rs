@@ -11,7 +11,7 @@ use crate::media_layout::{DATA_PARTITION_TYPE, MediaPartitionBinding};
 use std::fs::File;
 #[cfg(not(test))]
 use std::os::unix::fs::MetadataExt as _;
-mod witness;
+mod proof;
 #[cfg(feature = "flatpak-media-writer")]
 const COLUMNS_HOME: &str =
     "NAME,TYPE,SIZE,START,RO,FSTYPE,UUID,PARTUUID,PARTTYPE,MAJ:MIN,MOUNTPOINTS";
@@ -31,7 +31,7 @@ fn selection(
     if !target.is_media_target()
         || target.stable_id.as_deref() != Some(binding.target_stable_id.as_str())
     {
-        return Err(changed("Migration data medium custody changed"));
+        return Err(changed("Migration data medium ownership changed"));
     }
     let disks: Vec<_> = devices
         .iter()
@@ -299,7 +299,7 @@ fn with_data<T>(
     };
     check_cancel(cancel)?;
     mount.validate()?;
-    if !fresh && !witness::matches(&mount.root, &binding, &mount.partition)? {
+    if !fresh && !proof::matches(&mount.root, &binding, &mount.partition)? {
         // A new GPT identity cannot inherit ciphertext from an old filesystem.
         // The already authorized whole-drive rewrite permits replacing it.
         check_cancel(cancel)?;
@@ -325,16 +325,16 @@ fn with_data<T>(
     check_cancel(cancel)?;
     let grant = backend.grant(target, &mount.root)?;
     if fresh {
-        witness::publish(&grant, &binding, &mount.partition)?;
+        proof::publish(&grant, &binding, &mount.partition)?;
     }
-    if !witness::matches(&mount.root, &binding, &mount.partition)? {
-        return Err(changed("Migration filesystem ownership witness missing"));
+    if !proof::matches(&mount.root, &binding, &mount.partition)? {
+        return Err(changed("Migration filesystem ownership proof missing"));
     }
     let result = write(&grant)?;
     mount.validate()?;
-    if !witness::matches(&mount.root, &binding, &mount.partition)? {
+    if !proof::matches(&mount.root, &binding, &mount.partition)? {
         return Err(changed(
-            "Migration filesystem witness changed during delivery",
+            "Migration filesystem proof changed during delivery",
         ));
     }
     drop(grant);
@@ -361,7 +361,7 @@ pub fn deliver_home<T>(
 /// Returns an error unless running as root with the expected, unmounted ext4
 /// partition. Also returns errors for cancellation, failed device/GPT or grant
 /// validation, unavailable system services, mount/unmount failures, missing or
-/// changed ownership witnesses, or a failed read callback.
+/// changed ownership proofs, or a failed read callback.
 #[cfg(feature = "flatpak-media-writer")]
 pub fn with_existing_home<T>(
     target: &TargetDrive,
@@ -393,15 +393,15 @@ pub fn with_existing_home<T>(
         owned: true,
     };
     mount.validate()?;
-    if !witness::matches(&mount.root, expected, &mount.partition)? {
-        return Err(changed("Protected pending filesystem witness differs"));
+    if !proof::matches(&mount.root, expected, &mount.partition)? {
+        return Err(changed("Protected pending filesystem proof differs"));
     }
     let grant = DataBackend::grant(&backend, target, &mount.root)?;
     grant.validate_offline_media(&raw, expected)?;
     let result = read(&grant);
     mount.validate()?;
-    if !witness::matches(&mount.root, expected, &mount.partition)? {
-        return Err(changed("Protected pending filesystem witness changed"));
+    if !proof::matches(&mount.root, expected, &mount.partition)? {
+        return Err(changed("Protected pending filesystem proof changed"));
     }
     grant.validate_offline_media(&raw, expected)?;
     drop(grant);

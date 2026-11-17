@@ -103,7 +103,7 @@ struct Session {
     lifetimes: Mutex<Vec<Lifetime>>,
     workers: Weak<crate::operations::WorkerQueue>,
     pub(super) mutation_active: AtomicBool,
-    removal: Mutex<Option<Arc<removal::RemovalCustody>>>,
+    removal: Mutex<Option<Arc<removal::RemovalOwnership>>>,
 }
 
 struct SessionCall<'a> {
@@ -1230,7 +1230,7 @@ fn open_pinned(
         #[cfg(target_os = "linux")]
         Err(rustix::io::Errno::ACCESS) => {
             // A readable parent can enumerate an unreadable child. Hold metadata
-            // custody only: O_PATH cannot read or write bytes. All editable opens
+            // ownership only: O_PATH cannot read or write bytes. All editable opens
             // still use explicit native parent rights and RDONLY/WRONLY/RDWR.
             validate()?;
             let mut metadata_flags = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC;

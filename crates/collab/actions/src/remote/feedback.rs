@@ -37,7 +37,7 @@ pub struct FeedbackAdmission {
     pub owner_device: String,
     pub reporter_user: String,
     pub reporter_device: String,
-    pub standing: serde_json::Value,
+    pub access: serde_json::Value,
     /// The workspace's current sandbox capabilities.
     pub sandbox: serde_json::Value,
     pub unix_time: u64,
@@ -89,7 +89,7 @@ mod tests {
                 result: Err(ActionHostError::NotPermitted)
             }
         ));
-        let untrusted = serde_json::json!({"destination":{"workspace":"existing-workspace","provider":"record:so.tilo.chat:","channel":"existing-channel"},"standing":{"person":"owner"}});
+        let untrusted = serde_json::json!({"destination":{"workspace":"existing-workspace","provider":"record:so.tilo.chat:","channel":"existing-channel"},"access":{"person":"owner"}});
         assert!(serde_json::from_value::<FeedbackQuery>(untrusted).is_err());
     }
 }

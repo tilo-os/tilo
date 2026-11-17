@@ -17,7 +17,7 @@ that (HIG section 4):
 - chain: more than one " · " in a message; a row says one thing, at most a
   name and its value;
 - glyph: a separator glyph joining facts ("·", "•", "|", "—", "–" or " / "
-  between values) or a unicode symbol standing in for an icon (an arrow, a
+  between values) or a unicode symbol access in for an icon (an arrow, a
   check mark, a cross, a dot, a star). Separate facts are separate
   components: a secondary line, `ui::widget::Facts`, a property list, key
   hints with drawn keycaps; icons come from `ui::icons`

@@ -120,7 +120,7 @@ impl super::App {
                 None => Ok(()),
             });
         // A denied explicit job scope is permanently retired. Other admitted
-        // jobs retain their own custody and continue independently.
+        // jobs retain their own ownership and continue independently.
         result
     }
 }

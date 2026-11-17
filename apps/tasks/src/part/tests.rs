@@ -699,8 +699,8 @@ impl Task {
         self.held().work.unwrap_or_default()
     }
 
-    fn standing(&self) -> crate::model::Standing {
-        crate::model::standing(&self.held())
+    fn task_state(&self) -> crate::model::TaskState {
+        crate::model::task_state(&self.held())
     }
 
     /// What asks the agent at `now_ms`, read from the record alone, as a host
@@ -724,7 +724,7 @@ fn reply_wait() -> crate::model::WaitFor {
 /// days are over; a reader that holds only the record reads the same asks.
 #[test]
 fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
-    use crate::model::{Asked, Standing};
+    use crate::model::{Asked, TaskState};
     let until = 2_000 + 2 * DAY_MS;
     let waiting = || {
         let mut task = Task::given();
@@ -758,8 +758,8 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
     // On the reply.
     let mut task = waiting();
     assert_eq!(
-        task.standing(),
-        Standing::Waiting {
+        task.task_state(),
+        TaskState::Waiting {
             what: vec!["a reply from the supplier".into()],
             until_ms: until
         }
@@ -782,8 +782,8 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
     assert_eq!(asked[0].words, "the supplier replied");
     assert_eq!(asked[0].person, ui::tilo_resource::MemberId::person("ada"));
     assert_eq!(
-        task.standing(),
-        Standing::Working,
+        task.task_state(),
+        TaskState::Working,
         "it no longer reads as waiting"
     );
     task.begins(2_002 + DAY_MS);
@@ -808,7 +808,11 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
     assert_eq!(asked[0].asked, Asked::WaitEnded);
     assert_eq!(asked[0].cause, format!("waited-{until}"));
     task.begins(until + 5);
-    assert_eq!(task.standing(), Standing::Working, "the run ended the wait");
+    assert_eq!(
+        task.task_state(),
+        TaskState::Working,
+        "the run ended the wait"
+    );
     assert_eq!(task.work().until_ms, None);
     task.says(until + 6, "No reply came: I wrote again.");
     assert!(task.asks(until + DAY_MS).is_empty(), "answered once");
@@ -819,7 +823,7 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
 /// in a row the task stops and says so: it never reads as done.
 #[test]
 fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done() {
-    use crate::model::{Asked, MOST_LOST_RUNS, Standing, StoppedWhy};
+    use crate::model::{Asked, MOST_LOST_RUNS, StoppedWhy, TaskState};
     // Lost after it began to wait: the wait still holds.
     let mut task = Task::given();
     task.begins(2_000);
@@ -858,9 +862,9 @@ fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done(
         }),
     )
     .unwrap();
-    let read = task.standing();
+    let read = task.task_state();
     assert!(
-        matches!(&read, Standing::Stopped { why: StoppedWhy::LostWorker, words } if words.contains("interrupted")),
+        matches!(&read, TaskState::Stopped { why: StoppedWhy::LostWorker, words } if words.contains("interrupted")),
         "{read:?}"
     );
     assert!(!read.resolved(), "work that lost its worker is not done");
@@ -879,7 +883,7 @@ fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done(
         }),
     )
     .unwrap();
-    assert!(matches!(task.standing(), Standing::Stopped { .. }));
+    assert!(matches!(task.task_state(), TaskState::Stopped { .. }));
     task.agent_does(
         3_600,
         IssuePart::PLACE.with(issue_part::Place {
@@ -905,14 +909,14 @@ fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done(
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert_eq!(asked[0].asked, Asked::Message);
     task.begins(5_002);
-    assert_eq!(task.standing(), Standing::Working);
+    assert_eq!(task.task_state(), TaskState::Working);
 }
 
 /// A budget is its person's to raise. Once it is spent the task stops with a
 /// plain line, does not read as done, and goes on only after it was raised.
 #[test]
 fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
-    use crate::model::{Asked, BudgetBy, Standing, StoppedWhy};
+    use crate::model::{Asked, BudgetBy, StoppedWhy, TaskState};
     let mut task = Task::given();
     let issue = task.issue.clone();
     let budget = |money_micros: Option<u64>, time_ms: Option<u64>| {
@@ -958,9 +962,9 @@ fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
     )
     .unwrap();
     task.says(2_700, "I stopped: this task's budget of $2.00 is spent.");
-    let read = task.standing();
+    let read = task.task_state();
     assert!(
-        matches!(&read, Standing::Stopped { why: StoppedWhy::Budget, words } if words.contains("$2.00")),
+        matches!(&read, TaskState::Stopped { why: StoppedWhy::Budget, words } if words.contains("$2.00")),
         "{read:?}"
     );
     assert!(
@@ -985,7 +989,7 @@ fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
     let asked = task.asks(3_400);
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert_eq!(asked[0].asked, Asked::Resumed);
-    assert!(!matches!(task.standing(), Standing::Stopped { .. }));
+    assert!(!matches!(task.task_state(), TaskState::Stopped { .. }));
 }
 
 /// An agent gives an issue for the one person it acts for; an issue it filed
@@ -1015,8 +1019,8 @@ fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_the
         .clone();
     assert!(asks(&agent).is_empty(), "nobody asked for it yet");
     assert_eq!(
-        crate::model::standing(agent.state().unwrap().issues.get(&proposal).unwrap()),
-        crate::model::Standing::UpNext
+        crate::model::task_state(agent.state().unwrap().issues.get(&proposal).unwrap()),
+        crate::model::TaskState::UpNext
     );
     // The nod: its person gives it to the agent it is with.
     let mut ada = agent.fork().as_author("ada");

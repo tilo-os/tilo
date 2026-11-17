@@ -11,7 +11,7 @@ use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_peer_state::join::Role;
 use tilo_relay_protocol::AuthenticatedPeer;
-use tilo_relay_protocol::operator::WaitListStanding;
+use tilo_relay_protocol::operator::WaitListStatus;
 use tilo_relay_protocol::voice::{CallOperation, CallState};
 use tilo_relay_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
@@ -252,8 +252,8 @@ async fn bo_confirmed_beside_cy(
         "unconfirmed is hidden"
     );
     assert_eq!(
-        workspaces.wait_list_standing(workspace, [0x0b; 32]).await,
-        Ok(WaitListStanding::Pending)
+        workspaces.wait_list_state(workspace, [0x0b; 32]).await,
+        Ok(WaitListStatus::Pending)
     );
     assert_eq!(
         workspaces.confirm_wait_list(workspace, [0xee; 32]).await,
@@ -333,8 +333,8 @@ async fn the_address_is_invited_and_mailed(
             && now[1].invited_at_ns.is_none()
     );
     assert_eq!(
-        workspaces.wait_list_standing(workspace, [0x0b; 32]).await,
-        Ok(WaitListStanding::Invited)
+        workspaces.wait_list_state(workspace, [0x0b; 32]).await,
+        Ok(WaitListStatus::Invited)
     );
 
     // A relay whose operator sends no mail mails nothing.
@@ -383,9 +383,9 @@ async fn the_address_is_invited_and_mailed(
     assert_eq!(link, "https://entry.example/?invite=AAEC");
     assert_eq!(
         workspaces
-            .wait_list_standing(workspace, digest(&removal))
+            .wait_list_state(workspace, digest(&removal))
             .await,
-        Ok(WaitListStanding::Invited),
+        Ok(WaitListStatus::Invited),
         "the mail's removal link names the entry"
     );
     // Not twice within minutes.
@@ -427,8 +427,8 @@ async fn joining_takes_it_off_the_list(
         ["cy@example.org"]
     );
     assert_eq!(
-        workspaces.wait_list_standing(workspace, [0x0b; 32]).await,
-        Ok(WaitListStanding::Gone)
+        workspaces.wait_list_state(workspace, [0x0b; 32]).await,
+        Ok(WaitListStatus::Gone)
     );
 }
 
@@ -660,10 +660,10 @@ async fn assert_pending_removal_contact_digest(workspaces: &Workspaces) {
     );
     assert_eq!(
         workspaces
-            .wait_list_standing(&workspace, [1; 32])
+            .wait_list_state(&workspace, [1; 32])
             .await
             .unwrap(),
-        tilo_relay_protocol::operator::WaitListStanding::Gone
+        tilo_relay_protocol::operator::WaitListStatus::Gone
     );
 }
 

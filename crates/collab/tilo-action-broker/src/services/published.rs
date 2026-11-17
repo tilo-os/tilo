@@ -3,7 +3,7 @@
 //! A session's services — a catalogue of resources, each read and invoked —
 //! live in the session's process, on the session's own thread, which is the
 //! only thread that may touch them. An app is another process on the other
-//! side of the collaboration wire. This trait is the seam between them:
+//! side of the collaboration wire. This trait is the boundary between them:
 //! the broker answers an app's `Snapshot`, `Watch` and `Invoke` by asking the
 //! provider, and the provider answers on the session's thread.
 //!

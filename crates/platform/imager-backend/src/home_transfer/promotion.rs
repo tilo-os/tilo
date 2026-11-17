@@ -1,5 +1,5 @@
 //! Non-overwriting adoption of a verified home quarantine: existing target contents and selected
-//! Tilo custody survive, and every retained item has a receipt.
+//! Tilo ownership survive, and every retained item has a receipt.
 use super::super::{
     destination_security,
     migration::{OwnedTemporary, PinnedDirectory, changed},
@@ -48,7 +48,7 @@ mod structure;
 #[cfg(test)]
 mod tests;
 mod tree;
-pub use recovery::AdoptionWitness;
+pub use recovery::AdoptionProof;
 use storage::{Row, Sequence, Store};
 const MAX: usize = 64 * 1024 * 1024;
 // Atomic replacement keeps the current durable journal while its successor is written and synced;
@@ -64,7 +64,7 @@ struct Entry {
     parent_mode: u32,
     kind: Kind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    seed: Option<seeds::Witness>,
+    seed: Option<seeds::RecoveryBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     structure: Option<Sequence<structure::Item>>,
 }
@@ -73,7 +73,7 @@ struct Entry {
 enum Kind {
     Move,
     Collision { target: Fact },
-    InactiveCustody,
+    InactiveOwnership,
     MergedDirectory { target: Fact },
 }
 #[derive(Clone, Serialize)]
@@ -100,7 +100,7 @@ pub struct PromotionReview {
 pub struct PromotionReport {
     pub installed: Paths,
     pub collisions: Paths,
-    pub inactive_custody: Paths,
+    pub inactive_ownership: Paths,
     pub merged_directories: Paths,
     pub failed: Vec<(PathBuf, String)>,
     pub cancelled: bool,
@@ -236,8 +236,8 @@ fn roots(
             "Home adoption needs distinct private roots on the same filesystem and a journal outside quarantine",
         ));
     }
-    for custody in [".config/tilo", ".local/state/tilo"] {
-        let pin = parent(&home, Path::new(custody))?;
+    for ownership in [".config/tilo", ".local/state/tilo"] {
+        let pin = parent(&home, Path::new(ownership))?;
         destination_security::check_private_file(&pin.file)?;
     }
     Ok((quarantine, home, journal))
@@ -580,9 +580,9 @@ fn process(
             }
             Ok(())
         }
-        Kind::InactiveCustody => {
+        Kind::InactiveOwnership => {
             if tree::fact_in(&source, name, &path, &entry.items.store(), cancel)? != entry.fact {
-                return Err(changed("Retained identity or setup custody changed"));
+                return Err(changed("Retained identity or setup ownership changed"));
             }
             Ok(())
         }
@@ -776,18 +776,18 @@ fn validate_plan(plan: &Plan) -> io::Result<()> {
         }
         if let Some(seed) = &entry.seed {
             if !matches!(entry.kind, Kind::Move) {
-                return Err(changed("Generated seed witness requires an adoption move"));
+                return Err(changed("Generated seed proof requires an adoption move"));
             }
-            seeds::validate_witness(&path, seed)?;
+            seeds::validate_proof(&path, seed)?;
         }
         if entry.parent_mode > 0o777 || entry.fact.mode > 0o777 || entry.items.len() > ENTRIES {
             return Err(changed("Invalid adoption permissions or item bounds"));
         }
-        if matches!(entry.kind, Kind::InactiveCustody)
+        if matches!(entry.kind, Kind::InactiveOwnership)
             && path != Path::new(".config/tilo")
             && path != Path::new(".local/state/tilo")
         {
-            return Err(changed("Invalid inactive custody receipt"));
+            return Err(changed("Invalid inactive ownership receipt"));
         }
         if entry.items.is_empty() {
             return Err(changed("Adoption receipt omits its root item"));
@@ -825,7 +825,7 @@ struct CachedEntry {
     items: storage::Range,
     parent_mode: u32,
     kind: Kind,
-    seed: Option<seeds::Witness>,
+    seed: Option<seeds::RecoveryBinding>,
     structure: Option<storage::Range>,
 }
 impl Row for Entry {

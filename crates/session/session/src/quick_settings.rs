@@ -192,11 +192,11 @@ impl crate::Session {
         self.follow_panel_back();
         let open = self.shared.overlays.is_open(Part::QuickSettings);
         let place = self.shared.overlays.place(Part::QuickSettings);
-        if let Some(standing) = place {
+        if let Some(placement) = place {
             // Where the stack places it, and the most room it has there, resting against the edge
             // of that room the stack chose: below the caret's line, or above it. Down, it keeps
             // the last place, so it leaves from where it stood.
-            self.stand_layer(SURFACE_NAMESPACE, &standing);
+            self.stand_layer(SURFACE_NAMESPACE, &placement);
         }
         // Where it stands is as tall as its page: what a press outside it is judged by. A surface
         // still drawing the frame it fits takes no press until the person sees it.
@@ -218,7 +218,7 @@ impl crate::Session {
         self.quick_settings_panel.follow(
             open,
             visible,
-            place.map(|standing| (stands.unwrap_or(standing.room), standing.from)),
+            place.map(|placement| (stands.unwrap_or(placement.room), placement.from)),
         );
         if !open || place.is_none() {
             // Down, or up where the stack cannot say: nothing shows, and its app runs on hidden, so
@@ -450,9 +450,9 @@ impl crate::Session {
     pub(crate) fn stand_layer(
         &mut self,
         namespace: &str,
-        standing: &tilo_desktop::overlays::Standing,
+        placement: &tilo_desktop::overlays::Placement,
     ) {
-        let room = standing.room;
+        let room = placement.room;
         self.compositor.place_layer_in(
             namespace,
             Some((
@@ -461,7 +461,7 @@ impl crate::Session {
                 offset(room.width()).max(1),
                 offset(room.height()).max(1),
             )),
-            standing.rests_at_bottom,
+            placement.rests_at_bottom,
         );
     }
 }

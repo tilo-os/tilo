@@ -134,7 +134,7 @@ fn reopening_guided_installer_recovers_exact_name_photo_and_signer_only_after_ex
     let mut original = App::launched(&["--setup"]).unwrap();
     let identity = prepare(&mut original, &picture);
     let metadata = identity.metadata().unwrap();
-    let identity_directory = identity.custody_directory().to_owned();
+    let identity_directory = identity.ownership_directory().to_owned();
     let bytes = std::fs::read(identity_directory.join("primary.json")).unwrap();
     let signer = runtime_identity::load_from_path(identity_directory.join("primary.json")).unwrap();
     let signature = signer.sign(b"restart verification").unwrap();
@@ -420,7 +420,7 @@ fn resumed_draft_without_account_checkpoint_requires_review_before_bulk_import()
         .unwrap();
     assert!(secret.password.is_empty());
     assert_eq!(
-        account_custody::password_credential(&secret).as_str(),
+        account_credentials::password_credential(&secret).as_str(),
         "fixture-app-password"
     );
     assert_eq!(read(&mut resumed)["page"], "accounts");

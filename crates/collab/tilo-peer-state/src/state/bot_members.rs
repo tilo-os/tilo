@@ -16,7 +16,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::delegates::{GovernedDelegateRow, holds_no_power};
 use super::{
-    GovernedIdentity, Standing, StatePeer, SystemTime, err, governed_map, now_ns, person_of,
+    GovernedIdentity, MemberAccess, StatePeer, SystemTime, err, governed_map, now_ns, person_of,
 };
 use crate::installation::Installation;
 use crate::workspace_membership::{BotDevice, BotInstall, BotRenewal};
@@ -436,7 +436,7 @@ impl StatePeer {
                 &shortcut.grant,
             )
             .map_err(|error| error.to_string())?;
-            let asking = tilo_action_policy::Standing::person(
+            let asking = tilo_action_policy::MemberAccess::person(
                 member.policy.clone(),
                 person_of(&member)?.to_owned(),
             );
@@ -613,7 +613,7 @@ impl StatePeer {
         caller: &DeviceCert,
         action: &str,
         now: SystemTime,
-    ) -> Result<Standing, String> {
+    ) -> Result<MemberAccess, String> {
         let member = self.membership(caller.device_public_key, now)?;
         member
             .policy
@@ -786,7 +786,7 @@ fn program_grants(
     )
     .map_err(|error| error.to_string())?;
     // Nobody hands a bot more than its installer holds right now.
-    let installer = tilo_action_policy::Standing::person(policy.clone(), installed_by.clone());
+    let installer = tilo_action_policy::MemberAccess::person(policy.clone(), installed_by.clone());
     let authority = installer.authority();
     for grant in &grants {
         WorkspacePolicy::check_within(&authority, grant, cx)

@@ -274,7 +274,7 @@ fn what_no_answer_places_under_a_name_two_places_share_says_its_device_is_not_kn
         "message": "POST https://orders.test", "url": PAGE,
         "to_url": "https://orders.test"});
     engine.set_page_data(
-        "ledger",
+        "log",
         json!({"entries": [field_filled(1, MEMBER, "Given names"), held],
             "next": 2, "more": false, "dropped": 0, "waiting": 0}),
     );

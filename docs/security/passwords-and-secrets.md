@@ -15,16 +15,16 @@ buffer is cleared when dropped.
 
 The vault is XChaCha20-Poly1305 sealed with a fresh random nonce per write.
 `tilo-secret-vault` owns the envelope and migration format; `tilo-secrets` is its
-shared platform key-custody API (Secret Service on Linux, Keychain on macOS,
+shared platform key-ownership API (Secret Service on Linux, Keychain on macOS,
 WebCrypto-wrapped IndexedDB on the web). Windows accounts retain their DPAPI
-custody. Existing accounts vault paths, key names and encrypted entries are
+ownership. Existing accounts vault paths, key names and encrypted entries are
 preserved. An unavailable or damaged existing key never authorizes replacement.
 
 The person's accounts vault and the handoff credentials beside it have one
-custody on every host Tilo runs on: the platform's secret store (the Secret
+ownership on every host Tilo runs on: the platform's secret store (the Secret
 Service on Linux, the Keychain on macOS) where it answers, otherwise an
 owner-only `vault.key` beside the ciphertext, and
-`SecretVault::custody()` reports which so the UI never calls a key file a
+`SecretVault::ownership()` reports which so the UI never calls a key file a
 keyring. An owner-only key left by that fallback migrates into the secret store,
 after a verified round trip, once it answers. `SecretVault::open_in` opens a
 store of someone else's root (a capture, an imported copy, a test's) under its
@@ -52,10 +52,10 @@ for explicit adoption; they must not infer it from a newly edited profile.
 Adoption and old-entry removal share one vault write; retries preserve a newer
 bound entry. No second provider vault is created.
 
-Use `tilo_secrets::SecretStore::for_app` for platform-owned custody material.
+Use `tilo_secrets::SecretStore::for_app` for platform-owned ownership material.
 Both native and browser callers have async `get`, `put` and `delete`; secrets are
 zeroized on Rust drop. `SecretStore::with_backend` accepts a host's `SecretBackend`, for
-example a lightweight backend that keeps custody outside its web frontend. Such
+example a lightweight backend that keeps ownership outside its web frontend. Such
 a backend must authenticate the caller, authorize its app namespace and use
 protected storage; the storage trait itself is not an authorization protocol.
 There is no plaintext-file, localStorage or network fallback.
@@ -71,7 +71,7 @@ keyring. It requires WebCrypto and Web Locks for writes, and reports failures
 rather than selecting weaker storage. Non-extractable keys prevent ordinary key
 export, but do not defend against scripts in the same origin, a compromised
 browser, or an attacker controlling the browser profile. Do not equate this with
-hardware-backed key custody.
+hardware-backed key storage.
 
 Browser hosts using blocking accounts APIs must await
 `tilo_secrets::web::mirror()` before mounting consumers and await
@@ -86,7 +86,7 @@ Accounts page edits use an encrypted JSON inventory in the same durable secret
 backend. The entire reload/compare/merge/write holds the app's Web Lock, not just
 key creation. Existing encrypted page files seed migration only when that
 inventory is absent; unrelated entries survive. Each changed entry carries its
-original value, so stale conflicting edits fail without replacing custody.
+original value, so stale conflicting edits fail without replacing ownership.
 The synchronous save reports pending until the transaction commits: retain the
 draft and retry the same save after browser storage completes. Only an
 acknowledged save may publish dependent metadata. Storage failures require
@@ -108,14 +108,14 @@ same-key edit fails and requires reopening, rather than overwriting a changed
 origin binding or resurrecting a removed credential. Atomic file replacement
 alone is not sufficient for a whole-inventory transaction.
 
-## Account secrets for sandboxed apps: the session is the custodian
+## Account secrets for sandboxed apps: the session is the owner
 
 A sandboxed app never opens the person's account vault. Its config root is
 its own app directory, the vault's files are outside the sandbox, and the key
-custody that seals them (the Secret Service, or `TILO_SECRETS_DIR` on a
+ownership that seals them (the Secret Service, or `TILO_SECRETS_DIR` on a
 headless machine) is outside it too: the app's D-Bus proxy passes portals
 only, and the sandbox environment is cleared. The session process holds the
-person's vault under session custody and is the one custodian.
+person's vault under session ownership and is the one owner.
 
 Apps reach it with one request shape on their own certified route
 (`runtime_collab::BrowserServiceSessionCommand`, the channel method that also
@@ -135,7 +135,7 @@ agent or host connection.
   email), only for an enabled account in the person's accounts. The app
   keeps it in memory for signing in and never writes it anywhere.
 
-Custody does not sign in for the app: Mail's IMAP and SMTP sessions run in
+Ownership does not sign in for the app: Mail's IMAP and SMTP sessions run in
 Mail, so a password account's secret is released to it. Each seal and release
 is logged by the session with the account and app, never the value.
 
@@ -145,14 +145,14 @@ directly.
 
 ## Remaining consumer migrations
 
-Mail, Calendar and system account custody use `accounts::AccountCredentials`,
+Mail, Calendar and system account credentials use `accounts::AccountCredentials`,
 the shared account-owner facade alongside `ServiceCredentials`. It adopts legacy
 account-ID password and OAuth entries in place, without copying or renaming them;
 Settings can still edit passwords, refresh grants and remove credentials at the
-canonical key. Custody refresh tokens are system-owned grants, not interactive
+canonical key. Ownership refresh tokens are system-owned grants, not interactive
 password-manager disclosures, and are not forced through Passwords consent.
 Only trusted account owners and refreshers may use this facade. Opening damaged
-or unavailable custody returns an error; writes retain the sealed vault's atomic,
+or unavailable ownership returns an error; writes retain the sealed vault's atomic,
 locked, conflict-checked persistence. Secrets never enter account JSON, CRDT
 state, debug output or logs. The low-level `SecretVault` API stays public for
 Settings, recovery and adapters not yet migrated. Runtime channel and identity stores already

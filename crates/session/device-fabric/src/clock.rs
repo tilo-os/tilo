@@ -48,7 +48,7 @@ pub const CLOCK_SYNC_DEADLINE: Duration = Duration::from_secs(5);
 const CLOCK_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 /// Probes awaiting a report per peer: enough that the slowest usable round
 /// trip still completes at the synchronised cadence.
-const MAX_OUTSTANDING_CLOCK_PROBES: usize = 8;
+const MAX_OUTACCESS_CLOCK_PROBES: usize = 8;
 
 /// Round trips kept per peer. At the 4 Hz synchronised cadence this spans a
 /// minute, long enough to resolve skew to a few ppm.
@@ -575,7 +575,7 @@ impl FabricClockCore {
                 continue;
             }
             let outstanding = self.pending.entry(peer.clone()).or_default();
-            if outstanding.len() >= MAX_OUTSTANDING_CLOCK_PROBES {
+            if outstanding.len() >= MAX_OUTACCESS_CLOCK_PROBES {
                 outstanding.pop_front();
             }
             outstanding.push_back(PendingClockProbe {

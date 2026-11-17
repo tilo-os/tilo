@@ -708,7 +708,7 @@ d-st426t4p = A front workspace
 d-st426t4p-name = Name
 
 d-ztflhbbf = A strip
-    .doc = Adds a strip named `name` to `row`, standing at `width`, and returns its key.
+    .doc = Adds a strip named `name` to `row`, access at `width`, and returns its key.
 
 d-ztflhbbf-row = Row
 

@@ -33,7 +33,7 @@ size of its own, until it is dragged back into a gap or snapped back.
 Every input device says the same three things:
 
 1. **Direction is spatial.** ←/→ is the window axis, ↑/↓ the strip axis, and
-   both keep their meaning across a display seam. Spatial moves clamp at the
+   both keep their meaning across a display border. Spatial moves clamp at the
    ends; lists (Alt+Tab, overview rows) wrap. A move never spills into the next
    level: Super+→ on the last window does not switch workspace.
 2. **The level is a modifier, or a finger count.** Plain Super+← / → walks the
@@ -103,7 +103,7 @@ and Shift+F10 keys continue to reach the app's resource menu.
 
 | Operation | Relative action | Keyboard | Touch and pointer | Status |
 |---|---|---|---|---|
-| One slot left / right, walking across a display seam | `group.move-left` / `-right` | Super+Shift+← / → | drag the tab-bar ground into a gap | today within a display |
+| One slot left / right, walking across a display border | `group.move-left` / `-right` | Super+Shift+← / → | drag the tab-bar ground into a gap | today within a display |
 | To the strip above / below | `group.move-to-strip-previous` / `-next` | Shift+Ctrl+Super+↑ / ↓ | drag onto another strip | today, except the drag |
 | To a strip chosen by name | `group.move-to-strip` (`strip`) | — | the window menu's Move to strip | today |
 | To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Super+Shift+PageUp / PageDown | — | planned; one tab today via `tab.move-to-workspace` |
@@ -202,7 +202,7 @@ area at least 24 px wide under touch.
 - **Tab-bar ground** (the empty part of the bar): drag moves the whole group to
   the same targets; double-click maximizes.
 - **Either edge of a window**: drag resizes that window, and only it; Shift
-  trades width with the window across the seam. See
+  trades width with the window across the border. See
   [Resizing a window](#resizing-a-window).
 - **Super + drag** anywhere on a window moves its group; Super + right-drag
   resizes it. Super chords are shell-owned, so no app loses a binding.
@@ -217,22 +217,22 @@ area at least 24 px wide under touch.
 
 The strip is infinitely wide, so resizing is never zero-sum unless the person
 asks for it. One rule decides every case, and the code holds it in one place,
-`crates/sdk/ui-core/src/widget/edge_resize.rs`: `seam_owner` says whose edge a
+`crates/sdk/ui-core/src/widget/edge_resize.rs`: `border_owner` says whose edge a
 point is, `EdgeDrag::resize` says what a drag sets. The row
 (`group_row_edges.rs`) only feeds them geometry: the hover highlight, the press
 and every frame of the drag ask the same two functions.
 
 - **You resize the window whose edge you grab, and only that window.** Every
-  window owns both of its edges. The seam between two windows (each one's
+  window owns both of its edges. The border between two windows (each one's
   6 px grip plus the 8 px gap) is split down the middle, each half being the
   edge of the window it touches, except that **the focused window owns the
-  whole seam**: the seam is too small to aim at halves, and the window you are
+  whole border**: the border is too small to aim at halves, and the window you are
   working in is the one you mean. Grabbing Files' left edge, where it meets a
   terminal, resizes Files when Files is the window in use, wherever on the
-  seam the press lands.
+  border the press lands.
 - **Before pressing**, the edge of the window that will change shows its grip
-  (with Shift held, both windows' grips at that seam), and the pointer shows
-  the resize cursor. The seam's own rule never lights up, so it never suggests
+  (with Shift held, both windows' grips at that border), and the pointer shows
+  the resize cursor. The border's own rule never lights up, so it never suggests
   that the gap or both windows move.
 - **A plain drag** changes only the grabbed window. Its width follows the
   pointer 1:1, in whole pixels, and its *opposite* edge holds still on screen.
@@ -240,7 +240,7 @@ and every frame of the drag ask the same two functions.
   a left edge left pans the strip by what the window grew, so the windows
   before it slide away and its right edge stays put. No other window changes
   size.
-- **Shift+drag** is zero-sum between the two windows at that seam: what one
+- **Shift+drag** is zero-sum between the two windows at that border: what one
   gains the other loses, both outer edges stay put. On an outer edge there is
   no one to trade with, and it is a plain drag. Shift is read at the press.
 - **Limits stop the edge** and nothing else makes up for it. The narrowest a
@@ -295,16 +295,16 @@ Pinned by `edge_resize.rs`'s unit tests (the rule), `group_row.rs`'s row
 tests (hover highlight, push, Shift, limits, cancel, auto-scroll) and the
 pointer tests in `crates/session/session/tests/`.
 
-**Why it kept regressing.** Seam ownership used to be nobody's decision. The
-seam handle was keyed to its left neighbour (its drag set "left width + dx"),
+**Why it kept regressing.** Border ownership used to be nobody's decision. The
+border handle was keyed to its left neighbour (its drag set "left width + dx"),
 so the infinite-strip change of 2026-09-20 kept only the left window moving,
 and the 2026-10-12 change that added leading edges wrote that down as the
-rule ("the seam is the first window's trailing edge") and pinned it in a test
+rule ("the border is the first window's trailing edge") and pinned it in a test
 (`[40, 0, 0]` for the middle window's left edge). Each fix stacked another hit
-target (window grips, a leading grip only at a lane's start, the seam), and
+target (window grips, a leading grip only at a lane's start, the border), and
 which window moved fell out of dispatch order. The same handle drag also left
 the strip's re-framing on, so the pan moved under the pointer. Now the owner
-is decided by a named function with tests per case, the seam widget resizes
+is decided by a named function with tests per case, the border widget resizes
 nothing, and the user's words are pinned.
 
 ## Where things open

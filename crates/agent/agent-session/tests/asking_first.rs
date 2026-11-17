@@ -1,7 +1,7 @@
 //! An agent never confirms by its own word. Over the real session, a task
 //! step whose action asks a person first is put to the person through their
 //! own host (`ActionHost::confirm`) while the agent shows it is waiting; it
-//! runs only on the person's witnessed answer, and is refused when nobody
+//! runs only on the person's approved answer, and is refused when nobody
 //! is there to ask or the person says no.
 
 #![allow(
@@ -214,9 +214,9 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     );
 
     // 2. The person's host is asked, the agent shows it is waiting, and the
-    // step runs once the person's device witnessed it.
+    // step runs once the person's device approved it.
     let person = Arc::new(PersonHost::default());
-    control.set_witness(Some(person.clone()));
+    control.set_approver(Some(person.clone()));
     control.message(&shelve_then_remove()).unwrap();
     let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| !person.asked.lock().unwrap().is_empty());
@@ -243,7 +243,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         control.activity()
     );
     assert_eq!(last_task(&control).state, TaskState::Running);
-    person.answer(Ok(Confirmation::Witnessed("from Ada's device".into())));
+    person.answer(Ok(Confirmation::Approved("from Ada's device".into())));
     until_done(&mut agent, &control);
     let confirmed = last_task(&control);
     assert_eq!(confirmed.state, TaskState::Completed, "{confirmed:?}");

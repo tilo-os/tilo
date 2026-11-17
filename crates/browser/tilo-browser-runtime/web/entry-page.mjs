@@ -25,9 +25,9 @@ import {mountWaitList} from './wait-list.mjs';
 import {handToNativeHost} from './native-host.mjs';
 import {boot, grammar} from './entry.mjs';
 import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';
-import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
+import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withDeviceKey} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
-import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
@@ -1165,10 +1165,10 @@ export async function startEntryPage({mode}) {
       const paired = remembering(() => keptMembership({host: {origin}}));
       if (paired?.paired) {
         const profile = identityProfile(paired, paired.origin);
-        const custody = await openDeviceCustody({profile, storage: idbStorage(), requireExisting: true});
+        const deviceKey = await openDeviceKey({profile, storage: idbStorage(), requireExisting: true});
         displayName = chosenDisplayName(paired.userPublicKey) ?? defaultDisplayName(paired.userPublicKey);
-        return withCustody(custody, () => connectPeer({origin, workspace, userPublicKey: paired.userPublicKey,
-          profile, custody, displayName, runtime, requireExistingCertificate: true}));
+        return withDeviceKey(deviceKey, () => connectPeer({origin, workspace, userPublicKey: paired.userPublicKey,
+          profile, deviceKey, displayName, runtime, requireExistingCertificate: true}));
       }
       const identity = currentIdentity() ?? await browserIdentity({create: false});
       const kept = identity && hostToReconnect(origin, identity.userPublicKey);
@@ -1193,14 +1193,14 @@ export async function startEntryPage({mode}) {
       // enters through the workspace's entry on its session, which lets a
       // device it admitted straight back in and admits any other device of
       // a member at the part the person holds.
-      const custody = await openDeviceCustody({profile: identityProfile(identity, origin), storage: idbStorage()});
+      const deviceKey = await openDeviceKey({profile: identityProfile(identity, origin), storage: idbStorage()});
       if (!kept.owner) {
         const entry = new URL(`directory/${workspace}/`, `${origin}/`).href;
-        const entered = await withCustody(custody, () => joinWorkspace({origin, entry, identity, runtime, displayName, custody}));
+        const entered = await withDeviceKey(deviceKey, () => joinWorkspace({origin, entry, identity, runtime, displayName, deviceKey}));
         keepJoinedHost({origin, workspace, userPublicKey: identity.userPublicKey});
         return entered;
       }
-      const peer = await withCustody(custody, () => connectPeer({origin, workspace, identity, runtime, displayName, custody}));
+      const peer = await withDeviceKey(deviceKey, () => connectPeer({origin, workspace, identity, runtime, displayName, deviceKey}));
       // What is kept names the workspace the host's entry let this browser
       // into (`keepJoinedHost`): reconnecting to another of the host's
       // workspaces, such as the person's own, leaves it as it is.
@@ -1264,11 +1264,11 @@ export async function startEntryPage({mode}) {
     },
     connectMember: async ({origin, workspace, account}) => {
       const {userPublicKey, profile, device} = account;
-      const custody = await openDeviceCustody({profile, storage: idbStorage(), requireExisting: true});
+      const deviceKey = await openDeviceKey({profile, storage: idbStorage(), requireExisting: true});
       // The account names the profile's first device; a tab that took
       // another of its device keys is that device, with its own namespace.
-      return withCustody(custody, () => connectPeer({origin, workspace, userPublicKey, profile, custody,
-        device: custody.slot ? profileDevice(profile, globalThis.localStorage, custody.slot) : device,
+      return withDeviceKey(deviceKey, () => connectPeer({origin, workspace, userPublicKey, profile, deviceKey,
+        device: deviceKey.slot ? profileDevice(profile, globalThis.localStorage, deviceKey.slot) : device,
         runtime, requireExistingCertificate: true}));
     },
   };
@@ -1652,7 +1652,7 @@ export async function startEntryPage({mode}) {
     const known = admitting && remembering(() => rememberedWorkspace(admitting.scope));
     // A declined or unusable invitation, a damaged link or this browser's
     // device key held by another tab says nothing about the workspace.
-    const local = error?.name === 'CustodyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed', 'removed'].includes(error.code));
+    const local = error?.name === 'DeviceKeyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed', 'removed'].includes(error.code));
     // A workspace this browser was a member of: forgotten when its origin says
     // another host holds it now, and no longer reopened on a bare entry.
     const settled = known && !local ? await settleWorkspace(known, runtime) : null;

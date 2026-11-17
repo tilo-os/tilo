@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 
 use tilo_desktop_model::Layout;
-use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
+use tilo_desktop_model::commands::{DesktopCommand, Requester, may_command, may_create_workspace};
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_model::{StripId, WorkspaceId};
 
@@ -478,8 +478,8 @@ pub trait ChromeSource {
     }
     /// Place who is here in `tree`, as the active workspace's members and their presence.
     fn place_people(&self, _tree: &mut Layout) {}
-    /// Ask `answer` what this person may change here, as this host knows their standing.
-    fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R;
+    /// Ask `answer` what this person may change here, as this host knows their requester.
+    fn with_requester<R>(&self, answer: impl FnOnce(&Requester<'_>) -> R) -> R;
     /// Ask `answer` who made each strip and opened each window here.
     fn with_authors<R>(&self, answer: impl FnOnce(&mut Authors) -> R) -> R;
     /// The person's own avatar: their name, colour and identity.
@@ -705,12 +705,12 @@ impl<S: ChromeSource + ?Sized> DesktopRules for HostChrome<S> {
 
     fn may(&self, command: &DesktopCommand) -> Result<(), String> {
         self.source.with_authors(|authors| {
-            self.source.with_standing(|standing| {
+            self.source.with_requester(|requester| {
                 self.source.handle().read(|tree| {
                     let workspace = tree
                         .active_workspace()
                         .ok_or_else(|| "There is no workspace open".to_owned())?;
-                    may_command(standing, authors, workspace, command)
+                    may_command(requester, authors, workspace, command)
                         .map_err(|refusal| refusal.to_string())
                 })
             })
@@ -718,8 +718,8 @@ impl<S: ChromeSource + ?Sized> DesktopRules for HostChrome<S> {
     }
 
     fn may_create_workspace(&self) -> Result<(), String> {
-        self.source.with_standing(|standing| {
-            may_create_workspace(standing).map_err(|refusal| refusal.to_string())
+        self.source.with_requester(|requester| {
+            may_create_workspace(requester).map_err(|refusal| refusal.to_string())
         })
     }
 

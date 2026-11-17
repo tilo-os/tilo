@@ -63,7 +63,7 @@ impl ContentReads {
                 crate::arriving::Arriving::pending(crate::arriving::Source::Local)
             })
             .clone();
-        let now = content_standing(self.store.state(hash));
+        let now = content_arrival(self.store.state(hash));
         if arriving.with(|was| *was != now) {
             arriving.stand(now);
         }
@@ -78,7 +78,7 @@ impl ContentReads {
 }
 
 /// Where content that stands at `state` has got to, as an arrival.
-fn content_standing(state: ContentState) -> crate::arriving::Arrival<(), ContentUnavailable> {
+fn content_arrival(state: ContentState) -> crate::arriving::Arrival<(), ContentUnavailable> {
     use crate::arriving::Arrival;
     match state {
         ContentState::Resolved => Arrival::Ready(()),

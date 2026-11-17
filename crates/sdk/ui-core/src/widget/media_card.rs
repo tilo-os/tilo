@@ -1456,17 +1456,17 @@ impl Widget for MediaCard {
 }
 
 impl crate::widget::controls::ActionControls for MediaCard {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        self.activation.install_custody(domain, attachment);
+        self.activation.attach(domain, attachment);
         if let Some(hover) = self.hover_action_mut() {
-            let _ = hover.emitter.install_custody(domain, attachment);
+            let _ = hover.emitter.attach(domain, attachment);
         }
         for child in crate::widget::Widget::children_mut(self) {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 

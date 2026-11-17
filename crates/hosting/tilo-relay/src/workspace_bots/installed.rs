@@ -282,7 +282,7 @@ impl BotRunner {
                 .filter(|app| catalogue.get(app).is_some()),
         );
         let installer = hex::encode(host.user_public_key);
-        let standing = bot_standing(
+        let access = bot_access(
             &workspace,
             &installer,
             &bot.installation,
@@ -296,7 +296,7 @@ impl BotRunner {
             ReplicaActor::Bot {
                 installation: bot.installation.clone(),
                 installer: installer.clone(),
-                standing,
+                access,
             },
         )));
         let handle = tokio::runtime::Handle::current();
@@ -929,7 +929,7 @@ impl BotRunner {
 
     /// Who is in the workspace and in what role, as of now: `{"members":
     /// [{"member", "role"}]}`, removed people left out. A program reads it
-    /// to judge an outside request by the requester's standing here.
+    /// to judge an outside request by the requester's access here.
     pub(crate) async fn workspace_input(&self) -> Result<Value, String> {
         let summary = self
             .workspaces
@@ -1137,15 +1137,15 @@ fn read_progress(path: &Path) -> Result<Progress, String> {
 /// workspace's root, may, bounded to the grant its program carries (or, for a
 /// program that carries none, the one derived from its steps and
 /// triggers), and to settling its connectors' outboxes.
-fn bot_standing(
+fn bot_access(
     workspace: &str,
     installer: &str,
     installation: &str,
     shortcut: &Shortcut,
     connectors: &BTreeSet<String>,
-) -> tilo_action_policy::Standing {
+) -> tilo_action_policy::MemberAccess {
     use tilo_action_policy::{
-        Answer, Grant, Grantee, KindSet, Level, Rule, Standing, TreePath, WorkspacePolicy,
+        Answer, Grant, Grantee, KindSet, Level, MemberAccess, Rule, TreePath, WorkspacePolicy,
     };
     let bot = Grantee::bot(installation);
     let mut rules = if shortcut.grant.is_empty() {
@@ -1187,7 +1187,7 @@ fn bot_standing(
             )
         })
         .collect();
-    Standing::person(WorkspacePolicy::new(workspace, installer), installer).acting_as(
+    MemberAccess::person(WorkspacePolicy::new(workspace, installer), installer).acting_as(
         tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::bot(installation)),
         grants,
     )

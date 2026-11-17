@@ -245,7 +245,7 @@ pub struct MailApp {
     /// that keeps the accounts reads and sends here.
     #[cfg(any(test, not(feature = "live")))]
     host_mail: Option<host_mail::HostMail>,
-    custody: Option<crate::custody::SecretRelease>,
+    ownership: Option<crate::account_secrets::SecretRelease>,
     sender_pictures_seen: Option<(u64, Vec<String>)>,
     preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
     followed_preferences: crate::resource::MailPreferences,
@@ -446,8 +446,8 @@ impl MailApp {
             .config_root()
             .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
         // In a session the accounts' secrets are the session's to release;
-        let custody = crate::custody::SecretRelease::capture();
-        let accounts = match (&custody, persist.root()) {
+        let ownership = crate::account_secrets::SecretRelease::capture();
+        let accounts = match (&ownership, persist.root()) {
             (_, None) => AccountStore::new(),
             (Some(_), Some(root)) => AccountStore::load_without_secrets_in(&root),
             (None, Some(root)) => AccountStore::load_in(&root),
@@ -461,7 +461,7 @@ impl MailApp {
         let (tx, rx) = crate::engine::spawn(content.clone(), wake_through(&waker));
         let mut app = Self::assemble(shared, content, Some(EngineHandle { tx, rx }), persist);
         app.waker = waker;
-        app.custody = custody;
+        app.ownership = ownership;
         // Fetched mail is kept in the app's cache area; a host without one
         // fetches every time.
         let store = storage.files().paths().cache().native_path().map_or_else(
@@ -621,7 +621,7 @@ impl MailApp {
             person_accounts: None,
             #[cfg(any(test, not(feature = "live")))]
             host_mail: None,
-            custody: None,
+            ownership: None,
             sender_pictures_seen: None,
             preferences: None,
             followed_preferences: crate::resource::MailPreferences::default(),
@@ -2892,9 +2892,9 @@ impl MailApp {
         }
         let root = self.state().accounts_persist.root();
         if let Some(root) = root {
-            // In a session the secrets are custody's: this sandbox keeps no
+            // In a session the secrets are ownership's: this sandbox keeps no
             // vault of its own, and a released secret stays in memory.
-            if self.custody.is_none() {
+            if self.ownership.is_none() {
                 updated.keep_secrets_in(&root, &removed)?;
             }
             record.get().project_in(&root)?;
@@ -4312,7 +4312,7 @@ impl Widget for MailApp {
         // waits for `sync` to show it, then idle rather than busy-loop once
         // results have arrived.
         // `wants_older` is what the list last painted wanting (`MessageList`:
-        // the end of the rows is on screen), a standing condition rather than
+        // the end of the rows is on screen), an access condition rather than
         // news: on its own it would ask for a pass on every frame, and a pass
         // paints the end again. It asks for one only while a page is really
         // left to ask a server for, which is what `load_older` then does.

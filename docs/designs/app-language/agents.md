@@ -57,7 +57,7 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
 
 ### Reading resources outside their app
 
-A workspace's documents are sealed per app: today only a connection holding that app's launch custody
+A workspace's documents are sealed per app: today only a connection holding that app's launch ownership
 opens them. The task host is not an app, so it gets its own admission instead of borrowing one:
 
 - **Admission.** The MCP server serves the task as *the agent acting for the person* who admitted
@@ -91,7 +91,7 @@ opens them. The task host is not an app, so it gets its own admission instead of
   What the resource's origin applied for the task is kept for the task's life and put into every
   resource the task reads, so each program reads the task's earlier changes while the copy the
   server hands over still lags the origin.
-- **Changes, never writes.** The task host gets no write custody. It plans the action from the
+- **Changes, never writes.** The task host gets no write ownership. It plans the action from the
   app's package over the resource it read, for the preview only, and sends the invocation
   (action, arguments, the resource it changes, the planned writes) to the server. The broker
   decides it at the action's node for the agent acting for the person (`RecordChanges`): an

@@ -118,7 +118,7 @@ impl NativeDocumentReads for Service {
     }
 }
 
-fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
+fn context(ownership: &Arc<AtomicBool>) -> NativeDocumentReadContext {
     let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
     let mut certificate = tilo_user_identity::DeviceCert {
@@ -132,25 +132,25 @@ fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
-    let custody = Arc::clone(custody);
+    let ownership = Arc::clone(ownership);
     NativeDocumentReadContext {
         resource_type: None,
         route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", WORKSPACE, ""),
         certificate,
         revalidate: Arc::new(move || {
-            if custody.load(Ordering::Acquire) {
+            if ownership.load(Ordering::Acquire) {
                 Ok(())
             } else {
-                Err("committed read launcher custody ended".into())
+                Err("committed read launcher ownership ended".into())
             }
         }),
     }
 }
 
-/// One admitted channel: its slot, custody, budget and capture ids.
+/// One admitted channel: its slot, ownership, budget and capture ids.
 struct Channel {
     slot: Slot,
-    custody: Arc<AtomicBool>,
+    ownership: Arc<AtomicBool>,
     service: Arc<Service>,
     budget: Arc<Budget>,
     ids: AtomicU64,
@@ -163,7 +163,7 @@ impl Channel {
     fn sharing(service: &Arc<Service>, budget: &Arc<Budget>) -> Self {
         Self {
             slot: Slot::default(),
-            custody: Arc::new(AtomicBool::new(true)),
+            ownership: Arc::new(AtomicBool::new(true)),
             service: Arc::clone(service),
             budget: Arc::clone(budget),
             ids: AtomicU64::new(1),
@@ -183,7 +183,7 @@ impl Channel {
         held: Option<&HeldRevision>,
     ) -> Result<Reply, String> {
         let reading = Reading {
-            context: context(&self.custody),
+            context: context(&self.ownership),
             service: self.service.clone(),
             budget: &self.budget,
             ids: &self.ids,
@@ -403,9 +403,9 @@ fn every_piece_of_changes_is_authorized_and_a_revocation_while_editing_fails_clo
     service.edit(6);
     assert!(channel.open_changes([4; 32]).is_err());
     assert!(channel.open(Some([4; 32])).is_err());
-    // Ended custody refuses as well, even where the owner would answer.
+    // Ended ownership refuses as well, even where the owner would answer.
     service.readable.store(true, Ordering::Release);
-    channel.custody.store(false, Ordering::Release);
+    channel.ownership.store(false, Ordering::Release);
     assert!(channel.open_changes([4; 32]).is_err());
 }
 
@@ -501,9 +501,9 @@ tilo_test_env::scenario! {
             let service = Service::new(false, 3);
             let mut holder = Channel::sharing(&service, &budget);
             let held = holder.open(None).unwrap();
-            // A reader whose custody ended is refused, not queued.
+            // A reader whose ownership ended is refused, not queued.
             let mut revoked = Channel::sharing(&service, &budget);
-            revoked.custody.store(false, Ordering::Release);
+            revoked.ownership.store(false, Ordering::Release);
             assert!(revoked.open(None).is_err());
             // A reader queued behind the budget whose owner then refuses it is
             // refused once its turn comes.
@@ -535,9 +535,9 @@ tilo_test_env::scenario! {
                 assert_eq!(channel.open(None).unwrap(), Reply::Busy);
                 settle().await;
             }
-            // The first in line loses custody while it waits; the second stops
+            // The first in line loses ownership while it waits; the second stops
             // reading on its channel.
-            revoked.custody.store(false, Ordering::Release);
+            revoked.ownership.store(false, Ordering::Release);
             leaving.slot.leave();
             holder.take(&held);
             settle().await;

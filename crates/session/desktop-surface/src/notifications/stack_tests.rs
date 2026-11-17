@@ -1058,10 +1058,10 @@ tilo_test_env::scenario! {
         assert_eq!(stack.folded, stack.on_screen.last().copied());
         let log = host.log();
         for n in log.active() {
-            let standing = stack.on_screen.contains(&n.id);
+            let on_screen = stack.on_screen.contains(&n.id);
             assert_eq!(
                 n.dwell.is_running(),
-                standing,
+                on_screen,
                 "only a banner on screen ages"
             );
         }

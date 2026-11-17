@@ -205,7 +205,7 @@ class Services:
             # Keep this owner and every actual child reachable. Outer owned
             # PID-namespace retirement remains required on a fixture failure.
             _UNKNOWN_SERVICES.append(self)
-            raise RuntimeError('receiving services retain unknown child custody') from errors[0]
+            raise RuntimeError('receiving services retain unknown child ownership') from errors[0]
         groups = {child.pid for child in self.children}
         for process in Path('/proc').iterdir():
             if process.name.isdecimal():

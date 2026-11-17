@@ -80,10 +80,10 @@ impl Widget for Root {
 }
 
 impl crate::widget::controls::ActionControls for Root {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         let index = self.observed.installs.get();
         self.observed.installs.set(index + 1);
@@ -91,7 +91,7 @@ impl crate::widget::controls::ActionControls for Root {
             self.observed.panic_install.get() != Some(index),
             "control installation probe"
         );
-        crate::widget::controls::install_control_custody(&mut self.inner, domain, attachment);
+        crate::widget::controls::attach_controls(&mut self.inner, domain, attachment);
     }
 }
 crate::testing::test_app_widget!(

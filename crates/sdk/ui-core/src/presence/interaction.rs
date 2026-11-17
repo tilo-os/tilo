@@ -2187,7 +2187,7 @@ mod tests {
         }
 
         phase a_tag_elsewhere_leaves_the_would_click_place_labelled;
-        // A tag of the agent's standing elsewhere — at the caret in the field it just wrote — says
+        // A tag of the agent's access elsewhere — at the caret in the field it just wrote — says
         // nothing about the control it would press next: that place keeps its own tag, or a person
         // seeing the step has only a thin outline to go by.
         {

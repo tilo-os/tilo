@@ -1433,13 +1433,13 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A host that mutates before reporting execution failure. The real ledger
+/// A host that mutates before reporting execution failure. The real log
 /// deduplicates the caller's id; it cannot protect against a bridge inventing
 /// a fresh id. Admission refusals, in contrast, record no mutation.
 #[derive(Clone)]
 struct FailingMutationHost {
     directory: Writer,
-    ledger: Arc<Mutex<tilo_actions::remote::InvocationLedger<InvocationState>>>,
+    log: Arc<Mutex<tilo_actions::remote::InvocationLog<InvocationState>>>,
     mutations: Arc<Mutex<Vec<InvokeRequest>>>,
     refuse: bool,
 }
@@ -1450,7 +1450,7 @@ impl FailingMutationHost {
         *directory.running.lock().unwrap() = true;
         Self {
             directory,
-            ledger: Arc::default(),
+            log: Arc::default(),
             mutations: Arc::default(),
             refuse,
         }
@@ -1475,7 +1475,7 @@ impl ActionHost for FailingMutationHost {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
         let result = self
-            .ledger
+            .log
             .lock()
             .unwrap()
             .admit(caller, &request, || {
@@ -1498,7 +1498,7 @@ impl ActionHost for FailingMutationHost {
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.ledger.lock().unwrap().get(caller, id).cloned()
+        self.log.lock().unwrap().get(caller, id).cloned()
     }
 
     fn cancel(

@@ -143,7 +143,7 @@ where
     /// Take the subtree showing now out of the view, `with` standing in it.
     /// The subtree's controls keep working where it goes: they were in this
     /// view's control scope, which closes with the view, so they move to the
-    /// domain the view stands in, as a host renews custody it closed.
+    /// domain the view stands in, as a host renews ownership it closed.
     pub(crate) fn replace_child(&mut self, with: Element) -> Element {
         self.structure_dirty = true;
         let mut taken = std::mem::replace(&mut self.child, with);
@@ -151,7 +151,7 @@ where
         {
             self.child_domain = None;
             scope.close();
-            crate::widget::controls::install_control_custody(
+            crate::widget::controls::attach_controls(
                 taken.as_mut(),
                 &outer,
                 outer.renewal_from(&scope),
@@ -193,10 +193,10 @@ where
         self.child_domain = self.scope_domain.as_ref().map(crate::ControlDomain::child);
         self.child = (self.build)(&next, self.child_domain.as_ref());
         if let Some(domain) = &self.child_domain {
-            crate::widget::controls::install_control_custody(
+            crate::widget::controls::attach_controls(
                 self.child.as_mut(),
                 domain,
-                crate::control_custody::CustodyAttachment::Dynamic,
+                crate::control_domain::DomainAttachment::Dynamic,
             );
         }
         self.current = Some(next);
@@ -450,10 +450,10 @@ impl<K> crate::widget::controls::ActionControls for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(old) = &self.control_domain {
             if !old.same(domain) {
@@ -470,11 +470,7 @@ where
         self.control_domain = Some(domain.clone());
         let scope = self.scope_domain.get_or_insert_with(|| domain.child());
         let child_domain = self.child_domain.get_or_insert_with(|| scope.child());
-        crate::widget::controls::install_control_custody(
-            self.child.as_mut(),
-            child_domain,
-            attachment,
-        );
+        crate::widget::controls::attach_controls(self.child.as_mut(), child_domain, attachment);
     }
 }
 

@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
         assert_eq!(service.calls.load(Ordering::Acquire), 0);
     }
 
-    phase browser_private_delegation_checks_route_and_post_provider_custody;
+    phase browser_private_delegation_checks_route_and_post_provider_ownership;
     {
         let live = Arc::new(AtomicBool::new(true));
         let service = Arc::new(Service {

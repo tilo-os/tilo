@@ -167,7 +167,7 @@ fn page_holds(engine: &TestEngine, answers: &[Answer<'_>], record: &[Value]) {
     );
     engine.set_page_data("fields", json!({"fields": fields}));
     engine.set_page_data(
-        "ledger",
+        "log",
         json!({"entries": record, "next": record.len(), "more": false, "dropped": 0,
             "waiting": 0}),
     );
@@ -259,7 +259,7 @@ fn the_review_opens_for_a_person_and_for_an_agent_and_closes_to_the_page() {
             .any(|(_, request)| matches!(request, PageRequest::Fields { .. }))
             && asks
                 .iter()
-                .any(|(_, request)| matches!(request, PageRequest::Ledger { .. }))
+                .any(|(_, request)| matches!(request, PageRequest::Log { .. }))
     );
     assert!(asks.iter().all(|(actor, _)| actor.is_none()), "{asks:?}");
 
@@ -383,7 +383,7 @@ fn each_answer_shows_under_the_agent_that_set_it_as_the_agents_work() {
         asks.iter()
             .filter(|(_, request)| matches!(
                 request,
-                PageRequest::Fields { .. } | PageRequest::Forms { .. } | PageRequest::Ledger { .. }
+                PageRequest::Fields { .. } | PageRequest::Forms { .. } | PageRequest::Log { .. }
             ))
             .all(|(actor, _)| actor.is_none())
     );

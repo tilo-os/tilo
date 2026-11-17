@@ -191,7 +191,7 @@ pub async fn put(
         if resumed > RESUMES {
             return Err(why);
         }
-        sent = match answered(steps.put_step(ContentPutStep::Standing { upload }).await) {
+        sent = match answered(steps.put_step(ContentPutStep::Progress { upload }).await) {
             Ok(ContentPutAnswer::Appended { written }) => written,
             Ok(other) => return Err(unexpected(&other)),
             // The upload is gone (the store refused its bytes): what went wrong first says why.

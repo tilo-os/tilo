@@ -1,4 +1,4 @@
-//! Finite custody for live controls that were queued before History opened. Retained invocations are
+//! Finite ownership for live controls that were queued before History opened. Retained invocations are
 //! inert data. A continuation token identifies one presentation of one item; it never carries authority
 //! or confirmation.
 
@@ -85,7 +85,7 @@ impl PendingControlOrigin {
 pub(crate) struct SealedComponentControl {
     pub(crate) target: BoundActionTarget,
     pub(crate) invocation: ControlInvocation,
-    pub(crate) witness: Result<crate::bound_dispatch::ControlWitness, String>,
+    pub(crate) observation: Result<crate::bound_dispatch::ControlObservation, String>,
 }
 
 #[derive(Clone)]
@@ -93,10 +93,10 @@ struct PendingControl {
     id: PendingControlId,
     invocation: ControlInvocation,
     origin: PendingControlOrigin,
-    witness: Result<crate::bound_dispatch::ControlWitness, String>,
+    observation: Result<crate::bound_dispatch::ControlObservation, String>,
     status: PendingControlStatus,
     outstanding_nonce: Option<Uuid>,
-    control_domain: Option<crate::control_custody::WeakControlDomain>,
+    control_domain: Option<crate::control_domain::WeakControlDomain>,
     label: Option<String>,
 }
 
@@ -111,7 +111,7 @@ pub(crate) struct PreparedContinuation {
     pub(crate) id: PendingControlId,
     pub(crate) invocation: ControlInvocation,
     pub(crate) target: LocalResourceTarget,
-    pub(crate) witness: Result<crate::bound_dispatch::ControlWitness, String>,
+    pub(crate) observation: Result<crate::bound_dispatch::ControlObservation, String>,
     pub(crate) confirmed: bool,
 }
 
@@ -174,7 +174,7 @@ impl SuspendedLocalControls {
         &mut self,
         origin: PendingControlOrigin,
         invocation: ControlInvocation,
-        witness: Result<crate::bound_dispatch::ControlWitness, String>,
+        observation: Result<crate::bound_dispatch::ControlObservation, String>,
     ) {
         if !self.suspended {
             return;
@@ -189,7 +189,7 @@ impl SuspendedLocalControls {
             id,
             invocation,
             origin,
-            witness,
+            observation,
             status: PendingControlStatus::Suspended,
             outstanding_nonce: None,
             control_domain: None,
@@ -199,10 +199,10 @@ impl SuspendedLocalControls {
 
     pub(crate) fn capture_registered(
         &mut self,
-        control: crate::control_custody::OwnedControl,
-        witness: Result<crate::bound_dispatch::ControlWitness, String>,
+        control: crate::control_domain::OwnedControl,
+        observation: Result<crate::bound_dispatch::ControlObservation, String>,
     ) {
-        self.capture(control.origin, control.invocation, witness);
+        self.capture(control.origin, control.invocation, observation);
         if let Some(item) = self.items.last_mut() {
             item.control_domain = Some(control.domain);
         }
@@ -265,16 +265,16 @@ impl SuspendedLocalControls {
                     item.status.clone()
                 },
                 confirmation: item
-                    .witness
+                    .observation
                     .as_ref()
-                    .map(|witness| witness.confirmation().clone())
+                    .map(|observation| observation.confirmation().clone())
                     .map_err(Clone::clone),
                 owner: item.origin.description(),
                 label: item.label.clone().or_else(|| {
-                    item.witness
+                    item.observation
                         .as_ref()
                         .ok()
-                        .map(|witness| witness.label().to_owned())
+                        .map(|observation| observation.label().to_owned())
                         .filter(|label| !label.trim().is_empty())
                 }),
             })
@@ -362,7 +362,7 @@ impl SuspendedLocalControls {
             id: item.id,
             invocation: item.invocation.clone(),
             target: item.origin.target(),
-            witness: item.witness.clone(),
+            observation: item.observation.clone(),
             confirmed,
         })
     }
@@ -373,7 +373,7 @@ impl SuspendedLocalControls {
         value: &str,
     ) -> Option<PreparedContinuation> {
         let item = self.items.iter().find(|item| item.id == token.item_id)?;
-        let policy = item.witness.as_ref().ok()?.confirmation();
+        let policy = item.observation.as_ref().ok()?.confirmation();
         // The click on Confirm is the confirmation; only a phrase naming
         // what is destroyed must also be typed.
         match policy {

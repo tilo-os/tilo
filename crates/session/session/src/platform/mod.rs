@@ -9,7 +9,7 @@
 //! effects itself: the canvas the surfaces are drawn on, the browser's app
 //! host, the browser's store, and the page's own transport.
 //!
-//! Each concern the roles ask for lives here as one seam, so a role names
+//! Each concern the roles ask for lives here as one service, so a role names
 //! the effect and never a platform crate: [`records::Reading`] is the value a
 //! change keeps current, and a concern with a Linux half in [`session`] gains
 //! its page half here beside it.
@@ -37,8 +37,8 @@ pub mod invite;
 #[cfg(target_os = "linux")]
 pub mod directory;
 
-/// Whether this device still holds custody of a workspace, as this desktop checks it.
-pub mod custody;
+/// Whether this device still owns a workspace, as this desktop checks it.
+pub mod membership_check;
 
 /// The person's certified devices, as a role reaches them.
 #[cfg(target_os = "linux")]

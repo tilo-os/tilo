@@ -703,7 +703,7 @@ fn action_authority_context(
     Ok(PermissionContext::new(
         crate::permissions::Acting::member(person.clone()),
         Vec::new(),
-        projection.standing(),
+        projection.access(),
     ))
 }
 
@@ -1986,11 +1986,11 @@ mod native_process_tests {
                 Answer::Deny,
                 "another app's actions keep the launch participation"
             );
-            let allowed = permissions.directory_witness().unwrap();
+            let allowed = permissions.directory_observation().unwrap();
             let mut revoked = original.clone();
             revoked.policy.owner = None;
             publish(Some(serde_json::to_vec(&revoked).unwrap()));
-            assert_ne!(permissions.directory_witness().unwrap(), allowed);
+            assert_ne!(permissions.directory_observation().unwrap(), allowed);
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
             {
                 let mut invalid = original.clone();
@@ -2007,16 +2007,16 @@ mod native_process_tests {
                 invalid[field] = value.into();
                 publish(Some(serde_json::to_vec(&invalid).unwrap()));
                 assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-                assert!(permissions.directory_witness().is_err());
+                assert!(permissions.directory_observation().is_err());
             }
             for invalid in [None, Some(b"invalid".to_vec())] {
                 publish(invalid);
                 assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-                assert!(permissions.directory_witness().is_err());
+                assert!(permissions.directory_observation().is_err());
             }
             publish(Some(serde_json::to_vec(&original).unwrap()));
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
-            assert_eq!(permissions.directory_witness().unwrap(), allowed);
+            assert_eq!(permissions.directory_observation().unwrap(), allowed);
         }
 
         phase a_host_authority_whose_changes_cannot_be_heard_is_read_at_each_decision;

@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
-    CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending,
+    CatalogueRow, InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
+    Pending,
 };
 use tilo_actions::{
     ActionContract, ActionOutput, Collects, ExecutionLocus, InvocationId, InvocationUpdate,
@@ -177,7 +177,7 @@ pub struct AgentControl {
     changed: Changed,
     /// Who confirms an action the agent's grants leave to the person: the
     /// person's own host, never the agent.
-    witness: Mutex<Option<Witness>>,
+    approver: Mutex<Option<Approver>>,
     /// The supervisor's signal that its snapshot changed, once the agent
     /// is one of its agents.
     reports_to: OnceLock<Arc<SnapshotChanges>>,
@@ -186,9 +186,9 @@ pub struct AgentControl {
 /// The person's host an agent asks before an action that asks first
 /// ([`tilo_actions::remote::ActionHost::confirm`]): it puts the question to
 /// the person on their own device and answers with their
-/// [`Confirmation::Witnessed`](tilo_actions::remote::Confirmation::Witnessed),
+/// [`Confirmation::Approved`](tilo_actions::remote::Confirmation::Approved),
 /// or refuses.
-pub type Witness = Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>;
+pub type Approver = Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>;
 
 impl AgentControl {
     #[must_use]
@@ -204,7 +204,7 @@ impl AgentControl {
                 workspace: None,
             }),
             changed: Changed::default(),
-            witness: Mutex::new(None),
+            approver: Mutex::new(None),
             reports_to: OnceLock::new(),
         })
     }
@@ -238,7 +238,7 @@ impl AgentControl {
                 workspace: info.workspace.clone(),
             }),
             changed: Changed::default(),
-            witness: Mutex::new(None),
+            approver: Mutex::new(None),
             reports_to: OnceLock::new(),
         })
     }
@@ -336,12 +336,12 @@ impl AgentControl {
 
     /// The person's host that confirms what the agent's grants leave to
     /// them. Without one, such an action is refused.
-    pub fn set_witness(&self, witness: Option<Witness>) {
-        *self.witness.lock_recover() = witness;
+    pub fn set_approver(&self, approver: Option<Approver>) {
+        *self.approver.lock_recover() = approver;
     }
 
-    pub(crate) fn witness(&self) -> Option<Witness> {
-        self.witness.lock_recover().clone()
+    pub(crate) fn approver(&self) -> Option<Approver> {
+        self.approver.lock_recover().clone()
     }
 
     #[must_use]
@@ -725,7 +725,7 @@ pub trait AgentHostLink: Send + Sync {
     /// The host of the person `delegation` names, which puts an action the
     /// agent's grants leave to them to them on their own device. `None`: no
     /// such host here, and the agent's actions that ask first are refused.
-    fn witness(&self, delegation: &Delegation) -> Option<Witness> {
+    fn approver(&self, delegation: &Delegation) -> Option<Approver> {
         let _ = delegation;
         None
     }
@@ -825,7 +825,7 @@ pub struct AgentSupervisor {
     spawner: Spawner,
     link: Mutex<Option<Arc<dyn AgentHostLink>>>,
     state: Mutex<SupervisorState>,
-    ledger: Mutex<InvocationLedger<InvocationState>>,
+    log: Mutex<InvocationLog<InvocationState>>,
     /// Raised whenever [`Self::snapshot`] would return something new.
     changes: Arc<SnapshotChanges>,
     me: Weak<Self>,
@@ -842,7 +842,7 @@ impl AgentSupervisor {
                 grants: Vec::new(),
                 agents: BTreeMap::new(),
             }),
-            ledger: Mutex::new(InvocationLedger::default()),
+            log: Mutex::new(InvocationLog::default()),
             changes: Arc::default(),
             me: me.clone(),
         })
@@ -868,8 +868,8 @@ impl AgentSupervisor {
             .min()
     }
 
-    fn ledger(&self) -> MutexGuard<'_, InvocationLedger<InvocationState>> {
-        self.ledger.lock_recover()
+    fn log(&self) -> MutexGuard<'_, InvocationLog<InvocationState>> {
+        self.log.lock_recover()
     }
 
     fn link(&self) -> Option<Arc<dyn AgentHostLink>> {
@@ -881,7 +881,7 @@ impl AgentSupervisor {
     pub fn set_link(&self, link: Arc<dyn AgentHostLink>) {
         // Agents already running ask the person through this host too.
         for control in self.state().agents.values() {
-            control.set_witness(link.witness(control.delegation()));
+            control.set_approver(link.approver(control.delegation()));
         }
         *self.link.lock_recover() = Some(link);
     }
@@ -1134,9 +1134,9 @@ impl AgentSupervisor {
             let control = AgentControl::new(identity.delegation.clone());
             control.report_to(&self.changes);
             control.set_workspace(&workspace);
-            control.set_witness(
+            control.set_approver(
                 self.link()
-                    .and_then(|link| link.witness(&identity.delegation)),
+                    .and_then(|link| link.approver(&identity.delegation)),
             );
             state.agents.insert(grant.to_owned(), control.clone());
             drop(state);
@@ -1287,9 +1287,9 @@ impl AgentSupervisor {
                 (None, Err(_)) => continue,
             };
             let control = AgentControl::restore(delegation, &info);
-            control.set_witness(
+            control.set_approver(
                 self.link()
-                    .and_then(|link| link.witness(control.delegation())),
+                    .and_then(|link| link.approver(control.delegation())),
             );
             control.report_to(&self.changes);
             match identity {
@@ -1591,7 +1591,7 @@ impl ActionHost for SupervisorHost {
         let invocation = request.invocation;
         let supervisor = &self.0;
         let receipt = supervisor
-            .ledger()
+            .log()
             .admit(caller, &request, || {
                 let output = supervisor.run(&request)?;
                 Ok(InvocationState::new(
@@ -1604,7 +1604,7 @@ impl ActionHost for SupervisorHost {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.0.ledger().get(caller, id).cloned()
+        self.0.log().get(caller, id).cloned()
     }
 
     fn cancel(
@@ -1612,7 +1612,7 @@ impl ActionHost for SupervisorHost {
         caller: &Caller,
         id: &InvocationId,
     ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(if self.0.ledger().get(caller, id).is_none() {
+        tilo_actions::remote::Pending::ready(if self.0.log().get(caller, id).is_none() {
             Err(ActionHostError::UnknownInvocation)
         } else {
             Err(ActionHostError::NotCancellable {

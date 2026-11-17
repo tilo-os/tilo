@@ -948,7 +948,7 @@ fn a_still_window_produces_no_frames() {
     let mut app = staged("a busy week");
     // The live window's own tick: take up what the app's workers woke it for.
     app.frame();
-    // The frame that settles the window left the witness the next frame is read against.
+    // The frame that settles the window left the observation the next frame is read against.
     app.harness().relayout();
     assert!(
         !moving(&mut app),

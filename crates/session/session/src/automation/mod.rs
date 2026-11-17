@@ -121,7 +121,7 @@ pub struct Feeds {
 }
 
 impl Automation {
-    /// The trigger host of a session whose shell is `handle` , keeping its schedule ledger under
+    /// The trigger host of a session whose shell is `handle` , keeping its schedule log under
     /// `state` in the file the shell kept it in.
     #[must_use]
     pub fn new(
@@ -202,7 +202,7 @@ impl Automation {
             let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
             self.start(waiting);
         }
-        // A schedule firing waits for the ledger that records it: the write wakes the loop, and its
+        // A schedule firing waits for the log that records it: the write wakes the loop, and its
         // firings start then rather than a tick later.
         let settled = self.triggers.take_settled_firings();
         if !settled.is_empty() {

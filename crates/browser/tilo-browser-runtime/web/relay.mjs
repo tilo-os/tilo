@@ -1,6 +1,6 @@
 /**
  * The page as a certified device of one tilo-relay workspace, in one call:
- * `connectRelayPeer` opens this profile's device key (`device-custody.mjs`),
+ * `connectRelayPeer` opens this profile's device key (`device-key.mjs`),
  * loads the runtime and connects `peer.mjs`'s certified peer to `workspace`.
  * Pages written for the relay peer of the runtime this one replaced keep
  * working unchanged:
@@ -17,7 +17,7 @@
  */
 import * as host from './host.mjs';
 import {connectPeer} from './peer.mjs';
-import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {idbStorage, openDeviceKey} from './device-key.mjs';
 
 /**
  * Connect this page to relay workspace `workspace` at `origin` as a device of the
@@ -32,14 +32,14 @@ export async function connectRelayPeer({
 }) {
   if (!origin || !userPublicKey || !workspace) throw new TypeError('origin, userPublicKey and workspace are required');
   signal?.throwIfAborted();
-  const custody = await openDeviceCustody({profile, storage: idbStorage()});
+  const deviceKey = await openDeviceKey({profile, storage: idbStorage()});
   // Each device key of the profile (one per tab open at once) is a device of
   // its own, with a namespace of its own.
-  if (custody.slot) device = `${device}#${custody.slot}`;
+  if (deviceKey.slot) device = `${device}#${deviceKey.slot}`;
   const peer = await connectPeer({
     // The runtime, with the peer's code, and the profile's storage come
     // through host.mjs, which loads them once for this page.
-    origin, userPublicKey, workspace, label, profile, device, displayName, custody, desktop: host,
+    origin, userPublicKey, workspace, label, profile, device, displayName, deviceKey, desktop: host,
     onPairingCode, onStatus, signal, fetch: fetcher, live,
   });
   return Object.create(peer, {

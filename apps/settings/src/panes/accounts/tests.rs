@@ -332,8 +332,10 @@ fn import_only_rows_keep_recorded_errors_offline_and_signin_requirements() {
     }
     let (_scratch, root) = scratch_root();
     let id = accounts::AccountId::from("import-google");
-    let mut account =
-        accounts::Account::new(id.clone(), account_custody::providers::GOOGLE_DRIVE_TYPE);
+    let mut account = accounts::Account::new(
+        id.clone(),
+        account_credentials::providers::GOOGLE_DRIVE_TYPE,
+    );
     account.config = serde_json::json!({"files_mode": "import", "use_files": true});
     let mut store = accounts::AccountStore::new();
     store.upsert(account);
@@ -631,8 +633,8 @@ fn vault_save_failure_preserves_existing_account_metadata() {
     vault.put(&old_id, &accounts::Secret::password("old-password"));
     vault.try_save().unwrap();
     assert_eq!(
-        accounts::SecretVault::open_in(&root).custody(),
-        accounts::SecretCustody::LocalFile
+        accounts::SecretVault::open_in(&root).backend(),
+        accounts::VaultBackend::LocalFile
     );
     let dir = accounts::vault_dir_in(&root);
     let ciphertext_before = std::fs::read(dir.join("vault.enc")).unwrap();
@@ -857,10 +859,10 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
         1,
         "the pane lists a Mail account"
     );
-    root.custodian()
+    root.credential_store()
         .seal_oauth(
             &id,
-            &account_custody::TokenSet {
+            &account_credentials::TokenSet {
                 access_token: "test-only-access".into(),
                 scope: None,
                 refresh_token: "test-only-refresh".into(),

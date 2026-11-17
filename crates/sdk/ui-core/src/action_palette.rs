@@ -214,7 +214,7 @@ pub struct PendingOperation {
     pub(crate) history_draft_identity:
         Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
     pub(crate) history_identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
-    pub(crate) history_witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
+    pub(crate) history_seen: Option<Result<crate::bound_dispatch::ControlObservation, String>>,
 }
 
 /// The confirmation `spec` needs for exactly this collected input. A generic
@@ -837,7 +837,7 @@ impl ActionPalette {
             history_target: None,
             history_draft_identity: None,
             history_identity: None,
-            history_witness: None,
+            history_seen: None,
         };
         self.open = true;
         self.arg = None;
@@ -1845,7 +1845,7 @@ impl ActionPalette {
                 history_target: None,
                 history_draft_identity: None,
                 history_identity: None,
-                history_witness: None,
+                history_seen: None,
             },
             confirmation,
         );
@@ -2086,7 +2086,7 @@ impl ActionPalette {
                                 history_target,
                                 history_draft_identity: None,
                                 history_identity: None,
-                                history_witness: None,
+                                history_seen: None,
                             },
                             confirmation,
                         );
@@ -2804,7 +2804,7 @@ impl ActionPalette {
                     .action_kind_for_address(&state.address, state.bound.as_ref())
                     .filter(|kind| !matches!(kind, ActionKind::NoArgument { .. }))
                 else {
-                    if self.history_has_custody() {
+                    if self.history_has_ownership() {
                         self.search_announcement = Some(
                             "The retained action was removed, changed, or is currently unavailable"
                                 .into(),
@@ -2889,7 +2889,7 @@ impl ActionPalette {
                             history_target,
                             history_draft_identity,
                             history_identity: None,
-                            history_witness: None,
+                            history_seen: None,
                         },
                         confirmation,
                     );

@@ -29,8 +29,8 @@ use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::{AppActionServer, Envelope, RelayClient};
 use tilo_relay_client::Approver;
 use tilo_user_identity::{
-    AgentScope, DeviceCapabilities, DeviceCert, HostWitness, RevocationList, prepare_stand_in_cert,
-    sign_device_cert,
+    AgentScope, DeviceCapabilities, DeviceCert, HostApproval, RevocationList,
+    prepare_stand_in_cert, sign_device_cert,
 };
 
 use crate::common::{
@@ -384,11 +384,11 @@ async fn next(client: &RelayClient, who: &str) -> Envelope {
 }
 
 /// One page action a window was handed: who sent it, and whether it carried
-/// the witnessed answer of the host that certified the window.
+/// the approved answer of the host that certified the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Handed {
     from: [u8; 32],
-    witnessed: bool,
+    approved: bool,
 }
 
 /// What a window does with a page action: run it, or — an action that asks
@@ -508,23 +508,23 @@ async fn window_session(
             };
             // Only the host that certified this window, for this very
             // invocation and action, answers for the person.
-            let witnessed = match &request.confirmation {
-                Some(Confirmation::Witnessed(token)) => {
-                    HostWitness::decode(token).is_some_and(|witness| {
-                        witness.host_device_public_key == certifier
-                            && witness.invocation == *request.invocation.0.as_bytes()
-                            && witness.provider == request.target.provider
-                            && witness.action == request.target.address.action
-                            && witness.verify(tilo_clock::unix_now_ns()).is_ok()
+            let approved = match &request.confirmation {
+                Some(Confirmation::Approved(token)) => {
+                    HostApproval::decode(token).is_some_and(|approval| {
+                        approval.host_device_public_key == certifier
+                            && approval.invocation == *request.invocation.0.as_bytes()
+                            && approval.provider == request.target.provider
+                            && approval.action == request.target.address.action
+                            && approval.verify(tilo_clock::unix_now_ns()).is_ok()
                     })
                 }
                 _ => false,
             };
             heard.lock().unwrap().push(Handed {
                 from: from_device_public_key,
-                witnessed,
+                approved,
             });
-            let status = if asks.asks(&request.target.address.action) && !witnessed {
+            let status = if asks.asks(&request.target.address.action) && !approved {
                 ReceiptStatus::Rejected {
                     error: ActionHostError::ConfirmationRequired {
                         departure: asks.departure(),
@@ -1097,7 +1097,7 @@ async fn an_agents_reads_and_fills_run_at_once_and_its_submit_is_put_to_the_pers
     );
     assert_eq!(seen.lock().unwrap().len(), 5, "the window was asked once");
     assert!(
-        !seen.lock().unwrap()[4].witnessed,
+        !seen.lock().unwrap()[4].approved,
         "the agent carried no confirmation of its own"
     );
 }
@@ -1245,7 +1245,7 @@ async fn a_keys_page_actions_run_at_once_where_its_person_let_it_operate_them() 
             "the window ran them as the key's own agent"
         );
         assert!(
-            seen.iter().all(|handed| handed.witnessed),
+            seen.iter().all(|handed| handed.approved),
             "the host answered for the person, as their answer does"
         );
     }
@@ -1403,13 +1403,13 @@ async fn a_page_action_the_person_allows_runs_once_and_the_page_answers_it() {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 2, "the window was handed it twice");
     assert_eq!(seen[0].from, fixture.agent.device_pubkey());
-    assert!(!seen[0].witnessed, "the first had no answer to carry");
+    assert!(!seen[0].approved, "the first had no answer to carry");
     assert_eq!(
         seen[1].from,
         fixture.agent.device_pubkey(),
         "the run with the person's answer is the agent's, not the relay's"
     );
-    assert!(seen[1].witnessed, "the second carried their answer");
+    assert!(seen[1].approved, "the second carried their answer");
 }
 
 /// The person declining a page action ends it refused: it never runs, and
@@ -1504,7 +1504,7 @@ async fn only_this_hosts_answer_for_this_invocation_runs_a_page_action() {
 
     let id = InvocationId::new();
     let elsewhere = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
-    let mut witness = HostWitness::unsigned(
+    let mut approval = HostApproval::unsigned(
         tilo_user_identity::Parties {
             person: fixture.user.user_pk,
             host: elsewhere.verifying_key().to_bytes(),
@@ -1523,7 +1523,7 @@ async fn only_this_hosts_answer_for_this_invocation_runs_a_page_action() {
             tilo_clock::unix_now_ns().saturating_add(60_000_000_000),
         ),
     );
-    witness.sign(&elsewhere).expect("the other host signs it");
+    approval.sign(&elsewhere).expect("the other host signs it");
     caller
         .send(to_host(
             WS,
@@ -1531,7 +1531,7 @@ async fn only_this_hosts_answer_for_this_invocation_runs_a_page_action() {
             frame(page_with(
                 id,
                 "submit-page",
-                Some(Confirmation::Witnessed(witness.encode())),
+                Some(Confirmation::Approved(approval.encode())),
             )),
         ))
         .unwrap();
@@ -2034,7 +2034,7 @@ async fn hold_answer(
 
 /// A departure the page started on its own waits on nobody's invocation, so
 /// the session holding the window reports it: the relay puts it to the person
-/// once, and their allow is the witness that releases that one request.
+/// once, and their allow is the approval that releases that one request.
 #[tokio::test]
 async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_names_it() {
     let fixture = fixture(Arc::new(Counting::default())).await;
@@ -2088,22 +2088,22 @@ async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_name
     let confirmed = hold_answer(&window, 1)
         .await
         .expect("their answer is the confirmation the request runs with");
-    let Some(Confirmation::Witnessed(token)) = Some(confirmed.confirmation) else {
-        panic!("the person's answer travels as the host's witness");
+    let Some(Confirmation::Approved(token)) = Some(confirmed.confirmation) else {
+        panic!("the person's answer travels as the host's approval");
     };
-    let witness = HostWitness::decode(&token).expect("the witness is the relay's");
+    let approval = HostApproval::decode(&token).expect("the approval is the relay's");
     assert_eq!(
-        witness.host_device_public_key, fixture.home,
+        approval.host_device_public_key, fixture.home,
         "signed by the host that certified the window"
     );
     assert_eq!(
-        witness.target_device_public_key, material.device.device_public_key,
+        approval.target_device_public_key, material.device.device_public_key,
         "for the window the request runs on"
     );
-    assert_eq!(witness.action, "send-held-request");
+    assert_eq!(approval.action, "send-held-request");
     assert!(
-        witness.verify(tilo_clock::unix_now_ns()).is_ok(),
-        "the witness is good now"
+        approval.verify(tilo_clock::unix_now_ns()).is_ok(),
+        "the approval is good now"
     );
     assert_eq!(
         *fixture.meter.recorded.lock().unwrap(),

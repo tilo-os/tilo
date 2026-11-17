@@ -14,12 +14,14 @@ pub(crate) struct ReadOnlyMediaGrant {
 impl std::ops::Deref for ReadOnlyMediaGrant {
     type Target = native::ReadOnlyMediaGrant;
     fn deref(&self) -> &Self::Target {
-        self.native.as_ref().expect("live selected-medium custody")
+        self.native
+            .as_ref()
+            .expect("live selected-medium ownership")
     }
 }
 impl Drop for ReadOnlyMediaGrant {
     fn drop(&mut self) {
-        // First close the session and transfer custody to the backend registry;
+        // First close the session and transfer ownership to the backend registry;
         // scheduling failure must never discard native ownership.
         drop(self.native.take());
         super::journey::prepared_media::observe_read_medium(self.retirement_key.clone());
@@ -37,7 +39,7 @@ fn wrap(
         }),
         Err(error) => {
             // Validation can fail after the backend has assembled and retired
-            // a grant. Observe that custody even when no grant reaches the UI.
+            // a grant. Observe that ownership even when no grant reaches the UI.
             if native::retirement_pending(&retirement_key) {
                 super::journey::prepared_media::observe_read_medium(retirement_key);
             }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, defaultDisplayName, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStanding, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
-import {CustodyError} from './device-custody.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, defaultDisplayName, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStatus, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {DeviceKeyError} from './device-key.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 import {PAIRING_SAME_PERSON} from './pairing.mjs';
 import {unmarkOwnPairing} from './workspaces.mjs';
@@ -16,13 +16,13 @@ const reply = ({status = 200, headers = {}, body = {}}) => ({
   text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
 });
 
-/** A device key of `profile` as `openDeviceCustody` gives it: `created` for
+/** A device key of `profile` as `openDeviceKey` gives it: `created` for
  * one no host has seen yet (a new tab's). */
-const custodyOf = (calls, created) => async profile => {
-  const custody = {profile, slot: created ? 1 : 0, created, closed: false, destroyed: false,
-    close: async () => { custody.closed = true; }, destroy: async () => { custody.destroyed = true; custody.closed = true; }};
-  calls.custodies.push(custody);
-  return custody;
+const deviceKeyOf = (calls, created) => async profile => {
+  const deviceKey = {profile, slot: created ? 1 : 0, created, closed: false, destroyed: false,
+    close: async () => { deviceKey.closed = true; }, destroy: async () => { deviceKey.destroyed = true; deviceKey.closed = true; }};
+  calls.deviceKeys.push(deviceKey);
+  return deviceKey;
 };
 
 /** An entry's refusal as the shared entry reads it (`HostRefusal`, peer.mjs):
@@ -40,7 +40,7 @@ const knocking = (calls, answers) => options => {
 };
 
 function harness({person = identity(0x22), membership = null, entry = [null], connectFails = false, created = false} = {}) {
-  const calls = {posted: [], joined: [], connected: [], paired: [], custodies: [], renewed: [], waited: [], progress: []};
+  const calls = {posted: [], joined: [], connected: [], paired: [], deviceKeys: [], renewed: [], waited: [], progress: []};
   const store = new Map(membership ? [[KEY, JSON.stringify({'https://workspaces.example': membership})]] : []);
   const knock = knocking(calls, entry);
   return {
@@ -59,11 +59,11 @@ function harness({person = identity(0x22), membership = null, entry = [null], co
       },
       connect: async options => { calls.connected.push(options); if (connectFails) throw new Error('refused: not a member'); return {workspace: options.workspace}; },
       pair: async options => { calls.paired.push(options); if (options.entry) knock(options); return {workspace: options.workspace}; },
-      openCustody: custodyOf(calls, created),
-      renew: async (custody, profile) => {
+      openDeviceKey: deviceKeyOf(calls, created),
+      renew: async (deviceKey, profile) => {
         const renewed = {profile, slot: 0, created: true, renewed: calls.renewed.length + 1, closed: false, close: async () => { renewed.closed = true; }};
-        calls.renewed.push({custody, profile, renewed});
-        await custody.destroy();
+        calls.renewed.push({deviceKey, profile, renewed});
+        await deviceKey.destroy();
         return renewed;
       },
       wait: async next => { calls.waited.push(next); },
@@ -94,7 +94,7 @@ const refusing = (calls, reasons, knock = knocking(calls, [null])) => async join
   calls.joined.push(joined);
   if (reasons.length) throw refusal(reasons.shift());
   joined.onProgress?.({phase: 'admitted', workspace: 'WORKSPACE'});
-  return {workspace: 'WORKSPACE', dispose: async () => { await joined.custody?.close(); }};
+  return {workspace: 'WORKSPACE', dispose: async () => { await joined.deviceKey?.close(); }};
 };
 
 test('a device the host knows under a certificate this browser lost joins as a new device of the same person', async () => {
@@ -108,12 +108,12 @@ test('a device the host knows under a certificate this browser lost joins as a n
   const peer = await joinViaHost(options);
   assert.equal(peer.workspace, 'WORKSPACE');
   assert.deepEqual(calls.posted.map(post => post.body.userPublicKey), ['11'.repeat(32), '11'.repeat(32)], 'the same person, a fresh invitation');
-  assert.equal(calls.joined[0].custody, calls.custodies[0], 'first with the key the host knows');
+  assert.equal(calls.joined[0].deviceKey, calls.deviceKeys[0], 'first with the key the host knows');
   assert.equal(calls.renewed.length, 1);
-  assert.equal(calls.renewed[0].custody, calls.custodies[0], 'that key is replaced');
-  assert.ok(calls.custodies[0].destroyed);
+  assert.equal(calls.renewed[0].deviceKey, calls.deviceKeys[0], 'that key is replaced');
+  assert.ok(calls.deviceKeys[0].destroyed);
   assert.equal(calls.renewed[0].profile, `tilo-identity:${'11'.repeat(32)}@workspaces.example`);
-  assert.equal(calls.joined[1].custody, calls.renewed[0].renewed, 'then as a new device');
+  assert.equal(calls.joined[1].deviceKey, calls.renewed[0].renewed, 'then as a new device');
   assert.deepEqual(calls.waited, [], 'at once');
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
   await peer.dispose();
@@ -132,7 +132,7 @@ test('a host started anew that knows this device under another certificate is jo
   options.join = refusing(calls, ['governed certificate conflict']);
   assert.equal((await joinViaHost(options)).workspace, 'WORKSPACE');
   assert.equal(calls.posted.length, 2);
-  assert.equal(calls.renewed[0].custody, calls.custodies[0]);
+  assert.equal(calls.renewed[0].deviceKey, calls.deviceKeys[0]);
 });
 
 test('a browser whose person is gone joins as the person it holds now, on a new device when refused', async () => {
@@ -143,10 +143,10 @@ test('a browser whose person is gone joins as the person it holds now, on a new 
   options.join = refusing(calls, ['certificate conflict']);
   assert.equal((await joinViaHost(options)).workspace, 'WORKSPACE');
   assert.equal(calls.connected.length, 0);
-  assert.equal(calls.joined[0].custody, undefined, 'first with the key joining opens');
-  assert.equal(calls.custodies[0].profile, `tilo-identity:${'33'.repeat(32)}@workspaces.example`, 'that key, opened to be replaced');
-  assert.equal(calls.renewed[0].custody, calls.custodies[0]);
-  assert.equal(calls.joined[1].custody, calls.renewed[0].renewed);
+  assert.equal(calls.joined[0].deviceKey, undefined, 'first with the key joining opens');
+  assert.equal(calls.deviceKeys[0].profile, `tilo-identity:${'33'.repeat(32)}@workspaces.example`, 'that key, opened to be replaced');
+  assert.equal(calls.renewed[0].deviceKey, calls.deviceKeys[0]);
+  assert.equal(calls.joined[1].deviceKey, calls.renewed[0].renewed);
   assert.equal(keptMembership(commons, {getItem: key => store.get(key)}).userPublicKey, '33'.repeat(32));
 });
 
@@ -172,7 +172,7 @@ test('a refusal a new device does not end says it is reconnecting and asks again
   assert.ok(calls.waited.every(next => next.since === calls.waited[0].since && Number.isFinite(next.since)));
   assert.equal(calls.progress.at(-1), 'admitted');
   assert.equal(calls.renewed.length, 6, 'each try after the first as a new device');
-  assert.equal(calls.renewed[1].custody.profile, `tilo-identity:${'22'.repeat(32)}@workspaces.example`,
+  assert.equal(calls.renewed[1].deviceKey.profile, `tilo-identity:${'22'.repeat(32)}@workspaces.example`,
     'a later try replaces the key it reopens, never one let go');
 });
 
@@ -378,8 +378,8 @@ test('a mailed address waits to be confirmed by its link, and the entry says whe
     fetch: entry({body: {email: 'cy@example.org', removal: secret, mail: true}})});
   assert.deepEqual(waitListing(commons, storage), {email: 'cy@example.org', pending: true});
 
-  assert.equal(await waitListStanding({workspace: commons, storage, fetch: entry({body: {standing: 'pending'}})}), 'pending');
-  assert.equal(posted.at(-1).url, 'https://workspaces.example/wait-list/standing');
+  assert.equal(await waitListStatus({workspace: commons, storage, fetch: entry({body: {status: 'pending'}})}), 'pending');
+  assert.equal(posted.at(-1).url, 'https://workspaces.example/wait-list/status');
   assert.deepEqual(posted.at(-1).body, {secret});
   // The link confirms it: sent as it came, and this browser stops waiting.
   const token = 'd4'.repeat(32);
@@ -393,12 +393,12 @@ test('a mailed address waits to be confirmed by its link, and the entry says whe
   assert.equal(await confirmWaitList({workspace: commons, token: 'nope', storage, fetch: entry({body: {confirmed: true}})}), false);
   assert.equal(posted.length, asked);
   // The entry cannot say now: nothing changes; it says gone: forgotten.
-  assert.equal(await waitListStanding({workspace: commons, storage, fetch: entry({status: 503, body: {code: 'unavailable'}})}), null);
-  assert.equal(await waitListStanding({workspace: commons, storage, fetch: async () => { throw new TypeError('Failed to fetch'); }}), null);
+  assert.equal(await waitListStatus({workspace: commons, storage, fetch: entry({status: 503, body: {code: 'unavailable'}})}), null);
+  assert.equal(await waitListStatus({workspace: commons, storage, fetch: async () => { throw new TypeError('Failed to fetch'); }}), null);
   assert.ok(waitListing(commons, storage));
-  assert.equal(await waitListStanding({workspace: commons, storage, fetch: entry({body: {standing: 'gone'}})}), 'gone');
+  assert.equal(await waitListStatus({workspace: commons, storage, fetch: entry({body: {status: 'gone'}})}), 'gone');
   assert.equal(waitListing(commons, storage), null);
-  assert.equal(await waitListStanding({workspace: commons, storage, fetch: entry({body: {standing: 'listed'}})}), null);
+  assert.equal(await waitListStatus({workspace: commons, storage, fetch: entry({body: {status: 'listed'}})}), null);
 });
 
 test('a removal link takes its address off, and this browser forgets what it left', async () => {
@@ -441,13 +441,13 @@ test('a second tab is a new device of the person, admitted through the entry onc
   const peer = await joinViaHost(options);
   assert.equal(calls.connected.length, 0, 'no connection the workspace would refuse');
   assert.deepEqual(calls.posted.map(post => post.body.userPublicKey), ['11'.repeat(32)]);
-  assert.equal(calls.joined[0].custody, calls.custodies[0], 'joined with the new tab\u2019s own key');
-  assert.equal(calls.custodies[0].profile, `tilo-identity:${'11'.repeat(32)}@workspaces.example`);
+  assert.equal(calls.joined[0].deviceKey, calls.deviceKeys[0], 'joined with the new tab\u2019s own key');
+  assert.equal(calls.deviceKeys[0].profile, `tilo-identity:${'11'.repeat(32)}@workspaces.example`);
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {...membership, workspace: 'WORKSPACE'});
   // The tab's key is let go with its peer.
-  assert.equal(calls.custodies[0].closed, false);
+  assert.equal(calls.deviceKeys[0].closed, false);
   await peer.dispose();
-  assert.equal(calls.custodies[0].closed, true);
+  assert.equal(calls.deviceKeys[0].closed, true);
 });
 
 test('a second tab of a paired device pairs as a new device, approved on one of the person\u2019s devices', async () => {
@@ -457,7 +457,7 @@ test('a second tab of a paired device pairs as a new device, approved on one of 
   await joinViaHost({...options, identity: undefined, onPairingCode: () => {}});
   assert.equal(calls.connected.length, 0);
   assert.equal(calls.paired[0].userPublicKey, person);
-  assert.equal(calls.paired[0].custody, calls.custodies[0]);
+  assert.equal(calls.paired[0].deviceKey, calls.deviceKeys[0]);
   assert.equal(typeof calls.paired[0].onPairingCode, 'function');
   assert.deepEqual(calls.posted, [{url: 'https://workspaces.example/join', body: {userPublicKey: person, displayName: 'Brave Otter'}}],
     'the new device joins the person\u2019s workspace through the entry once paired');
@@ -469,8 +469,8 @@ test('every device key held by other tabs keeps the membership and asks the host
   // then fail the same way.
   const membership = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
-  options.openCustody = async () => { throw new CustodyError('custody-busy', 'Every device key is held by another tab'); };
-  await assert.rejects(joinViaHost(options), {name: 'CustodyError', code: 'custody-busy'});
+  options.openDeviceKey = async () => { throw new DeviceKeyError('device-key-busy', 'Every device key is held by another tab'); };
+  await assert.rejects(joinViaHost(options), {name: 'DeviceKeyError', code: 'device-key-busy'});
   assert.equal(calls.posted.length, 0);
   assert.equal(calls.joined.length, 0);
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);

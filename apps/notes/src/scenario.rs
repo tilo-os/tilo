@@ -162,7 +162,7 @@ Quick captures to sort later.
 
 - Reply to the venue about the date
 
-- Look into a standing setup
+- Look into an access setup
 ";
 
 const READING_BODY: &str = "\

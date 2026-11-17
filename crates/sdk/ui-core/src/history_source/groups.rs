@@ -253,7 +253,7 @@ pub fn move_named_boundary(
     Some((new_left, new_right))
 }
 
-/// One work session beside a seam, as the person saw it: its named record,
+/// One work session beside a boundary, as the person saw it: its named record,
 /// or `None` while it is still an automatic projection with these bounds and
 /// title.
 #[derive(Clone, Copy)]
@@ -273,7 +273,7 @@ impl DisplayedSession<'_> {
     }
 }
 
-/// Correct a seam even when one or both work sessions are still automatic
+/// Correct a boundary even when one or both work sessions are still automatic
 /// projections. Missing records are materialized with the titles and bounds
 /// the person saw, then the bordering action is moved in the same document
 /// transaction. The atomic history entries themselves are never rewritten.
@@ -467,7 +467,7 @@ mod tests {
             assert_eq!(ranges[0].label, "Finished task");
         }
 
-        phase correcting_an_automatic_seam_materializes_both_sessions_then_moves_it;
+        phase correcting_an_automatic_boundary_materializes_both_sessions_then_moves_it;
         {
             let mut doc = AutoCommit::new();
             let (left, right) = materialize_and_move_boundary(

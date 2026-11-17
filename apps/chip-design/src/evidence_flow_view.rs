@@ -45,7 +45,7 @@ pub fn item(state: &ProjectState, value: &str) -> Option<serde_json::Value> {
         "placement" => crate::placement_view::item(state, report, id)?,
         _ => return None,
     };
-    Some(serde_json::json!({"custody":"reported_unverified","content":value}))
+    Some(serde_json::json!({"provenance":"reported_unverified","content":value}))
 }
 fn button(cx: &ViewCx<ChipProject>, report: &str, kind: &str, id: &str, label: &str) -> Button {
     cx.actions().bind_effect_invocation(
@@ -189,7 +189,7 @@ fn inspector(
     let Some(flow) = record.receipt.evidence_flow.as_ref() else {
         return Box::new(Text::new(&tr("chip-report-missing")));
     };
-    let mut properties = vec![property("chip-flow-custody", &tr("chip-flow-unverified"))];
+    let mut properties = vec![property("chip-flow-source", &tr("chip-flow-unverified"))];
     if let Some(stage) = flow
         .stages
         .iter()

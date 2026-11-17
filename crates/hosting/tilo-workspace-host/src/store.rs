@@ -104,7 +104,7 @@ pub(crate) fn thread_listed_entries() -> u64 {
     THREAD_LISTED_ENTRIES.with(std::cell::Cell::get)
 }
 
-/// Ledger of admitted `Commit`s, see [`CommitEntry`].
+/// Log of admitted `Commit`s, see [`CommitEntry`].
 pub const COMMITS_FILE: &str = "commits.bin";
 
 const COMMIT_RECORD_BYTES: usize = 32 + 16 + 8 + 32;
@@ -468,12 +468,12 @@ impl WorkspaceStore {
         Ok(out)
     }
 
-    /// Load the admitted-commit ledger, oldest first. A record torn by a
+    /// Load the admitted-commit log, oldest first. A record torn by a
     /// crash mid-append is cut off, so later appends stay aligned.
     ///
     /// # Errors
     ///
-    /// Returns an error if the ledger exists but can't be read or trimmed.
+    /// Returns an error if the log exists but can't be read or trimmed.
     pub fn load_commits(&self) -> Result<Vec<CommitEntry>, StoreError> {
         let path = self.root.join(COMMITS_FILE);
         if !path.exists() {
@@ -493,13 +493,13 @@ impl WorkspaceStore {
             .collect())
     }
 
-    /// Append one admitted commit to the ledger. Not synced: losing the
+    /// Append one admitted commit to the log. Not synced: losing the
     /// newest records to a power cut only lets a resend of those commits be
     /// admitted again, which the document merge absorbs.
     ///
     /// # Errors
     ///
-    /// Returns an error if the ledger can't be opened or written.
+    /// Returns an error if the log can't be opened or written.
     pub fn append_commit(&self, record: &CommitEntry) -> Result<(), StoreError> {
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -509,7 +509,7 @@ impl WorkspaceStore {
         Ok(())
     }
 
-    /// Atomically replace the ledger with `records`, dropping evicted ones.
+    /// Atomically replace the log with `records`, dropping evicted ones.
     pub fn rewrite_commits(&self, records: &[CommitEntry]) -> Result<(), StoreError> {
         let mut bytes = Vec::with_capacity(records.len().saturating_mul(COMMIT_RECORD_BYTES));
         for record in records {
@@ -570,7 +570,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn commit_ledger_round_trips_and_ignores_a_torn_tail() {
+    fn commit_log_round_trips_and_ignores_a_torn_tail() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), true).unwrap();
         let record = |n: u8| CommitEntry {

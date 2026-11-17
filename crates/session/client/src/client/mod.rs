@@ -223,7 +223,7 @@ impl Client {
             |workspace, topic| {
                 let _ = outgoing.send(Cmd::Join(topic));
                 // A workspace joined is one this device takes part in through whatever its host
-                // opens there: the desktop's custody session, which carries the workspace's app
+                // opens there: the desktop's ownership session, which carries the workspace's app
                 // records.
                 if let Some(host) = self.host.borrow().clone() {
                     host.joined(workspace);

@@ -504,7 +504,7 @@ impl InstanceDocument {
             .ok_or_else(|| DocumentError::Open("the connection joined no route".to_owned()))?;
         let workspace = route.cluster_id.to_string();
         let store = route_document(documents, &route)?;
-        // Construction custody reads the committed history before the document is built, as a
+        // Construction ownership reads the committed history before the document is built, as a
         // native launch's does: only a route whose reads are committed has one.
         let construction = match read {
             Read::Taken(read) => NativeConstruction::enter_read(manager, read.map(|read| *read)),

@@ -45,7 +45,7 @@ pub fn browser_accounts_key(root: &str) -> Result<String, JsValue> {
 
 /// Read public picker metadata from an existing Settings account document.
 /// The caller reads only the key [`browser_accounts_key`] names; no record
-/// initialization, key custody, or credential store is involved.
+/// initialization, key storage, or credential store is involved.
 ///
 /// # Errors
 /// Refuses invalid identity, oversized or malformed documents, and failed projection.
@@ -310,7 +310,7 @@ pub fn refresh_storage_lease(profile: &str, device: &str) -> Result<(), JsValue>
             && store.flush(None).is_err()
         {
             return Err(error(
-                "unsaved writes retain custody; retry persistence first",
+                "unsaved writes retain ownership; retry persistence first",
             ));
         }
         caches.remove(&key);

@@ -2006,15 +2006,13 @@ impl crate::resources::PublishesResources for EmptyState {
 }
 
 impl crate::widget::controls::ActionControls for EmptyState {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(engine) = &mut self.engine {
-            crate::widget::controls::ActionControls::install_control_custody(
-                engine, domain, attachment,
-            );
+            crate::widget::controls::ActionControls::attach_controls(engine, domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

@@ -210,7 +210,7 @@ impl AppBrokerState {
                         agent: current.agent_id.clone(),
                     }
                 } else {
-                    // The connection's custody attests only its own admitted
+                    // The connection's ownership attests only its own admitted
                     // Person or agent. An application acting under its own
                     // identity, or an effect continuing another caller's
                     // invocation, is decided as that actor and stays

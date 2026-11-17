@@ -91,7 +91,7 @@ impl OriginalSource {
         let mut held = self
             .intent
             .lock()
-            .map_err(|_| std::io::Error::other("Original source custody unavailable"))?;
+            .map_err(|_| std::io::Error::other("Original source ownership unavailable"))?;
         if let Some(intent) = &*held {
             if applications_only {
                 intent.for_pending_applications()?;
@@ -645,7 +645,7 @@ fn validate_grant(selected: &Path, expected: &Path) -> Result<Arc<SourceGrant>, 
 impl OriginalSource {
     fn from_native(native: NativeOriginalSource) -> Self {
         Self {
-            native_payload: super::native_ownership::FrontendNativeCustody::new(native),
+            native_payload: super::native_ownership::FrontendNativeOwnership::new(native),
             applications_only: Self::native_applications_only,
         }
     }

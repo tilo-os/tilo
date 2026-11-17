@@ -1,5 +1,5 @@
-//! Explicit existing-device enrollment into isolated future-device custody.
-//! The canonical helper owns the protocol; public status is never custody proof.
+//! Explicit existing-device enrollment into isolated future-device identity.
+//! The canonical helper owns the protocol; public status is never ownership proof.
 use crate::{
     destination_security, migration::PinnedDirectory, prepared_identity::PreparedIdentity,
 };
@@ -15,7 +15,7 @@ use std::{
 const PROCESS_BOUND: Duration = Duration::from_secs(840);
 const STATUS_LIMIT: u64 = 8192;
 
-struct Custody {
+struct Ownership {
     root: PathBuf,
     identities: PathBuf,
     status: PathBuf,
@@ -27,7 +27,7 @@ struct Custody {
 #[derive(Default)]
 pub struct Pairing {
     process: Option<bounded_command::AsyncCommand>,
-    custody: Option<Custody>,
+    ownership: Option<Ownership>,
     code: Option<String>,
     prepared: Option<Arc<PreparedIdentity>>,
     state: &'static str,
@@ -38,7 +38,7 @@ impl Pairing {
     pub fn resume(prepared: Arc<PreparedIdentity>) -> std::io::Result<Self> {
         let label = prepared
             .enrolled_device_label()
-            .ok_or_else(|| std::io::Error::other("Prepared device is not enrolled custody"))?
+            .ok_or_else(|| std::io::Error::other("Prepared device is not enrolled ownership"))?
             .to_owned();
         Ok(Self {
             prepared: Some(prepared),
@@ -49,7 +49,7 @@ impl Pairing {
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn fixture_operation_directory(&self) -> PathBuf {
-        self.custody
+        self.ownership
             .as_ref()
             .unwrap()
             .root
@@ -100,7 +100,7 @@ impl Pairing {
         let identity_pin = pin
             .create_child(std::ffi::OsStr::new("identities"))
             .map_err(|_| "installer-pairing-failed")?;
-        let custody = Custody {
+        let ownership = Ownership {
             root,
             identities: operation.join("identities"),
             status: operation.join("pairing-status.json"),
@@ -112,30 +112,30 @@ impl Pairing {
         command
             .arg("pair-device")
             .arg("--identity-root")
-            .arg(&custody.root)
+            .arg(&ownership.root)
             .arg("--identity-dir")
-            .arg(&custody.identities)
+            .arg(&ownership.identities)
             .args(["--label", label, "--timeout", "270"])
             .arg("--status-file")
-            .arg(&custody.status)
+            .arg(&ownership.status)
             .arg("--requester-pid")
             .arg(requester_pid.to_string())
             .arg("--requester-start-time")
             .arg(requester_start_time.to_string());
-        self.begin(command, custody, PROCESS_BOUND)?;
+        self.begin(command, ownership, PROCESS_BOUND)?;
         self.approved_label = Some(label.to_owned());
         Ok(())
     }
     fn begin(
         &mut self,
         command: Command,
-        custody: Custody,
+        ownership: Ownership,
         timeout: Duration,
     ) -> Result<(), &'static str> {
         let process = bounded_command::spawn_prepared(command, None, 16384, timeout)
             .map_err(|_| "installer-pairing-failed")?;
         self.process = Some(process);
-        self.custody = Some(custody);
+        self.ownership = Some(ownership);
         self.prepared = None;
         self.code = None;
         self.state = "starting";
@@ -148,18 +148,18 @@ impl Pairing {
         self.process = None;
         self.code = None;
         self.state = "cancelled";
-        // Custody is deliberately retained: local cancellation does not revoke
+        // Ownership is deliberately retained: local cancellation does not revoke
         // any certificate the other device may already have approved.
         Ok(())
     }
     pub fn poll(&mut self) -> bool {
-        let Some(custody) = &self.custody else {
+        let Some(ownership) = &self.ownership else {
             return false;
         };
         if !self.busy() {
             return false;
         }
-        let status = read_status(custody);
+        let status = read_status(ownership);
         let mut changed = false;
         if let Ok(value) = &status
             && let Some(code) = public_code(value)
@@ -178,13 +178,13 @@ impl Pairing {
         self.process = None;
         let result = result.map_err(|_| ()).and_then(|output| {
             if output.status.success() {
-                read_status(custody).map_err(|_| ())
+                read_status(ownership).map_err(|_| ())
             } else {
                 Err(())
             }
         });
         match result
-            .and_then(|status| authenticate(custody, &status, self.approved_label.as_deref()))
+            .and_then(|status| authenticate(ownership, &status, self.approved_label.as_deref()))
         {
             Ok(prepared) => {
                 self.prepared = Some(Arc::new(prepared));
@@ -245,19 +245,19 @@ fn trusted_helper_from(
     })
 }
 
-fn read_status(custody: &Custody) -> std::io::Result<serde_json::Value> {
-    custody.pin.validate()?;
-    custody.root_pin.validate()?;
-    custody.identity_pin.validate()?;
+fn read_status(ownership: &Ownership) -> std::io::Result<serde_json::Value> {
+    ownership.pin.validate()?;
+    ownership.root_pin.validate()?;
+    ownership.identity_pin.validate()?;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(&custody.status)?;
+        .open(&ownership.status)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > STATUS_LIMIT {
         return Err(std::io::Error::other("Invalid pairing status"));
     }
-    if metadata.uid() != custody.pin.file.metadata()?.uid()
+    if metadata.uid() != ownership.pin.file.metadata()?.uid()
         || metadata.mode() & 0o022 != 0
         || metadata.nlink() != 1
     {
@@ -265,7 +265,7 @@ fn read_status(custody: &Custody) -> std::io::Result<serde_json::Value> {
     }
     let mut bytes = Vec::new();
     file.take(STATUS_LIMIT + 1).read_to_end(&mut bytes)?;
-    custody.pin.validate()?;
+    ownership.pin.validate()?;
     if bytes.len() > 8192 {
         return Err(std::io::Error::other("Oversized pairing status"));
     }
@@ -281,7 +281,7 @@ fn public_code(status: &serde_json::Value) -> Option<String> {
     .then(|| code.to_owned())
 }
 fn authenticate(
-    custody: &Custody,
+    ownership: &Ownership,
     status: &serde_json::Value,
     label: Option<&str>,
 ) -> Result<PreparedIdentity, ()> {
@@ -302,13 +302,13 @@ fn authenticate(
             .and_then(serde_json::Value::as_str)
             .ok_or(())?,
     );
-    if record.parent() != Some(custody.identities.as_path()) {
+    if record.parent() != Some(ownership.identities.as_path()) {
         return Err(());
     }
-    custody.pin.validate().map_err(|_| ())?;
-    custody.root_pin.validate().map_err(|_| ())?;
-    custody.identity_pin.validate().map_err(|_| ())?;
-    let paths = tilo_user_identity::persist::IdentityPaths::under(&custody.root);
+    ownership.pin.validate().map_err(|_| ())?;
+    ownership.root_pin.validate().map_err(|_| ())?;
+    ownership.identity_pin.validate().map_err(|_| ())?;
+    let paths = tilo_user_identity::persist::IdentityPaths::under(&ownership.root);
     let device = tilo_user_identity::persist::load_device_key(&paths).map_err(|_| ())?;
     let now = u64::try_from(
         SystemTime::now()
@@ -318,7 +318,7 @@ fn authenticate(
     )
     .map_err(|_| ())?;
     let enrolled = tilo_identity_host::enrolled_transport::EnrolledDevice::review(
-        &custody.root,
+        &ownership.root,
         &record,
         expected_root,
         device.verifying_key().to_bytes(),
@@ -331,7 +331,7 @@ fn authenticate(
     PreparedIdentity::from_enrolled(Arc::new(enrolled)).map_err(|_| ())
 }
 
-/// Actual locally approved canonical custody, served by an inert helper.
+/// Actual locally approved canonical ownership, served by an inert helper.
 /// No pairing network or live account paths are touched by this fixture.
 #[cfg(any(test, feature = "test-support"))]
 pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
@@ -398,7 +398,7 @@ pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
         0o600,
     )
     .unwrap();
-    let custody = Custody {
+    let ownership = Ownership {
         root_pin: PinnedDirectory::open_absolute(&system).unwrap(),
         identity_pin: PinnedDirectory::open_absolute(&identities).unwrap(),
         root: system,
@@ -412,11 +412,11 @@ pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
         .arg("-c")
         .arg(r#"printf '%s' "$2" > "$1""#)
         .arg("fixture")
-        .arg(&custody.status)
+        .arg(&ownership.status)
         .arg(completed.to_string());
     let mut pairing = Pairing::default();
     pairing
-        .begin(command, custody, Duration::from_secs(5))
+        .begin(command, ownership, Duration::from_secs(5))
         .unwrap();
     pairing.approved_label = Some(certificate.device_label);
     (temporary, pairing)
@@ -433,7 +433,7 @@ pub fn waiting_fixture() -> (tempfile::TempDir, Pairing) {
     let identities = directory.join("identities");
     std::fs::create_dir(&root).unwrap();
     std::fs::create_dir(&identities).unwrap();
-    let custody = Custody {
+    let ownership = Ownership {
         root_pin: PinnedDirectory::open_absolute(&root).unwrap(),
         identity_pin: PinnedDirectory::open_absolute(&identities).unwrap(),
         root,
@@ -444,10 +444,10 @@ pub fn waiting_fixture() -> (tempfile::TempDir, Pairing) {
     let mut command = Command::new("/bin/sh");
     command.arg("-c")
         .arg(r#"printf '%s' '{"state":"waiting","verification_code":"123456"}' > "$1"; exec sleep 120"#)
-        .arg("fixture").arg(&custody.status);
+        .arg("fixture").arg(&ownership.status);
     let mut pairing = Pairing::default();
     pairing
-        .begin(command, custody, Duration::from_secs(180))
+        .begin(command, ownership, Duration::from_secs(180))
         .unwrap();
     pairing.approved_label = Some("My future computer".into());
     (temporary, pairing)
@@ -464,7 +464,7 @@ pub fn failed_fixture() -> (tempfile::TempDir, Pairing) {
     let identities = directory.join("identities");
     std::fs::create_dir(&root).unwrap();
     std::fs::create_dir(&identities).unwrap();
-    let custody = Custody {
+    let ownership = Ownership {
         root_pin: PinnedDirectory::open_absolute(&root).unwrap(),
         identity_pin: PinnedDirectory::open_absolute(&identities).unwrap(),
         root,
@@ -472,7 +472,7 @@ pub fn failed_fixture() -> (tempfile::TempDir, Pairing) {
         status: directory.join("status.json"),
         pin: PinnedDirectory::open_absolute(&directory).unwrap(),
     };
-    let record = custody.identities.join("forged.json");
+    let record = ownership.identities.join("forged.json");
     let fake =
         serde_json::json!({"state":"complete", "identity":"03".repeat(32), "record_path":record});
     let mut command = Command::new("/bin/sh");
@@ -480,11 +480,11 @@ pub fn failed_fixture() -> (tempfile::TempDir, Pairing) {
         .arg("-c")
         .arg(r#"printf '%s' "$2" > "$1""#)
         .arg("fixture")
-        .arg(&custody.status)
+        .arg(&ownership.status)
         .arg(fake.to_string());
     let mut pairing = Pairing::default();
     pairing
-        .begin(command, custody, Duration::from_secs(5))
+        .begin(command, ownership, Duration::from_secs(5))
         .unwrap();
     (temporary, pairing)
 }
@@ -499,7 +499,7 @@ fn ensure_private_tree(path: &Path) -> std::io::Result<Arc<PinnedDirectory>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let parent = ensure_private_tree(path.parent().ok_or(error)?)?;
             let child = parent.create_child(path.file_name().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing custody name")
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing ownership name")
             })?)?;
             crate::migration_durability::sync_directory(&child.file)?;
             crate::migration_durability::sync_directory(&parent.file)?;
@@ -514,7 +514,7 @@ mod tests {
     use super::*;
     use std::{os::unix::fs::PermissionsExt, time::Instant};
 
-    fn fixture() -> (tempfile::TempDir, Custody) {
+    fn fixture() -> (tempfile::TempDir, Ownership) {
         let temporary = tempfile::tempdir().unwrap();
         let directory = temporary.path().canonicalize().unwrap();
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -522,7 +522,7 @@ mod tests {
         let identities = directory.join("identities");
         std::fs::create_dir(&root).unwrap();
         std::fs::create_dir(&identities).unwrap();
-        let custody = Custody {
+        let ownership = Ownership {
             root_pin: PinnedDirectory::open_absolute(&root).unwrap(),
             identity_pin: PinnedDirectory::open_absolute(&identities).unwrap(),
             root,
@@ -530,7 +530,7 @@ mod tests {
             status: directory.join("status.json"),
             pin: PinnedDirectory::open_absolute(&directory).unwrap(),
         };
-        (temporary, custody)
+        (temporary, ownership)
     }
     fn wait(pairing: &mut Pairing, ready: impl Fn(&Pairing) -> bool) {
         let deadline = tilo_test_env::hang_deadline();
@@ -547,7 +547,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn pairing_helper_is_trusted_only_when_owned_and_safe;
 
-        phase missing_or_unsafe_helper_fails_before_creating_custody;
+        phase missing_or_unsafe_helper_fails_before_creating_ownership;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             let temporary = tempfile::tempdir().unwrap();
@@ -565,7 +565,7 @@ mod tests {
                 );
                 assert!(!pairing.busy());
                 assert!(!pairing.ready());
-                assert!(pairing.custody.is_none());
+                assert!(pairing.ownership.is_none());
                 assert!(pairing.prepared().is_none());
                 assert!(!state.exists());
             };
@@ -598,15 +598,15 @@ mod tests {
 
     #[test]
     fn explicit_pairing_observes_only_public_code_and_cancel_reaps_process_tree() {
-        let (temporary, custody) = fixture();
+        let (temporary, ownership) = fixture();
         let child = temporary.path().join("child.pid");
         let mut command = Command::new("/bin/sh");
         command.arg("-c").arg(r#"sleep 3600 & child=$!; printf '%s' "$child" > "$2"; printf '%s' '{"state":"waiting_for_approval","verification_code":"ABCD-1234","error":"PRIVATE_DETAIL"}' > "$1"; wait"#)
-            .arg("fixture").arg(&custody.status).arg(&child);
+            .arg("fixture").arg(&ownership.status).arg(&child);
         let mut pairing = Pairing::default();
         assert!(!pairing.busy());
         pairing
-            .begin(command, custody, Duration::from_secs(60))
+            .begin(command, ownership, Duration::from_secs(60))
             .unwrap();
         wait(&mut pairing, |value| value.code.is_some());
         assert_eq!(pairing.projection()["verification_code"], "ABCD-1234");
@@ -628,21 +628,21 @@ mod tests {
     tilo_test_env::scenario! {
         fn pairing_status_never_enrolls_from_forged_or_redirected_files;
 
-        phase forged_complete_status_never_becomes_enrolled_custody;
+        phase forged_complete_status_never_becomes_enrolled_ownership;
         {
-            let (_temporary, custody) = fixture();
-            let record = custody.identities.join("forged.json");
+            let (_temporary, ownership) = fixture();
+            let record = ownership.identities.join("forged.json");
             let fake = serde_json::json!({"state":"complete", "identity":"03".repeat(32), "record_path": record});
             let mut command = Command::new("/bin/sh");
             command
                 .arg("-c")
                 .arg(r#"printf '%s' "$2" > "$1""#)
                 .arg("fixture")
-                .arg(&custody.status)
+                .arg(&ownership.status)
                 .arg(fake.to_string());
             let mut pairing = Pairing::default();
             pairing
-                .begin(command, custody, tilo_test_env::hang_bound())
+                .begin(command, ownership, tilo_test_env::hang_bound())
                 .unwrap();
             wait(&mut pairing, |value| !value.busy());
             assert_eq!(pairing.projection()["state"], "failed");
@@ -651,19 +651,19 @@ mod tests {
 
         phase status_reader_refuses_redirects_and_nonregular_files;
         {
-            let (temporary, custody) = fixture();
+            let (temporary, ownership) = fixture();
             let external = temporary.path().join("external");
             std::fs::write(&external, b"{}").unwrap();
-            std::os::unix::fs::symlink(&external, &custody.status).unwrap();
-            assert!(read_status(&custody).is_err());
-            std::fs::remove_file(&custody.status).unwrap();
+            std::os::unix::fs::symlink(&external, &ownership.status).unwrap();
+            assert!(read_status(&ownership).is_err());
+            std::fs::remove_file(&ownership.status).unwrap();
             let path = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(
-                custody.status.as_os_str(),
+                ownership.status.as_os_str(),
             ))
             .unwrap();
             // SAFETY: path is a valid fixture-only NUL-terminated pathname.
             assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
-            assert!(read_status(&custody).is_err());
+            assert!(read_status(&ownership).is_err());
         }
     }
 }

@@ -14,7 +14,7 @@ use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 pub type AwaitingDocument = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
 
 /// No public constructor. The route and original caller are retained from the
-/// admitted channel, together with live launcher/host-worker custody.
+/// admitted channel, together with live launcher/host-worker ownership.
 #[derive(Clone)]
 pub struct NativeDocumentReadContext {
     route: CrdtRoute,
@@ -34,7 +34,7 @@ mod changes_tests;
 mod service_session_tests;
 impl NativeDocumentReadContext {
     /// A read of `route` by an agent acting for the person whose device certificate is
-    /// `certificate` (`resource_read`): no launcher custody, only `revalidate`,
+    /// `certificate` (`resource_read`): no launcher ownership, only `revalidate`,
     /// which decides the agent's read of the record again. Only the broker can make one.
     pub(super) fn for_agent(
         route: CrdtRoute,
@@ -70,7 +70,7 @@ impl NativeDocumentReadContext {
     pub fn resource_type(&self) -> Option<&str> {
         self.resource_type.as_deref()
     }
-    /// Re-checks the admitted channel's live custody and admission.
+    /// Re-checks the admitted channel's live ownership and admission.
     pub fn revalidate(&self) -> Result<(), String> {
         (self.revalidate)()
     }
@@ -124,12 +124,12 @@ pub enum ResourceRead {
     Own,
     /// Every record of a workspace this owner commits
     /// ([`NativeDocumentReads::requires_workspace`]): read under the launcher's or
-    /// a host worker's custody.
+    /// a host worker's ownership.
     Committed,
     /// A record a sealed workspace this device holds already holds, read through
     /// the channel's keys. Its authority is the one the app's own sealed
     /// channel reads under: the channel's live admission and the workspace's read
-    /// policy, plus the launcher's custody whenever the app has one.
+    /// policy, plus the launcher's ownership whenever the app has one.
     Sealed,
 }
 /// What a workspace's hosts answered about the head of a chain: the record that
@@ -206,7 +206,7 @@ pub trait NativeDocumentReads: Send + Sync {
         let _ = context;
         None
     }
-    /// Must check exact current selected custody, caller certificate, and native
+    /// Must check exact current selected ownership, caller certificate, and native
     /// document Read permission. Called again before every returned chunk.
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String>;
     /// Called only after the broker reserves maximum bytes. Implementations must
@@ -403,7 +403,7 @@ impl Slot {
             self.active = None;
         }
     }
-    /// The next piece of the active capture, re-checking custody and the
+    /// The next piece of the active capture, re-checking ownership and the
     /// owner's authorization before it is handed out.
     fn next(&mut self, capture: u64, offset: u32, token: [u8; 16]) -> Result<Reply, String> {
         let active = self
@@ -490,8 +490,8 @@ impl JoinedChannel {
     fn own_document_context(&self) -> Result<NativeDocumentReadContext, String> {
         self.read_context(self.resource_read() == ResourceRead::Sealed)
     }
-    /// The read context under this channel's custody. A `sealed` read of the
-    /// channel's own record needs no launcher custody when the app has
+    /// The read context under this channel's ownership. A `sealed` read of the
+    /// channel's own record needs no launcher ownership when the app has
     /// none: an app the person opened directly (an SDK app the runtime
     /// starts) reads its sealed record under its channel's admission, as its
     /// own sealed channel does. An agent never reads that way.
@@ -523,9 +523,9 @@ impl JoinedChannel {
                 if launch_holds(local, &checked_route, read_only).is_none()
                     || admitted.agent_id.is_some()
                 {
-                    return Err("committed read launcher custody ended".into());
+                    return Err("committed read launcher ownership ended".into());
                 }
-                // Another app's record is read with the person's own standing
+                // Another app's record is read with the person's own access
                 // on it, as the join decided, and again at every read.
                 if read_only
                     && !identity_reads_document(
@@ -538,7 +538,7 @@ impl JoinedChannel {
                     return Err("committed read of another app's record ended".into());
                 }
             } else if !sealed || admitted.agent_id.is_some() {
-                return Err("committed read requires launcher custody".into());
+                return Err("committed read requires launcher ownership".into());
             }
             state
                 .revalidate_admission(&checked_route, &admitted)
@@ -579,7 +579,7 @@ impl JoinedChannel {
         match launch_holds(local, &route, self.route_access == RouteAccess::ReadOnly) {
             Some(true) => {}
             Some(false) => return Ok(None),
-            None => return Err("native private launch custody ended".into()),
+            None => return Err("native private launch ownership ended".into()),
         }
         let context = self.document_read_context()?;
         self.state
@@ -771,7 +771,7 @@ fn launch_holds(
         .then_some(false)
 }
 
-/// What an Open reads with: the channel's checked custody and admission
+/// What an Open reads with: the channel's checked ownership and admission
 /// (`context`), its document owner, the shared byte budget and capture ids.
 struct Reading<'a> {
     context: NativeDocumentReadContext,
@@ -783,7 +783,7 @@ struct Reading<'a> {
 /// An Open's answer for `known_revision`, and the id of the capture it
 /// started, whose deadline the caller arms. With `held` the owner may answer
 /// with only the changes since; every check is the same either way: the
-/// owner's authorization, the read under the byte budget, then custody and
+/// owner's authorization, the read under the byte budget, then ownership and
 /// authorization again.
 fn open_read(
     slot: &mut Slot,
@@ -801,7 +801,7 @@ fn open_read(
     if slot.active.is_some() {
         return Err("committed read requires previous response acknowledgement".into());
     }
-    // Custody and admission first: a reader that may no longer read is
+    // Ownership and admission first: a reader that may no longer read is
     // refused, never queued. Then capacity: a read that must wait its turn
     // has done nothing yet.
     if let Err(refused) = context.revalidate() {
@@ -861,7 +861,7 @@ fn open_read(
 /// Whether an Open for `known_revision` would answer exactly what the caller
 /// holds (`Unchanged` for that revision; for `None` `Absent` when `absent`,
 /// else `Unavailable`), with
-/// every check the Open makes, in its order: custody and admission
+/// every check the Open makes, in its order: ownership and admission
 /// (`context`), the owner's authorization, the read under the shared byte
 /// budget, then both checks again. `None` when the Open would answer
 /// anything else, refusals included; otherwise the checked context.
@@ -1009,7 +1009,7 @@ impl JoinedChannel {
     /// holds, then answer with what that Open answers: the changed record
     /// goes to the reader with the wake.
     ///
-    /// The checks are the Open's own (custody, admission, the owner's
+    /// The checks are the Open's own (ownership, admission, the owner's
     /// authorization and capture), re-run whenever something they read may
     /// have changed: every writer of those inputs announces
     /// ([`tilo_identity_host::policy_change`]), and the first instant a
@@ -1061,7 +1061,7 @@ impl JoinedChannel {
         if let Some((granted, turn)) = turn {
             // A read waiting in the budget's queue: what changes its Open's
             // answer is its turn coming, announced by the queue itself, or
-            // its custody or admission ending, announced as any policy
+            // its ownership or admission ending, announced as any policy
             // change is. Either way the Open decides now.
             loop {
                 if !self.holds_wait(generation) {

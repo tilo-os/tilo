@@ -222,7 +222,7 @@ fn report(workspace: &str, devices: &[&Device]) -> String {
              shell in {workspace}: {}\n\
              -- the live session --\n{}\n-- the workspace's channels --\n{}\n-- the shares --\n{}\n\
              -- the windows' messages --\n{}\n-- warnings --\n{}\n\
-             -- the live_session's keys and standings, in order --\n{}\n\
+             -- the live_session's keys and states, in order --\n{}\n\
              -- the workspace's channel frames, in order --\n{}\n\
              -- the links to the workspaces' hosts, in order --\n{}",
             device.label,

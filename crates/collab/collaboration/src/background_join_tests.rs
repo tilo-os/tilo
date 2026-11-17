@@ -92,7 +92,7 @@ fn a_joining_manager_builds_on_its_local_replica_and_takes_the_answer_as_an_even
     assert_eq!(
         manager
             .primary_route()
-            .map(|witness| witness.route().clone()),
+            .map(|observation| observation.route().clone()),
         Some(route)
     );
     assert!(
@@ -235,13 +235,13 @@ fn a_join_waited_for_off_its_thread_wakes_the_app_it_was_made_for() {
     );
 }
 
-/// A window asks the session for its account custody as soon as it is
+/// A window asks the session for its account credentials as soon as it is
 /// built, while its route is still joining (the live launch builds
 /// local-first). The handle it captured keeps working: the request waits in
 /// the worker for the route the app named, and the session's answer comes
 /// back on the window's own route once it joined.
 #[test]
-fn account_custody_taken_while_the_route_joins_answers_once_it_is_admitted() {
+fn account_credentials_taken_while_the_route_joins_answers_once_it_is_admitted() {
     let mut scope = crate::wake::WakeScope::new();
     let wakes = wakes_of(&mut scope);
     let route = joining_route();
@@ -272,7 +272,7 @@ fn account_custody_taken_while_the_route_joins_answers_once_it_is_admitted() {
         )
         .expect("the request waits for the route");
 
-    // The route joins; the request is served on it, by the custodian.
+    // The route joins; the request is served on it, by the credential store.
     broker.answer();
     let manager = manager.as_mut().unwrap();
     poll_on_wakes(manager, &wakes, "the route to be admitted", |manager, _| {

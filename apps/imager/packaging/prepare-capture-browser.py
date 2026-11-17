@@ -87,12 +87,12 @@ def prepare(output, sidecar, pins, runtime_identity, app_identity):
                                   '--identity', app_identity], text=True).strip()
     for package in ('browser.tapp', 'cef.tapp'):
         run([tools / 'tilo-app-package', 'verify', '--trusted-key', key, output / package])
-    ledger = {'schema': 1, 'cef_version': version, 'cef_publisher': publisher,
+    manifest = {'schema': 1, 'cef_version': version, 'cef_publisher': publisher,
               'app_publisher': key,
               'browser_sha256': recorder.facts(payload / 'bin/browser')['sha256'],
               'packages': {name: recorder.facts(output / name)['sha256']
                            for name in ('browser.tapp', 'cef.tapp')}}
-    (output / 'receiving.json').write_text(json.dumps(ledger, sort_keys=True) + '\n')
+    (output / 'receiving.json').write_text(json.dumps(manifest, sort_keys=True) + '\n')
     return sdk, version, publisher, key
 
 
@@ -101,10 +101,10 @@ def stage(root, output, pins, cohort, qualification=False):
     spec = importlib.util.spec_from_file_location('receiving_qualifier', ROOT / 'apps/imager/packaging/qualify-capture-release.py')
     qualifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(qualifier)
-    ledger = qualifier.document(output / 'receiving.json')
+    manifest = qualifier.document(output / 'receiving.json')
     sdk = qualifier.document(pins)
     expected = cohort['roles']['browser']['sha256']
-    if ledger['schema'] != 1 or ledger['browser_sha256'] != expected:
+    if manifest['schema'] != 1 or manifest['browser_sha256'] != expected:
         raise ValueError('signed Browser differs from current compiler role')
     sources = qualifier.document(output / 'native-source-inputs.json')
     for name, digest in cohort['source_inputs'].items():
@@ -113,12 +113,12 @@ def stage(root, output, pins, cohort, qualification=False):
     tools = ROOT / 'target/release'
     import tarfile
     for name in ('browser.tapp', 'cef.tapp'):
-        qualifier.bound_file(output / name, ledger['packages'][name])
-        run([tools / 'tilo-app-package', 'verify', '--trusted-key', ledger['app_publisher'], output / name])
+        qualifier.bound_file(output / name, manifest['packages'][name])
+        run([tools / 'tilo-app-package', 'verify', '--trusted-key', manifest['app_publisher'], output / name])
     with tarfile.open(output / 'browser.tapp') as archive:
         authored = tomllib.loads(archive.extractfile('manifest.toml').read().decode())
     if (authored['package']['runtime'] != 'tilo-runtime/' + sdk['runtime_version']
-            or authored['package']['optional-runtimes'] != ['tilo-runtime/' + ledger['cef_version']]):
+            or authored['package']['optional-runtimes'] != ['tilo-runtime/' + manifest['cef_version']]):
         raise ValueError('signed Browser receives another SDK/CEF graph')
     with tempfile.TemporaryDirectory(prefix='tilo-browser-admission-') as scratch:
         payload = Path(scratch).resolve() / 'payload'
@@ -127,7 +127,7 @@ def stage(root, output, pins, cohort, qualification=False):
         qualifier.bound_file(payload / 'surface.toml', cohort['source_inputs']['apps/browser/surface.toml'])
     sidecar = pins.parent / 'sidecar'
     bundles = ((sidecar / 'runtime' / sdk['runtime_version'], sdk['runtime_version'], sdk['runtime_publisher']),
-               (output / 'cef', ledger['cef_version'], ledger['cef_publisher']))
+               (output / 'cef', manifest['cef_version'], manifest['cef_publisher']))
     for bundle, version, publisher in bundles:
         run([tools / 'tilo-runtime-bundle', 'verify', bundle, '--require-signature',
              '--require-arch', os.uname().machine, '--require-publisher', publisher])
@@ -150,7 +150,7 @@ def stage(root, output, pins, cohort, qualification=False):
     share.mkdir(parents=True, exist_ok=True)
     for name, value in (('account-consumer-runtime-version', sdk['runtime_version']),
                         ('account-consumer-runtime-publisher.hex', sdk['runtime_publisher']),
-                        ('browser-runtime-publisher.hex', ledger['cef_publisher'])):
+                        ('browser-runtime-publisher.hex', manifest['cef_publisher'])):
         path = share / name
         path.write_text(value + '\n')
         path.chmod(0o644)
@@ -165,8 +165,8 @@ def stage(root, output, pins, cohort, qualification=False):
     packages.mkdir()
     for name in ('browser.tapp', 'cef.tapp'):
         shutil.copyfile(output / name, packages / name)
-        qualifier.bound_file(packages / name, ledger['packages'][name])
-    publishers = (sdk['runtime_publisher'], ledger['cef_publisher'])
+        qualifier.bound_file(packages / name, manifest['packages'][name])
+    publishers = (sdk['runtime_publisher'], manifest['cef_publisher'])
     recipe = ''
     if qualification:
         # This exact enrollment exists only in the disposable image. It does
@@ -189,7 +189,7 @@ def stage(root, output, pins, cohort, qualification=False):
                    'target=/usr/share/tilo/browser-runtime-publisher.hex,ro,relabel=shared '
                    'TILO_APPS_DATA_DIR=/usr/share/tilo-apps TILO_RUNTIME_BUNDLE_DIR=/usr/lib/tilo-runtime '
                    '/usr/libexec/tilo/tilo-install install /qualification-packages/' + name
-                   + ' --force --pinned --require-publisher ' + ledger['app_publisher']
+                   + ' --force --pinned --require-publisher ' + manifest['app_publisher']
                    + (' --allow-self-signed' if qualification else '') + '\n')
     # This tree contains public installed payloads, never signing identities or
     # session state. A private operator umask must not make /usr untraversable

@@ -3,7 +3,7 @@
 //!
 //! The shell keeps the ceremony: the decisions ([`crate::identity::Onboarding`]),
 //! the identity work, the crash journal, nearby pairing, the prepared setup
-//! and its transfers, the media codecs install and every secret's custody.
+//! and its transfers, the media codecs install and every secret's ownership.
 //! The app shows the page this view projects ([`tilo_onboarding::Page`]) and
 //! asks through the state this view lends it; secrets are typed into buffers
 //! this view owns and zeroizes, never carried by what the app asks.

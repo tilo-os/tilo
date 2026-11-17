@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
 
     phase missing_content_reads_where_its_host_says_the_want_stands;
     {
-        let (store, lane) = resource_store("standing");
+        let (store, lane) = resource_store("known");
         let bytes = b"bytes on a device that is offline".to_vec();
         let hash = tilo_content::hash_bytes(&bytes);
         assert_eq!(store.read(&hash), None);
@@ -214,10 +214,10 @@ tilo_test_env::scenario! {
         assert_eq!(store.read(&hash), Some(bytes));
         assert_eq!(store.state(&hash), ContentState::Resolved);
 
-        // Content nobody here asked for has no standing.
+        // Content nobody here asked for has no access.
         let other = tilo_content::hash_bytes(b"never asked");
         lane.stands(other.clone(), ContentState::Unavailable);
-        assert_eq!(lane.standing(&other), None);
+        assert_eq!(lane.known(&other), None);
     }
 }
 

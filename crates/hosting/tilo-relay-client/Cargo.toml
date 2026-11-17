@@ -3,7 +3,7 @@ name = "tilo-relay-client"
 version = "0.1.0"
 edition = "2024"
 publish = true
-description = "Client side of the Tilo host + relay every peer shares: the frame codec both ends of a relay stream use, the co-edit payloads, device certification and the device-signer seam."
+description = "Client side of the Tilo host + relay every peer shares: the frame codec both ends of a relay stream use, the co-edit payloads, device certification and the device-signer boundary."
 license = "MIT OR Apache-2.0"
 repository.workspace = true
 homepage.workspace = true
@@ -11,7 +11,7 @@ homepage.workspace = true
 # The relay session and co-edit clients live in `tilo-relay-session`, next to
 # the delivery, join and transport records they speak. This crate holds what a
 # browser peer needs as well: the frame codec, the co-edit payloads, the
-# signer seam and (with `iroh`) the certification dialer, and the identity
+# signer boundary and (with `iroh`) the certification dialer, and the identity
 # layer's device side: a computer signing in as one of a person's devices, the
 # login code it reads, and the certificates a person's root issues.
 [dependencies]

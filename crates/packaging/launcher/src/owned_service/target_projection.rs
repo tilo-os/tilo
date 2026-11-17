@@ -41,7 +41,7 @@ const WORKSPACE: workspace::Layout = workspace::Layout {
     person: workspace::Person::Empty,
     root,
 };
-const BASELINE: delayed_filter::Custody = delayed_filter::Custody {
+const BASELINE: delayed_filter::Ownership = delayed_filter::Ownership {
     label: "Target projection",
     memfd: c"tilo-target-baseline",
     root,
@@ -55,7 +55,7 @@ fn root() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     if (r, e, s) != (0, 0, 0) || unsafe { libc::setfsuid(u32::MAX) } != 0 {
-        return Err(refused("Target projection requires real root custody"));
+        return Err(refused("Target projection requires real root ownership"));
     }
     Ok(())
 }
@@ -65,7 +65,7 @@ pub struct TargetProjectionCredentials {
     gid: u32,
 }
 impl TargetProjectionCredentials {
-    /// Fails unless the caller has real root custody and the IDs identify a non-root target user
+    /// Fails unless the caller has real root ownership and the IDs identify a non-root target user
     /// without sentinel user or group IDs.
     pub fn admitted(uid: u32, gid: u32) -> io::Result<Self> {
         root()?;
@@ -83,7 +83,7 @@ pub enum TargetProjectionMode {
 }
 pub trait TargetProjectionAuthority: super::ServiceAuthority {
     fn projection_mode(&self) -> TargetProjectionMode;
-    /// Fails if the certified target identity cannot be admitted under root custody.
+    /// Fails if the certified target identity cannot be admitted under root ownership.
     fn target_credentials(&self) -> io::Result<TargetProjectionCredentials>;
     fn context_sha256(&self) -> [u8; 32];
     fn source_view_sha256(&self) -> [u8; 32];
@@ -237,7 +237,7 @@ fn receive_record(file: &File) -> io::Result<Record> {
             .as_bytes()
             .starts_with(b"/memfd:tilo-target-projection")
     {
-        return Err(refused("Target bootstrap lacks sealed root custody"));
+        return Err(refused("Target bootstrap lacks sealed root ownership"));
     }
     let mut bytes = vec![0; usize::try_from(m.len()).map_err(io::Error::other)?];
     file.read_exact_at(&mut bytes, 0)?;
@@ -276,7 +276,7 @@ fn mount_id(file: &File) -> io::Result<u64> {
         .filter(|id| *id != 0)
         .ok_or_else(|| refused("Target mount identity unavailable"))
 }
-/// Canonical runner custody before namespace creation.
+/// Canonical runner ownership before namespace creation.
 struct LaunchState {
     token: File,
     filter: delayed_filter::Filter,
@@ -293,10 +293,10 @@ pub struct TargetProjectionAdmission {
     pub(super) receiver: std::sync::Mutex<Option<UnixStream>>,
     record: Record,
     pub(super) authority: Arc<dyn TargetProjectionAuthority>,
-    exposure: Arc<exposure::ExposureCustody>,
+    exposure: Arc<exposure::ExposureOwnership>,
 }
 impl TargetProjectionAdmission {
-    /// Fails if root custody, live authority, offline policy, target identity, FUSE access, or sealed
+    /// Fails if root ownership, live authority, offline policy, target identity, FUSE access, or sealed
     /// bootstrap preparation cannot be established.
     pub fn admit(authority: Arc<dyn TargetProjectionAuthority>) -> io::Result<Self> {
         root()?;
@@ -343,7 +343,7 @@ impl TargetProjectionAdmission {
             workspace: std::sync::Mutex::new(None),
             launch: std::sync::Mutex::new(None),
             authority,
-            exposure: Arc::new(exposure::ExposureCustody::default()),
+            exposure: Arc::new(exposure::ExposureOwnership::default()),
         };
         this.check()?;
         Ok(this)
@@ -473,7 +473,7 @@ impl TargetProjectionAdmission {
         let mut slot = self
             .launch
             .lock()
-            .map_err(|_| refused("Target filter custody poisoned"))?;
+            .map_err(|_| refused("Target filter ownership poisoned"))?;
         if slot.is_some() {
             return Err(refused("Target baseline already prepared"));
         }
@@ -493,7 +493,7 @@ impl TargetProjectionAdmission {
     fn launch_record(&self) -> io::Result<Record> {
         self.launch
             .lock()
-            .map_err(|_| refused("Target filter custody poisoned"))?
+            .map_err(|_| refused("Target filter ownership poisoned"))?
             .as_ref()
             .map(|s| s.record.clone())
             .ok_or_else(|| refused("Target filter missing"))
@@ -515,7 +515,7 @@ impl TargetProjectionAdmission {
         let guard = self
             .launch
             .lock()
-            .map_err(|_| refused("Target filter custody poisoned"))?;
+            .map_err(|_| refused("Target filter ownership poisoned"))?;
         let state = guard
             .as_ref()
             .ok_or_else(|| refused("Target baseline missing"))?;
@@ -532,7 +532,7 @@ impl TargetProjectionAdmission {
         let guard = self
             .launch
             .lock()
-            .map_err(|_| refused("Target filter custody poisoned"))?;
+            .map_err(|_| refused("Target filter ownership poisoned"))?;
         let state = guard
             .as_ref()
             .ok_or_else(|| refused("Target baseline missing"))?;
@@ -550,9 +550,9 @@ impl TargetProjectionAdmission {
     }
     pub(crate) fn splice_credentials(&self, argv: &mut Vec<String>) -> io::Result<()> {
         self.native()?;
-        super::splice_custody(
+        super::splice_ownership(
             argv,
-            &super::CustodySplice {
+            &super::OwnershipSplice {
                 token_flag: "--target-projection-fd",
                 token_fd: TOKEN_FD,
                 extra_caps: &["--cap-add", "CAP_SYS_ADMIN"],

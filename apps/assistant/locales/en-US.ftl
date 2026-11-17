@@ -29,9 +29,9 @@ assistant-start-sub-agent-message = Start a sub-agent for this job: { $words }
 assistant-no-such-sub-agent = There is no such sub-agent
 assistant-sub-agent-conversation-not-here = Its conversation is not available here
 assistant-sub-agent-cannot-read-main = It cannot read the main chat
-assistant-standing-working = Working
-assistant-standing-needs-you = Needs you
-assistant-standing-done = Done { $when }
+assistant-progress-working = Working
+assistant-progress-needs-you = Needs you
+assistant-progress-done = Done { $when }
 
 assistant-tasks = Tasks
 assistant-panel-views = Views of the tasks

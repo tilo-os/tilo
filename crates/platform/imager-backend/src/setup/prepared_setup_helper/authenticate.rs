@@ -1,5 +1,5 @@
 //! Read-only authentication of prepared installation choices. No persona or
-//! account custody is imported, activated or registered by this entry point.
+//! account credentials is imported, activated or registered by this entry point.
 use super::{failed, private_parent};
 use crate::setup::{migration::PinnedDirectory, prepared_setup::PreparedSetupReview};
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};

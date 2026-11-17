@@ -89,7 +89,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .todayAt: "Today {time}"
         case .yesterdayAt: "Yesterday {time}"
         case .lineScheduled: "scheduled, {when}"
-        case .lineActedAlone: "done, by your standing instruction"
+        case .lineActedAlone: "done, by your lasting instruction"
         case .replyOne: "1 reply"
         case .replyMany: "{count} replies"
         case .important: "Important"

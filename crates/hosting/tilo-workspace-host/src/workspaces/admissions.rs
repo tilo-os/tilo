@@ -1,4 +1,4 @@
-//! The owner's standing decisions to admit a person, and what the workspace did
+//! The owner's lasting decisions to admit a person, and what the workspace did
 //! under them for the owner to see.
 //!
 //! An owner who expects someone (a co-founder, a teammate a backend vouched

@@ -1120,7 +1120,7 @@ fn native_idle_model_wake_adopts_requested_component_before_draining() {
     );
     assert!(
         !first.lifetime.is_active(),
-        "old callback custody must retire"
+        "old callback ownership must retire"
     );
     assert_saved_body(&host, &first, "edited");
     assert_eq!(body(&shown.records, &shown.checkout), "initialized");

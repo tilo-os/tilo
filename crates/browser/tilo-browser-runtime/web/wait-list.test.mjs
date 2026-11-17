@@ -40,7 +40,7 @@ const NAMES = ['form', 'email', 'submit', 'done', 'againLine', 'againPrompt', 'a
  * not), at an entry that mails or not, after a mailed link (`arrival`) or
  * not, the host answering as given. */
 function entry({kept = null, contact = null, mail = false, arrival = null, messages = null, join, leave = async () => {},
-  confirm = async () => true, standing = async () => null} = {}) {
+  confirm = async () => true, status = async () => null} = {}) {
   const elements = Object.fromEntries(NAMES.map(name => [name, new Element()]));
   const root = {dataset: {}};
   const calls = [];
@@ -60,7 +60,7 @@ function entry({kept = null, contact = null, mail = false, arrival = null, messa
       listing = null;
     },
     confirm: async request => { calls.push(['confirm', request.token]); return confirm(request); },
-    standing: async request => { calls.push(['standing', request.workspace.name]); return standing(request); }});
+    status: async request => { calls.push(['status', request.workspace.name]); return status(request); }});
   const shown = () => ({
     state: root.dataset.waitList, listed: 'waitListed' in root.dataset, done: elements.done.textContent,
     again: elements.againLine.hidden ? '' : `${elements.againPrompt.textContent} ${elements.again.textContent}`,
@@ -115,20 +115,20 @@ test('a browser that left its address before is told where it stands instead of 
     ['invited', 'invited', 'You’re invited: the link is in your inbox.'],
     [null, 'inbox', 'Check your inbox: we sent a link to ada@example.org to confirm.'],
   ]) {
-    const {shown, mounted, calls} = entry({mail: true, kept: {email: 'ada@example.org', pending: true}, standing: async () => stands});
+    const {shown, mounted, calls} = entry({mail: true, kept: {email: 'ada@example.org', pending: true}, status: async () => stands});
     assert.equal(shown().state, 'inbox', 'at once, from what this browser kept');
     await mounted.settled;
-    assert.deepEqual(calls, [['standing', 'Lounge']]);
+    assert.deepEqual(calls, [['status', 'Lounge']]);
     assert.equal(shown().state, state, String(stands));
     assert.equal(shown().done, done);
     assert.equal(shown().off, 'Changed your mind? Take me off the list');
   }
   // Gone (joined, or taken off elsewhere): the form.
-  const gone = entry({kept: {email: 'ada@example.org', pending: false}, standing: async () => 'gone'});
+  const gone = entry({kept: {email: 'ada@example.org', pending: false}, status: async () => 'gone'});
   await gone.mounted.settled;
   assert.equal(gone.shown().state, 'form');
   // Invited where the entry sends no mail: the invitation comes from the inviter.
-  const plain = entry({kept: {email: 'ada@example.org', pending: false}, standing: async () => 'invited'});
+  const plain = entry({kept: {email: 'ada@example.org', pending: false}, status: async () => 'invited'});
   await plain.mounted.settled;
   assert.equal(plain.shown().done, 'You’re invited: whoever invited you sends you the link.');
 });

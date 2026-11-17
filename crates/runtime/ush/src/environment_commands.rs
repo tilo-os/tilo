@@ -19,7 +19,7 @@ use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan
 use tilo_actions::remote::environment_machines::{self, BranchMachine, MachineBranched};
 use tilo_actions::remote::linux_apps::{self, OpenApp};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLedger,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLog,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, Reservation,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
@@ -46,7 +46,7 @@ struct Inner {
     shells: WorkspaceShells,
     browsers: Option<BrowserHost>,
     operator: [u8; 32],
-    ledger: Mutex<InvocationLedger<Run>>,
+    log: Mutex<InvocationLog<Run>>,
     moved: Condvar,
     /// How many times a run moved, so a waiter tells a change from a wake.
     moves: Mutex<u64>,
@@ -78,7 +78,7 @@ impl EnvironmentCommands {
             shells,
             browsers,
             operator,
-            ledger: Mutex::new(InvocationLedger::with_capacity(REMEMBERED)),
+            log: Mutex::new(InvocationLog::with_capacity(REMEMBERED)),
             moved: Condvar::new(),
             moves: Mutex::new(0),
         }))
@@ -418,8 +418,8 @@ impl ActionHost for EnvironmentCommands {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let ledger = self.0.ledger.lock().unwrap_or_else(PoisonError::into_inner);
-        ledger.get(caller, id).map(Run::state)
+        let log = self.0.log.lock().unwrap_or_else(PoisonError::into_inner);
+        log.get(caller, id).map(Run::state)
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
@@ -436,7 +436,7 @@ impl ActionHost for EnvironmentCommands {
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
         let run = self
             .0
-            .ledger
+            .log
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(caller, id)
@@ -504,9 +504,9 @@ impl EnvironmentCommands {
             _ => return Err(not_served()),
         };
         let invocation = request.invocation;
-        let mut ledger = self.0.ledger.lock().unwrap_or_else(PoisonError::into_inner);
-        match ledger.reserve(caller, request)? {
-            Reservation::Admitted => ledger
+        let mut log = self.0.log.lock().unwrap_or_else(PoisonError::into_inner);
+        match log.reserve(caller, request)? {
+            Reservation::Admitted => log
                 .get(caller, &invocation)
                 .map(|run| run.state().receipt())
                 .ok_or(ActionHostError::UnknownInvocation),
@@ -518,8 +518,8 @@ impl EnvironmentCommands {
                     ))),
                     stop: Arc::new(AtomicBool::new(false)),
                 };
-                ledger.complete(&invocation, run.clone());
-                drop(ledger);
+                log.complete(&invocation, run.clone());
+                drop(log);
                 let receipt = run.state().receipt();
                 match asked {
                     Asked::Command(asked) => self.0.start(run, workspace, asked),

@@ -141,7 +141,7 @@ async fn join_with(workspaces: &Workspaces, invitation: Vec<u8>, device: &Device
 
 /// How `person` stands in `workspace`: their role and whether they
 /// administer it.
-async fn standing(
+async fn access(
     workspaces: &Workspaces,
     workspace: &str,
     person: [u8; 32],
@@ -232,7 +232,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     // Joining makes them its administrator.
     join(workspaces, &created, &guest).await;
     assert_eq!(
-        standing(
+        access(
             workspaces,
             &created.workspace.workspace,
             guest.user_public_key
@@ -364,10 +364,10 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         1,
         "their account read lists the records directory once for all {HUNDREDS}"
     );
-    let standing = account.standing.unwrap();
-    assert_eq!(standing.usage.workspaces.len(), HUNDREDS);
+    let subscription = account.subscription.unwrap();
+    assert_eq!(subscription.usage.workspaces.len(), HUNDREDS);
     assert_eq!(
-        standing.limits.unwrap().max_workspaces,
+        subscription.limits.unwrap().max_workspaces,
         None,
         "how many of their own a person may keep is unbounded"
     );
@@ -409,16 +409,16 @@ async fn the_account_read_lists_every_workspace_of_their_own_with_no_bound_on_ho
     read.target = host_account::target(host_account::ACCOUNT);
     let account: HostAccount =
         serde_json::from_value(invoke(&host, &guest, read).await.unwrap()).unwrap();
-    let standing = account.standing.unwrap();
+    let subscription = account.subscription.unwrap();
     assert_eq!(account.host, "tilo.test");
-    assert_eq!(standing.account, hex::encode(guest.user_public_key));
+    assert_eq!(subscription.account, hex::encode(guest.user_public_key));
     assert_eq!(
-        standing.limits.unwrap().max_workspaces,
+        subscription.limits.unwrap().max_workspaces,
         None,
         "no bound on how many workspaces of their own a person keeps"
     );
     assert_eq!(account.plans[0].limits.max_workspaces, None);
-    let listed: Vec<&str> = standing
+    let listed: Vec<&str> = subscription
         .usage
         .workspaces
         .iter()
@@ -432,15 +432,15 @@ async fn the_account_read_lists_every_workspace_of_their_own_with_no_bound_on_ho
         ]
     );
     assert_eq!(
-        standing.usage.stored_bytes(),
-        standing
+        subscription.usage.stored_bytes(),
+        subscription
             .usage
             .workspaces
             .iter()
             .map(|usage| usage.stored_bytes)
             .sum::<u64>()
     );
-    assert!(standing.usage.stored_bytes() > 0);
+    assert!(subscription.usage.stored_bytes() > 0);
     relay.shutdown().await;
 }
 
@@ -470,7 +470,7 @@ async fn a_plan_sets_the_storage_a_persons_own_workspaces_keep() {
         Some(2_000_000_000),
         "their plan's storage, not the host's ten gigabytes"
     );
-    let limits = account.standing.unwrap().limits.unwrap();
+    let limits = account.subscription.unwrap().limits.unwrap();
     assert_eq!(limits.storage_bytes, Some(2_000_000_000));
     assert_eq!(limits.max_workspaces, None);
     // A stranger is on the host's own storage.
@@ -505,7 +505,7 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
         .await
         .unwrap();
     let account = workspaces.own_account(&guest.user_public_key).unwrap();
-    let usage = account.standing.unwrap().usage;
+    let usage = account.subscription.unwrap().usage;
     let kept = |workspace: &str| {
         usage
             .workspaces
@@ -664,7 +664,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     );
     join(workspaces, &created, &all).await;
     assert_eq!(
-        standing(
+        access(
             workspaces,
             &created.workspace.workspace,
             root.verifying_key().to_bytes()
@@ -753,12 +753,12 @@ async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
     read.target = host_account::target(host_account::ACCOUNT);
     let account: HostAccount =
         serde_json::from_value(invoke(&host, &guest, read).await.unwrap()).unwrap();
-    let standing = account.standing.unwrap();
+    let subscription = account.subscription.unwrap();
     assert_eq!(account.host, "tilo.test");
-    assert_eq!(standing.account, hex::encode(guest.user_public_key));
-    assert_eq!(standing.limits.unwrap().storage_bytes, Some(1));
-    assert_eq!(standing.usage.stored_bytes(), used_bytes);
-    assert_eq!(standing.usage.workspaces[0].workspace, own.workspace);
+    assert_eq!(subscription.account, hex::encode(guest.user_public_key));
+    assert_eq!(subscription.limits.unwrap().storage_bytes, Some(1));
+    assert_eq!(subscription.usage.stored_bytes(), used_bytes);
+    assert_eq!(subscription.usage.workspaces[0].workspace, own.workspace);
     relay.shutdown().await;
 }
 
@@ -802,7 +802,7 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
     };
     let account: HostAccount = serde_json::from_value(output.value.unwrap()).unwrap();
     assert_eq!(
-        account.standing.unwrap().account,
+        account.subscription.unwrap().account,
         hex::encode(root.verifying_key().to_bytes())
     );
     // An agent the person connected through consent, reaching every
@@ -991,7 +991,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     join_with(workspaces, invitation, &page).await;
     let rosa_person = rosa.verifying_key().to_bytes();
     assert_eq!(
-        standing(workspaces, &workspace.workspace, rosa_person).await,
+        access(workspaces, &workspace.workspace, rosa_person).await,
         Some((Role::Editor, false))
     );
 
@@ -1002,7 +1002,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     assert_eq!(entering.workspace.workspace, workspace.workspace);
     join(workspaces, &entering, &reviewer).await;
     assert_eq!(
-        standing(workspaces, &workspace.workspace, rosa_person).await,
+        access(workspaces, &workspace.workspace, rosa_person).await,
         Some((Role::Editor, false))
     );
     // She administers nothing there, so her key invites nobody into it.
@@ -1087,7 +1087,7 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
         .unwrap();
     let hal_person = hal.verifying_key().to_bytes();
     assert_eq!(
-        standing(workspaces, &workspace.workspace, hal_person).await,
+        access(workspaces, &workspace.workspace, hal_person).await,
         Some((Role::Editor, true))
     );
     assert!(!workspaces.is_owner(&workspace.workspace, hal_person).await);
@@ -1100,7 +1100,7 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
         .unwrap();
     let ivy_person = ivy.verifying_key().to_bytes();
     assert_eq!(
-        standing(workspaces, &workspace.workspace, ivy_person).await,
+        access(workspaces, &workspace.workspace, ivy_person).await,
         Some((Role::Editor, false))
     );
     let refused = add_member(&host, workspace, &hal_key, &ivy, "owner").await;
@@ -1408,7 +1408,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     );
     let account = workspaces.own_account(&person).unwrap();
     assert!(
-        account.standing.unwrap().usage.workspaces.is_empty(),
+        account.subscription.unwrap().usage.workspaces.is_empty(),
         "what it kept no longer counts against its person"
     );
     // Nothing of it stays on disk but the mark that it was deleted.

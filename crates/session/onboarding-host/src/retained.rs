@@ -1,4 +1,4 @@
-//! The plans for original-file custody a migration leaves behind: what the
+//! The plans for original-file ownership a migration leaves behind: what the
 //! person chose to keep from the system Tilo replaced, read back only from
 //! private files bound to the active identity, and the receipts that
 //! acknowledge exactly one plan.
@@ -454,7 +454,7 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             let (home, path) = fixture(Some("access-read-write"), false, &mut env);
             let expected = request(home.path(), "test-operation").unwrap().unwrap();
-            // Exercise receipt custody only; this does not fabricate a live actor or authentication.
+            // Exercise receipt ownership only; this does not fabricate a live actor or authentication.
             acknowledge(home.path(), &expected).unwrap();
             assert!(acknowledged(home.path(), "test-operation").unwrap());
             let (_other, _) = fixture(None, false, &mut env);

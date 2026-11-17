@@ -223,7 +223,7 @@ fn read_up_to(file: &mut std::fs::File, into: &mut [u8]) -> std::io::Result<usiz
 impl WorkspaceActions {
     /// Answer `step` of an upload `caller` asks of the host in
     /// `workspace_id`. The host's own person and their agents put files; a
-    /// member, or an agent of theirs, puts them where their standing lets
+    /// member, or an agent of theirs, puts them where their access lets
     /// them change the workspace's records, which the service's thread reads
     /// when the upload begins. Its later steps go to the upload they began.
     pub(super) fn content_put(
@@ -306,7 +306,7 @@ impl WorkspaceActions {
 
     /// Answer `caller`'s request for a link to content of the host's
     /// workspace `workspace_id`: anyone who may read it, as the service's
-    /// thread reads their standing.
+    /// thread reads their access.
     pub(super) fn content_link(
         &self,
         workspace_id: WorkspaceId,

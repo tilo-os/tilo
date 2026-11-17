@@ -66,7 +66,7 @@ pub use apps::{
 };
 pub use control::{
     AdmissionDone, AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone,
-    GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot, Witness,
+    Approver, GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot,
 };
 pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
 pub use member::actions::{RESOURCE_PROVIDER, record_provider};

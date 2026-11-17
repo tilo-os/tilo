@@ -4751,7 +4751,7 @@ impl BlockEditor {
         {
             // Conversion or a concurrent edit can split an authored fence.
             // Address the visible fragment without rewriting collaborative
-            // identities during projection. Both boundaries are witnessed so
+            // identities during projection. Both boundaries are observed so
             // an old Copy button cannot silently expand after Undo or a merge.
             return Some(format!(
                 "notes.code-copy:fragment:{group}:{}:{}",

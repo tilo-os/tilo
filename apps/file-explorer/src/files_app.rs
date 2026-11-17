@@ -587,7 +587,7 @@ pub struct FilesState {
 
 struct StagedScenario(Option<String>);
 
-/// One test at a time: the waiting stack and the ledger are the process's,
+/// One test at a time: the waiting stack and the log are the process's,
 /// so two tests running at once would see each other's rows.
 #[cfg(test)]
 pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {

@@ -25,8 +25,8 @@ use tilo_actions::outcome::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
-    CatalogueRow, Confirmation, InvocationLedger, InvocationReceipt, InvocationState,
-    InvokeRequest, Pending,
+    CatalogueRow, Confirmation, InvocationLog, InvocationReceipt, InvocationState, InvokeRequest,
+    Pending,
 };
 use tilo_agent::transform::{self, TransformModel};
 use tilo_automation::{
@@ -86,7 +86,7 @@ struct AgentHost {
     model: Scripted,
     answering: Answering,
     content: ui::content::ContentStore,
-    ledger: Mutex<InvocationLedger<InvocationUpdate>>,
+    log: Mutex<InvocationLog<InvocationUpdate>>,
 }
 
 impl AgentHost {
@@ -114,7 +114,7 @@ impl AgentHost {
             model: Scripted::new(answers),
             answering: Answering::AsTheAgent,
             content: ui::content::ContentStore::memory(),
-            ledger: Mutex::new(InvocationLedger::default()),
+            log: Mutex::new(InvocationLog::default()),
         }
     }
 
@@ -185,7 +185,7 @@ impl ActionHost for AgentHost {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
         let receipt = self
-            .ledger
+            .log
             .lock()
             .unwrap()
             .admit(caller, &request, || Ok(self.answer(&request)))
@@ -194,7 +194,7 @@ impl ActionHost for AgentHost {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.ledger
+        self.log
             .lock()
             .unwrap()
             .get(caller, id)

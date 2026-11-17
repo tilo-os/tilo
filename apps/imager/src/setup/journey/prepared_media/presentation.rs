@@ -1,16 +1,16 @@
 //! Journey presentation over frontend-owned native preparation workers.
 
-use super::native_ownership::{FrontendNativeActor as Actor, FrontendNativeCustody};
+use super::native_ownership::{FrontendNativeActor as Actor, FrontendNativeOwnership};
 use std::sync::Arc;
 
 pub(crate) struct PreparedMedia {
-    pub(super) native_payload: FrontendNativeCustody,
+    pub(super) native_payload: FrontendNativeOwnership,
     pub(super) api: PreparedApi,
 }
 pub(super) struct PreparedApi {
     pub projection: fn(&PreparedMedia) -> serde_json::Value,
     pub expectation: fn(&PreparedMedia) -> &imager_backend::imager_model::PreparedSetupExpectation,
-    pub account_custody_protocol: fn(&PreparedMedia) -> Option<u32>,
+    pub account_credentials_protocol: fn(&PreparedMedia) -> Option<u32>,
     pub service_session_protocol: fn(&PreparedMedia) -> Option<u32>,
     pub applications_protocol: fn(&PreparedMedia) -> Option<u32>,
     pub home_archive_protocol: fn(&PreparedMedia) -> Option<u32>,
@@ -104,8 +104,8 @@ impl PreparedMedia {
     pub fn expectation(&self) -> &imager_backend::imager_model::PreparedSetupExpectation {
         (self.api.expectation)(self)
     }
-    pub fn account_custody_protocol(&self) -> Option<u32> {
-        (self.api.account_custody_protocol)(self)
+    pub fn account_credentials_protocol(&self) -> Option<u32> {
+        (self.api.account_credentials_protocol)(self)
     }
     pub fn service_session_protocol(&self) -> Option<u32> {
         (self.api.service_session_protocol)(self)

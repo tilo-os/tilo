@@ -346,14 +346,14 @@ tilo_test_env::scenario! {
                 .authority
                 .device_governs
                 .store(false, Ordering::SeqCst);
-            let custody = (
+            let ownership = (
                 &fixture.caller,
                 Some(&fixture.origin),
                 fixture.workspace.as_str(),
             );
             let (_, original, now) = fixture
                 .state
-                .current_framework_authority(custody.0, custody.1, custody.2)
+                .current_framework_authority(ownership.0, ownership.1, ownership.2)
                 .unwrap();
             let outside = tilo_actions::ActionContract {
                 kind: tilo_actions::ActionKind::Outside,
@@ -373,7 +373,7 @@ tilo_test_env::scenario! {
                 permission.3.as_str(),
             );
             // The keyless projection alone would regain the owner's Outside
-            // permission. Production authorization under the retained custody must
+            // permission. Production authorization under the retained ownership must
             // refuse it: a foreign device needs the person's confirmation.
             assert!(
                 fixture
@@ -402,10 +402,10 @@ tilo_test_env::scenario! {
             let result = if close {
                 fixture
                     .state
-                    .close_application(custody, admitted, &app().package_id)
+                    .close_application(ownership, admitted, &app().package_id)
             } else {
                 fixture.state.launch_application(
-                    custody,
+                    ownership,
                     admitted,
                     &app().package_id,
                     crate::services::LaunchContent {
@@ -580,7 +580,7 @@ tilo_test_env::scenario! {
                     .unwrap();
                 fixture.assert_signed(&request, false);
                 fixture.authority.revoked.store(true, Ordering::SeqCst);
-                let custody = (
+                let ownership = (
                     &fixture.caller,
                     Some(&fixture.origin),
                     fixture.workspace.as_str(),
@@ -589,10 +589,10 @@ tilo_test_env::scenario! {
                     if close {
                         fixture
                             .state
-                            .close_application(custody, admitted, &app().package_id)
+                            .close_application(ownership, admitted, &app().package_id)
                     } else {
                         fixture.state.launch_application(
-                            custody,
+                            ownership,
                             admitted,
                             &app().package_id,
                             crate::services::LaunchContent {
@@ -627,7 +627,7 @@ tilo_test_env::scenario! {
 
     phase local_origin_replacement_during_admission_is_refused;
     // Re-enrolling a request under a new origin during admission must not turn
-    // its original local custody into fresh authority.
+    // its original local ownership into fresh authority.
     {
         let fixture = Fixture::new(HostServices::default());
         let replacement = fixture.new_policy_origin();
@@ -736,7 +736,7 @@ tilo_test_env::scenario! {
                         workers.insert(7, worker_route.clone(), retired);
                     }
                 }
-                let custody = (
+                let ownership = (
                     &fixture.caller,
                     Some(&fixture.origin),
                     fixture.workspace.as_str(),
@@ -744,10 +744,10 @@ tilo_test_env::scenario! {
                 let result = if close {
                     fixture
                         .state
-                        .close_application(custody, admitted, &app().package_id)
+                        .close_application(ownership, admitted, &app().package_id)
                 } else {
                     fixture.state.launch_application(
-                        custody,
+                        ownership,
                         admitted,
                         &app().package_id,
                         crate::services::LaunchContent {

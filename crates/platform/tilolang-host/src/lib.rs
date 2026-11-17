@@ -354,11 +354,11 @@ impl TilolangHost {
     }
 
     /// What the person may do in `app` changed: its instances, running or opening, offer and
-    /// invoke by `standing` from now on. Whether any of them changed.
-    pub fn set_standing(
+    /// invoke by `access` from now on. Whether any of them changed.
+    pub fn set_access(
         &mut self,
         app: &str,
-        standing: Option<&tilo_action_policy::Standing>,
+        access: Option<&tilo_action_policy::MemberAccess>,
     ) -> bool {
         let mut changed = false;
         for running in self
@@ -366,14 +366,14 @@ impl TilolangHost {
             .iter_mut()
             .filter(|running| running.hosted.spec().app == app)
         {
-            changed |= running.hosted.set_standing(standing.cloned());
+            changed |= running.hosted.set_access(access.cloned());
         }
         // An instance still opening runs with it from its first frame.
         for opening in self.opening.iter_mut().filter(|opening| opening.app == app) {
             match &mut opening.stage {
-                Stage::Module { request, .. } => request.standing = standing.cloned(),
+                Stage::Module { request, .. } => request.access = access.cloned(),
                 Stage::Joining { spec, .. } | Stage::Reading { spec, .. } => {
-                    spec.standing = standing.cloned();
+                    spec.access = access.cloned();
                 }
                 Stage::Moved => {}
             }
@@ -690,7 +690,7 @@ impl TilolangHost {
             spec: Spec {
                 installed: request.installed,
                 language: request.language,
-                standing: request.standing,
+                access: request.access,
                 ..Spec::new(
                     request.app,
                     request.workspace,
@@ -1212,7 +1212,7 @@ mod tests {
         assert!(!opens_document(&owns, other.as_str()));
         assert!(!opens_document(&owns, "not a document"));
         // Naming nothing names no document: not the workspace's, whose route names none, by the
-        // empty name or by the key its custody keeps it under, and not a member's own.
+        // empty name or by the key its ownership keeps it under, and not a member's own.
         let primary = collab_types::document::DocumentId::package_primary();
         for unnamed in ["", primary.as_str()] {
             assert!(

@@ -55,7 +55,7 @@ impl MlsVault {
 
     /// Open the vault of the session the launcher started: its state root under the session's own
     /// state directory. No home directory fallback is accepted because that would weaken key
-    /// custody.
+    /// ownership.
     ///
     /// # Errors
     /// The launcher named no state directory, or the vault material cannot be opened.

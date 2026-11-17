@@ -781,7 +781,7 @@ impl PortableStorage {
                 .is_none_or(|committed| committed.revision < write.revision)
         {
             if write.value.actor != entry.current().actor {
-                return Err("acknowledgement actor differs from persistent custody".into());
+                return Err("acknowledgement actor differs from persistent ownership".into());
             }
             let same_revision = write.revision == entry.revision;
             if same_revision && write.value.bytes != entry.current().bytes {

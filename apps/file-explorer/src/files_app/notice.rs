@@ -193,7 +193,7 @@ mod tests {
         // window: it does not expire, and it asks nobody.
         {
             ui::attention::clear();
-            ui::attention::clear_ledger();
+            ui::attention::clear_log();
             let mut notice = Notice::default();
             notice.show("Couldn’t open “a.pdf”", "No app opens PDF files", None);
             notice.publish();
@@ -202,14 +202,14 @@ mod tests {
                 ui::attention::entries()
                     .iter()
                     .any(|entry| entry.what().contains("Couldn’t open")),
-                "the ledger keeps it"
+                "the log keeps it"
             );
         }
 
         phase one_outcome_is_recorded_once;
         {
             ui::attention::clear();
-            ui::attention::clear_ledger();
+            ui::attention::clear_log();
             let mut notice = Notice::default();
             notice.show("Copied 3 files", "", None);
             notice.publish();

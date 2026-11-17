@@ -48,12 +48,12 @@ impl Reading {
             return None;
         }
         let person = hex::encode(self.person);
-        let standing = ui::permissions::PermissionContext::member_of(
+        let access = ui::permissions::PermissionContext::member_of(
             WORKSPACE,
             &ui::permissions::MemberId::person(person.clone()),
             Role::Editor,
         )
-        .standing()
+        .access()
         .clone();
         let denied: Vec<Grant> = self
             .bound
@@ -65,7 +65,7 @@ impl Reading {
                 Grant::new(
                     format!("no-read:{app}"),
                     grantee.clone(),
-                    standing.node(&TreePath::root().app(app)),
+                    access.node(&TreePath::root().app(app)),
                     KindSet::of(ActionKind::Read),
                     Answer::Deny,
                     grantee,
@@ -74,7 +74,7 @@ impl Reading {
             .collect();
         Some(ViewReadPolicy {
             workspace: WORKSPACE.into(),
-            standing: standing.granted(denied),
+            access: access.granted(denied),
             sandbox: Vec::new(),
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
         })

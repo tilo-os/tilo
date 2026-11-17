@@ -94,7 +94,7 @@ struct Link {
     ours: OwnedFd,
     /// The launch's end, until the launch takes it with its release.
     theirs: Option<OwnedFd>,
-    /// The launcher process, once it exists: the custody a window's
+    /// The launcher process, once it exists: the ownership a window's
     /// connections are attributed to.
     launcher_pid: Option<u32>,
     /// Which reservation this is, so the end of an earlier launch never

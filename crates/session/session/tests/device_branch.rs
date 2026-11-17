@@ -586,14 +586,14 @@ fn syncing(device: &Device) -> String {
                 "history",
                 "workspace_sync",
                 "refus",
-                "custody",
+                "ownership",
                 "take this device",
                 "peer-sync",
                 "dials its host",
                 "device of the person",
                 "own host",
                 "layout",
-                "custody",
+                "ownership",
                 "native",
                 "link",
                 "WARN",
@@ -733,11 +733,11 @@ fn a_workspace_its_source_hosts_and_a_copy_edit_each_other_after_every_restart()
 }
 
 /// A copy keeps reaching the workspace its source hosts however much it writes there: each window
-/// it opens shows on its source, past the writes its custody holds at once (`MAX_ENTRIES`, 64).
-/// The copy's writes stayed in its custody for good and, once that was full, a new one never left
+/// it opens shows on its source, past the writes its ownership holds at once (`MAX_ENTRIES`, 64).
+/// The copy's writes stayed in its ownership for good and, once that was full, a new one never left
 /// it (`e2e-branch` S11).
 #[test]
-fn a_copy_keeps_reaching_the_workspace_its_source_hosts_past_what_its_custody_holds() {
+fn a_copy_keeps_reaching_the_workspace_its_source_hosts_past_what_its_ownership_holds() {
     let ada = Person::new("Ada");
     let mut laptop = ada.device("Ada's laptop");
     laptop.start();

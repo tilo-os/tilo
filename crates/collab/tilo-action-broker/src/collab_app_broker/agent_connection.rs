@@ -200,7 +200,7 @@ impl AgentConnection {
             .ok_or(ActionHostError::NotPermitted)?
             .to_owned();
         let question = state
-            .witness_question(caller, &person, request)?
+            .approval_question(caller, &person, request)?
             .ok_or(ActionHostError::UnknownAction)?;
         let nobody = || ActionHostError::Unavailable {
             reason: "nobody is at this desktop to answer the agent's question".into(),
@@ -235,7 +235,7 @@ impl AgentConnection {
         ) {
             sessions.keep_answer(&self.0.session, grant);
         }
-        state.witness_answer(&question, request, &answer.edits)
+        state.approval_answer(&question, request, &answer.edits)
     }
 
     /// The person's answer on the sheet to the question about `label`, waited for while the

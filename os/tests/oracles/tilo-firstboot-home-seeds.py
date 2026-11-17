@@ -51,8 +51,8 @@ def verify_receipt(receipt, home, uid):
         relative = Path(entry['path'])
         if (relative.is_absolute() or not relative.parts or '..' in relative.parts
                 or str(relative) != entry['path'] or entry['path'] in seen
-                or any(relative == Path(custody) or Path(custody) in relative.parents
-                       for custody in ('.config/tilo', '.local/state/tilo'))):
+                or any(relative == Path(ownership) or Path(ownership) in relative.parents
+                       for ownership in ('.config/tilo', '.local/state/tilo'))):
             raise ValueError('unsafe firstboot seed proof path')
         seen.add(entry['path'])
         directory = os.open(home, atomic.DIR)
@@ -163,11 +163,11 @@ def seed(home, skeleton, uid, gid, proofs=PROOFS):
                             raise ValueError('firstboot skeleton changed')
                     publish_bytes(destination, name, data,
                                   stat.S_IMODE(metadata.st_mode) & 0o777, uid, gid)
-                    witness = stamp(target.lstat())
+                    proof = stamp(target.lstat())
                     relative_file = target.relative_to(home)
-                    if not any(relative_file == Path(custody) or Path(custody) in relative_file.parents
-                               for custody in ('.config/tilo', '.local/state/tilo')):
-                        files.append({'path': str(relative_file), 'stamp': witness,
+                    if not any(relative_file == Path(ownership) or Path(ownership) in relative_file.parents
+                               for ownership in ('.config/tilo', '.local/state/tilo')):
+                        files.append({'path': str(relative_file), 'stamp': proof,
                                       'sha256': hashlib.sha256(data).hexdigest()})
                 except BaseException:
                     # Never remove a path after a possible same-name substitution.

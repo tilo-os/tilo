@@ -317,13 +317,13 @@ pub fn project_effect_receipts(
     if receipts.is_empty() {
         return Ok(());
     }
-    let ledger = match doc.get(&ROOT, WORKSPACE_EFFECT_RECEIPTS_KEY)? {
+    let log = match doc.get(&ROOT, WORKSPACE_EFFECT_RECEIPTS_KEY)? {
         Some((Value::Object(ObjType::Map), id)) => id,
         _ => doc.put_object(&ROOT, WORKSPACE_EFFECT_RECEIPTS_KEY, ObjType::Map)?,
     };
-    let slice = match doc.get(&ledger, person)? {
+    let slice = match doc.get(&log, person)? {
         Some((Value::Object(ObjType::Map), id)) => id,
-        _ => doc.put_object(&ledger, person, ObjType::Map)?,
+        _ => doc.put_object(&log, person, ObjType::Map)?,
     };
     for receipt in receipts {
         let key = receipt.invocation.0.to_string();
@@ -346,14 +346,14 @@ pub fn project_effect_receipts(
 /// oldest first. Receipts that do not decode are skipped.
 pub fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectReceipt> {
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value};
-    let Some((Value::Object(ObjType::Map), ledger)) =
+    let Some((Value::Object(ObjType::Map), log)) =
         doc.get(&ROOT, WORKSPACE_EFFECT_RECEIPTS_KEY).ok().flatten()
     else {
         return Vec::new();
     };
     let mut receipts = Vec::new();
-    for person in doc.keys(&ledger) {
-        let Some((Value::Object(ObjType::Map), slice)) = doc.get(&ledger, &person).ok().flatten()
+    for person in doc.keys(&log) {
+        let Some((Value::Object(ObjType::Map), slice)) = doc.get(&log, &person).ok().flatten()
         else {
             continue;
         };

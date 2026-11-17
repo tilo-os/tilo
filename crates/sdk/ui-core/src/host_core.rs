@@ -884,16 +884,14 @@ pub(crate) trait HostCore {
         &mut self,
         prepared: PreparedContinuation,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        let captured =
-            prepared
-                .witness
-                .as_ref()
-                .map_err(|reason| tilo_actions::ApiError::Unavailable {
-                    code: "stale_pending_control".into(),
-                    reason: reason.clone(),
-                })?;
+        let captured = prepared.observation.as_ref().map_err(|reason| {
+            tilo_actions::ApiError::Unavailable {
+                code: "stale_pending_control".into(),
+                reason: reason.clone(),
+            }
+        })?;
         let tree = self.tree();
-        let current = crate::bound_dispatch::control_witness(
+        let current = crate::bound_dispatch::control_observation(
             tree.root,
             &tree.state.doc,
             &prepared.target,

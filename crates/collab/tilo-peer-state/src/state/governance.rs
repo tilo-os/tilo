@@ -3,9 +3,9 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, Grant, GrantId, Grantee,
-    Member, MemberId, MemberList, MembershipError, Person, ROOT, ReadDoc, RevocationList, Role,
-    Standing, SystemTime, Transactable, administrator_grant_id, err, governed_map, now_ns,
-    person_of, workspace,
+    Member, MemberAccess, MemberId, MemberList, MembershipError, Person, ROOT, ReadDoc,
+    RevocationList, Role, SystemTime, Transactable, administrator_grant_id, err, governed_map,
+    now_ns, person_of, workspace,
 };
 use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
@@ -26,31 +26,33 @@ impl PeerGovernance<'_> {
             .map(|bytes| serde_json::from_slice(bytes).map_err(err))
             .collect()
     }
-    /// The standing of every governed member device at `now`: what a relay
+    /// The access of every governed member device at `now`: what a relay
     /// that does not hold the workspace's governance decides their changes
     /// with, each held to its foreign-device bound.
-    pub fn governed_standings(
+    pub fn governed_device_access(
         self,
         now: SystemTime,
-    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
+    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>, String>
+    {
         let access = self.peer.governance().governed_access(now)?;
-        self.standings_of(&access.member_devices, now)
+        self.access_of(&access.member_devices, now)
     }
-    /// [`Self::governed_standings`] of `devices`, the member devices
+    /// [`Self::governed_device_access`] of `devices`, the member devices
     /// [`Self::governed_access`] at `now` answered: a host that just listed
     /// them for its access does not list them again.
-    pub fn standings_of(
+    pub fn access_of(
         self,
         devices: &[[u8; 32]],
         now: SystemTime,
-    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
+    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>, String>
+    {
         let doc = self
             .peer
             .core
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
-        // One policy, shared by every device's standing.
+        // One policy, shared by every device's access.
         let policy = std::sync::Arc::new(doc.workspace_policy(&self.peer.core.workspace).clone());
         Ok(devices
             .iter()
@@ -1200,7 +1202,7 @@ impl PeerGovernanceMut<'_> {
 impl super::StatePeer {
     /// The current member writing with `key`, as its own device's authority
     /// holds it: what inviting is decided by.
-    fn inviter(&self, key: &dyn DeviceSigner, now: SystemTime) -> Result<Standing, String> {
+    fn inviter(&self, key: &dyn DeviceSigner, now: SystemTime) -> Result<MemberAccess, String> {
         let device = key.device_public_key();
         self.require_member_writer(key, now)?;
         self.membership(device, now)

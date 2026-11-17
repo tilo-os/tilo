@@ -35,21 +35,21 @@ impl PlacementRecord {
 pub(crate) enum Operation {
     Place,
     Retire,
-    Witness,
+    Proof,
 }
 impl Operation {
     fn byte(self) -> u8 {
         match self {
             Self::Place => 1,
             Self::Retire => 2,
-            Self::Witness => 3,
+            Self::Proof => 3,
         }
     }
     fn decode(byte: u8) -> io::Result<Self> {
         match byte {
             1 => Ok(Self::Place),
             2 => Ok(Self::Retire),
-            3 => Ok(Self::Witness),
+            3 => Ok(Self::Proof),
             _ => Err(io::ErrorKind::InvalidData.into()),
         }
     }
@@ -294,30 +294,30 @@ impl super::ManagedConsumingBootstrap {
     pub(crate) fn adopt_exposure_consumer(
         &mut self,
         record: &PlacementRecord,
-        witness: &crate::ordinary_namespace::NamespaceWitness,
+        proof: &crate::ordinary_namespace::NamespaceProof,
         peer: &runtime_portal::process_binding::ExecutingPeer,
     ) -> io::Result<()> {
         self.verify_launcher(peer)?;
-        witness.validate_for_launcher(peer)?;
-        let init = File::from(witness.init_pidfd()?);
+        proof.validate_for_launcher(peer)?;
+        let init = File::from(proof.init_pidfd()?);
         let launcher = File::from(peer.pidfd().try_clone_to_owned()?);
-        let pidns = witness.pid_namespace()?;
-        let mntns = witness.mount_namespace()?;
+        let pidns = proof.pid_namespace()?;
+        let mntns = proof.mount_namespace()?;
         let mut io = Handoff::new(
             &mut self.control,
             &self.cancel,
             std::time::Duration::from_secs(10),
         )?;
         io.write_all(b"W")?;
-        send_request(&mut io, Operation::Witness, record)?;
+        send_request(&mut io, Operation::Proof, record)?;
         for (tag, file) in [(4, &init), (5, &launcher), (6, &pidns), (7, &mntns)] {
             send_file(&mut io, tag, file)?;
         }
-        receive_result(&mut io, Operation::Witness, record)?;
+        receive_result(&mut io, Operation::Proof, record)?;
         drop(io);
         self.check_current()
     }
-    /// Kernel/controller custody only: source cancellation cannot prevent cleanup.
+    /// Kernel/controller ownership only: source cancellation cannot prevent cleanup.
     pub(crate) fn retire_exposure(&mut self, record: &PlacementRecord) -> io::Result<()> {
         self.check_current()?;
         let cleanup = crate::owned_service::ServiceCancellation::default();
@@ -339,7 +339,7 @@ pub struct ExposureRequest {
     operation: Operation,
     record: PlacementRecord,
     clone: Option<File>,
-    witness: Option<(OwnedFd, OwnedFd, File, File)>,
+    proof: Option<(OwnedFd, OwnedFd, File, File)>,
 }
 /// Actual child stage lifetime, never an app/source grant.
 #[derive(Default)]
@@ -360,7 +360,7 @@ impl super::ConsumingBootstrapEntry {
         let (operation, record) = receive_request(&mut io)?;
         if !matches!(
             (opcode, operation),
-            (b'E', Operation::Place) | (b'R', Operation::Retire) | (b'W', Operation::Witness)
+            (b'E', Operation::Place) | (b'R', Operation::Retire) | (b'W', Operation::Proof)
         ) {
             return Err(io::ErrorKind::InvalidData.into());
         }
@@ -369,7 +369,7 @@ impl super::ConsumingBootstrapEntry {
         } else {
             None
         };
-        let witness = if operation == Operation::Witness {
+        let proof = if operation == Operation::Proof {
             Some((
                 receive_file(&mut io, 4)?.into(),
                 receive_file(&mut io, 5)?.into(),
@@ -385,7 +385,7 @@ impl super::ConsumingBootstrapEntry {
             operation,
             record,
             clone,
-            witness,
+            proof,
         })
     }
 }
@@ -448,12 +448,12 @@ impl ExposureRequest {
                 owner.init.take();
                 Ok(())
             }
-            Operation::Witness => {
+            Operation::Proof => {
                 if owner.scope.as_ref() != Some(&record) || owner.init.is_some() {
                     return Err(io::ErrorKind::PermissionDenied.into());
                 }
                 let (init, launcher, pidns, mntns) =
-                    self.witness.ok_or(io::ErrorKind::InvalidData)?;
+                    self.proof.ok_or(io::ErrorKind::InvalidData)?;
                 let consumer = consumer.as_ref().ok_or(io::ErrorKind::NotConnected)?;
                 consumer.verify_launcher_pidfd(&launcher)?;
                 verify_init(&init, &launcher, &pidns, &mntns)?;

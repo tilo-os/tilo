@@ -310,7 +310,7 @@ impl RelayCoeditSession {
     /// commit `op`: the host admits it as it would the same payload
     /// published, and answers [`Inbound::Committed`] once it is durable, or
     /// [`Inbound::CommitRefused`]. Sending the same `op` again, on this or a
-    /// later session, is answered from the host's ledger and kept once.
+    /// later session, is answered from the host's log and kept once.
     ///
     /// # Errors
     ///

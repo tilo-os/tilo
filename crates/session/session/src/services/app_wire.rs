@@ -257,7 +257,7 @@ pub(crate) fn start_app_wire(
     handle: &DesktopHandle,
     shortcuts: std::sync::Arc<ShortcutLibrary>,
     activity: &activity::Activity,
-    seams: Knitted,
+    services: Knitted,
     collaboration: Collaboration<'_>,
 ) -> Result<Option<AppWire>, Error> {
     let Collaboration {
@@ -326,8 +326,8 @@ pub(crate) fn start_app_wire(
             layout: std::sync::Arc::clone(&layout),
             shortcuts,
             activity: activity_wire,
-            agents: seams.agents,
-            agent_sessions: seams.agent_sessions,
+            agents: services.agents,
+            agent_sessions: services.agent_sessions,
             sealed,
             own_device,
             document_content: content,
@@ -341,7 +341,7 @@ pub(crate) fn start_app_wire(
             // read by search's own worker off the session's thread.
             lists: options.lists.clone(),
             // Files' waits for the drive and app lists to change, which the tools service answers.
-            tools: seams.tools,
+            tools: services.tools,
             task_programs,
             session_actions,
             settings_steps,

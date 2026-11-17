@@ -212,10 +212,10 @@ struct Asking {
     arguments: serde_json::Map<String, serde_json::Value>,
     /// The person's answer once it arrives; a host that went away without
     /// one answers that confirmation is still required.
-    answer: Arc<std::sync::Mutex<Option<WitnessAnswer>>>,
+    answer: Arc<std::sync::Mutex<Option<ApprovalAnswer>>>,
 }
 
-type WitnessAnswer =
+type ApprovalAnswer =
     Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionHostError>;
 
 /// One agent in one workspace.
@@ -936,7 +936,7 @@ impl AgentMember {
             // The person's own device answered for this invocation: it runs
             // as they allowed it, with the arguments as they changed them.
             Ok(tilo_actions::remote::ConfirmedInvocation {
-                confirmation: tilo_actions::remote::Confirmation::Witnessed(_),
+                confirmation: tilo_actions::remote::Confirmation::Approved(_),
                 arguments,
             }) => self
                 .invoke_step(
@@ -1840,7 +1840,7 @@ impl AgentMember {
                 tilo_actions::api::ApiError::ConfirmationRequired.code()
             )))
         };
-        let Some(witness) = self.control.witness() else {
+        let Some(approver) = self.control.approver() else {
             return refused();
         };
         let caller = tilo_actions::remote::Caller::delegated_agent(
@@ -1884,7 +1884,7 @@ impl AgentMember {
         };
         let answer = Arc::new(std::sync::Mutex::new(None));
         let (arrived, control) = (Arc::clone(&answer), Arc::clone(&self.control));
-        witness.confirm(&caller, &request).then(move |given| {
+        approver.confirm(&caller, &request).then(move |given| {
             *arrived.lock_recover() = Some(given.unwrap_or(Err(
                 tilo_actions::remote::ActionHostError::confirmation_required(),
             )));

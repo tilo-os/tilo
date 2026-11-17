@@ -37,7 +37,7 @@ pub fn reviewing() -> (tempfile::TempDir, AccountsController) {
     let mut controller = AccountsController::fixture(
         directory.path(),
         Arc::new(NoBrowser::default()),
-        |custody| custody,
+        |ownership| ownership,
     )
     .unwrap();
     let config = calendar::CalDavConfig {
@@ -145,7 +145,7 @@ tilo_test_env::scenario! {
         assert_eq!(account.config["use_files"], true);
         let vault = SecretVault::open_in(destination.path());
         assert_eq!(
-            account_custody::password_credential(&vault.get(&selected[0]).unwrap()).as_str(),
+            account_credentials::password_credential(&vault.get(&selected[0]).unwrap()).as_str(),
             "app-password"
         );
     }

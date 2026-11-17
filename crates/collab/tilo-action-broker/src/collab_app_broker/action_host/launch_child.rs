@@ -65,9 +65,9 @@ impl AppBrokerState {
             .as_deref()
             .filter(|record| !record.is_empty());
         let Some(origin) = origin else {
-            // Native-task execution has independent retained custody and checks.
+            // Native-task execution has independent retained ownership and checks.
             // Its origin-less path cannot safely mint a certificate-owned child
-            // from actor text. Preserve that path until it supplies typed custody.
+            // from actor text. Preserve that path until it supplies typed ownership.
             return self
                 .launch_retained(&destination.app_id, &destination.workspace, record, place)
                 .map_err(refusal);

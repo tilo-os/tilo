@@ -106,7 +106,7 @@ test('users share one lease; the last release flushes and frees the lock',async(
   await reopened.release();
 });
 
-test('a release whose flush fails keeps custody until retried',async()=>{
+test('a release whose flush fails keeps device key until retried',async()=>{
   const h=harness();
   const storage=await h.host.open('p','d');
   h.idb.failNextPut('AbortError');
@@ -129,7 +129,7 @@ test('host settings seed only a profile without stored settings',async()=>{
 });
 
 
-test('automatic document writes cannot outrun failed credential custody',async()=>{
+test('automatic document writes cannot outrun failed credential device key',async()=>{
   const h=harness();const storage=await h.host.open('p','d');
   h.runtime.flush_files=async()=>{throw Error('credential quota exceeded');};
   h.runtime.write('p','d','doc','opaque credential reference');

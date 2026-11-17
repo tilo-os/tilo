@@ -1,5 +1,5 @@
 //! Edits a browser makes over HTTPS while its host is down stay in its
-//! replica's persisted custody, however many there are, and are replayed once
+//! replica's persisted ownership, however many there are, and are replayed once
 //! the host is back on the same address; a peer that joins afterwards receives
 //! them from the host.
 
@@ -25,7 +25,7 @@ use crate::support::{
     start_host_serving, start_peer, wait_for,
 };
 
-/// How many of `peer`'s writes to the workspace its replica's custody still holds.
+/// How many of `peer`'s writes to the workspace its replica's ownership still holds.
 fn unadmitted(peer: &Link) -> usize {
     let workspace = tilo_desktop_model::WorkspaceId::parse(crate::support::WORKSPACE).unwrap();
     peer.engine()
@@ -83,7 +83,7 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
     host.relay.shutdown().await;
 }
 
-/// Edits made while the host is down: past twice what custody keeps in its record.
+/// Edits made while the host is down: past twice what ownership keeps in its record.
 const OFFLINE: usize = 150;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -127,7 +127,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
 
     drop(host.web);
     host.relay.shutdown().await;
-    // Far more edits than custody keeps in its record: every one is taken.
+    // Far more edits than ownership keeps in its record: every one is taken.
     let mut offline = AutoCommit::new();
     for typed in 0..OFFLINE {
         peer.write(

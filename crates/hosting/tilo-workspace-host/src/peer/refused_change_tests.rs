@@ -20,7 +20,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use super::*;
 use crate::workspaces::fixtures::{
-    admit_view_reader, governor_with, project_standings, test_host_taking_part,
+    admit_view_reader, governor_with, project_access, test_host_taking_part,
 };
 use crate::workspaces::sealed_documents::fixtures::SealingMember;
 use tilo_relay_protocol::WorkspaceId;
@@ -369,10 +369,10 @@ async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
     )
     .await;
     // The device's admission reaches the relay's own runtime, and the
-    // standings its changes are decided against, as a settled decision
+    // device_access its changes are decided against, as a settled decision
     // carries them there.
     lounge.publishing_again(&runtime, &holds).await;
-    project_standings(&lounge.workspaces, &lounge.workspace).await;
+    project_access(&lounge.workspaces, &lounge.workspace).await;
     let ((), sealed) = lounge.writer.seal(&lounge.workspace, |document| {
         document
             .put(automerge::ROOT, "title", "sealed")

@@ -108,6 +108,8 @@ mod bluetooth_handoff;
 #[cfg(target_os = "linux")]
 mod boot_join;
 #[cfg(target_os = "linux")]
+mod broker_services;
+#[cfg(target_os = "linux")]
 mod calls;
 #[cfg(target_os = "linux")]
 pub mod capture;
@@ -337,8 +339,6 @@ mod restore;
 mod rotation;
 #[cfg(target_os = "linux")]
 pub mod run;
-#[cfg(target_os = "linux")]
-mod seams;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 pub mod seeded_apps;

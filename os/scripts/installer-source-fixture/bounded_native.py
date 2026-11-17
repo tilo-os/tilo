@@ -6,15 +6,15 @@ import subprocess
 import time
 
 BOUND = 1024 * 1024
-_OUTSTANDING = {}
+_OUTACCESS = {}
 
 
 def retain_unknown(process):
-    _OUTSTANDING[id(process)] = process
+    _OUTACCESS[id(process)] = process
 
 
 def assert_children_retired():
-    if _OUTSTANDING:
+    if _OUTACCESS:
         raise RuntimeError('owned child retirement unknown; preserve native fixture namespace')
 
 
@@ -78,7 +78,7 @@ def bounded(argv, *, timeout=1800, pass_fds=(), limit=BOUND, test_manifest=None,
         status = observed.si_status if observed.si_code == os.CLD_EXITED else -observed.si_status
         return status, bytes(output[0]), bytes(output[1])
     finally:
-        # Setup failures also enter this custody path. No unbounded wait, and
+        # Setup failures also enter this ownership path. No unbounded wait, and
         # nothing signals a leader after wait/reap made its PID reusable.
         try:
             if process is not None:

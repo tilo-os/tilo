@@ -64,7 +64,7 @@ final class PhoneProbe: ObservableObject {
     func run() {
         guard let engine, !started else { return }
         started = true
-        Task { for await standing in engine.standings() { await stood(standing) } }
+        Task { for await state in engine.states() { await stood(state) } }
         Task {
             for await _ in engine.changes() { await look(after: "the page's word") }
         }
@@ -92,9 +92,9 @@ final class PhoneProbe: ObservableObject {
         }
     }
 
-    private func stood(_ standing: TiloEngine.Standing) async {
+    private func stood(_ state: TiloEngine.Standing) async {
         let seconds = JSON.number((Date().timeIntervalSince(began) * 10).rounded() / 10)
-        switch standing {
+        switch state {
         case .away: break
         case .arriving(let step):
             // A page that stopped on its way in and is loaded once more says why it stopped.
@@ -158,7 +158,7 @@ final class PhoneProbe: ObservableObject {
 
     /// Read Chat's newest messages and print the ones not printed yet, as `TiloLiveProbe` does.
     private func look(after why: String) async {
-        guard let engine, case .open = engine.standing else { return }
+        guard let engine, case .open = engine.state else { return }
         guard !looking else { again = why; return }
         looking = true
         defer { looking = false }

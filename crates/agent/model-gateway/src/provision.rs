@@ -1,7 +1,7 @@
 //! Give a configuration's person a model provider without Settings' window,
 //! through what Settings' provider changes write: the profile into their
 //! provider settings ([`ProviderConfig::save`]), the key into this gateway's
-//! credential custody ([`super::set_key`]). A scripted session
+//! credential storage ([`super::set_key`]). A scripted session
 //! (`dist/dev/nested-session.sh --model-provider`) uses it, from the
 //! developer's key or their own default provider ([`export`]).
 //!

@@ -85,7 +85,7 @@ impl Admit for Workspaces {
                 (None, Through::Invitation { invitation, token }) => {
                     // The keys the entry asks for are the named workspace's group's: an
                     // invitation into another is not this entry's.
-                    let names = tilo_peer_state::join_ledger::invitation_workspace(
+                    let names = tilo_peer_state::join_log::invitation_workspace(
                         &invitation,
                         tilo_clock::unix_now_ns(),
                     );
@@ -172,12 +172,12 @@ impl Workspaces {
 
     /// What `cert`'s device hears when it is a member of `workspace` already,
     /// and the entry keeps nobody out of it: the workspace's own admission,
-    /// with the standings its changes there are decided against brought up to
+    /// with the device_access its changes there are decided against brought up to
     /// date first. `None` for a device the workspace does not admit, and for
     /// one whose person the entry refuses.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the workspace stays locked until its standings are settled and the device's admission is read from it"
+        reason = "the workspace stays locked until its device_access are settled and the device's admission is read from it"
     )]
     async fn member_already(&self, cert: &DeviceCert, workspace: &str) -> Option<Entered> {
         let now = tilo_clock::unix_now_ns();
@@ -202,14 +202,14 @@ impl Workspaces {
             .permissions(cert.device_public_key, tilo_clock::wall())
             .ok()?;
         // An entry cut off between committing an admission and settling it
-        // leaves the device in governance and out of the standings this
+        // leaves the device in governance and out of the device_access this
         // workspace decides its changes against: settle before answering, as
         // a device that enters once more does.
         if !self
             .inner
             .host
             .access
-            .projects_standing(governed.workspace_id(), cert.device_public_key)
+            .projects_access(governed.workspace_id(), cert.device_public_key)
             .await
         {
             self.settle(&mut governed).await.ok()?;

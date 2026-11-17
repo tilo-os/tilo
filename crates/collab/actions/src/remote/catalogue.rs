@@ -54,7 +54,7 @@ pub struct ResourceViewLocator {
 }
 
 /// Exact document route whose broker-owned live publisher is requested.
-/// This selects custody, not permission: ordinary caller authorization still applies.
+/// This selects ownership, not permission: ordinary caller authorization still applies.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CanonicalActionRoute {
@@ -68,7 +68,7 @@ pub struct CanonicalActionRoute {
 /// query lists the first page of everything offered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueQuery {
-    /// Provider-only lookup of one exact route's custodian. Cannot accompany
+    /// Provider-only lookup of one exact route's owner. Cannot accompany
     /// a provider, cursor, target, view lookup, or row filter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_route: Option<CanonicalActionRoute>,

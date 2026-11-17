@@ -77,7 +77,7 @@ fn owner_revision(
     membership.with_workspace(&id, &mut |current| {
         if current.owner().map(String::as_str) == Some(account) {
             // Only structural ownership authorizes this action. Task progress,
-            // receipts, layout and delegated grants cannot revoke owner custody.
+            // receipts, layout and delegated grants cannot revoke owner ownership.
             revision = serde_json::to_vec(&(&current.id(), current.owner()))
                 .ok()
                 .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
@@ -104,7 +104,7 @@ impl LegacyImportAuthority for Authority {
         );
         anyhow::ensure!(
             request == &self.request && approval == &self.approval,
-            "legacy import custody changed"
+            "legacy import ownership changed"
         );
         anyhow::ensure!(
             owner_revision(

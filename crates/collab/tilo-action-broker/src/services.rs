@@ -21,7 +21,7 @@ pub type WorkspaceStatusFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = runtime_collab::WorkspaceStatus> + Send>>;
 
 /// Native workspace membership owner. Public callers choose only a closed typed
-/// command; this host service supplies the private governor signing custody.
+/// command; this host service supplies the private governor signing ownership.
 pub trait WorkspaceMemberships: Send + Sync {
     fn requires_workspace(&self, workspace: &str) -> bool;
 
@@ -69,7 +69,7 @@ pub trait WorkspaceMemberships: Send + Sync {
     ) -> tilo_peer_state::owner_commit::CommitFuture;
 }
 
-/// Host-retained original custody for one exact observed launch: no public constructor or wire
+/// Host-retained original ownership for one exact observed launch: no public constructor or wire
 /// form, and it never grants rights.
 #[derive(Clone)]
 pub struct ObservedApplicationLaunch {
@@ -161,7 +161,7 @@ pub trait LauncherServices: Send + Sync {
         let _ = (app, package_root, workspace, author);
         Err("observed application startup is unavailable on this host".into())
     }
-    /// Observe startup with host-retained original custody, when available.
+    /// Observe startup with host-retained original ownership, when available.
     fn begin_launch_from_original(
         &self,
         app: &str,
@@ -237,7 +237,7 @@ pub trait LauncherServices: Send + Sync {
         }))
     }
 
-    /// Admit kernel-attested executing custody only beneath this exact launch; it grants no new
+    /// Admit kernel-attested executing ownership only beneath this exact launch; it grants no new
     /// identity or filesystem permissions.
     #[cfg(target_os = "linux")]
     fn attest_executing_process(
@@ -572,7 +572,7 @@ pub trait NearbyTransferServices: Send + Sync {
     }
 }
 
-/// Original Browser connection, minted only from certified launcher custody.
+/// Original Browser connection, minted only from certified launcher ownership.
 #[derive(Clone)]
 pub struct BrowserServiceSessionRequestContext {
     peer_id: u64,
@@ -616,7 +616,7 @@ impl BrowserServiceSessionRequestContext {
         self.read.revalidate()
     }
 }
-/// Private credential custody, independent of replicated collaboration state.
+/// Private credential storage, independent of replicated collaboration state.
 pub trait BrowserServiceSessionServices: Send + Sync {
     /// Recheck current route Read permission and the session's own person.
     fn authorize(&self, context: &BrowserServiceSessionRequestContext) -> Result<(), String>;
@@ -632,10 +632,10 @@ pub trait BrowserServiceSessionServices: Send + Sync {
         ) {
             return Err("Website session Admin authorization unavailable".into());
         }
-        // An account secret needs the custodian's own decision for the app
+        // An account secret needs the owner's own decision for the app
         // asking; a host that makes none releases and seals nothing.
         if !command.browser_only() {
-            return Err("Account custody unavailable".into());
+            return Err("Account credentials unavailable".into());
         }
         self.authorize(context)
     }
@@ -668,7 +668,7 @@ pub struct FileClipboardContext {
     pub(crate) duplicate: SelectedDescriptorSource,
     pub(crate) workspace: String,
     pub(crate) owner: tilo_action_policy::MemberId,
-    /// The agent behind this command, when the broker's custody of its
+    /// The agent behind this command, when the broker's ownership of its
     /// original invocation names an agent acting for the person whose
     /// session Files runs in. Presentation only.
     pub(crate) attributed_agent: Option<String>,
@@ -700,13 +700,13 @@ impl FileClipboardContext {
     }
     /// The id of the agent whose invocation this command continues,
     /// acting for the person whose session Files runs in, as the broker's
-    /// custody of that invocation names it; `None` for anyone else. What the
+    /// ownership of that invocation names it; `None` for anyone else. What the
     /// transfer writes is recorded as that agent's, for its person. It grants
     /// nothing.
     pub fn attributed_agent(&self) -> Option<&str> {
         self.attributed_agent.as_deref()
     }
-    /// Recheck the exact caller against live custody and workspace policy.
+    /// Recheck the exact caller against live ownership and workspace policy.
     pub fn authorize(&self, permission: tilo_actions::ActionKind) -> Result<(), String> {
         (self.check)(permission)
     }
@@ -721,7 +721,7 @@ pub trait FileClipboardServices: Send + Sync {
     fn disconnect(&self, peer: u64);
 
     /// Name the agent `agent`, by its id, which the broker took from its own
-    /// custody of a live Files invocation and that acts for the person whose
+    /// ownership of a live Files invocation and that acts for the person whose
     /// session Files runs in, as the cause of this device's next writes to
     /// `paths` (absolute paths under the workspace mount; a folder covers
     /// what is under it). Presentation only: it grants nothing.
@@ -921,9 +921,9 @@ pub struct HostServices {
 }
 
 impl HostServices {
-    /// The seams of these services, by name, in the order the struct declares them: a field added
+    /// The names of these services, in the order the struct declares them: a field added
     /// above belongs here too, and a host's own test compares its decisions to this list.
-    pub const SEAMS: &[&str] = &[
+    pub const NAMES: &[&str] = &[
         "approved_checks",
         "committed_documents",
         "native_media",

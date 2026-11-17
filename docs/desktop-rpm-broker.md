@@ -10,7 +10,7 @@ session result. No build, install test or current-head check is removed.
 `dist/rpm/sign-rpms.sh` invokes the public-artifact broker client. The executable
 is fixed at `/usr/local/libexec/tilo-desktop-rpm-broker`; it and every parent must
 be canonical, root-owned, and not group/world writable, outside the checkout and
-job temporary directory. This matches the existing imager broker custody pattern;
+job temporary directory. This matches the existing imager broker ownership pattern;
 it does **not** grant Desktop access to an imager, EFI, PCR or OCI authority.
 No private key, key identifier, arbitrary endpoint, signing command or IAM role
 is accepted from the job. The native Forgejo OIDC request capability is enabled
@@ -46,7 +46,7 @@ operator client/service, never checkout code.
 Only the isolated service holds the dedicated compatible OpenPGP private authority
 and runs native RPM signing. Raw EFI/PCR RSA or OCI Cosign signatures cannot stand
 in for an RPM/OpenPGP signing identity. Signer provisioning, key creation, key
-custody and live server deployment are outside this code change.
+ownership and live server deployment are outside this code change.
 
 The response directory must contain exactly the three signed RPMs,
 `tilo-rpm-signing-key.asc`, and `receipt.json`. The receipt has exactly:
@@ -90,7 +90,7 @@ their generated package-local signer; production authority is a separate check.
 This code intentionally fails closed until an operator separately approves and
 installs the dedicated broker client/service and public verification tools in a
 qualified runner image, pins the actual public fingerprint, and protects desktop
-release tags. Approval must identify compatible authority/custody/revocation,
+release tags. Approval must identify compatible authority/ownership/revocation,
 exact immutable client image/path, TLS origin/audience, protected-tag OIDC policy,
 minimal service-side artifact access, replay storage, audit/cleanup and resource
 budget without taking feature-PR capacity. No deployment, credentials, IAM grant,

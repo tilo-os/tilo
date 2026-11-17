@@ -135,7 +135,7 @@ fn timers_ring_once_per_deadline_across_restart_and_native_handoff() {
         "case changed-deadline: rings itself"
     );
 
-    // Case: a removed timer leaves the ledger.
+    // Case: a removed timer leaves the log.
     clocks.timers.remove(&id);
     tick(&clocks, &mut reopened, restarted_end, Local::now());
     assert!(reopened.timers_rung.is_empty(), "removed timer forgotten");
@@ -330,7 +330,7 @@ tilo_test_env::scenario! {
             let mut reopened = restarted(&delivery);
             assert!(
                 ring(&clocks, &mut reopened, reopened_at).due.is_empty(),
-                "recurring: the reopened ledger does not repeat the catch-up"
+                "recurring: the reopened log does not repeat the catch-up"
             );
             let next = local(2026, 1, 29, 12, 0, 0);
             assert_eq!(
@@ -372,7 +372,7 @@ tilo_test_env::scenario! {
         }
 
         // Phase: an alarm moved to another time on another device is armed
-        // afresh, and a removed alarm leaves the ledger.
+        // afresh, and a removed alarm leaves the log.
         {
             let (mut clocks, id) = with_alarm(lunch(&[]));
             let mut delivery = Delivery::default();
@@ -391,7 +391,7 @@ tilo_test_env::scenario! {
             );
             clocks.alarms.remove(&id);
             ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 31, 0));
-            assert!(delivery.alarms.is_empty(), "removed: ledger entry dropped");
+            assert!(delivery.alarms.is_empty(), "removed: log entry dropped");
         }
     }
 

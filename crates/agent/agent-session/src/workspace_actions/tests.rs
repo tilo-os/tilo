@@ -35,11 +35,11 @@ fn a_retryable_failure_leaves_the_id_free_to_run_again() {
     );
 }
 
-/// A full ledger makes room by forgetting what settled, never an invocation
+/// A full log makes room by forgetting what settled, never an invocation
 /// still to run or running: forgotten, it would never run, or leave its
 /// caller no answer, and a retry under its id would run it twice.
 #[test]
-fn a_full_ledger_forgets_only_settled_invocations() {
+fn a_full_log_forgets_only_settled_invocations() {
     use tilo_actions::remote::{InvokeRequest, RemoteActionTarget};
     use tilo_actions::{InvocationId, InvocationUpdate};
     let caller = tilo_actions::remote::Caller::local_person("ada");
@@ -57,42 +57,39 @@ fn a_full_ledger_forgets_only_settled_invocations() {
         wait_ms: None,
         appearance: None,
     };
-    let mut ledger = super::Ledger::default();
+    let mut log = super::InvocationLog::default();
     let pending = request().invocation;
     let first = InvokeRequest {
         invocation: pending,
         ..request()
     };
-    assert!(ledger.insert(&caller, first));
-    for _ in 1..super::ledger::REMEMBERED {
-        assert!(ledger.insert(&caller, request()));
+    assert!(log.insert(&caller, first));
+    for _ in 1..super::invocation_log::REMEMBERED {
+        assert!(log.insert(&caller, request()));
     }
     assert!(
-        !ledger.insert(&caller, request()),
+        !log.insert(&caller, request()),
         "with every invocation unsettled, a new one is refused, not one of them dropped"
     );
     assert!(
-        ledger.entries.contains_key(&pending),
+        log.entries.contains_key(&pending),
         "the pending write is kept"
     );
 
-    let settled = ledger.order[1];
-    if let Some(entry) = ledger.entries.get_mut(&settled) {
+    let settled = log.order[1];
+    if let Some(entry) = log.entries.get_mut(&settled) {
         entry.update = InvocationUpdate::Succeeded {
             invocation: settled,
             output: tilo_actions::ActionOutput::default(),
         };
     }
+    assert!(log.insert(&caller, request()), "a settled one makes room");
     assert!(
-        ledger.insert(&caller, request()),
-        "a settled one makes room"
-    );
-    assert!(
-        !ledger.entries.contains_key(&settled),
+        !log.entries.contains_key(&settled),
         "the settled one is forgotten"
     );
     assert!(
-        ledger.entries.contains_key(&pending),
+        log.entries.contains_key(&pending),
         "the oldest, still pending, is kept"
     );
 }
@@ -192,7 +189,7 @@ fn a_pending_write_settles_as_its_save_does() {
         wait_ms: None,
         appearance: None,
     };
-    let ledger = Arc::new(Mutex::new(super::Ledger::default()));
+    let log = Arc::new(Mutex::new(super::InvocationLog::default()));
     // Each write: its save's outcome, sent, dropped (`None`) or never said
     // (`Some(None)` holds the answer back), and how it settled.
     let mut kept = Vec::new();
@@ -200,13 +197,13 @@ fn a_pending_write_settles_as_its_save_does() {
         let asked = request();
         let invocation = asked.invocation;
         {
-            let mut held = ledger.lock().unwrap();
+            let mut held = log.lock().unwrap();
             assert!(held.insert(&caller, asked));
             held.entries.get_mut(&invocation).unwrap().saving = true;
         }
         let (answer, saved) = tilo_session_client::answer();
         let (settled, heard) = mpsc::channel();
-        let shared = Arc::clone(&ledger);
+        let shared = Arc::clone(&log);
         super::publish::Unsaved::waiting(saved).settle_within(
             std::time::Duration::from_millis(200),
             move |saved| {
@@ -224,7 +221,7 @@ fn a_pending_write_settles_as_its_save_does() {
         heard
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the save's outcome settles the write");
-        let (saving, update) = ledger
+        let (saving, update) = log
             .lock()
             .unwrap()
             .entries

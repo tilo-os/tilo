@@ -1,4 +1,4 @@
-//! Private native construction custody. It borrows the existing SDK worker;
+//! Private native construction ownership. It borrows the existing SDK worker;
 //! neither an environment value nor a data capture is a positive authority.
 #[cfg(feature = "broker-transport")]
 use super::{
@@ -17,7 +17,7 @@ struct Construction {
     transferring: Cell<bool>,
     component_scope: RefCell<Option<crate::wake::WakeScope>>,
 }
-/// The record a component is bound to, as construction custody reads it: the
+/// The record a component is bound to, as construction ownership reads it: the
 /// toolkit's callback binding (`ui::bound_dispatch::CallbackBinding`).
 pub trait ComponentBinding {
     /// What [`Self::enter`] holds while a committed history is applied.
@@ -36,7 +36,7 @@ pub trait ComponentBinding {
     fn merge_committed(&self, mutation: collab_types::DocumentMutation) -> Result<(), String>;
 }
 
-/// Why construction custody could not give a record's committed history.
+/// Why construction ownership could not give a record's committed history.
 /// The record store reports each as its own open error
 /// (`ui::resource::ResourceOpenError`), in the same words.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -269,7 +269,9 @@ impl NativeConstruction {
         }
         manager.switch_native_resource(binding.checkout())?;
         let connected = manager.is_connected();
-        let current = manager.primary_route().map(|witness| witness.route.clone());
+        let current = manager
+            .primary_route()
+            .map(|observation| observation.route.clone());
         let observed = current.as_ref().and_then(|_| binding.admission_route());
         if current
             .as_ref()
@@ -283,7 +285,7 @@ impl NativeConstruction {
                     .primary_route
                     .accepted
                     .as_ref()
-                    .is_some_and(|witness| witness.route == requested),
+                    .is_some_and(|observation| observation.route == requested),
                 observed.as_ref() == Some(&requested),
             ));
         }
@@ -381,7 +383,7 @@ pub fn take_component_scope() -> Option<crate::wake::WakeScope> {
         return state.component_scope.borrow_mut().take();
     }
     if state.component_scope.borrow().is_some() {
-        fail("nested component cannot take native wake custody");
+        fail("nested component cannot take native wake ownership");
     }
     None
 }
@@ -418,7 +420,7 @@ pub fn service_capture_bridge() -> Option<InitialReadBridge> {
     }
     let manager = construction.manager.borrow();
     let manager = manager.as_ref()?;
-    // Any app's own route: the custodian authorizes each request for the
+    // Any app's own route: the owner authorizes each request for the
     // app that sends it (Browser's sessions, Settings' sealing, the secret
     // of an account of the type an app keeps).
     InitialReadBridge::service_connection(manager, construction.bridge.as_ref())
@@ -470,7 +472,7 @@ impl InitialReadBridge {
         String,
     > {
         if command.browser_only() {
-            // Browser's sessions are Browser's alone; the custodian checks
+            // Browser's sessions are Browser's alone; the owner checks
             // that again, as the certified app of the route sending them.
             self.check_scope("so.tilo.browser", None)?;
         } else {
@@ -518,7 +520,7 @@ impl InitialReadBridge {
             .primary_route
             .accepted
             .as_ref()
-            .map(|witness| &witness.route)
+            .map(|observation| &observation.route)
             .or_else(|| manager.requested_primary_route())?;
         if let Some(bridge) = bridge
             && (bridge.route.app_id != route.app_id || bridge.route.cluster_id != route.cluster_id)

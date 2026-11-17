@@ -277,11 +277,11 @@ fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String
     (ada, meta, clock)
 }
 
-/// `who`'s standing in the teller workspace: an editor allowed to tell and to reach outside from
+/// `who`'s access in the teller workspace: an editor allowed to tell and to reach outside from
 /// `tell_and_seal`, so the action runs up to the seal it asks about.
-fn teller_standing(meta: &Meta, who: &str) -> tilo_action_policy::Standing {
+fn teller_access(meta: &Meta, who: &str) -> tilo_action_policy::MemberAccess {
     use tilo_action_policy::{
-        Answer, Grant, Grantee, KindSet, Role, Standing, TreePath, WorkspacePolicy,
+        Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
     };
     let mut policy = WorkspacePolicy::new(WORKSPACE, "sol");
     for member in ["ada", "grace"] {
@@ -305,7 +305,7 @@ fn teller_standing(meta: &Meta, who: &str) -> tilo_action_policy::Standing {
         Answer::Allow,
         owner,
     )]);
-    Standing::person(policy, who)
+    MemberAccess::person(policy, who)
 }
 
 /// Two replicas of a teller workspace: ada told the note's person about it, and sealing the note
@@ -315,11 +315,11 @@ fn teller_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     let meta = probe[0].meta.clone();
     let ids = probe[0].ids.clone();
     let packages = [(TELLER.0, ids.as_str())];
-    let (mut ada, _) = Replica::standing(
+    let (mut ada, _) = Replica::access(
         "ada",
         AutoCommit::new(),
         &packages,
-        Some(teller_standing(&meta, "ada")),
+        Some(teller_access(&meta, "ada")),
     );
     let note = ada.host.root_of(TELLER_APP).unwrap();
     ada.commit();
@@ -351,11 +351,11 @@ fn teller_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
         )
         .unwrap();
     ada.commit();
-    let grace = Replica::standing(
+    let grace = Replica::access(
         "grace",
         ada.doc.fork(),
         &packages,
-        Some(teller_standing(&meta, "grace")),
+        Some(teller_access(&meta, "grace")),
     )
     .0;
     (ada, grace, invocation)

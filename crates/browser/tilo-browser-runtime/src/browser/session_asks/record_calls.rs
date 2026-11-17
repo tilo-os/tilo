@@ -3,7 +3,7 @@
 //! Chat asks a shared note for its link; any window may ask a record another app keeps for one of
 //! its actions (provider `record:<app>:<record>`). On a native desktop the broker hands that to
 //! whatever serves the record. A page reaches the workspace's host, which runs a record's actions
-//! whoever has it open and decides each by the asking person's own standing: the page grants
+//! whoever has it open and decides each by the asking person's own access: the page grants
 //! nothing itself. The desktop's session carries such an action here
 //! ([`tilo_desktop_surface::session::DesktopSession::serve_workspace_api`]).
 

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::super::{
     ActionHost, ActionHostError, Admission, Caller, CataloguePage, CatalogueQuery, Completer,
-    InvocationLedger, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
+    InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
     PendingPoll, REMOTE_ACTIONS_VERSION, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
     RemoteActionTarget, pending, serve,
 };
@@ -392,18 +392,18 @@ tilo_test_env::scenario! {
 
     phase a_retry_that_waits_differently_is_the_same_invocation;
     {
-        let mut ledger = InvocationLedger::<u32>::default();
-        ledger
+        let mut log = InvocationLog::<u32>::default();
+        log
             .admit(&alice(), &rename(id(), None), || Ok(1))
             .unwrap();
-        let (handle, admission) = ledger
+        let (handle, admission) = log
             .admit(&alice(), &rename(id(), Some(5_000)), || Ok(2))
             .unwrap();
         assert_eq!((*handle, admission), (1, Admission::Retried));
         let mut other = rename(id(), Some(5_000));
         other.argument = InvokeArgument::Text("Other".into());
         assert_eq!(
-            ledger
+            log
                 .admit(&alice(), &other, || Ok(3))
                 .map(|(handle, _)| *handle),
             Err(ActionHostError::InvocationConflict)

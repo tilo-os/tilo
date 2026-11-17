@@ -36,7 +36,7 @@ const ENTRY_PARTS = ['arrival-refusal', 'arrival-refusal-heading', 'arrival-refu
   'arrival-invite-link', 'arrival-invite-error'];
 
 // Run the real page wiring and workspace actions. Replace only the booted
-// WASM/GPU peer, arrival animation, and root custody with fixtures. `pair`
+// WASM/GPU peer, arrival animation, and root device key with fixtures. `pair`
 // stands for the runtime certifying this tab's device key through the host
 // (`pairDevice`, peer.mjs): what the host answers a new device. `identity` is
 // the person this tab has open, and `kept` the one this browser keeps

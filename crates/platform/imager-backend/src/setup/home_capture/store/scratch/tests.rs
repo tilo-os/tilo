@@ -17,7 +17,7 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn a_scratch_receipt_round_trips_and_rejects_noncanonical_wire;
 
-    phase receipt_wire_round_trip_preserves_exact_custody_facts;
+    phase receipt_wire_round_trip_preserves_exact_ownership_facts;
     {
         let expected = receipt();
         let bytes = serde_json::to_vec(&expected).unwrap();

@@ -34,7 +34,7 @@
 //! The device a member dials answers each of the member's own writes it took
 //! in, or refused for good, on a unidirectional stream of its own opened after
 //! its frames' ([`Answered`]); the member lets an answered write go from its
-//! custody, as it does what a relay host answers. That stream is the
+//! ownership, as it does what a relay host answers. That stream is the
 //! difference between [`DIRECT_ALPN`] and [`DIRECT_ALPN_V2`], which a device
 //! still answers and dials where the other device answers nothing newer: on a
 //! link of the older protocol nothing is answered, and a member lets its writes
@@ -70,7 +70,7 @@ pub const DIRECT_ALPN_V2: &[u8] = b"tilo-peer-state-direct/2";
 pub const DIRECT_ALPNS: [&[u8]; 2] = [DIRECT_ALPN, DIRECT_ALPN_V2];
 
 /// What the dialled device made of one of the dialling device's own writes,
-/// named by the hash of the write's frame as the writer keeps it in custody.
+/// named by the hash of the write's frame as the writer keeps it held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Answered {
     /// The hash of the write's frame.
@@ -445,7 +445,7 @@ struct Inner {
     /// Where this device's engine owns the workspace: frames are admitted into
     /// its live replica and published as they land.
     admission: Option<Admission>,
-    /// This device's custody of its key, which signs what the link writes.
+    /// This device's ownership of its key, which signs what the link writes.
     signer: Arc<dyn DeviceSigner>,
     /// The sealed history this device keeps for the workspace, when it is a
     /// store device.
@@ -527,7 +527,7 @@ impl std::fmt::Debug for DirectSync {
 }
 
 impl DirectSync {
-    /// Share `replica`, the replica of the device `signer` is the custody of
+    /// Share `replica`, the replica of the device `signer` is the ownership of
     /// (and whose key its iroh endpoint's secret key is).
     #[must_use]
     pub fn new(replica: StatePeer, signer: impl DeviceSigner + 'static) -> Self {
@@ -713,7 +713,7 @@ impl DirectSync {
     }
 
     /// What the device this one dialled answers of this device's own writes,
-    /// on a link of [`DIRECT_ALPN`]: what its custody lets go of. A receiver
+    /// on a link of [`DIRECT_ALPN`]: what its ownership lets go of. A receiver
     /// that falls behind loses answers, and the writes they name wait for the
     /// next link's catch-up.
     #[must_use]
@@ -1577,13 +1577,13 @@ impl DirectSync {
 
     /// Whether `authored`, a frame `remote` sent live on its link, is decided as history: a
     /// member's own record write to the workspace this device hosts. A member keeps its writes
-    /// in custody while its host is away, or while custody's head is full, and sends them when it
+    /// held while its host is away, or while ownership's head is full, and sends them when it
     /// can: how long one waited says nothing of it. A relay host decides a member's writes the
     /// same way, whatever carried them ([`TransportOrigin::RetainedRelayDelta`]).
     ///
     /// What stands in for the live window is what a relay host relies on too: the write's own
     /// signature by its author, its author's sequence on the record (a write replayed or
-    /// numbered below one already taken is never taken again), and its author's standing in the
+    /// numbered below one already taken is never taken again), and its author's access in the
     /// workspace's current governance (the role it holds now, not the one it held when it
     /// wrote, and no revoked device), decided as of the write's own time for what is timed. The
     /// link's other end is besides the device the link authenticated, and is still a device
@@ -1648,7 +1648,7 @@ impl DirectSync {
             }
             return;
         }
-        // The other device's own write is answered, named as its custody names it.
+        // The other device's own write is answered, named as its ownership names it.
         let write = match &authored.message {
             NeighbourMsg::AppDocument { envelope, .. } if authored.from == remote => {
                 postcard::to_allocvec(&authored.message)
@@ -2199,7 +2199,7 @@ impl std::fmt::Debug for Owning {
 }
 
 impl Owning {
-    /// Answer for `owner`'s workspaces as the device `signer` is the custody
+    /// Answer for `owner`'s workspaces as the device `signer` is the ownership
     /// of, keeping the frames of each at `store`.
     #[must_use]
     pub fn new(
@@ -2211,7 +2211,7 @@ impl Owning {
         let serving = Serving::new();
         // What this device commits to a workspace it hosts itself reaches the
         // members linked to it now, as this device's frame; the workspace keeps
-        // no custody for it and holds no link to a host. Nothing is kept for a
+        // no ownership for it and holds no link to a host. Nothing is kept for a
         // member linked later: the workspace's own state is what its link's
         // catch-up hands it.
         let device = signer.device_public_key();
@@ -2398,7 +2398,7 @@ async fn forward(
 /// (one not its author's own on a link to its host, [`DirectSync::member_history`]) that waited
 /// somewhere on its way. That says nothing of the write, so it is
 /// neither answered as refused nor filed as a verdict: the writer keeps it, in its replica and
-/// in its custody, rather than losing an edit the workspace never judged.
+/// in its ownership, rather than losing an edit the workspace never judged.
 fn arrived_late(error: &crate::AdmissionError) -> bool {
     error
         .to_string()

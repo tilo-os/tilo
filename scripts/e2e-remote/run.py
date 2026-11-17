@@ -1523,7 +1523,7 @@ class Run:
             where = f" runs on {label}" if label else " runs on another device of this workspace"
             named = [" ".join(str(target.get("name") or "").split())
                      for target in self.targets(a)]
-            return {"standing": said.get("standing"), "waiting_for": said.get("waiting_for"),
+            return {"state": said.get("state"), "waiting_for": said.get("waiting_for"),
                     "notice": [name for name in named if name.endswith(where)],
                     "expected": f"<the app>{where}"}
 
@@ -1536,11 +1536,11 @@ class Run:
 
             def said() -> dict | None:
                 seen = stands_on_a()
-                return seen if seen["standing"] == "not-shared" and seen["notice"] else None
+                return seen if seen["state"] == "not-shared" and seen["notice"] else None
 
             seen = wait_until(said, 60, 2.0) or stands_on_a()
             res.facts[f"stands_on_a_{when}"] = json.dumps(seen, ensure_ascii=False)[:600]
-            if seen["standing"] != "not-shared":
+            if seen["state"] != "not-shared":
                 waits = f", waiting for {seen['waiting_for']!r}" if seen["waiting_for"] else ""
                 self.tab_stands[when] = (f"{when} the share, A's session does not read B's Browser window as "
                                          "one that is not shared with the workspace: it reads "

@@ -79,5 +79,5 @@ one ask model with editable drafts, one run group for undo. External agents keep
 1. Point and type in menus, plus the composer's layout, working state and rich answers (sections
    1 and 2). Independent of tilolang.
 2. Answers as views, after the tilolang host (step 2b).
-3. One agent: relay agents' standing and asks first (separately tracked), then the rest.
+3. One agent: relay agents' access and asks first (separately tracked), then the rest.
 4. The canvas.

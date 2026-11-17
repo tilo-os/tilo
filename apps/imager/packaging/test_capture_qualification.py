@@ -167,7 +167,7 @@ class NativeQualificationBoundary(unittest.TestCase):
     def receiving_observation(self):
         return {'schema': 1, 'status': 'completed', 'shared_files_readwrite': True,
                 'writer_shared_file_edit': True, 'apps_data_and_launch': True,
-                'protected_cloud_custody': True, 'cloud_fs_and_files': True,
+                'protected_cloud_ownership': True, 'cloud_fs_and_files': True,
                 'identity_headless_lifecycle': True, 'owned_resources_retired': True,
                 'service_sessions': dict(schema=2, service_session_protocol=2,
                     receiving_route_qualification_sha256='a' * 64,

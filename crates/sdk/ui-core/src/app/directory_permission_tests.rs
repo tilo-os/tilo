@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
     phase directory_permission_actor_and_capability_semantics_invalidate_revision;
     {
         use crate::permissions::{
-            Access, Acting, CapOverride, Grantee, PermissionContext, Scope, Standing,
+            Access, Acting, CapOverride, Grantee, PermissionContext, Scope, MemberAccess,
         };
         for actor_change in [false, true] {
             let mut fixture = ActionFixture::broker();
@@ -177,7 +177,7 @@ tilo_test_env::scenario! {
                 PermissionContext::new(
                     Acting::person("other-user"),
                     old.capabilities().to_vec(),
-                    Standing::person(old.standing().policy.clone(), "other-user"),
+                    MemberAccess::person(old.access().policy.clone(), "other-user"),
                 )
                 .at_unix_time(100)
             } else {
@@ -276,7 +276,7 @@ tilo_test_env::scenario! {
     {
         let mut fixture = ActionFixture::broker();
         let old = capture_bound_directory(&mut fixture);
-        let before = crate::bound_dispatch::directory_witness(
+        let before = crate::bound_dispatch::directory_observation(
             fixture.app.root_widget.as_ref(),
             &fixture.app.state.doc,
         )

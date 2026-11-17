@@ -674,18 +674,18 @@ impl super::Session {
 /// What the person may do in the app, as the session hands it with the launch and says again when
 /// it changes: a viewer's window offers no change as if they could make it, and the instance
 /// refuses one before it reaches the workspace.
-mod standing {
+mod access {
     use collaboration::RouteSpec;
     use tilolang_host::hosted::Spec;
-    use ui::permissions::policy::{Role, Standing, WorkspacePolicy};
+    use ui::permissions::policy::{MemberAccess, Role, WorkspacePolicy};
 
     use super::super::{Session, TASKS, Window, find, task_in_document};
 
-    /// Ada's standing in `workspace`, whose owner is Bob, as `role`.
-    fn ada_as(workspace: &str, role: Role) -> Standing {
+    /// Ada's access in `workspace`, whose owner is Bob, as `role`.
+    fn ada_as(workspace: &str, role: Role) -> MemberAccess {
         let mut policy = WorkspacePolicy::new(workspace, "bob");
         policy.members.insert("ada".to_owned(), role);
-        Standing::person(policy, "ada")
+        MemberAccess::person(policy, "ada")
     }
 
     /// Ada at a Tasks window of Bob's workspace, as `role`.
@@ -694,7 +694,7 @@ mod standing {
         let workspace = route.cluster_id.to_string();
         let spec = Spec::new(TASKS, workspace.clone(), 1, "ada")
             .in_language("en-US")
-            .standing(ada_as(&workspace, role));
+            .access(ada_as(&workspace, role));
         let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
         let mut session = Session::brokered_as(&route, spec, chunks, None, Window::in_harness);
         session.settle();
@@ -754,7 +754,7 @@ mod standing {
         assert!(
             session
                 .host
-                .set_standing(TASKS, Some(&ada_as(&workspace, Role::Editor)))
+                .set_access(TASKS, Some(&ada_as(&workspace, Role::Editor)))
         );
         session.settle();
         let button = new_task_button(&mut session);
@@ -778,8 +778,8 @@ mod standing {
         assert!(
             !session
                 .host
-                .set_standing(TASKS, Some(&ada_as(&workspace, Role::Editor))),
-            "the same standing said again is nothing to do"
+                .set_access(TASKS, Some(&ada_as(&workspace, Role::Editor))),
+            "the same access said again is nothing to do"
         );
     }
 }

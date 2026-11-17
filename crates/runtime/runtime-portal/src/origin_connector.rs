@@ -1,6 +1,6 @@
 //! The socket of an app's origin connector: the process the session's launcher starts for a
 //! tilolang app whose types hold an outside service's resources (a mail server), in the app's
-//! sandbox with the network and custody its manifest declares for that origin. It runs whether
+//! sandbox with the network and ownership its manifest declares for that origin. It runs whether
 //! or not a window of the app is open.
 //!
 //! Each instance of the app a tilolang host runs reaches the connector over a connection of its

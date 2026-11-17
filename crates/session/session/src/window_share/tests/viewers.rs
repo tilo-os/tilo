@@ -349,8 +349,8 @@ fn a_shared_window_reaches_both_members_showing_it() {
         assert_eq!(read.app_id, APP, "the window it shows");
         assert_eq!(read.peer, sharer, "the device sharing it");
         assert_eq!(
-            read.standing,
-            tilo_desktop_surface::Standing::Pictured,
+            read.state,
+            tilo_desktop_surface::StreamState::Pictured,
             "the tile reads as a picture of the window"
         );
         let (width, height, bytes) = read.picture.expect("the picture the tile decoded");

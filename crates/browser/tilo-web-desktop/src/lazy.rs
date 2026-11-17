@@ -151,7 +151,7 @@ split_code! {
 }
 
 split_code! {
-    /// Feedback's custody and delivery: a page configured with a destination
+    /// Feedback's device key and delivery: a page configured with a destination
     /// asks for them.
     mod feedback_code: tilo_browser_runtime::FeedbackCode = tilo_browser_runtime::builtin_feedback()
         => tilo_browser_runtime::FEEDBACK, module = "feedback_service", hash = "9c3e5a17b2d4f860",

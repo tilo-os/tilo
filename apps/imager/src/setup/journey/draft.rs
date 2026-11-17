@@ -333,7 +333,7 @@ impl DraftStore {
                 choices: pending.choices.clone(),
             },
         };
-        ready.restore_custody()?;
+        ready.restore_ownership()?;
         self.write(&Record {
             schema: 1,
             choices: current.choices,
@@ -349,7 +349,7 @@ impl DraftStore {
     ) -> io::Result<()> {
         let _lock = self.lock()?;
         choices.validate()?;
-        let directory = prepared.custody_directory();
+        let directory = prepared.ownership_directory();
         let operation = directory.parent().ok_or_else(invalid)?;
         if operation.parent() != Some(self.root.as_path())
             || directory.file_name()
@@ -396,7 +396,7 @@ impl DraftStore {
                 choices: choices.clone(),
             },
         }
-        .restore_custody()?;
+        .restore_ownership()?;
         self.write(&Record {
             schema: 1,
             choices: Some(choices.clone()),
@@ -453,7 +453,7 @@ impl DraftStore {
                     "identity"
                 });
         prepared.metadata()?;
-        if prepared.custody_directory() != expected_directory
+        if prepared.ownership_directory() != expected_directory
             || Some(prepared.public_key()) != pointer.root_key
             || prepared.device_public_key() != pointer.device_key
             || prepared.current_declaration()? != pointer.current_device
@@ -539,7 +539,7 @@ impl ReadyDraft {
         self.pending.kind()
     }
     pub(super) fn resume(&self) -> io::Result<Arc<PreparedIdentity>> {
-        self.with_current(|| self.restore_custody())
+        self.with_current(|| self.restore_ownership())
     }
     pub(super) fn with_current<T>(&self, action: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
         let _guard = self.acquire_current()?;
@@ -573,7 +573,7 @@ impl ReadyDraft {
         }
         Ok(guard)
     }
-    fn restore_custody(&self) -> io::Result<Arc<PreparedIdentity>> {
+    fn restore_ownership(&self) -> io::Result<Arc<PreparedIdentity>> {
         self.pending.store.storage.validate()?;
         let expected = self.pending.pointer.root_key.ok_or_else(invalid)?;
         if self.kind() == IdentityKind::CurrentDevice

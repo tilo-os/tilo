@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 publish.workspace = true
-description = "A device's workspace engine: its admitted replicas, their durable owner record, enrollment, outgoing custody and sessions with hosts."
+description = "A device's workspace engine: its admitted replicas, their durable owner record, enrollment, outgoing ownership and sessions with hosts."
 
 [features]
 # Fixtures and internals the desktop session's own owner tests assert on.
@@ -80,7 +80,7 @@ tilo-content = { path = "../../system/content" }
 # The random id of each enrollment challenge request.
 getrandom.workspace = true
 rand_core.workspace = true
-# The device custody an enrollment presents to the issuing host.
+# The device identity an enrollment presents to the issuing host.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 
 [dev-dependencies]

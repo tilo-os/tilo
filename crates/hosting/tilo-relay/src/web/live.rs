@@ -5,7 +5,7 @@
 //! it over the relay's iroh endpoint ([`tilo_live::native`]) as its own
 //! certificate says it may. A page dials it the same way: its device
 //! certificate is the grant, and the delegation it carries names the endpoint
-//! key of its page, which cannot leave custody. Either way the workspace's
+//! key of its page, which cannot leave ownership. Either way the workspace's
 //! governance answers for it as it answers for any member, and the answer
 //! stays current from the relay-wide authority epoch — a device removed from
 //! the workspace is cut on that event, not on a timer.
@@ -264,7 +264,7 @@ impl Authority {
             serde_json::from_slice(&grant.certificate).map_err(|_| Denied)?;
         // The endpoint speaks for that device: it is the device's own key, or
         // one the device signed a live delegation for — a page's key cannot
-        // leave its custody, so its endpoint speaks under a key of its own.
+        // leave its ownership, so its endpoint speaks under a key of its own.
         if endpoint != certificate.device_public_key {
             let delegation: tilo_user_identity::EndpointDelegation =
                 serde_json::from_slice(&grant.delegation).map_err(|_| Denied)?;

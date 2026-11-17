@@ -703,7 +703,7 @@ fn hidden_canonical_component_updates_once_per_ordinary_host_pass() {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "The assertion helper compares queued and refused bindings across one custody transition."
+    reason = "The assertion helper compares queued and refused bindings across one ownership transition."
 )]
 #[path = "readiness_tests.rs"]
 mod readiness_tests;

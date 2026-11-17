@@ -395,9 +395,9 @@ tilo_test_env::scenario! {
         assert_eq!(windows(&guard), vec![1], "the refused write left nothing");
     }
 
-    phase a_device_holding_the_primarys_custody_key_reads_and_heals_to_its_route;
+    phase a_device_holding_the_primarys_ownership_key_reads_and_heals_to_its_route;
     // A layout written before pages named records by their route holds the package
-    // primary's custody key for it. It reads as the primary's route, so the page
+    // primary's ownership key for it. It reads as the primary's route, so the page
     // that writes the layout next restates the same record instead of rebinding it.
     {
         let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
@@ -411,7 +411,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             adopted.records,
             vec![(1, String::new())],
-            "the custody key reads as the primary's route"
+            "the ownership key reads as the primary's route"
         );
         let heals = ada.write(&adopted);
         guard

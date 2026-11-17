@@ -18,7 +18,7 @@ pub enum Confirmation {
     /// their own device: the host hands the caller this token, which names
     /// that answer. Only a person acting themselves confirms by their own
     /// word; anyone acting for them carries the person's answer.
-    Witnessed(String),
+    Approved(String),
 }
 
 /// What a confirmation is bound to of an invocation's arguments: their

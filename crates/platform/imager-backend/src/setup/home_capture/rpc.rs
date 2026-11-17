@@ -149,7 +149,7 @@ pub enum Reply {
     },
     Validated,
     OriginalRegistered {
-        witness: super::SourceWitness,
+        proof: super::SourceProof,
         original_caller: super::OriginalCallerFacts,
     },
     RetainedCallerRegistered {
@@ -157,7 +157,7 @@ pub enum Reply {
     },
     MountedOriginalRegistered {
         generation: uuid::Uuid,
-        witness: super::store::MountedWitness,
+        proof: super::store::MountedProof,
         original_caller: super::OriginalCallerFacts,
     },
     Released,
@@ -182,7 +182,7 @@ pub struct Incoming {
     pub call: Call,
     pub output: Option<File>,
     pub retained_declaration: Option<super::RetainedCallerDeclaration>,
-    pub mounted: Option<(uuid::Uuid, super::store::MountedWitness)>,
+    pub mounted: Option<(uuid::Uuid, super::store::MountedProof)>,
     registration: Option<super::store::original::mounted::MountedRegistration>,
 }
 pub struct RootSession {
@@ -221,7 +221,7 @@ impl RootSession {
         caller: u32,
         selection: &super::super::home_capture_helper::OriginalRequest,
         cancel: Arc<AtomicBool>,
-    ) -> io::Result<(Self, (super::SourceWitness, super::OriginalCallerFacts))> {
+    ) -> io::Result<(Self, (super::SourceProof, super::OriginalCallerFacts))> {
         let home = selection.home.decode().map_err(io::Error::other)?;
         if selection.plan.home_uid() != caller {
             return Err(failure(
@@ -255,7 +255,7 @@ impl RootSession {
                         selection.preparation.as_ref(),
                     )?
                 };
-                Ok((registered.witness()?, registered.original_caller().clone()))
+                Ok((registered.proof()?, registered.original_caller().clone()))
             },
         )
     }
@@ -383,9 +383,9 @@ impl RootSession {
                             home, plan, inputs, &channel, &cancel,
                         )?;
                         super::super::migration::check_cancel(&cancel)?;
-                        let witness = held.witness().clone();
+                        let proof = held.proof().clone();
                         registration = Some(held);
-                        Some((*generation, witness))
+                        Some((*generation, proof))
                     } else {
                         None
                     };
@@ -424,23 +424,21 @@ impl RootSession {
             let held = incoming
                 .registration
                 .take()
-                .ok_or_else(|| failure("Mounted RPC custody missing"))?;
+                .ok_or_else(|| failure("Mounted RPC ownership missing"))?;
             let expected = incoming
                 .mounted
                 .as_ref()
-                .ok_or_else(|| failure("Mounted RPC witness missing"))?;
+                .ok_or_else(|| failure("Mounted RPC proof missing"))?;
             if expected.0 != *generation
-                || expected.1 != *held.witness()
-                || held.witness().operation() != call.operation
+                || expected.1 != *held.proof()
+                || held.proof().operation() != call.operation
             {
-                return Err(failure(
-                    "Mounted RPC witness differs from retained authority",
-                ));
+                return Err(failure("Mounted RPC proof differs from retained authority"));
             }
             held.validate_ack(&self.cancel)?;
             self.registration = Some((*generation, held));
         } else if incoming.registration.is_some() || incoming.mounted.is_some() {
-            return Err(failure("Unexpected mounted RPC custody"));
+            return Err(failure("Unexpected mounted RPC ownership"));
         }
         self.active = Some((call.operation.clone(), call.sequence));
         Ok(())
@@ -470,10 +468,10 @@ impl RootSession {
                 match reply {
                     Reply::MountedOriginalRegistered {
                         generation: returned,
-                        witness,
+                        proof,
                         original_caller,
                     } if returned == generation
-                        && witness == held.witness()
+                        && proof == held.proof()
                         && original_caller == &held.original_caller()? =>
                     {
                         held.validate_ack(&self.cancel)?
@@ -727,16 +725,16 @@ fn read_reply(
                     | (_, Reply::RetainedCallerRegistered { .. }) => {
                         return Err(failure("Retained registration response binding differs"));
                     }
-                    (Action::RegisterOriginal, Reply::OriginalRegistered { witness, .. })
-                        if witness.operation == call.operation => {}
+                    (Action::RegisterOriginal, Reply::OriginalRegistered { proof, .. })
+                        if proof.operation == call.operation => {}
                     (
                         Action::RegisterOriginalMounted { generation, .. },
                         Reply::MountedOriginalRegistered {
                             generation: returned,
-                            witness,
+                            proof,
                             ..
                         },
-                    ) if generation == returned && witness.operation() == call.operation => {}
+                    ) if generation == returned && proof.operation() == call.operation => {}
                     (Action::RegisterOriginalMounted { .. }, _)
                     | (_, Reply::MountedOriginalRegistered { .. }) => {
                         return Err(failure("Mounted registration response generation differs"));
@@ -1300,7 +1298,7 @@ impl RootMediaReadSession {
         }
     }
     // Active work has no elapsed-total cutoff: the owned transaction polls the
-    // authenticated peer and cancellation while retaining its cleanup custody.
+    // authenticated peer and cancellation while retaining its cleanup ownership.
     pub(in crate::setup) fn check_boot_cancel(&mut self, cancel: &AtomicBool) -> io::Result<()> {
         if let Err(error) = self.channel.validate_peer().and_then(|()| {
             if self.boot_active {

@@ -405,7 +405,7 @@ mod tests {
             url,
             byte_size: BYTES.len() as u64,
             sha256: hex::encode(Sha256::digest(BYTES)),
-            account_custody: None,
+            account_credentials: None,
             verified_runtime: None,
         }
     }

@@ -139,13 +139,13 @@ fn a_lost_piece_resumes_where_the_host_stands() {
         Some(bytes),
         "the file is whole"
     );
-    let standing = host
+    let access = host
         .steps
         .borrow()
         .iter()
-        .filter(|step| matches!(step, ContentPutStep::Standing { .. }))
+        .filter(|step| matches!(step, ContentPutStep::Progress { .. }))
         .count();
-    assert_eq!(standing, 1, "the upload asked where it stands once");
+    assert_eq!(access, 1, "the upload asked where it stands once");
     let offsets: Vec<u64> = host
         .appends()
         .into_iter()

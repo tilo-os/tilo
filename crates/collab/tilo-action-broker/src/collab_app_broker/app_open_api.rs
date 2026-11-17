@@ -5,7 +5,7 @@
 //! submits, or another app's published action its effect calls. It is
 //! decided as that invocation's caller (the person at one of the host's own
 //! apis: the palette, search, a Shortcut, the control socket; an agent; or
-//! another member), by their own grants, and admitted under the custody the
+//! another member), by their own grants, and admitted under the ownership the
 //! broker kept for them, so the child's history names them and their undo
 //! takes it back. The app's own identity adds nothing, and its own grants
 //! are not used. It reaches no further than that invocation was admitted
@@ -45,20 +45,20 @@ pub(super) enum OpenAuthority {
 }
 
 /// The running invocation a request continues: decided as its caller, with
-/// that invocation's own custody.
+/// that invocation's own ownership.
 pub(super) struct Continued {
     caller: Caller,
     original: Option<std::sync::Arc<super::OriginalInvocationData>>,
 }
 
-/// Who an app's request is decided as, and the custody it is admitted
+/// Who an app's request is decided as, and the ownership it is admitted
 /// under when that is not the app's connection's own.
 pub(super) type RequestCaller = (Caller, Option<InvocationCaller>);
 
 /// What a request names as the invocation it continues.
 pub(super) enum Continuing {
     /// Someone else's invocation, delivered to this connection and still
-    /// running: the request is decided as its caller, under its custody.
+    /// running: the request is decided as its caller, under its ownership.
     Invocation(Box<Continued>),
     /// An invocation the app made of its own action through its own api:
     /// nobody's authority but the app's.
@@ -67,7 +67,7 @@ pub(super) enum Continuing {
 
 impl AppBrokerState {
     /// Who application `app_id`'s `message` on connection `peer_id` is
-    /// decided as, and the custody it is admitted under, when it opens an
+    /// decided as, and the ownership it is admitted under, when it opens an
     /// application or continues an invocation; `None` for a request the
     /// app's own api decides. `person` is who admitted the connection.
     pub(super) fn app_request_caller(
@@ -192,7 +192,7 @@ impl AppBrokerState {
 
 impl Continued {
     /// The caller a child request `child` of this invocation is decided
-    /// as, and the custody kept for them it is admitted under.
+    /// as, and the ownership kept for them it is admitted under.
     fn child(self, child: tilo_actions::InvocationId) -> RequestCaller {
         let Self { caller, original } = self;
         (

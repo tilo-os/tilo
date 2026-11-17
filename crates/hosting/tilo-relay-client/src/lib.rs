@@ -29,7 +29,7 @@
 //!
 //! The messages themselves are defined in [`tilo_relay_protocol`]. Without
 //! the default `dial` feature the dialers (certification, the link) are left
-//! out and the signer seam, the co-edit payloads and the frame codec remain.
+//! out and the signer boundary, the co-edit payloads and the frame codec remain.
 
 #![deny(rust_2018_idioms)]
 #![cfg_attr(

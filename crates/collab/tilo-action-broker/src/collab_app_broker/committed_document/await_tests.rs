@@ -99,7 +99,7 @@ impl super::DocumentBytes for Bytes {
     }
 }
 
-fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
+fn context(ownership: &Arc<AtomicBool>) -> NativeDocumentReadContext {
     let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
     let mut certificate = tilo_user_identity::DeviceCert {
@@ -113,37 +113,37 @@ fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
-    let custody = Arc::clone(custody);
+    let ownership = Arc::clone(ownership);
     NativeDocumentReadContext {
         resource_type: None,
         route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", WORKSPACE, ""),
         certificate,
         revalidate: Arc::new(move || {
-            if custody.load(Ordering::Acquire) {
+            if ownership.load(Ordering::Acquire) {
                 Ok(())
             } else {
-                Err("committed read launcher custody ended".into())
+                Err("committed read launcher ownership ended".into())
             }
         }),
     }
 }
 
-fn unchanged(service: &Service, custody: &Arc<AtomicBool>, known: Option<[u8; 32]>) -> bool {
-    holds(service, custody, known, false)
+fn unchanged(service: &Service, ownership: &Arc<AtomicBool>, known: Option<[u8; 32]>) -> bool {
+    holds(service, ownership, known, false)
 }
 
 /// Whether a wait holds for a reader holding `known`, or for `None` the
 /// `Absent` (`absent`) or `Unavailable` its last Open answered.
 fn holds(
     service: &Service,
-    custody: &Arc<AtomicBool>,
+    ownership: &Arc<AtomicBool>,
     known: Option<[u8; 32]>,
     absent: bool,
 ) -> bool {
     read_unchanged(
         service,
         service.resource_read(WORKSPACE, "so.tilo.notes", ""),
-        || Ok(context(custody)),
+        || Ok(context(ownership)),
         &Arc::new(Budget::default()),
         known,
         absent,
@@ -156,26 +156,26 @@ tilo_test_env::scenario! {
 
     phase a_reader_told_a_record_is_absent_waits_until_that_changes;
     {
-        let custody = Arc::new(AtomicBool::new(true));
+        let ownership = Arc::new(AtomicBool::new(true));
         let service = Service::new(Owner::Pending, true);
-        assert!(holds(&service, &custody, None, false));
+        assert!(holds(&service, &ownership, None, false));
         *service.owner.lock().unwrap() = Owner::Absent;
         assert!(
-            !holds(&service, &custody, None, false),
+            !holds(&service, &ownership, None, false),
             "the hosts saying they have none ends a wait on a record arriving"
         );
         assert!(
-            holds(&service, &custody, None, true),
+            holds(&service, &ownership, None, true),
             "an absent record holds a reader told so"
         );
         *service.owner.lock().unwrap() = Owner::Pending;
         assert!(
-            !holds(&service, &custody, None, true),
+            !holds(&service, &ownership, None, true),
             "a host connecting ends the wait of a reader told it is absent"
         );
         *service.owner.lock().unwrap() = Owner::At([1; 32]);
         assert!(
-            !holds(&service, &custody, None, true),
+            !holds(&service, &ownership, None, true),
             "the record arriving ends it too"
         );
     }
@@ -183,25 +183,25 @@ tilo_test_env::scenario! {
     phase a_wait_holds_exactly_while_an_open_would_answer_what_the_reader_holds;
     {
         for cheap in [true, false] {
-            let custody = Arc::new(AtomicBool::new(true));
+            let ownership = Arc::new(AtomicBool::new(true));
             let service = Service::new(Owner::At([1; 32]), cheap);
-            assert!(unchanged(&service, &custody, Some([1; 32])));
+            assert!(unchanged(&service, &ownership, Some([1; 32])));
             assert!(
-                !unchanged(&service, &custody, Some([2; 32])),
+                !unchanged(&service, &ownership, Some([2; 32])),
                 "a reader holding another revision is stale"
             );
             assert!(
-                !unchanged(&service, &custody, None),
+                !unchanged(&service, &ownership, None),
                 "a readable record is stale to a reader that holds nothing"
             );
             *service.owner.lock().unwrap() = Owner::At([3; 32]);
             assert!(
-                !unchanged(&service, &custody, Some([1; 32])),
+                !unchanged(&service, &ownership, Some([1; 32])),
                 "a newer committed revision ends the wait"
             );
             *service.owner.lock().unwrap() = Owner::Pending;
             assert!(
-                unchanged(&service, &custody, None),
+                unchanged(&service, &ownership, None),
                 "a checkpoint still arriving holds a reader that holds nothing"
             );
         }
@@ -209,18 +209,18 @@ tilo_test_env::scenario! {
 
     phase a_refusal_ends_the_wait_so_the_reader_s_open_meets_it;
     {
-        let custody = Arc::new(AtomicBool::new(true));
+        let ownership = Arc::new(AtomicBool::new(true));
         let service = Service::new(Owner::At([1; 32]), true);
         service.readable.store(false, Ordering::Release);
         assert!(
-            !unchanged(&service, &custody, Some([1; 32])),
+            !unchanged(&service, &ownership, Some([1; 32])),
             "a revoked read permission is never held"
         );
         service.readable.store(true, Ordering::Release);
-        custody.store(false, Ordering::Release);
+        ownership.store(false, Ordering::Release);
         assert!(
-            !unchanged(&service, &custody, Some([1; 32])),
-            "ended launcher custody is never held"
+            !unchanged(&service, &ownership, Some([1; 32])),
+            "ended launcher ownership is never held"
         );
         assert!(
             read_unchanged(
@@ -238,17 +238,17 @@ tilo_test_env::scenario! {
 
     phase an_unchanged_revision_is_held_from_heads_without_a_capture;
     {
-        let custody = Arc::new(AtomicBool::new(true));
+        let ownership = Arc::new(AtomicBool::new(true));
         let service = Service::new(Owner::At([1; 32]), true);
         for _ in 0..10 {
-            assert!(unchanged(&service, &custody, Some([1; 32])));
+            assert!(unchanged(&service, &ownership, Some([1; 32])));
         }
         assert_eq!(service.captures.load(Ordering::Acquire), 0);
     }
 
     phase a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget;
     {
-        let custody = Arc::new(AtomicBool::new(true));
+        let ownership = Arc::new(AtomicBool::new(true));
         let service = Service::new(Owner::At([1; 32]), false);
         let budget = Arc::new(Budget::default());
         let held: Vec<_> = std::iter::from_fn(|| budget.try_reserve()).collect();
@@ -257,7 +257,7 @@ tilo_test_env::scenario! {
             read_unchanged(
                 service.as_ref(),
                 service.as_ref().resource_read(WORKSPACE, "so.tilo.notes", ""),
-                || Ok(context(&custody)),
+                || Ok(context(&ownership)),
                 &budget,
                 Some([1; 32]),
                 false,
@@ -271,7 +271,7 @@ tilo_test_env::scenario! {
             read_unchanged(
                 service.as_ref(),
                 service.as_ref().resource_read(WORKSPACE, "so.tilo.notes", ""),
-                || Ok(context(&custody)),
+                || Ok(context(&ownership)),
                 &budget,
                 Some([1; 32]),
                 false,
@@ -458,7 +458,7 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
     assert!(!keys_here());
 
     let wake = Arc::new(tokio::sync::Notify::new());
-    let custody = Arc::new(AtomicBool::new(true));
+    let ownership = Arc::new(AtomicBool::new(true));
     let service = Service::new(Owner::Pending, false);
     let held = hold_until_changed(
         &wake,
@@ -468,7 +468,7 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
             if keys_here() {
                 *service.owner.lock().unwrap() = Owner::At([2; 32]);
             }
-            Ok(holds(&service, &custody, None, false).then_some(true))
+            Ok(holds(&service, &ownership, None, false).then_some(true))
         },
     );
     tokio::pin!(held);

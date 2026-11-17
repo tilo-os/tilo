@@ -15,7 +15,7 @@ fn refused() -> io::Error {
 
 /// Only the root-installed actor constructs this after comparing the genuine
 /// certified selection, signed target package and actual executing launcher.
-/// It remains live custody through every view handoff and namespace lifetime.
+/// It remains live ownership through every view handoff and namespace lifetime.
 pub(super) struct ReviewedConsumerSelection {
     input: Arc<InstalledRetainedLaunchInput>,
     launcher: Arc<ExecutingPeer>,

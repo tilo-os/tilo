@@ -134,7 +134,7 @@ impl GovernedWorkspace {
                 refused: None,
             },
             // This device could not decide the write: no verdict of its says
-            // anything about it, and the write stays in the relay's custody
+            // anything about it, and the write stays in the relay's ownership
             // for the next replay.
             Err(error) if error.is_device_failure() => {
                 tracing::warn!(

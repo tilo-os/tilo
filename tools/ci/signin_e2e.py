@@ -875,7 +875,7 @@ cryptsetup close e2e-target
             state = {"unreachable": str(reason)}
         self.save(f"signin-{label}-console.json", state)
 
-    def lockout_custody(self, wait: float = 0) -> dict:
+    def lockout_ownership(self, wait: float = 0) -> dict:
         """Where the TPM's dictionary-attack reset authorisation is held. The TPM reports
         lockoutAuthSet once tilo-rollback-harden (a timer-started oneshot) has set it and left
         it in its root-only file; at the admin's sign-in tilo-authd wraps it into lockout.json
@@ -1019,15 +1019,15 @@ cryptsetup close e2e-target
         self.save("first-boot-sessions.txt", sessions)
         path, text = self.cycle.screen()
         self.cycle.keep_screen("first-boot-after-unlock", path, text)
-        custody = self.lockout_custody(wait=240)
-        hardened = custody["reset_auth_set"] is True and custody["harden_file"] == "root:600"
+        ownership = self.lockout_ownership(wait=240)
+        hardened = ownership["reset_auth_set"] is True and ownership["harden_file"] == "root:600"
         _, pending = self.guest("test -e /etc/tilo/firstboot-autologin-pending && echo pending || echo consumed; "
                                 "systemctl show -P ActiveState -P Result tilo-firstboot-autologin-cleanup; "
                                 "journalctl -b -u tilo-firstboot-autologin-cleanup --no-pager -o cat | tail -n 5")
         consumed = pending.strip().startswith("consumed")
         evidence = {"disk_prompts_answered": typed, "user_session": session,
                     "greeter_prompts": prompts, "disk_prompt_again": again,
-                    "firstboot_autologin_marker": pending.strip(), "lockout_custody": custody}
+                    "firstboot_autologin_marker": pending.strip(), "lockout_ownership": ownership}
         if typed == 1 and session and not prompts and not again and hardened and consumed:
             self.item("1", "passed", "one disk prompt at first boot, then the session started "
                       "without the greeter asking", **evidence)
@@ -1042,7 +1042,7 @@ cryptsetup close e2e-target
             if again:
                 why.append("the disk prompt came back")
             if not hardened:
-                why.append(f"the TPM reset authorisation was not set by harden: {custody}")
+                why.append(f"the TPM reset authorisation was not set by harden: {ownership}")
             if not consumed:
                 why.append("the one-boot autologin handoff was not consumed, so the next boot "
                            f"logs in without the greeter again: {pending.strip()}")
@@ -1128,8 +1128,8 @@ cryptsetup close e2e-target
         # this generation is confirmed (sign-in.md section 9).
         kept_for = [line for line in authd.splitlines() if "keeping uid" in line]
         kept_until_confirmed = bool(kept_for) and all("is not confirmed yet" in line for line in kept_for)
-        custody = self.lockout_custody()
-        evidence = {"lockout_custody": custody, "disk_prompts_answered": typed, "session": session, "record": summary,
+        ownership = self.lockout_ownership()
+        evidence = {"lockout_ownership": ownership, "disk_prompts_answered": typed, "session": session, "record": summary,
                     "tilo_signin_tokens": [{k: t.get(k) for k in ("keyslots", "uid", "name")}
                                            for t in tokens],
                     "shadow_locked": locked, "shadow_kept_for": kept_for,
@@ -1155,8 +1155,8 @@ cryptsetup close e2e-target
                 reopen["disk_secret"] is not None and reopen["disk_secret"] == self.baseline.get("disk_secret_slot"),
             "the recovery key still opens its slot":
                 self.recovery is None or reopen.get("recovery_key") == self.baseline.get("recovery_slot"),
-            "the TPM reset authorisation is set": custody["reset_auth_set"] is True,
-            "lockout.json wraps it under the person's user key": "user" in custody["lockout_json_wrappings"],
+            "the TPM reset authorisation is set": ownership["reset_auth_set"] is True,
+            "lockout.json wraps it under the person's user key": "user" in ownership["lockout_json_wrappings"],
         }
         evidence["checks"] = checks
         if self.recovery is None:
@@ -1522,9 +1522,9 @@ cryptsetup close e2e-target
             "the recovery key still opens its slot": self.recovery is None
             or opened.get("recovery_key") == self.baseline.get("recovery_slot"),
             "no tilo-auth:volume-key left in the kernel keyring": not evidence["volume_key_left_in_keyring"],
-            "the TPM reset authorisation is set": evidence["lockout_custody"]["reset_auth_set"] is True,
+            "the TPM reset authorisation is set": evidence["lockout_ownership"]["reset_auth_set"] is True,
             "lockout.json wraps it under the person's user key":
-                "user" in evidence["lockout_custody"]["lockout_json_wrappings"],
+                "user" in evidence["lockout_ownership"]["lockout_json_wrappings"],
         }
         evidence["checks"] = checks
         failed = [name for name, ok in checks.items() if not ok]

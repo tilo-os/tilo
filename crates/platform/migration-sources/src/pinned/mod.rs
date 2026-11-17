@@ -30,7 +30,7 @@ pub struct PinnedDirectory {
 }
 
 impl PinnedDirectory {
-    /// Admit a detached directory only after its caller has validated custody.
+    /// Admit a detached directory only after its caller has validated ownership.
     /// Destination namespace protections are independently checked here.
     pub fn from_admitted_directory(file: File) -> io::Result<Arc<Self>> {
         let pin = Arc::new(Self {

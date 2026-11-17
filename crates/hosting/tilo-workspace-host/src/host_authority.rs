@@ -48,7 +48,7 @@ pub enum HostOperation {
     SetAdministrator,
     /// Install or renew a bot in a workspace.
     GovernBot,
-    /// Author or prepare a workspace's applications in exact governor custody.
+    /// Author or prepare a workspace's applications in exact governor ownership.
     AuthorApplications,
     /// Drive the host's personal compute over its control stream.
     ComputeControl,

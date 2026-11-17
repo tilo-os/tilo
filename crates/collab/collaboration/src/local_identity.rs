@@ -1,7 +1,7 @@
 //! Who sits at this device, as far as undo attribution and history authors
 //! are concerned.
 //!
-//! This is the process's one identity seam, the toolkit's and the collab
+//! This is the process's one identity boundary, the toolkit's and the collab
 //! client's. The toolkit reads the person's
 //! public identity only through the process's [`LocalIdentitySource`]. The
 //! native implementation reads the runtime identity the launcher bound
@@ -9,7 +9,7 @@
 //! (feature `local-daemons`). A browser page installs one derived from its
 //! certified device (the relay peer's `DeviceCert` names the user root) with
 //! [`install_source`] once certification completes; the device key itself
-//! stays in the page's custody and signs through the relay client's
+//! stays in the page's ownership and signs through the relay client's
 //! `DeviceSigner`, never through the toolkit. Without either there is no
 //! local identity, and callers fall back to their account-name ladders.
 

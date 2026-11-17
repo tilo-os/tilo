@@ -1029,7 +1029,7 @@ pub(crate) fn humanize_control_id(id: &str) -> String {
 #[cfg(test)]
 mod test_controls;
 #[cfg(test)]
-pub(crate) use test_controls::{Uncustodied, test_value_action_binding};
+pub(crate) use test_controls::{Unattached, test_value_action_binding};
 
 #[cfg(test)]
 fn test_action_binding<I>(spec: tilo_actions::ActionSpec) -> tilo_actions::ActionBinding<I>
@@ -2098,7 +2098,7 @@ pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, HeaderRowLayout, HeaderRows, LabelPlacement,
     LayoutInfo, LayoutOrigin, ListLayout, ListPillLayout, ManualConflict, ManualLayout, PageLayout,
-    RowLayout, ScrollDirection, ScrollLayout, SectionLayout, ShellLayout, SidebarStanding,
+    RowLayout, ScrollDirection, ScrollLayout, SectionLayout, ShellLayout, SidebarPosition,
     TextLayout,
 };
 mod embedded;

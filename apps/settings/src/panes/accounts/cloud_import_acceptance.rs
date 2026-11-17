@@ -95,19 +95,19 @@ fn settings_import_connection_to_files_exports_independent_copies_and_undo() {
     let drive = FakeDrive::start();
     let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
     oauth.issue_access_token(SOURCE_TOKEN);
-    let custodian = root
-        .custodian()
+    let credential_store = root
+        .credential_store()
         .with_provider(
-            account_custody::OAuthCloud::GoogleDrive,
+            account_credentials::OAuthCloud::GoogleDrive,
             oauth.provider(),
             "drive-client",
         )
         .with_storage_config(
-            account_custody::OAuthCloud::GoogleDrive,
+            account_credentials::OAuthCloud::GoogleDrive,
             serde_json::to_value(drive.config()).unwrap(),
         );
     let mut pane = AccountsPane::in_root(root.clone())
-        .with_custodian(custodian.clone())
+        .with_credential_store(credential_store.clone())
         .with_browser_opener(Arc::new(Browser));
     pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
     // This is the same Settings form state SelectAccountServices changes,
@@ -174,7 +174,7 @@ fn settings_import_connection_to_files_exports_independent_copies_and_undo() {
             config_root: Some(root.path().unwrap()),
             mounts_root: home.join("Remote"),
             state_root: scratch.path().join("state"),
-            refresher: Arc::new(custodian),
+            refresher: Arc::new(credential_store),
             control_socket: None,
             file_socket: None,
         },
@@ -449,19 +449,19 @@ fn existing_sync_import_prepares_and_restores_on_cancel_or_failed_save() {
     let drive = FakeDrive::start();
     let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
     oauth.issue_access_token(SOURCE_TOKEN);
-    let custodian = root
-        .custodian()
+    let credential_store = root
+        .credential_store()
         .with_provider(
-            account_custody::OAuthCloud::GoogleDrive,
+            account_credentials::OAuthCloud::GoogleDrive,
             oauth.provider(),
             "drive-client",
         )
         .with_storage_config(
-            account_custody::OAuthCloud::GoogleDrive,
+            account_credentials::OAuthCloud::GoogleDrive,
             serde_json::to_value(drive.config()).unwrap(),
         );
     let mut pane = AccountsPane::in_root(root.clone())
-        .with_custodian(custodian.clone())
+        .with_credential_store(credential_store.clone())
         .with_browser_opener(Arc::new(Browser));
     pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
     // This is the same Settings form state SelectAccountServices changes,
@@ -497,14 +497,14 @@ fn existing_sync_import_prepares_and_restores_on_cancel_or_failed_save() {
     secret.token = Some(serde_json::to_string(&grant).unwrap());
     vault.put(&account.id, &secret);
     vault.try_save().unwrap();
-    custodian.signed_in(&account.id).unwrap();
+    credential_store.signed_in(&account.id).unwrap();
     let launcher = InProcessLauncher::default();
     let mut service = CloudService::new(
         ServiceConfig {
             config_root: Some(root.path().unwrap()),
             mounts_root: home.join("Remote"),
             state_root: scratch.path().join("state"),
-            refresher: Arc::new(custodian),
+            refresher: Arc::new(credential_store),
             control_socket: None,
             file_socket: None,
         },

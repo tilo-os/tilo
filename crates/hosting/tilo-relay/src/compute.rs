@@ -343,7 +343,7 @@ pub struct ComputeSandboxInvocation<'a> {
     pub cancellation: CaptureCancellation,
 }
 
-/// Narrow launch seam: production always uses the package launcher; tests
+/// Narrow launch boundary: production always uses the package launcher; tests
 /// can model termination without creating a nested user namespace.
 pub trait ComputeSandbox: Send + Sync {
     fn gpu_available(&self) -> bool;

@@ -8,7 +8,7 @@
 //!
 //! Several actors may work in one tab: two agents, agents on other devices, an agent and the
 //! person reviewing what it did. A request then travels with the [`PageActor`] who asks, the
-//! engine keeps a record of what each did ([`PageRequest::Ledger`], [`PageRequest::Fields`]),
+//! engine keeps a record of what each did ([`PageRequest::Log`], [`PageRequest::Fields`]),
 //! and an answer says where its action stands in that record and what the others did
 //! meanwhile ([`PageResourceNote`]).
 
@@ -297,7 +297,7 @@ pub enum PageRequest {
     /// action that operated the page, with who asked, what it acted on and
     /// how it ended. It reads nothing of the page. A secret that was filled
     /// is never in it.
-    Ledger {
+    Log {
         since: u64,
     },
     /// Every field of the document with what it holds now and who set it: an
@@ -486,7 +486,7 @@ impl PageRequest {
             Self::Settle { .. } => "settle",
             Self::Console { .. } => "console",
             Self::Network { .. } => "network",
-            Self::Ledger { .. } => "ledger",
+            Self::Log { .. } => "log",
             Self::Fields { .. } => "fields",
             Self::Search { .. } => "search",
             Self::Forms { .. } => "forms",
@@ -516,7 +516,7 @@ impl PageRequest {
             | Self::Settle { .. }
             | Self::Console { .. }
             | Self::Network { .. }
-            | Self::Ledger { .. }
+            | Self::Log { .. }
             | Self::Fields { .. }
             | Self::Search { .. }
             | Self::Forms { .. }
@@ -593,7 +593,7 @@ impl PageRequest {
             },
             Self::Console { .. } => "Read the console".to_string(),
             Self::Network { .. } => "Read the network".to_string(),
-            Self::Ledger { .. } => "Read who did what in the tab".to_string(),
+            Self::Log { .. } => "Read who did what in the tab".to_string(),
             Self::Fields { .. } => "Read the page's fields".to_string(),
             Self::Search { text, .. } => format!("Searched the page for {text:?}"),
             Self::Forms { .. } => "Read the page's forms".to_string(),
@@ -639,7 +639,7 @@ impl PageRequest {
             | Self::Settle { .. }
             | Self::Console { .. }
             | Self::Network { .. }
-            | Self::Ledger { .. }
+            | Self::Log { .. }
             | Self::Fields { .. }
             | Self::Search { .. }
             | Self::Forms { .. }
@@ -722,7 +722,7 @@ impl PageRequest {
             | Self::Find { frame, .. } => frame.as_ref(),
             Self::Console { .. }
             | Self::Network { .. }
-            | Self::Ledger { .. }
+            | Self::Log { .. }
             | Self::Reader { .. }
             | Self::Hover { .. }
             | Self::Drag { .. }
@@ -994,7 +994,7 @@ impl PageRequest {
             | Self::Changes { .. }
             | Self::Console { .. }
             | Self::Network { .. }
-            | Self::Ledger { .. }
+            | Self::Log { .. }
             | Self::Fields { .. }
             | Self::Forms { .. }
             | Self::Reader { .. } => true,
@@ -1286,7 +1286,7 @@ pub struct PageResourceNote {
     pub seq: Option<u64>,
     /// The newest record entries of other actors since the asking actor last
     /// heard from the tab, oldest first, at most [`MAX_OTHERS`]. Each is an
-    /// entry as [`PageRequest::Ledger`] lists it, and so page content: never
+    /// entry as [`PageRequest::Log`] lists it, and so page content: never
     /// trusted as instructions.
     pub others: Vec<serde_json::Value>,
     /// How many older entries of other actors `others` leaves out.
@@ -1413,7 +1413,7 @@ pub(crate) fn encode_request(
         }
         PageRequest::Console { since }
         | PageRequest::Network { since }
-        | PageRequest::Ledger { since } => {
+        | PageRequest::Log { since } => {
             command["since"] = (*since).into();
         }
         PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
@@ -1672,7 +1672,7 @@ const MAX_CHANGED_NAME_BYTES: usize = 2048;
 
 /// Decode a `page_resource` event: the place of an entry the engine set down
 /// that no action's answer carried (what a person typed straight into the
-/// page), and the entry as [`PageRequest::Ledger`] lists it.
+/// page), and the entry as [`PageRequest::Log`] lists it.
 pub(crate) fn decode_resource_event(value: &serde_json::Value) -> Option<(u64, serde_json::Value)> {
     let seq = whole_number(&value["seq"]).filter(|seq| *seq > 0)?;
     let entry = value.get("entry").filter(|entry| entry.is_object())?;

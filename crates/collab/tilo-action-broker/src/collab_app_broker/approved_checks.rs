@@ -1,11 +1,11 @@
-//! Host-only check execution under the actual accepted target action's custody.
+//! Host-only check execution under the actual accepted target action's ownership.
 use super::{AppBrokerState, Arc, JoinedChannel, OriginalInvocation};
 use runtime_collab::approved_checks::{Receipt, Report, ReportObservation, Request};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, Weak};
 use tokio::sync::watch;
 
-/// No public constructor or deserializer: only this broker mints custody.
+/// No public constructor or deserializer: only this broker mints ownership.
 #[derive(Clone)]
 pub struct ApprovedCheckContext {
     original: Arc<OriginalInvocation>,
@@ -36,7 +36,7 @@ impl ApprovedCheckContext {
     pub fn invocation(&self) -> String {
         self.original.request().invocation.0.to_string()
     }
-    /// Forward a bounded informational observation under this exact run's custody.
+    /// Forward a bounded informational observation under this exact run's ownership.
     /// It never completes an invocation or establishes command success.
     pub fn report(&self, observation: ReportObservation) -> Result<(), String> {
         self.recheck()?;
@@ -45,7 +45,7 @@ impl ApprovedCheckContext {
         }
         Ok(())
     }
-    /// Recheck original attribution, current target custody and active cancellation.
+    /// Recheck original attribution, current target ownership and active cancellation.
     pub fn recheck(&self) -> Result<(), String> {
         let state = self
             .state
@@ -61,7 +61,7 @@ impl ApprovedCheckContext {
 /// Trusted host adapter; it resolves the exact resource binding, command and bounds.
 /// Implementations run on the host effect worker, never the broker's `LocalSet`.
 pub trait ApprovedCheckServices: Send + Sync {
-    /// Execute this exact approved ID and recheck custody before and during work.
+    /// Execute this exact approved ID and recheck ownership before and during work.
     fn run(&self, context: &ApprovedCheckContext) -> Result<Receipt, String>;
 }
 

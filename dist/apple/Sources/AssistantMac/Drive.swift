@@ -104,27 +104,27 @@ final class AssistantDrive {
         model.start()
         let engine = source.engine
         Task { [weak self] in
-            for await standing in engine.standings() { self?.stood(standing) }
+            for await state in engine.states() { self?.stood(state) }
         }
         watch()
     }
 
-    private func stood(_ standing: TiloEngine.Standing) {
+    private func stood(_ state: TiloEngine.State) {
         let seconds = JSON.number((Date().timeIntervalSince(began) * 10).rounded() / 10)
-        switch standing {
+        switch state {
         case .away: break
-        case .arriving(let step): AssistantDrive.say(["standing": "arriving", "step": .string(step), "s": seconds])
+        case .arriving(let step): AssistantDrive.say(["state": "arriving", "step": .string(step), "s": seconds])
         case .pairing(let code):
             if let codeFile {
                 FileManager.default.createFile(atPath: codeFile, contents: Data(code.utf8), attributes: [.posixPermissions: 0o600])
             }
-            AssistantDrive.say(["standing": "pairing", "s": seconds])
+            AssistantDrive.say(["state": "pairing", "s": seconds])
         case .open(let route):
             // The workspace by the start of its id: enough to tell two apart, and no address.
             let workspace = EngineAddress.workspace(of: route)?.split(separator: "/").last.map { String($0.prefix(8)) } ?? ""
-            AssistantDrive.say(["standing": "open", "workspace": .string(workspace), "s": seconds])
-        case .refused(let why): AssistantDrive.say(["standing": "refused", "why": .string(why), "s": seconds])
-        case .failed(let why): AssistantDrive.say(["standing": "failed", "why": .string(why), "s": seconds])
+            AssistantDrive.say(["state": "open", "workspace": .string(workspace), "s": seconds])
+        case .refused(let why): AssistantDrive.say(["state": "refused", "why": .string(why), "s": seconds])
+        case .failed(let why): AssistantDrive.say(["state": "failed", "why": .string(why), "s": seconds])
         }
     }
 
@@ -193,7 +193,7 @@ final class AssistantDrive {
             line["kind"] = "secret"
             line["text"] = .string(request.text)
             line["name"] = .string(request.name)
-            line["standing"] = switch request.standing {
+            line["state"] = switch request.state {
             case .waiting: "waiting"
             case .kept: "kept"
             case .declined: "declined"

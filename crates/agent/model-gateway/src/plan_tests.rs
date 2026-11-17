@@ -89,7 +89,7 @@ fn read_request(stream: &mut TcpStream) -> Option<String> {
 fn prepare_plan_credentials(case: &str, profile: &ProviderProfile) {
     let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
     if case == "unavailable-storage" {
-        // Custody falls back to an owner-only key beside the ciphertext, so an
+        // Ownership falls back to an owner-only key beside the ciphertext, so an
         // absent keyring no longer leaves the vault unavailable. The state has
         // to be made: a path no vault can be read from.
         let vault = accounts::vault_dir_in(&root);
@@ -98,7 +98,7 @@ fn prepare_plan_credentials(case: &str, profile: &ProviderProfile) {
         return;
     }
     // The subprocess has a disposable, explicit test root, not a live Secret
-    // Service session. Opt into local test custody deliberately.
+    // Service session. Opt into local test ownership deliberately.
     let (reference, authorization) = credential_binding(profile).unwrap();
     ServiceCredentials::open_in(&root)
         .store(
@@ -112,7 +112,7 @@ fn prepare_plan_credentials(case: &str, profile: &ProviderProfile) {
         )
         .unwrap();
     if case == "missing-key" {
-        // An absent key is meaningful only after custody was established.
+        // An absent key is meaningful only after ownership was established.
         // Removing the disposable entry leaves a valid empty sealed vault.
         assert!(
             ServiceCredentials::open_in(&root)
@@ -215,7 +215,7 @@ fn child_plan(case: &str) {
         case,
         "local-unauthenticated" | "local-anthropic-unauthenticated"
     ) {
-        // Establish disposable custody before querying an empty vault.
+        // Establish disposable ownership before querying an empty vault.
         let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
         let (reference, authorization) = credential_binding(&profile).unwrap();
         let store = ServiceCredentials::open_in(&root);

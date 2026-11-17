@@ -87,7 +87,7 @@ fn fixture_with_root_acl(root_acl: bool) -> Fixture {
     fs::write(source.join("document"), b"original document").unwrap();
     fs::write(
         source.join(".config/tilo/identity"),
-        b"old identity custody",
+        b"old identity storage",
     )
     .unwrap();
     fs::write(
@@ -127,7 +127,7 @@ fn fixture_with_root_acl(root_acl: bool) -> Fixture {
     private(&home);
     fs::write(
         home.join(".config/tilo/identity"),
-        b"chosen new identity custody",
+        b"chosen new identity storage",
     )
     .unwrap();
     let workspace = home.join(".local/state/tilo/portable-home/operation");
@@ -172,7 +172,7 @@ fn authenticated_home_adopts_files_flatpak_data_and_links_without_old_identity_t
         .prepare(Zeroizing::new(PASSWORD.to_vec()), &cancel)
         .unwrap();
     assert!(preview.install_items > 0);
-    assert!(preview.inactive_custody > 0);
+    assert!(preview.inactive_ownership > 0);
     assert!(!fixture.grants.home.join("document").exists());
     assert!(review.verify_completed_adoption(&cancel).is_err());
     assert!(finished(&mut review.start_adoption(&cancel).unwrap()).complete);
@@ -183,7 +183,7 @@ fn authenticated_home_adopts_files_flatpak_data_and_links_without_old_identity_t
     );
     assert_eq!(
         fs::read(fixture.grants.home.join(".config/tilo/identity")).unwrap(),
-        b"chosen new identity custody"
+        b"chosen new identity storage"
     );
     assert_eq!(
         fs::read(fixture.grants.home.join(".var/app/org.example.App/session")).unwrap(),
@@ -313,7 +313,7 @@ fn mutable_media_expectation_cannot_replace_authenticated_setup_binding() {
     assert!(!fixture.grants.workspace.join("imported").exists());
     assert_eq!(
         fs::read(fixture.grants.home.join(".config/tilo/identity")).unwrap(),
-        b"chosen new identity custody"
+        b"chosen new identity storage"
     );
 }
 
@@ -390,7 +390,7 @@ fn native_helper_reviews_then_explicitly_adopts_same_authenticated_home_controll
     );
     assert_eq!(
         fs::read(fixture.grants.home.join(".config/tilo/identity")).unwrap(),
-        b"chosen new identity custody"
+        b"chosen new identity storage"
     );
     assert_eq!(
         fs::read(fixture.source.join("document")).unwrap(),
@@ -479,7 +479,7 @@ fn prepared_setup_helper_preserves_authenticated_home_declaration_for_first_logi
     let root = fixture._temporary.path().canonicalize().unwrap();
     let args = [
         ("--package", root.join("setup.sealed")),
-        ("--quarantine", root.join("helper-custody-quarantine")),
+        ("--quarantine", root.join("helper-ownership-quarantine")),
         ("--identity-dir", root.join("helper-identities")),
         ("--config-root", root.join("helper-accounts")),
     ]

@@ -2,7 +2,7 @@
 //!
 //! Search reads two indexes that only a host with a disk keeps: what apps published of their
 //! content (a note, a message, a login) and the bodies of the person's files. A page has neither
-//! and answers with its own, so a role names this seam and never the disk behind it.
+//! and answers with its own, so a role names this service and never the disk behind it.
 
 use std::sync::Arc;
 

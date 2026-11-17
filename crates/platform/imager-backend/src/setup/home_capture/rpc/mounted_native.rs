@@ -154,7 +154,7 @@ fn original_user_rpc_fixture_child() {
     let mut request =
         crate::setup::home_capture_helper::OriginalRequest::new(&home, plan, rendezvous).unwrap();
     if paired {
-        // The real original-owner publication seam binds inventory bytes to the
+        // The real original-owner publication boundary binds inventory bytes to the
         // private sidecar's device/inode/length before root admission reads it.
         let published =
             crate::setup::home_capture_helper::publish_original_request(&request_dir, &mut request)
@@ -236,16 +236,16 @@ fn original_user_rpc_fixture_child() {
     match reply {
         Reply::MountedOriginalRegistered {
             generation: returned,
-            witness,
+            proof,
             original_caller,
         } => {
             assert_eq!(returned, generation);
-            assert_eq!(witness.operation(), operation);
+            assert_eq!(proof.operation(), operation);
             assert_eq!(original_caller.uid(), 1000);
             assert_eq!(original_caller.primary_gid(), 1001);
             assert_eq!(original_caller.supplementary_gids(), [1002, 1003]);
         }
-        _ => panic!("Actual protected mounted witness required"),
+        _ => panic!("Actual protected mounted proof required"),
     }
     session.shutdown();
     drop((session, roots, report, refusal, primary));
@@ -270,7 +270,7 @@ fn actual_foreign_rpc_failed_ack_retires_all_leases_without_sender_success() {
     run_original_user_case(false, true, true, Acknowledgement::Normal, 0);
 }
 #[test]
-fn actual_foreign_rpc_cancelled_channel_retires_all_ack_custody() {
+fn actual_foreign_rpc_cancelled_channel_retires_all_ack_ownership() {
     run_original_user_case(false, true, false, Acknowledgement::Cancelled, 0);
 }
 #[test]
@@ -457,7 +457,7 @@ fn run_original_user_case(
     if cancelled {
         assert!(
             event.is_err(),
-            "Cancelled peer cannot deliver registered witness"
+            "Cancelled peer cannot deliver registered proof"
         );
         assert!(
             !target
@@ -511,7 +511,7 @@ fn run_original_user_case(
     } else {
         begun.as_ref().unwrap();
     }
-    let (returned, witness) = incoming.mounted.take().unwrap();
+    let (returned, proof) = incoming.mounted.take().unwrap();
     drop(incoming);
     if tamper != 1 {
         // After Incoming is consumed, the private RootSession guard still owns
@@ -576,7 +576,7 @@ fn run_original_user_case(
             .unwrap();
         session.reply(&Reply::MountedOriginalRegistered {
             generation,
-            witness,
+            proof,
             original_caller,
         })
     };
@@ -643,14 +643,14 @@ fn assert_operation_busy(result: io::Result<super::super::Store>) {
 
 /// Runs the actual original-owner chooser and authenticated mounted registration
 /// for a caller-owned complete plan. Caller owns the source/volume mounts
-/// and canonical protected Store bind throughout the returned witnesses' use.
+/// and canonical protected Store bind throughout the returned proofs' use.
 pub(in crate::setup::home_capture) fn register_for_paired(
     home: &Path,
     plan: &crate::setup::migration_handoff::Plan,
     request_dir: &Path,
 ) -> (
-    super::super::SourceWitness,
-    super::super::MountedWitness,
+    super::super::SourceProof,
+    super::super::MountedProof,
     super::super::OriginalCallerFacts,
 ) {
     assert_eq!(
@@ -780,7 +780,7 @@ pub(in crate::setup::home_capture) fn register_for_paired(
     session
         .reply(&Reply::MountedOriginalRegistered {
             generation,
-            witness: mounted.clone(),
+            proof: mounted.clone(),
             original_caller: retained_caller,
         })
         .unwrap();

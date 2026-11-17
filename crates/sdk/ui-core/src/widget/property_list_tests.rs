@@ -532,7 +532,7 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
     let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
     let mut harness = FrameHarness::for_root(
         crate::State::new(),
-        crate::widget::Uncustodied(
+        crate::widget::Unattached(
             PropertyList::new(vec![
                 Property::new("Phone", "+31 20 123 4567")
                     .copyable()
@@ -543,7 +543,7 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
         (480, 240),
         Theme::dark(),
     );
-    let mut root = harness.root_mut::<crate::widget::Uncustodied<PropertyList>>();
+    let mut root = harness.root_mut::<crate::widget::Unattached<PropertyList>>();
     let list = &mut root.0;
     let bindings = list.control_action_bindings();
     let bound = bindings
@@ -564,7 +564,7 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
     let bounds = action.bounds().expect("bounds");
     let center = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1).center();
     harness.click_at(center.x, center.y);
-    let mut root = harness.root_mut::<crate::widget::Uncustodied<PropertyList>>();
+    let mut root = harness.root_mut::<crate::widget::Unattached<PropertyList>>();
     let list = &mut root.0;
     let invocation = list
         .take_control_invocation()

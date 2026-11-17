@@ -10,7 +10,7 @@ use super::{NavAction, NavDrop, NavList, NavModel, NavShared};
 use crate::widget::{ActionEmitter, ControlBindingMetadata};
 
 /// The emitters a list's bound gestures queue into. They live as long as the
-/// list, so new sections keep them and the host's custody of them.
+/// list, so new sections keep them and the host's ownership of them.
 #[derive(Default)]
 pub(super) struct NavBindings {
     pub(super) items: HashMap<String, ActionEmitter<String>>,
@@ -64,10 +64,10 @@ impl NavBindings {
             || self.singles().iter().any(Option::is_some)
     }
 
-    pub(super) fn install_custody(
+    pub(super) fn attach(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         for producer in self.producers_mut() {
             producer.install(domain, attachment);
@@ -175,7 +175,7 @@ trait Producer {
     fn install(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     );
     fn take(&mut self) -> Option<ControlInvocation>;
     fn refresh(&mut self, allowed: &HashSet<ActionAddress>);
@@ -186,9 +186,9 @@ impl<I> Producer for ActionEmitter<I> {
     fn install(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        let _ = self.install_custody(domain, attachment);
+        let _ = self.attach(domain, attachment);
     }
     fn take(&mut self) -> Option<ControlInvocation> {
         ActionEmitter::take(self)

@@ -216,7 +216,7 @@ tilo_test_env::scenario! {
         assert!(admission.history.action_history_ready);
         assert!(admission.history.primary_history_ready);
         assert!(admission.history.all_owner_histories_ready);
-        assert!(admission.connection.custody_reconciled);
+        assert!(admission.connection.ownership_reconciled);
         assert!(admission.directory.directory_enqueued);
         let page = app.published_action_directory_page(initial_history_query());
         assert!(!page.rows.is_empty());
@@ -619,14 +619,14 @@ tilo_test_env::scenario! {
             app.pump_collab_presence();
             assert!(
                 app.collaboration.manager.is_connected(),
-                "subsequent capture must preserve original owner custody"
+                "subsequent capture must preserve original owner ownership"
             );
             std::thread::yield_now();
         }
         assert_eq!(calls.get(), 0);
         assert!(
             app.collaboration.manager.is_connected(),
-            "a subsequent capture is not lost owner custody"
+            "a subsequent capture is not lost owner ownership"
         );
         assert!(app.action_publication_failure.is_none());
         assert_eq!(app.state.doc.get_actor(), &original_actor);

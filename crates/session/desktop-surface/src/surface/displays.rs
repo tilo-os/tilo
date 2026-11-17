@@ -32,7 +32,7 @@ use crate::navigation::{self, Admitted, RouteIds};
 pub(crate) enum Step {
     /// Another window of the strip.
     Window(GroupId, TabId),
-    /// Onto display `.0` , to its window `.1` nearest the seam crossed, or to none when it shows no
+    /// Onto display `.0` , to its window `.1` nearest the border crossed, or to none when it shows no
     /// window.
     Display(u32, Option<GroupId>),
 }
@@ -40,7 +40,7 @@ pub(crate) enum Step {
 /// The step `steps` windows from `from` (the focused window, when focus is on one) along `strip` .
 /// On one display that walks the strip's windows and stops at either end. Across several it walks
 /// the focused display's windows and, past its first or last, crosses to the neighbouring display,
-/// landing on the window nearest the seam.
+/// landing on the window nearest the border.
 pub(crate) fn step(
     tree: &Layout,
     strip: &Strip,
@@ -920,7 +920,7 @@ mod tests {
         assert_eq!(
             step(&tree, &s, Some((2, 20)), 1),
             Some(Step::Display(1, Some(3))),
-            "lands on the window nearest the seam"
+            "lands on the window nearest the border"
         );
         tree.outputs.set_focused(1);
         assert_eq!(

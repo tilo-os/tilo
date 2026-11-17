@@ -1046,7 +1046,7 @@ impl ui::collaboration::PeerTransport for Broker {
                         correlation: *correlation,
                         result: Ok(Box::new(
                             tilo_actions::remote::ConfirmedInvocation::unchanged(
-                                tilo_actions::remote::Confirmation::Witnessed("allowed".into()),
+                                tilo_actions::remote::Confirmation::Approved("allowed".into()),
                             ),
                         )),
                     }),

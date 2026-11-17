@@ -7,7 +7,7 @@
 //! and its check and lock files, checking they are the ones at those paths,
 //! and reading the stored bytes, writer identity and load hint) and hands
 //! the open descriptors and the bytes back. Until then the caller is told
-//! [`SeamError::Opening`]; its wake ([`durable_store::waiting::wake`]) is
+//! [`DurableError::Opening`]; its wake ([`durable_store::waiting::wake`]) is
 //! called once when the work is done, however often it asked, and it asks
 //! again.
 //!
@@ -21,10 +21,10 @@
 
 use std::path::Path;
 
-use durable_store::{ReadyWake, StorageKey, StoreError as SeamError, Stored, WriteOp};
+use durable_store::{ReadyWake, StorageKey, StoreError as DurableError, Stored, WriteOp};
 
 use super::{
-    Files, Shared, Target, keep_hint, lock, read_hint_in, read_stored, seam_to_store, target_in,
+    Files, Shared, Target, durable_to_store, keep_hint, lock, read_hint_in, read_stored, target_in,
 };
 use crate::{CANONICAL_LOCK, LOCK_FILE, StoreError, io_err, open_directory, same_file};
 
@@ -81,14 +81,14 @@ pub(super) enum Preparation {
 
 impl Shared {
     /// Take the preparation of `key` for `access`, or have the store's
-    /// thread start it and answer [`SeamError::Opening`]. The caller has
+    /// thread start it and answer [`DurableError::Opening`]. The caller has
     /// already refused what needs no disk (a key held here).
     pub(super) fn take_prepared(
         &self,
         key: &StorageKey,
         access: Access,
         wake: &ReadyWake,
-    ) -> Result<Prepared, SeamError> {
+    ) -> Result<Prepared, DurableError> {
         let mut state = lock(&self.state);
         match state.prepared.remove(key) {
             Some(Preparation::Ready(prepared)) if prepared.access == access => {
@@ -99,10 +99,10 @@ impl Shared {
                 state
                     .prepared
                     .insert(key.clone(), Preparation::Queued(queued, waiting));
-                return Err(SeamError::Opening(key.to_string()));
+                return Err(DurableError::Opening(key.to_string()));
             }
             Some(Preparation::Failed(message)) => {
-                return Err(SeamError::Failed {
+                return Err(DurableError::Failed {
                     context: format!("opening {key}"),
                     message,
                 });
@@ -117,18 +117,18 @@ impl Shared {
         state.prepare_queue.push_back((key.clone(), access));
         drop(state);
         self.changed.notify_all();
-        Err(SeamError::Opening(key.to_string()))
+        Err(DurableError::Opening(key.to_string()))
     }
 
     /// A read on the thread that declined waiting: the snapshot of a key
-    /// leased here or prepared for it, else [`SeamError::Opening`] while the
+    /// leased here or prepared for it, else [`DurableError::Opening`] while the
     /// store's thread reads it. A snapshot prepared only to be read is
     /// handed over once.
     pub(super) fn read_without_waiting(
         &self,
         key: &StorageKey,
         wake: &ReadyWake,
-    ) -> Result<Option<Stored>, SeamError> {
+    ) -> Result<Option<Stored>, DurableError> {
         let mut state = lock(&self.state);
         if let Some(snapshot) = state.cache.get(key) {
             return Ok(snapshot.stored.clone());
@@ -139,7 +139,7 @@ impl Shared {
             }
             Some(Preparation::Queued(_, waiting)) => {
                 add_wake(waiting, wake);
-                return Err(SeamError::Opening(key.to_string()));
+                return Err(DurableError::Opening(key.to_string()));
             }
             _ => {}
         }
@@ -188,7 +188,7 @@ pub(super) fn prepare_in(
             let _ = hold.recv();
         }
     }
-    let target = target_in(&shared.root, key).map_err(seam_to_store)?;
+    let target = target_in(&shared.root, key).map_err(durable_to_store)?;
     let files = match (&target, access) {
         (_, Access::Read) => None,
         (Target::Document(directory), Access::Exclusive | Access::Shared) => {

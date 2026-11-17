@@ -1,9 +1,9 @@
-//! Feedback's custody and delivery, the code a page fetches once it is
+//! Feedback's ownership and delivery, the code a page fetches once it is
 //! configured with a destination (`deferred-feedback`; linked otherwise).
 //!
 //! Everything that sends reports, asks the destination's owner for
 //! admission and keeps the approved outbox (the delivery connection, the
-//! startup handoff's installation and the private custody it installs) is
+//! startup handoff's installation and the private ownership it installs) is
 //! reached only through [`FeedbackCode`], declared with `ui::lazy_code!`, so
 //! the browser desktop keeps it out of its start module. Until it is in a
 //! configured destination waits here and reads as awaiting admission, which
@@ -23,8 +23,8 @@ use tilo_session_client::Link;
 use tilo_user_identity::DeviceCert;
 use ui::models::Models;
 
-/// A profile's private feedback custody, as the desktop holds it.
-pub(crate) trait Custody {
+/// A profile's private feedback sender, as the desktop holds it.
+pub(crate) trait FeedbackSender {
     /// When storage or transport next wants servicing.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant>;
     /// Service storage and transport.
@@ -39,7 +39,7 @@ pub(crate) trait Custody {
     fn begin_report(&self, picked: PickedReport) -> Result<(), Error>;
 }
 
-impl Custody for tilo_desktop::feedback::PrivateFeedback {
+impl FeedbackSender for tilo_desktop::feedback::PrivateFeedback {
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         Self::next_wake_deadline(self)
     }
@@ -61,7 +61,7 @@ impl Custody for tilo_desktop::feedback::PrivateFeedback {
 }
 
 type Configure = fn(u32, Link, DeviceCert, DeviceCert, FeedbackDestination) -> Result<(), String>;
-type Install = fn(Startup, Rc<dyn DurableStore>) -> Result<Box<dyn Custody>, String>;
+type Install = fn(Startup, Rc<dyn DurableStore>) -> Result<Box<dyn FeedbackSender>, String>;
 
 /// Feedback's code: what the module a page fetches hands over.
 #[derive(Clone, Copy)]
@@ -89,14 +89,14 @@ pub fn builtin_feedback() -> FeedbackCode {
             let mut slot = None;
             tilo_desktop::feedback::install(startup, store, &mut slot)
                 .map_err(|error| error.to_string())?;
-            slot.map(|custody| Box::new(custody) as Box<dyn Custody>)
-                .ok_or_else(|| "feedback custody was not installed".into())
+            slot.map(|sender| Box::new(sender) as Box<dyn FeedbackSender>)
+                .ok_or_else(|| "feedback sender was not installed".into())
         },
     }
 }
 
 ui::lazy_code! {
-    /// Feedback's custody and delivery.
+    /// Feedback's ownership and delivery.
     pub static FEEDBACK: FeedbackCode = builtin_feedback, feature = "deferred-feedback";
 }
 
@@ -222,11 +222,11 @@ pub(crate) fn owner_model(peer: u32) -> Option<(Models, String)> {
     FEEDBACK.get().and_then(|code| (code.owner_model)(peer))
 }
 
-/// Install `startup` over `store` as the profile's private custody.
+/// Install `startup` over `store` as the profile's private ownership.
 pub(crate) fn install(
     startup: Startup,
     store: Rc<dyn DurableStore>,
-) -> Result<Box<dyn Custody>, String> {
+) -> Result<Box<dyn FeedbackSender>, String> {
     let code = FEEDBACK
         .get()
         .ok_or_else(|| "feedback is still loading".to_owned())?;

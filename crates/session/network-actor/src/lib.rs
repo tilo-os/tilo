@@ -180,7 +180,7 @@ struct PersonalFabricWireFrame {
 
 pub use tilo_desktop_model::WorkspaceId;
 pub type PeerId = EndpointId;
-pub use tilo_identity_host::custody::HostIdentity;
+pub use tilo_identity_host::identity_store::HostIdentity;
 
 /// Enrollment-bound identity expected behind a distinct relay service key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -515,7 +515,7 @@ enum InternalEvent {
         ws: WorkspaceId,
         answers: Vec<tilo_peer_state::direct::Answered>,
     },
-    /// This device let answered writes of workspace `ws` go from its custody: what waited behind
+    /// This device let answered writes of workspace `ws` go from its ownership: what waited behind
     /// them goes now.
     NativeRetired { ws: WorkspaceId },
     /// A workspace's link ended; `deleted` when its host said the
@@ -3769,7 +3769,7 @@ fn spawn_direct_pump(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                        tracing::warn!(ws = %ws, missed, "answers to this device's writes were missed; they leave custody at the next link");
+                        tracing::warn!(ws = %ws, missed, "answers to this device's writes were missed; they leave ownership at the next link");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
                 },

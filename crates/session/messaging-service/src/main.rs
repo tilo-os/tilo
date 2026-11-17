@@ -71,8 +71,8 @@ fn main() {
     let service = match Service::new(&actor, &device, &profile, session, runtime.handle().clone()) {
         Ok(service) => service,
         Err(error) => {
-            // No custody on this device yet: no accounts to hold.
-            tracing::warn!(target: "tilo::messaging", %error, "the person's device custody is unavailable");
+            // No ownership on this device yet: no accounts to hold.
+            tracing::warn!(target: "tilo::messaging", %error, "the person's device identity is unavailable");
             std::process::exit(0);
         }
     };

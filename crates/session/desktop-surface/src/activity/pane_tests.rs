@@ -2126,7 +2126,7 @@ mod tests {
                         .unwrap()
                         .changes,
                 4,
-                "materializing and moving a seam must preserve every atomic action"
+                "materializing and moving a border must preserve every atomic action"
             );
         }
     }
@@ -2446,7 +2446,7 @@ mod tests {
                 .map(|entry| entry.id)
                 .collect::<Vec<_>>(),
             original_ids,
-            "redrawing a work-session seam never rewrites or reorders actions"
+            "redrawing a work-session border never rewrites or reorders actions"
         );
         assert_eq!(
             pane.digest

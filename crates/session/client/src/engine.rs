@@ -26,7 +26,7 @@ use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity_host::identity_store::HostIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::join::Role;
@@ -44,9 +44,9 @@ use tilo_peer_state::{KeptDocument, Member};
 use tilo_user_identity::RevocationList;
 use tilo_workspace_keys::{KeyAccess, KeyProvider};
 
-use crate::custody::Custody;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::identity;
+use crate::membership_check::MembershipCheck;
 use crate::workspace_keys;
 
 /// The engine's record, under this device's state directory: the name an earlier build kept it
@@ -205,8 +205,8 @@ pub struct Engine {
     /// the session opens the workspaces before it opens the service, and every reader of a sealed
     /// record goes through this.
     keys: KeyProvider,
-    /// How this host proves this device still has custody of a workspace before it commits there.
-    custody: Arc<dyn crate::custody::Custody>,
+    /// How this host proves this device still owns a workspace before it commits there.
+    ownership: Arc<dyn crate::membership_check::MembershipCheck>,
     /// The workspace transport of this session's peer network, once it runs: a record the
     /// workspace's hosts send only once asked is asked for here, and the peer network is gone while this
     /// is `None` .
@@ -287,7 +287,7 @@ type SavedRecord = Option<(Vec<u8>, [u8; 32])>;
 
 /// The writes this device made that its replica has not taken in yet, by record, as document
 /// frames in the clear: they wait for their record's keys (nothing goes out unsealed) or for workspace
-/// in custody. The session that writes them keeps them here, and its readers read them over the
+/// held. The session that writes them keeps them here, and its readers read them over the
 /// replica ([`Engine::read_resource`]); nobody else sees them until they land.
 #[derive(Clone, Default)]
 pub struct HeldWrites(Arc<std::sync::Mutex<BTreeMap<DocumentRoute, Vec<Vec<u8>>>>>);
@@ -414,7 +414,7 @@ impl Engine {
         owner: NativeWorkspaceOwner,
         shown: Arc<Shown>,
         identity: HostIdentity,
-        custody: Arc<dyn Custody>,
+        ownership: Arc<dyn MembershipCheck>,
     ) -> Self {
         let keys = KeyProvider::default();
         let handed = Arc::<std::sync::Mutex<RouteKeys>>::default();
@@ -427,7 +427,7 @@ impl Engine {
             shown,
             identity,
             keys,
-            custody,
+            ownership,
             link: std::sync::Mutex::new(None),
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             founding: std::sync::Mutex::new(std::collections::BTreeSet::new()),
@@ -452,7 +452,7 @@ impl Engine {
         identity: HostIdentity,
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
-        custody: Arc<dyn Custody>,
+        ownership: Arc<dyn MembershipCheck>,
     ) -> Result<Self, String> {
         let state = state.ok_or("this session keeps no state, so it holds no workspace")?;
         let path = owner_path(state)?;
@@ -460,7 +460,7 @@ impl Engine {
             workspaces.into_iter().collect(),
         )));
         let owner = open_file_with(&path, Arc::clone(&shown) as Arc<dyn FileHost>)?;
-        let mut engine = Self::holding(owner.clone(), shown, identity, custody);
+        let mut engine = Self::holding(owner.clone(), shown, identity, ownership);
         // What the workspaces' other devices reach this one at, keeping the frames each brings: a
         // device that holds a workspace is a store device of it.
         engine.directed = match tilo_peer_state::store::Store::open(frames_path(state), FRAMES_KEPT)
@@ -478,7 +478,7 @@ impl Engine {
                     )
                     .with_channel_history(Arc::new(move |workspace| {
                         keys.get()
-                            .map(|channels| channels.standing_governance(workspace))
+                            .map(|channels| channels.current_governance(workspace))
                             .unwrap_or_default()
                     })),
                 )
@@ -497,11 +497,11 @@ impl Engine {
     pub fn for_this_device(
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
-        custody: Arc<dyn Custody>,
+        ownership: Arc<dyn MembershipCheck>,
     ) -> Result<Self, String> {
         let identity = identity::device_identity()
             .ok_or("this computer has no identity yet, so it holds no workspace")?;
-        Self::open(identity, state, workspaces, custody)
+        Self::open(identity, state, workspaces, ownership)
     }
 
     /// The workspace ids this device holds.
@@ -1097,10 +1097,10 @@ impl Engine {
     }
 
     /// Whether `certificate`'s holder reads `app`'s `record` in `workspace` here now: the workspace
-    /// is held with this device's custody of it, its people certify the caller, and the caller's
+    /// is held with this device's ownership of it, its people certify the caller, and the caller's
     /// device is one the workspace's policy lets read the record.
     /// # Errors
-    /// The workspace is not held here, this device has no custody of it, or the caller may not
+    /// The workspace is not held here, this device has no ownership of it, or the caller may not
     /// read the record now.
     pub fn authorizes_read(
         &self,
@@ -1109,9 +1109,9 @@ impl Engine {
         app: &str,
         record: &str,
     ) -> Result<(), String> {
-        use tilo_broker_core::custody::OwnerCustody as _;
+        use tilo_broker_core::owner_service::OwnerService as _;
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        self.check_custody(&self.owner, workspace)?;
+        self.check_ownership(&self.owner, workspace)?;
         let reader = self.identity.device_cert.device_public_key;
         self.owner.with_current(workspace, |view| {
             let certified = view.peer().certificates().iter().any(|held| {
@@ -1180,7 +1180,7 @@ impl Engine {
         founding: bool,
         sealed: Option<&key_group::ContentKeys>,
     ) -> Result<tilo_peer_state::owner::AppWrite, String> {
-        use tilo_broker_core::custody::OwnerCustody as _;
+        use tilo_broker_core::owner_service::OwnerService as _;
         let device = self.identity.device_cert.device_public_key;
         let now = tilo_clock::wall();
         let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), record);
@@ -1401,7 +1401,7 @@ impl Engine {
     /// The invitations into `workspace` this device's person issued that are still
     /// redeemable: a link is answered by the device that signed it.
     /// # Errors
-    /// The workspace is not held here, or its join ledger cannot be read now.
+    /// The workspace is not held here, or its join log cannot be read now.
     #[cfg(target_os = "linux")]
     pub fn invitations(
         &self,
@@ -1985,7 +1985,7 @@ impl Engine {
 /// What the broker's owner commits ask of this device's workspaces: the engine's owner is the
 /// canonical copy of every workspace it holds, and what it commits leaves on the peer network's session
 /// with the workspace's host.
-impl tilo_broker_core::custody::OwnerCustody for Engine {
+impl tilo_broker_core::owner_service::OwnerService for Engine {
     /// A held workspace whose host takes part in no channels: its records are documents the owner
     /// commits, never sealed channels.
     fn commits_documents(&self, workspace_id: WorkspaceId) -> bool {
@@ -2011,12 +2011,12 @@ impl tilo_broker_core::custody::OwnerCustody for Engine {
         Ok(self.owner.clone())
     }
 
-    fn check_custody(
+    fn check_ownership(
         &self,
         owner: &NativeWorkspaceOwner,
         workspace_id: WorkspaceId,
     ) -> Result<(), String> {
-        self.custody.check(owner, workspace_id, &self.identity)
+        self.ownership.check(owner, workspace_id, &self.identity)
     }
 
     fn signer(
@@ -2024,15 +2024,15 @@ impl tilo_broker_core::custody::OwnerCustody for Engine {
         owner: &NativeWorkspaceOwner,
         workspace_id: WorkspaceId,
     ) -> Result<Arc<dyn collab_types::signer::DeviceSigner>, String> {
-        self.check_custody(owner, workspace_id)?;
+        self.check_ownership(owner, workspace_id)?;
         Ok(Arc::clone(&self.identity.signer))
     }
 
-    /// Send the owner's outgoing custody of `workspace` to its peers soon: what was just committed
+    /// Send the owner's outgoing ownership of `workspace` to its peers soon: what was just committed
     /// leaves this device. Queued, never awaited.
     fn schedule_publication(&self, workspace_id: WorkspaceId) {
         if let Some(link) = self.link() {
-            link.publish_custody(workspace_id);
+            link.publish_ownership(workspace_id);
         }
     }
 }
@@ -2162,11 +2162,11 @@ mod tests {
         (identity, root)
     }
 
-    /// A host whose own proof of custody this device's engine asks: these tests read what it asks
+    /// A host whose own proof of ownership this device's engine asks: these tests read what it asks
     /// with, not the proof a desktop makes over the peer network.
     struct Kept;
 
-    impl Custody for Kept {
+    impl MembershipCheck for Kept {
         fn check(
             &self,
             _owner: &NativeWorkspaceOwner,
@@ -2227,7 +2227,7 @@ mod tests {
 
         phase a_workspace_this_device_hosts_names_its_own_host_and_commits_here;
         {
-            use tilo_broker_core::custody::OwnerCustody as _;
+            use tilo_broker_core::owner_service::OwnerService as _;
 
             let state = tempfile::tempdir().expect("a state directory");
             let (identity, _) = identity(DeviceCapabilities::member());
@@ -2246,7 +2246,7 @@ mod tests {
                 "the host it names is this device, whose host is in this process"
             );
             engine
-                .check_custody(&engine.owner, workspace)
+                .check_ownership(&engine.owner, workspace)
                 .expect("its own member acts there, its host being in this process");
         }
 
@@ -2274,7 +2274,7 @@ mod tests {
 
         phase a_workspace_this_device_hosts_without_an_address_commits_here;
         {
-            use tilo_broker_core::custody::OwnerCustody as _;
+            use tilo_broker_core::owner_service::OwnerService as _;
 
             let state = tempfile::tempdir().expect("a state directory");
             let (identity, _) = identity(DeviceCapabilities::member());
@@ -2294,7 +2294,7 @@ mod tests {
                 "its record names no host to reach until this device has one"
             );
             engine
-                .check_custody(&engine.owner, workspace)
+                .check_ownership(&engine.owner, workspace)
                 .expect("its own member acts there, its host being in this process");
         }
 

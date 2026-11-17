@@ -25,7 +25,7 @@ pub(super) struct Facts {
     leaf: (u64, u64),
     journal: (u64, u64),
 }
-struct Custody {
+struct Ownership {
     source: File,
     guard: advisory_lock::FileLock,
     leaf: File,
@@ -33,8 +33,8 @@ struct Custody {
     facts: Facts,
     authority: Arc<dyn RetainedIoAuthority>,
 }
-pub(super) struct Removal(Option<Custody>);
-/// Opaque root-held namespace witness; neither names nor serialized claims can construct it.
+pub(super) struct Removal(Option<Ownership>);
+/// Opaque root-held namespace proof; neither names nor serialized claims can construct it.
 pub struct RetainedNativeOwner {
     source: File,
     guard: File,
@@ -55,7 +55,7 @@ impl RetainedNativeOwner {
         )?;
         if !empty(&self.leaf)? {
             return Err(refused(
-                "Captured native entries require recovery; source custody retained",
+                "Captured native entries require recovery; source ownership retained",
             ));
         }
         Ok(())
@@ -174,7 +174,7 @@ impl Removal {
             leaf: id(&leaf)?,
             journal: id(&journal)?,
         };
-        let this = Self(Some(Custody {
+        let this = Self(Some(Ownership {
             source: source.try_clone()?,
             guard,
             leaf,
@@ -183,14 +183,16 @@ impl Removal {
             authority,
         }));
         this.check()?;
-        let custody = this.0.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        custody.authority.retain_native_owner(RetainedNativeOwner {
-            source: open(&custody.source, c".")?,
-            guard: open(&custody.guard, c".")?,
-            leaf: open(&custody.leaf, c".")?,
-            journal: open(&custody.journal, c".")?,
-            facts: custody.facts.clone(),
-        })?;
+        let ownership = this.0.as_ref().ok_or(io::ErrorKind::NotConnected)?;
+        ownership
+            .authority
+            .retain_native_owner(RetainedNativeOwner {
+                source: open(&ownership.source, c".")?,
+                guard: open(&ownership.guard, c".")?,
+                leaf: open(&ownership.leaf, c".")?,
+                journal: open(&ownership.journal, c".")?,
+                facts: ownership.facts.clone(),
+            })?;
         Ok(this)
     }
     pub(super) fn descriptor(&self) -> io::Result<i32> {
@@ -226,19 +228,19 @@ impl Removal {
     }
     pub(super) fn confirm_empty(&self) -> io::Result<()> {
         root()?;
-        let custody = self.0.as_ref().ok_or(io::ErrorKind::NotConnected)?;
+        let ownership = self.0.as_ref().ok_or(io::ErrorKind::NotConnected)?;
         // Target revocation must stop I/O, but cannot prevent observing retained source namespace
         // obligations after confirmed worker death.
         check_namespace(
-            &custody.source,
-            &custody.guard,
-            &custody.leaf,
-            &custody.journal,
-            &custody.facts,
+            &ownership.source,
+            &ownership.guard,
+            &ownership.leaf,
+            &ownership.journal,
+            &ownership.facts,
         )?;
-        if !empty(&custody.leaf)? {
+        if !empty(&ownership.leaf)? {
             return Err(refused(
-                "Captured removal requires native recovery; source custody retained",
+                "Captured removal requires native recovery; source ownership retained",
             ));
         }
         Ok(())

@@ -173,7 +173,7 @@ class NativeSeeds(unittest.TestCase):
         self.assertEqual(self.home.stat().st_mode & 0o7777, 0o700)
         self.assertEqual(self.body()['files'], [])
 
-    def test_links_and_custody_are_seeded_but_never_attested(self):
+    def test_links_and_ownership_are_seeded_but_never_attested(self):
         self.default('ordinary')
         self.default('folder/default')
         for name in ['.config/tilo/identity', '.local/state/tilo/secret']:
@@ -186,7 +186,7 @@ class NativeSeeds(unittest.TestCase):
         for name in ['directory-link', 'dangling', 'absolute']:
             self.assertEqual(os.readlink(self.home / name), os.readlink(self.skel / name))
             self.assertEqual((self.home / name).lstat().st_uid, UID)
-        (self.home / '.config/tilo/identity').write_text('user custody')
+        (self.home / '.config/tilo/identity').write_text('user ownership')
         self.run_seed()
         self.run_seed(oracle=True)
 

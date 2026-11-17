@@ -6,7 +6,7 @@
 use std::io;
 
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::Standing;
+use tilo_action_policy::MemberAccess;
 use tilo_formats::RegionFormats;
 
 pub use crate::windows::Descriptor;
@@ -32,18 +32,18 @@ pub struct Locale {
     pub language: String,
 }
 
-/// The person's standing for one app, as the session hands it to a host whose instances of the
+/// The person's access for one app, as the session hands it to a host whose instances of the
 /// app are already running.
-pub const STANDING_VERB: &[u8] = b"standing";
+pub const ACCESS_VERB: &[u8] = b"access";
 
 /// What the person may do in one app of the host's workspace, said again when it changes
-/// ([`STANDING_VERB`]): a role given or taken back reaches the windows already open.
+/// ([`ACCESS_VERB`]): a role given or taken back reaches the windows already open.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppStanding {
+pub struct AppAccess {
     pub app: String,
     /// `None` once the session holds no policy for the workspace: the broker alone decides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub standing: Option<Standing>,
+    pub access: Option<MemberAccess>,
 }
 
 /// A later build of an app a host runs, as a development session verified it after a reinstall,
@@ -75,7 +75,7 @@ pub enum FromHost {
     Exiting(String),
 }
 
-/// The largest message on the socket: a standing holds the workspace's policy as one app sees it,
+/// The largest message on the socket: an access holds the workspace's policy as one app sees it,
 /// which the session bounds at 64 KiB.
 pub const MAX_MESSAGE: usize = 80 * 1024;
 
@@ -133,7 +133,7 @@ pub struct InstanceRequest {
     /// offer what it denies them disabled, and refuse it before it reaches the broker. `None`
     /// where the session holds no policy for the workspace; the broker decides either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub standing: Option<Standing>,
+    pub access: Option<MemberAccess>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,7 +175,7 @@ pub enum Handed {
     Instance(Box<InstanceRequest>, InstanceFds),
     Task(TaskRequest, TaskFds),
     Locale(Locale),
-    Standing(AppStanding),
+    Access(AppAccess),
     Build(AppBuild, Descriptor),
 }
 
@@ -478,8 +478,8 @@ pub fn send_locale(socket: &Descriptor, locale: &Locale) -> io::Result<()> {
 
 /// Say on the host behind `socket` what the person may now do in one app: its instances of the app
 /// offer and refuse by it from now on ([`say`]).
-pub fn send_standing(socket: &Descriptor, standing: &AppStanding) -> io::Result<()> {
-    say(socket, STANDING_VERB, standing, &[])
+pub fn send_access(socket: &Descriptor, access: &AppAccess) -> io::Result<()> {
+    say(socket, ACCESS_VERB, access, &[])
 }
 
 /// Hand the host behind `socket` a later build of an app it runs, its module in the sealed memfd
@@ -538,13 +538,13 @@ pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
             }
             return Ok(Some(Handed::Locale(locale)));
         }
-        if verb == STANDING_VERB {
-            let standing: AppStanding = serde_json::from_slice(request)
-                .map_err(|_| invalid("a standing that does not decode"))?;
+        if verb == ACCESS_VERB {
+            let access: AppAccess = serde_json::from_slice(request)
+                .map_err(|_| invalid("an access that does not decode"))?;
             if !fds.is_empty() {
-                return Err(invalid("a standing carrying a connection"));
+                return Err(invalid("an access carrying a connection"));
             }
-            return Ok(Some(Handed::Standing(standing)));
+            return Ok(Some(Handed::Access(access)));
         }
         if verb == BUILD_VERB {
             let build: AppBuild = serde_json::from_slice(request)
@@ -711,7 +711,7 @@ mod tests {
                 record: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
                 reveal: Some("tl.so.tilo.lang.notes.Note:7".into()),
                 installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
-                standing: Some(Standing::person(
+                access: Some(MemberAccess::person(
                     tilo_action_policy::WorkspacePolicy::new(
                         "7a110d00-0000-4000-8000-000000000001",
                         "bob",
@@ -782,19 +782,19 @@ mod tests {
                     .members
                     .insert(format!("member-{member}"), tilo_action_policy::Role::Viewer);
             }
-            let standing = AppStanding {
+            let access = AppAccess {
                 app: "so.tilo.lang.notes".into(),
-                standing: Some(Standing::person(policy, "member-7")),
+                access: Some(MemberAccess::person(policy, "member-7")),
             };
-            assert!(serde_json::to_vec(&standing).unwrap().len() > 4096);
-            send_standing(&shell, &standing).unwrap();
+            assert!(serde_json::to_vec(&access).unwrap().len() > 4096);
+            send_access(&shell, &access).unwrap();
             assert_eq!(
                 receive(&host).unwrap().map(|handed| match handed {
-                    Handed::Standing(standing) => standing,
-                    other => panic!("a standing arrives as one: {other:?}"),
+                    Handed::Access(access) => access,
+                    other => panic!("an access arrives as one: {other:?}"),
                 }),
-                Some(standing),
-                "the person's standing in the app reaches the host whole"
+                Some(access),
+                "the person's access in the app reaches the host whole"
             );
         }
 

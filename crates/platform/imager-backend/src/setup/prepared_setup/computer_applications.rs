@@ -122,7 +122,7 @@ impl SharedHomeApplicationsDeclaration {
         // OriginalCopy holds a protected inventory marker. Its real producer
         // validated every held inline root before registration; the consumer
         // reopens that exact sidecar. Geometry parsing must not reinterpret the
-        // marker as an inline inventory or discard its witness.
+        // marker as an inline inventory or discard its proof.
         let mut physical = apps.clone();
         physical.flatpak_inventory = None;
         physical.validate_for_install(&self.staging_plan)?;

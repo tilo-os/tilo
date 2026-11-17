@@ -42,7 +42,7 @@ fn until_stands(
         if let Some((seed, label)) = heard_as {
             heard(viewer, seed, label);
         }
-        stands(viewer, tab).is_some_and(|(standing, _)| standing == wanted)
+        stands(viewer, tab).is_some_and(|(state, _)| state == wanted)
     });
 }
 

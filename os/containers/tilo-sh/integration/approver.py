@@ -4,7 +4,7 @@
 connects to the relay as one of the person's approving devices, from the root
 their page's recovery key opened, and answers the next question a host puts to
 them — allow, deny, or nothing at all. A host asks before what a person's
-standing makes them answer for: an agent's action that reaches outside a
+access makes them answer for: an agent's action that reaches outside a
 workspace's records (running a command in its VM among them), a page action a
 key without the Browser's scope asks about, and a submission a page is held at.
 

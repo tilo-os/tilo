@@ -1242,7 +1242,7 @@ fn tab_menu_renames_duplicates_deletes_moves_and_colours() {
             &named_event(winit::keyboard::NamedKey::Enter),
             Modifiers::default()
         ));
-        assert_eq!(doc_sheet_names(&doc)[0], "Ledger");
+        assert_eq!(doc_sheet_names(&doc)[0], "Log");
     }
 
     {

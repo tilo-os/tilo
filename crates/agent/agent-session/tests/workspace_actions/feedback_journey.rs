@@ -342,7 +342,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
 }
 
 /// A commenter files a report through the owner's submit action: it runs
-/// there under their own standing and answers only once the owner's durable
+/// there under their own access and answers only once the owner's durable
 /// store holds it. Filing again keeps one report; a Write action such as
 /// triage stays refused to them, as does anything outside `comments`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -733,16 +733,16 @@ async fn assert_signed_canonical(
         reporter: Caller::authenticated(reporter.user_public_key, reporter.device_public_key)
             .in_workspace(&submission.destination.workspace),
         permissions: {
-            let standing: ui::permissions::Standing =
-                serde_json::from_value(admission.admission.standing).unwrap();
+            let access: ui::permissions::MemberAccess =
+                serde_json::from_value(admission.admission.access).unwrap();
             assert_eq!(
-                standing.person_id(),
+                access.person_id(),
                 Some(hex::encode(reporter.user_public_key).as_str())
             );
             ui::permissions::PermissionContext::new(
-                ui::permissions::Acting::person(standing.person_id().unwrap_or_default()),
+                ui::permissions::Acting::person(access.person_id().unwrap_or_default()),
                 serde_json::from_value(admission.admission.sandbox).unwrap(),
-                standing,
+                access,
             )
             .at_unix_time(admission.admission.unix_time)
         },

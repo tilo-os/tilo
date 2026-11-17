@@ -1403,21 +1403,21 @@ impl Widget for Chip {
 }
 
 impl crate::widget::controls::ActionControls for Chip {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        self.activation.install_custody(domain, attachment);
-        self.remove_press.install_custody(domain, attachment);
+        self.activation.attach(domain, attachment);
+        self.remove_press.attach(domain, attachment);
         for verb in [self.toggle_verb.as_mut(), self.remove_verb.as_mut()]
             .into_iter()
             .flatten()
         {
-            verb.install_custody(domain, attachment);
+            verb.attach(domain, attachment);
         }
         for child in crate::widget::Widget::children_mut(self) {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

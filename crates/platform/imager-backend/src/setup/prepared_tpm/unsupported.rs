@@ -35,13 +35,13 @@ pub fn seal_prepared_handoff(
     Err(unsupported())
 }
 
-/// Verifying a sidecar needs the canonical prepared package custody this host
+/// Verifying a sidecar needs the canonical prepared package ownership this host
 /// does not provide.
 pub fn preflight_handoff(_sidecar: &Path, _package: &Path) -> io::Result<()> {
     Err(unsupported())
 }
 
-/// Reading a verified sidecar needs the same custody this host does not
+/// Reading a verified sidecar needs the same ownership this host does not
 /// provide.
 pub fn read_prepared_handoff(_sidecar: &Path, _package: &Path) -> io::Result<SealedPreparation> {
     Err(unsupported())

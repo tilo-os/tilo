@@ -72,7 +72,7 @@ pub enum ContentPutStep {
     /// Where the upload stands: answered with the bytes accepted so far
     /// ([`ContentPutAnswer::Appended`]), so a client whose append failed on
     /// the way resumes from there.
-    Standing { upload: u64 },
+    Progress { upload: u64 },
 }
 
 impl ContentPutStep {
@@ -116,7 +116,7 @@ struct HostedOpen {
 
 impl HostedContentPuts {
     /// Where `caller`'s open upload `upload` stands, if they have one so called.
-    fn standing(&self, caller: &Caller, upload: u64) -> Option<ContentPutAnswer> {
+    fn progress(&self, caller: &Caller, upload: u64) -> Option<ContentPutAnswer> {
         use tilo_lock::MutexRecover as _;
         self.open
             .lock_recover()
@@ -212,8 +212,8 @@ impl HostedContentPuts {
                 drop(open);
                 appended.map(|written| ContentPutAnswer::Appended { written })
             }
-            ContentPutStep::Standing { upload } => {
-                self.standing(caller, upload).ok_or_else(|| gone(upload))
+            ContentPutStep::Progress { upload } => {
+                self.progress(caller, upload).ok_or_else(|| gone(upload))
             }
             ContentPutStep::Finish { upload } => {
                 let mut open = self.open.lock_recover();
@@ -314,13 +314,13 @@ mod tests {
             "a piece sent again is refused"
         );
         assert_eq!(
-            puts.step(&Memory, &ada, ContentPutStep::Standing { upload })
+            puts.step(&Memory, &ada, ContentPutStep::Progress { upload })
                 .unwrap(),
             ContentPutAnswer::Appended { written: 2 },
             "the upload says where to resume"
         );
         assert!(
-            puts.step(&Memory, &eve, ContentPutStep::Standing { upload })
+            puts.step(&Memory, &eve, ContentPutStep::Progress { upload })
                 .is_err(),
             "nobody else learns where it stands"
         );

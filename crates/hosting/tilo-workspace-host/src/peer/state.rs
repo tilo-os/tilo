@@ -436,8 +436,8 @@ pub(super) async fn handle_delta(
             "author does not match authenticated device".into(),
         ));
     }
-    let standing = super::change_standing(peer, &*ws.lock().await);
-    if let Some(limited) = over_change_limit(peer, session, standing) {
+    let ownership = super::change_ownership(peer, &*ws.lock().await);
+    if let Some(limited) = over_change_limit(peer, session, ownership) {
         // Neither kept nor forwarded, and the session stays, as for a
         // refused change below.
         tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "refused a change over the member limit");
@@ -535,15 +535,15 @@ async fn change_refusal(
     };
     // The change itself must say what it does and stay inside what its app
     // publishes, before the relay keeps or forwards it.
-    let (standings, payloads) =
-        crate::workspace::standings_deciding(ws, claimed, |standings, payloads| {
-            crate::surfaces::refusal(payloads, delta, standings).is_some()
-                || crate::surfaces::role_refusal(delta, standings, claimed).is_some()
+    let (device_access, payloads) =
+        crate::workspace::access_deciding(ws, claimed, |device_access, payloads| {
+            crate::surfaces::refusal(payloads, delta, device_access).is_some()
+                || crate::surfaces::role_refusal(delta, device_access, claimed).is_some()
         })
         .await;
     let store = ws.lock().await.store.clone();
-    let refused = crate::surfaces::refusal(&*payloads, delta, standings.as_deref())
-        .or_else(|| crate::surfaces::role_refusal(delta, standings.as_deref(), claimed))
+    let refused = crate::surfaces::refusal(&*payloads, delta, device_access.as_deref())
+        .or_else(|| crate::surfaces::role_refusal(delta, device_access.as_deref(), claimed))
         .or_else(|| {
             (!attached)
                 .then(|| crate::surfaces::own_refusal(&store, &peer.user_public_key, delta))
@@ -631,7 +631,7 @@ pub(crate) async fn tell_governor(
     }
 }
 
-/// Whose standing decides `claimed`'s change that came over `peer`'s
+/// Whose access decides `claimed`'s change that came over `peer`'s
 /// session. A device's session writes only its own (checked before). A
 /// host attached to the workspace carries its members' changes under their
 /// own keys, so each is decided as that member's, never as that of the host

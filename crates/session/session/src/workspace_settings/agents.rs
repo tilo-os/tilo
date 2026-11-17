@@ -70,7 +70,7 @@ impl Host for crate::engine_records::EngineRecords {
         person: &UserId,
     ) -> (WorkspaceResources, Option<LivePermissions>) {
         use ui::permissions::PermissionContext;
-        let context = PermissionContext::from_standing(tilo_action_policy::Standing::person(
+        let context = PermissionContext::from_access(tilo_action_policy::MemberAccess::person(
             workspace.policy.clone(),
             person.clone(),
         ))

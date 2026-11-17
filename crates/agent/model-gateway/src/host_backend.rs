@@ -197,7 +197,7 @@ impl CompletionClient {
         self
     }
 
-    /// Complete one neutral turn with the same custody and bounded retry policy
+    /// Complete one neutral turn with the same ownership and bounded retry policy
     /// as the gateway. Rotating credentials are resolved before every attempt.
     pub fn complete(
         &mut self,
@@ -341,7 +341,7 @@ async fn complete_with_http(
             turn.0,
             request.clone(),
             budget,
-            target, // Host retries resolve custody anew and retain their idempotency key.
+            target, // Host retries resolve ownership anew and retain their idempotency key.
         )
         .await
         {
@@ -561,7 +561,7 @@ mod tests {
     use super::*;
 
     #[tokio::test(flavor = "current_thread")]
-    async fn rig_retries_a_metered_turn_with_rotated_custody_and_one_key() {
+    async fn rig_retries_a_metered_turn_with_rotated_ownership_and_one_key() {
         use std::io::{BufRead as _, Read as _, Write as _};
         for (target, refusal) in [
             (Target::Standard, "429 Too Many Requests"),

@@ -1,4 +1,4 @@
-//! Relocation witnesses. A journal cannot authorize unverified home
+//! Relocation proofs. A journal cannot authorize unverified home
 //! data: the caller additionally checks every original completed fidelity entry.
 use super::*;
 use crate::migration_review::storage::{IndexValue, SortedIndex};
@@ -72,7 +72,7 @@ pub(super) fn verify_remaining(
     }
     Ok(())
 }
-pub struct AdoptionWitness {
+pub struct AdoptionProof {
     pub quarantine: Arc<PinnedDirectory>,
     home: Arc<PinnedDirectory>,
     moved: Arc<SortedIndex<Marker>>,
@@ -82,7 +82,7 @@ pub struct AdoptionWitness {
     quarantine_path: PathBuf,
     home_path: PathBuf,
 }
-impl AdoptionWitness {
+impl AdoptionProof {
     fn selected_items(&self) -> impl Iterator<Item = io::Result<PathBuf>> + '_ {
         self.items.iter().filter_map(|item| match item {
             Err(error) => Some(Err(error)),
@@ -284,12 +284,12 @@ impl PromotionReview {
     }
     pub fn verify_completed(&self) -> Result<(), String> {
         self.require_root_acl_checkpoint()?;
-        let witness = self.witness()?;
+        let proof = self.proof()?;
         for entry in self.plan.entries.iter() {
             let entry = entry.map_err(|e| e.to_string())?;
             match entry.kind {
                 Kind::Move
-                    if !witness
+                    if !proof
                         .moved
                         .get(&decoded(&entry.path).map_err(|error| error.to_string())?)
                         .map_err(|e| e.to_string())?
@@ -307,17 +307,17 @@ impl PromotionReview {
     }
     /// Verify completed relocation while deferring only the approved Flatpak
     /// repository and its directory ancestors to an authenticated archive and
-    /// independent signed-output verifier. This witness alone is not data proof.
-    pub fn completed_application_witness(&self) -> Result<AdoptionWitness, String> {
+    /// independent signed-output verifier. This proof alone is not data proof.
+    pub fn completed_application_proof(&self) -> Result<AdoptionProof, String> {
         self.require_root_acl_checkpoint()?;
-        let witness = self
-            .witness_inner(Some(Path::new(".local/share/flatpak")))
+        let proof = self
+            .proof_inner(Some(Path::new(".local/share/flatpak")))
             .map_err(|error| error.to_string())?;
         for entry in self.plan.entries.iter() {
             let entry = entry.map_err(|e| e.to_string())?;
             match entry.kind {
                 Kind::Move
-                    if !witness
+                    if !proof
                         .moved
                         .get(&decoded(&entry.path).map_err(|error| error.to_string())?)
                         .map_err(|e| e.to_string())?
@@ -331,12 +331,12 @@ impl PromotionReview {
                 _ => {}
             }
         }
-        Ok(witness)
+        Ok(proof)
     }
-    pub fn witness(&self) -> Result<AdoptionWitness, String> {
-        self.witness_inner(None).map_err(|error| error.to_string())
+    pub fn proof(&self) -> Result<AdoptionProof, String> {
+        self.proof_inner(None).map_err(|error| error.to_string())
     }
-    fn witness_inner(&self, application: Option<&Path>) -> io::Result<AdoptionWitness> {
+    fn proof_inner(&self, application: Option<&Path>) -> io::Result<AdoptionProof> {
         let (q, h, j) = roots(&self.quarantine, &self.home, &self.journal)?;
         let log = Log::open(
             &j,
@@ -444,7 +444,7 @@ impl PromotionReview {
                         return Err(changed("Adoption collision changed"));
                     }
                 }
-                Kind::InactiveCustody => {
+                Kind::InactiveOwnership => {
                     if tree::fact_in(
                         &source,
                         name,
@@ -453,7 +453,7 @@ impl PromotionReview {
                         &AtomicBool::new(false),
                     )? != entry.fact
                     {
-                        return Err(changed("Retained identity custody changed"));
+                        return Err(changed("Retained identity storage changed"));
                     }
                 }
             }
@@ -464,7 +464,7 @@ impl PromotionReview {
         let items = source_index(&self.plan)?;
         q.validate_destination()?;
         h.validate_destination()?;
-        Ok(AdoptionWitness {
+        Ok(AdoptionProof {
             quarantine: q,
             home: h,
             moved: Arc::new(moved),

@@ -28,7 +28,7 @@ use tilo_clock::time::Instant;
 
 use durable_store::{
     Durability, DurableStore, Lease, ReadyWake, Revision, SettleWatch, SharedLease, StorageKey,
-    StoreError as SeamError, Stored, WriteOp,
+    StoreError as DurableError, Stored, WriteOp,
 };
 
 use crate::{
@@ -297,11 +297,11 @@ pub fn workspace_index_directory(
     root: &Path,
     app: &str,
     workspace: &str,
-) -> Result<PathBuf, SeamError> {
+) -> Result<PathBuf, DurableError> {
     let key = StorageKey::workspace_index(app, workspace);
     match target_in(root, &key)? {
         Target::Document(directory) => Ok(directory),
-        Target::View(_) => Err(SeamError::InvalidKey {
+        Target::View(_) => Err(DurableError::InvalidKey {
             key: key.to_string(),
             reason: "a workspace index is a document".into(),
         }),
@@ -311,7 +311,7 @@ pub fn workspace_index_directory(
 /// Every workspace index below `root`, as its app and workspace: one
 /// directory per app holding one per workspace, whatever this device
 /// shows of them.
-fn workspace_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError> {
+fn workspace_indexes_in(root: &Path) -> Result<Vec<(String, String)>, DurableError> {
     let mut apps = Vec::new();
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
@@ -352,7 +352,7 @@ fn workspace_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError>
     Ok(indexes)
 }
 
-fn target_in(root: &Path, key: &StorageKey) -> Result<Target, SeamError> {
+fn target_in(root: &Path, key: &StorageKey) -> Result<Target, DurableError> {
     match key {
         StorageKey::Document {
             app,
@@ -386,7 +386,7 @@ fn target_in(root: &Path, key: &StorageKey) -> Result<Target, SeamError> {
             validate_absolute_directory(root)?;
             for identity in [device, workspace] {
                 if identity.is_empty() {
-                    return Err(SeamError::InvalidKey {
+                    return Err(DurableError::InvalidKey {
                         key: key.to_string(),
                         reason: "view identities must not be empty".into(),
                     });
@@ -411,7 +411,7 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
     hex::decode(text).ok().filter(|bytes| !bytes.is_empty())
 }
 
-impl From<StoreError> for SeamError {
+impl From<StoreError> for DurableError {
     fn from(error: StoreError) -> Self {
         match error {
             StoreError::WriterBusy { path } => Self::Busy(path.display().to_string()),
@@ -482,11 +482,11 @@ impl FsStore {
         app_dir_in(&self.root, app)
     }
 
-    fn target(&self, key: &StorageKey) -> Result<Target, SeamError> {
+    fn target(&self, key: &StorageKey) -> Result<Target, DurableError> {
         target_in(&self.root, key)
     }
 
-    fn ensure_worker(&self) -> Result<(), SeamError> {
+    fn ensure_worker(&self) -> Result<(), DurableError> {
         let mut worker = lock(&self.worker);
         let mut state = lock(&self.shared.state);
         if state.running {
@@ -510,7 +510,7 @@ impl FsStore {
             Err(error) => {
                 drop(worker);
                 lock(&self.shared.state).running = false;
-                Err(SeamError::Failed {
+                Err(DurableError::Failed {
                     context: "starting the storage writer".into(),
                     message: error.to_string(),
                 })
@@ -532,7 +532,7 @@ impl FsStore {
 /// Make bytes that were read, rather than written by this store, durable:
 /// the document file, then every directory above it.
 fn sync_existing_in(shared: &Shared, key: &StorageKey) -> Result<(), StoreError> {
-    let (file, directory) = match target_in(&shared.root, key).map_err(seam_to_store)? {
+    let (file, directory) = match target_in(&shared.root, key).map_err(durable_to_store)? {
         Target::Document(directory) => (directory.join(DOCUMENT_FILE), directory),
         Target::View(path) => {
             let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -645,7 +645,7 @@ impl Unwritten {
     }
 }
 
-fn seam_to_store(error: SeamError) -> StoreError {
+fn durable_to_store(error: DurableError) -> StoreError {
     StoreError::from(error)
 }
 
@@ -654,7 +654,7 @@ impl DurableStore for FsStore {
         &self.namespace
     }
 
-    fn read(&self, key: &StorageKey) -> Result<Option<Stored>, SeamError> {
+    fn read(&self, key: &StorageKey) -> Result<Option<Stored>, DurableError> {
         let target = self.target(key)?;
         if let Some(wake) = durable_store::waiting::wake() {
             // What this store holds answers without the disk; anything else
@@ -728,17 +728,17 @@ impl DurableStore for FsStore {
         key: &StorageKey,
         op: WriteOp,
         writer: Option<&[u8]>,
-    ) -> Result<Revision, SeamError> {
+    ) -> Result<Revision, DurableError> {
         let view = match self.target(key)? {
             Target::Document(_) => {
                 if !lock(&self.shared.state).owners.contains_key(key) {
-                    return Err(SeamError::NotLeased(key.to_string()));
+                    return Err(DurableError::NotLeased(key.to_string()));
                 }
                 None
             }
             Target::View(path) => {
                 if writer.is_some() {
-                    return Err(SeamError::InvalidKey {
+                    return Err(DurableError::InvalidKey {
                         key: key.to_string(),
                         reason: "views carry no writer identity".into(),
                     });
@@ -754,7 +754,7 @@ impl DurableStore for FsStore {
             let revision = state
                 .issued
                 .checked_add(1)
-                .ok_or_else(|| SeamError::Failed {
+                .ok_or_else(|| DurableError::Failed {
                     context: key.to_string(),
                     message: "revision space exhausted".into(),
                 })?;
@@ -798,7 +798,7 @@ impl DurableStore for FsStore {
         durability_in(&lock(&self.shared.state), key, revision)
     }
 
-    fn flush(&self, key: Option<&StorageKey>) -> Result<(), SeamError> {
+    fn flush(&self, key: Option<&StorageKey>) -> Result<(), DurableError> {
         let matches = |candidate: &StorageKey| key.is_none_or(|key| key == candidate);
         let marked = {
             let mut state = lock(&self.shared.state);
@@ -854,7 +854,7 @@ impl DurableStore for FsStore {
             .filter(|(candidate, _)| matches(candidate))
             .find_map(|(candidate, status)| {
                 let (_, _, message) = status.failed.last()?;
-                Some(SeamError::Failed {
+                Some(DurableError::Failed {
                     context: candidate.to_string(),
                     message: message.clone(),
                 })
@@ -874,11 +874,11 @@ impl DurableStore for FsStore {
         Ok(())
     }
 
-    fn flush_without_waiting(&self, key: &StorageKey) -> Result<(), SeamError> {
+    fn flush_without_waiting(&self, key: &StorageKey) -> Result<(), DurableError> {
         self.target(key)?;
         let mut state = lock(&self.shared.state);
         if let Some((_, _, message)) = state.keys.get(key).and_then(|status| status.failed.last()) {
-            return Err(SeamError::Failed {
+            return Err(DurableError::Failed {
                 context: key.to_string(),
                 message: message.clone(),
             });
@@ -900,7 +900,9 @@ impl DurableStore for FsStore {
         drop(state);
         self.ensure_worker()?;
         self.shared.changed.notify_all();
-        Err(SeamError::Pending(format!("{key} is being made durable")))
+        Err(DurableError::Pending(format!(
+            "{key} is being made durable"
+        )))
     }
 
     fn is_settled(&self, key: &StorageKey) -> bool {
@@ -911,7 +913,7 @@ impl DurableStore for FsStore {
         arm_settle_wake(&mut lock(&self.shared.state), key, wake)
     }
 
-    fn lease(&self, key: &StorageKey) -> Result<Lease, SeamError> {
+    fn lease(&self, key: &StorageKey) -> Result<Lease, DurableError> {
         let target = self.target(key)?;
         if let Some(wake) = durable_store::waiting::wake() {
             return self
@@ -921,7 +923,7 @@ impl DurableStore for FsStore {
         match target {
             Target::Document(directory) => {
                 if lock(&self.shared.state).owners.contains_key(key) {
-                    return Err(SeamError::Busy(key.to_string()));
+                    return Err(DurableError::Busy(key.to_string()));
                 }
                 let owner = Arc::new(open_owner(&directory)?);
                 Ok(Box::new(self.register(key, owner)?))
@@ -929,7 +931,7 @@ impl DurableStore for FsStore {
             Target::View(path) => {
                 let mut state = lock(&self.shared.state);
                 if state.view_leases.contains_key(key) {
-                    return Err(SeamError::Busy(key.to_string()));
+                    return Err(DurableError::Busy(key.to_string()));
                 }
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent).map_err(|e| io_err("creating view directory", e))?;
@@ -949,7 +951,7 @@ impl DurableStore for FsStore {
         }
     }
 
-    fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, SeamError> {
+    fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, DurableError> {
         let target = self.target(key)?;
         if let (Target::Document(_), Some(wake)) = (&target, durable_store::waiting::wake()) {
             let (lease, primary) =
@@ -963,7 +965,7 @@ impl DurableStore for FsStore {
                     .get(key)
                     .is_some_and(|live| live.iter().any(|owner| owner.exclusive))
                 {
-                    return Err(SeamError::Busy(key.to_string()));
+                    return Err(DurableError::Busy(key.to_string()));
                 }
                 let owner = Arc::new(open_shared_owner(&directory)?);
                 let primary = owner.writer_lock.is_some();
@@ -972,7 +974,7 @@ impl DurableStore for FsStore {
                     primary,
                 })
             }
-            Target::View(_) => Err(SeamError::InvalidKey {
+            Target::View(_) => Err(DurableError::InvalidKey {
                 key: key.to_string(),
                 reason: "a view has exactly one writer".into(),
             }),
@@ -983,7 +985,7 @@ impl DurableStore for FsStore {
         durable_store::waiting::disk_forbidden()
     }
 
-    fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, SeamError> {
+    fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, DurableError> {
         validate_document_key(claimant)?;
         let marker = match key {
             // A workspace record adopted under a new identity (see
@@ -991,14 +993,14 @@ impl DurableStore for FsStore {
             StorageKey::Document { .. } => match self.target(key)? {
                 Target::Document(directory) => directory.join(DOCUMENT_SUCCESSOR_CLAIM),
                 Target::View(_) => {
-                    return Err(SeamError::InvalidKey {
+                    return Err(DurableError::InvalidKey {
                         key: key.to_string(),
                         reason: "a record is a document".into(),
                     });
                 }
             },
             _ => {
-                return Err(SeamError::InvalidKey {
+                return Err(DurableError::InvalidKey {
                     key: key.to_string(),
                     reason: "only workspace records are claimed".into(),
                 });
@@ -1013,7 +1015,7 @@ impl DurableStore for FsStore {
 
     /// Records whose document file holds committed bytes. A write still in
     /// its debounce window is not listed until it commits.
-    fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, SeamError> {
+    fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, DurableError> {
         validate_document_key(workspace)?;
         let directory = self
             .app_dir(app)?
@@ -1044,7 +1046,7 @@ impl DurableStore for FsStore {
         Ok(records)
     }
 
-    fn workspace_indexes(&self) -> Result<Vec<(String, String)>, SeamError> {
+    fn workspace_indexes(&self) -> Result<Vec<(String, String)>, DurableError> {
         workspace_indexes_in(&self.root)
     }
 
@@ -1059,12 +1061,12 @@ impl DurableStore for FsStore {
     /// never syncs. Written at once, unsynced: a hint lost to a crash, or
     /// written ahead of a replacement that then fails, names bytes the
     /// document no longer holds and the reader ignores it.
-    fn write_hint(&self, key: &StorageKey, hint: &[u8]) -> Result<(), SeamError> {
+    fn write_hint(&self, key: &StorageKey, hint: &[u8]) -> Result<(), DurableError> {
         let Target::Document(directory) = self.target(key)? else {
             return Ok(());
         };
         if !lock(&self.shared.state).owners.contains_key(key) {
-            return Err(SeamError::NotLeased(key.to_string()));
+            return Err(DurableError::NotLeased(key.to_string()));
         }
         if durable_store::waiting::disk_forbidden() {
             self.ensure_worker()?;
@@ -1119,7 +1121,7 @@ impl FsStore {
         target: &Target,
         access: Access,
         wake: &ReadyWake,
-    ) -> Result<(Lease, bool), SeamError> {
+    ) -> Result<(Lease, bool), DurableError> {
         let state = lock(&self.shared.state);
         let held = match target {
             Target::Document(_) => state.owners.get(key).is_some_and(|live| {
@@ -1129,11 +1131,11 @@ impl FsStore {
         };
         drop(state);
         if held {
-            return Err(SeamError::Busy(key.to_string()));
+            return Err(DurableError::Busy(key.to_string()));
         }
         self.ensure_worker()?;
         let prepared = self.shared.take_prepared(key, access, wake)?;
-        let files = prepared.files.ok_or_else(|| SeamError::Failed {
+        let files = prepared.files.ok_or_else(|| DurableError::Failed {
             context: format!("opening {key}"),
             message: "prepared for reading only".into(),
         })?;
@@ -1144,8 +1146,8 @@ impl FsStore {
         };
         let check =
             advisory_lock::FileLock::try_lock(files.check, mode).map_err(|error| match error {
-                advisory_lock::TryLockError::WouldBlock => SeamError::Busy(key.to_string()),
-                advisory_lock::TryLockError::Error(error) => SeamError::Failed {
+                advisory_lock::TryLockError::WouldBlock => DurableError::Busy(key.to_string()),
+                advisory_lock::TryLockError::Error(error) => DurableError::Failed {
                     context: format!("acquiring the check of {key}"),
                     message: error.to_string(),
                 },
@@ -1154,7 +1156,7 @@ impl FsStore {
             let check = Arc::new(check);
             let mut state = lock(&self.shared.state);
             if state.view_leases.contains_key(key) {
-                return Err(SeamError::Busy(key.to_string()));
+                return Err(DurableError::Busy(key.to_string()));
             }
             state.view_leases.insert(key.clone(), Arc::clone(&check));
             state.cache.insert(key.clone(), prepared.snapshot);
@@ -1198,11 +1200,11 @@ impl FsStore {
         Ok((Box::new(lease), primary))
     }
 
-    fn register(&self, key: &StorageKey, owner: Arc<Owner>) -> Result<FsLease, SeamError> {
+    fn register(&self, key: &StorageKey, owner: Arc<Owner>) -> Result<FsLease, DurableError> {
         let mut state = lock(&self.shared.state);
         let live = state.owners.entry(key.clone()).or_default();
         if live.iter().any(|other| other.exclusive || owner.exclusive) {
-            return Err(SeamError::Busy(key.to_string()));
+            return Err(DurableError::Busy(key.to_string()));
         }
         let first = live.is_empty();
         live.push(Arc::clone(&owner));
@@ -1294,7 +1296,7 @@ fn durability_in(state: &State, key: &StorageKey, revision: Revision) -> Durabil
 }
 
 /// A key's stored bytes and writer identity, read from the disk.
-fn read_stored(target: &Target) -> Result<Option<Stored>, SeamError> {
+fn read_stored(target: &Target) -> Result<Option<Stored>, DurableError> {
     let (path, writer) = match target {
         Target::Document(directory) => (
             directory.join(DOCUMENT_FILE),
@@ -1329,7 +1331,7 @@ fn keep_hint(directory: &Path, hint: &[u8]) -> Result<(), StoreError> {
         .map_err(|e| io_err(format!("writing {}", path.display()), e))
 }
 
-fn read_writer(path: &Path) -> Result<Option<Vec<u8>>, SeamError> {
+fn read_writer(path: &Path) -> Result<Option<Vec<u8>>, DurableError> {
     read_writer_on(path, this_machine())
 }
 
@@ -1337,7 +1339,7 @@ fn read_writer(path: &Path) -> Result<Option<Vec<u8>>, SeamError> {
 /// another machine is not this one's. A disk copied to another machine (a branch of a device)
 /// carries its source's sidecars, and two machines writing a shared record as one actor make
 /// changes no peer can take in ("duplicate seq"): the copy mints its own instead.
-fn read_writer_on(path: &Path, machine: Option<&str>) -> Result<Option<Vec<u8>>, SeamError> {
+fn read_writer_on(path: &Path, machine: Option<&str>) -> Result<Option<Vec<u8>>, DurableError> {
     match fs::read_to_string(path) {
         Ok(text) => {
             let (actor, made_on) = split_sidecar(&text);
@@ -1895,8 +1897,8 @@ mod tests {
             });
             {
                 let _loop = durable_store::waiting::forbid_strictly_on_this_thread().waking(wake);
-                assert!(matches!(fs.read(&key), Err(SeamError::Opening(_))));
-                assert!(matches!(fs.read(&key), Err(SeamError::Opening(_))));
+                assert!(matches!(fs.read(&key), Err(DurableError::Opening(_))));
+                assert!(matches!(fs.read(&key), Err(DurableError::Opening(_))));
                 assert!(
                     notified.try_recv().is_err(),
                     "woken before the work was done"
@@ -1992,13 +1994,13 @@ mod tests {
                 let _loop = durable_store::waiting::forbid_strictly_on_this_thread().waking(wake);
                 assert!(matches!(
                     fs.flush_where_allowed(&key),
-                    Err(SeamError::Pending(_))
+                    Err(DurableError::Pending(_))
                 ));
                 tilo_test_env::recv("the writer thread to take the append", &reached);
                 fs.write(&key, WriteOp::Append(b"ef".to_vec()), None)
                     .unwrap();
                 assert!(
-                    matches!(fs.read(&key), Err(SeamError::Opening(_))),
+                    matches!(fs.read(&key), Err(DurableError::Opening(_))),
                     "what only the file holds is the store's thread to read"
                 );
             }
@@ -2042,11 +2044,11 @@ mod tests {
             drop(lease);
             let other = FsStore::new(tmp.path());
             assert!(
-                matches!(other.lease(&key), Err(SeamError::Busy(_))),
+                matches!(other.lease(&key), Err(DurableError::Busy(_))),
                 "another process waits for the queued write"
             );
             assert!(
-                matches!(fs.lease(&key), Err(SeamError::Busy(_))),
+                matches!(fs.lease(&key), Err(DurableError::Busy(_))),
                 "so does a new owner in this one"
             );
             fs.flush(Some(&key)).unwrap();
@@ -2151,7 +2153,7 @@ mod tests {
                 .write(&key, WriteOp::Replace(b"evidence".to_vec()), None)
                 .unwrap();
             drop(lease);
-            assert!(matches!(peer.lease(&key), Err(SeamError::Busy(_))));
+            assert!(matches!(peer.lease(&key), Err(DurableError::Busy(_))));
             store.flush(Some(&key)).unwrap();
             assert_eq!(store.durability(&key, revision), Durability::Durable);
             // The worker must release the check before flush wakes its caller.
@@ -2334,8 +2336,11 @@ mod tests {
 
         // The disk is held until after these return: a caller that waited
         // for it would never return.
-        assert!(matches!(fs.lease_shared(&key), Err(SeamError::Opening(_))));
-        assert!(matches!(fs.read(&key), Err(SeamError::Opening(_))));
+        assert!(matches!(
+            fs.lease_shared(&key),
+            Err(DurableError::Opening(_))
+        ));
+        assert!(matches!(fs.read(&key), Err(DurableError::Opening(_))));
         assert!(!directory.exists(), "the caller created the directory");
         assert!(
             notified.try_recv().is_err(),
@@ -2417,14 +2422,14 @@ mod tests {
             tilo_test_env::recv("the other owner's writes", &wait_written);
             let (wake, notified) = thread_wake();
             durable_store::waiting::decline_on_this_thread(wake);
-            assert!(matches!(fs.read(view), Err(SeamError::Opening(_))));
+            assert!(matches!(fs.read(view), Err(DurableError::Opening(_))));
             tilo_test_env::recv("the read's wake", &notified);
             assert_eq!(
                 fs.read(view).unwrap().map(|stored| stored.bytes),
                 Some(b"layout+queued".to_vec())
             );
             // A snapshot read only to be read is handed over once.
-            assert!(matches!(fs.read(view), Err(SeamError::Opening(_))));
+            assert!(matches!(fs.read(view), Err(DurableError::Opening(_))));
             tilo_test_env::recv("the read's wake", &notified);
             done.send(()).unwrap();
         });
@@ -2450,9 +2455,9 @@ mod tests {
         .unwrap();
         let (wake, notified) = thread_wake();
         durable_store::waiting::decline_on_this_thread(wake);
-        assert!(matches!(fs.lease(&key), Err(SeamError::Opening(_))));
+        assert!(matches!(fs.lease(&key), Err(DurableError::Opening(_))));
         tilo_test_env::recv("the preparation's wake", &notified);
-        assert!(matches!(fs.lease(&key), Err(SeamError::Busy(_))));
+        assert!(matches!(fs.lease(&key), Err(DurableError::Busy(_))));
     }
 
     /// A blocking flush on a thread that must not wait is reported: a test
@@ -2487,14 +2492,20 @@ mod tests {
         let key = record("blocked");
         let (wake, notified) = thread_wake();
         durable_store::waiting::decline_on_this_thread(wake);
-        assert!(matches!(fs.lease_shared(&key), Err(SeamError::Opening(_))));
+        assert!(matches!(
+            fs.lease_shared(&key),
+            Err(DurableError::Opening(_))
+        ));
         tilo_test_env::recv("the preparation's wake", &notified);
         assert!(matches!(
             fs.lease_shared(&key),
-            Err(SeamError::Failed { .. })
+            Err(DurableError::Failed { .. })
         ));
         // Reported once; the next call tries again.
-        assert!(matches!(fs.lease_shared(&key), Err(SeamError::Opening(_))));
+        assert!(matches!(
+            fs.lease_shared(&key),
+            Err(DurableError::Opening(_))
+        ));
     }
 
     #[test]
@@ -2571,7 +2582,7 @@ mod tests {
             let store = FsStore::new(tmp.path());
             assert!(matches!(
                 store.write(&record("rec"), WriteOp::Replace(vec![1]), None),
-                Err(SeamError::NotLeased(_))
+                Err(DurableError::NotLeased(_))
             ));
             for key in [record("../escape"), record(""), record("a/b")] {
                 assert!(store.lease(&key).is_err(), "{key}");

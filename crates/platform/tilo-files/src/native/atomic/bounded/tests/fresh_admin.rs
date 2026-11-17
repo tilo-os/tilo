@@ -128,7 +128,7 @@ fn bounded_fresh_admin_renamed_root_keeps_original_parent_barrier() {
     target_os = "linux",
     ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"
 )]
-fn bounded_fresh_admin_parent_and_nonempty_retry_keep_original_custody() {
+fn bounded_fresh_admin_parent_and_nonempty_retry_keep_original_ownership() {
     use super::allocations::measure;
     let temp = private_root();
     let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();

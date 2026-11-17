@@ -777,7 +777,7 @@ live session whose relay is at its bound and read that it dials until it is
 carried again. Two real sessions run the stranger case: one is started
 against the relay of the session hosting its workspace while sixteen
 endpoints nobody knows hold that relay, and is in the live session at once, never
-told busy. The session's own tests read the standing, the state and the
+told busy. The session's own tests read the access, the state and the
 words, English and German, of a live session whose relay was busy and of one that
 does not hear every device, the latter from a live session with three devices
 more than it reads.

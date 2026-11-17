@@ -395,7 +395,7 @@ impl ImagerApp {
                 release.image_sha256 == source.expected_sha256.as_deref().unwrap_or_default()
                     && release.size == source.size
                     && format!("{} {}", release.name, release.version) == source.name
-                    && release.account_custody.as_ref().is_some_and(|proof| {
+                    && release.account_credentials.as_ref().is_some_and(|proof| {
                         proof.validate().is_ok() && proof.protected_grant_protocol == protocol
                     })
             });
@@ -420,7 +420,7 @@ impl ImagerApp {
                 release.image_sha256 == source.expected_sha256.as_deref().unwrap_or_default()
                     && release.size == source.size
                     && format!("{} {}", release.name, release.version) == source.name
-                    && release.account_custody.as_ref().is_some_and(|proof| {
+                    && release.account_credentials.as_ref().is_some_and(|proof| {
                         proof.supports_service_session_protocol(protocol)
                             || imager_backend::account_admission::source_candidate(protocol, proof)
                                 .unwrap_or(false)
@@ -2011,7 +2011,7 @@ impl ImagerApp {
             &src,
             self.prepared_delivery
                 .artifact()
-                .and_then(|artifact| artifact.account_custody_protocol()),
+                .and_then(|artifact| artifact.account_credentials_protocol()),
         )?;
         self.require_media_service_session_protocol(
             &src,
@@ -2157,8 +2157,8 @@ impl ImagerApp {
     ) {
         // The guard exists before the future is first polled: cancelling a
         // newly scheduled canonical job must also cancel its native writer.
-        struct WriteJobCustody(JobControl);
-        impl Drop for WriteJobCustody {
+        struct WriteJobOwnership(JobControl);
+        impl Drop for WriteJobOwnership {
             fn drop(&mut self) {
                 if !self.0.observed_stopped() {
                     self.0.cancel();
@@ -2168,14 +2168,14 @@ impl ImagerApp {
         jobs.start::<Self>(WRITE_JOB, move |cx| {
             Ok(cx.spawn(
                 move |progress| {
-                    let custody = WriteJobCustody(control);
+                    let ownership = WriteJobOwnership(control);
                     async move {
                         let mut last = None;
                         let mut ended = false;
                         let mut disconnected = false;
                         loop {
                             if progress.is_cancelled() {
-                                custody.0.cancel();
+                                ownership.0.cancel();
                             }
                             // std receivers are polled, never waited on by the UI or
                             // the bounded blocking pool. Limit each runtime turn.
@@ -2207,9 +2207,9 @@ impl ImagerApp {
                                 }
                             }
                             // Progress is not completion. The canonical job only
-                            // delivers its callback after the same native stop witness
+                            // delivers its callback after the same native stop proof
                             // that guards UI state, prepared delivery and close.
-                            if (ended || disconnected) && custody.0.observed_stopped() {
+                            if (ended || disconnected) && ownership.0.observed_stopped() {
                                 return last;
                             }
                             ui::rt::sleep(std::time::Duration::from_millis(25)).await;
@@ -2297,7 +2297,7 @@ impl ImagerApp {
     fn finish_write(&mut self, last: Option<Progress>) {
         self.dirty = true;
         // A terminal progress packet can precede helper wait and native exit.
-        // Keep the cancellation channel and authority until that owned witness.
+        // Keep the cancellation channel and authority until that owned proof.
         if self
             .job_control
             .as_ref()
@@ -4093,7 +4093,7 @@ mod tests {
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let (prepared, artifact) =
             crate::setup::journey::prepared_media::protected_account_media_fixture(root.path());
-        assert_eq!(prepared.account_custody_protocol(), Some(1));
+        assert_eq!(prepared.account_credentials_protocol(), Some(1));
         let original_artifact = std::fs::read(&artifact.source_path).unwrap();
         let handoffs = root.path().join("handoffs");
         std::fs::create_dir(&handoffs).unwrap();
@@ -4147,7 +4147,7 @@ mod tests {
             runtime_library: "lib/libruntime_dylib.so".into(),
             service_sessions: None,
         };
-        app.releases[0].account_custody = Some(proof);
+        app.releases[0].account_credentials = Some(proof);
         app.require_media_account_protocol(&source, Some(1))
             .unwrap();
         app.require_media_service_session_protocol(&source, None)
@@ -4179,7 +4179,7 @@ mod tests {
                 .is_err()
         );
         app.releases[0]
-            .account_custody
+            .account_credentials
             .as_mut()
             .unwrap()
             .runtime_library = "other.so".into();

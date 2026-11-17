@@ -735,7 +735,7 @@ Keep an encrypted offline recovery copy, then pass --yes."
   # PCR 7 authenticates the Secure Boot policy, not the particular booted UKI.
   # If firmware db contains a factory certificate or an extra image hash, an
   # alternate OS trusted by that entry can reproduce PCR 7 and decrypt db.key.
-  # Permit PCR7-only custody only when the owner certificate is the sole boot
+  # Permit PCR7-only ownership only when the owner certificate is the sole boot
   # authority. Hardware that must retain vendor db trust should keep db.key
   # offline rather than claiming the TPM has isolated it to Tilo.
   local firmware_db

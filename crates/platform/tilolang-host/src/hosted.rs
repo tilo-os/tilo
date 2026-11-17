@@ -87,10 +87,10 @@ pub struct Spec {
     /// its own process's language.
     pub language: String,
     /// What the person may do in the app as the session handed it with the launch
-    /// (`InstanceRequest::standing`): the views offer what it denies them disabled, and the
+    /// (`InstanceRequest::access`): the views offer what it denies them disabled, and the
     /// runtime refuses it before it reaches the broker. `None` where the session holds no policy
     /// for the workspace: the broker alone decides.
-    pub standing: Option<tilo_action_policy::Standing>,
+    pub access: Option<tilo_action_policy::MemberAccess>,
 }
 
 impl Spec {
@@ -110,7 +110,7 @@ impl Spec {
             person: person.into(),
             installed: BTreeMap::new(),
             language: String::new(),
-            standing: None,
+            access: None,
         }
     }
 
@@ -121,10 +121,10 @@ impl Spec {
         self
     }
 
-    /// [`Self::new`] for a person whose standing in the workspace is `standing`.
+    /// [`Self::new`] for a person whose access in the workspace is `access`.
     #[must_use]
-    pub fn standing(mut self, standing: tilo_action_policy::Standing) -> Self {
-        self.standing = Some(standing);
+    pub fn access(mut self, access: tilo_action_policy::MemberAccess) -> Self {
+        self.access = Some(access);
         self
     }
 }
@@ -779,8 +779,8 @@ pub struct Hosted {
     /// The scope the instance's code runs in, its document's content store registered for it.
     scope: DocumentScope,
     /// What the person may do in the app now: the launch's, until the session says it changed
-    /// ([`Self::set_standing`]). The runtime reads it at each decision.
-    standing: Rc<RefCell<Option<tilo_action_policy::Standing>>>,
+    /// ([`Self::set_access`]). The runtime reads it at each decision.
+    access: Rc<RefCell<Option<tilo_action_policy::MemberAccess>>>,
     /// The workspace's document of each person's own state: what the person picked in the views
     /// and what they have seen, given to the views and kept back as they change it.
     personal: PersonalDocument,
@@ -882,11 +882,11 @@ impl Hosted {
         // The device that governs the workspace is its documents' origin: the package's migrations
         // run there, once.
         instance.set_origin(record.governs());
-        // What its runtime offers and invokes is decided by the person's standing as the session
+        // What its runtime offers and invokes is decided by the person's access as the session
         // says it, read at each decision.
-        let standing = Rc::new(RefCell::new(spec.standing.clone()));
-        let read = Rc::clone(&standing);
-        instance.set_standing(Rc::new(move || read.borrow().clone()));
+        let access = Rc::new(RefCell::new(spec.access.clone()));
+        let read = Rc::clone(&access);
+        instance.set_access(Rc::new(move || read.borrow().clone()));
         let mut registry = ActionRegistry::with(tilolang_tilo::history::register);
         registry.connect_content(record.content().clone());
         drop(in_scope);
@@ -921,7 +921,7 @@ impl Hosted {
             identity: None,
             scope,
             personal,
-            standing,
+            access,
             presence,
             early: Vec::new(),
         }
@@ -1033,13 +1033,13 @@ impl Hosted {
     }
 
     /// What the person may do in the app changed (a role given or taken back): the views offer and
-    /// the runtime invokes by `standing` from now on, and what they offer is drawn again. Whether
+    /// the runtime invokes by `access` from now on, and what they offer is drawn again. Whether
     /// it changed.
-    pub fn set_standing(&mut self, standing: Option<tilo_action_policy::Standing>) -> bool {
-        if *self.standing.borrow() == standing {
+    pub fn set_access(&mut self, access: Option<tilo_action_policy::MemberAccess>) -> bool {
+        if *self.access.borrow() == access {
             return false;
         }
-        *self.standing.borrow_mut() = standing;
+        *self.access.borrow_mut() = access;
         self.person_changed();
         true
     }
@@ -2525,7 +2525,7 @@ enum Applying {
 
 /// The origin of one document applying one change: an agent task's invocation the broker
 /// admitted (`docs/designs/app-language/agents.md`, "Reading documents outside their app"). No
-/// window and no instance: the document on its connection, which holds the app's custody as an
+/// window and no instance: the document on its connection, which holds the app's ownership as an
 /// instance's does, and the app's package in a runtime of its own. The action's code runs
 /// against the document as it is when the change is applied, so its requirements are decided on
 /// what others wrote since the task read it; what it wrote is applied as the invoker's step

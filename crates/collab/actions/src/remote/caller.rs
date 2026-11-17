@@ -241,7 +241,7 @@ impl Caller {
 
     /// Retain a host-issued execution when projecting the same transport into
     /// another verified action API. A lease conveys ownership and lifetime,
-    /// never certificate custody or additional permissions.
+    /// never certificate ownership or additional permissions.
     #[must_use]
     pub fn in_execution(mut self, execution: ExecutionLease) -> Self {
         self.execution = Some(execution);
@@ -361,9 +361,9 @@ impl Caller {
 
     /// The person whose own device handed this connection to its agent
     /// ([`Self::delegated_to`]), as that device is admitted: the person the
-    /// agent acts for, on the same device, whose current standing bounds
+    /// agent acts for, on the same device, whose current access bounds
     /// everything the agent may do. `None` for any other caller. Use it to
-    /// read the person's standing, never to act as them.
+    /// read the person's access, never to act as them.
     #[must_use]
     pub fn delegating_person(&self) -> Option<Self> {
         if !self.acting.is_agent() {

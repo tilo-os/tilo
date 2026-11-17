@@ -445,7 +445,7 @@ impl ResourceApp for BrowserShell {
                 tracing::error!(%error, "Cannot prepare browser storage");
             }
             BrowserWidget::new_with_mode(mode).with_service_client(
-                if mode.holds_account_custody()
+                if mode.holds_account_credentials()
                     && cx
                         .me()
                         .and_then(ui::tilo_resource::MemberId::person_id)
@@ -562,16 +562,16 @@ pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> E
 /// store, and in a live window the person's resources, this device's settings and the
 /// engine's wakes.
 fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
-    // The person's account custody (their website accounts, saved addresses, the
+    // The person's account credentials (their website accounts, saved addresses, the
     // profile handed over from another device) is lent only to their own window: a
     // window opened for an agent browses as a visitor.
-    let custody = window_mode(cx).holds_account_custody();
+    let ownership = window_mode(cx).holds_account_credentials();
     window.attach_dispatcher(cx.dispatcher(), cx.actions());
     window.attach_services(
         cx.me()
             .and_then(ui::tilo_resource::MemberId::person_id)
             .and_then(crate::service_sessions::identity)
-            .filter(|_| custody),
+            .filter(|_| ownership),
         cx.waker(),
     );
     // A picture of the page is content: the store the host lent this window
@@ -583,7 +583,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     if !cx.mode().is_live() {
         return;
     }
-    if custody
+    if ownership
         && cx
             .me()
             .and_then(ui::tilo_resource::MemberId::person_id)
@@ -620,12 +620,12 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
             .page_mut()
             .attach_page_resource(record, cx.device().unwrap_or_default());
     }
-    if custody && let Some(person) = cx.me().and_then(ui::tilo_resource::MemberId::person_id) {
+    if ownership && let Some(person) = cx.me().and_then(ui::tilo_resource::MemberId::person_id) {
         window
             .page_mut()
             .attach_continuity(person, cx.storage().files(), cx.waker());
     }
-    if custody && let Some(book) = cx.person::<crate::autofill::AddressBook>() {
+    if ownership && let Some(book) = cx.person::<crate::autofill::AddressBook>() {
         window.attach_address_book(book);
     }
     // The engine publishes frames and navigation from its own threads; each wakes the
@@ -1028,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn a_window_launched_as_a_visitor_holds_none_of_the_persons_custody() {
+    fn a_window_launched_as_a_visitor_holds_none_of_the_persons_ownership() {
         use ui::permissions::policy::Answer::{Allow, Ask};
         let answers = |arguments: &[&str]| {
             let engine = ui::webview::test_engine::TestEngine::new();

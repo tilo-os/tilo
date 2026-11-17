@@ -25,7 +25,7 @@ use std::sync::Arc;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::offer::{Answer, Power, Query, Route, Work};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLedger,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLog,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, Reservation,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
@@ -111,7 +111,7 @@ pub(crate) struct HostWork {
     /// run an action here is what its workspace's policy grants them.
     workspaces: Arc<WorkspacesMap>,
     offered: std::sync::Mutex<Vec<Offered>>,
-    ledger: std::sync::Mutex<InvocationLedger<InvocationState>>,
+    log: std::sync::Mutex<InvocationLog<InvocationState>>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -197,7 +197,7 @@ impl HostWork {
             jobs: std::sync::RwLock::default(),
             workspaces,
             offered: std::sync::Mutex::default(),
-            ledger: std::sync::Mutex::default(),
+            log: std::sync::Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         })
     }
@@ -364,15 +364,14 @@ impl ActionHost for HostActions {
             // An invocation this host already admitted is answered with what it
             // has, and is never run a second time.
             let admitted = {
-                let mut ledger = shared.ledger.lock_recover();
-                match ledger.reserve(&caller, &request) {
+                let mut log = shared.log.lock_recover();
+                match log.reserve(&caller, &request) {
                     Err(error) => {
                         completer.complete(Err(error));
                         return;
                     }
                     Ok(Reservation::Admitted) => Some(
-                        ledger
-                            .get(&caller, &invocation)
+                        log.get(&caller, &invocation)
                             .map(InvocationState::receipt)
                             .ok_or(ActionHostError::UnknownInvocation),
                     ),
@@ -403,21 +402,21 @@ impl ActionHost for HostActions {
             };
             let state = InvocationState::new(invocation, update);
             let receipt = state.receipt();
-            shared.ledger.lock_recover().complete(&invocation, state);
+            shared.log.lock_recover().complete(&invocation, state);
             completer.complete(Ok(receipt));
         });
         answer
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.0.ledger.lock_recover().get(caller, id).cloned()
+        self.0.log.lock_recover().get(caller, id).cloned()
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
         let Some(jobs) = self.0.jobs.read_recover().clone() else {
             return Pending::ready(Err(not_served()));
         };
-        match self.0.ledger.lock_recover().get(caller, id) {
+        match self.0.log.lock_recover().get(caller, id) {
             Some(state) if state.is_terminal() => {
                 Pending::ready(Err(ActionHostError::NotCancellable {
                     reason: "the job already finished here".into(),

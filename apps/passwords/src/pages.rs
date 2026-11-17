@@ -529,10 +529,10 @@ fn review(core: &Core) -> Element {
             CATALOG.t(CHECKED_AGAINST),
         ),
     ];
-    if let Some(custody) = core.custody {
+    if let Some(backend) = core.backend {
         facts.push(Property::new(
             CATALOG.t("passwords-encryption-key"),
-            custody,
+            backend,
         ));
     }
     groups.push(Box::new(

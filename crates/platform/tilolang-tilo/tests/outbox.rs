@@ -306,11 +306,14 @@ action document(d: Draft) {
 const RELAY_APP: &str = "test.relay";
 const WORKSPACE: &str = "workspace";
 
-/// `who`'s standing in the relay workspace: an editor of it, allowed to post, so the action runs
+/// `who`'s access in the relay workspace: an editor of it, allowed to post, so the action runs
 /// up to the effect it queues before the ask about recording the letter.
-fn relay_standing(meta: &tilolang_runtime::meta::Meta, who: &str) -> tilo_action_policy::Standing {
+fn relay_access(
+    meta: &tilolang_runtime::meta::Meta,
+    who: &str,
+) -> tilo_action_policy::MemberAccess {
     use tilo_action_policy::{
-        Answer, Grant, Grantee, KindSet, Role, Standing, TreePath, WorkspacePolicy,
+        Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
     };
     let mut policy = WorkspacePolicy::new(WORKSPACE, "sol");
     for member in ["ada", "grace"] {
@@ -334,7 +337,7 @@ fn relay_standing(meta: &tilolang_runtime::meta::Meta, who: &str) -> tilo_action
         Answer::Allow,
         owner,
     )]);
-    Standing::person(policy, who)
+    MemberAccess::person(policy, who)
 }
 
 /// Two replicas of a relay workspace: ada posted a letter, and recording it waits on a person.
@@ -344,11 +347,11 @@ fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     let meta = probe[0].meta.clone();
     let ids = probe[0].ids.clone();
     let packages = [(RELAY, ids.as_str())];
-    let (mut ada, _) = Replica::standing(
+    let (mut ada, _) = Replica::access(
         "ada",
         AutoCommit::new(),
         &packages,
-        Some(relay_standing(&meta, "ada")),
+        Some(relay_access(&meta, "ada")),
     );
     let letters = ada.host.root_of(RELAY_APP).unwrap();
     ada.commit();
@@ -400,11 +403,11 @@ fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
         )
         .unwrap();
     ada.commit();
-    let grace = Replica::standing(
+    let grace = Replica::access(
         "grace",
         ada.doc.fork(),
         &packages,
-        Some(relay_standing(&meta, "grace")),
+        Some(relay_access(&meta, "grace")),
     )
     .0;
     (ada, grace, invocation)

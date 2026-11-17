@@ -1,7 +1,7 @@
 /**
  * An unlocked identity with the calls the page makes on one, recording them:
  * a stand-in where the real identity (which needs the wasm runtime and a
- * `WebCrypto` custody key) is more than a page test needs.
+ * `WebCrypto` device key key) is more than a page test needs.
  *
  * `envelope` starts empty and grows a wrap per keeping call, as the real one
  * does; `calls` records what was asked (`['keepWithPasskey', options]`,

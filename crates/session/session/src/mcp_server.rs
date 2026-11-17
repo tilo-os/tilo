@@ -1424,7 +1424,7 @@ enum ApiAsk {
     },
 }
 
-/// The seam between the server's connections and the session's own services.
+/// The boundary between the server's connections and the session's own services.
 pub(crate) struct SessionServices {
     asks: std::sync::Mutex<Vec<ApiAsk>>,
     wake: Wake,
@@ -1516,7 +1516,7 @@ impl SessionServices {
         self.kept.lock_recover().contains(app)
     }
 
-    /// The seam `wake` wakes the loop on, shared by every connection that asks the session's own
+    /// The services `wake` wakes the loop for, shared by every connection that asks the session's own
     /// services, for the person sitting here.
     pub(crate) fn new(wake: Wake, person: &str) -> Self {
         Self {
@@ -2014,14 +2014,14 @@ impl Host {
     }
 
     /// An invocation the person at this device made through this device's own control sockets: the
-    /// same as [`ActionHost::invoke`], except that the broker keeps the device's certificate custody for it
+    /// same as [`ActionHost::invoke`], except that the broker keeps the device's certificate ownership for it
     /// ([`AppBrokerState::action_invoke_local_person`]), as it does for the palette's actions, so
     /// what the person may do here is what the person may do anywhere.
     /// Only this device's own control sockets call it — the owner's socket, whose peer is the account
     /// whose desktop this is ([`crate::test_control::owner_decision`]), and the development
     /// test-control socket, which drives it as the person at this device. An agent, or a person over
     /// a network, MCP or app connection, invokes as itself through [`ActionHost::invoke`], and the
-    /// broker's per-action and per-role permissions decide; the broker refuses custody to anything
+    /// broker's per-action and per-role permissions decide; the broker refuses ownership to anything
     /// but the person at this device.
     pub(crate) fn invoke_as_local_person(
         &self,
@@ -2270,7 +2270,7 @@ impl ActionHost for Host {
         // certificate for the person alone. An agent's step is the turn's, and the broker
         // decides it exactly as it decides the agent's app action in that turn.
         // An admitted connection invokes as itself: the broker decides by its per-action and
-        // per-role permissions. Device custody belongs to this device's own control sockets alone
+        // per-role permissions. Device identity belongs to this device's own control sockets alone
         // ([`Host::invoke_as_local_person`]), and the person's own steps on the session go to the loop
         // wherever they come from ([`Host::invoke_within`]).
         self.invoke_within(caller, request, false)
@@ -2330,7 +2330,7 @@ impl ActionHost for Host {
             return agent.confirm(caller, request);
         }
         match &self.state {
-            Some(state) => state.request_witness(caller, None, request),
+            Some(state) => state.request_approval(caller, None, request),
             None => Pending::ready(Err(ActionHostError::confirmation_required())),
         }
     }

@@ -167,7 +167,7 @@ def build_tl_apps(state: Path, out: Path, build: bool) -> list[Path]:
 def control_rect(session: CanvasSession, name: str, deadline: float = 30.0) -> list[float]:
     """Where the shell draws the control `name` now, once it stands still across two frames: a
     press aimed at a place a control has left misses it."""
-    def standing():
+    def at_rest():
         first = next((t.get("rect") for t in session.targets() if t.get("name") == name), None)
         if first is None:
             return None
@@ -175,7 +175,7 @@ def control_rect(session: CanvasSession, name: str, deadline: float = 30.0) -> l
         second = next((t.get("rect") for t in session.targets() if t.get("name") == name), None)
         return second if first == second else None
 
-    rect = until(f"the control {name!r} to stand still", standing, deadline)
+    rect = until(f"the control {name!r} to stand still", at_rest, deadline)
     return rect
 
 
@@ -364,7 +364,7 @@ def on_screen(rect: list[float], view: tuple[float, float]) -> bool:
     return x >= 0 and y >= 0 and x + width <= view[0] and y + height <= view[1]
 
 
-def standing_on_screen(rows: list[dict], apps: list[str] | None = None) -> list[dict] | None:
+def shown_on_screen(rows: list[dict], apps: list[str] | None = None) -> list[dict] | None:
     """`rows` (the windows of `apps`, or of every app) once each stands whole on the screen,
     else `None`: a window a person just opened is where they can see it, not past the edge."""
     view = screen()
@@ -459,7 +459,7 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     # output's edge, and the canvas pans to it. Board keeps the place it stands at and slides
     # with the canvas, as every place does.
     until("the window just opened to stand whole on the screen",
-          lambda: standing_on_screen(placed_rows(session), ["so.tilo.chat"]), 30)
+          lambda: shown_on_screen(placed_rows(session), ["so.tilo.chat"]), 30)
     time.sleep(1.5)
     session.snapshot(shots / "01-populated-canvas.png")
     before = placed(session)
@@ -496,20 +496,20 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
 
     # A second ask lands in the same conversation: the window it already shows is raised and
     # revealed, never a second window of the same conversation.
-    standing = {row.get("group"): row for row in chat_windows(session)}
+    before = {row.get("group"): row for row in chat_windows(session)}
     type_on_canvas(session, ASK_AGAIN)
     since = time.monotonic()
 
     def the_same_windows():
         now = {row.get("group"): row for row in chat_windows(session)}
-        if set(now) != set(standing):
+        if set(now) != set(before):
             raise Failed(f"the second ask opened another window of the conversation: "
-                         f"{sorted(set(now) - set(standing))}")
+                         f"{sorted(set(now) - set(before))}")
         if time.monotonic() - since < SECOND_ASK_SETTLES:
             return None
         return now
 
-    after_ask = until("the second ask to land in the standing conversation", the_same_windows, 60)
+    after_ask = until("the second ask to land in the same conversation", the_same_windows, 60)
     until("the conversation to stand whole on the screen again", the_conversation_shown, 30)
     raised = [row for row in after_ask.values() if row.get("active")]
     if not raised:

@@ -4712,7 +4712,7 @@ mod accessibility_tests {
     #[test]
     fn files_states_and_modal_sheets_publish_accessible_semantics() {
         custom_empty_loading_and_error_states_are_live_semantics();
-        deterministic_shot_seams_cover_loading_and_actionable_error_states();
+        deterministic_shot_boundaries_cover_loading_and_actionable_error_states();
         collaboration_sheet_is_a_focused_modal_semantic_subtree();
         #[cfg(unix)]
         destructive_eviction_requires_a_named_modal_action_before_writing_the_override();
@@ -4769,7 +4769,7 @@ mod accessibility_tests {
         assert_eq!(retry.action_target.as_deref(), Some(RETRY_ROW));
     }
 
-    fn deterministic_shot_seams_cover_loading_and_actionable_error_states() {
+    fn deterministic_shot_boundaries_cover_loading_and_actionable_error_states() {
         let (_home, widget) = empty_widget();
         widget.state().debug_show_loading_state();
         assert!(widget.state().is_loading());

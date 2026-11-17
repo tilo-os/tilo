@@ -19,7 +19,7 @@ pub trait Labels {
     fn everything(&self) -> String;
 }
 
-/// Labels nodes by their ids, for a reader that speaks the ledger's own
+/// Labels nodes by their ids, for a reader that speaks the log's own
 /// language (an agent, a bot's directory). A window passes its own labels,
 /// so the word it paints for the whole tree comes from its catalogue.
 #[derive(Clone, Copy, Debug, Default)]

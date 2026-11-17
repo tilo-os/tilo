@@ -418,7 +418,7 @@ fn wide_session(root: &std::path::Path) -> Session {
 
 /// How the place [`a_place_moved_to_a_point_is_drawn_there`] moves came to stand on the canvas.
 #[derive(Clone, Copy, Debug)]
-enum Standing {
+enum PlaceOrigin {
     /// The notes' root, placed at a point by an agent's `place`.
     PlacedRecord,
     /// The Notes app's window, opened beside another app's as `session.open_app` opens them.
@@ -428,7 +428,7 @@ enum Standing {
 /// Move the place `key` to `(1600, 0)` with its own `position`, as the agent, and wait until it is
 /// drawn there: its frame as far right of where it was drawn as 1600 is of the strip's point
 /// before, and at the canvas' top. `row` is how the place came to stand, which every failure names.
-fn moved_and_drawn(session: &mut Session, key: &str, row: Standing) {
+fn moved_and_drawn(session: &mut Session, key: &str, row: PlaceOrigin) {
     let (name, title) = crate::common::wait_for(
         session,
         format_args!("{row:?}: the place's name"),
@@ -500,16 +500,16 @@ fn moved_and_drawn(session: &mut Session, key: &str, row: Standing) {
 #[test]
 fn a_place_moved_to_a_point_is_drawn_there() {
     let _settled = ui::motion::testing::settled();
-    for row in [Standing::PlacedRecord, Standing::AppWindow] {
+    for row in [PlaceOrigin::PlacedRecord, PlaceOrigin::AppWindow] {
         let root = private_home();
         let mut session = wide_session(root.path());
-        let standing = crate::common::places(&session);
+        let origin = crate::common::places(&session);
         assert!(
-            standing.is_empty(),
+            origin.is_empty(),
             "{row:?}: nothing stands on the canvas the row starts on: {standing:?}"
         );
         let key = match row {
-            Standing::PlacedRecord => {
+            PlaceOrigin::PlacedRecord => {
                 let notes_root = root_of(&session, "so.tilo.lang.notes");
                 placed_as_agent(
                     &mut session,
@@ -518,7 +518,7 @@ fn a_place_moved_to_a_point_is_drawn_there() {
                 )
                 .key
             }
-            Standing::AppWindow => {
+            PlaceOrigin::AppWindow => {
                 for app in ["so.tilo.lang.tasks", "so.tilo.lang.notes"] {
                     session
                         .invoke(

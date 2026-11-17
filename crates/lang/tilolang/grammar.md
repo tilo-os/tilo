@@ -21,7 +21,7 @@ root       = "root" [ ident ":" ] type ;                      (* `root notebook:
 alias      = "type" Ident "=" type ;                          (* another name for a type *)
 default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a root by name *)
 row_view   = "row" "view" ident "for" type ;
-place_view = "place" "view" ident "for" type ;   (* what a place of the type shows standing on its own *)
+place_view = "place" "view" ident "for" type ;   (* what a place of the type shows state on its own *)
 views      = "views" ident { "," ident } "for" type ;   (* what a window of the type switches between *)
 role       = "primary" | "destructive" | "migration" ;
 

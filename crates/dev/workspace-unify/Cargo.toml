@@ -27,7 +27,7 @@ doc = false
 "accesskit_atspi_common-0_20_0" = { package = "accesskit_atspi_common", version = "^0.20.0", default-features = false, features = [] }
 "accesskit_consumer-0_39_0" = { package = "accesskit_consumer", version = "^0.39.0", default-features = false, features = [] }
 "accesskit_unix-0_23_0" = { package = "accesskit_unix", path = "../../../vendor/accesskit_unix", default-features = false, features = ["tokio"] }
-"account-custody" = { path = "../../../crates/system/account-custody", default-features = false, features = ["custody", "default", "hints", "hugging-face"] }
+"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["store", "default", "hints", "hugging-face"] }
 "accounts" = { path = "../../../crates/system/accounts", default-features = false, features = ["person"] }
 "activity" = { path = "../../../apps/activity", default-features = false, features = ["samples"] }
 "acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
@@ -1614,7 +1614,7 @@ doc = false
 "zvariant_utils-3_4_0" = { package = "zvariant_utils", version = "^3.4.0", default-features = false, features = ["default"] }
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.build-dependencies]
-"account-custody" = { path = "../../../crates/system/account-custody", default-features = false, features = ["custody", "default", "hints", "hugging-face"] }
+"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["store", "default", "hints", "hugging-face"] }
 "accounts" = { path = "../../../crates/system/accounts", default-features = false, features = ["person"] }
 "acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
 "adblock-0_12_1" = { package = "adblock", version = "^0.12.1", default-features = false, features = ["addr", "content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
@@ -2637,7 +2637,7 @@ doc = false
 "accesskit_atspi_common-0_20_0" = { package = "accesskit_atspi_common", version = "^0.20.0", default-features = false, features = [] }
 "accesskit_consumer-0_39_0" = { package = "accesskit_consumer", version = "^0.39.0", default-features = false, features = [] }
 "accesskit_unix-0_23_0" = { package = "accesskit_unix", path = "../../../vendor/accesskit_unix", default-features = false, features = ["tokio"] }
-"account-custody" = { path = "../../../crates/system/account-custody", default-features = false, features = ["custody", "default", "hints", "hugging-face"] }
+"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["store", "default", "hints", "hugging-face"] }
 "accounts" = { path = "../../../crates/system/accounts", default-features = false, features = ["person"] }
 "activity" = { path = "../../../apps/activity", default-features = false, features = ["samples"] }
 "acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
@@ -4222,7 +4222,7 @@ doc = false
 "accesskit_atspi_common-0_20_0" = { package = "accesskit_atspi_common", version = "^0.20.0", default-features = false, features = [] }
 "accesskit_consumer-0_39_0" = { package = "accesskit_consumer", version = "^0.39.0", default-features = false, features = [] }
 "accesskit_unix-0_23_0" = { package = "accesskit_unix", path = "../../../vendor/accesskit_unix", default-features = false, features = ["tokio"] }
-"account-custody" = { path = "../../../crates/system/account-custody", default-features = false, features = ["custody", "default", "hints", "hugging-face"] }
+"account-credentials" = { path = "../../../crates/system/account-credentials", default-features = false, features = ["store", "default", "hints", "hugging-face"] }
 "accounts" = { path = "../../../crates/system/accounts", default-features = false, features = ["person"] }
 "acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
 "adblock-0_12_1" = { package = "adblock", version = "^0.12.1", default-features = false, features = ["addr", "content-blocking", "embedded-domain-resolver", "full-regex-handling"] }

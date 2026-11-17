@@ -42,14 +42,14 @@ impl BoolAction {
         }
     }
 
-    pub(crate) fn install_custody(
+    pub(crate) fn attach(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         let _ = match self {
-            Self::Value(action) => action.install_custody(domain, attachment),
-            Self::Press(action) => action.install_custody(domain, attachment),
+            Self::Value(action) => action.attach(domain, attachment),
+            Self::Press(action) => action.attach(domain, attachment),
         };
     }
 
@@ -607,13 +607,13 @@ macro_rules! bool_control_capabilities {
         }
 
         impl crate::widget::controls::ActionControls for $ty {
-            fn install_control_custody(
+            fn attach_controls(
                 &mut self,
                 domain: &crate::ControlDomain,
-                attachment: crate::control_custody::CustodyAttachment,
+                attachment: crate::control_domain::DomainAttachment,
             ) {
                 if let Some(action) = &mut self.control.action {
-                    action.install_custody(domain, attachment);
+                    action.attach(domain, attachment);
                 }
             }
             fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

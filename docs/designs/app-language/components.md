@@ -204,7 +204,7 @@ and the row stays a row of the list it is in. One row stands open at a time, Esc
 outside close it, and a row that leaves the list — a place switched, a filter, a sync — closes
 with it, so the open item is always one of the items on screen. A window re-renders its list as
 its place, its filter or its rows change, and the item stays open across that: `open:` carries
-the item standing open, `opened:` reports the item the person opened, `closed:` that it closed
+the item access open, `opened:` reports the item the person opened, `closed:` that it closed
 (pressing the open row again, Escape, a press beside it, or its item leaving the list), and the
 view keeps it as its own state — `std.list` does that for its person.
 

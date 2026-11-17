@@ -1,6 +1,6 @@
 //! Transport shared by sign-in and Drive: one blocking client on Tilo's TLS
 //! defaults, a small cookie jar and bounded JSON bodies. Public so the
-//! sign-in in `account-custody` speaks to Apple exactly as Drive does.
+//! sign-in in `account-credentials` speaks to Apple exactly as Drive does.
 
 use std::fmt;
 use std::time::{Duration, SystemTime};

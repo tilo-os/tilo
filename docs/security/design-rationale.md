@@ -41,5 +41,5 @@ data or redesigning collaboration authority.
 - A hosted operator must not become an implicit reader of tenant content merely
   by operating relay or storage infrastructure.
 
-This record explains the architectural seam behind the current security
+This record explains the architectural boundary behind the current security
 documents; it is not a rollout plan or a statement of deployment status.

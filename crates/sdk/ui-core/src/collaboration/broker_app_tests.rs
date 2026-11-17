@@ -597,7 +597,7 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
     assert_eq!(
         app.collaboration_manager()
             .primary_route()
-            .and_then(|witness| witness.route().document.clone())
+            .and_then(|observation| observation.route().document.clone())
             .as_deref(),
         Some(wanted.as_str()),
         "the window's primary route is the record it shows now"

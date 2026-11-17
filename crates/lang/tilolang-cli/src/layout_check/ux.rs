@@ -938,7 +938,7 @@ fn opens(
     }
 }
 
-/// What standing open says of an item whose box is `row`: the list it belongs to shows it where it
+/// What held open says of an item whose box is `row`: the list it belongs to shows it where it
 /// stands, or it stands outside the list the person is reading.
 fn outside_list(list: Option<&InspectionNode>, row: Rect) -> Option<String> {
     let Some(list) = list else {
@@ -959,7 +959,7 @@ fn outside_list(list: Option<&InspectionNode>, row: Rect) -> Option<String> {
     })
 }
 
-/// Whether this is the second item standing open in `list`.
+/// Whether this is the second item held open in `list`.
 fn second_open(list: Option<&InspectionNode>, shown: &mut BTreeSet<String>) -> bool {
     !shown.insert(list.map_or_else(String::new, |list| list.path.clone()))
 }
@@ -1352,8 +1352,8 @@ mod tests {
                 )
             };
             // The title's column, and the one step a folding chevron hangs in front of the rows.
-            let standing = section(46.0, 68.0);
-            assert!(found(Kind::FirstLevelIndent, &standing, (390, 844)).is_empty());
+            let state = section(46.0, 68.0);
+            assert!(found(Kind::FirstLevelIndent, &state, (390, 844)).is_empty());
             let flush = section(24.0, 46.0);
             assert!(found(Kind::FirstLevelIndent, &flush, (390, 844)).is_empty());
 
@@ -1963,7 +1963,7 @@ mod tests {
         node
     }
 
-    /// An item standing open where it stands: the row of the list, below its top edge.
+    /// An item held open where it stands: the row of the list, below its top edge.
     fn opened(id: &str, rect: [f64; 4], role: Role) -> InspectionNode {
         let mut row = node("ListItem", id, rect, Some(role));
         row.semantics =
@@ -1997,7 +1997,7 @@ mod tests {
             )]);
             assert!(found(Kind::OpenOutsideList, &long, (1280, 800)).is_empty());
 
-            // An item standing open beside the list is not the item where it stands in it.
+            // An item held open beside the list is not the item where it stands in it.
             let beside = holding(
                 "Stack",
                 "window",
@@ -2087,11 +2087,11 @@ mod tests {
             assert_eq!(
                 found(Kind::OpenOutsideList, &twice, (1280, 800)).len(),
                 1,
-                "two rows of one list standing open"
+                "two rows of one list held open"
             );
 
             // A tree's branch says it is expanded while its subtasks
-            // show, which is not an item standing open where it
+            // show, which is not an item held open where it
             // stands.
             let branch = published(vec![
                 row(Role::TreeItem, [16.0, 120.0, 584.0, 36.0]),

@@ -939,7 +939,7 @@ fn build(
 }
 
 /// The stack a worker lays a window out on: a window's tree is as deep as the documents it shows,
-/// and a rich-text editor inside a row standing open needs more room than a thread's default two
+/// and a rich-text editor inside a row held open needs more room than a thread's default two
 /// megabytes, sized for a plain thread's work.
 pub(crate) const WORKER_STACK: usize = 32 * 1024 * 1024;
 

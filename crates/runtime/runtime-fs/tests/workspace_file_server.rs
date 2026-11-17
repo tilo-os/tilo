@@ -479,7 +479,7 @@ fn assert_concurrent_appends(
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
-async fn existing_read_write_and_atomic_append_use_live_exact_inode_custody() {
+async fn existing_read_write_and_atomic_append_use_live_exact_inode_ownership() {
     use std::os::unix::fs::MetadataExt;
     let disk = tempfile::tempdir().unwrap();
     let chosen = disk.path().join("chosen");

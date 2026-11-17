@@ -29,7 +29,7 @@ slug = "policies"
 source = "docs/policies.md"
 section = "Rules"
 nav = "Repository policies"
-description = "The standing rules for contributors, human or agent, and the checks that enforce them."
+description = "The lasting rules for contributors, human or agent, and the checks that enforce them."
 
 [[page]]
 slug = "security"

@@ -307,7 +307,7 @@ fn the_persons_allow_releases_the_held_submission_instead_of_submitting_again() 
     assert!(needs_the_person(&asked));
     let sent = page_requests(&engine).len();
     // The person allowed it: the same invocation comes back, as the relay
-    // hands a witnessed invocation to the window again.
+    // hands a observed invocation to the window again.
     assert!(
         matches!(
             widget.admit(submit, effect_operation(&submit_payload(&widget))),

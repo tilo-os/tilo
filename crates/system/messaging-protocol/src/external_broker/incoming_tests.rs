@@ -343,7 +343,7 @@ async fn same_whatsapp_stanza_id_from_two_direct_chats_never_merges_people_or_me
 }
 
 #[tokio::test]
-async fn ordinary_whatsapp_transport_metadata_stays_in_sdk_custody_and_never_weakens_retention() {
+async fn ordinary_whatsapp_transport_metadata_stays_in_sdk_ownership_and_never_weakens_retention() {
     let fixture = fixture().await;
     let mut event = incoming(&fixture.route, "text with native transport metadata");
     let context = Arc::make_mut(&mut event.message)

@@ -1,4 +1,4 @@
-//! One call's audio devices: one-shot `PipeWire` registry custody for the graph a
+//! One call's audio devices: one-shot `PipeWire` registry ownership for the graph a
 //! person picks a microphone from, and the exact connection `GStreamer` runs that
 //! microphone and the call's output on.
 //!

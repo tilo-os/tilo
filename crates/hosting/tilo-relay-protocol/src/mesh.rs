@@ -71,7 +71,7 @@ pub struct ServiceCapabilities {
     pub remote_control_relay: bool,
     /// Run app backends for eligible clients.
     pub app_serving: bool,
-    /// Accept distributed jobs. This is a placement seam only; it grants no
+    /// Accept distributed jobs. This is a placement boundary only; it grants no
     /// ability to execute code outside the app sandbox.
     pub compute: bool,
 }

@@ -72,7 +72,7 @@ fn native_home(uid: u32) -> io::Result<PathBuf> {
     Ok(path)
 }
 /// Nonclone receive authority, minted by mutual real root QPE and the pinned
-/// Shell's actual owned root helper. Secret/frame/worker custody remain joined.
+/// Shell's actual owned root helper. Secret/frame/worker ownership remain joined.
 pub(super) struct AuthenticatedCopyReceive {
     channel: Mutex<ReceivedInstalledCopy>,
     payload: CopyPayload,
@@ -278,7 +278,7 @@ pub fn run_receiver(arguments: impl Iterator<Item = std::ffi::OsString>) -> io::
             return Err(refused());
         }
         // Valid inherited descriptor; consumed once only after kernel socket
-        // type measurement. QPE then authenticates peer and path custody.
+        // type measurement. QPE then authenticates peer and path ownership.
         let socket = unsafe { UnixStream::from_raw_fd(fd) };
         socket.peer_addr()?;
         Ok(socket)

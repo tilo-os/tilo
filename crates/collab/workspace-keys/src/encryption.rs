@@ -397,7 +397,7 @@ pub struct KeysConfig {
     pub state: Arc<dyn KeyStorage>,
     /// Key sealing that state, held by the platform secret store.
     pub vault: VaultKey,
-    /// This device's certified key, kept in its custody: the request and frame signer.
+    /// This device's certified key, kept in its ownership: the request and frame signer.
     pub signer: Arc<dyn DeviceSigner>,
     /// Whether this device settles its groups or only follows them.
     pub role: KeyRole,
@@ -454,7 +454,7 @@ struct PeerEntry {
     peer: GroupPeer,
     /// The request this device asks with while it waits, re-sent on `retry`.
     request: Option<MlsAccessRequestV1>,
-    /// A request whose signature the device's custody has not answered yet.
+    /// A request whose signature the device's ownership has not answered yet.
     signing: Option<(MlsAccessRequestV1, SignFuture<'static>)>,
     retry: Backoff,
     /// When the next request mints a fresh member key: an admission whose
@@ -831,14 +831,14 @@ impl WorkspaceKeys {
             .is_some_and(|store| store.role == KeyRole::Follower)
     }
 
-    /// Whether a request waits on its signature from the device's custody: [`Self::signatures`]
+    /// Whether a request waits on its signature from the device's ownership: [`Self::signatures`]
     /// then has something to await.
     #[must_use]
     pub fn signing(&self) -> bool {
         self.peers.values().any(|entry| entry.signing.is_some())
     }
 
-    /// Await every signature the device's custody owes, keeping each signed request for the next
+    /// Await every signature the device's ownership owes, keeping each signed request for the next
     /// [`Self::pump`] to send.
     pub async fn signatures(&mut self) {
         for (workspace, request, signing) in self.take_signing() {
@@ -847,7 +847,7 @@ impl WorkspaceKeys {
         }
     }
 
-    /// The access requests whose signatures the device's custody owes, taken out of the service
+    /// The access requests whose signatures the device's ownership owes, taken out of the service
     /// so a shared one is not held while they are awaited; each answer goes back with
     /// [`Self::signed`].
     pub fn take_signing(
@@ -866,7 +866,7 @@ impl WorkspaceKeys {
             .collect()
     }
 
-    /// Keep `request`, signed by the device's custody, for the next [`Self::pump`] to send.
+    /// Keep `request`, signed by the device's ownership, for the next [`Self::pump`] to send.
     pub fn signed(
         &mut self,
         workspace: WorkspaceId,
@@ -1470,7 +1470,7 @@ impl WorkspaceKeys {
             let signer = Arc::clone(&store.signer);
             let mut signing: SignFuture<'static> =
                 Box::pin(async move { signer.sign(message).await });
-            // A key that answers at once (a native one) signs in this pass; custody that answers
+            // A key that answers at once (a native one) signs in this pass; ownership that answers
             // later (a page's) leaves the request for [`Self::signatures`].
             match signing
                 .as_mut()
@@ -1717,7 +1717,7 @@ impl SharedKeys {
         Some(operation(&mut service))
     }
 
-    /// See [`WorkspaceKeys::ask_on_entry`]; the custody's signature is awaited without
+    /// See [`WorkspaceKeys::ask_on_entry`]; the ownership's signature is awaited without
     /// holding the service.
     pub async fn ask_on_entry(
         &self,
@@ -1806,7 +1806,7 @@ impl SharedKeys {
     }
 
     /// [`WorkspaceKeys::signatures`] on the shared service, never holding it while the
-    /// device's custody signs.
+    /// device's ownership signs.
     pub async fn signatures(&self) {
         let Some(owed) = self.run(WorkspaceKeys::take_signing) else {
             return;
@@ -1828,7 +1828,7 @@ impl SharedKeys {
         }
     }
 
-    /// Whether the device's custody owes a signature ([`WorkspaceKeys::signing`]).
+    /// Whether the device's ownership owes a signature ([`WorkspaceKeys::signing`]).
     pub fn signing(&self) -> bool {
         self.run(|service| service.signing()).unwrap_or(false)
     }
@@ -2168,7 +2168,7 @@ impl tilo_identity_host::sources::GroupKeySource for KeyProvider {
 }
 
 mod entry;
-mod standing;
+mod handover;
 
 #[cfg(test)]
 mod tests {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Public, paced production-worker probe. Run in a private hardware-free namespace.
 
-Uses the existing ephemeral qualification witness, never an installed trust key.
+Uses the existing ephemeral qualification proof, never an installed trust key.
 Only pinned public FLEURS fixture transcripts may appear in its output.
 """
 import argparse
@@ -222,7 +222,7 @@ def main():
     if args.native_review_model is not None:
         model = {'sha256': '3fc991d3badad7277c11030a7519832cddaf2057aafed6d4b25147e953a070b1'}
         if args.qualifier is not None or args.model != 'base':
-            parser.error('native review fixture excludes Whisper model/witness options')
+            parser.error('native review fixture excludes Whisper model/proof options')
         if args.native_review_model.stat().st_size != 742090464:
             parser.error('exact native review object size required')
     else:
@@ -289,12 +289,12 @@ def main():
             with selectors.DefaultSelector() as selector:
                 selector.register(holder.stdout, selectors.EVENT_READ)
                 if not selector.select(90):
-                    raise TimeoutError('ephemeral witness deadline')
-            witness = json.loads(holder.stdout.readline(4096))
-            if witness.get('ephemeral') is not True or witness['model_sha256'] != model['sha256']:
-                raise ValueError('unexpected isolated witness')
-            worker_command = [str(args.worker), '--root', witness['root'],
-                              '--catalog', witness['catalog'], '--keys', witness['keys']]
+                    raise TimeoutError('ephemeral proof deadline')
+            proof = json.loads(holder.stdout.readline(4096))
+            if proof.get('ephemeral') is not True or proof['model_sha256'] != model['sha256']:
+                raise ValueError('unexpected isolated proof')
+            worker_command = [str(args.worker), '--root', proof['root'],
+                              '--catalog', proof['catalog'], '--keys', proof['keys']]
             if args.worker_diagnostics:
                 worker_command.append('--diagnostics')
         else:
@@ -465,7 +465,7 @@ def main():
         if holder is not None:
             holder.stdin.close()
             if holder.wait(timeout=10) != 0:
-                raise RuntimeError('ephemeral witness cleanup failed')
+                raise RuntimeError('ephemeral proof cleanup failed')
             holder.stdout.close()
 
 

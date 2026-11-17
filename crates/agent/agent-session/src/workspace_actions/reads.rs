@@ -85,7 +85,7 @@ impl CanonicalRead {
             .view_read_policy(workspace, caller, &route.app_id, &route.document)
             .ok_or("canonical read permission retired")?;
         if fresh.workspace != self.admitted.workspace
-            || fresh.standing != self.admitted.standing
+            || fresh.access != self.admitted.access
             || fresh.sandbox != self.admitted.sandbox
         {
             return Err("canonical read policy changed".into());

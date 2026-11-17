@@ -252,7 +252,7 @@ impl MediaEngine {
         }
     }
 
-    /// Test seam: the synthesized backend answers its next seek with a picture
+    /// Test boundary: the synthesized backend answers its next seek with a picture
     /// stamped `pts_ms`, as a pipeline mid-playback hands over its current frame.
     #[cfg(test)]
     pub(crate) fn offer_stale_on_next_seek(&mut self, pts_ms: u64) {
@@ -741,7 +741,7 @@ impl MediaEngine {
         events
     }
 
-    /// Test seam: pump at an explicit virtual `now_ms`. On a decode backend this
+    /// Test boundary: pump at an explicit virtual `now_ms`. On a decode backend this
     /// behaves like [`Self::poll`] and ignores the argument.
     pub fn poll_at(&mut self, now_ms: u64) -> Vec<MediaEvent> {
         let events = match &mut self.backend {

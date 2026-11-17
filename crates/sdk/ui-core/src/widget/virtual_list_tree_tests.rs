@@ -198,7 +198,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_row_standing_open_folds_its_branch_and_closing_it_brings_the_rows_back;
+    phase a_row_held_open_folds_its_branch_and_closing_it_brings_the_rows_back;
     {
         let marks = Rc::new(TreeMarks::default());
         let list = OpenableTree {
@@ -227,7 +227,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             list.viewport.item_height(1),
             Some(0.0),
-            "the branch folds under the row standing open"
+            "the branch folds under the row held open"
         );
         assert_eq!(
             list.viewport.item_height(2),
@@ -891,7 +891,7 @@ tilo_test_env::scenario! {
         assert!(marks.is_branch(&0), "the row it landed in holds subtasks");
     }
 
-    phase the_seam_below_an_open_branch_lands_at_the_first_row_it_holds;
+    phase the_boundary_below_an_open_branch_lands_at_the_first_row_it_holds;
     {
         let marks = Rc::new(TreeMarks::default());
         let mut list = movable(vec![0, 1, 2], &[(1, 0)])

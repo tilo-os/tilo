@@ -294,7 +294,7 @@ pub(super) fn serve_after_consent(
                         other => other,
                     };
                     let person = consent.request.person.clone();
-                    super::witness::serve_answering(
+                    super::approval::serve_answering(
                         Arc::clone(&state),
                         host,
                         caller,

@@ -521,7 +521,7 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
 }
 
 /// A host of another person whose operator takes the workspace holds it once
-/// its governor grants it custody: from then on a change made through either
+/// its governor grants it ownership: from then on a change made through either
 /// host reaches the other with its author, also after that host restarts, and
 /// detached it lets the workspace go.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

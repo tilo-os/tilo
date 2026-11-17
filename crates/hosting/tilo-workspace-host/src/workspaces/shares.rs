@@ -11,7 +11,7 @@
 
 use tilo_action_policy::share::ShareAccess;
 use tilo_action_policy::{Context, TreePath};
-use tilo_peer_state::join_ledger::request_digest;
+use tilo_peer_state::join_log::request_digest;
 use tilo_peer_state::workspace::share;
 use tilo_user_identity::DeviceCert;
 

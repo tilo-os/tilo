@@ -10,7 +10,7 @@ Its one gesture is **point somewhere and say what you want there.** It is the st
 
 | Pointing | What the words carry | What the answer fills |
 |---|---|---|
-| **Click free space** | the point, and what stands near it | content standing at the point, at its own size |
+| **Click free space** | the point, and what stands near it | content access at the point, at its own size |
 | **Drag a rectangle on free space** | the rectangle | that rectangle: the content is laid out to it |
 | **Right-click a thing** | the thing: a place, a resource in it, a field | beside it, or the thing itself when the words change it |
 | **Select things** (drag a rectangle over them, or shift-click) | the selection | beside the selection |
@@ -57,7 +57,7 @@ A place on the canvas is a resource's view, drawn as itself:
 - Following up is pointing again: click under a reply to continue that turn, right-click an
   answer to refine it in place.
 - Nothing modal: an answer in progress shows where it will land and never blocks the rest of
-  the canvas. Nothing already standing moves to make room.
+  the canvas. Nothing already access moves to make room.
 
 ## 4. The agent has the whole session
 

@@ -49,7 +49,7 @@ fn placement_public_read_search_geometry_and_click_share_the_resource() {
     let child = crate::evidence_flow_view::resource_id(&id, "placement", "physical/macro-a");
     app.call_on(&child, "inspect-evidence", json!({})).unwrap();
     let read = app.call("read", json!({"item":child})).unwrap().unwrap();
-    assert_eq!(read["custody"], "reported_unverified");
+    assert_eq!(read["provenance"], "reported_unverified");
     assert_eq!(
         read["content"]["macro"]["bounds_dbu"],
         json!([100_000, 100_000, 600_000, 200_000])

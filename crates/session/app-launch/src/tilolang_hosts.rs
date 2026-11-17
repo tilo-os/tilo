@@ -232,8 +232,8 @@ pub struct Instance {
     pub origin: Option<OwnedFd>,
     /// What the window was asked to show.
     pub opens: crate::Opens,
-    /// What the person may do in the app ([`crate::authority::standing`]).
-    pub standing: Option<tilo_action_policy::Standing>,
+    /// What the person may do in the app ([`crate::authority::access`]).
+    pub access: Option<tilo_action_policy::MemberAccess>,
 }
 
 /// How a host is started: the command for one on `runtime` and `app_runtime`, keeping `storage`.
@@ -348,12 +348,12 @@ impl Hosts {
             }
             let apps: BTreeSet<&String> = host.instances.values().collect();
             for app in apps {
-                let standing = runtime_portal::tilolang_host::AppStanding {
+                let access = runtime_portal::tilolang_host::AppAccess {
                     app: app.clone(),
-                    standing: crate::authority::standing(workspace, app),
+                    access: crate::authority::access(workspace, app),
                 };
                 if let Err(error) =
-                    runtime_portal::tilolang_host::send_standing(&host.socket, &standing)
+                    runtime_portal::tilolang_host::send_access(&host.socket, &access)
                 {
                     // Its follow thread reads the end of the socket and forgets it: the next
                     // instance starts another.
@@ -450,7 +450,7 @@ impl Hosts {
             } else {
                 std::collections::BTreeMap::new()
             },
-            standing: instance.standing,
+            access: instance.access,
         };
         let fds = InstanceFds {
             broker: instance.collaboration,
@@ -1027,14 +1027,14 @@ mod tests {
         };
         hosts.policy_changed(&workspace);
         let handed = runtime_portal::tilolang_host::receive(&theirs).unwrap();
-        let Some(runtime_portal::tilolang_host::Handed::Standing(said)) = handed else {
-            panic!("the workspace's host is told the person's standing: {handed:?}");
+        let Some(runtime_portal::tilolang_host::Handed::Access(said)) = handed else {
+            panic!("the workspace's host is told the person's access: {handed:?}");
         };
         assert_eq!(said.app, NOTES);
         // What a launched Notes reads of the person's authority, as it reads back off the socket.
-        let expected = crate::authority::standing(&workspace, NOTES).unwrap();
+        let expected = crate::authority::access(&workspace, NOTES).unwrap();
         let expected = serde_json::from_slice(&serde_json::to_vec(&expected).unwrap()).unwrap();
-        assert_eq!(said.standing, Some(expected));
+        assert_eq!(said.access, Some(expected));
         drop(hosts);
         assert!(
             runtime_portal::tilolang_host::receive(&theirs)

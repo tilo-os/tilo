@@ -14,7 +14,7 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
     };
     let session = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
     // The persistent OS-search API and CLI use this same runtime facade.
-    // It retains certified custody without installing a local person service.
+    // It retains certified ownership without installing a local person service.
     let host = session.action_host().unwrap();
     let owner = Caller::local_person(session.actor()).in_workspace(session.workspace());
     let runtime = session.media_host().handle().unwrap();
@@ -189,7 +189,7 @@ fn refuse_scoped_imports(
         &owner.clone().running_shortcut("saved"),
         asked.clone(),
     );
-    // Confirmation is not owner custody when an owner delegates the call or
+    // Confirmation is not owner ownership when an owner delegates the call or
     // attributes it to another invocation.
     refused(host, &owner.clone().delegated_to("limited"), asked.clone());
     refused(
@@ -312,7 +312,7 @@ fn owner_import_through_the_canonical_api_grants_only_the_selected_workspace() {
     ));
     let cli_request = serde_json::to_string(&request(workspace, &untouched.to_hex())).unwrap();
     // An active daemon owns the profile. The owner CLI must never start a
-    // second server or bypass that custody.
+    // second server or bypass that ownership.
     assert!(crate::cli::owner_action::<Standalone>(&profile, &cli_request).is_err());
     drop(host);
     drop(own);

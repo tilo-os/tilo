@@ -419,7 +419,7 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        phase legacy_account_credentials_load_and_damaged_custody_is_reported;
+        phase legacy_account_credentials_load_and_damaged_ownership_is_reported;
         {
             let root = temp_root();
             let id = AccountId::from("legacy@example.test");

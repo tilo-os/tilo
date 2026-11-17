@@ -825,7 +825,7 @@ fn emoji() -> Scene {
 }
 
 /// What a scene may differ by. Two anti-aliasing implementations disagree on
-/// edge pixels, mostly by a few levels; hard colour seams (a repeating
+/// edge pixels, mostly by a few levels; hard colour boundaries (a repeating
 /// gradient's wrap, a stop pair at one offset) differ fully on the one pixel
 /// each side samples differently. Neither covers more than a sliver of a
 /// scene, while a misread stream or wrong transform changes whole areas.

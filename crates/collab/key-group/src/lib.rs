@@ -27,7 +27,7 @@
 //!
 //! This crate does not support external commits or joins, epoch rotation
 //! outside membership changes, or direct-share/cross-workspace envelopes.
-//! Sealed persistence exists, but vault-key custody belongs to the
+//! Sealed persistence exists, but vault-key storage belongs to the
 //! production identity service.
 //!
 //! One fixed ciphersuite: [`crypto::CIPHERSUITE`] =

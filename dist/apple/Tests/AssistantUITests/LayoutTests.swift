@@ -68,7 +68,7 @@ final class LayoutTests: XCTestCase {
     func testOnANarrowWindowATasksSecondPartAlignsWithItsTitle() async throws {
         let model = AssistantModel(source: Drawing.source())
         await model.prime()
-        let line = TaskLine(task: "maya", title: "Reply to Maya at Northwind", standing: .replies(2))
+        let line = TaskLine(task: "maya", title: "Reply to Maya at Northwind", state: .replies(2))
         let view = AssistantRoot(model: model) {
             TaskLineView(line: line, isImportant: true, before: "maya", chat: .main)
                 .frame(width: 300, alignment: .leading)

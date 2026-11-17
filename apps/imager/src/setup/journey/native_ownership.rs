@@ -5,8 +5,8 @@ use imager_backend::journey_media::Unsupported;
 use std::any::Any;
 
 /// Native payload ownership is never serialized or reconstructed from a path.
-pub struct FrontendNativeCustody(Box<dyn Any + Send + Sync>);
-impl FrontendNativeCustody {
+pub struct FrontendNativeOwnership(Box<dyn Any + Send + Sync>);
+impl FrontendNativeOwnership {
     pub fn new<T: Any + Send + Sync>(value: T) -> Self {
         Self(Box::new(value))
     }

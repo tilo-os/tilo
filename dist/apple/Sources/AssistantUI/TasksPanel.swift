@@ -97,12 +97,12 @@ public struct TasksPanel: View {
     }
 
     @ViewBuilder private var active: some View {
-        let groups: [(AssistantWords, AssistantTask.Standing, Sign)] = [
+        let groups: [(AssistantWords, AssistantTask.State, Sign)] = [
             (.readyForReview, .readyForReview, .check), (.needsInput, .needsInput, .ask), (.inProgress, .inProgress, .run),
         ]
         if groups.allSatisfy({ model.tasks($0.1).isEmpty }) { Empty(words: .nothingActive) }
-        ForEach(groups, id: \.0) { name, standing, sign in
-            let tasks = model.tasks(standing)
+        ForEach(groups, id: \.0) { name, state, sign in
+            let tasks = model.tasks(state)
             if !tasks.isEmpty {
                 SectionHead(name: name.said, count: tasks.count)
                 ForEach(tasks) { TaskRow(task: $0, sign: sign) }
@@ -111,8 +111,8 @@ public struct TasksPanel: View {
     }
 
     @ViewBuilder
-    private func plain(_ standing: AssistantTask.Standing, sign: Sign, empty: AssistantWords) -> some View {
-        let tasks = model.tasks(standing)
+    private func plain(_ state: AssistantTask.State, sign: Sign, empty: AssistantWords) -> some View {
+        let tasks = model.tasks(state)
         if tasks.isEmpty { Empty(words: empty) }
         ForEach(tasks) { TaskRow(task: $0, sign: sign) }
     }

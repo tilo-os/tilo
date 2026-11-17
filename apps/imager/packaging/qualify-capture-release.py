@@ -75,7 +75,7 @@ PACKAGE_FILES = (
 PACKAGES = {'worker': 'apps/imager', 'runtime': 'crates/runtime/runtime-dylib', 'host': 'apps/imager', 'imager_tests': 'apps/imager',
             'backend_tests': 'crates/platform/imager-backend',
             'shell': 'crates/session/session', 'fs': 'crates/system/fs',
-            'credential_helper': 'crates/system/account-custody',
+            'credential_helper': 'crates/system/account-credentials',
             'home_seeds': 'crates/system/install-helpers', 'prepared_extract': 'apps/imager',
             'staging_handoff': 'crates/system/install-helpers',
             'handoff_copy': 'crates/system/install-helpers',
@@ -155,7 +155,7 @@ def receiving_completion(output):
     value = json.loads(output, object_pairs_hook=unique)
     expected = {'schema': 1, 'status': 'completed',
                 'shared_files_readwrite': True, 'writer_shared_file_edit': True,
-                'apps_data_and_launch': True, 'protected_cloud_custody': True,
+                'apps_data_and_launch': True, 'protected_cloud_ownership': True,
                 'cloud_fs_and_files': True, 'identity_headless_lifecycle': True,
                 'owned_resources_retired': True}
     require(type(value) is dict and set(value) == set(expected)
@@ -221,7 +221,7 @@ def validate_role(root, role, row, sources):
     for name, digest in sources.items():
         recorded = before.get(name)
         require(type(recorded) is dict and recorded.get('sha256') == digest,
-                'qualification compiler source ledger omits current source')
+                'qualification compiler source manifest omits current source')
         bound_file(root / name, digest)
     status, producer = document(row['build_status']), document(row['producer'])
     require(type(status.get('exit_code')) is int and status['exit_code'] == 0
@@ -513,7 +513,7 @@ def prepare_source(candidate):
         path = Path('/') / installed
         info = path.lstat()
         require(info.st_uid == 0 and stat.S_IMODE(info.st_mode) == mode,
-                'installed source prerequisite custody differs')
+                'installed source prerequisite ownership differs')
         if relative == 'os/registry-runtime-publisher.hex':
             # Only this disposable native image enrolls the exact signed graph.
             # Bind the unchanged official baseline plus the two selected keys;

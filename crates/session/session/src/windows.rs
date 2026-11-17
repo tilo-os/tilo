@@ -61,7 +61,7 @@ fn untitled() -> String {
 
 /// Where a tab stands on the shell while its window is read.
 #[derive(Clone, Copy)]
-struct Standing<'a> {
+struct TabPlace<'a> {
     workspace: &'a Workspace,
     strip: &'a Strip,
     /// What the workspace and the strip are called as a person reads them: the names they were
@@ -82,7 +82,7 @@ struct Standing<'a> {
 /// `handle` says what may be pictured: a window whose app holds secrets shows its app's glyph
 /// instead of its picture (`withheld`), and one that is not this device's window shows neither
 /// (`none`).
-fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> Window {
+fn window_reading(tab: &Tab, at: TabPlace<'_>, handle: &DesktopHandle) -> Window {
     use tilo_desktop_model::TileContent;
     let app = match &tab.tile {
         TileContent::Foreign { app_id, .. }
@@ -208,7 +208,7 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
                     place = place.saturating_add(1);
                     readings.push(window_reading(
                         tab,
-                        Standing {
+                        TabPlace {
                             workspace,
                             strip,
                             workspace_name: &workspace_name,

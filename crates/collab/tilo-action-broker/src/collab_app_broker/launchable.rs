@@ -1183,10 +1183,10 @@ mod tests {
             );
         }
 
-        phase an_agent_asked_first_acts_only_on_the_persons_witnessed_confirmation;
+        phase an_agent_asked_first_acts_only_on_the_persons_approved_confirmation;
         // An action the workspace's grants let an agent take only after asking is
         // offered to it marked as asking for confirmation. The agent's own word
-        // does not confirm it; the person's answer, witnessed on their device,
+        // does not confirm it; the person's answer, approved on their device,
         // does, for that one invocation.
         {
             use crate::test_support::{Answer, Grantee, Grants as _, KindSet, TreePath};
@@ -1259,9 +1259,9 @@ mod tests {
                 appearance: None,
                 on_behalf_of: None,
             };
-            let binding = state.witness_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
-            let witnessed = state.witness_confirmation(&binding).unwrap();
-            request.confirmation = Some(Confirmation::Witnessed(witnessed));
+            let binding = state.approval_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
+            let approved = state.approval_confirmation(&binding).unwrap();
+            request.confirmation = Some(Confirmation::Approved(approved));
             let call = |request: &InvokeRequest| {
                 state
                     .action_invoke(&agent, None, None, request)
@@ -1286,10 +1286,10 @@ mod tests {
                 call(&request).err(),
                 Some(ActionHostError::confirmation_required())
             );
-            let mut other_binding = state.witness_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
+            let mut other_binding = state.approval_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
             other_binding.action = "empty-trash".into();
-            request.confirmation = Some(Confirmation::Witnessed(
-                state.witness_confirmation(&other_binding).unwrap(),
+            request.confirmation = Some(Confirmation::Approved(
+                state.approval_confirmation(&other_binding).unwrap(),
             ));
             assert_eq!(
                 call(&request).err(),

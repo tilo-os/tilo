@@ -22,13 +22,13 @@ fn hosted_pump_timing() -> bool {
 
 /// Policy meaning observed by the previous hosted pump: the App's own context
 /// and the root component owner's host-supplied context (the `Rc` replaced by
-/// `HostWorker::pump`). Directory witnesses include per-capability liveness at
+/// `HostWorker::pump`). Directory observations include per-capability liveness at
 /// a fresh policy-time sample, so expiry is a change even when the context
 /// value is identical.
 #[derive(PartialEq, Eq)]
-struct HostedAuthorityWitness {
-    app: crate::permissions::DirectoryPermissionWitness,
-    owner: Option<crate::permissions::DirectoryPermissionWitness>,
+struct HostedAuthorityObservation {
+    app: crate::permissions::DirectoryPermissionObservation,
+    owner: Option<crate::permissions::DirectoryPermissionObservation>,
 }
 
 /// Every input of `publish_action_surface` that can change without a
@@ -39,7 +39,7 @@ pub(super) struct PublicationStamp {
     resource_generation: u64,
     permission_generation: u64,
     registry_generation: u64,
-    route: Option<crate::collaboration::PrimaryRouteWitness>,
+    route: Option<crate::collaboration::AcceptedRoute>,
     revision: String,
 }
 
@@ -54,7 +54,7 @@ impl PublicationStamp {
 pub(super) struct HostedPumpState {
     #[cfg(test)]
     pub(super) calls: usize,
-    authority: Option<HostedAuthorityWitness>,
+    authority: Option<HostedAuthorityObservation>,
 }
 
 /// What one hosted pump did; used by focused tests and the timing trace.
@@ -270,19 +270,19 @@ impl super::App {
     /// or cannot be sampled (fail closed: refresh on every such pass).
     fn refresh_hosted_authority(&mut self) -> bool {
         let owner = if let Some(binding) = self.root_widget.callback_binding() {
-            let Ok(witness) = binding.permissions.borrow().directory_witness() else {
+            let Ok(observation) = binding.permissions.borrow().directory_observation() else {
                 self.actions.hosted.authority = None;
                 return true;
             };
-            Some(witness)
+            Some(observation)
         } else {
             None
         };
-        let Ok(app) = self.permission_ctx.directory_witness() else {
+        let Ok(app) = self.permission_ctx.directory_observation() else {
             self.actions.hosted.authority = None;
             return true;
         };
-        let current = HostedAuthorityWitness { app, owner };
+        let current = HostedAuthorityObservation { app, owner };
         let changed = self.actions.hosted.authority.as_ref() != Some(&current);
         self.actions.hosted.authority = Some(current);
         changed

@@ -60,7 +60,7 @@ fn runner_on(dispatch: Dispatcher<Probe>) -> EffectRunner<Probe, (), Work> {
 tilo_test_env::scenario! {
     fn a_job_stops_when_nobody_waits_for_it;
 
-    phase blocking_cancellation_signal_tracks_actual_job_and_preserves_custody_checks;
+    phase blocking_cancellation_signal_tracks_actual_job_and_preserves_ownership_checks;
     {
         let mut runner = runner();
         let invocation = InvocationId::new();

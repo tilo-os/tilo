@@ -84,7 +84,7 @@ tilo_test_env::scenario! {
     {
         let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
         shell.layout = Some(ui::widget::LayoutInfo::Shell(ui::widget::ShellLayout {
-            sidebar: ui::widget::SidebarStanding::None,
+            sidebar: ui::widget::SidebarPosition::None,
             beside: ui::widget::arrange::WidthClass::Compact,
             needs: ui::widget::arrange::WidthClass::Compact,
             beside_width: 400.0,
@@ -310,7 +310,7 @@ fn row_that_opens(
 }
 
 fn shell_layout(
-    sidebar: ui::widget::SidebarStanding,
+    sidebar: ui::widget::SidebarPosition,
     beside: ui::widget::arrange::WidthClass,
     width: f32,
 ) -> ui::widget::ShellLayout {
@@ -330,7 +330,7 @@ tilo_test_env::scenario! {
     // A sidebar stands beside content of the window's own: a pane narrower than a column is a phone's
     // screen, so the sidebar folds behind the bar's toggle there instead.
     {
-        use ui::widget::SidebarStanding;
+        use ui::widget::SidebarPosition;
         use ui::widget::arrange::WidthClass;
         let with = |sidebar, beside, width| {
             let mut shell = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
@@ -342,17 +342,17 @@ tilo_test_env::scenario! {
                 .filter(|problem| problem.kind == Kind::ContentBesideSidebar)
                 .collect::<Vec<Problem>>()
         };
-        let found = with(SidebarStanding::Docked, WidthClass::Compact, 336.0);
+        let found = with(SidebarPosition::Docked, WidthClass::Compact, 336.0);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].detail.contains("336"), "{}", found[0].detail);
         assert!(
-            with(SidebarStanding::Docked, WidthClass::Medium, 420.0).is_empty(),
+            with(SidebarPosition::Docked, WidthClass::Medium, 420.0).is_empty(),
             "content of a column's width stands beside the sidebar"
         );
         // A grid of tiles or a surface drawn on works narrower than a
         // column: the same width is what its own kind asks for there.
         let mut phone_pane = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
-        let mut layout = shell_layout(SidebarStanding::Docked, WidthClass::Compact, 336.0);
+        let mut layout = shell_layout(SidebarPosition::Docked, WidthClass::Compact, 336.0);
         layout.needs = WidthClass::Compact;
         phone_pane.layout = Some(ui::widget::LayoutInfo::Shell(layout));
         assert!(
@@ -362,11 +362,11 @@ tilo_test_env::scenario! {
             "a surface works below a column where its kind says so"
         );
         assert!(
-            with(SidebarStanding::Alone, WidthClass::Compact, 336.0).is_empty(),
+            with(SidebarPosition::Alone, WidthClass::Compact, 336.0).is_empty(),
             "a sidebar that folded beside a phone-width pane is what the rule asks for"
         );
         assert!(
-            with(SidebarStanding::Over, WidthClass::Compact, 336.0).is_empty(),
+            with(SidebarPosition::Over, WidthClass::Compact, 336.0).is_empty(),
             "a drawer stands over the content, not beside it"
         );
     }
@@ -755,7 +755,7 @@ tilo_test_env::scenario! {
     }
 
     phase an_item_shown_in_an_open_rows_document_and_again_in_the_list_is_caught;
-    // An item stands once: the document of a row standing open that lists an item the list shows again
+    // An item stands once: the document of a row held open that lists an item the list shows again
     // is the same item twice, while a document listing items of its own is not.
     {
         let held = |rows: Vec<InspectionNode>| {
@@ -774,7 +774,7 @@ tilo_test_env::scenario! {
                 .collect::<Vec<Problem>>()
         };
 
-        // The row standing open lists two steps, and the list shows one of them again.
+        // The row held open lists two steps, and the list shows one of them again.
         let mut open = list_row("Call the landlord", [304.0, 100.0, 952.0, 400.0], true);
         open.children = vec![document(
             vec![
@@ -2781,7 +2781,7 @@ fn document_row(title: &str, rect: [f64; 4]) -> InspectionNode {
     row
 }
 
-/// What a document holds: the outline of the items under the row standing open.
+/// What a document holds: the outline of the items under the row held open.
 fn document(rows: Vec<InspectionNode>, rect: [f64; 4]) -> InspectionNode {
     let mut tree = node("TreeView", "subtasks", rect, Some(Role::Tree));
     tree.children = rows;

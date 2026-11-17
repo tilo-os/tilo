@@ -31,12 +31,12 @@ final class LiveStageTests: XCTestCase {
         let stage = LiveStage(engine: engine)
         let view = LiveThing(id: "v", title: "Open tasks", .writtenView(source: "view shown() {}"))
         await stage.bring(view)
-        XCTAssertEqual(stage.standing(of: view), .notYet)
+        XCTAssertEqual(stage.state(of: view), .notYet)
         // The device is not in: a document is not asked for, and the place says so.
         let document = LiveThing(id: "d", title: "Report", .record(app: "so.tilo.word-processor", record: "uuid:1"))
-        XCTAssertEqual(stage.standing(of: document), .asleep)
+        XCTAssertEqual(stage.state(of: document), .asleep)
         await stage.bring(document)
-        XCTAssertEqual(stage.standing(of: document), .offline)
+        XCTAssertEqual(stage.state(of: document), .offline)
         XCTAssertNil(stage.front)
     }
 }

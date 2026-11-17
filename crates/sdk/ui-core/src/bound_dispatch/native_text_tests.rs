@@ -261,7 +261,7 @@ tilo_test_env::scenario! {
         let (binding, _scope, _owner) =
             super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
         let domain = crate::ControlDomain::new();
-        domain.set_owner(crate::control_custody::ControlOwner::Component(binding));
+        domain.set_owner(crate::control_domain::ControlOwner::Component(binding));
         let mut emitter =
             crate::widget::ActionEmitter::new_in(crate::widget::test_string_action_binding(), &domain);
         with_physical_text(true, || emitter.emit("same".into())).unwrap();
@@ -280,7 +280,7 @@ tilo_test_env::scenario! {
         assert!(!physical_text(), "the scoped producer flag cannot leak");
     }
 
-    phase physical_text_provenance_survives_initial_custody_transfer_and_legacy_draining;
+    phase physical_text_provenance_survives_initial_ownership_transfer_and_legacy_draining;
     {
         let mut initial =
             crate::widget::ActionEmitter::new(crate::widget::test_string_action_binding());
@@ -299,9 +299,9 @@ tilo_test_env::scenario! {
         let (binding, _scope, _owner) =
             super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
         let domain = crate::ControlDomain::new();
-        domain.set_owner(crate::control_custody::ControlOwner::Component(binding));
+        domain.set_owner(crate::control_domain::ControlOwner::Component(binding));
         initial
-            .install_custody(&domain, crate::control_custody::CustodyAttachment::Initial)
+            .attach(&domain, crate::control_domain::DomainAttachment::Initial)
             .unwrap();
         let mut queued = domain.drain_partitioned().components.into_iter();
         let (physical, first) = queued.next().unwrap();

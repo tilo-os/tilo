@@ -38,17 +38,16 @@ fn ids() -> impl FnMut() -> u32 {
     }
 }
 
-/// An alarm scheduled and rung once at `due`: the ledger and the ringing
+/// An alarm scheduled and rung once at `due`: the log and the ringing
 /// occurrence.
-fn rung(due: DateTime<FixedOffset>, weekdays: u8, path: Option<PathBuf>) -> (Ledger, Occurrence) {
-    let mut ledger = Ledger::open(path).expect("ledger");
-    ledger
-        .schedule(
-            &owner("studio", "so.tilo.clocks"),
-            alarm("alarm", due, weekdays),
-        )
-        .expect("handoff");
-    let ringing = ledger.take_due(&due, ids()).expect("rung");
+fn rung(due: DateTime<FixedOffset>, weekdays: u8, path: Option<PathBuf>) -> (Log, Occurrence) {
+    let mut log = Log::open(path).expect("log");
+    log.schedule(
+        &owner("studio", "so.tilo.clocks"),
+        alarm("alarm", due, weekdays),
+    )
+    .expect("handoff");
+    let ringing = log.take_due(&due, ids()).expect("rung");
     let [notification] = ringing.as_slice() else {
         panic!("one ring, not {}", ringing.len());
     };
@@ -63,7 +62,7 @@ fn rung(due: DateTime<FixedOffset>, weekdays: u8, path: Option<PathBuf>) -> (Led
     let occurrence = notification.scheduled.clone().expect("its deadline");
     assert!(occurrence.calendar_alarm);
     assert_eq!(occurrence.occurrence_ms, due.timestamp_millis());
-    (ledger, occurrence)
+    (log, occurrence)
 }
 
 #[test]
@@ -95,9 +94,9 @@ fn the_wire_arguments_make_a_request() {
 }
 
 tilo_test_env::scenario! {
-    fn the_ledger_keeps_deadlines_across_restarts_and_failed_writes;
+    fn the_log_keeps_deadlines_across_restarts_and_failed_writes;
 
-    phase a_ledger_written_under_the_workspace_key_still_delivers_its_deadline;
+    phase a_log_written_under_the_workspace_key_still_delivers_its_deadline;
     {
         let temp = tempfile::tempdir().expect("private fixture");
         let path = temp.path().join("schedules.json");
@@ -108,10 +107,10 @@ tilo_test_env::scenario! {
              "next_at_ms":1000,"calendar":null,"last_rung":null,
              "token":"0123456789abcdef0123456789abcdef"}]"#,
         )
-        .expect("an earlier session's ledger");
-        let ledger = Ledger::open(Some(path)).expect("ledger");
+        .expect("an earlier session's log");
+        let log = Log::open(Some(path)).expect("log");
         assert_eq!(
-            ledger.pending(&owner("studio", "so.tilo.clocks")),
+            log.pending(&owner("studio", "so.tilo.clocks")),
             [("alarm".to_owned(), 1000)]
         );
     }
@@ -122,12 +121,12 @@ tilo_test_env::scenario! {
         let path = temp.path().join("schedules.json");
         let caller = owner("studio", "so.tilo.clocks");
         let due = at("2026-04-14T12:00:00+00:00");
-        let mut ledger = Ledger::open(Some(path.clone())).expect("new ledger");
-        ledger
+        let mut log = Log::open(Some(path.clone())).expect("new log");
+        log
             .schedule(&caller, alarm("alarm", due, 0))
             .expect("handoff");
-        drop(ledger); // The app and the daemon may both exit before the deadline.
-        let mut restarted = Ledger::open(Some(path.clone())).expect("restart");
+        drop(log); // The app and the daemon may both exit before the deadline.
+        let mut restarted = Log::open(Some(path.clone())).expect("restart");
         let delivered = restarted.take_due(&due, ids()).expect("deliver");
         assert_eq!(delivered.len(), 1);
         assert_eq!(
@@ -142,7 +141,7 @@ tilo_test_env::scenario! {
             .schedule(&caller, alarm("alarm", due, 0))
             .expect("idempotent reopen");
         drop(restarted);
-        let mut restarted = Ledger::open(Some(path)).expect("second restart");
+        let mut restarted = Log::open(Some(path)).expect("second restart");
         assert!(
             restarted
                 .take_due(&due, ids())
@@ -158,23 +157,23 @@ tilo_test_env::scenario! {
         let path = temp.path().join("schedules.json");
         let caller = owner("studio", "so.tilo.clocks");
         let due = at("2026-04-14T12:00:00+00:00");
-        let mut ledger = Ledger::open(Some(path.clone())).expect("ledger");
-        ledger
+        let mut log = Log::open(Some(path.clone())).expect("log");
+        log
             .schedule(&caller, alarm("alarm", due, 0))
             .expect("schedule");
         std::fs::remove_file(&path).expect("remove the file");
         std::fs::create_dir(&path).expect("block its replacement with a directory");
-        assert!(ledger.take_due(&due, ids()).is_err());
-        assert_eq!(ledger.pending(&caller).len(), 1);
+        assert!(log.take_due(&due, ids()).is_err());
+        assert_eq!(log.pending(&caller).len(), 1);
         std::fs::remove_dir(&path).expect("writable again");
-        assert_eq!(ledger.take_due(&due, ids()).expect("retry").len(), 1);
+        assert_eq!(log.take_due(&due, ids()).expect("retry").len(), 1);
     }
 
-    phase an_unavailable_ledger_refuses_rather_than_losing_deadlines;
+    phase an_unavailable_log_refuses_rather_than_losing_deadlines;
     {
         let temp = tempfile::tempdir().expect("private fixture");
         let path = temp.path().join("schedules.json");
-        std::fs::write(&path, b"not a ledger").expect("corrupt");
+        std::fs::write(&path, b"not a log").expect("corrupt");
         let schedules = Schedules::open(Some(path));
         assert!(
             schedules
@@ -197,7 +196,7 @@ tilo_test_env::scenario! {
     phase a_ringing_occurrence_carries_its_workspace;
     {
         let due = at("2026-04-14T12:00:00+00:00");
-        let (_ledger, occurrence) = rung(due, 127, None);
+        let (_log, occurrence) = rung(due, 127, None);
         let written = serde_json::to_value(&occurrence).expect("its data");
         assert_eq!(written["workspace"], "studio");
     }
@@ -207,9 +206,9 @@ tilo_test_env::scenario! {
         let temp = tempfile::tempdir().expect("private fixture");
         let path = temp.path().join("schedules.json");
         let due = at("2026-04-14T12:00:00+00:00");
-        let (mut ledger, occurrence) = rung(due, 127, Some(path.clone()));
-        let original = ledger.alarm_states(&owner("studio", "so.tilo.clocks"));
-        ledger
+        let (mut log, occurrence) = rung(due, 127, Some(path.clone()));
+        let original = log.alarm_states(&owner("studio", "so.tilo.clocks"));
+        log
             .act(
                 "so.tilo.clocks",
                 &occurrence,
@@ -217,8 +216,8 @@ tilo_test_env::scenario! {
                 due.timestamp_millis(),
             )
             .expect("snooze");
-        drop(ledger);
-        let mut restarted = Ledger::open(Some(path)).expect("restart");
+        drop(log);
+        let mut restarted = Log::open(Some(path)).expect("restart");
         let snoozed = due + chrono::Duration::minutes(5);
         assert!(
             restarted
@@ -256,9 +255,9 @@ tilo_test_env::scenario! {
         let due = at("2026-04-14T12:00:00+00:00");
         let temp = tempfile::tempdir().expect("private fixture");
         let path = temp.path().join("schedules.json");
-        let (mut ledger, occurrence) = rung(due, 0, Some(path.clone()));
+        let (mut log, occurrence) = rung(due, 0, Some(path.clone()));
         let app = "so.tilo.clocks";
-        ledger
+        log
             .act(
                 app,
                 &occurrence,
@@ -266,8 +265,8 @@ tilo_test_env::scenario! {
                 due.timestamp_millis(),
             )
             .expect("snooze");
-        let deadline = ledger.next_at_ms();
-        ledger
+        let deadline = log.next_at_ms();
+        log
             .act(
                 app,
                 &occurrence,
@@ -276,11 +275,11 @@ tilo_test_env::scenario! {
             )
             .expect("idempotent retry");
         assert_eq!(
-            ledger.next_at_ms(),
+            log.next_at_ms(),
             deadline,
             "a retry cannot extend a snooze"
         );
-        ledger
+        log
             .act(
                 app,
                 &occurrence,
@@ -288,7 +287,7 @@ tilo_test_env::scenario! {
                 due.timestamp_millis(),
             )
             .expect("dismiss the pending snooze");
-        ledger
+        log
             .act(
                 app,
                 &occurrence,
@@ -296,9 +295,9 @@ tilo_test_env::scenario! {
                 due.timestamp_millis(),
             )
             .expect("idempotent dismiss");
-        assert!(ledger.next_at_ms().is_none());
+        assert!(log.next_at_ms().is_none());
         assert!(
-            ledger
+            log
                 .act(
                     app,
                     &occurrence,
@@ -307,8 +306,8 @@ tilo_test_env::scenario! {
                 )
                 .is_err()
         );
-        drop(ledger);
-        let mut restarted = Ledger::open(Some(path)).expect("restart after dismissal");
+        drop(log);
+        let mut restarted = Log::open(Some(path)).expect("restart after dismissal");
         assert!(restarted.next_at_ms().is_none());
         assert!(
             restarted
@@ -323,9 +322,9 @@ tilo_test_env::scenario! {
         let temp = tempfile::tempdir().expect("private fixture");
         let path = temp.path().join("schedules.json");
         let due = at("2026-04-14T12:00:00+00:00");
-        let (mut ledger, occurrence) = rung(due, 0, Some(path.clone()));
+        let (mut log, occurrence) = rung(due, 0, Some(path.clone()));
         let app = "so.tilo.clocks";
-        ledger
+        log
             .act(
                 app,
                 &occurrence,
@@ -333,11 +332,11 @@ tilo_test_env::scenario! {
                 due.timestamp_millis(),
             )
             .expect("snooze");
-        ledger
+        log
             .cancel(&owner("studio", app), "alarm")
             .expect("cancel");
-        drop(ledger);
-        let mut restarted = Ledger::open(Some(path)).expect("restart");
+        drop(log);
+        let mut restarted = Log::open(Some(path)).expect("restart");
         assert!(
             restarted
                 .act(
@@ -368,8 +367,8 @@ tilo_test_env::scenario! {
     phase foreign_app_workspace_token_and_stale_occurrence_cannot_change_an_alarm;
     {
         let due = at("2026-04-14T12:00:00+00:00");
-        let (mut ledger, occurrence) = rung(due, 127, None);
-        let original = ledger.alarm_states(&owner("studio", "so.tilo.clocks"));
+        let (mut log, occurrence) = rung(due, 127, None);
+        let original = log.alarm_states(&owner("studio", "so.tilo.clocks"));
         for changed in 0..4 {
             let mut target = occurrence.clone();
             let mut app = "so.tilo.clocks";
@@ -380,13 +379,13 @@ tilo_test_env::scenario! {
                 _ => target.occurrence_ms -= 1,
             }
             assert!(
-                ledger
+                log
                     .act(app, &target, AlarmAction::Snooze, due.timestamp_millis())
                     .is_err()
             );
         }
         assert_eq!(
-            ledger.alarm_states(&owner("studio", "so.tilo.clocks")),
+            log.alarm_states(&owner("studio", "so.tilo.clocks")),
             original
         );
     }
@@ -394,8 +393,8 @@ tilo_test_env::scenario! {
     phase snooze_stays_in_utc_across_time_zone_and_wall_clock_changes;
     {
         let due = at("2026-04-14T12:00:00+00:00");
-        let (mut ledger, occurrence) = rung(due, 127, None);
-        ledger
+        let (mut log, occurrence) = rung(due, 127, None);
+        log
             .act(
                 "so.tilo.clocks",
                 &occurrence,
@@ -404,25 +403,25 @@ tilo_test_env::scenario! {
             )
             .expect("snooze");
         let expected = (due + chrono::Duration::minutes(5)).timestamp_millis();
-        assert_eq!(ledger.next_at_ms(), Some(expected));
+        assert_eq!(log.next_at_ms(), Some(expected));
         assert!(
-            ledger
+            log
                 .take_due(&at("2026-04-14T21:03:00+09:00"), ids())
                 .expect("zone")
                 .is_empty()
         );
-        assert_eq!(ledger.next_at_ms(), Some(expected));
+        assert_eq!(log.next_at_ms(), Some(expected));
         assert!(
-            ledger
+            log
                 .take_due(&at("2026-04-14T20:03:00+09:00"), ids())
                 .expect("back")
                 .is_empty()
         );
-        assert_eq!(ledger.next_at_ms(), Some(expected));
+        assert_eq!(log.next_at_ms(), Some(expected));
         let forward = due + chrono::Duration::minutes(7);
-        assert_eq!(ledger.take_due(&forward, ids()).expect("forward").len(), 1);
+        assert_eq!(log.take_due(&forward, ids()).expect("forward").len(), 1);
         assert!(
-            ledger
+            log
                 .take_due(&forward, ids())
                 .expect("same clock")
                 .is_empty()
@@ -468,15 +467,15 @@ tilo_test_env::scenario! {
         .next_in(Some(now.date_naive()), &now)
         .expect("next unconsumed occurrence");
         let caller = owner("studio", "so.tilo.clocks");
-        let mut ledger = Ledger::open(None).expect("ledger");
+        let mut log = Log::open(None).expect("log");
         let mut request = alarm("reopened", tomorrow, 0);
         if let Some(alarm) = request.alarm.as_mut() {
             alarm.last_rung = Some(now.date_naive());
         }
-        ledger.schedule(&caller, request).expect("handoff");
-        assert!(ledger.take_due(&now, ids()).expect("tick").is_empty());
+        log.schedule(&caller, request).expect("handoff");
+        assert!(log.take_due(&now, ids()).expect("tick").is_empty());
         assert_eq!(
-            ledger.pending(&caller),
+            log.pending(&caller),
             vec![("reopened".into(), tomorrow.timestamp_millis())],
             "recomputing must not move an already rung date back into the schedule"
         );
@@ -484,21 +483,21 @@ tilo_test_env::scenario! {
 
     phase cancellation_and_tags_are_scoped_to_the_workspace_and_app;
     {
-        let mut ledger = Ledger::open(None).expect("ledger");
+        let mut log = Log::open(None).expect("log");
         let due = at("2026-04-14T12:00:00+00:00");
         let a = owner("one", "so.tilo.clocks");
         let b = owner("two", "so.tilo.clocks");
         let c = owner("one", "so.tilo.other");
         for caller in [&a, &b, &c] {
-            ledger
+            log
                 .schedule(caller, alarm("same-tag", due, 0))
                 .expect("schedule");
         }
-        ledger.cancel(&a, "same-tag").expect("cancel its own");
-        assert!(ledger.pending(&a).is_empty());
-        assert_eq!(ledger.pending(&b).len(), 1);
-        assert_eq!(ledger.pending(&c).len(), 1);
-        let delivered = ledger.take_due(&due, ids()).expect("deliver the others");
+        log.cancel(&a, "same-tag").expect("cancel its own");
+        assert!(log.pending(&a).is_empty());
+        assert_eq!(log.pending(&b).len(), 1);
+        assert_eq!(log.pending(&c).len(), 1);
+        let delivered = log.take_due(&due, ids()).expect("deliver the others");
         assert_eq!(delivered.len(), 2);
         assert!(delivered.iter().all(|n| {
             n.caller
@@ -510,9 +509,9 @@ tilo_test_env::scenario! {
 
     phase a_repeating_alarm_catches_up_once_and_follows_local_time;
     {
-        let mut ledger = Ledger::open(None).expect("ledger");
+        let mut log = Log::open(None).expect("log");
         let caller = owner("studio", "so.tilo.clocks");
-        ledger
+        log
             .schedule(
                 &caller,
                 alarm("daily", at("2026-04-14T12:00:00+00:00"), 127),
@@ -520,35 +519,35 @@ tilo_test_env::scenario! {
             .expect("schedule");
         let late = at("2026-04-17T15:00:00+00:00");
         assert_eq!(
-            ledger.take_due(&late, ids()).expect("catch up").len(),
+            log.take_due(&late, ids()).expect("catch up").len(),
             1,
             "missed days are not replayed"
         );
-        assert!(ledger.take_due(&late, ids()).expect("again").is_empty());
+        assert!(log.take_due(&late, ids()).expect("again").is_empty());
         let changed_zone = at("2026-04-18T10:00:00+02:00");
         assert!(
-            ledger
+            log
                 .take_due(&changed_zone, ids())
                 .expect("zone")
                 .is_empty()
         );
         assert_eq!(
-            ledger.pending(&caller),
+            log.pending(&caller),
             vec![(
                 "daily".into(),
                 at("2026-04-18T12:00:00+02:00").timestamp_millis()
             )]
         );
         let local_noon = at("2026-04-18T12:00:00+02:00");
-        assert_eq!(ledger.take_due(&local_noon, ids()).expect("noon").len(), 1);
+        assert_eq!(log.take_due(&local_noon, ids()).expect("noon").len(), 1);
         assert!(
-            ledger
+            log
                 .take_due(&at("2026-04-18T11:00:00+02:00"), ids())
                 .expect("clock back")
                 .is_empty()
         );
         assert!(
-            ledger
+            log
                 .take_due(&local_noon, ids())
                 .expect("same date")
                 .is_empty(),

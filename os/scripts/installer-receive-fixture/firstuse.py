@@ -48,7 +48,7 @@ def complete(control, account, password, backup_destination, expected_operation,
                 migration_states.append(current)
                 last = current
             if migration.get('cleanup_state') == 'unavailable':
-                raise RuntimeError('actual source cleanup custody is unavailable')
+                raise RuntimeError('actual source cleanup ownership is unavailable')
             if current == 'existing-files-available':
                 result = migration.get('original_copy_completion') or {}
                 cleanup = migration.get('cleanup_result') or {}

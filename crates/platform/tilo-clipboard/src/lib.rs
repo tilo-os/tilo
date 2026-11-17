@@ -8,7 +8,7 @@
 
 //! The clipboard: one API on Linux, macOS and the web.
 //!
-//! [`ClipboardBackend`] is the seam a host fills; [`system`] is this target's
+//! [`ClipboardBackend`] is the boundary a host fills; [`system`] is this target's
 //! backend:
 //!
 //! | Target | Backend |

@@ -37,7 +37,7 @@ struct KeyFile {
 }
 
 /// A catalogue verified against explicitly supplied trust input. The payload
-/// is immutable through this witness; speech loading requires this type.
+/// is immutable through this approval; speech loading requires this type.
 pub struct VerifiedCatalog(CatalogPayload);
 impl VerifiedCatalog {
     /// Verify envelope, canonical payload, schema and all release shapes.

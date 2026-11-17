@@ -1,4 +1,4 @@
-//! Persistence for a Tilo app's Automerge documents, through one seam.
+//! Persistence for a Tilo app's Automerge documents, through one interface.
 //!
 //! Every document lives behind a [`durable_store::DurableStore`] key.
 //! [`FsStore`] is the native implementation: one directory per document
@@ -338,7 +338,7 @@ impl DocStore {
     }
 
     /// The existing workspace-scoped app-primary directory, with explicit
-    /// custody.
+    /// ownership.
     pub fn workspace_primary_dir_at(
         profile_root: &Path,
         app: &str,

@@ -404,7 +404,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   limiters bound each VM's bandwidth.
 - **Metering:** each run of the VM's process and each held snapshot is a
   usage record (VM, workspace, account, size, start, end, seconds) in the
-  account's ledger, billed per second with the sub-second rest carried to
+  account's log, billed per second with the sub-second rest carried to
   the next run. A stopped or suspended VM costs nothing.
 - **Plans:** an account's plan bounds its running VMs, its VMs kept and the
   sizes it may use. A refused program says why in plain words, and what to
@@ -423,10 +423,10 @@ that workspace environment's own, never in a guest sharing the host's kernel
   writes the plans file and answers its pages.
 - **The account, live:** the session serves the person's account with its
   host (`tilo.hosting`, `host.account/account`) as a live read: the plans
-  offered, the account's standing, usage per workspace, limits, credit,
+  offered, the account's access, usage per workspace, limits, credit,
   invoices and where billing is managed, sent again whenever the plans file
   changes (`crates/hosting/tilo-host-account`). A host that sells nothing
-  answers no plans and no standing.
+  answers no plans and no access.
 - **ush** runs the program through the VM's agent with the shell's streams
   relayed, when the host names its hosted-VM service (`TILO_HOSTED_VM_SOCKET`,
   `TILO_HOSTED_ACCOUNT`, `TILO_HOSTED_VM_SIZE`, and `TILO_HOSTED_PLANS`, the

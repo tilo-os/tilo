@@ -207,7 +207,7 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
     }
     if let Some(prepared) = &request.prepared_setup {
         if !prepared.valid() || request.plan.basis.host_os() != super::plan::HostOs::Linux {
-            return bad("Prepared setup requires bounded private Linux staging custody");
+            return bad("Prepared setup requires bounded private Linux staging ownership");
         }
         if let Some(expected) = request.profile.get("prepared_setup") {
             let claimed = serde_json::to_value(&prepared.expectation).map_err(io_refusal)?;
@@ -2142,7 +2142,7 @@ impl Engine<'_> {
         {
             return Err(Refusal::new(
                 codes::REQUEST_INVALID,
-                "Prepared profile requires actual encrypted setup custody",
+                "Prepared profile requires actual encrypted setup ownership",
             ));
         }
         if self.record.is_none() {

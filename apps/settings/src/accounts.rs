@@ -62,17 +62,17 @@ impl VaultOpener {
     }
 
     #[cfg(feature = "tilo-os")]
-    pub fn custodian(&self) -> account_custody::Custodian {
-        account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
+    pub fn credential_store(&self) -> account_credentials::CredentialStore {
+        account_credentials::CredentialStore::for_root(self.explicit.clone()).with_apple_icloud()
     }
 
     #[cfg(feature = "tilo-os")]
     pub fn oauth_granted(&self, ids: Vec<String>) -> std::collections::BTreeSet<String> {
         self.reach();
-        let custodian = self.custodian();
+        let credential_store = self.credential_store();
         ids.into_iter()
             .filter(|id| {
-                custodian
+                credential_store
                     .oauth_scopes(&accounts::AccountId::from(id.clone()))
                     .is_ok()
             })
@@ -146,8 +146,8 @@ impl AccountRoot {
     }
 
     #[cfg(feature = "tilo-os")]
-    pub fn custodian(&self) -> account_custody::Custodian {
-        account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
+    pub fn credential_store(&self) -> account_credentials::CredentialStore {
+        account_credentials::CredentialStore::for_root(self.explicit.clone()).with_apple_icloud()
     }
 
     pub fn path(&self) -> Option<PathBuf> {
@@ -267,7 +267,7 @@ impl AccountRoot {
     /// Add or replace the email account `config` in the person's accounts,
     /// keyed by its address, and keep this device's file their projection.
     /// Its secret is sealed apart ([`Self::seal_password`] or the session's
-    /// custody), never here.
+    /// ownership), never here.
     /// Save the email account `config`, with the other names and addresses
     /// it sends as (`identities`, each `Name <address>`).
     pub fn save_email_account(
@@ -290,7 +290,7 @@ impl AccountRoot {
 
     pub fn seal_password(&self, id: &accounts::AccountId, password: &str) -> Result<(), String> {
         let Some(root) = &self.explicit else {
-            return Err("This device's account custody is unavailable".into());
+            return Err("This device's account credentials is unavailable".into());
         };
         let mut credentials = accounts::AccountCredentials::open_in(root)?;
         let token = credentials.get(id).and_then(|secret| secret.token);
@@ -569,10 +569,10 @@ impl AccountKind {
             AccountKind::CalDav => CALDAV_TYPE,
             AccountKind::WebDav => WEBDAV_TYPE,
             AccountKind::Nextcloud => NEXTCLOUD_TYPE,
-            AccountKind::GoogleDrive => account_custody::providers::GOOGLE_DRIVE_TYPE,
-            AccountKind::OneDrive => account_custody::providers::ONEDRIVE_TYPE,
-            AccountKind::Dropbox => account_custody::providers::DROPBOX_TYPE,
-            AccountKind::ICloudDrive => account_custody::providers::ICLOUD_DRIVE_TYPE,
+            AccountKind::GoogleDrive => account_credentials::providers::GOOGLE_DRIVE_TYPE,
+            AccountKind::OneDrive => account_credentials::providers::ONEDRIVE_TYPE,
+            AccountKind::Dropbox => account_credentials::providers::DROPBOX_TYPE,
+            AccountKind::ICloudDrive => account_credentials::providers::ICLOUD_DRIVE_TYPE,
         }
     }
 
@@ -589,8 +589,8 @@ impl AccountKind {
     }
 
     #[cfg(feature = "tilo-os")]
-    pub fn oauth_cloud(self) -> Option<account_custody::OAuthCloud> {
-        account_custody::OAuthCloud::from_type_id(self.type_id())
+    pub fn oauth_cloud(self) -> Option<account_credentials::OAuthCloud> {
+        account_credentials::OAuthCloud::from_type_id(self.type_id())
     }
 
     #[cfg(feature = "tilo-os")]

@@ -1,4 +1,4 @@
-//! Original-caller custody for asynchronous desktop URI effects.
+//! Original-caller ownership for asynchronous desktop URI effects.
 use super::EffectCheck;
 use std::sync::mpsc::Receiver;
 

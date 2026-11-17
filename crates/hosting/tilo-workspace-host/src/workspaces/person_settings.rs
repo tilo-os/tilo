@@ -1301,7 +1301,7 @@ mod tests {
             };
             for entry in entries.flatten() {
                 let path = entry.path();
-                // Only regular files carry a document's bytes: key custody
+                // Only regular files carry a document's bytes: key storage
                 // keeps other kinds of entry beside them.
                 match std::fs::metadata(&path) {
                     Ok(metadata) if metadata.is_dir() => waiting.push(path),

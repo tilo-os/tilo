@@ -30,7 +30,7 @@ struct AssistantLiveActivity: Widget {
                     Mark(side: 24).padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    LiveStanding(facts: context.state).font(.small12).padding(.trailing, 4)
+                    LiveState(facts: context.state).font(.small12).padding(.trailing, 4)
                 }
                 DynamicIslandExpandedRegion(.center) {
                     Text(context.state.title).font(.tilo(15, .semibold)).lineLimit(1)
@@ -50,7 +50,7 @@ struct AssistantLiveActivity: Widget {
             } compactLeading: {
                 Mark(side: 16)
             } compactTrailing: {
-                LiveStanding(facts: context.state).font(.small12)
+                LiveState(facts: context.state).font(.small12)
             } minimal: {
                 Mark(side: 16)
             }

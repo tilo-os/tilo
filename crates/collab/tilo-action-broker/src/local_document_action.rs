@@ -7,19 +7,19 @@ use serde::{Deserialize, Serialize};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_HASHES: usize = 256;
 
-/// The authenticated channel verifies the original actor, app and record custody.
+/// The authenticated channel verifies the original actor, app and record ownership.
 /// Encoded input, context, hashes and grouping are the application's report,
 /// not verified execution. Context never supplies the authenticated actor.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
-    /// Original authenticated channel provenance, compared with live custody at admission.
+    /// Original authenticated channel provenance, compared with live ownership at admission.
     #[serde(default)]
-    pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
+    pub ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub version: u8,
     pub invocation: uuid::Uuid,
     /// Random identity of this capture, before content binding. Keeps identical
-    /// reads/no-ops distinct without an unbounded host invocation ledger.
+    /// reads/no-ops distinct without an unbounded host invocation log.
     pub capture_id: uuid::Uuid,
     pub revision: String,
     pub resource: String,
@@ -150,7 +150,7 @@ mod tests {
             "mutation_hashes": vec![[1u8; 32]], "group": null,
             "encoded": {"type_id": "test.edit", "payload": b"{}".to_vec()},
             "context": null,
-            "custody": null
+            "ownership": null
         })
     }
 
@@ -175,7 +175,7 @@ mod tests {
                     "encoded" => {
                         serde_json::json!({"type_id": "test.edit", "payload": b"null".to_vec()})
                     }
-                    "custody" => serde_json::json!({
+                    "ownership" => serde_json::json!({
                         "root": vec![1; 32], "device": vec![2; 32], "agent": null,
                         "app_id": "app", "workspace": "workspace", "document": "document"
                     }),
@@ -213,7 +213,7 @@ mod tests {
                             .with_purpose("private purpose")
                             .with_group("gesture", "Edit", "edit")
                     ),
-                    "custody" => serde_json::json!({
+                    "ownership" => serde_json::json!({
                         "root": vec![1; 32], "device": vec![2; 32], "agent": null,
                         "app_id": "app", "workspace": "workspace", "document": "document"
                     }),

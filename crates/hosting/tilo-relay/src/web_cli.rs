@@ -1227,7 +1227,7 @@ async fn approve_admitted(
                     OperatorCommand::WaitList { .. }
                     | OperatorCommand::Unlist { .. }
                     | OperatorCommand::Confirm { .. }
-                    | OperatorCommand::Standing { .. }
+                    | OperatorCommand::Status { .. }
                     | OperatorCommand::InviteMailQueued { .. }
                     | OperatorCommand::ImportPeople { .. },
                 )) => {

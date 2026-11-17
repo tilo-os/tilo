@@ -19,7 +19,7 @@ use tilo_action_broker::{
     workspace_keys::{GovernancePark, GovernanceTransport, InboundGovernance, KeyProvider},
 };
 use tilo_desktop_model::{Workspace, WorkspaceId};
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity_host::identity_store::HostIdentity;
 use tilo_peer_state::direct::{DirectSync, Heard};
 use tilo_peer_state::join::TransportHint;
 use tilo_peer_state::owner::{
@@ -50,7 +50,7 @@ pub(super) use mcp_admission::{Refusal, SessionAdmission};
 pub(super) struct Joined {
     executions: Arc<super::execution::ExecutionPins>,
     owner: NativeWorkspaceOwner,
-    custody: HostIdentity,
+    identity: HostIdentity,
     endpoint: iroh::Endpoint,
     /// Workspaces this profile must not enroll in, whose writes are refused
     /// here: those the desktop session governs or enrolled this device in.
@@ -65,7 +65,7 @@ pub(super) struct Joined {
     /// Wakes the channel service's pump when governance arrives.
     governance_wake: Arc<GovernancePark>,
     /// This device's channel keys, once the channel service runs: the only
-    /// renewer of its sealed writes that expire in custody.
+    /// renewer of its sealed writes that expire held.
     keys: KeyProvider,
     /// The workspace host this profile runs, once it runs.
     own_host: std::sync::OnceLock<hosted::OwnHost>,
@@ -124,7 +124,7 @@ impl Joined {
     /// each. `endpoint` is keyed by this device's key, as hosts require.
     pub(super) fn open(
         profile: &Path,
-        custody: HostIdentity,
+        identity: HostIdentity,
         endpoint: iroh::Endpoint,
         refused: BTreeSet<WorkspaceId>,
         broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
@@ -139,7 +139,7 @@ impl Joined {
         let joined = Arc::new_cyclic(|this| Self {
             executions,
             owner,
-            custody,
+            identity,
             endpoint,
             refused,
             channels: broker.0,
@@ -163,12 +163,12 @@ impl Joined {
         self.endpoint.clone()
     }
 
-    /// The joined workspaces kept in `profile`, held as the device `custody`
+    /// The joined workspaces kept in `profile`, held as the device `ownership`
     /// certifies, over `endpoint`: what a profile that serves them alone
     /// starts with, as a member device that takes its workspaces' work does.
     pub(in crate::standalone) fn from_profile(
         profile: &Path,
-        custody: HostIdentity,
+        identity: HostIdentity,
         endpoint: iroh::Endpoint,
     ) -> io::Result<Arc<Self>> {
         let broker = (
@@ -176,22 +176,22 @@ impl Joined {
             Arc::new(FanoutState::new()),
         );
         let refused = desktop_enrolled(profile)?;
-        Self::open(profile, custody, endpoint, refused, broker)
+        Self::open(profile, identity, endpoint, refused, broker)
     }
 
     /// What signs as this device, as its action service signs every request it makes.
     pub(in crate::standalone) fn signer(&self) -> Arc<dyn collab_types::signer::DeviceSigner> {
-        Arc::clone(&self.custody.signer)
+        Arc::clone(&self.identity.signer)
     }
 
-    /// The device certificate this profile's custody holds.
+    /// The device certificate this profile's ownership holds.
     pub(in crate::standalone) fn device_cert(&self) -> &tilo_user_identity::DeviceCert {
-        &self.custody.device_cert
+        &self.identity.device_cert
     }
 
     /// The person this device belongs to: whose devices may ask it for work.
     pub(in crate::standalone) fn operator(&self) -> [u8; 32] {
-        self.custody.device_cert.user_public_key
+        self.identity.device_cert.user_public_key
     }
 
     /// How this profile asks the other devices of its workspaces whether they
@@ -248,7 +248,7 @@ impl Joined {
         let topic = workspace;
         let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
             self.join_client(invitation)?,
-            self.custody.clone(),
+            self.identity.clone(),
             topic,
             None,
             invitation.to_owned(),
@@ -297,7 +297,7 @@ impl Joined {
     ) -> io::Result<tilo_fs::identity::PeerCredentials> {
         let workspace =
             WorkspaceId::parse(workspace).ok_or_else(|| io::Error::other("not a workspace id"))?;
-        let (cert, _) = self.custody.material_for(workspace);
+        let (cert, _) = self.identity.material_for(workspace);
         tilo_fs::identity::PeerCredentials::certified(
             cert,
             self.signer(),
@@ -311,11 +311,11 @@ impl Joined {
         self.owner.workspaces().is_empty()
     }
 
-    // Use the same current custody check as an enrolled relay session. Merely
+    // Use the same current ownership check as an enrolled relay session. Merely
     // retaining a peer or its device key cannot authenticate a selected root.
     fn current_workspace(&self, workspace: WorkspaceId) -> Result<(Workspace, String), String> {
         let (_, cert, continuity) =
-            Connect::new(self.owner.clone(), workspace)?.material(&self.custody)?;
+            Connect::new(self.owner.clone(), workspace)?.material(&self.identity)?;
         self.owner.with_current(workspace, |view| {
             if view.continuity() != continuity || view.device() != &cert {
                 return Err("workspace identity changed while selecting the audience".into());
@@ -395,7 +395,7 @@ impl Joined {
         let now = tilo_clock::try_unix_now_ns().ok_or("the clock is before the Unix epoch")?;
         let join = tilo_peer_state::join::decode_and_verify_invitation_text(
             invitation,
-            Some(self.custody.device_cert.user_public_key),
+            Some(self.identity.device_cert.user_public_key),
             &tilo_user_identity::RevocationList::new(),
             now,
         )?;
@@ -428,7 +428,7 @@ impl Joined {
         let Ok(connect) = Connect::new(self.owner.clone(), workspace) else {
             return;
         };
-        let identity = Some(self.custody.clone());
+        let identity = Some(self.identity.clone());
         let holder = WorkspaceHolder {
             joined: Arc::clone(self),
             wake,
@@ -450,7 +450,7 @@ impl Joined {
         let mut caught_up = link.caught_up();
         let mut live = false;
         let mut running = Box::pin(linked.run());
-        let mut sending = tilo_session_client::custody::Sending::default();
+        let mut sending = tilo_session_client::membership_check::Sending::default();
         let ended = loop {
             tokio::select! {
                 ended = &mut running => break ended.map_err(|refusal| refusal.to_string()),
@@ -571,7 +571,7 @@ impl Joined {
     /// this profile's own and the host it is linked to, which its link
     /// already names.
     fn membership(&self, workspace: WorkspaceId, device: [u8; 32]) {
-        if device == self.custody.device_public_key() {
+        if device == self.identity.device_public_key() {
             return;
         }
         if let Ok(mut sessions) = self.sessions.lock()
@@ -635,22 +635,22 @@ impl Joined {
         &self,
         scope: &Scope,
         link: &DirectSync,
-        sending: &mut tilo_session_client::custody::Sending,
+        sending: &mut tilo_session_client::membership_check::Sending,
     ) {
         let workspace = scope.workspace();
-        // What the workspace answered for leaves custody before what it still
+        // What the workspace answered for leaves ownership before what it still
         // holds is renewed and sent.
         if let Err(error) = self.owner.retire_outgoing(workspace) {
             tracing::warn!(%error, "joined workspace publication retirement not committed");
         }
-        if scope.current(&self.custody).is_ok() {
+        if scope.current(&self.identity).is_ok() {
             self.fold_and_renew(workspace).await;
         }
-        let sent = scope.current(&self.custody).and_then(|()| {
+        let sent = scope.current(&self.identity).and_then(|()| {
             sending.drive(
                 &self.owner,
                 workspace,
-                |view| scope.authorize(view, &self.custody),
+                |view| scope.authorize(view, &self.identity),
                 |write| {
                     postcard::from_bytes(write.bytes)
                         .map_err(|error| error.to_string())
@@ -660,16 +660,16 @@ impl Joined {
             )
         });
         if let Err(error) = sent {
-            tracing::debug!(%error, "joined workspace publication remains in durable custody");
+            tracing::debug!(%error, "joined workspace publication remains in durable ownership");
         }
     }
 
     /// What the link brought into a sealed record's history is this device's
     /// to fold, as its own writes are before each of them
     /// ([`NativeWorkspaceOwner::compact_outgoing`]). Then its sealed writes
-    /// that expired in custody are sealed again.
+    /// that expired held are sealed again.
     async fn fold_and_renew(&self, workspace: WorkspaceId) {
-        let signer = self.custody.signer.as_ref();
+        let signer = self.identity.signer.as_ref();
         match self
             .owner
             .compact_outgoing(workspace, signer, SystemTime::now())
@@ -753,10 +753,10 @@ impl OwnerCommitService for Joined {
             );
         }
         // Drafted again past its record's floor when this device's local writers signed out of
-        // the order the owner takes them, for this device's custody to sign.
+        // the order the owner takes them, for this device's ownership to sign.
         let (owner, signer, this) = (
             self.owner.clone(),
-            Arc::clone(&self.custody.signer),
+            Arc::clone(&self.identity.signer),
             self.this.clone(),
         );
         Box::pin(async move {
@@ -816,21 +816,21 @@ mod mcp_admission_tests;
 
 #[cfg(test)]
 impl Joined {
-    /// Read this profile's custody from `paths` from now on, before any run
+    /// Read this profile's ownership from `paths` from now on, before any run
     /// is admitted: the tests that make one read of it fail compare the same
-    /// custody, read and unread.
+    /// ownership, read and unread.
     ///
     /// The fixture is the only holder here; every run is admitted after.
-    pub(in crate::standalone) fn install_custody_paths(
+    pub(in crate::standalone) fn install_identity_paths(
         &self,
         paths: tilo_user_identity::persist::IdentityPaths,
     ) {
-        let custody = &raw const self.custody;
+        let identity = &raw const self.identity;
         // SAFETY: no run has been admitted yet, so nothing reads this store
         // concurrently; each admission afterwards pins what it reads.
         unsafe {
-            (*(custody.cast_mut())).custody =
-                std::sync::Arc::new(tilo_identity_host::custody::files::Files::new(paths));
+            (*(identity.cast_mut())).identity_store =
+                std::sync::Arc::new(tilo_identity_host::identity_store::files::Files::new(paths));
         }
     }
 }

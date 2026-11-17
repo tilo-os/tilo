@@ -38,7 +38,7 @@ pub use page_view::{PageStream, PageView};
 #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
 pub use surface::peer_view::{
     Elsewhere, NeighbourMsg, PeerAction, PeerId, PeerOutcome, PeerRead, PeerStreamStart,
-    PeerSurface, PeerSurfaces, PeerTiles, PeerView, PictureWake, Standing, SurfaceId, WhyEnded,
+    PeerSurface, PeerSurfaces, PeerTiles, PeerView, PictureWake, StreamState, SurfaceId, WhyEnded,
 };
 pub use surface::{
     ActivityModel, ActivityPaneCode, AppInbox, AppNotifier, AskedFloat, DesktopHandle,

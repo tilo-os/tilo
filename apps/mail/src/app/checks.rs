@@ -93,7 +93,7 @@ impl DeviceChecks {
 
 /// How a check stands in the mailbox.
 #[derive(Debug, PartialEq, Eq)]
-enum Standing {
+enum CheckState {
     Waiting,
     Done,
     Failed(String),
@@ -101,22 +101,22 @@ enum Standing {
     Gone,
 }
 
-fn standing(mail: &Mail, check: &MailCheck) -> Standing {
+fn check_state(mail: &Mail, check: &MailCheck) -> CheckState {
     if mail.checks.pending().any(|(_, waiting)| waiting == check) {
-        return Standing::Waiting;
+        return CheckState::Waiting;
     }
     // The newest settled check of the same folder says how it went.
-    let mut found = Standing::Gone;
+    let mut found = CheckState::Gone;
     for (_, entry) in mail.checks.entries() {
         if entry.value != *check {
             continue;
         }
         found = match &entry.settled {
-            Some(ui::tilo_resource::Settled::Done(())) => Standing::Done,
+            Some(ui::tilo_resource::Settled::Done(())) => CheckState::Done,
             Some(ui::tilo_resource::Settled::Failed { reason, .. }) => {
-                Standing::Failed(reason.clone())
+                CheckState::Failed(reason.clone())
             }
-            None => Standing::Waiting,
+            None => CheckState::Waiting,
         };
     }
     found
@@ -194,8 +194,8 @@ impl MailApp {
                     .label_for(&asked.check.account)
                     .unwrap_or_else(|| asked.check.account.clone())
             };
-            match standing(&mail, &asked.check) {
-                Standing::Waiting => {
+            match check_state(&mail, &asked.check) {
+                CheckState::Waiting => {
                     if !asked.said && now >= asked.since + UNANSWERED {
                         asked.said = true;
                         self.shared
@@ -205,7 +205,7 @@ impl MailApp {
                     }
                     still.push(asked);
                 }
-                Standing::Done | Standing::Gone => {
+                CheckState::Done | CheckState::Gone => {
                     let mut st = self.shared.borrow_mut();
                     if st
                         .sync_error
@@ -216,7 +216,7 @@ impl MailApp {
                     }
                     self.dirty = true;
                 }
-                Standing::Failed(reason) => {
+                CheckState::Failed(reason) => {
                     self.shared
                         .borrow_mut()
                         .note_sync_failure(label, crate::notice::sync_cause(&reason));
@@ -233,7 +233,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use super::{Standing, UNANSWERED, standing};
+    use super::{CheckState, UNANSWERED, check_state};
     use crate::actions::MailCheck;
     use crate::app::{EngineHandle, MailApp};
     use crate::engine::{EngineEvent, EngineRequest, EngineRequestKind};
@@ -284,11 +284,11 @@ mod tests {
         phase a_check_waits_until_a_device_settles_it;
         {
             let mut mail = Mail::default();
-            assert_eq!(standing(&mail, &check()), Standing::Gone);
+            assert_eq!(check_state(&mail, &check()), CheckState::Gone);
             let id = mail.checks.push(Id::from_raw("one"), check());
-            assert_eq!(standing(&mail, &check()), Standing::Waiting);
+            assert_eq!(check_state(&mail, &check()), CheckState::Waiting);
             mail.checks.settle(&id, Settled::Done(()));
-            assert_eq!(standing(&mail, &check()), Standing::Done);
+            assert_eq!(check_state(&mail, &check()), CheckState::Done);
         }
 
         phase a_failed_check_says_why;
@@ -303,8 +303,8 @@ mod tests {
                 },
             );
             assert_eq!(
-                standing(&mail, &check()),
-                Standing::Failed("fetch: connection refused".into())
+                check_state(&mail, &check()),
+                CheckState::Failed("fetch: connection refused".into())
             );
         }
     }

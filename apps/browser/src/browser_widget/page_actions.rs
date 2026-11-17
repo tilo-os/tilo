@@ -1730,8 +1730,8 @@ fn the_resource_and_the_fields_are_read_typed_and_answer_in_the_declared_shape()
     assert_eq!(
         page_requests(&engine),
         vec![
-            PageRequest::Ledger { since: 0 },
-            PageRequest::Ledger { since: 2 },
+            PageRequest::Log { since: 0 },
+            PageRequest::Log { since: 2 },
             PageRequest::Fields { frame: None },
             PageRequest::Fields {
                 frame: Some(FrameId::parse("1.2").unwrap()),
@@ -1817,7 +1817,7 @@ fn reading_the_resource_takes_no_turn() {
         page_asks(&engine),
         vec![
             (Some("agent:ada".to_owned()), "fill"),
-            (Some("rev".to_owned()), "ledger"),
+            (Some("rev".to_owned()), "log"),
         ],
         "the resource is asked for while the fill still runs, ahead of what waits"
     );
@@ -1846,7 +1846,7 @@ fn reading_the_resource_takes_no_turn() {
             .into_iter()
             .map(|(_, action)| action)
             .collect::<Vec<_>>(),
-        vec!["fill", "ledger", "click", "outline"]
+        vec!["fill", "log", "click", "outline"]
     );
 
     // A caller that gives up on a read of the resource stops that request and

@@ -6,7 +6,7 @@ publish = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Sealed local secret vaults: XChaCha20-Poly1305 files and the custody of their key"
+description = "Sealed local secret vaults: XChaCha20-Poly1305 files and the ownership of their key"
 
 [lib]
 name = "secret_vault"
@@ -18,7 +18,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 tracing.workspace = true
 # `tilo-seal` seals the vault and mints its keys; `zeroize` wipes key
-# material read from custody and decrypted plaintext.
+# material read from ownership and decrypted plaintext.
 tilo-seal = { version = "0.1.0", path = "../tilo-seal" }
 zeroize.workspace = true
 # The secret store holds the vault key as lower-case hex.

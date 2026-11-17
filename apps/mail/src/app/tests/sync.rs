@@ -474,7 +474,7 @@ tilo_test_env::scenario! {
 #[cfg(feature = "live")]
 #[test]
 fn already_open_mail_adopts_settings_google_consent_on_sync() {
-    use account_custody::{ClientTable, OAuthIssuer};
+    use account_credentials::{ClientTable, OAuthIssuer};
     use settings::accounts::{AccountKind, AccountRoot};
     use settings::panes::accounts::{AccountViewCommand, AccountsPane, BrowserOpener};
     use test_http::{Reply, Responder};
@@ -515,12 +515,12 @@ fn already_open_mail_adopts_settings_google_consent_on_sync() {
             .header("Content-Type", "application/json")
             .body(r#"{"emailAddress":"ada@example.org"}"#),
     ]);
-    let custody = root
-        .custodian()
+    let ownership = root
+        .credential_store()
         .with_issuer_endpoints(OAuthIssuer::Google, oauth.provider())
         .with_gmail_profile_endpoint(format!("{}/profile", gmail.url()));
     let mut pane = AccountsPane::in_root(root.clone())
-        .with_custodian(custody)
+        .with_credential_store(ownership)
         .with_browser_opener(std::sync::Arc::new(Browser));
     pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
     pane.command(AccountViewCommand::SubmitGoogleMail);

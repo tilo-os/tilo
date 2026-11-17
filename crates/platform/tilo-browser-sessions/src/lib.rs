@@ -18,7 +18,7 @@ fn selection(session: &SessionCookies) -> SessionSelection {
     }
 }
 
-/// Verify cookie and raw origin-storage custody codecs before qualifying
+/// Verify cookie and raw origin-storage ownership codecs before qualifying
 /// consumers; no engine, account store, keychain, network or provider is touched.
 pub fn probe_service_session_codecs() -> Result<Vec<SessionSelection>, String> {
     use browser_continuity::sessions::{Cookie, OriginStorage, SameSite};
@@ -44,7 +44,7 @@ pub fn probe_service_session_codecs() -> Result<Vec<SessionSelection>, String> {
             same_site: SameSite::Lax,
         }],
     };
-    account_custody::service_sessions::verify_service_session_codec(&session)
+    account_credentials::service_sessions::verify_service_session_codec(&session)
         .map_err(|_| failure())?;
     let first = selection(&session);
     let mut discord = session;
@@ -58,13 +58,13 @@ pub fn probe_service_session_codecs() -> Result<Vec<SessionSelection>, String> {
         value: "\"synthetic-consumer-origin\"".into(),
         source_snapshot_digest: [7; 32],
     }];
-    account_custody::service_sessions::verify_service_session_codec(&discord)
+    account_credentials::service_sessions::verify_service_session_codec(&discord)
         .map_err(|_| failure())?;
     let second = selection(&discord);
     let mut foreign = discord.clone();
     let entry = foreign.origin_storage.first_mut().ok_or_else(failure)?;
     entry.origin = "https://discord.com.evil.example".into();
-    if account_custody::service_sessions::service_session_secret(&foreign).is_ok() {
+    if account_credentials::service_sessions::service_session_secret(&foreign).is_ok() {
         return Err(failure());
     }
     Ok(vec![first, second])

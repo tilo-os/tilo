@@ -1,4 +1,4 @@
-//! Target-user custody bridge for encrypted installer preparation.
+//! Target-user ownership bridge for encrypted installer preparation.
 //! No window is launched, and no identity is activated by the helper.
 use sha2::{Digest, Sha256};
 use std::{
@@ -62,7 +62,7 @@ pub struct Imported {
     pub mail: Vec<serde_json::Value>,
 }
 
-/// Public selection metadata; credential bytes remain in imported private custody.
+/// Public selection metadata; credential bytes remain in imported private ownership.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceSessions {
@@ -924,7 +924,7 @@ mod tests {
             let identity = home.path().join(".config/tilo/identity");
             pending
                 .prepare_targets(&identity)
-                .expect("private new custody");
+                .expect("private new ownership");
             assert_eq!(
                 std::fs::metadata(&identity).expect("identity").mode() & 0o777,
                 0o700

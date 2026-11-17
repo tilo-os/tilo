@@ -74,7 +74,7 @@ pub struct Pending {
     done: bool,
 }
 impl Pending {
-    /// A reply is returned at most once; dropping this object drops private custody.
+    /// A reply is returned at most once; dropping this object drops private ownership.
     pub fn poll(&mut self) -> Option<Result<BrowserServiceSessionReply, String>> {
         if self.done {
             return None;

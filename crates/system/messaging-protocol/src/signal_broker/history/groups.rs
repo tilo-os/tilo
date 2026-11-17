@@ -80,7 +80,7 @@ impl History {
                 return Err(SendError::InvalidRequest);
             }
             let key = row.key()?;
-            if let Some(prior) = self.ledger.groups.get(&key).or_else(|| staged.get(&key)) {
+            if let Some(prior) = self.log.groups.get(&key).or_else(|| staged.get(&key)) {
                 if prior != row {
                     return Err(SendError::InvalidRequest);
                 }
@@ -90,10 +90,10 @@ impl History {
         }
         let count = direct.len().saturating_add(staged.len());
         if self
-            .ledger
+            .log
             .rows
             .len()
-            .saturating_add(self.ledger.groups.len())
+            .saturating_add(self.log.groups.len())
             .saturating_add(count)
             > MAX_ROWS
         {
@@ -104,14 +104,14 @@ impl History {
         }
         let direct_keys: Vec<_> = direct.keys().cloned().collect();
         let group_keys: Vec<_> = staged.keys().cloned().collect();
-        self.ledger.rows.append(&mut direct);
-        self.ledger.groups.append(&mut staged);
+        self.log.rows.append(&mut direct);
+        self.log.groups.append(&mut staged);
         if let Err(error) = self.persist() {
             for key in direct_keys {
-                self.ledger.rows.remove(&key);
+                self.log.rows.remove(&key);
             }
             for key in group_keys {
-                self.ledger.groups.remove(&key);
+                self.log.groups.remove(&key);
             }
             return Err(error);
         }
@@ -123,7 +123,7 @@ impl History {
             return Err(SendError::Unavailable);
         }
         Ok(self
-            .ledger
+            .log
             .groups
             .values()
             .filter(|r| r.group == group)

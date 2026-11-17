@@ -746,7 +746,7 @@ impl GroupPeer {
     /// ([`PeerEvent::Desynchronised`]), as it does when a host kept only the
     /// newest frame.
     #[must_use]
-    pub fn standing(&self) -> Vec<MlsGovernanceFrame> {
+    pub fn current_frames(&self) -> Vec<MlsGovernanceFrame> {
         if !matches!(self.record, MemberRecord::Joined(_)) {
             return Vec::new();
         }
@@ -873,7 +873,7 @@ impl GroupPeer {
     /// An access request carrying a fresh key package, still to be signed by
     /// the device key ([`MlsAccessRequestV1::unsigned`]), or `None` when the
     /// device is already admitted: for a device key held apart from this
-    /// state (a browser's page custody). A removed device starts waiting
+    /// state (a browser's page ownership). A removed device starts waiting
     /// again. With `fresh`, a waiting device asks with a new member key: the
     /// key holders then see a device they may have admitted already (whose
     /// Welcome never arrived here) asking with another key, and admit it

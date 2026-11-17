@@ -258,7 +258,7 @@ impl ApplicationImport {
         }
     }
     /// The state travels as a sealed Home unit and the promotion engine preserves collisions and
-    /// private Tilo custody.
+    /// private Tilo ownership.
     pub fn adopt_user_state(
         &mut self,
         runner: &impl OfflineRunner,

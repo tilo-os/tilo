@@ -89,7 +89,7 @@ pub fn init_scoped(
     home: &str,
     workspace: Option<&str>,
 ) -> bool {
-    // Primary custody is the checked app/workspace namespace, never a fake
+    // Primary ownership is the checked app/workspace namespace, never a fake
     // record stamp. Keep this serialized internal id stable across hosts.
     if id.is_package_primary() {
         return primary_document(doc);
@@ -281,7 +281,7 @@ fn restamp(doc: &mut AutoCommit, former: &DocumentId, want: &DocumentCheckout) -
 }
 
 /// Adopt the stored document of the first former identity of `want` that exists, belongs to its
-/// kind and workspace, and whose custody this successor can claim. The former document is only
+/// kind and workspace, and whose ownership this successor can claim. The former document is only
 /// read: the copy is restamped and returned to persist under the new id.
 fn adopt_former(
     store: &Rc<dyn DurableStore>,
@@ -907,7 +907,7 @@ impl ResourceSet {
             return self.finish_checkout(state, workspace, want);
         }
 
-        // A malformed incoming legacy document must fail before custody of
+        // A malformed incoming legacy document must fail before ownership of
         // the valid active document moves into a parked slot.
         let prepared = if self.open.contains_key(&want.id) {
             None
@@ -2336,7 +2336,7 @@ impl ResourceStore {
             .wire_route(id)
     }
 
-    /// Checked custody-to-wire mapping. Primary stays `record=None` on every host.
+    /// Checked ownership-to-wire mapping. Primary stays `record=None` on every host.
     pub fn route(
         &self,
         checkout: &DocumentCheckout,
@@ -2410,7 +2410,7 @@ impl ResourceStore {
         Ok(())
     }
 
-    /// Cheap content witness for retained projections over open records: base heads cover committed
+    /// Cheap content observation for retained projections over open records: base heads cover committed
     /// changes, `pending_ops` the live typing transaction, and the record identity makes opening or
     /// closing a document invalidate a snapshot.
     pub fn content_revision(&self) -> String {

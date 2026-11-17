@@ -57,9 +57,9 @@ public enum Drawing {
     public static let quietReason = "Dima's mail did not notify you: not important while you are not raising."
 
     public static var mainChat: [Item] {
-        let rundown = TaskLine(task: "morning-rundown", title: "Morning rundown", standing: .scheduled("every day"))
-        let inbound = TaskLine(task: "investor-inbound", title: "Answer investor inbound", standing: .actedAlone)
-        let maya = TaskLine(task: "maya", title: "Reply to Maya at Northwind", standing: .replies(2))
+        let rundown = TaskLine(task: "morning-rundown", title: "Morning rundown", state: .scheduled("every day"))
+        let inbound = TaskLine(task: "investor-inbound", title: "Answer investor inbound", state: .actedAlone)
+        let maya = TaskLine(task: "maya", title: "Reply to Maya at Northwind", state: .replies(2))
         return [
             Item(id: "rundown-1", at: at(7, 30), .message(Message(.assistant, """
                 Good morning. Today:
@@ -96,13 +96,13 @@ public enum Drawing {
 
     public static var subAgents: [SubAgent] {
         [
-            SubAgent(id: "usage-drop", title: "Usage drop: investigate", role: "Coder", standing: .working,
+            SubAgent(id: "usage-drop", title: "Usage drop: investigate", role: "Coder", state: .working,
                      runsOn: "Claude Code on the cloud machine", started: at(9, 20)),
-            SubAgent(id: "board-deck", title: "Find the Q3 board deck", role: "Researcher", standing: .needsYou,
+            SubAgent(id: "board-deck", title: "Find the Q3 board deck", role: "Researcher", state: .needsYou,
                      runsOn: "The cloud machine", started: at(8, 50)),
-            SubAgent(id: "yc-batch", title: "YC batch against the thesis", role: "Researcher", standing: .working,
+            SubAgent(id: "yc-batch", title: "YC batch against the thesis", role: "Researcher", state: .working,
                      runsOn: "The cloud machine", started: at(8, 5)),
-            SubAgent(id: "data-room", title: "Data room: open requests", role: "Researcher", standing: .done,
+            SubAgent(id: "data-room", title: "Data room: open requests", role: "Researcher", state: .done,
                      runsOn: "The cloud machine", started: at(15, 10, day: 16), finished: at(16, 2, day: 16)),
         ]
     }
@@ -130,11 +130,11 @@ public enum Drawing {
 
     public static var tasks: [AssistantTask] {
         [
-            AssistantTask(id: "maya", title: "Reply to Maya at Northwind", standing: .readyForReview, isImportant: true, item: "maya"),
-            AssistantTask(id: "deck-draft", title: "Board deck for Friday: first draft", standing: .readyForReview),
-            AssistantTask(id: "deck", title: "Find the Q3 board deck", standing: .needsInput, note: "Two versions exist. Which one?"),
-            AssistantTask(id: "usage", title: "Find out why usage dropped", standing: .inProgress),
-            AssistantTask(id: "yc", title: "Shortlist the YC batch for the thesis", standing: .inProgress),
+            AssistantTask(id: "maya", title: "Reply to Maya at Northwind", state: .readyForReview, isImportant: true, item: "maya"),
+            AssistantTask(id: "deck-draft", title: "Board deck for Friday: first draft", state: .readyForReview),
+            AssistantTask(id: "deck", title: "Find the Q3 board deck", state: .needsInput, note: "Two versions exist. Which one?"),
+            AssistantTask(id: "usage", title: "Find out why usage dropped", state: .inProgress),
+            AssistantTask(id: "yc", title: "Shortlist the YC batch for the thesis", state: .inProgress),
         ]
     }
 

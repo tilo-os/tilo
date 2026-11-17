@@ -14,7 +14,7 @@ use tilo_actions::outcome::{ActionOutput, InvocationId as ActionInvocationId, In
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
-    CatalogueRow, Completer, Confirmation, InvocationLedger, InvocationReceipt, InvocationState,
+    CatalogueRow, Completer, Confirmation, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, ResourceAddress, ResourceCopy, ResourceReads,
     ResourceWake, pending,
 };
@@ -143,7 +143,7 @@ pub(crate) struct FakeHost {
 
 #[derive(Default)]
 struct HostState {
-    ledger: InvocationLedger<InvocationUpdate>,
+    log: InvocationLog<InvocationUpdate>,
     started: Vec<InvokeRequest>,
 }
 
@@ -345,8 +345,8 @@ impl ActionHost for FakeHost {
             }));
         }
         let mut state = self.state.lock().unwrap();
-        let HostState { ledger, started } = &mut *state;
-        let receipt = ledger
+        let HostState { log, started } = &mut *state;
+        let receipt = log
             .admit(caller, &request, || {
                 started.push(request.clone());
                 Ok(InvocationUpdate::Succeeded {
@@ -366,7 +366,7 @@ impl ActionHost for FakeHost {
     fn observe(&self, caller: &Caller, id: &ActionInvocationId) -> Option<InvocationState> {
         let state = self.state.lock().unwrap();
         state
-            .ledger
+            .log
             .get(caller, id)
             .map(|update| InvocationState::new(*id, update.clone()))
     }

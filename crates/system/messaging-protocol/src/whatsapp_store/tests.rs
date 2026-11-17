@@ -117,7 +117,7 @@ async fn group_journal_encrypts_reviews_and_never_replays_uncertain_writes_after
     );
 }
 #[tokio::test]
-async fn group_store_uses_original_revocable_custody_for_every_read_and_write() {
+async fn group_store_uses_original_revocable_ownership_for_every_read_and_write() {
     let dir = tempfile::tempdir().unwrap();
     let grant = Arc::new(Grant(std::sync::atomic::AtomicBool::new(true)));
     let now = tilo_clock::try_unix_now().unwrap();
@@ -420,7 +420,10 @@ async fn approved_profile_key_is_bound_before_sdk_state_and_survives_only_origin
     let root = dir.path().join("profile");
     let grant = Arc::new(Grant(std::sync::atomic::AtomicBool::new(false)));
     assert!(EncryptedBackend::open_profile(&root, owner(), fixture_key(), grant.clone()).is_err());
-    assert!(!root.exists(), "unapproved profile custody performs no I/O");
+    assert!(
+        !root.exists(),
+        "unapproved profile ownership performs no I/O"
+    );
     grant.0.store(true, std::sync::atomic::Ordering::SeqCst);
     let backend =
         EncryptedBackend::open_profile(&root, owner(), fixture_key(), grant.clone()).unwrap();
@@ -503,11 +506,11 @@ async fn revoked_original_grant_stops_actual_sdk_ratchet_and_pending_writes() {
         .is_err()
     );
     assert!(sdk.load().await.is_err());
-    let forbidden = dir.path().join("revoked-custody");
+    let forbidden = dir.path().join("revoked-ownership");
     assert!(EncryptedBackend::open_system(&forbidden, owner(), grant.clone()).is_err());
     assert!(
         !forbidden.exists(),
-        "revoked grants must perform no custody I/O"
+        "revoked grants must perform no ownership I/O"
     );
     assert!(
         prior_clone
@@ -541,7 +544,7 @@ async fn revoked_original_grant_stops_actual_sdk_ratchet_and_pending_writes() {
 }
 
 #[test]
-fn revocation_during_custody_lookup_prevents_store_initialization() {
+fn revocation_during_ownership_lookup_prevents_store_initialization() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("never-initialized");
     let grant = Arc::new(Grant(std::sync::atomic::AtomicBool::new(true)));
@@ -552,6 +555,6 @@ fn revocation_during_custody_lookup_prevents_store_initialization() {
     assert!(result.is_err());
     assert!(
         !root.exists(),
-        "a grant revoked while custody responds must not create a private store"
+        "a grant revoked while ownership responds must not create a private store"
     );
 }

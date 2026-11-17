@@ -106,7 +106,10 @@ fn a_member_that_missed_the_newest_commit_is_current_from_what_another_holds() {
     deliver(&alice.take(), &mut [&mut bob], &members);
     assert_eq!(bob.epoch(), alice.epoch());
     assert!(
-        Device::waiting(4, workspace).peer.standing().is_empty(),
+        Device::waiting(4, workspace)
+            .peer
+            .current_frames()
+            .is_empty(),
         "a device that is not in the group has nothing of it to hand over"
     );
 
@@ -120,14 +123,14 @@ fn a_member_that_missed_the_newest_commit_is_current_from_what_another_holds() {
     assert!(alice.peer.outbox().is_empty(), "and nothing is left to say");
 
     // What Alice holds of the group, handed to Bob as he reaches her again.
-    let standing = alice.peer.standing();
+    let frames = alice.peer.current_frames();
     assert!(
-        standing
+        frames
             .iter()
             .any(|frame| frame.epoch == alice.epoch().unwrap()),
         "the head is among what a member is handed"
     );
-    deliver(&standing, &mut [&mut bob], &members);
+    deliver(&frames, &mut [&mut bob], &members);
     assert_eq!(bob.epoch(), alice.epoch());
     let sealed = carol.seal("after the commit");
     assert_eq!(bob.opens(&sealed).as_deref(), Some("after the commit"));

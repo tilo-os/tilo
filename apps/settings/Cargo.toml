@@ -27,11 +27,11 @@ default = ["tilo-os"]
 # programs, files, sockets and system bus. A browser tab has none of them,
 # so the web build (and the agent host, which has no device to administer)
 # leaves the feature off: those panes are compiled out, not shown broken.
-tilo-os = ["dep:bounded-command", "dep:desktop-entry", "dep:os-actions", "dep:tilo-ntfs-mount", "dep:runtime-fs", "dep:tilo-bluez", "dep:account-custody", "dep:media", "dep:tilo-audio-service", "dep:tilo-dav", "dep:tilo-account-probe", "dep:tilo-capture"]
+tilo-os = ["dep:bounded-command", "dep:desktop-entry", "dep:os-actions", "dep:tilo-ntfs-mount", "dep:runtime-fs", "dep:tilo-bluez", "dep:account-credentials", "dep:media", "dep:tilo-audio-service", "dep:tilo-dav", "dep:tilo-account-probe", "dep:tilo-capture"]
 thin = ["dep:runtime-dylib"]
 # Run the app from the Settings engine library in the runtime bundle
 # (libtilo_settings_engine.so, crates/runtime/engines/settings), which carries
-# this package's library and links account custody and the IMAP client from
+# this package's library and links account credentials and the IMAP client from
 # their own engine library: the binary is one call into it (src/main.rs). The
 # release collection enables it (dist/apps/app-collections.toml); a `thin`
 # build without it (`tilo-app dev`) links the library statically, because an
@@ -101,10 +101,10 @@ tilo-bluez = { path = "../../crates/system/tilo-bluez", optional = true }
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.
 accounts = { path = "../../crates/system/accounts", features = ["person"] }
-# Credential custody for cloud accounts: the shared OAuth client, Nextcloud
+# Credential ownership for cloud accounts: the shared OAuth client, Nextcloud
 # Login Flow v2, iCloud sessions and the short-lived handoff to the storage
 # daemon.
-account-custody = { path = "../../crates/system/account-custody", optional = true }
+account-credentials = { path = "../../crates/system/account-credentials", optional = true }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
 agent-provider-config = { path = "../../crates/agent/provider-config", features = ["model"] }
@@ -152,7 +152,7 @@ workspace-hack = { version = "0.1" }
 # The integration suites read the account store and the runtime's files back.
 hex.workspace = true
 runtime-fs = { package = "tilo-fs-client", path = "../../crates/runtime/tilo-fs-client" }
-account-custody = { path = "../../crates/system/account-custody" }
+account-credentials = { path = "../../crates/system/account-credentials" }
 # Exercise the published Files surface against the production cloud service.
 file-explorer = { path = "../file-explorer" }
 # The platform adapter the native runner feeds, for the live-bus benchmark.

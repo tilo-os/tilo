@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest as _, Sha256};
 use tilo_action_policy::{EntryPolicy, ListingPolicy, Role, roles::governance};
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::join_ledger::request_digest;
+use tilo_peer_state::join_log::request_digest;
 use tilo_relay_protocol::directory::{
     DirectoryEntry, EntryJoin, EntryReport, Face, Listing, MAX_FACES, entry_path,
 };

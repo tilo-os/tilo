@@ -109,7 +109,7 @@ impl RiskLevel {
 /// [`ActionContract::tags`] entry of an action any member of a workspace may ask
 /// the workspace's host to run for themselves on a record of the workspace (linking
 /// their own account elsewhere). The host runs it as that member, under
-/// their own standing, so the action's API and its own checks decide what
+/// their own access, so the action's API and its own checks decide what
 /// it may do; its answer goes back to the asking device alone.
 pub const MEMBER_OWN_TAG: &str = "host:member-own";
 

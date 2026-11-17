@@ -245,11 +245,11 @@ const RECEIPTS: &str = "joins";
 impl WorkspaceDocumentEntry {
     /// The record `stored` names: `published`, the publications file's, before
     /// the publications it holds, and `receipted`, the receipts file's, before
-    /// the receipts its ledger holds.
+    /// the receipts its log holds.
     fn read(
         stored: document_format::StoredResource,
         mut published: Vec<Publication>,
-        mut receipted: Vec<tilo_peer_state::join_ledger::JoinCompletionRecord>,
+        mut receipted: Vec<tilo_peer_state::join_log::JoinCompletionRecord>,
     ) -> Self {
         let mut outgoing = stored.outgoing;
         published.append(&mut outgoing);
@@ -280,7 +280,7 @@ struct GovernedWorkspace {
     /// `record.outgoing`, in its own file.
     publications: appended::Appended<Publication>,
     /// The join receipts of `record.collaboration`, in their own file.
-    receipts: appended::Appended<tilo_peer_state::join_ledger::JoinCompletionRecord>,
+    receipts: appended::Appended<tilo_peer_state::join_log::JoinCompletionRecord>,
     /// The channel keys of the device this host runs on, asked for the
     /// records of this workspace: `None` when that device keeps no channel
     /// keys, and the workspace's records are then held in the clear.
@@ -570,9 +570,9 @@ impl GovernedWorkspace {
             Some(first) if first < self.record.published => first,
             _ => self.record.published,
         };
-        let ledger = &self.record.collaboration;
+        let log = &self.record.collaboration;
         let filed_publications = self.publications.file(&self.record.outgoing)?;
-        let filed_receipts = self.receipts.file(&ledger.join_completions)?;
+        let filed_receipts = self.receipts.file(&log.join_completions)?;
         let beyond = |filed: u64| usize::try_from(filed).map_err(|error| error.to_string());
         let record = document_format::StoredDocumentRef {
             version: DOCUMENT_VERSION,
@@ -587,15 +587,15 @@ impl GovernedWorkspace {
                 .get(beyond(filed_publications)?..)
                 .unwrap_or_default(),
             published,
-            collaboration: document_format::LedgerRef {
-                invitations: &ledger.invitations,
-                join_challenges: &ledger.join_challenges,
-                join_completions: ledger
+            collaboration: document_format::LogRef {
+                invitations: &log.invitations,
+                join_challenges: &log.join_challenges,
+                join_completions: log
                     .join_completions
                     .get(beyond(filed_receipts)?..)
                     .unwrap_or_default(),
-                membership_challenges: &ledger.membership_challenges,
-                administration: &ledger.administration,
+                membership_challenges: &log.membership_challenges,
+                administration: &log.administration,
             },
             filed_publications,
             filed_receipts,
@@ -2866,13 +2866,13 @@ impl Workspaces {
                 tracing::debug!(workspace = %workspace.workspace(), forgotten, "forgot the hellos of devices the workspace no longer admits");
             }
         }
-        let standing = crate::timing::start();
-        let standings = workspace.peer().governance().standings_of(&members, now)?;
+        let settling = crate::timing::start();
+        let device_access = workspace.peer().governance().access_of(&members, now)?;
         host.access
-            .replace_standings(workspace.workspace_id(), true, standings)
+            .replace_access(workspace.workspace_id(), true, device_access)
             .await
             .map_err(|error| error.to_string())?;
-        crate::timing::event("workspace.settle.standings", standing, 0);
+        crate::timing::event("workspace.settle.device_access", settling, 0);
         let publishing = crate::timing::start();
         let publisher = Arc::clone(&workspace.publisher);
         if workspace.rebased {

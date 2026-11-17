@@ -10,7 +10,7 @@ import XCTest
 final class EngineTests: XCTestCase {
     private static let site = "https://tilo.test"
     private var engine: TiloEngine!
-    private var stood: [TiloEngine.Standing] = []
+    private var stood: [TiloEngine.State] = []
     private var changes = 0
     private var listening: [Task<Void, Never>] = []
 
@@ -20,7 +20,7 @@ final class EngineTests: XCTestCase {
         changes = 0
         let engine = engine!
         listening = [
-            Task { for await standing in engine.standings() { self.stood.append(standing) } },
+            Task { for await state in engine.states() { self.stood.append(state) } },
             Task { for await _ in engine.changes() { self.changes += 1 } },
         ]
         engine.view.loadHTMLString(Self.page, baseURL: URL(string: "\(Self.site)/app/"))
@@ -137,14 +137,14 @@ final class EngineTests: XCTestCase {
         try await until("the code to compare is told") { self.stood.contains(.pairing(code: "135790")) }
         XCTAssertFalse(stood.contains { if case .open = $0 { true } else { false } })
         try await run("enter()")
-        try await until("the engine is in") { self.engine.standing == .open(route: "/@host.example/w/ws-1/so.tilo.chat") }
+        try await until("the engine is in") { self.engine.state == .open(route: "/@host.example/w/ws-1/so.tilo.chat") }
         // The code stays on the page after the approval: it is no longer what the page waits for.
         XCTAssertEqual(stood.last, .open(route: "/@host.example/w/ws-1/so.tilo.chat"))
     }
 
     func testARefusalIsSaidInTheSitesOwnWords() async throws {
         try await run("refuse('Lounge is invite-only for now.')")
-        try await until("the refusal is told") { self.engine.standing == .refused("Lounge is invite-only for now.") }
+        try await until("the refusal is told") { self.engine.state == .refused("Lounge is invite-only for now.") }
     }
 
     func testAPageThatStoppedIsLoadedOnceMoreAndItsOwnSentenceIsSaidWhenThatLoadSaysNothing() async throws {
@@ -202,7 +202,7 @@ final class EngineTests: XCTestCase {
 
     func testReadsAndActionsGoThroughThePagesOwnEntryAndAChangeIsSaidWithoutAClock() async throws {
         try await run("location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
-        try await until("the engine is in") { if case .open = self.engine.standing { true } else { false } }
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
         try await until("the first word that there is something to read") { self.changes >= 1 }
         let before = changes
         try await run("write('Ship the report')")
@@ -255,7 +255,7 @@ final class EngineTests: XCTestCase {
 
     func testALiveThingIsOneMoreMountOfTheSamePageAndItsActionsAreItsOwn() async throws {
         try await run("location.hash = '#/w/ws-1/so.tilo.chat'; offerBeside(); enter()")
-        try await until("the engine is in") { if case .open = self.engine.standing { true } else { false } }
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
         let made = try await engine.show(live: "draft", .new(app: "so.tilo.word-processor"))
         XCTAssertEqual(made, "uuid:made-now")
         let known = try await engine.show(live: "report", .record(app: "so.tilo.word-processor", record: "uuid:1f0e"))
@@ -294,7 +294,7 @@ final class EngineTests: XCTestCase {
 
     func testAPageThatSaysItsOwnChangesIsListenedTo() async throws {
         try await run("location.hash = '#/w/ws-1/so.tilo.chat'; offerChanges(); enter()")
-        try await until("the engine is in") { if case .open = self.engine.standing { true } else { false } }
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
         try await until("the first word") { self.changes >= 1 }
         let before = changes
         try await run("told[0]()")
@@ -310,7 +310,7 @@ final class EngineTests: XCTestCase {
 
     private func enterAsADevice() async throws {
         try await run("location.hash = '#/w/ws-1/so.tilo.chat'; handOver(); enter()")
-        try await until("the engine is in") { if case .open = self.engine.standing { true } else { false } }
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
     }
 
     /// What the page's host was asked, as text.
@@ -506,7 +506,7 @@ final class EngineTests: XCTestCase {
     func testAPageThatHandsANativeAppNothingSaysSo() async throws {
         // Tilo's page as it was before it knew of a native host, and any page in a browser.
         try await run("location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
-        try await until("the engine is in") { if case .open = self.engine.standing { true } else { false } }
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
         do {
             _ = try await engine.modelProviders()
             XCTFail("a page that hands over nothing answered for the person's providers")
@@ -547,7 +547,7 @@ final class EngineTests: XCTestCase {
 
     func testASendWaitsForChatToOfferItAtThePagesNextWord() async throws {
         try await run("location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
-        try await until("the engine is in") { if case .open = self.engine.standing { true } else { false } }
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
         let engine = engine!
         let sending = Task { try await engine.chatSend("Hello", to: ChatRecipient(.conversation, id: "c_chat", name: "chat")) }
         // Chat refuses the send it does not offer yet, and the engine asks again at the page's
@@ -570,7 +570,7 @@ final class EngineTests: XCTestCase {
 
     func testAnActionThatIsNeverOfferedIsRefusedInTilosWordsWhenThePatienceIsOver() async throws {
         try await run("location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
-        try await until("the engine is in") { if case .open = self.engine.standing { true } else { false } }
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
         do {
             _ = try await engine.whenPublished(within: .milliseconds(400)) {
                 try await self.engine.invoke("send", on: "chat.workspace", ["to": [["id": "c_chat"]], "text": "Hello"])
@@ -604,7 +604,7 @@ final class EngineTests: XCTestCase {
         XCTAssertFalse(stood.contains { if case .open = $0 { true } else { false } }, "the engine was in on the page that paired")
         // The page of that second load says it is in: now the engine is.
         try await run("document.documentElement.dataset.arrival = 'done again'")
-        try await until("the engine is in") { self.engine.standing == .open(route: "/@host.example/w/own-1/so.tilo.chat") }
+        try await until("the engine is in") { self.engine.state == .open(route: "/@host.example/w/own-1/so.tilo.chat") }
         XCTAssertEqual(asked.count, 2)
     }
 
@@ -621,7 +621,7 @@ final class EngineTests: XCTestCase {
         XCTAssertFalse(stood.contains { if case .open = $0 { true } else { false } }, "the engine was in at a workspace nobody asked for")
         // There it is in.
         try await run("location.hash = '#/@host.example/w/own-1/so.tilo.chat'")
-        try await until("the engine is in") { self.engine.standing == .open(route: "/@host.example/w/own-1/so.tilo.chat") }
+        try await until("the engine is in") { self.engine.state == .open(route: "/@host.example/w/own-1/so.tilo.chat") }
         XCTAssertEqual(asked.count, 2)
     }
 
@@ -634,7 +634,7 @@ final class EngineTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(120))
             try await run("location.hash = '#/w/home-\(n)/so.tilo.chat'")
         }
-        try await until("it is said") { if case .failed = self.engine.standing { true } else { false } }
+        try await until("it is said") { if case .failed = self.engine.state { true } else { false } }
         // The address itself, and three more tries.
         XCTAssertEqual(asked, 4)
         XCTAssertFalse(stood.contains { if case .open = $0 { true } else { false } })

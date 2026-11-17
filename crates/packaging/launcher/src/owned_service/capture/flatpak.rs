@@ -42,7 +42,7 @@ pub(super) struct FlatpakSources {
     inventory: File,
     inventory_identity: (u64, u64, u32, u64),
     sources: Vec<File>,
-    custody: Arc<dyn ServiceAuthority>,
+    ownership: Arc<dyn ServiceAuthority>,
 }
 fn refused() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
@@ -78,8 +78,8 @@ impl FlatpakSources {
         if rustix::process::geteuid().as_raw() != 0 {
             return Err(refused());
         }
-        self.custody.check()?;
-        if !self.custody.network_hosts()?.is_empty() {
+        self.ownership.check()?;
+        if !self.ownership.network_hosts()?.is_empty() {
             return Err(refused());
         }
         self.check_inventory()?;
@@ -174,7 +174,7 @@ impl CaptureAdmission {
         binding: OriginalFlatpakBinding,
         inventory: File,
         sources: Vec<File>,
-        custody: Arc<dyn ServiceAuthority>,
+        ownership: Arc<dyn ServiceAuthority>,
     ) -> io::Result<Self> {
         self.check()?;
         if self.flatpak.is_some() || self.original_bootstrap.is_none() {
@@ -192,7 +192,7 @@ impl CaptureAdmission {
             inventory_identity: (facts.dev(), facts.ino(), facts.uid(), facts.len()),
             inventory,
             sources,
-            custody,
+            ownership,
         };
         flatpak.check()?;
         self.flatpak = Some(flatpak);

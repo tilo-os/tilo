@@ -134,7 +134,7 @@ impl Shell {
     }
 }
 
-/// The distance between two windows' left edges: a window and its seam.
+/// The distance between two windows' left edges: a window and its border.
 fn slot(frame: &Frame) -> f64 {
     frame.windows[1].1 - frame.windows[0].1
 }

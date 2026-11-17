@@ -67,23 +67,23 @@ def native(args):
         raise ValueError('native namespace requires the authorized operator')
     if not args.child:
         with tempfile.TemporaryDirectory(prefix='tilo-native-image-', dir='/var/tmp') as scratch:
-            # Keep the outer custody directory 0700, but expose an ordinary
+            # Keep the outer ownership directory 0700, but expose an ordinary
             # 0755 '/' inside chroot so real login users can execute the OS.
             root = Path(scratch) / 'rootfs'
             root.mkdir(mode=0o755)
             checked(['tar', '--numeric-owner', '-xf', args.archive, '-C', root], stdout=subprocess.DEVNULL)
             root.chmod(0o755)
-            witness = os.open('/proc/self/ns/pid', os.O_RDONLY | os.O_CLOEXEC)
+            proof = os.open('/proc/self/ns/pid', os.O_RDONLY | os.O_CLOEXEC)
             try:
                 command = [sys.executable, '-B', __file__, '--child', '--native-root', root,
                            '--stage', args.stage, '--evidence', args.evidence,
-                           '--pidns-fd', str(witness), '--mode', args.mode,
+                           '--pidns-fd', str(proof), '--mode', args.mode,
                            '--native-store-provenance', args.native_store_provenance]
                 if args.case:
                     command += ['--case', args.case]
                 child = subprocess.Popen(list(map(str, ['unshare', '--mount', '--pid', '--net',
                     '--uts', '--ipc', '--fork', '--kill-child', *command])),
-                    pass_fds=(witness,), start_new_session=True)
+                    pass_fds=(proof,), start_new_session=True)
                 try:
                     # The unprivileged caller owns the write end. Its death or
                     # cancellation closes it even though it cannot signal root.
@@ -117,7 +117,7 @@ def native(args):
                         os.killpg(child.pid, signal.SIGKILL)
                         child.wait(timeout=10)
             finally:
-                os.close(witness)
+                os.close(proof)
         return
     if os.getpid() != 1:
         raise ValueError('native subject must own its fresh PID namespace')
@@ -131,7 +131,7 @@ def native(args):
          root / str(args.native_store_provenance).lstrip('/'), True)
     bind(args.stage, root / 'qualified', True)
     bind(args.evidence, root / 'evidence')
-    # mount(8) closes inherited FDs, so name this process's held witness,
+    # mount(8) closes inherited FDs, so name this process's held proof,
     # not mount's /proc/self (the proc mount still names the outer PID IDs).
     bind(Path('/proc/self').resolve() / 'fd' / str(args.pidns_fd),
          root / 'qualification-initial-pidns', True)
@@ -151,7 +151,7 @@ def native(args):
         for path in sorted(paths):
             bind(path, root / str(path).lstrip('/'), True)
     # Exporting a bootc-like filesystem does not retain its read-only mounts.
-    # Restore immutable installed publisher/retention custody before any CLI or
+    # Restore immutable installed publisher/retention ownership before any CLI or
     # app starts; never relax the runtime's real fstatvfs/ownership checks.
     protect_runtime_trust(root)
     spec = importlib.util.spec_from_file_location('native_qualifier', args.stage / 'apps/imager/packaging/qualify-capture-release.py')

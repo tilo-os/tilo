@@ -146,7 +146,7 @@ impl Subjects {
     }
     pub(super) fn geometry(&self, operation: &str) -> Vec<Vec<u8>> {
         // Parent directory geometry also covers the regular-file source disk;
-        // exact file inode authority remains in the ACKed mounted witness.
+        // exact file inode authority remains in the ACKed mounted proof.
         vec![
             migration_handoff::capture(
                 &self.directory,

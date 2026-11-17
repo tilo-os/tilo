@@ -78,7 +78,7 @@ fn pending_google_stages_combined_grant_without_returning_tokens() {
             "{CALENDAR_SCOPE} https://www.googleapis.com/auth/drive"
         )),
     };
-    let expected = account_custody::oauth_secret(&tokens);
+    let expected = account_credentials::oauth_secret(&tokens);
     let pending = PendingGoogleCalendar { tokens };
     let mut vault = accounts::SecretVault::open_in(root.path());
     let ids = ["files", "mail", "calendar"].map(accounts::AccountId::from);
@@ -97,14 +97,14 @@ fn pending_google_stages_combined_grant_without_returning_tokens() {
 
 #[test]
 fn pending_google_rejects_other_issuers_before_exchange() {
-    let issuer = account_custody::OAuthIssuer::Microsoft;
-    let registration = account_custody::Registration {
+    let issuer = account_credentials::OAuthIssuer::Microsoft;
+    let registration = account_credentials::Registration {
         client_id: "test-client".into(),
         ..Default::default()
     };
     let authorization = Authorization::begin(&issuer.endpoints(), &registration, None).unwrap();
     assert!(PendingGoogleCalendar::complete(authorization).is_err());
-    let mut provider = account_custody::OAuthIssuer::Google.endpoints();
+    let mut provider = account_credentials::OAuthIssuer::Google.endpoints();
     provider.scopes = vec!["openid".into()];
     let authorization = Authorization::begin(&provider, &registration, None).unwrap();
     assert!(PendingGoogleCalendar::complete(authorization).is_err());

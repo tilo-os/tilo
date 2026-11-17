@@ -1339,7 +1339,7 @@ mod tests {
         // used, and its Manage billing opens the provider's page and leaves the overview up.
         {
             use tilo_actions::remote::host_account::{
-                HostAccount, HostKind, PaymentMethod, PlanOffer, Standing,
+                HostAccount, HostKind, PaymentMethod, PlanOffer, Subscription,
             };
             ui::i18n::I18nManager::init("en-US");
             let mut with_host = shell();
@@ -1351,10 +1351,10 @@ mod tests {
                     name: "Pro".into(),
                     ..PlanOffer::default()
                 }],
-                standing: Some(Standing {
+                subscription: Some(Subscription {
                     plan: Some("pro".into()),
                     payment_method: Some(PaymentMethod::default()),
-                    ..Standing::default()
+                    ..Subscription::default()
                 }),
                 manage_billing: Some("https://tilo.sh/billing".into()),
             }];

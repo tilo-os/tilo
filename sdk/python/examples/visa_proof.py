@@ -86,7 +86,7 @@ def quantile(values: list[float], q: float) -> float:
 
 
 def passport_png() -> bytes:
-    """A small picture standing in for a passport scan."""
+    """A small picture subscription in for a passport scan."""
     width, height = 64, 40
     rows = b"".join(
         b"\x00" + b"".join(bytes((40 + x * 3, 60 + y * 4, 140)) for x in range(width))
@@ -408,7 +408,7 @@ async def main() -> int:
     check(jane_usage is not None, "the account meters Jane's workspace")
     check(jane_usage.vm_seconds == 0 and not jane_usage.running, "no VM time in Jane's workspace, none running")
     check(usage.vm_seconds == 0 and not usage.running, f"0 VM seconds across all {len(usage.workspaces)} workspaces")
-    check(usage.raw.get("standing", {}).get("account") in acted_for_people, "the account is the person the agent acted for")
+    check(usage.raw.get("subscription", {}).get("account") in acted_for_people, "the account is the person the agent acted for")
 
     say("4f. Revoking ends what it reached")
     await backend.keys.revoke(minted.grant)

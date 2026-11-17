@@ -415,7 +415,7 @@ impl Directory {
         if stamp(&before) != stamp(&after) || stamp(&after) != stamp(&named) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Current device key custody changed",
+                "Current device key identity store changed",
             ));
         }
         self.validate()?;

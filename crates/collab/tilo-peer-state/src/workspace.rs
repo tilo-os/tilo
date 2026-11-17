@@ -11,8 +11,8 @@ pub mod rows;
 pub mod saved_shortcut;
 pub mod share;
 pub use admit::{
-    AdmissionFailure, AdmittedWorkspace, Standing, WorkspaceAdmission, WorkspaceRefusal, Writer,
-    admit_workspace_changes,
+    AdmissionFailure, AdmittedWorkspace, SenderAccess, WorkspaceAdmission, WorkspaceRefusal,
+    Writer, admit_workspace_changes,
 };
 pub use adopt::adopt_workspace;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
@@ -43,7 +43,7 @@ pub struct WorkspaceGovernance {
     /// `invitation_receipts_v1.*`: every redemption receipt, keyed by invite id.
     pub invitation_receipts: BTreeMap<String, Vec<Vec<u8>>>,
     /// `invitation_parts_v1.*`: the runs of signed invitations receipts
-    /// share, keyed by their digest ([`crate::state::invitation_ledger`]).
+    /// share, keyed by their digest ([`crate::state::invitation_receipts`]).
     pub invitation_parts: BTreeMap<String, Vec<Vec<u8>>>,
     /// The governed media policy, by value.
     pub media: media::MediaGovernanceValue,
@@ -96,7 +96,7 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
     debug_assert!(result.is_ok());
     governance.coverage = crate::coverage::governed_bytes(doc);
     governance.invitation_receipts = invitation_receipts(doc).unwrap_or_default();
-    governance.invitation_parts = crate::state::invitation_ledger::parts(doc).unwrap_or_default();
+    governance.invitation_parts = crate::state::invitation_receipts::parts(doc).unwrap_or_default();
     governance.media = media::governed_value(Some(doc));
     governance
 }
@@ -122,23 +122,20 @@ pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, String> {
 }
 
 /// The redemption receipts `doc` records, by invite id: every receipt it has
-/// seen under one invitation, as the ledger holds them.
+/// seen under one invitation, as the log holds them.
 /// The receipts kept under `key`, one invitation's id, in every receipt
-/// ledger the document holds: [`invitation_receipts`] of one invitation,
+/// log the document holds: [`invitation_receipts`] of one invitation,
 /// without reading anyone else's.
 pub(crate) fn invitation_receipts_of(doc: &AutoCommit, key: &str) -> Result<Vec<Vec<u8>>, String> {
     let mut receipts = Vec::new();
-    for (value, ledger) in doc
-        .get_all(ROOT, crate::state::invitation_ledger::RECEIPTS_KEY)
+    for (value, log) in doc
+        .get_all(ROOT, crate::state::invitation_receipts::RECEIPTS_KEY)
         .map_err(|error| error.to_string())?
     {
         if !matches!(value, Value::Object(automerge::ObjType::Map)) {
-            return Err("governed invitation receipt ledger is not a map".to_string());
+            return Err("governed invitation receipt log is not a map".to_string());
         }
-        for (value, _) in doc
-            .get_all(&ledger, key)
-            .map_err(|error| error.to_string())?
-        {
+        for (value, _) in doc.get_all(&log, key).map_err(|error| error.to_string())? {
             match value {
                 Value::Scalar(value) => match value.as_ref() {
                     ScalarValue::Bytes(bytes) => receipts.push(bytes.clone()),
@@ -155,17 +152,17 @@ pub(crate) fn invitation_receipts_of(doc: &AutoCommit, key: &str) -> Result<Vec<
 pub(crate) fn invitation_receipts(
     doc: &AutoCommit,
 ) -> Result<BTreeMap<String, Vec<Vec<u8>>>, String> {
-    let ledgers = doc
-        .get_all(ROOT, crate::state::invitation_ledger::RECEIPTS_KEY)
+    let logs = doc
+        .get_all(ROOT, crate::state::invitation_receipts::RECEIPTS_KEY)
         .map_err(|error| error.to_string())?
         .into_iter()
         .map(|(value, object)| match value {
             Value::Object(automerge::ObjType::Map) => Ok(object),
-            _ => Err("governed invitation receipt ledger is not a map".to_string()),
+            _ => Err("governed invitation receipt log is not a map".to_string()),
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut receipts: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
-    for object in ledgers {
+    for object in logs {
         for key in doc.keys(&object) {
             let values = doc
                 .get_all(&object, &key)
@@ -194,9 +191,9 @@ pub(crate) fn invitation_receipts(
 /// that receipt is the workspace's record from then on. A batch may redeem an
 /// invitation the workspace holds no redemption of, and nothing else.
 ///
-/// A ledger this build cannot read is not evidence of either: it keeps nothing.
+/// A log this build cannot read is not evidence of either: it keeps nothing.
 pub(crate) fn redemptions_kept(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
-    use crate::state::invitation_ledger::parts;
+    use crate::state::invitation_receipts::parts;
     let Some(before) = before else {
         return true;
     };
@@ -727,12 +724,12 @@ pub fn immutable_receipts(before: Option<&AutoCommit>, after: &AutoCommit) -> bo
     let Some(before) = before else {
         return true;
     };
-    let Some((_, ledger)) = after.get(ROOT, EFFECT_RECEIPTS).ok().flatten() else {
+    let Some((_, log)) = after.get(ROOT, EFFECT_RECEIPTS).ok().flatten() else {
         return true;
     };
     visit_nested_bytes(before, EFFECT_RECEIPTS, |person, invocation, prior| {
         let rewritten = after
-            .get(&ledger, person)
+            .get(&log, person)
             .ok()
             .flatten()
             .and_then(|(_, slice)| after.get(&slice, invocation).ok().flatten())
@@ -745,26 +742,26 @@ pub fn immutable_receipts(before: Option<&AutoCommit>, after: &AutoCommit) -> bo
     .is_ok()
 }
 
-/// Record every effect receipt `doc` carries in `ledger`, the receipts this
-/// peer has admitted for the workspace's lifetime. A receipt the ledger already holds
+/// Record every effect receipt `doc` carries in `log`, the receipts this
+/// peer has admitted for the workspace's lifetime. A receipt the log already holds
 /// byte-for-byte costs one comparison; a new one is decoded once (an unreadable
 /// receipt is not evidence and is not recorded) and stored as received, never
-/// re-encoded. Ledger rows written in the older re-encoded form are compared
+/// re-encoded. Log rows written in the older re-encoded form are compared
 /// by value and replaced by the received bytes, so they take the fast path next
 /// time.
 ///
 /// # Errors
 ///
-/// [`WorkspaceRefusal::ReceiptImmutable`] when `doc` rewrites a receipt the ledger
-/// holds; `ledger` may then be partly updated and must be discarded.
+/// [`WorkspaceRefusal::ReceiptImmutable`] when `doc` rewrites a receipt the log
+/// holds; `log` may then be partly updated and must be discarded.
 pub(crate) fn admit_receipts(
-    ledger: &mut BTreeMap<String, Vec<u8>>,
+    log: &mut BTreeMap<String, Vec<u8>>,
     doc: &AutoCommit,
 ) -> Result<(), WorkspaceRefusal> {
     visit_receipt_bytes(doc, |key, bytes| {
-        let Some(prior) = ledger.get(key) else {
+        let Some(prior) = log.get(key) else {
             if decode_receipt(bytes).is_some() {
-                ledger.insert(key.to_owned(), bytes.to_vec());
+                log.insert(key.to_owned(), bytes.to_vec());
             }
             return Ok(());
         };
@@ -777,7 +774,7 @@ pub(crate) fn admit_receipts(
         if decode_receipt(prior).is_none_or(|prior| prior != value) {
             return Err(WorkspaceRefusal::ReceiptImmutable);
         }
-        ledger.insert(key.to_owned(), bytes.to_vec());
+        log.insert(key.to_owned(), bytes.to_vec());
         Ok(())
     })
 }

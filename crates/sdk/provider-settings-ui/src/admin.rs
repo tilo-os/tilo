@@ -219,7 +219,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 .as_ref()
                 .ok_or_else(|| t("agent-provider-refresh-required"))?;
             let revision = snapshot.revision.clone();
-            validate_key_custody(snapshot, &effect)?;
+            validate_key_ownership(snapshot, &effect)?;
             self.limits_ack = self.remember_limits(&effect);
             let work: PendingMutation =
                 match effect {
@@ -377,8 +377,8 @@ impl<H: PanelBindings> ProviderPanel<H> {
     }
 }
 
-/// Sign-in credentials remain exclusively under account custody.
-fn validate_key_custody(
+/// Sign-in credentials remain exclusively under account credentials.
+fn validate_key_ownership(
     snapshot: &ProviderSnapshot,
     effect: &ProviderEffect,
 ) -> Result<(), String> {
@@ -395,7 +395,7 @@ fn validate_key_custody(
         .iter()
         .any(|profile| &profile.id == provider && profile.sign_in.is_some())
     {
-        return Err(t("agent-sign-in-custody"));
+        return Err(t("agent-sign-in-credentials"));
     }
     Ok(())
 }

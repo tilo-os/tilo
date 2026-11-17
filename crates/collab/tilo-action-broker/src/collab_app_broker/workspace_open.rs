@@ -514,7 +514,7 @@ mod tests {
             clippy::too_many_lines,
             reason = "one scenario, end to end, reads as one test; the test keeps its fixture and guards alive through its assertions"
         )]
-        fn opening_an_app_keeps_custody_and_its_ticket;
+        fn opening_an_app_keeps_ownership_and_its_ticket;
 
         phase native_launch_and_close_keep_certified_ownership_and_signed_terminals;
         {
@@ -535,7 +535,7 @@ mod tests {
                     request.target.address.action = "close".into();
                 }
                 let pending = state.action_invoke_local_person(&caller, &request);
-                // Native custody is inert until the broker services its admission
+                // Native ownership is inert until the broker services its admission
                 // turn. Drive the same eager dispatch as the live accept loop,
                 // rather than waiting for a worker this fixture never started.
                 let super::super::ActionDirectoryBridgeRequest::InvokeEager(invoke) = bridge
@@ -690,7 +690,7 @@ mod tests {
             assert_eq!(record.update, terminal);
         }
 
-        phase missing_original_custody_cannot_launch_or_allocate_a_ticket;
+        phase missing_original_ownership_cannot_launch_or_allocate_a_ticket;
         {
             let (state, workspace) = broker();
             let caller = Caller::authenticated([41; 32], [42; 32]).in_workspace(&workspace);

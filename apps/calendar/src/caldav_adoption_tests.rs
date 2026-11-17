@@ -1,4 +1,4 @@
-use account_custody::{Custodian, OAuthIssuer, TokenSet, portable};
+use account_credentials::{CredentialStore, OAuthIssuer, TokenSet, portable};
 use accounts::{Account, AccountId, AccountStore, SecretVault};
 
 struct AdoptionFixture {
@@ -69,7 +69,7 @@ END:VCALENDAR
         expires_in: 1,
         scope: Some("https://www.googleapis.com/auth/calendar".into()),
     };
-    Custodian::for_root(Some(source.path().to_owned()))
+    CredentialStore::for_root(Some(source.path().to_owned()))
         .seal_oauth(&id, &expired)
         .unwrap();
     let password = b"explicit portable password";
@@ -129,9 +129,9 @@ fn portable_google_selection_uses_production_report_and_etag_guards() {
     );
     let mut endpoints = OAuthIssuer::Google.endpoints();
     endpoints.token_endpoint = format!("{}/token", tokens.url());
-    let custodian = Custodian::for_root(Some(destination.path().to_owned()))
+    let credential_store = CredentialStore::for_root(Some(destination.path().to_owned()))
         .with_issuer_endpoints(OAuthIssuer::Google, endpoints);
-    let service = Service::for_test_origin(custodian.clone(), &server.url()).unwrap();
+    let service = Service::for_test_origin(credential_store.clone(), &server.url()).unwrap();
     let client = CalDavClient::new(service);
     let (pulled, outcome) = run(client.sync_all(
         &[(adopted.config.clone(), adopted.calendars.clone())],
@@ -153,7 +153,7 @@ fn portable_google_selection_uses_production_report_and_etag_guards() {
         href: Some(resource.href.clone()),
         etag: resource.etag.clone(),
     };
-    custodian
+    credential_store
         .seal_oauth(
             &id,
             &TokenSet {

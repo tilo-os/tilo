@@ -92,7 +92,7 @@ pub enum MenuItem {
         /// ([`MenuItem::for_action`]).
         address: Option<tilo_actions::ActionAddress>,
         /// What a press of the row does, when the view bound it: the action runs through the
-        /// menu's custody, as a control's own press does.
+        /// menu's ownership, as a control's own press does.
         press: crate::widget::Press,
     },
     Separator,
@@ -270,7 +270,7 @@ impl MenuItem {
     }
 
     /// Say that choosing the row presses what the view bound to it (`press`): the row runs the
-    /// action itself, through the menu's custody.
+    /// action itself, through the menu's ownership.
     #[must_use]
     pub fn for_press(mut self, press: crate::widget::Press) -> Self {
         if let MenuItem::Action {

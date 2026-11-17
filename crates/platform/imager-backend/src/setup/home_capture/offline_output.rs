@@ -1,4 +1,4 @@
-//! Original-source output custody, never a completed-export receipt.
+//! Original-source output ownership, never a completed-export receipt.
 mod applications;
 pub mod bootstrap;
 mod export;
@@ -12,8 +12,8 @@ use super::{OfflineReadAdmission, offline_read::OriginalApplicationsOutput, stor
 use crate::media_layout::MediaPartitionBinding;
 pub use export::OriginalExportOutcome;
 use launcher::owned_service::{
-    CaptureAdmission, OriginalOutputAdmission, OriginalOutputBinding, OriginalOutputCustody,
-    OriginalOutputFiles, ServiceAuthority, ServiceCancellation,
+    CaptureAdmission, OriginalOutputAdmission, OriginalOutputBinding, OriginalOutputFiles,
+    OriginalOutputOwnership, ServiceAuthority, ServiceCancellation,
 };
 pub use native::{BootMedium, NativeMediumOutput, with_boot_medium};
 use std::{
@@ -24,7 +24,7 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
-/// Root-controller mount ownership seam, never implemented by app requests or `MediaGrant`: the
+/// Root-controller mount ownership boundary, never implemented by app requests or `MediaGrant`: the
 /// implementation retains the raw disk, partition and mount lease, verifies the namespace and creates
 /// only a fresh fixed staging child, and releases nothing before supervised child exit.
 pub(in crate::setup::home_capture) trait OwnedMediumOutput:
@@ -36,21 +36,23 @@ pub(in crate::setup::home_capture) trait OwnedMediumOutput:
         ))
     }
     /// Defaults refuse: generic output directories do not promise a paired checkpoint, read-only root
-    /// projection or signed-helper custody.
+    /// projection or signed-helper ownership.
     fn admit_application_output(&self, _proof: &OriginalApplicationsOutput) -> io::Result<()> {
         Err(refused(
-            "Original application output custody is unavailable",
+            "Original application output ownership is unavailable",
         ))
     }
     fn output_directory(&self) -> io::Result<Arc<crate::setup::migration::PinnedDirectory>> {
-        Err(refused("Original verified directory custody unavailable"))
+        Err(refused("Original verified directory ownership unavailable"))
     }
     fn completed_directory(
         &self,
         _store: &Store,
         _expected: &crate::setup::portable_home_media::Expectation,
     ) -> io::Result<Arc<crate::setup::migration::PinnedDirectory>> {
-        Err(refused("Original completion directory custody unavailable"))
+        Err(refused(
+            "Original completion directory ownership unavailable",
+        ))
     }
     fn completed_directory_paired(
         &self,
@@ -58,14 +60,16 @@ pub(in crate::setup::home_capture) trait OwnedMediumOutput:
         expected: &super::store::OriginalOutputExpectations<'_>,
     ) -> io::Result<Arc<crate::setup::migration::PinnedDirectory>> {
         if expected.applications.is_some() {
-            return Err(refused("Paired setup generation custody unavailable"));
+            return Err(refused("Paired setup generation ownership unavailable"));
         }
         self.completed_directory(store, expected.home)
     }
     fn committed_selection_directory(
         &self,
     ) -> io::Result<Arc<crate::setup::migration::PinnedDirectory>> {
-        Err(refused("Committed selection directory custody unavailable"))
+        Err(refused(
+            "Committed selection directory ownership unavailable",
+        ))
     }
     fn publish_verified_applications_receipt(
         &self,
@@ -74,14 +78,18 @@ pub(in crate::setup::home_capture) trait OwnedMediumOutput:
         _key: &launcher::owned_service::ServiceLeaseKey,
         _work: &Path,
     ) -> io::Result<()> {
-        Err(refused("Applications-only publication custody unavailable"))
+        Err(refused(
+            "Applications-only publication ownership unavailable",
+        ))
     }
     fn completed_applications_directory(
         &self,
         _store: &Store,
         _expected: &crate::setup::flatpak_transfer::portable::Expectation,
     ) -> io::Result<Arc<crate::setup::migration::PinnedDirectory>> {
-        Err(refused("Applications-only completion custody unavailable"))
+        Err(refused(
+            "Applications-only completion ownership unavailable",
+        ))
     }
     fn files(&self) -> io::Result<OriginalOutputFiles>;
     fn mount_binding(&self) -> io::Result<OriginalOutputBinding>;
@@ -94,7 +102,7 @@ pub(in crate::setup::home_capture) trait OwnedMediumOutput:
     ) -> io::Result<()> {
         if expected.applications.is_some() {
             return Err(refused(
-                "Original application publication custody unavailable",
+                "Original application publication ownership unavailable",
             ));
         }
         self.publish_verified_receipt(expected.home, exit, key, work)
@@ -124,7 +132,10 @@ fn refused(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
 impl OfflineOutputTransaction {
-    fn record_namespace(&self, facts: &launcher::owned_service::ServiceCustody) -> io::Result<()> {
+    fn record_namespace(
+        &self,
+        facts: &launcher::owned_service::ServiceOwnership,
+    ) -> io::Result<()> {
         self.check()?;
         self.store
             .lock()
@@ -257,7 +268,7 @@ impl OfflineOutputTransaction {
                 run(
                     admission
                         .with_inventory_scratch(directory, allowance)?
-                        .retain_inventory_scratch_custody(medium)?,
+                        .retain_inventory_scratch_ownership(medium)?,
                     request,
                     digest,
                 )
@@ -312,12 +323,12 @@ impl ServiceAuthority for OfflineOutputTransaction {
         Ok(())
     }
 }
-impl OriginalOutputCustody for OfflineOutputTransaction {
+impl OriginalOutputOwnership for OfflineOutputTransaction {
     fn held_files(&self) -> io::Result<OriginalOutputFiles> {
         self.check()?;
         let mut files = self.medium.files()?;
         // A mount implementation never chooses the source: clone it only from the already
-        // authenticated protected custody.
+        // authenticated protected ownership.
         files.source = self.read.output_original_home(&self.cancelled)?;
         Ok(files)
     }
@@ -329,7 +340,9 @@ impl OriginalOutputCustody for OfflineOutputTransaction {
 fn number(file: &File) -> io::Result<String> {
     let metadata = file.metadata()?;
     if !metadata.file_type().is_block_device() {
-        return Err(refused("Original medium custody is not a block descriptor"));
+        return Err(refused(
+            "Original medium ownership is not a block descriptor",
+        ));
     }
     Ok(format!(
         "{}:{}",
@@ -416,4 +429,4 @@ fn binding_digest(binding: &OriginalOutputBinding) -> io::Result<[u8; 32]> {
     Ok(sha2::Sha256::digest(bytes).into())
 }
 
-pub(in crate::setup::home_capture) use native::review_filesystem_witness;
+pub(in crate::setup::home_capture) use native::review_filesystem_proof;

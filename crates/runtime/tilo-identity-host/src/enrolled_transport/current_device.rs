@@ -1,6 +1,6 @@
 //! Password-authenticated reference to this host's existing owner identity.
 //! No device seed or personal signing share travels; activation only reviews
-//! the same existing canonical identity and never publishes system custody.
+//! the same existing canonical identity and never publishes system identity store.
 use super::{
     DeviceCert, DeviceFleet, MAX_BYTES, TransportReceipt, fs, invalid, password_valid,
     validate_fleet,
@@ -117,12 +117,12 @@ pub struct CurrentDeviceReference {
 }
 impl CurrentDeviceReference {
     /// Review the active identity only when it is the canonical current owner.
-    /// This reads existing custody; it never creates a key, cert or selector.
+    /// This reads existing identity store; it never creates a key, cert or selector.
     ///
     /// # Errors
     /// Returns an error for inaccessible or insecure namespaces/files, an invalid
     /// selector or record, or an identity that does not own the host. Also refuses
-    /// invalid, expired or revoked certification, inconsistent fleet/key custody,
+    /// invalid, expired or revoked certification, inconsistent fleet/key identity store,
     /// changes during review, and an unavailable clock.
     pub fn review(system_root: &Path, identity_directory: &Path) -> io::Result<Self> {
         let system = fs::Directory::open_public_root(system_root)?;
@@ -221,7 +221,7 @@ impl CurrentDeviceReference {
         self.validate()?;
         Ok(metadata)
     }
-    /// Reattest the held namespaces and exact current-owner custody.
+    /// Reattest the held namespaces and exact current-owner identity store.
     ///
     /// # Errors
     /// Returns an error for inaccessible, insecure or changed namespaces/files,
@@ -462,7 +462,7 @@ impl ResolvedCurrentIdentity {
     ///
     /// # Errors
     /// Returns an error for unavailable, insecure, changed or invalid current-owner
-    /// custody, or an unavailable clock; see [`CurrentDeviceReference::validate`].
+    /// identity store, or an unavailable clock; see [`CurrentDeviceReference::validate`].
     pub fn validate(&self) -> io::Result<()> {
         self.current.validate()
     }
@@ -499,7 +499,7 @@ impl ResolvedCurrentIdentity {
 
 /// Root-only observation of a held target-owner directory. The authenticated
 /// owner channel must supply this descriptor and its actual executing peer UID.
-/// This type cannot export a current-device reference or modify owner custody.
+/// This type cannot export a current-device reference or modify owner identity store.
 #[cfg(target_os = "linux")]
 pub struct RootObservedCurrentDevice {
     current: CurrentDeviceReference,
@@ -507,7 +507,7 @@ pub struct RootObservedCurrentDevice {
 }
 #[cfg(target_os = "linux")]
 impl RootObservedCurrentDevice {
-    /// Review current-owner custody through a supplied owner directory descriptor.
+    /// Review current-owner identity store through a supplied owner directory descriptor.
     ///
     /// # Errors
     /// Returns an error unless both real and effective UID are root, or if the
@@ -546,7 +546,7 @@ impl RootObservedCurrentDevice {
     ///
     /// # Errors
     /// Returns an error unless both real and effective UID remain root, or if
-    /// [`CurrentDeviceReference::validate`] fails for the held owner custody.
+    /// [`CurrentDeviceReference::validate`] fails for the held owner identity store.
     pub fn validate(&self) -> io::Result<()> {
         if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -556,7 +556,7 @@ impl RootObservedCurrentDevice {
     /// Return public certification and revocations from the observed owner epoch.
     ///
     /// # Errors
-    /// Returns an error if root authority or held current-owner custody cannot be
+    /// Returns an error if root authority or held current-owner identity store cannot be
     /// revalidated before, during or after collecting the public material.
     pub fn public_native_material(
         &self,

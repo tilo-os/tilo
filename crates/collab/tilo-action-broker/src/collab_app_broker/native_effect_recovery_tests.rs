@@ -256,7 +256,7 @@ async fn prepared_effect_native_owner_crash_gap_keeps_exact_history() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn prepared_effect_native_recovery_rechecks_authority_and_failed_custody() {
+async fn prepared_effect_native_recovery_rechecks_authority_and_failed_ownership() {
     for scenario in ["before", "after", "refused"] {
         let f = fixture();
         let record = prepare(&f);

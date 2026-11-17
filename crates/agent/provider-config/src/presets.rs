@@ -47,7 +47,7 @@ pub enum Authentication {
     None,
     /// An API key in this device's vault.
     ApiKey,
-    /// A sign-in held by account custody.
+    /// A sign-in held by account credentials.
     SignIn(SignInIssuer),
 }
 

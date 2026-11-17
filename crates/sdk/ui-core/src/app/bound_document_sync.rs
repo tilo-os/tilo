@@ -5,11 +5,11 @@
 //! the document it shows.
 use super::{App, Widget};
 use crate::bound_dispatch::CallbackBinding;
-use crate::collaboration::PrimaryRouteWitness;
+use crate::collaboration::AcceptedRoute;
 
 pub(super) struct BoundDocumentSync {
     pub(super) binding: CallbackBinding,
-    route: PrimaryRouteWitness,
+    route: AcceptedRoute,
 }
 
 /// A primary document's unsent changes, the heads they leave, and the
@@ -24,7 +24,7 @@ impl App {
     pub(super) fn prepare_primary_document(&mut self) -> Result<bool, String> {
         fn visit(
             widget: &dyn Widget,
-            route: Option<&PrimaryRouteWitness>,
+            route: Option<&AcceptedRoute>,
             found: &mut Option<CallbackBinding>,
             has_components: &mut bool,
         ) -> Result<(), String> {
@@ -111,7 +111,7 @@ impl App {
         let mutation = collab_types::DocumentMutation::Incremental(delta);
         let route = self
             .bound_broker_route()
-            .map(|witness| witness.route().clone());
+            .map(|observation| observation.route().clone());
         let commit = route.and_then(|route| {
             let unit = collab_types::UnitMutation {
                 app: &route.app_id,

@@ -356,7 +356,7 @@ deployment names change on every update. The mechanism resolves it:
 Caveat, honestly: [#2334](https://github.com/bootc-dev/bootc/issues/2334) is an
 open bug titled "Error during upgrade w/ composefs-backend and UKI: `composefs=`
 parameter mismatch". The design is sound; the implementation has live bugs on
-exactly this seam.
+exactly this boundary.
 
 ### 4. On-disk format risk on real machines
 

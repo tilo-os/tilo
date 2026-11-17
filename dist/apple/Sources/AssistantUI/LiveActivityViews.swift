@@ -17,7 +17,7 @@ public struct LiveFactsView: View {
                 Mark(side: 14)
                 Text(AssistantWords.assistant.said).font(.small12).foregroundStyle(Token.ink3)
                 Spacer(minLength: 8)
-                LiveStanding(facts: facts).font(.small12)
+                LiveState(facts: facts).font(.small12)
             }
             if facts.isImportant { ImportantMark() }
             Text(facts.title).font(.tilo(15, .semibold)).foregroundStyle(Token.ink).lineLimit(2)
@@ -43,7 +43,7 @@ public struct LiveFactsView: View {
 
 /// How an activity stands, in a few letters: the time left while it counts down, else whether
 /// it works, needs the person, or is done.
-public struct LiveStanding: View {
+public struct LiveState: View {
     private let facts: LiveFacts
 
     public init(facts: LiveFacts) {
@@ -51,12 +51,12 @@ public struct LiveStanding: View {
     }
 
     public var body: some View {
-        if let until = facts.until, facts.standing == .running, until > Date() {
+        if let until = facts.until, facts.state == .running, until > Date() {
             Text(timerInterval: Date()...until, countsDown: true)
                 .monospacedDigit().multilineTextAlignment(.trailing).foregroundStyle(Token.ink2)
                 .frame(maxWidth: 64, alignment: .trailing)
         } else {
-            switch facts.standing {
+            switch facts.state {
             case .running: Text(AssistantWords.working.said).foregroundStyle(Token.asst)
             case .needsYou: Text(AssistantWords.needsYou.said).foregroundStyle(Token.you)
             case .done: Text(AssistantWords.done.said).foregroundStyle(Token.on)

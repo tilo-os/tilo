@@ -2,7 +2,7 @@
 //! presence in them, and everyone else's.
 //!
 //! The client itself — the boards of each workspace, this device's own word on them, and the peer network
-//! seam every host carries it over — lives in `tilo-session-client`, so an agent or a program links
+//! service every host carries it over — lives in `tilo-session-client`, so an agent or a program links
 //! it without a desktop. What this session adds is the desktop's own host: the peer actor on an
 //! iroh endpoint, the live session, the workspaces' state and their channels, the device fabric and
 //! the transfers, and the roster the bar draws.

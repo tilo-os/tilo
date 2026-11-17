@@ -41,7 +41,7 @@ fn no_member(person: &str) -> PermissionContext {
     PermissionContext::new(
         Acting::person(person),
         vec![],
-        ui::permissions::Standing::person(
+        ui::permissions::MemberAccess::person(
             policy::WorkspacePolicy::unowned(WORKSPACE, &policy::Grantee::role(Role::Owner)),
             person,
         ),
@@ -752,7 +752,7 @@ tilo_test_env::scenario! {
 
     phase startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_a_denied_grant;
     //
-    // The custody a desktop installs over a startup is that desktop's own
+    // The ownership a desktop installs over a startup is that desktop's own
     // (`tilo_desktop::feedback::install`): this crate only opens the host.
     {
         let mut missing = enrollment();

@@ -629,7 +629,7 @@ async fn listening(
 /// own and in the host's order. What admission takes in from another device goes to this device's
 /// apps through `documents`.
 fn heard(
-    holds_custody: bool,
+    holds_ownership: bool,
     arrivals: std::sync::mpsc::Sender<Event>,
     host_events: std::sync::mpsc::Sender<HostEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -641,7 +641,7 @@ fn heard(
     Option<tokio::task::JoinHandle<()>>,
 ) {
     let replayed = link.clone();
-    let (admissions, attending) = if holds_custody {
+    let (admissions, attending) = if holds_ownership {
         let (say, hear) = tokio::sync::mpsc::unbounded_channel();
         let attending = tokio::spawn(async move { take_in(hear, link, documents).await });
         (Some(say), Some(attending))
@@ -871,7 +871,7 @@ async fn carry_out(
             .send(NetCmd::OpenDocument { ws, channel, own })
             .await
             .is_ok(),
-        Cmd::PublishCustody(ws) => network.send(NetCmd::NativePublish { ws }).await.is_ok(),
+        Cmd::PublishOwnership(ws) => network.send(NetCmd::NativePublish { ws }).await.is_ok(),
         Cmd::Roster { ws, devices } => network
             .send(NetCmd::SetWorkspaceRoster { ws, devices })
             .await

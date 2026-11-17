@@ -11,7 +11,7 @@
 //! - [`model_endpoint`]: the harness's model, asked in its provider's own
 //!   protocol inside the machine and answered on the host by the person's own
 //!   model, so the person's key never enters the machine, every answer is
-//!   counted on their ledger and their day's limit stops it.
+//!   counted in their usage log and their day's limit stops it.
 //! - [`run`]: one run, followed for as long as it lasts: its endpoints
 //!   answered, what it says written into the sub-agent's conversation as it
 //!   says it, a message carried to it, a stop that asks before it ends.

@@ -165,7 +165,7 @@ impl ResourceReadRequest<'_> {
         } else if root.has_separate_document_owner() {
             return Err(refused(
                 "resource_unavailable",
-                "Separate document custody is unavailable",
+                "Separate document ownership is unavailable",
             ));
         }
         let mut result = Ok(());

@@ -97,7 +97,7 @@ impl Urgency {
 pub enum Target {
     /// A job in [`crate::jobs`].
     Job(u64),
-    /// A ledger record.
+    /// A log record.
     Record(u64),
 }
 
@@ -268,7 +268,7 @@ impl Item {
 pub enum Published {
     /// It waits for a person: the item's identity.
     Waiting(ItemId),
-    /// It was recorded: the ledger entry's identity.
+    /// It was recorded: the log entry's identity.
     Recorded(u64),
 }
 
@@ -341,7 +341,7 @@ impl Notice {
     }
 }
 
-/// Say it once: an outcome goes to the waiting stack if it needs a person, or to the ledger if it does
+/// Say it once: an outcome goes to the waiting stack if it needs a person, or to the log if it does
 /// not.
 pub fn publish(notice: Notice) -> Published {
     if let Some(action) = notice.action.clone() {
@@ -357,7 +357,7 @@ pub fn publish(notice: Notice) -> Published {
         }
         Published::Waiting(raise(item))
     } else {
-        let mut entry = crate::attention::ledger::Entry::new(notice.owner, notice.title);
+        let mut entry = crate::attention::outcome_log::Entry::new(notice.owner, notice.title);
         if let Some(about) = notice.about {
             entry = entry.about(about);
         }
@@ -367,7 +367,7 @@ pub fn publish(notice: Notice) -> Published {
         if let Some(target) = notice.target {
             entry = entry.subject(target);
         }
-        Published::Recorded(crate::attention::ledger::record(entry))
+        Published::Recorded(crate::attention::outcome_log::record(entry))
     }
 }
 

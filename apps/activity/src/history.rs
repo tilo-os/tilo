@@ -1,4 +1,4 @@
-//! History: every change in the workspace, newest first — and, beside them, the ledger's
+//! History: every change in the workspace, newest first — and, beside them, the log's
 //! outcomes: what the system did that needs no decision.
 
 use std::collections::HashMap;
@@ -317,15 +317,15 @@ fn list(
         };
         column = column.push(Box::new(section));
     }
-    if let Some(ledger) = ledger_section(filter) {
-        column = column.push(ledger);
+    if let Some(log) = log_section(filter) {
+        column = column.push(log);
     }
     Box::new(column)
 }
 
-/// What the system did, from the ledger: outcomes that needed nobody, with the app that did
+/// What the system did, from the log: outcomes that needed nobody, with the app that did
 /// them and when.
-fn ledger_section(filter: &Filter) -> Option<Element> {
+fn log_section(filter: &Filter) -> Option<Element> {
     let entries: Vec<ui::attention::Entry> = ui::attention::entries()
         .into_iter()
         .filter(|entry| {
@@ -343,7 +343,7 @@ fn ledger_section(filter: &Filter) -> Option<Element> {
         .iter()
         .rev()
         .map(|entry| {
-            let mut row = ListRow::new(format!("activity-ledger-{}", entry.id()), entry.what())
+            let mut row = ListRow::new(format!("activity-log-{}", entry.id()), entry.what())
                 .icon(entry.owner().icon)
                 .subtitle(entry.owner().name.clone())
                 .meta(ago(i64::try_from(entry.at_ms()).unwrap_or(i64::MAX)));
@@ -355,7 +355,7 @@ fn ledger_section(filter: &Filter) -> Option<Element> {
         })
         .collect();
     Some(Box::new(Section::new(rows).with_header(
-        SectionHeader::group(tr("activity-ledger-heading")),
+        SectionHeader::group(tr("activity-log-heading")),
     )))
 }
 

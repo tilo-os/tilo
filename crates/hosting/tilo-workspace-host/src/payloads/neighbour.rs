@@ -1,6 +1,6 @@
 //! [`ShellPayloads`](super::ShellPayloads) for the desktop's peer-sync messages.
 //!
-//! Every classification here is the one the host applied before the seam
+//! Every classification here is the one the host applied before the boundary
 //! existed, so retained data written by any earlier host is judged exactly
 //! as it was: retention and channel come from the one host-retention
 //! classifier (`neighbour_wire::retention`), and the host identity channel

@@ -101,7 +101,7 @@ def run_make(command,capture_callback):
 
 
 def derive(recipe):
- text=recipe.decode();marker='    make -j"$JOBS" all; \\\n';require(text.count(marker)==1,'unique resumed make seam required')
+ text=recipe.decode();marker='    make -j"$JOBS" all; \\\n';require(text.count(marker)==1,'unique resumed make boundary required')
  start=text.rfind('RUN --mount=type=bind,from=kernel-checkpoint',0,text.index(marker));require(start>=0,'reviewed recovery context required')
  text=text[:start]+'ARG KERNEL_CHECKPOINT_RUN_ID\nARG KERNEL_CHECKPOINT_ATTEMPT\n'+text[start:]
  text=text.replace('RUN --mount=type=bind,from=kernel-checkpoint,target=/checkpoint,ro ',

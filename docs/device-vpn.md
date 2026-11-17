@@ -150,7 +150,7 @@ follows them and makes the tunnel match.
 
 ### Settings
 
-`settings_store::device_vpn` is the whole seam for Settings → Network → VPN:
+`settings_store::device_vpn` is the whole boundary for Settings → Network → VPN:
 
 - `DeviceVpnStatus::load()` and `rows()`: one `DeviceVpnRow` per device this
   one routes or could route through (the current one first), each titled

@@ -25,7 +25,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
         };
         // Pair each composed row with the row the list holds, by where it stands: the
         // composition names a row by its path in the window's layout, the list by its key.
-        let mut standing: Vec<(u32, M::Key, Composed)> = Vec::with_capacity(rows.len());
+        let mut paired: Vec<(u32, M::Key, Composed)> = Vec::with_capacity(rows.len());
         let mut loose: Vec<Composed> = Vec::new();
         for row in rows {
             let mounted = self.mounted.iter().find(|mounted| {
@@ -36,13 +36,11 @@ impl<M: ListModel + 'static> VirtualList<M> {
                     && near(rect.height(), row.rect[3])
             });
             match mounted {
-                Some(mounted) => {
-                    standing.push((marks.depth(&mounted.key), mounted.key.clone(), row))
-                }
+                Some(mounted) => paired.push((marks.depth(&mounted.key), mounted.key.clone(), row)),
                 None => loose.push(row),
             }
         }
-        for (_, key, row) in &mut standing {
+        for (_, key, row) in &mut paired {
             let Some(rect) = self.disclosure_rect(key) else {
                 continue;
             };
@@ -50,7 +48,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
             let part = self.disclosure_html(key, &row.path, rect, folded, theme);
             row.children.insert(0, part);
         }
-        let mut rows = standing
+        let mut rows = paired
             .into_iter()
             .map(|(depth, _, row)| (depth, row))
             .peekable();

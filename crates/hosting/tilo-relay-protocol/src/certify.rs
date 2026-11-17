@@ -49,7 +49,7 @@
 //! only for the exact request it answers.
 //!
 //! The host never signs a certificate. An approver is a device of the host's
-//! user with `can_admit_devices`, i.e. one that holds root custody. The host
+//! user with `can_admit_devices`, i.e. one that holds root ownership. The host
 //! checks every issued certificate against the exact request and its
 //! [`CertificationPolicy`](tilo_user_identity::CertificationPolicy) before
 //! handing it on, and refuses revoked devices at request and at issuance.

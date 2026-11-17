@@ -1305,7 +1305,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_valid_destination_witness_does_not_authorize_a_fresh_guest_import;
+    phase a_valid_destination_observation_does_not_authorize_a_fresh_guest_import;
     {
         let root = tempfile::tempdir().unwrap();
         let destination = import_destination(root.path());

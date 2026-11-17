@@ -546,7 +546,7 @@ relay_env() {
   fi
   # A workspace's programs and its Browser run in its VM on this stack's own
   # VM host, when it is up: where to place a workspace, which device holds it,
-  # and the ledger its page actions are counted in.
+  # and the log its page actions are counted in.
   if vm_host_running; then
     local line
     while IFS= read -r line; do env+=("$line"); done < <(vm_host env)

@@ -567,14 +567,14 @@ tilo_test_env::scenario! {
             guest.bootstrap_handshake(),
             "the seed's receipt must select the bootstrap transport"
         );
-        // Nothing in the crate may fall back to a `TILO_*` seam in its place: a
+        // Nothing in the crate may fall back to a `TILO_*` boundary in its place: a
         // variable would make the bootstrap transport reachable from outside the seed
         // that owns the receipt.
         for entry in walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
             let text = fs::read_to_string(&entry).unwrap();
             assert!(
                 !text.contains("TILO_CODE_BOOTSTRAP_HANDSHAKE"),
-                "{} still reads the retired environment seam",
+                "{} still reads the retired environment boundary",
                 entry.display()
             );
         }

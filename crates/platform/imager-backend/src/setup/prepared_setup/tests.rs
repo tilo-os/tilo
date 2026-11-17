@@ -16,7 +16,7 @@ fn package(root: &Path, staging: &Path, name: &str) -> PathBuf {
     path
 }
 #[test]
-fn real_prepared_setup_authenticates_exact_identity_accounts_then_imports_fresh_custody() {
+fn real_prepared_setup_authenticates_exact_identity_accounts_then_imports_fresh_ownership() {
     let dav_server = crate::setup::account_transfer::dav_readiness::test_server();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
@@ -609,7 +609,7 @@ fn protected_accounts_require_authenticated_manifest_protocol_before_adoption() 
     assert!(!root.join("target-identity").exists());
     assert!(!root.join("target-accounts").exists());
     fs::remove_file(staging.join(MANIFEST_FILE)).unwrap();
-    manifest.account_custody_protocol = Some(1);
+    manifest.account_credentials_protocol = Some(1);
     manifest.write(&staging).unwrap();
     let valid = package(&root, &staging, "protected.sealed");
     let review = PreparedSetupReview::open(
@@ -619,15 +619,15 @@ fn protected_accounts_require_authenticated_manifest_protocol_before_adoption() 
         &AtomicBool::new(false),
     )
     .unwrap();
-    assert_eq!(review.manifest().account_custody_protocol, Some(1));
-    // The current canonical custodian genuinely consumes the resealed grant;
+    assert_eq!(review.manifest().account_credentials_protocol, Some(1));
+    // The current canonical credential store genuinely consumes the resealed grant;
     // image/first-login admission separately verifies its installed counterpart.
     let target = root.join("target-accounts");
     assert_eq!(
         review.import_accounts(&target, PASSWORD).unwrap(),
         vec![id.clone()]
     );
-    account_custody::Custodian::for_root(Some(target.clone()))
+    account_credentials::CredentialStore::for_root(Some(target.clone()))
         .publish(&id, false)
         .unwrap();
     let Some(accounts::HandoffCredential::Basic { username, password }) =
@@ -712,7 +712,7 @@ fn prepared_setup_authenticates_separate_selected_session_before_any_adoption() 
     );
     assert!(!target.exists());
     review.import_service_sessions(&target, PASSWORD).unwrap();
-    let selected = account_custody::Custodian::for_root(Some(target))
+    let selected = account_credentials::CredentialStore::for_root(Some(target))
         .service_session(
             &AccountId::from(declaration.sessions[0].id.clone()),
             identity.public_key(),
@@ -981,7 +981,7 @@ fn offline_home_crypto_reopen_preserves_exact_selection_and_refuses_split_declar
     assert_eq!(
         review.pending_offline_declaration().unwrap_err().kind(),
         io::ErrorKind::Unsupported,
-        "authenticated shape-only caller metadata has no protected source witness"
+        "authenticated shape-only caller metadata has no protected source proof"
     );
     assert_eq!(
         review.require_completed_export().unwrap_err().kind(),
@@ -1058,7 +1058,7 @@ fn pending_home_without_account_consent_refuses_selected_service_sessions() {
     let root = tempfile::tempdir().unwrap();
     let (mut manifest, _, _, _) = offline_home_fixture(root.path());
     manifest.account_ids.clear();
-    manifest.account_custody_protocol = None;
+    manifest.account_credentials_protocol = None;
     let source = root.path().join("selected-service-source");
     private(&source);
     let db = rusqlite::Connection::open(source.join("cookies.sqlite")).unwrap();

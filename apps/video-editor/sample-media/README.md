@@ -1,7 +1,7 @@
 # Bundled sample media
 
 These files are **stand-ins** for the seven sources in the demo project
-(`doc::sample_project`). They exist so the FUSE-media seam
+(`doc::sample_project`). They exist so the FUSE-media boundary
 ([`src/media.rs`](../src/media.rs)) resolves the sample project's media
 references to **local, decodable** files during `--shots` and tests, without
 a live `/var/workspace` FUSE mount or shipping large footage in the
@@ -48,6 +48,6 @@ decode.
 
 ## Why sample media stays small
 
-H.264 sources are megabytes each. The seam is what matters: the tests produce
+H.264 sources are megabytes each. The boundary is what matters: the tests produce
 encoded bytes on demand, and these stand-ins keep the repo small while
 checking the resolution contract end to end.

@@ -256,7 +256,7 @@ impl PasswordSealedThunderbird {
     }
 
     /// Authenticates the wrap and the inner selection, then hands the retained key to the import; a
-    /// wrong password, binding or changed bytes is refused before any target custody is touched.
+    /// wrong password, binding or changed bytes is refused before any target ownership is touched.
     pub fn open(
         &self,
         password: &[u8],

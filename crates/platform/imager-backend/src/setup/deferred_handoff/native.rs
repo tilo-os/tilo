@@ -980,7 +980,7 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    /// The real identity-host custody, not a fixture grant.
+    /// The real identity-host ownership, not a fixture grant.
     fn provision_device(
         root: &Path,
         identity: &PreparedIdentity,
@@ -991,7 +991,7 @@ mod tests {
         std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o700)).unwrap();
         environment.set("XDG_CONFIG_HOME", &config);
         environment.set("TILO_IDENTITY_ROOT", root.join("system"));
-        let record = identity.custody_directory().join("primary.json");
+        let record = identity.ownership_directory().join("primary.json");
         let mut registry = tilo_identity_host::registry::IdentityRegistry::default();
         let id = registry.register_record(&record).unwrap().id.clone();
         tilo_identity_host::registry::IdentityRegistryStore::from_env()

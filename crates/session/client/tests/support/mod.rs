@@ -536,13 +536,13 @@ pub fn start_peer_with_store(
     )
 }
 
-/// A page's device key in custody: the session signs with it and never reads
+/// A page's device key held: the session signs with it and never reads
 /// it, and each signature answers on a later poll, as a browser's `WebCrypto`
 /// key does. A page's endpoint therefore speaks under a key of its own, which
 /// the device signs for.
-pub struct PageCustody(SigningKey);
+pub struct PageMembership(SigningKey);
 
-impl tilo_relay_client::DeviceSigner for PageCustody {
+impl tilo_relay_client::DeviceSigner for PageMembership {
     fn device_public_key(&self) -> [u8; 32] {
         self.0.verifying_key().to_bytes()
     }
@@ -561,7 +561,7 @@ impl tilo_relay_client::DeviceSigner for PageCustody {
     }
 }
 
-/// [`start_peer`] for a page: over `store`, its custody keeps the device key,
+/// [`start_peer`] for a page: over `store`, its ownership keeps the device key,
 /// so its session dials from an endpoint the device delegated.
 pub fn start_page(
     host: Host,
@@ -578,7 +578,7 @@ pub fn start_page(
             revocations: RevocationList::new(),
             entering: None,
         },
-        Arc::new(PageCustody(key)),
+        Arc::new(PageMembership(key)),
         store,
     )
 }
@@ -601,7 +601,7 @@ pub fn enter_page(
             revocations: RevocationList::new(),
             entering: Some(entering),
         },
-        Arc::new(PageCustody(key)),
+        Arc::new(PageMembership(key)),
         store,
     )
 }
@@ -743,7 +743,7 @@ async fn in_replica<T>(
 }
 
 /// Wait until every write `peer` published is durable on its host; a timeout says what the
-/// session's channels, failures and custody were.
+/// session's channels, failures and ownership were.
 pub async fn durable(peer: &Link) {
     // The receipt is awaited, as a page awaits it: it completes the moment the host answers the
     // barrier, where a poll found the answer up to a whole interval later, once for every write

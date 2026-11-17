@@ -161,7 +161,7 @@ impl Store {
     ) -> io::Result<RetainedCallerDeclaration> {
         if rustix::process::geteuid().as_raw() != 0 || self.operation != plan.operation_id {
             return Err(failure(
-                "Retained registration requires root operation custody",
+                "Retained registration requires root operation ownership",
             ));
         }
         selected(plan)?;
@@ -276,7 +276,7 @@ fn read_record(mut file: File, expected: &[u8]) -> io::Result<File> {
         || before.len() > MAX_RECORD
     {
         return Err(failure(
-            "Retained record is not bounded private root custody",
+            "Retained record is not bounded private root ownership",
         ));
     }
     file.seek(SeekFrom::Start(0))?;
@@ -308,7 +308,7 @@ impl RootRetainedPermit {
         selected(plan)
     }
 }
-/// No argv, JSON or CRDT can construct this witness; a cloned directory descriptor alone is
+/// No argv, JSON or CRDT can construct this proof; a cloned directory descriptor alone is
 /// insufficient.
 static UNKNOWN_SOURCE_RETIREMENT: AtomicBool = AtomicBool::new(false);
 fn retire_physical_source(source: RetainedSource) -> io::Result<()> {
@@ -352,7 +352,7 @@ impl RetainedMountedEpoch {
         let orphaned = state.lock().unwrap_or_else(|error| error.into_inner());
         if *orphaned {
             retain_orphaned_epoch(&self);
-            return Err(failure("Retained source has abandoned actor custody"));
+            return Err(failure("Retained source has abandoned actor ownership"));
         }
         let Some(mut final_owner) = Arc::into_inner(self) else {
             return Ok(());
@@ -361,7 +361,7 @@ impl RetainedMountedEpoch {
             .source
             .take()
             .ok_or_else(|| failure("Retained epoch retired"))?;
-        drop(final_owner); // Close protected record custody before unmount.
+        drop(final_owner); // Close protected record ownership before unmount.
         drop(orphaned);
         retire_physical_source(source)
     }
@@ -383,7 +383,7 @@ impl Drop for RetainedMountedEpoch {
         };
         UNKNOWN_SOURCE_RETIREMENT.store(true, std::sync::atomic::Ordering::Release);
         // Unexpected last-owner loss is not observed retirement: keep exact mount, service and Home
-        // custody instead of unmounting in Drop.
+        // ownership instead of unmounting in Drop.
         static UNKNOWN: std::sync::Mutex<Vec<RetainedSource>> = std::sync::Mutex::new(Vec::new());
         match UNKNOWN.lock() {
             Ok(mut held) if held.len() < 64 => held.push(source),
@@ -413,7 +413,7 @@ impl Drop for RetainedSourceAuthority {
 }
 impl RetainedSourceAuthority {
     /// Constructors can fail before returning an actor, so the supervisor must stay alive while exact
-    /// quarantined custody is unknown.
+    /// quarantined ownership is unknown.
     pub fn unknown_retirement() -> bool {
         UNKNOWN_SOURCE_RETIREMENT.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -469,7 +469,7 @@ impl RetainedSourceAuthority {
         let declaration = manifest
             .units
             .retained_caller()
-            .ok_or_else(|| failure("Legacy retained Home has no source-group witness"))?;
+            .ok_or_else(|| failure("Legacy retained Home has no source-group proof"))?;
         declaration.validate_binding(original.as_plan(), &manifest.setup_binding, active_person)?;
         let effective = manifest
             .planned_btrfs_resize
@@ -545,7 +545,7 @@ impl RetainedSourceAuthority {
     }
     pub fn retire(self: Arc<Self>) -> io::Result<()> {
         let mut owned = Arc::try_unwrap(self)
-            .map_err(|_| failure("Retained source still has native projection custody"))?;
+            .map_err(|_| failure("Retained source still has native projection ownership"))?;
         let epoch = Arc::clone(&owned.epoch);
         owned.retired = true;
         drop(owned); // Release only this actor's installed record/latch.
@@ -576,7 +576,7 @@ impl RetainedSourceAuthority {
         }
         crate::setup::migration::check_cancel(cancel)
     }
-    /// The callback must attach this exact Arc to process custody; this seam does not launch, mint an
+    /// The callback must attach this exact Arc to process ownership; this boundary does not launch, mint an
     /// app grant or advertise support.
     pub fn projection(
         self: &Arc<Self>,
@@ -587,7 +587,7 @@ impl RetainedSourceAuthority {
         self.revalidate(cancel)?;
         Ok(RetainedSourceProjection {
             directory: file,
-            custody: self.clone(),
+            ownership: self.clone(),
         })
     }
     pub fn native_owner_sha256(&self, cancel: &AtomicBool) -> io::Result<[u8; 32]> {
@@ -615,15 +615,15 @@ impl RetainedSourceAuthority {
     }
 }
 
-/// Native-only inseparable source descriptor/custody handoff for increment B.
+/// Native-only inseparable source descriptor/ownership handoff for increment B.
 pub struct RetainedSourceProjection {
     directory: File,
-    custody: Arc<RetainedSourceAuthority>,
+    ownership: Arc<RetainedSourceAuthority>,
 }
 impl RetainedSourceProjection {
     pub fn native_owner_sha256(&self, cancel: &AtomicBool) -> io::Result<[u8; 32]> {
         self.revalidate(cancel)?;
-        let owner = self.custody.native_owner_sha256(cancel)?;
+        let owner = self.ownership.native_owner_sha256(cancel)?;
         self.revalidate(cancel)?;
         Ok(owner)
     }
@@ -631,7 +631,7 @@ impl RetainedSourceProjection {
         &self.directory
     }
     pub fn revalidate(&self, cancel: &AtomicBool) -> io::Result<()> {
-        self.custody.revalidate(cancel)
+        self.ownership.revalidate(cancel)
     }
     /// No pathname, manifest DTO or directory FD can construct this derivative.
     pub fn derive_installed(
@@ -648,16 +648,16 @@ impl RetainedSourceProjection {
         crate::setup::migration::check_cancel(cancel)?;
         installed.revalidate()?;
         let previous = self
-            .custody
+            .ownership
             .installed
             .as_ref()
-            .ok_or_else(|| failure("Editor requires actual installed source custody"))?;
+            .ok_or_else(|| failure("Editor requires actual installed source ownership"))?;
         previous.revalidate()?;
-        let epoch = &self.custody.epoch;
+        let epoch = &self.ownership.epoch;
         if *epoch
             .retirement
             .lock()
-            .map_err(|_| failure("Retained epoch custody poisoned"))?
+            .map_err(|_| failure("Retained epoch ownership poisoned"))?
             || installed.manifest() != previous.manifest()
             || installed.manifest() != &epoch.manifest
             || active_person != self.identity_public_key()
@@ -684,9 +684,9 @@ impl RetainedSourceProjection {
                 if *epoch
                     .retirement
                     .lock()
-                    .map_err(|_| failure("Retained epoch custody poisoned"))?
+                    .map_err(|_| failure("Retained epoch ownership poisoned"))?
                 {
-                    Err(failure("Retained source has abandoned actor custody"))
+                    Err(failure("Retained source has abandoned actor ownership"))
                 } else {
                     Ok(())
                 }
@@ -698,17 +698,17 @@ impl RetainedSourceProjection {
         Ok(derived)
     }
     pub fn original(&self) -> &OriginalCallerFacts {
-        self.custody.original()
+        self.ownership.original()
     }
     pub fn identity_public_key(&self) -> &[u8; 32] {
-        self.custody.identity_public_key()
+        self.ownership.identity_public_key()
     }
     pub fn original_home_alias(
         &self,
         cancel: &AtomicBool,
     ) -> io::Result<&launcher::retained_view::OriginalHomeAlias> {
         self.revalidate(cancel)?;
-        self.custody
+        self.ownership
             .epoch
             .declaration
             .original_home_alias

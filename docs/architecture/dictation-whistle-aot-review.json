@@ -85,7 +85,7 @@
       "crates/agent/local-model-service/examples/whistle_aot_review.rs": "3b3017be074cede5da9bf9e4c28b9efa4e7415ad5d87faee2393becef8bc8faa",
       "crates/agent/local-model-service/examples/whistle_aot_worker_review.rs": "9674b5e6474fbde81cd31486030cc1e4629d4cbf7becb35bd3dc7716a9dc1177",
       "crates/agent/local-model-service/examples/whistle_v8_worker_review/bridge.rs": "706552d4f09ce97a80bfe3ac53b49ff1f68b97c85a9145e10e6251573c2ae6f6",
-      "crates/agent/local-model-service/examples/whistle_v8_worker_review/custody.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7",
+      "crates/agent/local-model-service/examples/whistle_v8_worker_review/ownership.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7",
       "crates/agent/local-model-service/examples/whistle_aot_review/artifact.rs": "55fbe43cd3ef970637a83049429b9359117d59a34fed6d774366103a7b07c59c"
     }
   },
@@ -168,7 +168,7 @@
       "rust_sources": {
         "crates/agent/local-model-service/examples/whistle_aot_review.rs": "c8433300bbfed3aa898f8442da4464796ed85512bfecf137702af2f53d2fcec6",
         "crates/agent/local-model-service/examples/whistle_v8_worker_review/bridge.rs": "706552d4f09ce97a80bfe3ac53b49ff1f68b97c85a9145e10e6251573c2ae6f6",
-        "crates/agent/local-model-service/examples/whistle_v8_worker_review/custody.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7"
+        "crates/agent/local-model-service/examples/whistle_v8_worker_review/ownership.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7"
       }
     },
     "artifact": {
@@ -283,7 +283,7 @@
       "rust_sources": {
         "crates/agent/local-model-service/examples/whistle_aot_review.rs": "c8433300bbfed3aa898f8442da4464796ed85512bfecf137702af2f53d2fcec6",
         "crates/agent/local-model-service/examples/whistle_v8_worker_review/bridge.rs": "706552d4f09ce97a80bfe3ac53b49ff1f68b97c85a9145e10e6251573c2ae6f6",
-        "crates/agent/local-model-service/examples/whistle_v8_worker_review/custody.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7"
+        "crates/agent/local-model-service/examples/whistle_v8_worker_review/ownership.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7"
       }
     },
     "scope_before": {
@@ -840,7 +840,7 @@
   "licence": "Wasmtime Apache-2.0 WITH LLVM-exception; Whistle runtime/model Apache-2.0; binaries are private uninstalled qualification artifacts",
   "validation": {
     "strict_clippy": "passed 0.92 s",
-    "custody_tests": "final source: 3 passed, zero skips, 0.005 s after 0.77 s compile",
+    "ownership_tests": "final source: 3 passed, zero skips, 0.005 s after 0.77 s compile",
     "shell_tests_compile": "passed 1 min 17 s",
     "default_off_examples": "both final binaries built, 1.32 s",
     "native_cpp": "-Wall -Wextra -Werror passed",

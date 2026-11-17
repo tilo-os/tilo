@@ -746,7 +746,7 @@ fn invitation_entering(
     token: Option<&[u8]>,
 ) -> Result<tilo_relay_protocol::entering::Entering, String> {
     let workspace =
-        tilo_peer_state::join_ledger::invitation_workspace(invitation, tilo_clock::unix_now_ns())
+        tilo_peer_state::join_log::invitation_workspace(invitation, tilo_clock::unix_now_ns())
             .map_err(|error| format!("This invitation cannot be used: {error}"))?;
     Ok(tilo_relay_protocol::entering::Entering {
         workspace: workspace.to_string(),

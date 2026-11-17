@@ -15,7 +15,7 @@
 //! - **Why it stopped.** A run that hit the budget, lost its worker or failed says so here, in a
 //!   plain line, so an issue nobody works on never reads as one somebody does.
 //!
-//! [`standing`] is how every reader tells these apart: the panel that lists a person's tasks,
+//! [`task_state`] is how every reader tells these apart: the panel that lists a person's tasks,
 //! the host that decides whether to run, and a test.
 
 use serde::{Deserialize, Serialize};
@@ -194,9 +194,9 @@ impl Work {
 }
 
 /// How an issue stands, as whoever lists tasks reads it. The first of these that fits, in the
-/// order [`standing`] tries them.
+/// order [`task_state`] tries them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Standing {
+pub enum TaskState {
     /// A person called it off.
     Cancelled,
     /// Its work stopped before it was finished: it needs its person, and is never read as done
@@ -223,7 +223,7 @@ pub enum Standing {
     UpNext,
 }
 
-impl Standing {
+impl TaskState {
     /// Whether the issue is over: finished or called off. A stopped one never is.
     #[must_use]
     pub const fn resolved(&self) -> bool {
@@ -236,39 +236,39 @@ impl Standing {
 /// A stop is read before `done` and `in-review`: work that hit its budget, lost its worker or
 /// failed is not finished, whatever its status was set to since.
 #[must_use]
-pub fn standing(issue: &Issue) -> Standing {
+pub fn task_state(issue: &Issue) -> TaskState {
     if issue.status == Status::Cancelled {
-        return Standing::Cancelled;
+        return TaskState::Cancelled;
     }
     let work = issue.work.as_ref();
     if let Some(stopped) = work.and_then(|work| work.stopped.as_ref()) {
-        return Standing::Stopped {
+        return TaskState::Stopped {
             why: stopped.why,
             words: stopped.words.clone(),
         };
     }
     match issue.status {
-        Status::Done => return Standing::Done,
-        Status::InReview => return Standing::ReadyForReview,
+        Status::Done => return TaskState::Done,
+        Status::InReview => return TaskState::ReadyForReview,
         _ => {}
     }
     if let Some(work) = work
         && let Some(until_ms) = work.until_ms
     {
         if let Some(asked) = work.waits.iter().find(|wait| wait.kind == WaitKind::Answer) {
-            return Standing::NeedsYou {
+            return TaskState::NeedsYou {
                 what: asked.what.clone(),
             };
         }
-        return Standing::Waiting {
+        return TaskState::Waiting {
             what: work.waits.iter().map(|wait| wait.what.clone()).collect(),
             until_ms,
         };
     }
     if issue.status == Status::InProgress {
-        Standing::Working
+        TaskState::Working
     } else {
-        Standing::UpNext
+        TaskState::UpNext
     }
 }
 
@@ -399,9 +399,9 @@ mod tests {
                 Status::InReview,
                 Status::Done,
             ] {
-                let read = standing(&issue(status, Some(stopped(why))));
+                let read = task_state(&issue(status, Some(stopped(why))));
                 assert!(
-                    matches!(&read, Standing::Stopped { why: read_why, words }
+                    matches!(&read, TaskState::Stopped { why: read_why, words }
                         if *read_why == why && words.contains("budget of $2.00")),
                     "{status:?} stopped for {why:?} reads {read:?}"
                 );
@@ -410,24 +410,24 @@ mod tests {
         }
         // Called off by a person, it is over.
         assert_eq!(
-            standing(&issue(Status::Cancelled, Some(stopped(StoppedWhy::Budget)))),
-            Standing::Cancelled
+            task_state(&issue(Status::Cancelled, Some(stopped(StoppedWhy::Budget)))),
+            TaskState::Cancelled
         );
     }
 
     #[test]
     fn an_issue_reads_by_its_status_and_what_it_waits_for() {
-        assert_eq!(standing(&issue(Status::Backlog, None)), Standing::UpNext);
-        assert_eq!(standing(&issue(Status::Todo, None)), Standing::UpNext);
+        assert_eq!(task_state(&issue(Status::Backlog, None)), TaskState::UpNext);
+        assert_eq!(task_state(&issue(Status::Todo, None)), TaskState::UpNext);
         assert_eq!(
-            standing(&issue(Status::InProgress, None)),
-            Standing::Working
+            task_state(&issue(Status::InProgress, None)),
+            TaskState::Working
         );
         assert_eq!(
-            standing(&issue(Status::InReview, None)),
-            Standing::ReadyForReview
+            task_state(&issue(Status::InReview, None)),
+            TaskState::ReadyForReview
         );
-        assert_eq!(standing(&issue(Status::Done, None)), Standing::Done);
+        assert_eq!(task_state(&issue(Status::Done, None)), TaskState::Done);
 
         let reply = WaitFor {
             kind: WaitKind::Reply,
@@ -440,8 +440,8 @@ mod tests {
             ..Work::default()
         };
         assert_eq!(
-            standing(&issue(Status::InProgress, Some(waiting.clone()))),
-            Standing::Waiting {
+            task_state(&issue(Status::InProgress, Some(waiting.clone()))),
+            TaskState::Waiting {
                 what: vec!["a reply from the supplier".into()],
                 until_ms: 9_000
             }
@@ -459,8 +459,8 @@ mod tests {
             ..waiting
         };
         assert_eq!(
-            standing(&issue(Status::InProgress, Some(asked))),
-            Standing::NeedsYou {
+            task_state(&issue(Status::InProgress, Some(asked))),
+            TaskState::NeedsYou {
                 what: "Which regions count?".into()
             }
         );
@@ -470,8 +470,8 @@ mod tests {
             ..Work::default()
         };
         assert_eq!(
-            standing(&issue(Status::Todo, Some(until))),
-            Standing::Waiting {
+            task_state(&issue(Status::Todo, Some(until))),
+            TaskState::Waiting {
                 what: Vec::new(),
                 until_ms: 9_000
             }

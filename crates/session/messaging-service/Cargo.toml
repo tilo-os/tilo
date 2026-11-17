@@ -44,7 +44,7 @@ service = [
     "tokio/macros",
 ]
 
-# Explicit native RAM custody qualification of the Signal working profile:
+# Explicit native RAM ownership qualification of the Signal working profile:
 # needs a qualified tmpfs backing or permission to create a noswap fixture in
 # a private mount namespace.
 signal-profile-native-test = []

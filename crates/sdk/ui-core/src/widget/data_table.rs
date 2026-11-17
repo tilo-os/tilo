@@ -3711,25 +3711,25 @@ struct RowChoice {
 }
 
 impl crate::widget::controls::ActionControls for DataTableCore {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(view) = self.row_choice.as_mut() {
-            view.choice.install_custody(domain, attachment);
+            view.choice.attach(domain, attachment);
         }
         if let Some(opens) = self.opens.as_mut() {
-            opens.choice.install_custody(domain, attachment);
+            opens.choice.attach(domain, attachment);
         }
         if let Some(check) = self.check.as_mut() {
-            let _ = check.action.install_custody(domain, attachment);
+            let _ = check.action.attach(domain, attachment);
         }
         if let Some(click) = self.row_click.as_mut() {
-            let _ = click.action.install_custody(domain, attachment);
+            let _ = click.action.attach(domain, attachment);
         }
         for child in Widget::children_mut(self) {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 

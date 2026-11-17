@@ -7,7 +7,7 @@
 //! out; this controller only retains intent, bounded public progress and
 //! those receipts, and never substitutes a receipt for the helper's proofs.
 //! What differs per kind (the declaration, the helper's events, the package
-//! custody checks and the helper's arguments) is the kind's [`Kind`] policy.
+//! ownership checks and the helper's arguments) is the kind's [`Kind`] policy.
 use crate::prepared::Pending as Prepared;
 use std::{
     fs::OpenOptions,
@@ -87,7 +87,7 @@ pub trait Kind: Sized + 'static {
         declaration: &Self::Declaration,
         status: &mut serde_json::Map<String, serde_json::Value>,
     );
-    /// Check the saved expectation and the package's custody; the package's
+    /// Check the saved expectation and the package's ownership; the package's
     /// path and the operation naming the helper's workspace.
     fn package(cx: &Context<Self>, directory: &Path) -> io::Result<(PathBuf, String)>;
     fn settle(cx: &Context<Self>, event: Self::Event) -> Settled;

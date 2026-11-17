@@ -87,7 +87,7 @@ The panel is `crates/session/quick-settings`, an app of its own. The **app**
 is the same generation in both: the old shell mounted it in-process
 (`overlay_host/quick_settings.rs` `QuickSettingsPanel::mount`,
 `QUICK_SETTINGS_WINDOW`), the new session starts it as a surface app
-(`session/src/quick_settings.rs` `follow_quick_settings`, `Run::Standing`).
+(`session/src/quick_settings.rs` `follow_quick_settings`, `Run::MemberAccess`).
 What differs is the host around it.
 
 | Behaviour | Old | New | Status |
@@ -155,7 +155,7 @@ What differs is the host around it.
 | Display identify: a numbered card on every display, in the corner the focused window leaves free, for 3 s | `shell/display_identify.rs` | `desktop/src/display_identify.rs` | same |
 | Focused display, pointer moving focus between displays, menus and panels opening on the focused display | `overlay_host/displays.rs` (652-line module) | `desktop-surface/src/surface/displays.rs` `lanes()`, `display_at()`, `focus_display_at`; `desktop/src/overlays.rs` `display_for` | same |
 | Each display shows a strip of its own and moves between strips alone | `strip_rail.rs`, `focus_strip` per display, `show_strip_on(display, strip)` | `lay_out_displays` places lanes, but `show_active_strip` keys off `tree.active_strip_id()`, so every display shows the same strip | **missing** |
-| A window moved to another display, and a group carried across the seam | `move_focused_group_to_display`, `carry_focused_group_across_seam` | `desktop:shell` `move-to-display`; `surface/displays.rs` | same |
+| A window moved to another display, and a group carried across the boundary | `move_focused_group_to_display`, `carry_focused_group_across_boundary` | `desktop:shell` `move-to-display`; `surface/displays.rs` | same |
 | Touch: a tap is one click where the finger was, a hold is a context menu, a drag on an edge resizes, the top edge reveals the bar | `compositor/touch_pointer.rs` `TouchPointer`, `ui-core/src/interaction.rs` `TouchPointerEmulator` | the same unchanged | same |
 | On-screen keyboard: follows touch typing and tablet mode | `compositor/input_method.rs` `osk_wanted` | unchanged | same |
 | Touchpad: three fingers the strips, four workspaces, a pinch the overview | `compositor/gestures.rs` | `compositor/src/gestures.rs`, unchanged; the **host** side lost the direct stream (§1) | worse (host only) |

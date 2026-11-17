@@ -669,7 +669,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase ownership_only_home_preserves_content_source_witnesses_on_retry;
+    phase ownership_only_home_preserves_content_source_proofs_on_retry;
     {
         let work = tempfile::tempdir().unwrap();
         let home = work.path().join("home");
@@ -681,7 +681,7 @@ tilo_test_env::scenario! {
         fs::write(home.join("attested"), b"captured content").unwrap();
         symlink("attested", home.join("link")).unwrap();
         let paths = [home.clone(), home.join("attested"), home.join("link")];
-        let witness = |path: &PathBuf| {
+        let proof = |path: &PathBuf| {
             let metadata = fs::symlink_metadata(path).unwrap();
             (
                 metadata.ino(),
@@ -694,10 +694,10 @@ tilo_test_env::scenario! {
                 metadata.ctime_nsec(),
             )
         };
-        let before: Vec<_> = paths.iter().map(witness).collect();
+        let before: Vec<_> = paths.iter().map(proof).collect();
         let output = helper(&args, b"");
         assert!(output.status.success(), "{output:?}");
-        assert_eq!(paths.iter().map(witness).collect::<Vec<_>>(), before);
+        assert_eq!(paths.iter().map(proof).collect::<Vec<_>>(), before);
         assert_eq!(
             fs::read(home.join("attested")).unwrap(),
             b"captured content"

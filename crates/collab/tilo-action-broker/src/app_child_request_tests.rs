@@ -237,7 +237,7 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             );
             assert!(notes.try_recv().is_err(), "one call, one delivery");
 
-            // Kept under the agent's own custody: the agent follows the
+            // Kept under the agent's own ownership: the agent follows the
             // child it asked for through its app, as its own invocation.
             let agent_caller = rig
                 .state
@@ -647,7 +647,7 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
             .await;
             assert!(admitted(&unasked), "{unasked:?}");
             notes.try_recv().expect("Notes makes another page");
-            assert!(sheets.try_recv().is_err(), "a standing grant asks nothing");
+            assert!(sheets.try_recv().is_err(), "a lasting grant asks nothing");
 
             // One action of the app asking two things at once: each is put
             // to the person in turn, neither refused for the other.

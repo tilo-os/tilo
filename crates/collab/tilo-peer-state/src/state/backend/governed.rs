@@ -15,7 +15,7 @@ pub(in crate::state) enum ImportError {
     Receipt(postcard::Error),
     Certificate(DeviceCertError),
     Revocation(RevocationError),
-    LedgerShape,
+    LogShape,
     ReceiptShape,
     ReceiptKey,
     IdentityKey,
@@ -32,7 +32,7 @@ impl std::fmt::Display for ImportError {
             Self::Receipt(error) => write!(f, "governed invitation receipt: {error}"),
             Self::Certificate(error) => error.fmt(f),
             Self::Revocation(error) => error.fmt(f),
-            Self::LedgerShape => f.write_str("governed invitation receipt ledger is not a map"),
+            Self::LogShape => f.write_str("governed invitation receipt log is not a map"),
             Self::ReceiptShape => f.write_str("governed invitation receipt is not bytes"),
             Self::ReceiptKey => f.write_str("governed invitation receipt key mismatch"),
             Self::IdentityKey => f.write_str("governed identity key mismatch"),
@@ -101,7 +101,7 @@ fn receipts_checked<R: WorkspaceRead>(
                         ..
                     }
                 ) {
-                    return Err(ImportError::LedgerShape);
+                    return Err(ImportError::LogShape);
                 }
                 Ok(())
             },
@@ -119,7 +119,7 @@ fn receipts_checked<R: WorkspaceRead>(
                     object,
                 } = value
                 else {
-                    return Err(ImportError::LedgerShape);
+                    return Err(ImportError::LogShape);
                 };
                 workspace
                     .visit_keys(&object, |key| {
@@ -127,7 +127,7 @@ fn receipts_checked<R: WorkspaceRead>(
                             return Ok(());
                         }
                         crate::governance_work::receipt_read();
-                        // Keep all raw values in the same sorted-key/ledger order as the
+                        // Keep all raw values in the same sorted-key/log order as the
                         // original collector.
                         let mut values = Vec::new();
                         workspace
@@ -185,7 +185,7 @@ fn receipt_checked(key: &str, bytes: &[u8]) -> Result<(), ImportError> {
     {
         return Ok(());
     }
-    let receipt: RedemptionReceipt = crate::state::LedgerReceipt::decode(bytes)
+    let receipt: RedemptionReceipt = crate::state::StoredReceipt::decode(bytes)
         .map_err(ImportError::Receipt)?
         .receipt;
     if !is_key(key, &receipt.invite_id) {

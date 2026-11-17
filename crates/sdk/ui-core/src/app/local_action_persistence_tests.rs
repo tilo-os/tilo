@@ -5,11 +5,10 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
     fixture.app.collaboration.manager =
         CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
     fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
-    fixture.app.actions.bound_broker_route_for_test =
-        Some(crate::collaboration::PrimaryRouteWitness {
-            route: fixture.bindings[0].broker_route().unwrap(),
-            epoch: uuid::Uuid::new_v4(),
-        });
+    fixture.app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
+        route: fixture.bindings[0].broker_route().unwrap(),
+        epoch: uuid::Uuid::new_v4(),
+    });
     for binding in &fixture.bindings {
         fixture
             .app
@@ -120,15 +119,15 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
         .unwrap()
         .remove(0)
         .0;
-    let original_custody = checkpoint
-        .custody
-        .expect("authenticated custody must survive restart");
-    assert_eq!(original_custody, capture_custody(&route));
+    let original_ownership = checkpoint
+        .ownership
+        .expect("authenticated ownership must survive restart");
+    assert_eq!(original_ownership, capture_ownership(&route));
     // A new live connection cannot relabel old work, even when it owns the
     // same document and reports the same app-controlled action context.
     let mut mismatches = vec![None];
     for field in 0..6 {
-        let mut changed = original_custody.clone();
+        let mut changed = original_ownership.clone();
         match field {
             0 => changed.root = [3; 32],
             1 => changed.device = [4; 32],
@@ -139,11 +138,11 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
         }
         mismatches.push(Some(changed));
     }
-    for custody in mismatches {
+    for ownership in mismatches {
         fixture.app.collaboration.manager =
-            CollaborationManager::with_peer_transport(CustodyCapturePeer {
+            CollaborationManager::with_peer_transport(OwnershipCapturePeer {
                 inner: CapturePeer(sent.clone()),
-                custody,
+                ownership,
             });
         assert!(
             fixture
@@ -158,7 +157,7 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
         fixture.app.drain_local_input_capture();
         assert!(
             capture_reports(&sent).is_empty(),
-            "mismatched custody must never report"
+            "mismatched ownership must never report"
         );
         assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
         assert!(fixture.app.local_input_capture.failure.is_some());

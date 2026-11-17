@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLedger,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLog,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
@@ -501,7 +501,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
 #[derive(Default)]
 struct RecordingHost {
     callers: Mutex<Vec<Caller>>,
-    ledger: Mutex<InvocationLedger<()>>,
+    log: Mutex<InvocationLog<()>>,
 }
 
 /// Lets the test keep a handle on the host the relay owns.
@@ -525,7 +525,7 @@ impl ActionHost for SharedHost {
         self.0.callers.lock().unwrap().push(caller.clone());
         let admitted = self
             .0
-            .ledger
+            .log
             .lock()
             .unwrap()
             .admit(caller, &request, || Ok(()))
@@ -539,7 +539,7 @@ impl ActionHost for SharedHost {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.0.ledger.lock().unwrap().get(caller, id).map(|()| {
+        self.0.log.lock().unwrap().get(caller, id).map(|()| {
             InvocationState::new(
                 *id,
                 InvocationUpdate::Succeeded {

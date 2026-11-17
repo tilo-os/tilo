@@ -9,7 +9,8 @@ use std::sync::Mutex;
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_action_policy::{
-    Answer, Authority, Context, Grant, Grantee, KindSet, Role, Standing, TreePath, WorkspacePolicy,
+    Answer, Authority, Context, Grant, Grantee, KindSet, MemberAccess, Role, TreePath,
+    WorkspacePolicy,
 };
 use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Case, Judge, JudgeError, ModerationAgent, Outcome, Verdict};
@@ -173,7 +174,7 @@ fn bot_replica(page: &Replica) -> Replica {
         Answer::Allow,
         Grantee::person(OWNER),
     );
-    let standing = Standing::person(WorkspacePolicy::new(WORKSPACE, OWNER), OWNER).acting_as(
+    let access = MemberAccess::person(WorkspacePolicy::new(WORKSPACE, OWNER), OWNER).acting_as(
         tilo_action_policy::Actor::Member(MemberId::bot(BOT)),
         [grant],
     );
@@ -185,7 +186,7 @@ fn bot_replica(page: &Replica) -> Replica {
         ReplicaActor::Bot {
             installation: BOT.into(),
             installer: OWNER.into(),
-            standing,
+            access,
         },
         Seed::Existing {
             record: page.document_id().clone(),

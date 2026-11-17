@@ -3,7 +3,7 @@
 //! first-boot provisioning, pairing with a nearby device, a setup prepared
 //! on another computer and the transfers it carries over (a portable home,
 //! its applications, browser data, the files of the system Tilo replaced),
-//! and the custody of every secret those steps take.
+//! and the ownership of every secret those steps take.
 //!
 //! The session that runs setup lends what only it has through
 //! [`host::SessionHost`].

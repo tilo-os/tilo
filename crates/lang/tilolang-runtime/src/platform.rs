@@ -2376,7 +2376,7 @@ impl Core {
         // Whether it applies to the item where the view offers it at all, and whether it can
         // run on it now, as the conditions its target and place decide say: a menu leaves out
         // what cannot apply, and a control for what cannot run stands disabled with the reason.
-        // An action the person's standing denies them (a viewer's change) stands disabled too.
+        // An action the person's state denies them (a viewer's change) stands disabled too.
         let viewer = self.viewer_here()?;
         let mut applies = true;
         let mut available = true;

@@ -10,7 +10,7 @@
 # /etc, the system bus filtered to the named authorities, the PipeWire
 # socket and the compositor's runtime state. Printing stays behind the
 # Print portal. The launcher also binds the parts of `~/.config/tilo` this
-# app is custodian of (the account stores and their credential vault) and,
+# app is owner of (the account stores and their credential vault) and,
 # read-only, the workspace tree; never the settings document, the identity
 # store, trust lists, app registries or settings resources. The device's
 # settings it reads and writes through the shell's settings service, as

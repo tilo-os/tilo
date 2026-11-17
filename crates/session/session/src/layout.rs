@@ -35,7 +35,7 @@ use tilo_desktop_model::{Layout, TileContent, Workspace, WorkspaceId, peer_salt_
 use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
-use tilo_broker_core::custody::OwnerCustody as _;
+use tilo_broker_core::owner_service::OwnerService as _;
 
 use crate::engine::{Engine, SealKeys};
 use tilo_desktop_surface::DesktopHandle;
@@ -139,19 +139,19 @@ struct Held {
     /// Where the engine stood when this record was last read, or found not to have moved: a look
     /// that skips the record (its write under way) or a write of it that finished leaves it behind
     /// the engine, so the record is read again however the rest of the workspace moved meanwhile.
-    read_at: Option<Standing>,
+    read_at: Option<EngineVersion>,
 }
 
 /// Where the engine's copy of the workspaces stood at a look: its revision, and the generation of
 /// the channel keys that open their sealed records. A record read at one reads the same until
 /// either moves: keys that arrive open writes the copy already held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Standing {
+pub(crate) struct EngineVersion {
     pub(crate) revision: u64,
     pub(crate) keys: u64,
 }
 
-impl Standing {
+impl EngineVersion {
     pub(crate) fn of(engine: &Engine) -> Self {
         Self {
             revision: engine.owner().revision(),
@@ -529,9 +529,9 @@ impl Layouts {
     }
 
     /// Whether every record of every workspace `tree` holds was read here with the engine at
-    /// `standing`, and this session has not moved since: nothing of them can have changed, so no
+    /// `version`, and this session has not moved since: nothing of them can have changed, so no
     /// record is read or written again. Notes what was looked at.
-    pub(crate) fn settled(&self, standing: Standing, tree: &Layout) -> bool {
+    pub(crate) fn settled(&self, version: EngineVersion, tree: &Layout) -> bool {
         // A write under way is taken first, and while it is no record is read or written.
         if !self.settle_publishing() {
             return true;
@@ -546,7 +546,7 @@ impl Layouts {
                 .filter(|workspace| !workspace.id().is_nil())
                 .all(|workspace| {
                     let workspace_id = workspace.id();
-                    let current = |held: &mut Held| held.read && held.read_at == Some(standing);
+                    let current = |held: &mut Held| held.read && held.read_at == Some(version);
                     self.held(&(workspace_id, Route::layout()), current)
                         && person.as_deref().is_none_or(|person| {
                             self.held(&(workspace_id, Route::view(person)), current)
@@ -711,7 +711,7 @@ impl Layouts {
     /// Fold the layout of every workspace in the engine's copy into `tree`.
     fn follow_layout(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
         let salt = tree.salt;
-        let at = Standing::of(engine);
+        let at = EngineVersion::of(engine);
         let mut changed = false;
         for workspace in &mut tree.workspaces {
             let workspace_id = workspace.id();
@@ -835,7 +835,7 @@ impl Layouts {
             return false;
         };
         let route = Route::view(&person);
-        let at = Standing::of(engine);
+        let at = EngineVersion::of(engine);
         let held: Vec<WorkspaceId> = tree.workspaces.iter().map(Workspace::id).collect();
         let mut changed = false;
         for workspace_id in held {
@@ -2539,7 +2539,7 @@ mod tests {
             ..Layouts::default()
         };
         let key = (workspace, Route::layout());
-        let at = |revision| Standing { revision, keys: 0 };
+        let at = |revision| EngineVersion { revision, keys: 0 };
         let read_at = |revision| {
             desktops.held(&key, |held| {
                 held.read = true;
@@ -2585,7 +2585,7 @@ mod tests {
         // Keys that arrive open what the record held sealed, though the engine's copy did not move.
         assert!(
             !desktops.settled(
-                Standing {
+                EngineVersion {
                     revision: 8,
                     keys: 1
                 },
@@ -2691,13 +2691,13 @@ mod tests {
         let theirs = Arc::clone(&hold);
         let engine = Arc::new(
             Engine::open(
-                tilo_identity_host::custody::HostIdentity::kept(
+                tilo_identity_host::identity_store::HostIdentity::kept(
                     cert.clone(),
                     HeldSigner { key, hold: theirs },
                 ),
                 Some(state.path()),
                 std::iter::empty(),
-                crate::platform::custody::of_this_session(),
+                crate::platform::membership_check::of_this_session(),
             )
             .expect("this device's engine opens"),
         );
@@ -2826,8 +2826,8 @@ mod tests {
         strip
             .take(1)
             .for_each(|strip| strip.name = "Moved".to_owned());
-        let standing = Standing::of(&engine);
-        let _ = desktops.settled(standing, &tree);
+        let version = EngineVersion::of(&engine);
+        let _ = desktops.settled(version, &tree);
         hold.hold();
         desktops.capture(&engine, &tree);
         desktops.follow(&engine, "", &mut tree.clone());
@@ -2836,7 +2836,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the write wakes the loop once it is done");
         assert!(
-            !desktops.settled(standing, &tree),
+            !desktops.settled(version, &tree),
             "the look after a write reads the record its follow skipped"
         );
     }

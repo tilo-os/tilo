@@ -17,7 +17,8 @@
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_action_policy::{
-    Actor, Answer, Change, Grant, Grantee, KindSet, MemberId, Standing, TreePath, WorkspacePolicy,
+    Actor, Answer, Change, Grant, Grantee, KindSet, MemberAccess, MemberId, TreePath,
+    WorkspacePolicy,
 };
 use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Judge, ModerationAgent};
@@ -295,7 +296,7 @@ fn bot_replica(
         Answer::Allow,
         Grantee::person(installer),
     );
-    let standing = Standing::person(WorkspacePolicy::new(workspace, installer), installer)
+    let access = MemberAccess::person(WorkspacePolicy::new(workspace, installer), installer)
         .acting_as(
             Actor::Member(MemberId::bot(MODERATION_INSTALLATION)),
             [grant],
@@ -308,7 +309,7 @@ fn bot_replica(
         ReplicaActor::Bot {
             installation: MODERATION_INSTALLATION.into(),
             installer: installer.into(),
-            standing,
+            access,
         },
         Seed::Existing {
             record: ui::resource::DocumentId::package_primary(),

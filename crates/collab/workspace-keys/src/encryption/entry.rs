@@ -13,7 +13,7 @@ use super::{
 };
 
 /// The entry's access request ([`WorkspaceKeys::entry_request`]): signed already, or
-/// waiting for the signature of the device's custody.
+/// waiting for the signature of the device's ownership.
 pub enum EntryRequest {
     Signed(MlsAccessRequestV1),
     Unsigned(
@@ -53,7 +53,7 @@ impl WorkspaceKeys {
         }
     }
 
-    /// [`Self::ask_on_entry`] up to the signature the device's custody owes: what a caller
+    /// [`Self::ask_on_entry`] up to the signature the device's ownership owes: what a caller
     /// that shares this service awaits without holding it, then hands back with
     /// [`Self::entry_signed`].
     pub fn entry_request(

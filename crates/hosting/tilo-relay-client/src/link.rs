@@ -1,4 +1,4 @@
-//! How a device reaches its host for one thing it asks: the one seam every
+//! How a device reaches its host for one thing it asks: the one boundary every
 //! dialler goes through, whatever the device runs on.
 //!
 //! A device asks its host for a few things, each a conversation of its own

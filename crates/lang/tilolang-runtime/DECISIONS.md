@@ -87,7 +87,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **A call that waits for someone's approval splits the run there.** The writes before the wait
   end the run and are published as its action; the answer starts a new invocation, and what the
   action does after the approval is a second action. What the person approved is what they were
-  asked about, and a decline leaves the run's first part standing.
+  asked about, and a decline leaves the run's first part state.
 - **`many`** applies one action to many items as one change, so it refuses an action that calls
   another: that action makes a change per call.
 - **Journaled reads and writes.** A run journals every read of a resource and map, every write,
@@ -372,7 +372,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   touches is met with wasmi; wasmtime AOT would add a compiler and code cache to the platform
   for that. The time is in the host (store reads behind imports, search, publication), which is
   where the work goes. Revisit when a profile shows guest time as the larger share.
-- **One seam for engines.** What the runtime asks of an engine is a private trait in `engine.rs`:
+- **One boundary for engines.** What the runtime asks of an engine is a private trait in `engine.rs`:
   compile bytes into a shareable module, bind the import table, instantiate with fuel and a
   memory limit, call one export with a host context in the store. The module cache, instance
   pools, profile, import dispatch and the wording of every `CallError` sit above it, once, so a

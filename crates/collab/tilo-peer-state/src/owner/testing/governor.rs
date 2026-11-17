@@ -138,7 +138,7 @@ impl TestGovernor {
     }
 
     /// Empty interactive workspace governed by the fixture session's actual
-    /// root-certified device custody. Unlike `new`, this installs no app
+    /// root-certified device identity. Unlike `new`, this installs no app
     /// records, messages, agents or separately pinned delivery host.
     pub fn empty_interactive(
         governor: DeviceCert,
@@ -149,7 +149,7 @@ impl TestGovernor {
         if governor.device_public_key != governor_key.verifying_key().to_bytes()
             || !governor.capabilities.can_own_workspaces
         {
-            return Err("interactive fixture custody cannot govern this workspace".into());
+            return Err("interactive fixture ownership cannot govern this workspace".into());
         }
         let now = tilo_clock::wall();
         let workspace_id = WorkspaceId::parse(workspace)
@@ -596,7 +596,7 @@ mod empty_interactive_tests {
     use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 
     tilo_test_env::scenario! {
-        fn the_test_governor_follows_native_custody_without_seeding_apps;
+        fn the_test_governor_follows_native_ownership_without_seeding_apps;
 
         phase checkpoint_refresh_follows_admitted_native_receipts;
         {
@@ -627,7 +627,7 @@ mod empty_interactive_tests {
             assert!(receipts.values().all(|receipt| receipt.generation > 20));
         }
 
-        phase empty_interactive_preserves_certified_custody_without_seeding_apps_or_host_bits;
+        phase empty_interactive_preserves_certified_ownership_without_seeding_apps_or_host_bits;
         {
             let signing_identity = SigningKey::from_bytes(&[91; 32]);
             let key = SigningKey::from_bytes(&[92; 32]);
@@ -652,7 +652,7 @@ mod empty_interactive_tests {
             );
         }
 
-        phase empty_interactive_governor_redeems_its_actual_session_custody_without_app_seed;
+        phase empty_interactive_governor_redeems_its_actual_session_ownership_without_app_seed;
         {
             use crate::join::{
                 self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,

@@ -5,8 +5,8 @@
 mod artifact;
 #[path = "whistle_v8_worker_review/bridge.rs"]
 mod bridge;
-#[path = "whistle_v8_worker_review/custody.rs"]
-mod custody;
+#[path = "whistle_v8_worker_review/ownership.rs"]
+mod ownership;
 use local_model_service::speech::{self, SpeechError, worker};
 use std::process::ExitCode;
 use std::time::Instant;
@@ -38,14 +38,14 @@ fn run() -> Result<(), SpeechError> {
     if !["en", "de", "fr", "es", "it", "nl", "pl"].contains(&language.as_str()) {
         return Err(SpeechError::UnsupportedLanguage);
     }
-    // Review-only custody: AOT must come from this controller's pinned factory.
+    // Review-only ownership: AOT must come from this controller's pinned factory.
     let artifact = artifact::verified(artifact_path, artifact_sha)?;
-    let model = custody::verified(
+    let model = ownership::verified(
         model_path,
         16_919_407,
         "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
     )?;
-    let pcm = custody::verified(pcm_path, 30 * 16_000 * 4, pcm_sha)?;
+    let pcm = ownership::verified(pcm_path, 30 * 16_000 * 4, pcm_sha)?;
     if pcm.len() % 4 != 0 {
         return Err(SpeechError::Protocol);
     }

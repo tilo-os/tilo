@@ -1,4 +1,4 @@
-//! User-scoped DPAPI custody. No plaintext fallback or silent re-keying.
+//! User-scoped DPAPI backend. No plaintext fallback or silent re-keying.
 use std::io::{self, Read};
 use std::path::Path;
 

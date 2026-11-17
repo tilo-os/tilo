@@ -3,7 +3,7 @@ use super::*;
 tilo_test_env::scenario! {
     fn a_portable_owner_reserves_notices_and_withdraws_as_its_workspace_decides;
 
-    phase portable_owner_preserves_reservation_identity_custody_and_durability;
+    phase portable_owner_preserves_reservation_identity_ownership_and_durability;
     {
         let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
         let mut owners = ResourceOwners::portable(cache.clone());

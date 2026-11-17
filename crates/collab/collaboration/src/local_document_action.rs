@@ -21,7 +21,7 @@ pub struct PublishedInvocation {
 #[derive(Clone)]
 pub struct CapturedAction {
     /// Original broker-authenticated provenance, separate from app action context.
-    pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
+    pub ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub invocation: uuid::Uuid,
     /// Random identity generated once, before content binding; retained on retry.
     pub capture_id: uuid::Uuid,
@@ -66,7 +66,7 @@ impl CapturedAction {
             ))
         };
         Ok(runtime_collab::LocalDocumentActionReport {
-            custody: self.custody,
+            ownership: self.ownership,
             version: 1,
             invocation: self.invocation,
             capture_id: self.capture_id,

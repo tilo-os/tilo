@@ -37,7 +37,7 @@ pub struct WhatsappRuntime {
 }
 
 impl WhatsappRuntime {
-    /// Bind an already linked, host-custodied SDK instance to its local journal.
+    /// Bind an already linked, host-owned SDK instance to its local journal.
     /// The host must hold exclusive credential authority throughout a send.
     pub fn new(
         owner: Owner,
@@ -220,7 +220,7 @@ fn prepare(route: &Route, operation: &str, text: &str) -> Result<Prepared, Error
         return Err(Error::InvalidIdentity);
     }
     // This freezes the exact SDK inputs, not its subsequently randomized E2EE
-    // bytes. The SDK's crypto/ratchet state remains under host custody.
+    // bytes. The SDK's crypto/ratchet state remains under host ownership.
     let frozen = Zeroizing::new(
         serde_json::to_vec(&serde_json::json!({
             "route":route,"stanza_id":operation,"text":text

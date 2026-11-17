@@ -27,10 +27,10 @@ use tilo_user_identity::DeviceCert;
 const ADMINISTRATOR_GRANTS: [&str; 2] = ["room-admin-v1:", "workspace-admin-v1:"];
 
 /// What the earlier release's workspace recorded on disk, as far as this build
-/// reads it: its record's head, and its join ledger's invitations.
+/// reads it: its record's head, and its join log's invitations.
 ///
 /// The record is one `postcard` struct whose field order is the format; the
-/// fields after the ledger are not read, so a record that grew them still
+/// fields after the log are not read, so a record that grew them still
 /// reads here.
 #[derive(Deserialize)]
 struct Record {
@@ -48,12 +48,12 @@ struct Record {
     outgoing: Vec<Publication>,
     #[expect(dead_code, reason = "read to reach the fields after it")]
     published: usize,
-    collaboration: LedgerHead,
+    collaboration: LogHead,
 }
 
-/// The ledger's first field, which is all the export reads of it.
+/// The log's first field, which is all the export reads of it.
 #[derive(Deserialize)]
-struct LedgerHead {
+struct LogHead {
     invitations: Vec<InvitationEntry>,
 }
 
@@ -428,8 +428,8 @@ struct Kept {
 }
 
 /// The address each person came in at. The release kept one only where it
-/// invited them at it: on an invitation the ledger still holds, or on the
-/// invitation a redeemed one leaves in its receipt (the ledger drops an
+/// invited them at it: on an invitation the log still holds, or on the
+/// invitation a redeemed one leaves in its receipt (the log drops an
 /// invitation once it is redeemed), or on the wait-list entry an invitation
 /// was mailed to.
 fn addresses(

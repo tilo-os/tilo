@@ -430,13 +430,13 @@ impl crate::resources::PublishesResources for Breadcrumb {
 }
 
 impl crate::widget::controls::ActionControls for Breadcrumb {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(choice) = self.choice.as_mut() {
-            choice.install_custody(domain, attachment);
+            choice.attach(domain, attachment);
         }
     }
 

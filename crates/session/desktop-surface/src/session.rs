@@ -389,7 +389,7 @@ impl DesktopSession {
 
     /// Carry every action a window asks of a record of the workspace (provider
     /// `record:<app>:<record>`) to `api` from now on: the action API of the workspace's host,
-    /// which runs it whoever has the record open and decides it by the caller's own standing.
+    /// which runs it whoever has the record open and decides it by the caller's own access.
     pub fn serve_workspace_api(&self, api: Arc<dyn ActionHost + Send + Sync>) {
         *self.workspace_api.lock_recover() = Some(api);
     }

@@ -107,7 +107,7 @@ pub(super) fn run(arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
     let mut terminal = None;
     let result = run_current(arguments, &mut terminal);
     // A source constructor can fail before a reviewed actor exists, so the terminal cleanup latch
-    // keeps quarantined custody and an empty actor slot cannot prove the helper may exit.
+    // keeps quarantined ownership and an empty actor slot cannot prove the helper may exit.
     while ReviewedInstalledRetainedLaunch::retirement_pending() {
         std::thread::park_timeout(Duration::from_millis(50));
     }
@@ -199,7 +199,7 @@ fn run_current(
             std::thread::park_timeout(Duration::from_millis(50));
         }
         if actor.retire().is_err() {
-            // A consuming retirement can retain uncertain custody, and no remaining DTO or Arc can
+            // A consuming retirement can retain uncertain ownership, and no remaining DTO or Arc can
             // retry it or prove process exit safe.
             cancel.store(true, Ordering::Release);
             loop {
@@ -291,7 +291,7 @@ fn run_reviewed(
         Ok(lease) => lease,
         Err(mut pending) => {
             // A failed receipt-only transport retires normally; if a view may have been delivered
-            // while its namespace witness was lost, the helper remains the live owner.
+            // while its namespace proof was lost, the helper remains the live owner.
             pending.retain_failed_handoff(cancel);
             return Err(export.err().unwrap_or_else(refused));
         }

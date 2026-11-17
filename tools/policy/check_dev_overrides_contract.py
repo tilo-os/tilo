@@ -7,7 +7,7 @@ and a socket that drives the session as the user (`TILO_TEST_CONTROL`).
 `dev-session` stamps the marker the host developer-session entry requires.
 Both exist for dev images only. `agent-control` binds a socket that drives a
 headless session for hosted agent machines; it is not for the desktop or OS
-images either. `hosted-test-control` carries the shell's test seams and a
+images either. `hosted-test-control` carries the shell's test hooks and a
 sampling heap allocator, for test builds alone. `--all-features` would turn
 them on too.
 
@@ -66,7 +66,7 @@ class Violation:
             "  Why: `dev-overrides` binaries accept a fixed lock-screen password and open a\n"
             "  socket that drives the session as the user; `dev-session` marks a binary as\n"
             "  loggable by the developer session entry; `agent-control` lets a local socket drive\n"
-            "  the session; `hosted-test-control` carries test seams and a sampling heap\n"
+            "  the session; `hosted-test-control` carries test hooks and a sampling heap\n"
             "  allocator. None may ship in a production image.\n"
             "  Fix: remove the feature from this build. Dev-only binaries belong in\n"
             "  os/Containerfile.dev (the dev image), never in a production Containerfile."

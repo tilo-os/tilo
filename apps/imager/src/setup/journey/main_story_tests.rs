@@ -754,7 +754,7 @@ fn prepare_native_portable_story_source(
         .unwrap();
     let namespace = personal::preparation_namespace().unwrap();
     assert!(namespace.starts_with(home));
-    assert!(identity.custody_directory().starts_with(&namespace));
+    assert!(identity.ownership_directory().starts_with(&namespace));
     assert!(
         super::draft::DraftStore::for_session()
             .unwrap()

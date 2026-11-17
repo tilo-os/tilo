@@ -47,7 +47,7 @@ impl std::fmt::Debug for GoaCredentials {
 }
 pub struct GoaCredential {
     directory: File,
-    witness: (u32, u64, u64),
+    proof: (u32, u64, u64),
     provider: GoaProvider,
     id: String,
     identity: String,
@@ -80,7 +80,7 @@ impl GoaCredential {
         }
         Ok(Self {
             directory: directory.try_clone().map_err(|_| SecretError::Denied)?,
-            witness: (uid, metadata.dev(), metadata.ino()),
+            proof: (uid, metadata.dev(), metadata.ino()),
             provider,
             id: id.into(),
             identity: identity.into(),
@@ -89,15 +89,15 @@ impl GoaCredential {
     /// Read exact current source registration and existing refresh credentials only.
     pub fn read_blocking(&self) -> Result<GoaCredentials, SecretError> {
         let facts = self.directory.metadata().map_err(|_| SecretError::Denied)?;
-        if (facts.uid(), facts.dev(), facts.ino()) != self.witness
+        if (facts.uid(), facts.dev(), facts.ino()) != self.proof
             || facts.mode() & 0o022 != 0
-            || rustix::process::getuid().as_raw() != self.witness.0
-            || rustix::process::geteuid().as_raw() != self.witness.0
+            || rustix::process::getuid().as_raw() != self.proof.0
+            || rustix::process::geteuid().as_raw() != self.proof.0
         {
             return Err(SecretError::Denied);
         }
         crate::linux::read_goa(
-            self.witness.0,
+            self.proof.0,
             self.provider,
             self.id.clone(),
             self.identity.clone(),

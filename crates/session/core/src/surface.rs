@@ -1,7 +1,7 @@
 //! What a session's own surfaces — its panels, sheets and cards — are, on every host: where one
 //! stands, what it shows a host that draws it, and what reaches it as a person types and points.
 //!
-//! A host draws the surfaces and hands them their input; the roles above the seam only speak the
+//! A host draws the surfaces and hands them their input; the roles above the boundary only speak the
 //! vocabulary here, so the same role runs on the Linux desktop's compositor and on the page.
 
 mod host;

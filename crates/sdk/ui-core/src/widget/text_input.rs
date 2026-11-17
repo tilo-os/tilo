@@ -6096,22 +6096,22 @@ impl crate::presence::capability::PublishesPresence for TextInput {
 }
 
 impl crate::widget::controls::ActionControls for TextInput {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         if let Some(action) = &mut self.submit_action {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         if let Some((action, _)) = &mut self.submit_view {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         if let Some(verb) = &mut self.change_verb {
-            verb.install_custody(domain, attachment);
+            verb.attach(domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

@@ -1,7 +1,7 @@
 //! The work reading a workspace's governance takes, counted on each thread.
 //!
 //! Admitting one person must cost a workspace's host the same whether the
-//! workspace has ten members or ten thousand. Time is a poor witness of that
+//! workspace has ten members or ten thousand. Time is a poor proof of that
 //! (it varies with the machine and with everything else running), so the
 //! steps whose number would grow with the workspace are counted instead: a
 //! test admits someone into a small workspace and a large one and compares.

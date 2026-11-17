@@ -14,7 +14,7 @@
 //!   locked card and never asks a member for bytes.
 //! * [`ChatPermissions::can_participate`] — may this peer send / react / join a
 //!   call in the current workspace? (`Write` on the workspace.)
-//! * [`ChatPermissions::allows`] — the call-action seam (join / speak / camera
+//! * [`ChatPermissions::allows`] — the call-action boundary (join / speak / camera
 //!   / screen-share), backed by the same context.
 //!
 //! The default is [`ChatPermissions::permissive`] (the local single-user
@@ -92,7 +92,7 @@ impl ChatPermissions {
 
     /// The workspace this peer is in, as its host names it.
     pub fn workspace(&self) -> &str {
-        self.ctx.standing().workspace()
+        self.ctx.access().workspace()
     }
 
     /// May this peer remove other people's messages? Moderation in chat is

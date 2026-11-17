@@ -33,7 +33,7 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   category (`actions list`, provider `applications`).
 - **launch**: each opens from the applications provider, and the compositor
   admits its window under its own app id, which a sandboxed client gets only
-  through verified launch custody. Each window presents a frame.
+  through verified launch ownership. Each window presents a frame.
 - **processes**: each app is its own `tilolang-app` process from the tilolang
   runtime bundle, in its own user, mount and pid namespaces. No process loads
   a Vulkan driver except lavapipe.
@@ -80,7 +80,7 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   probe in place of Today (whose surface declares that it reads Notes' kinds)
   and Tasks (which declares no read). The probe runs as each app's own launched
   process (its entrypoint names the probe's runtime, not tilolang's), with that
-  app's launch custody. Tasks' join is refused as it declares no read; Today's
+  app's launch ownership. Tasks' join is refused as it declares no read; Today's
   is refused before its declared read is read, because this session's broker
   keeps what it admits and a tilolang host holds an app's route. The check
   reports that refusal.

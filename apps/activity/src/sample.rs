@@ -206,9 +206,9 @@ fn summary(caught_up: bool) -> wire::Summary {
     }
 }
 
-/// The ledger's outcomes beside the workspace's changes: what this device did that needed
+/// The log's outcomes beside the workspace's changes: what this device did that needed
 /// nobody.
-fn seed_ledger() {
+fn seed_log() {
     let owner = |app: &str, name: &str| {
         let icon = match name {
             "Print centre" => ui::icons::Icon::Printer,
@@ -330,7 +330,7 @@ fn replay() -> wire::Replay {
 
 /// The answers a capture's reads get.
 pub(crate) fn fixture(fixture: &mut Fixture<Filter>) {
-    seed_ledger();
+    seed_log();
     let caught_up = fixture.scenario() == Some("caught-up");
     fixture.answer(&wire::target(wire::SUMMARY), &summary(caught_up));
     fixture.answer(&wire::target(wire::FEED), &feed());

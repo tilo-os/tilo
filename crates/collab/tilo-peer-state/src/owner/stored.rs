@@ -114,7 +114,7 @@ pub(crate) struct StoredWorkspace {
     /// answering and the joins it admitted: what another device's join is
     /// decided against, held by every key holder that answers one.
     #[serde(default)]
-    pub join_ledger: crate::join_ledger::JoinLedger,
+    pub join_log: crate::join_log::JoinLog,
     /// The join admissions committed here, by the digest of their binding:
     /// the workspace delta that carried each one is published under its receipt.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -126,8 +126,8 @@ impl StoredWorkspace {
     /// everything this record holds besides the replica, its generation and
     /// what it published. Compared as stored, so a field the comparison
     /// cannot read counts as changed.
-    pub(crate) fn same_standing(&self, other: &Self) -> bool {
-        let standing = |record: &Self| {
+    pub(crate) fn same_access(&self, other: &Self) -> bool {
+        let access = |record: &Self| {
             serde_json::to_vec(&(
                 record.version,
                 &record.workspace,
@@ -141,12 +141,12 @@ impl StoredWorkspace {
                 &record.workspace_memberships,
                 &record.effect_receipts,
                 &record.shortcut_change,
-                &record.join_ledger,
+                &record.join_log,
                 &record.join_admissions,
             ))
             .ok()
         };
-        standing(self).is_some_and(|ours| Some(ours) == standing(other))
+        access(self).is_some_and(|ours| Some(ours) == access(other))
     }
 
     /// Whether this device keeps the workspace's records itself: its own host orders the

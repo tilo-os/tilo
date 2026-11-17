@@ -12,7 +12,7 @@ use tilo_desktop_model::{Workspace, projection};
 /// survive. Two things the document cannot take away: an owner (a document
 /// that names none leaves it) and a schedule claim this device holds for a
 /// shortcut the workspace still has. Effect receipts are the document's, plus
-/// those of `kept` it omits: a receiver with no receipt ledger of its own
+/// those of `kept` it omits: a receiver with no receipt log of its own
 /// passes the receipts it already projected, which are immutable.
 pub fn adopt_workspace(
     workspace: &mut Workspace,

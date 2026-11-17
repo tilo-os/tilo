@@ -77,7 +77,7 @@ mod linux {
         fn tilo_nemo_free(context: *mut c_void);
     }
 
-    // This witness is private to a fixed review receipt. It cannot manufacture
+    // This approval is private to a fixed review receipt. It cannot manufacture
     // catalogue authority, admit a different size, or install a model.
     struct ImmutableReviewModel(File);
     impl ImmutableReviewModel {

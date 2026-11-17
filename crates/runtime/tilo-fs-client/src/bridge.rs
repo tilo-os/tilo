@@ -129,7 +129,7 @@ where
     }
 
     /// Close the queue and observe the exact worker and transport outcome.
-    /// Requires sole custody after all FUSE callbacks and handles have retired.
+    /// Requires sole ownership after all FUSE callbacks and handles have retired.
     pub(crate) fn retire(self) -> io::Result<()> {
         let mut inner = Arc::try_unwrap(self.0)
             .map_err(|_| io::Error::other("retained source still has active owners"))?;

@@ -305,7 +305,7 @@ impl InstalledScratchIdentity {
             || current.partition.metadata()?.rdev() != self.facts.partition_rdev
             || current.disk.metadata()?.rdev() != self.facts.disk_rdev
         {
-            return Err(refusal("Scratch held block custody changed"));
+            return Err(refusal("Scratch held block ownership changed"));
         }
         let target_extent = extent(&self.facts.volume)?;
         for bytes in plans {

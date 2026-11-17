@@ -326,8 +326,8 @@ anchor on installed systems; only replacing the root does.
   each update's Rekor signed entry timestamp, which proves the log accepted the
   signature; it does not fetch a fresh inclusion proof and checkpoint, so it
   cannot detect a log that shows different views to different clients.
-- **Independent transparency witness.** Rekor provides public append-only
-  evidence, but the repository has no separately administered witness key and
+- **Independent transparency approval.** Rekor provides public append-only
+  evidence, but the repository has no separately administered approval key and
   checkpoint/freshness service yet. That independent operator is still needed
   for robust split-view and freeze detection; the existing release-signed
   freshness attestation is only the migration anchor, not an independent vote.

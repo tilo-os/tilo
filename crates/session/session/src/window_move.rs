@@ -200,7 +200,7 @@ impl Moves {
     ) {
         let read = shared.desktop.with_policy(|policy| {
             policy.handle().read(|tree| {
-                let here = standing(tree, tab, &shared.person, &shared.earlier)?;
+                let here = tab_window(tree, tab, &shared.person, &shared.earlier)?;
                 let there = workspace_at(tree, to, &shared.person, &shared.earlier)?;
                 Some((here, there))
             })
@@ -1041,7 +1041,7 @@ struct WorkspaceRead {
 
 /// What stands at `tab` : the window filling it, the app that window belongs to, and the workspace
 /// it is in.
-struct Standing {
+struct TabWindow {
     app: String,
     window: u64,
     workspace: WorkspaceRead,
@@ -1060,7 +1060,7 @@ fn tab_tile(tree: &Layout, tab: TabId) -> Option<&TileContent> {
 
 /// The window `tab` shows and the workspace the tab stands in; `None` when the tab is not on the
 /// shell or holds no window of an app this device started.
-fn standing(tree: &Layout, tab: TabId, person: &str, earlier: &[String]) -> Option<Standing> {
+fn tab_window(tree: &Layout, tab: TabId, person: &str, earlier: &[String]) -> Option<TabWindow> {
     let TileContent::Foreign { app_id, surface_id } = tab_tile(tree, tab)? else {
         return None;
     };
@@ -1072,7 +1072,7 @@ fn standing(tree: &Layout, tab: TabId, person: &str, earlier: &[String]) -> Opti
                 .any(|group| group.tabs.iter().any(|held| held.id == tab))
         })
     })?;
-    Some(Standing {
+    Some(TabWindow {
         app: app_id.clone(),
         window: *surface_id,
         workspace: read(workspace, person, earlier),

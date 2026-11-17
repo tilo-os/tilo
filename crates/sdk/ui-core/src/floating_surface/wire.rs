@@ -96,7 +96,7 @@ impl Recipient {
 #[must_use]
 pub fn recipients_matching(all: &[Recipient], query: &str) -> Vec<Recipient> {
     let needle = query.trim().to_lowercase();
-    let standing = |recipient: &Recipient| {
+    let rank = |recipient: &Recipient| {
         let name = recipient.name.to_lowercase();
         if name == needle {
             return Some(4);
@@ -125,9 +125,9 @@ pub fn recipients_matching(all: &[Recipient], query: &str) -> Vec<Recipient> {
     }
     let mut found: Vec<(u8, &Recipient)> = all
         .iter()
-        .filter_map(|recipient| Some((standing(recipient)?, recipient)))
+        .filter_map(|recipient| Some((rank(recipient)?, recipient)))
         .collect();
-    found.sort_by_key(|(standing, _)| std::cmp::Reverse(*standing));
+    found.sort_by_key(|(rank, _)| std::cmp::Reverse(*rank));
     found
         .into_iter()
         .take(12)

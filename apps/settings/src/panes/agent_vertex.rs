@@ -1,13 +1,13 @@
 //! Google Vertex AI, or the Gemini API, as an agent model provider, signed in
 //! with Google rather than set up with an API key. The person signs in in the
-//! system browser (PKCE with a loopback redirect, through account custody),
+//! system browser (PKCE with a loopback redirect, through account credentials),
 //! then chooses the Google Cloud project billed for requests and, for Vertex
 //! AI, the location they run in and the model.
 
 use std::sync::Arc;
 
-use account_custody::cloud_projects::{self, CloudProject};
-use account_custody::{Capability, Custodian, CustodyError, OAuthIssuer, OAuthUse};
+use account_credentials::cloud_projects::{self, CloudProject};
+use account_credentials::{Capability, CredentialError, CredentialStore, OAuthIssuer, OAuthUse};
 use accounts::AccountId;
 use agent_provider_config::{
     ModelDescriptor, ProviderConfig, ProviderProfile, SignInCredential, VERTEX_DEFAULT_LOCATION,
@@ -148,14 +148,18 @@ impl VertexSetup {
         self.projects = projects;
     }
 
-    pub(crate) fn begin(&mut self, custodian: &Custodian, opener: &Arc<dyn BrowserOpener>) {
+    pub(crate) fn begin(
+        &mut self,
+        credential_store: &CredentialStore,
+        opener: &Arc<dyn BrowserOpener>,
+    ) {
         if self.waiting() {
             return;
         }
         self.message = None;
-        let authorization = match custodian.begin_sign_in_for(GOOGLE_MODELS, None) {
+        let authorization = match credential_store.begin_sign_in_for(GOOGLE_MODELS, None) {
             Ok(authorization) => authorization,
-            Err(CustodyError::NotConfigured { .. }) => {
+            Err(CredentialError::NotConfigured { .. }) => {
                 self.message = Some(t("agent-vertex-not-configured"));
                 return;
             }
@@ -172,10 +176,10 @@ impl VertexSetup {
             return;
         };
         let url = authorization.url().to_owned();
-        let custodian = custodian.clone();
+        let credential_store = credential_store.clone();
         let grant = grant_id(&self.profile_id);
         let wait = SignInWait::browser(&url, cancel, opener, move || {
-            Ok(Custodian::finish_sign_in(authorization)
+            Ok(CredentialStore::finish_sign_in(authorization)
                 .map_err(|error| error.to_string())
                 .and_then(|tokens| {
                     if tokens.scope.as_deref().is_some_and(|scopes| {
@@ -185,7 +189,7 @@ impl VertexSetup {
                     }) {
                         return Err(t("agent-vertex-scope-missing"));
                     }
-                    custodian
+                    credential_store
                         .seal_oauth(&grant, &tokens)
                         .map_err(|error| error.to_string())?;
                     let projects = cloud_projects::google_cloud_projects(
@@ -612,9 +616,9 @@ pub(crate) fn apply_gemini(
 }
 
 #[cfg(test)]
-pub(crate) fn signed_in(custodian: &Custodian, profile_id: &str) -> bool {
+pub(crate) fn signed_in(credential_store: &CredentialStore, profile_id: &str) -> bool {
     matches!(
-        custodian.oauth_grant_state(&grant_id(profile_id)),
-        Ok(account_custody::GrantState::Usable)
+        credential_store.oauth_grant_state(&grant_id(profile_id)),
+        Ok(account_credentials::GrantState::Usable)
     )
 }

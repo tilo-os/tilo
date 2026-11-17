@@ -162,7 +162,7 @@ pub(super) fn answer(
         .view_read_policy(workspace, &caller, "so.tilo.chat", "")
         .filter(|fresh| {
             fresh.workspace == policy.workspace
-                && fresh.standing == policy.standing
+                && fresh.access == policy.access
                 && fresh.sandbox == policy.sandbox
         })
         .ok_or_else(|| unavailable("feedback admission retired"))?;
@@ -203,7 +203,7 @@ fn admission(
                 .device_public_key()
                 .ok_or_else(|| unavailable("reporter device unavailable"))?,
         ),
-        standing: serde_json::to_value(fresh.standing).map_err(|error| unavailable(&error))?,
+        access: serde_json::to_value(fresh.access).map_err(|error| unavailable(&error))?,
         sandbox: serde_json::to_value(fresh.sandbox).map_err(|error| unavailable(&error))?,
         unix_time: fresh.unix_time,
     })
@@ -283,7 +283,7 @@ impl CanonicalReceiptSource for RetainedSource {
     }
     fn keeps_content(&self, hash: &str) -> Result<bool, Error> {
         // Only bytes the host's own store keeps, verified against their
-        // address, witness a report's screenshot.
+        // address, approval a report's screenshot.
         Ok(self
             .link
             .content_blob(self.workspace, hash)

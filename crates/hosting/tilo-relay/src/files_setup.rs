@@ -1,4 +1,4 @@
-//! Host first-run preparation. Identity remains in its existing custody;
+//! Host first-run preparation. Identity remains in its existing ownership;
 //! creation is a separate, explicit choice from unavailable recovery.
 use std::path::{Path, PathBuf};
 

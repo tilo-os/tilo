@@ -707,7 +707,7 @@ impl<M: ListModel> VirtualList<M> {
             DropPlacement::Inside
         };
         let mut target = key.clone();
-        let mut seam = if fraction < 0.5 { row.y0 } else { row.y1 };
+        let mut edge = if fraction < 0.5 { row.y0 } else { row.y1 };
         if placement == DropPlacement::After
             && marks.is_branch(key)
             && !marks.is_folded(key)
@@ -716,7 +716,7 @@ impl<M: ListModel> VirtualList<M> {
         {
             target = below;
             placement = DropPlacement::Before;
-            seam = row.y1;
+            edge = row.y1;
         }
         let indent = self.rect.x0
             + self.lead
@@ -726,7 +726,7 @@ impl<M: ListModel> VirtualList<M> {
         let preview = match placement {
             DropPlacement::Inside => Rect::new(indent, row.y0, right, row.y1),
             DropPlacement::Before | DropPlacement::After => {
-                Rect::new(indent, seam - 1.0, right, seam + 1.0)
+                Rect::new(indent, edge - 1.0, right, edge + 1.0)
             }
         };
         let folded = placement == DropPlacement::Inside

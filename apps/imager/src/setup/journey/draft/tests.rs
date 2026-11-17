@@ -39,14 +39,14 @@ tilo_test_env::scenario! {
         assert!(matches!(store.review().unwrap(), DraftStatus::Missing));
         let reserved = store.reserve(&choices(), IdentityKind::New).unwrap();
         assert!(matches!(store.review().unwrap(), DraftStatus::Pending(_)));
-        let custody = reserved.identity_directory();
+        let ownership = reserved.identity_directory();
         let prepared = Arc::new(
-            PreparedIdentity::create(&custody, "Ada", [1, 2, 3], IdentityStorage::Files).unwrap(),
+            PreparedIdentity::create(&ownership, "Ada", [1, 2, 3], IdentityStorage::Files).unwrap(),
         );
         let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![12, 34, 56, 255]).unwrap();
         prepared.update_photo(Some(photo.clone())).unwrap();
         prepared.update_name("Ada").unwrap();
-        let before = runtime_identity::load_from_path(custody.join("primary.json"))
+        let before = runtime_identity::load_from_path(ownership.join("primary.json"))
             .unwrap()
             .sign(b"restart-proof")
             .unwrap();
@@ -64,14 +64,14 @@ tilo_test_env::scenario! {
         drop(store);
         let reopened = DraftStore::open(&path).unwrap();
         let DraftStatus::Ready(ready) = reopened.review().unwrap() else {
-            panic!("acknowledged custody missing");
+            panic!("acknowledged ownership missing");
         };
         assert_eq!(ready.kind(), IdentityKind::New);
         assert_eq!(ready.choices(), &changed);
         let prepared = ready.resume().unwrap();
         assert_eq!(prepared.metadata().unwrap().display_name, "Ada");
         assert_eq!(prepared.metadata().unwrap().profile_photo, Some(photo));
-        let after = runtime_identity::load_from_path(custody.join("primary.json"))
+        let after = runtime_identity::load_from_path(ownership.join("primary.json"))
             .unwrap()
             .sign(b"restart-proof")
             .unwrap();
@@ -89,13 +89,13 @@ tilo_test_env::scenario! {
         }
         reopened.retire().unwrap();
         assert!(matches!(reopened.review().unwrap(), DraftStatus::Missing));
-        assert!(custody.join("primary.json").is_file());
+        assert!(ownership.join("primary.json").is_file());
         assert_ne!(
             reopened
                 .reserve(&choices(), IdentityKind::New)
                 .unwrap()
                 .operation_directory(),
-            custody.parent().unwrap()
+            ownership.parent().unwrap()
         );
     }
 

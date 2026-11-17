@@ -1,4 +1,4 @@
-//! Feedback custody produced by an existing certified peer. Configuration picks
+//! Feedback ownership produced by an existing certified peer. Configuration picks
 //! an existing destination; only its authenticated owner supplies admission.
 use std::cell::RefCell;
 use std::collections::HashMap;

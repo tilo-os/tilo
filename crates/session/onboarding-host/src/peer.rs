@@ -62,13 +62,13 @@ impl Peer {
                 "This computer already has an identity",
             ));
         }
-        // The package's importer later creates its custody in the real
+        // The package's importer later creates its ownership in the real
         // identity directory, so that directory must already be private.
         std::fs::create_dir_all(identity_dir)?;
         std::fs::set_permissions(identity_dir, std::fs::Permissions::from_mode(0o700))?;
         // The joined member identity is staged privately while the package is
         // being received. The package's own canonical importer then installs
-        // the person's custody into the real identity directory, so a fresh
+        // the person's ownership into the real identity directory, so a fresh
         // computer never has two competing records for the same person.
         let join_identity = identity_dir.join(".other-computer-join");
         let receiver = tilo_handoff::Receiver::join(

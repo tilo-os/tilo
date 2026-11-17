@@ -2,7 +2,7 @@
 use std::io::Read as _;
 use std::time::Duration;
 
-use account_custody::{Capability, OAuthIssuer, OAuthUse, SpotifyIdentity, TokenSet};
+use account_credentials::{Capability, OAuthIssuer, OAuthUse, SpotifyIdentity, TokenSet};
 use accounts::{Account, AccountId};
 use serde::Deserialize;
 
@@ -128,7 +128,7 @@ impl Connector {
                 },
             );
             let access = self
-                .custodian
+                .credential_store
                 .oauth_access_token(&opposite, usage, false)
                 .map_err(|_| ConnectionError::SignInFailed)?;
             let previous = self.spotify_profile(access.as_str())?;
@@ -147,7 +147,7 @@ impl Connector {
         if let Some(stable) = profile.account_id {
             account.config["spotify_account_id"] = stable.into();
         }
-        self.persist(account, account_custody::oauth_secret(tokens))
+        self.persist(account, account_credentials::oauth_secret(tokens))
     }
 }
 
@@ -194,7 +194,7 @@ mod tests {
         endpoint: String,
         issuer: &tilo_oauth::fake::FakeAuthorizationServer,
     ) -> Connector {
-        let table = account_custody::ClientTable::parse(
+        let table = account_credentials::ClientTable::parse(
             r#"
 [spotify]
 client_id = "tilo-test-client"
@@ -204,10 +204,10 @@ music_streaming = ["streaming", "user-read-private"]
 "#,
         )
         .unwrap();
-        let custody = account_custody::Custodian::for_root(Some(root.to_owned()))
+        let ownership = account_credentials::CredentialStore::for_root(Some(root.to_owned()))
             .with_client_table(table)
             .with_issuer_endpoints(OAuthIssuer::Spotify, issuer.provider());
-        let mut connector = Connector::with_custodian(root.to_owned(), custody);
+        let mut connector = Connector::with_credential_store(root.to_owned(), ownership);
         connector.spotify_api = Some(endpoint);
         connector
     }
@@ -301,7 +301,7 @@ music_streaming = ["streaming", "user-read-private"]
             }
         }
 
-        phase spotify_preparation_refuses_invalid_provider_identity_before_any_custody_write;
+        phase spotify_preparation_refuses_invalid_provider_identity_before_any_ownership_write;
         {
             for profile in [
                 serde_json::json!({"id":""}),

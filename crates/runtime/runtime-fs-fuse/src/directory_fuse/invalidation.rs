@@ -49,7 +49,7 @@ impl InvalidationControl {
         let mut slot = self
             .sender
             .lock()
-            .map_err(|_| io::Error::other("FUSE notifier custody failed"))?;
+            .map_err(|_| io::Error::other("FUSE notifier ownership failed"))?;
         if slot.is_some() || self.started.load(Ordering::Acquire) {
             return Err(io::Error::other("FUSE notifier already started"));
         }

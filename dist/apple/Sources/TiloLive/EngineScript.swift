@@ -83,10 +83,10 @@ public enum EngineScript {
       const root = document.documentElement;
       let mount;
       let said = '';
-      const standing = () => {
+      const state = () => {
         const data = root.dataset;
         const now = {
-          kind: 'standing', entry: data.entry ?? '', arrival: data.arrival ?? '', code: data.pairingCode ?? '',
+          kind: 'state', entry: data.entry ?? '', arrival: data.arrival ?? '', code: data.pairingCode ?? '',
           // A page that cannot draw empties its status line and says why in a card.
           status: ((document.getElementById('status')?.textContent ?? '')
             || (data.entry === 'unsupported' ? document.querySelector('.tilo-entry-card[data-card="renderer"] p')?.textContent ?? '' : '')).slice(0, 400),
@@ -97,18 +97,18 @@ public enum EngineScript {
         said = text;
         post(now);
       };
-      new MutationObserver(standing).observe(root,
+      new MutationObserver(state).observe(root,
         {attributes: true, attributeFilter: ['data-entry', 'data-arrival', 'data-pairing-code']});
       const ready = () => {
         const status = document.getElementById('status');
-        if (status) new MutationObserver(standing).observe(status, {childList: true, characterData: true, subtree: true});
+        if (status) new MutationObserver(state).observe(status, {childList: true, characterData: true, subtree: true});
         // The page's cards are children of its body: the one that says it cannot draw may come
         // a moment after the page said that it stopped.
-        if (document.body) new MutationObserver(standing).observe(document.body, {childList: true});
-        standing();
+        if (document.body) new MutationObserver(state).observe(document.body, {childList: true});
+        state();
       };
       if (document.readyState === 'loading') addEventListener('DOMContentLoaded', ready, {once: true}); else ready();
-      addEventListener('hashchange', standing);
+      addEventListener('hashchange', state);
 
       // What the page shows changed: its own description of itself for assistive technology
       // did. Said at most once in forty milliseconds; the engine reads what it wants then.
@@ -132,7 +132,7 @@ public enum EngineScript {
           watching = new MutationObserver(changed);
           watching.observe(mount.semantics, {subtree: true, childList: true, characterData: true, attributes: true});
         }
-        standing();
+        state();
         changed();
       };
       // The page names its mount `tiloMount` once it is in. Hearing the name being given

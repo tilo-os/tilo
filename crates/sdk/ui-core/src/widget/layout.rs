@@ -888,7 +888,7 @@ impl CompositionFocus {
         })
     }
     /// Recover focus from the retained tree after a structural mutation. No
-    /// pointer from the previous layout is read; owner custody follows the
+    /// pointer from the previous layout is read; owner ownership follows the
     /// same component boundaries as the next admitted topology.
     pub(crate) fn capture_live(root: &dyn Widget) -> Option<Self> {
         type Visit<'v> =

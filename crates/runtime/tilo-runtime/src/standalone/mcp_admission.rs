@@ -1,5 +1,5 @@
 //! Exact selected-workspace material for a single runtime MCP execution.
-//! Uses existing custody and enrollment; never enrolls, provisions or grants.
+//! Uses existing ownership and enrollment; never enrolls, provisions or grants.
 use super::{Arc, Connect, Joined, WorkspaceId};
 use tilo_actions::remote::Caller;
 use tilo_user_identity::DeviceCert;
@@ -7,12 +7,12 @@ use tilo_user_identity::DeviceCert;
 /// Why an admitted run may not go on.
 ///
 /// The client sees the refusal; only what it can act on is said, so a
-/// changed custody (the workspace or device this run was admitted for is gone)
-/// and custody that could not be read (a disk or identity store that failed
+/// changed ownership (the workspace or device this run was admitted for is gone)
+/// and ownership that could not be read (a disk or identity store that failed
 /// this once) are never the same answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::standalone) enum Refusal {
-    /// The run ended: a custody change this run was admitted for, or the
+    /// The run ended: an ownership change this run was admitted for, or the
     /// caller's own request to end it.
     Ended,
     /// This call could not be checked because the identity material could
@@ -24,13 +24,13 @@ pub(in crate::standalone) enum Refusal {
 }
 
 impl Refusal {
-    /// The message the client sees. It carries no custody material, only
+    /// The message the client sees. It carries no ownership material, only
     /// what happened to the check.
     pub(in crate::standalone) fn message(&self) -> String {
         match self {
             Self::Ended => "execution session ended".into(),
             Self::Unavailable { reason } => format!(
-                "the caller's custody could not be verified, so this call was not run: {reason}; nothing changed, retry the call"
+                "the caller's ownership could not be verified, so this call was not run: {reason}; nothing changed, retry the call"
             ),
             Self::Stranger => "the caller may not invoke this action".into(),
         }
@@ -80,24 +80,24 @@ impl SessionAdmission {
         if !self.caller.execution_is_live() {
             return Err(Refusal::Ended);
         }
-        self.check_original_custody(joined)
+        self.check_original_ownership(joined)
     }
 
-    /// Compare the custody this run was admitted with to the workspace's now.
+    /// Compare the ownership this run was admitted with to the workspace's now.
     ///
     /// Only a comparison that was actually made can end the run: material
     /// that could not be read (a full disk, a busy identity store) says
-    /// nothing about custody, so that call is refused as retryable and the
+    /// nothing about ownership, so that call is refused as retryable and the
     /// run keeps its lease. Ending it there would kill the person's whole
     /// agent session over one transient failure.
-    fn check_original_custody(&self, joined: &Joined) -> Result<(), Refusal> {
+    fn check_original_ownership(&self, joined: &Joined) -> Result<(), Refusal> {
         let (certificate, enrollment) = match joined.mcp_material(self.workspace) {
             Ok(material) => material,
             Err(reason) => {
                 tracing::warn!(
                     workspace = %self.workspace,
                     %reason,
-                    "an admitted run's custody could not be read; refusing this call, keeping the run"
+                    "an admitted run's ownership could not be read; refusing this call, keeping the run"
                 );
                 return Err(Refusal::Unavailable { reason });
             }
@@ -105,7 +105,7 @@ impl SessionAdmission {
         if certificate != self.certificate || enrollment != self.enrollment {
             tracing::warn!(
                 workspace = %self.workspace,
-                "an admitted run's workspace or device custody changed; ending the run"
+                "an admitted run's workspace or device identity changed; ending the run"
             );
             self.caller.retire_execution();
             return Err(Refusal::Ended);
@@ -119,9 +119,9 @@ impl Joined {
         &self,
         workspace: WorkspaceId,
     ) -> Result<(DeviceCert, (tilo_peer_state::join::TransportHint, u64)), String> {
-        // Read apart, so a custody that no longer matches the enrollment is
+        // Read apart, so an ownership that no longer matches the enrollment is
         // a confirmed change rather than a read that failed.
-        let (certificate, _) = self.custody.current_material(workspace)?;
+        let (certificate, _) = self.identity.current_material(workspace)?;
         let enrollment = self.owner.with_current(workspace, |view| {
             Ok((view.transport_hint()?.clone(), view.continuity()))
         })?;
@@ -138,8 +138,8 @@ impl Joined {
             return Err("noncanonical MCP workspace".into());
         }
         // Only a workspace this device currently takes part in under its
-        // enrolled custody is admitted.
-        Connect::new(self.owner.clone(), selected)?.material(&self.custody)?;
+        // enrolled ownership is admitted.
+        Connect::new(self.owner.clone(), selected)?.material(&self.identity)?;
         let (certificate, enrollment) = self.mcp_material(selected)?;
         let caller =
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
@@ -169,7 +169,7 @@ impl Joined {
             device_certificate: serde_json::to_vec(&certificate)
                 .map_err(|error| error.to_string())?,
             proof: collab_types::signer::sign_now(
-                self.custody.signer.as_ref(),
+                self.identity.signer.as_ref(),
                 runtime_identity::collaboration_join_signing_bytes(workspace),
             )
             .map_err(|error| error.to_string())?
@@ -207,11 +207,11 @@ impl Joined {
         let mut result = Ok(());
         for admission in admissions {
             // An execution may end normally after the snapshot. Its lifetime
-            // says nothing about the workspace's custody, so only the pinned
-            // material is compared; a retired run stays retired. Custody
+            // says nothing about the workspace's ownership, so only the pinned
+            // material is compared; a retired run stays retired. Ownership
             // that could not be read is retried by the next pass, as the
             // announced change stays pending.
-            if admission.check_original_custody(self) == Err(Refusal::Ended) {
+            if admission.check_original_ownership(self) == Err(Refusal::Ended) {
                 result = Err(Refusal::Ended.message());
             }
         }

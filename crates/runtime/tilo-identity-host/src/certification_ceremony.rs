@@ -79,7 +79,7 @@ pub enum Step {
     /// still is that device's.
     Renew {
         /// The certificate this one replaces, as the asking device's
-        /// custody held it.
+        /// identity store held it.
         held: DeviceCert,
     },
     /// Sign with the share approved for this session, together with the

@@ -231,8 +231,8 @@ impl AppBrokerState {
         let resolved = match resolved {
             Ok(resolved) => resolved,
             Err(error) => {
-                if let Ok(mut ledger) = self.remote_invocations.lock() {
-                    ledger.abandon(&request.invocation);
+                if let Ok(mut log) = self.remote_invocations.lock() {
+                    log.abandon(&request.invocation);
                 }
                 return Pending::ready(Err(bridge_error(error)));
             }
@@ -250,8 +250,8 @@ impl AppBrokerState {
             if let Some(forward) =
                 state.directory_forward(&caller, &root, &request, origin.as_ref(), reply.as_ref())
             {
-                if let Ok(mut ledger) = state.remote_invocations.lock() {
-                    ledger.abandon(&request.invocation);
+                if let Ok(mut log) = state.remote_invocations.lock() {
+                    log.abandon(&request.invocation);
                 }
                 super::answer_with(state.send_to_host(&caller, forward), completer);
                 return;
@@ -339,7 +339,7 @@ impl AppBrokerState {
             argument,
             &actor,
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.member(), &root.cluster_id, request),
+            &self.approval_binding(actor.member(), &root.cluster_id, request),
         )?;
         let surface = PublishedSurface {
             peer_id: root.peer_id,

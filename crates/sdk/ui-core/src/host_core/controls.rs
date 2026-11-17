@@ -97,7 +97,7 @@ pub(crate) trait ControlHost: HostCore {
     fn invoke_outer_control(&mut self, request: &ResourceInvocation<'_>) -> Started;
 
     /// The control intents this host's tree registered, by owner.
-    fn control_domain(&self) -> &crate::control_custody::ControlDomain;
+    fn control_domain(&self) -> &crate::control_domain::ControlDomain;
 
     /// Put `request` to the person in the window's palette.
     fn ask_in_palette(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) -> bool;
@@ -183,7 +183,7 @@ pub(crate) trait ControlHost: HostCore {
     /// those the components and the outer document hold.
     fn dispatch_drained_controls(
         &mut self,
-        registered: crate::control_custody::RegisteredControls,
+        registered: crate::control_domain::RegisteredControls,
     ) -> usize {
         let mut dispatched = 0usize;
         let mut registered = registered;
@@ -200,11 +200,11 @@ pub(crate) trait ControlHost: HostCore {
     /// delivered at all.
     fn dispatch_control_round(
         &mut self,
-        registered: crate::control_custody::RegisteredControls,
+        registered: crate::control_domain::RegisteredControls,
     ) -> (usize, usize) {
         let mut dispatched = 0usize;
         let mut delivered = 0usize;
-        let crate::control_custody::RegisteredControls {
+        let crate::control_domain::RegisteredControls {
             mut outer,
             components,
         } = registered;

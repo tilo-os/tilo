@@ -1,5 +1,5 @@
 //! Single owned decoder ABI. No pointer or native error is logged.
-use super::custody;
+use super::ownership;
 use local_model_service::speech::{MAX_TEXT_BYTES, SpeechError};
 use std::ffi::{CString, c_void};
 use std::fs::File;
@@ -17,8 +17,8 @@ pub struct Library {
 }
 impl Library {
     pub fn load(path: &str, digest: &str) -> Result<Self, SpeechError> {
-        let bytes = custody::verified(path, 1024 * 1024, digest)?;
-        let snapshot = custody::sealed(&bytes)?;
+        let bytes = ownership::verified(path, 1024 * 1024, digest)?;
+        let snapshot = ownership::sealed(&bytes)?;
         let path = CString::new(format!("/proc/self/fd/{}", snapshot.as_raw_fd()))
             .map_err(|_| SpeechError::ModelReceipt)?;
         // SAFETY: authenticated immutable review library, explicit local symbols;

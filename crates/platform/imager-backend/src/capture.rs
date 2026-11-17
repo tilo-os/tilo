@@ -1,4 +1,4 @@
-//! Portable capture lifetime and native authenticated process custody.
+//! Portable capture lifetime and native authenticated process ownership.
 //! Constructors certify live kernel peers; serialized caller facts alone are
 //! never authority to project a source or signal a process.
 #[cfg_attr(not(target_os = "linux"), path = "capture/host_owner/unsupported.rs")]

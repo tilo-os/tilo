@@ -113,7 +113,7 @@ def build(args):
         "default_priority": 0,
         "installed": False,
         "systemwide_activation": False,
-        "header_custody": "caller must retain approved header/package provenance",
+        "header_ownership": "caller must retain approved header/package provenance",
     }
     (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps(manifest))

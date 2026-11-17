@@ -268,11 +268,11 @@ final class TiloSourceTests: XCTestCase {
         try await enter(device: true, Self.secretQuestion)
         guard case .secret(let request) = held[0].content else { return XCTFail("the request for a secret is none") }
         XCTAssertEqual(request.name, "api.example")
-        XCTAssertEqual(request.standing, .waiting)
+        XCTAssertEqual(request.state, .waiting)
         let typed = "sk-typed-into-the-protected-field"
         try await source.keep(Secret(typed), for: request.id)
         try await until("the request says the vault has it") {
-            if case .secret(let now)? = self.held.first?.content { now.standing == .kept } else { false }
+            if case .secret(let now)? = self.held.first?.content { now.state == .kept } else { false }
         }
         // The host's vault got it, with what the question said it is for.
         let kept = try await page("return JSON.stringify(window.vault)")
@@ -319,7 +319,7 @@ final class TiloSourceTests: XCTestCase {
         // Declining needs no vault: it is Chat's own answer.
         try await source.decline(request.id)
         try await until("the request says it was declined") {
-            if case .secret(let now)? = self.held.first?.content { now.standing == .declined } else { false }
+            if case .secret(let now)? = self.held.first?.content { now.state == .declined } else { false }
         }
     }
 

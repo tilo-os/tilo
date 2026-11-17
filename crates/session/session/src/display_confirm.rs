@@ -121,7 +121,7 @@ impl Confirmation {
         }
     }
 
-    /// Whether the question standing asks about the tool's change `id` .
+    /// Whether the question lasting asks about the tool's change `id` .
     fn asks_about_tool(&self, id: u64) -> bool {
         self.asked.as_ref().is_some_and(
             |asked| matches!(asked.change, Change::Tool { id: open, .. } if open == id),

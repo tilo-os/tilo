@@ -57,7 +57,7 @@ pub use journaled::{JournalParts, Journaled};
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES};
 pub use publication::{
     DocumentWrites, HostAnswer, NativeOutgoing, NativeOutgoingEntry, SealedHistoryKeys,
-    custody_run_name, outgoing_bytes, validate_file_layout,
+    outgoing_bytes, ownership_run_name, validate_file_layout,
 };
 pub use stored::{
     NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
@@ -129,15 +129,15 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     fn read_history(&self, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
         Err("native owner history content is unavailable".into())
     }
-    /// Durably keep `bytes`, a run of `workspace`'s outgoing custody waiting behind its head,
+    /// Durably keep `bytes`, a run of `workspace`'s outgoing ownership waiting behind its head,
     /// beside the record, and answer the hash it is named by. The store keeps it while the
     /// record names it.
-    fn put_custody(&self, _workspace: WorkspaceId, _bytes: &[u8]) -> Result<[u8; 32], String> {
-        Err("native outgoing custody runs are unavailable".into())
+    fn put_ownership(&self, _workspace: WorkspaceId, _bytes: &[u8]) -> Result<[u8; 32], String> {
+        Err("native outgoing ownership runs are unavailable".into())
     }
-    /// Read a run of custody [`Self::put_custody`] kept.
-    fn read_custody(&self, _workspace: WorkspaceId, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
-        Err("native outgoing custody runs are unavailable".into())
+    /// Read a run of ownership [`Self::put_ownership`] kept.
+    fn read_ownership(&self, _workspace: WorkspaceId, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        Err("native outgoing ownership runs are unavailable".into())
     }
     /// False once a publication may or may not have reached disk; the owner
     /// then stays fenced until it is reopened from what the disk holds.
@@ -405,9 +405,9 @@ impl NativeCommittedView {
     }
     /// Whether a publication of `peer` and `record` leaves everything
     /// authorization reads from this view as it is: the replica's governance
-    /// ([`StatePeer::same_policy`]) and the record's standing in the workspace.
+    /// ([`StatePeer::same_policy`]) and the record's access in the workspace.
     fn same_policy(&self, peer: &StatePeer, record: &stored::StoredWorkspace) -> bool {
-        self.peer.same_policy(peer) && self.record.same_standing(record)
+        self.peer.same_policy(peer) && self.record.same_access(record)
     }
     fn security_digest(&self) -> Result<[u8; 32], String> {
         if let Some(digest) = self.security.get() {
@@ -447,7 +447,7 @@ pub struct NativeFenceSubscription {
 }
 
 /// Told what this device committed to a workspace it hosts itself, once per
-/// commit, after it is durable: such a workspace keeps no outgoing custody
+/// commit, after it is durable: such a workspace keeps no outgoing ownership
 /// (its own device is its keeper) and holds no link to a host, so what its
 /// device writes reaches the members linked to it only through whoever is
 /// told here.
@@ -481,7 +481,7 @@ impl SharedOwner {
     /// committed to the governance of `workspace`, when it hosts that
     /// workspace itself (`hosted_here`): a share, a member's role, a grant, a
     /// device it admitted, its verdict on a member's write. Such a workspace has no host that hands its
-    /// device's change on, and the custody the change is also kept in leaves
+    /// device's change on, and the ownership the change is also kept in leaves
     /// on no link, so without this the members linked to the device read it
     /// only in the governance their next link starts with.
     fn governance_kept_here(
@@ -536,7 +536,7 @@ impl SharedOwner {
     ///
     /// `policy` says whether the publication changes what authorization
     /// decides on: the workspaces held, their governance, certificates and
-    /// revocations, or this device's standing in them. Its watchers re-check
+    /// revocations, or this device's access in them. Its watchers re-check
     /// on that, not on a write to an app record, which wakes the reads of
     /// that record itself.
     fn publish(
@@ -861,7 +861,7 @@ impl NativeWorkspaceOwner {
         // ([`publication::retire_member_changes`]), which a device that
         // published none (a page entering a workspace) never has.
         let mut governed: Vec<Vec<Vec<u8>>> = Vec::new();
-        // Custody, as the host's compactions of records this device compacted ahead of it
+        // Ownership, as the host's compactions of records this device compacted ahead of it
         // leave it.
         let mut publication = candidate.record.publication.clone();
         for (origin, message) in inputs {
@@ -898,7 +898,7 @@ impl NativeWorkspaceOwner {
             let durable = stored::DurablePeer::from(live.durable_parts()?);
             // Authentication and causal admission still run for every replay.
             // Reuse the actual committed barrier only when both durable peer
-            // state and outgoing custody are byte-for-byte unchanged. In
+            // state and outgoing ownership are byte-for-byte unchanged. In
             // particular, newly settled prerequisites or retired obligations
             // still require publication before they can be observed.
             if durable == record.peer && record.publication == previous_publication {
@@ -1174,8 +1174,8 @@ pub struct AppWrite {
     pub app_id: String,
     pub cluster_id: String,
     pub document_id: String,
-    /// The author's standing in the workspace.
-    pub author: tilo_action_policy::Standing,
+    /// The author's access in the workspace.
+    pub author: tilo_action_policy::MemberAccess,
     /// Whether the host replayed it from what it retains.
     pub replayed: bool,
     pub envelope: collab_types::SignedOp,

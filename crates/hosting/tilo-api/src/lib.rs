@@ -18,7 +18,7 @@
 //!   another. Pointing the agent at `https://mcp.tilo.sh/w/<workspace>` asks for exactly
 //!   that.
 //!
-//! The server holds no standing authority over anyone, and no workspace: it
+//! The server holds no access authority over anyone, and no workspace: it
 //! reads the grant a key carries, forwards each call to the host that serves
 //! the workspace best right now ([`hosts`]), and that host admits the grant's
 //! key as its person's agent, within the grant's scope and until it expires

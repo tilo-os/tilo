@@ -565,7 +565,7 @@ browser-history-paused-hint = Pages in this window are not saved to browsing his
 browser-service-sign-in-hint = Sign in to finish connecting this account.
 
 ## A window without the person's accounts
-browser-no-account-custody = This window browses without your sign-ins. Open the page in a Browser window of your own to use your accounts there
+browser-no-account-credentials = This window browses without your sign-ins. Open the page in a Browser window of your own to use your accounts there
 
 ## Actions
 

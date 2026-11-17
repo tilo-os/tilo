@@ -1,4 +1,4 @@
-//! The person's public presentation, independent of signing custody and image
+//! The person's public presentation, independent of signing ownership and image
 //! codecs: a photo holds normalized straight-alpha RGBA pixels, which the
 //! caller decoded and resized first.
 

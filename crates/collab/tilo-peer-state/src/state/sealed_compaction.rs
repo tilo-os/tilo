@@ -81,7 +81,7 @@ impl<'peer> PeerPublication<'peer> {
     }
 
     /// Draft the compaction of `history`, the record's history as its host holds it, under
-    /// `seq`, the place this device's custody keeps for it: as
+    /// `seq`, the place this device's ownership keeps for it: as
     /// [`Self::draft_sealed_compaction`] drafts the history this replica holds.
     ///
     /// # Errors

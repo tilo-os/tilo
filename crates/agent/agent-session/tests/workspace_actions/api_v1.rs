@@ -669,9 +669,9 @@ async fn a_file_larger_than_one_request_goes_up_in_pieces_that_resume() {
             &[],
         )
         .await;
-    let (status, standing) = json_of(reply).await;
-    assert_eq!(status, 200, "{standing}");
-    assert_eq!(standing["offset"], json!(1_000_000), "{standing}");
+    let (status, access) = json_of(reply).await;
+    assert_eq!(status, 200, "{access}");
+    assert_eq!(access["offset"], json!(1_000_000), "{access}");
 
     // A piece sent again from where it already stands is refused, with the
     // offset to send from: the workspace never keeps it twice.
@@ -689,13 +689,13 @@ async fn a_file_larger_than_one_request_goes_up_in_pieces_that_resume() {
         (409, &json!("offset_mismatch")),
         "{refused}"
     );
-    let (status, standing) = backend.get(&upload).await;
-    assert_eq!((status, &standing["offset"]), (200, &json!(1_000_000)));
+    let (status, access) = backend.get(&upload).await;
+    assert_eq!((status, &access["offset"]), (200, &json!(1_000_000)));
 
     // After a connection that stopped, the next piece continues from where
     // the workspace says the upload stands, and the last one answers the
     // content the whole file is kept under.
-    let mut at = standing["offset"].as_u64().unwrap() as usize;
+    let mut at = access["offset"].as_u64().unwrap() as usize;
     let mut content = Value::Null;
     while at < whole.len() {
         let chunk = piece(at, 1_000_000);

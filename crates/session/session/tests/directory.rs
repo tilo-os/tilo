@@ -301,16 +301,16 @@ fn ask_to_join(session: &mut Session, key: &str) {
     // carried out says why instead of waiting out the suite's bound for a join never asked for.
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let standing = session
+        let state = session
             .workspace_directory()
             .expect("the session hosts the workspace directory")
             .directory();
-        if standing.listings.iter().any(|listing| listing.key == key) {
+        if state.listings.iter().any(|listing| listing.key == key) {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the sheet lists the workspace to join: {standing:?}"
+            "the sheet lists the workspace to join: {listing:?}"
         );
         session.step(Duration::from_millis(10)).unwrap();
     }
@@ -692,7 +692,7 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    // This computer's certificate lasted a day, and it ran out twelve hours ago: custody starts
+    // This computer's certificate lasted a day, and it ran out twelve hours ago: ownership starts
     // holding one the host would refuse for having run out.
     let (person_hex, expired_paths) = expired_throwaway_identity(&mut home);
     let person = hex::decode(&person_hex)
@@ -720,7 +720,7 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
     look_up_site(&mut session, &lounge.entry);
     ask_to_join(&mut session, &lounge.workspace);
     wait_until_the_lounge_is_here(&mut session, &lounge);
-    // What the join presented was the renewal, not the certificate that had run out: custody holds
+    // What the join presented was the renewal, not the certificate that had run out: ownership holds
     // a certificate issued since, and the workspace holds this device under it.
     let presented = tilo_user_identity::persist::read_device_cert(&expired_paths.device_cert)
         .expect("the presented certificate");

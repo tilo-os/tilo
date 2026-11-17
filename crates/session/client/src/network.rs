@@ -373,8 +373,8 @@ pub enum Cmd {
         channel: [u8; 32],
         own: Option<tilo_relay_protocol::OwnedChannel>,
     },
-    /// Send this device's owner's outgoing custody of the workspace on `ws` to its peers.
-    PublishCustody(Topic),
+    /// Send this device's owner's outgoing ownership of the workspace on `ws` to its peers.
+    PublishOwnership(Topic),
     /// Say which devices workspace `ws` admits, and until when each of their certificates holds.
     Roster {
         ws: Topic,

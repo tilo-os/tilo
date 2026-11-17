@@ -284,7 +284,7 @@ pub enum RefusalReason {
     RateLimited,
     /// This sibling cannot open halves (it does not hold the person's root).
     #[error("this device cannot release halves")]
-    NotACustodian,
+    NotAKeyHolder,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]

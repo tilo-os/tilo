@@ -114,9 +114,13 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("vault");
-        let created = FORMAT.load_or_create_key(&dir, Custody::LocalFile).unwrap();
+        let created = FORMAT
+            .load_or_create_key(&dir, VaultBackend::LocalFile)
+            .unwrap();
         assert_eq!(persisted_key(&dir).as_slice(), created.expose_secret());
-        let reloaded = FORMAT.load_or_create_key(&dir, Custody::LocalFile).unwrap();
+        let reloaded = FORMAT
+            .load_or_create_key(&dir, VaultBackend::LocalFile)
+            .unwrap();
         assert_eq!(reloaded, created);
     }
     {
@@ -132,7 +136,9 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
                 let hold = std::sync::Arc::clone(&hold);
                 workers.push(std::thread::spawn(move || {
                     hold.wait();
-                    FORMAT.load_or_create_key(&dir, Custody::LocalFile).unwrap()
+                    FORMAT
+                        .load_or_create_key(&dir, VaultBackend::LocalFile)
+                        .unwrap()
                 }));
             }
             let keys: Vec<_> = workers
@@ -152,7 +158,9 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
         tilo_files::native::private::create_atomic(&dir.join(KEY_FILE), &[0x11; KEY_LEN]).unwrap();
-        let key = FORMAT.load_or_create_key(dir, Custody::LocalFile).unwrap();
+        let key = FORMAT
+            .load_or_create_key(dir, VaultBackend::LocalFile)
+            .unwrap();
         assert_eq!(key.expose_secret(), &[0x11; KEY_LEN]);
         assert_eq!(std::fs::read(dir.join(KEY_FILE)).unwrap(), [0x11; KEY_LEN]);
     }
@@ -161,7 +169,11 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
         let dir = root.path();
         let sealed = FORMAT.seal(&key(3), b"orphaned").unwrap();
         std::fs::write(dir.join(VAULT_FILE), &sealed).unwrap();
-        assert!(FORMAT.load_or_create_key(dir, Custody::LocalFile).is_none());
+        assert!(
+            FORMAT
+                .load_or_create_key(dir, VaultBackend::LocalFile)
+                .is_none()
+        );
         assert!(!dir.join(KEY_FILE).exists());
         assert_eq!(std::fs::read(dir.join(VAULT_FILE)).unwrap(), sealed);
     }
@@ -169,14 +181,22 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
         tilo_files::native::private::create_atomic(&dir.join(KEY_FILE), b"short").unwrap();
-        assert!(FORMAT.load_or_create_key(dir, Custody::LocalFile).is_none());
+        assert!(
+            FORMAT
+                .load_or_create_key(dir, VaultBackend::LocalFile)
+                .is_none()
+        );
         assert_eq!(std::fs::read(dir.join(KEY_FILE)).unwrap(), b"short");
     }
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
         std::fs::create_dir(dir.join(KEY_FILE)).unwrap();
-        assert!(FORMAT.load_or_create_key(dir, Custody::LocalFile).is_none());
+        assert!(
+            FORMAT
+                .load_or_create_key(dir, VaultBackend::LocalFile)
+                .is_none()
+        );
         assert!(dir.join(KEY_FILE).is_dir());
     }
 }
@@ -200,7 +220,9 @@ fn local_keys_are_owner_only_and_non_private_keys_are_kept() {
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(mode)).unwrap();
 
         assert!(
-            FORMAT.load_or_create_key(dir, Custody::LocalFile).is_none(),
+            FORMAT
+                .load_or_create_key(dir, VaultBackend::LocalFile)
+                .is_none(),
             "mode {mode:o} key must not be used or replaced"
         );
 
@@ -214,7 +236,7 @@ fn local_keys_are_owner_only_and_non_private_keys_are_kept() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         FORMAT
-            .load_or_create_key(root.path(), Custody::LocalFile)
+            .load_or_create_key(root.path(), VaultBackend::LocalFile)
             .unwrap();
         let mode = std::fs::metadata(root.path().join(KEY_FILE))
             .unwrap()
@@ -228,7 +250,7 @@ fn local_keys_are_owner_only_and_non_private_keys_are_kept() {
     {
         let root = tempfile::tempdir().unwrap();
         let key = FORMAT
-            .load_or_create_key(root.path(), Custody::LocalFile)
+            .load_or_create_key(root.path(), VaultBackend::LocalFile)
             .unwrap();
         let sealed = FORMAT.seal(&key, b"every password").unwrap();
         let from_file = key_from_bytes(&persisted_key(root.path())).unwrap();
@@ -237,9 +259,12 @@ fn local_keys_are_owner_only_and_non_private_keys_are_kept() {
             b"every password",
             "the key file alone opens the vault"
         );
-        let label = Custody::LocalFile.label().to_lowercase();
+        let label = VaultBackend::LocalFile.label().to_lowercase();
         assert!(label.contains("file"), "{label:?} must name the key file");
-        assert_ne!(Custody::LocalFile.label(), Custody::System.label());
+        assert_ne!(
+            VaultBackend::LocalFile.label(),
+            VaultBackend::System.label()
+        );
         for overclaim in ["encrypt", "protect", "secure", "sealed"] {
             assert!(
                 !label.contains(overclaim),

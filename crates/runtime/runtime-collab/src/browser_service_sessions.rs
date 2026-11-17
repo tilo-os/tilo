@@ -1,8 +1,8 @@
-//! Request-scoped account credentials from the session's custody; never a
+//! Request-scoped account credentials from the session's ownership; never a
 //! collaboration event or document.
 //!
 //! One request shape on an app's own admitted route reaches the one
-//! custodian, the session, which holds the person's account vault:
+//! owner, the session, which holds the person's account vault:
 //!
 //! - Browser lists, resolves and forgets its website sessions;
 //! - Settings, the keeper of the person's accounts, seals an account's
@@ -13,7 +13,7 @@
 //!   ([`BrowserServiceSessionCommand::ReleaseAccountSecret`]).
 //!
 //! A sandboxed app never opens the vault itself: its sandbox reaches neither
-//! the vault's files nor the key custody that seals them.
+//! the vault's files nor the key storage that seals them.
 use browser_continuity_core::sessions::{Service, SessionCookies};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -22,7 +22,7 @@ pub const MAX_BROWSER_SERVICE_SESSION_COMMAND_BYTES: usize = 4096;
 pub const MAX_BROWSER_SERVICE_SESSION_REPLY_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_BROWSER_SERVICE_SESSIONS: usize = 128;
 
-/// The longest account secret custody seals or releases.
+/// The longest account secret storage seals or releases.
 pub const MAX_ACCOUNT_SECRET_BYTES: usize = 2048;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,7 +136,7 @@ impl BrowserServiceSessionCommand {
         }
     }
     /// Whether only Browser may send this: its website sessions. The
-    /// account-secret requests are each authorized by the custodian for the
+    /// account-secret requests are each authorized by the owner for the
     /// app sending them.
     pub fn browser_only(&self) -> bool {
         matches!(

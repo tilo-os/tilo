@@ -142,7 +142,7 @@ fn read_protected_inventory(
         || before.bytes != len
     {
         return Err(refused(
-            "Protected inventory is not exact root-private custody",
+            "Protected inventory is not exact root-private ownership",
         ));
     }
     check_inventory_readonly(&file)?;
@@ -189,7 +189,7 @@ impl OriginalInventoryGrant {
             (serde_json::to_vec(raw)?, None)
         } else {
             return Err(refused(
-                "Selected original applications lack protected inventory custody",
+                "Selected original applications lack protected inventory ownership",
             ));
         };
         if bytes.is_empty()

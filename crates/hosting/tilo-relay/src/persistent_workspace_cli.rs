@@ -746,7 +746,7 @@ async fn answer_confirm(
 }
 
 /// Where the entry whose removal secret hashes to `removal_sha256` stands.
-async fn answer_standing(
+async fn answer_state(
     workspaces: &Workspaces,
     workspace: &str,
     request: String,
@@ -758,8 +758,8 @@ async fn answer_standing(
             reason: "the removal digest must be 64 hex characters".into(),
         };
     };
-    match workspaces.wait_list_standing(workspace, removal).await {
-        Ok(standing) => OperatorEvent::Standing { request, standing },
+    match workspaces.wait_list_state(workspace, removal).await {
+        Ok(state) => OperatorEvent::Status { request, state },
         Err(error) => OperatorEvent::WaitListFailed {
             request,
             reason: error.to_string(),
@@ -797,11 +797,11 @@ async fn answer_wait_list_command(
             request,
             confirm_sha256,
         } => answer_confirm(context, request, &confirm_sha256).await,
-        OperatorCommand::Standing {
+        OperatorCommand::Status {
             request,
             removal_sha256,
         } => {
-            answer_standing(
+            answer_state(
                 &context.workspaces,
                 &context.workspace,
                 request,
@@ -1805,10 +1805,10 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
             }
             // A question about an address, and nothing about the address in
             // its answer: the operator may ask it of a running workspace.
-            Ok(OperatorCommand::Standing {
+            Ok(OperatorCommand::Status {
                 request,
                 removal_sha256,
-            }) => answer_standing(
+            }) => answer_state(
                 &context.workspaces,
                 &context.workspace,
                 request,
@@ -1818,7 +1818,7 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
             .to_line(),
             Ok(other) => OperatorEvent::Unanswered {
                 reason: format!(
-                    "the operator socket takes import_people and standing, not {}; owners and \
+                    "the operator socket takes import_people and state, not {}; owners and \
                      administrators let people in with `tilo members add` and `tilo members \
                      invite`, and owners choose a workspace's hosts with `tilo workspace hosts`",
                     other.to_line().trim()
@@ -1897,7 +1897,7 @@ async fn serve_operator(
                 Some(Ok(command @ (OperatorCommand::WaitList { .. }
                 | OperatorCommand::Unlist { .. }
                 | OperatorCommand::Confirm { .. }
-                | OperatorCommand::Standing { .. }))) => {
+                | OperatorCommand::Status { .. }))) => {
                     println!("{}", answer_wait_list_command(context, command).await.to_line());
                 }
                 // An invitation the entry mailed itself is acknowledged here:

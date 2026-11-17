@@ -240,7 +240,7 @@ tilo_test_env::scenario! {
             );
             assert!(
                 history.needs_refresh(&outer, 900.0),
-                "closed custody is not a current frontier"
+                "closed ownership is not a current frontier"
             );
         }
     }

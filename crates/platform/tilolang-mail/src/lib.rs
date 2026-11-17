@@ -3,7 +3,7 @@
 //! types in step with it ([`origin`]).
 //!
 //! The accounts are the workspace's settings' (the account store Settings writes), and their
-//! credentials stay in custody, read by the connector in native code: package code never sees
+//! credentials stay held, read by the connector in native code: package code never sees
 //! them. Where an instance runs in a tilolang host, which holds no network and no credential,
 //! the connector runs in a process of its own that the system starts for the app ([`serve`])
 //! and the instance's origin reaches it over a socket ([`remote`], [`wire`]).

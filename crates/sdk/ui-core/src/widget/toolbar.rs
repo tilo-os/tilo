@@ -1231,24 +1231,22 @@ impl Toolbar {
 const SEPARATOR_HAIRLINE: f32 = 1.0;
 
 impl crate::widget::controls::ActionControls for Toolbar {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        let _ = self.overflow_action.install_custody(domain, attachment);
+        let _ = self.overflow_action.attach(domain, attachment);
         for item in &mut self.items {
             match item {
                 ToolbarItem::Button(command) => {
                     if let Some(action) = &mut command.action {
-                        let _ = action.install_custody(domain, attachment);
+                        let _ = action.attach(domain, attachment);
                     }
                 }
-                ToolbarItem::Element(element) => crate::widget::controls::install_control_custody(
-                    element.as_mut(),
-                    domain,
-                    attachment,
-                ),
+                ToolbarItem::Element(element) => {
+                    crate::widget::controls::attach_controls(element.as_mut(), domain, attachment)
+                }
                 _ => {}
             }
         }

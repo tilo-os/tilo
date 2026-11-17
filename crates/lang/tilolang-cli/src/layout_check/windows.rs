@@ -1498,7 +1498,7 @@ fn a_scenario_on_two_layers_is_named_apart() {
 
 /// Lay `body` out on a thread with a window's stack: a window's tree is
 /// as deep as the documents it shows, and a rich-text editor inside a
-/// row standing open needs more room than a test thread's two
+/// row held open needs more room than a test thread's two
 /// megabytes.
 fn on_a_windows_stack(body: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()

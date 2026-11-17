@@ -1913,7 +1913,7 @@ mod tests {
                     shown_named(root, "Subtasks"),
                     "the row holds the task's document at {width}×{height}"
                 );
-                // The document lists the task's subtasks: a list inside the row standing open gets
+                // The document lists the task's subtasks: a list inside the row held open gets
                 // its rows, and the row grows to hold them.
                 let outline =
                     named(root, &[ui::a11y::Role::Tree], "Subtasks").expect("the task's outline");
@@ -1931,14 +1931,14 @@ mod tests {
                         row.rect,
                         outline.rect
                     );
-                    // The row standing open folds its branch: a step
+                    // The row held open folds its branch: a step
                     // its document lists does not stand in the list
                     // again.
                     assert_eq!(
                         count_named(root, ROWS, subtask),
                         1,
                         "{subtask:?} stands once at {width}×{height}: in the document of the \
-                         row standing open, or in the list, never both"
+                         row state open, or in the list, never both"
                     );
                 }
                 // The outline's row says how far its branch got, as the list's row of the same task
@@ -2296,7 +2296,7 @@ mod tests {
         out
     }
 
-    /// Whether a list shows `label` as a row standing open into its item: the node the list
+    /// Whether a list shows `label` as a row held open into its item: the node the list
     /// publishes for that row, which is where a screen reader reads it.
     fn shows_open(node: &ui::headless::InspectionNode, label: &str) -> bool {
         let published = node.semantics.as_ref().is_some_and(|semantics| {

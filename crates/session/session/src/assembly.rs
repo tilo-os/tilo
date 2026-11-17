@@ -5,7 +5,7 @@
 //!
 //! A role in this crate takes `&Shared` or `&mut Session` and reaches an effect only through a
 //! field that every host has; what only one host can do stays behind `cfg(target_os = "linux")`
-//! here until its concern has a seam in [`crate::platform`].
+//! here until its concern has a service in [`crate::platform`].
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

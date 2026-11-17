@@ -53,7 +53,7 @@ use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_live::live_session::{LiveSession, MAX_HEARD};
 
 use super::WindowShares;
-use crate::live::{Refusal, Relayer, Standing, TurnedAway};
+use crate::live::{LiveState, Refusal, Relayer, TurnedAway};
 use crate::sync::Client;
 
 impl WindowShares {
@@ -65,7 +65,7 @@ impl WindowShares {
             return;
         }
         self.live_seen = seen;
-        self.live = sync.live_standings();
+        self.live = sync.live_states();
         self.turned = sync.live_turned_away();
         // Held weakly: a live session that ended is its session's to drop.
         self.live_sessions = crate::calls::live_sessions_of(sync)
@@ -128,8 +128,8 @@ impl WindowShares {
     /// and in a live session this device is in on lent keys, that it opens nothing another device sends.
     pub(super) fn watching_waits_for(&self, workspace: &str) -> String {
         match self.live.get(workspace) {
-            Some(Standing::Open { lent: true, .. }) => t("session-window-share-live-lent"),
-            standing => waiting_for(standing),
+            Some(LiveState::Open { lent: true, .. }) => t("session-window-share-live-lent"),
+            state => waiting_for(state),
         }
     }
 
@@ -291,13 +291,13 @@ impl WindowShares {
         let live: Vec<Value> = self
             .live
             .iter()
-            .map(|(workspace, standing)| {
+            .map(|(workspace, state)| {
                 let live_session = self
                     .live_sessions
                     .get(workspace)
                     .and_then(std::sync::Weak::upgrade);
                 let turned = self.turned.get(workspace).map_or(&[][..], Vec::as_slice);
-                live_row(workspace, standing, live_session.as_deref(), turned)
+                live_row(workspace, state, live_session.as_deref(), turned)
             })
             .collect();
         json!({
@@ -313,16 +313,16 @@ impl WindowShares {
 
 /// The word the reading says a live session's standing by: what a tool branches on, the same in every
 /// language.
-const fn state_of(standing: Option<&Standing>) -> &'static str {
-    match standing {
-        Some(Standing::Open { .. }) => "open",
-        Some(Standing::WaitingForKeys) => "waiting-for-keys",
-        Some(Standing::Keyless) => "no-keys",
-        Some(Standing::Unread) => "membership-unread",
-        Some(Standing::NoRelay) => "no-relay",
-        Some(Standing::Unreached { .. }) => "relay-unreached",
-        Some(Standing::Busy { .. }) => "relay-busy",
-        Some(Standing::Refused { .. }) => "refused",
+const fn state_of(state: Option<&LiveState>) -> &'static str {
+    match state {
+        Some(LiveState::Open { .. }) => "open",
+        Some(LiveState::WaitingForKeys) => "waiting-for-keys",
+        Some(LiveState::Keyless) => "no-keys",
+        Some(LiveState::Unread) => "membership-unread",
+        Some(LiveState::NoRelay) => "no-relay",
+        Some(LiveState::Unreached { .. }) => "relay-unreached",
+        Some(LiveState::Busy { .. }) => "relay-busy",
+        Some(LiveState::Refused { .. }) => "refused",
         None => "absent",
     }
 }
@@ -337,24 +337,24 @@ fn called(relay: &Relayer) -> String {
     }
 }
 
-/// What a workspace whose live session stands at `standing` waits for, in the person's words; nothing
+/// What a workspace whose live session stands at `state` waits for, in the person's words; nothing
 /// while it is open. `None` is a workspace this session runs no live session for.
-fn waiting_for(standing: Option<&Standing>) -> String {
-    match standing {
-        Some(Standing::Open { .. }) => String::new(),
-        Some(Standing::WaitingForKeys) => t("session-window-share-live-keys"),
-        Some(Standing::Keyless) => t("session-window-share-live-keyless"),
-        Some(Standing::Unread) => t("session-window-share-live-unread"),
-        Some(Standing::NoRelay) => t("session-window-share-live-no-relay"),
-        Some(Standing::Unreached { relay }) => t_args(
+fn waiting_for(state: Option<&LiveState>) -> String {
+    match state {
+        Some(LiveState::Open { .. }) => String::new(),
+        Some(LiveState::WaitingForKeys) => t("session-window-share-live-keys"),
+        Some(LiveState::Keyless) => t("session-window-share-live-keyless"),
+        Some(LiveState::Unread) => t("session-window-share-live-unread"),
+        Some(LiveState::NoRelay) => t("session-window-share-live-no-relay"),
+        Some(LiveState::Unreached { relay }) => t_args(
             "session-window-share-live-unreached",
             &[("device", called(relay).into())],
         ),
-        Some(Standing::Busy { relay }) => t_args(
+        Some(LiveState::Busy { relay }) => t_args(
             "session-window-share-live-busy",
             &[("device", called(relay).into())],
         ),
-        Some(Standing::Refused { relay, .. }) => t_args(
+        Some(LiveState::Refused { relay, .. }) => t_args(
             "session-window-share-live-refused",
             &[("device", called(relay).into())],
         ),
@@ -390,24 +390,24 @@ fn not_heard(unheard: usize) -> String {
 /// turned away from the workspace's live session, each with why.
 fn live_row(
     workspace: &str,
-    standing: &Standing,
+    state: &LiveState,
     live_session: Option<&LiveSession>,
     turned: &[TurnedAway],
 ) -> Value {
-    let relay = match standing {
-        Standing::Open { relay, .. }
-        | Standing::Unreached { relay }
-        | Standing::Busy { relay }
-        | Standing::Refused { relay, .. } => Some(relay),
+    let relay = match state {
+        LiveState::Open { relay, .. }
+        | LiveState::Unreached { relay }
+        | LiveState::Busy { relay }
+        | LiveState::Refused { relay, .. } => Some(relay),
         _ => None,
     };
     let unheard = live_session.map_or(0, LiveSession::unheard);
-    let epoch = match standing {
-        Standing::Open { epoch, .. } => Some(*epoch),
+    let epoch = match state {
+        LiveState::Open { epoch, .. } => Some(*epoch),
         _ => None,
     };
-    let presented = match standing {
-        Standing::Refused { epoch, .. } => Some(*epoch),
+    let presented = match state {
+        LiveState::Refused { epoch, .. } => Some(*epoch),
         _ => None,
     };
     let turned_away: Vec<Value> = turned.iter().map(turned_row).collect();
@@ -423,13 +423,13 @@ fn live_row(
     let asked_for: Vec<String> = asked_for.iter().map(ToString::to_string).collect();
     json!({
         "workspace": workspace,
-        "state": state_of(Some(standing)),
+        "state": state_of(Some(state)),
         "relay": relay.map(|relay| hex::encode(relay.device)).unwrap_or_default(),
         "relay_name": relay.map(|relay| relay.name.clone()).unwrap_or_default(),
         "relay_here": relay.is_some_and(|relay| relay.here),
-        "waiting_for": waiting_for(Some(standing)),
+        "waiting_for": waiting_for(Some(state)),
         "epoch": epoch,
-        "lent_keys": matches!(standing, Standing::Open { lent: true, .. }),
+        "lent_keys": matches!(state, LiveState::Open { lent: true, .. }),
         "presented": presented,
         "turned_away": turned_away,
         "heard": live_session.map_or(0, LiveSession::heard_total),
@@ -475,14 +475,14 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_live_sessions_standing_reads_in_a_word_and_in_the_persons_words;
+        fn a_live_sessions_state_reads_in_a_word_and_in_the_persons_words;
 
         phase an_open_live_session_waits_for_nothing_and_names_its_relay;
         // An open live session waits for nothing, and says which device carries it.
         {
             let row = live_row(
                 WORKSPACE,
-                &Standing::Open {
+                &LiveState::Open {
                     relay: relay("Ada's desktop", true),
                     epoch: 3,
                     lent: false,
@@ -506,7 +506,7 @@ mod tests {
         // A device in a live session on keys its host lent it says so: it sends what it shares and opens
         // nothing, so that it hears nobody there is no fault, and what it shares waits for nothing.
         {
-            let lent = Standing::Open {
+            let lent = LiveState::Open {
                 relay: relay("Ada's desktop", false),
                 epoch: 4,
                 lent: true,
@@ -522,7 +522,7 @@ mod tests {
         // person gave it or, for one they never named, by the start of its key; one that was refused
         // says so in other words than one that merely waits.
         {
-            let named = Standing::Unreached {
+            let named = LiveState::Unreached {
                 relay: relay("Ada's desktop", false),
             };
             let row = live_row(WORKSPACE, &named, None, &[]);
@@ -536,12 +536,12 @@ mod tests {
             let waits = row["waiting_for"].as_str().expect("what it waits for");
             assert!(waits.contains("Ada's desktop"), "{waits}");
 
-            let unnamed = waiting_for(Some(&Standing::Unreached {
+            let unnamed = waiting_for(Some(&LiveState::Unreached {
                 relay: relay("", false),
             }));
             assert!(unnamed.contains("abababab"), "{unnamed}");
 
-            let refused = Standing::Refused {
+            let refused = LiveState::Refused {
                 relay: relay("Ada's desktop", false),
                 epoch: 3,
             };
@@ -562,7 +562,7 @@ mod tests {
         // The device that relays a workspace says which endpoints it turned away from its live session and
         // why: a device whose keys are behind with both epochs, any other by its reason alone.
         {
-            let open = Standing::Open {
+            let open = LiveState::Open {
                 relay: relay("Ada's desktop", true),
                 epoch: 4,
                 lent: false,
@@ -613,7 +613,7 @@ mod tests {
         // name: it is a state and words of its own, apart from a relay that was not reached and from
         // one that refused this device, in English and in German.
         {
-            let busy = Standing::Busy {
+            let busy = LiveState::Busy {
                 relay: relay("Ada's phone", false),
             };
             let row = live_row(WORKSPACE, &busy, None, &[]);
@@ -632,10 +632,10 @@ mod tests {
                 "Ada's phone, the device that carries this workspace's calls and shared windows, is \
              taking in as many devices as it can at once; this device asks it again shortly"
             );
-            let unreached = waiting_for(Some(&Standing::Unreached {
+            let unreached = waiting_for(Some(&LiveState::Unreached {
                 relay: relay("Ada's phone", false),
             }));
-            let refused = waiting_for(Some(&Standing::Refused {
+            let refused = waiting_for(Some(&LiveState::Refused {
                 relay: relay("Ada's phone", false),
                 epoch: 3,
             }));
@@ -688,18 +688,18 @@ mod tests {
         }
 
         phase every_live_session_that_is_not_open_says_what_it_waits_for;
-        // Every standing but an open one says something, each its own, and a workspace no live session runs
+        // Every state but an open one says something, each its own, and a workspace no live session runs
         // for says so too: a row never reads as flowing by saying nothing.
         {
             let said: Vec<(&str, String)> = [
-                Some(Standing::WaitingForKeys),
-                Some(Standing::Keyless),
-                Some(Standing::Unread),
-                Some(Standing::NoRelay),
+                Some(LiveState::WaitingForKeys),
+                Some(LiveState::Keyless),
+                Some(LiveState::Unread),
+                Some(LiveState::NoRelay),
                 None,
             ]
             .iter()
-            .map(|standing| (state_of(standing.as_ref()), waiting_for(standing.as_ref())))
+            .map(|state| (state_of(state.as_ref()), waiting_for(state.as_ref())))
             .collect();
             let states: BTreeSet<&str> = said.iter().map(|(state, _)| *state).collect();
             let words: BTreeSet<&str> = said.iter().map(|(_, words)| words.as_str()).collect();
@@ -768,7 +768,7 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        let open = Standing::Open {
+        let open = LiveState::Open {
             relay: relay("Ada's desktop", true),
             epoch: 1,
             lent: false,

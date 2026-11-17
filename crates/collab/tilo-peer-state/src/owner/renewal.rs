@@ -11,7 +11,7 @@ use web_time::SystemTime;
 
 /// Whether `renewed` is a later certificate of `held`'s device from the same
 /// person's root. The certificates' signatures are checked where each is
-/// taken in: the device's custody and the workspace's governance.
+/// taken in: the device's ownership and the workspace's governance.
 #[must_use]
 pub fn renews(renewed: &DeviceCert, held: &DeviceCert) -> bool {
     renewed.renews(held)

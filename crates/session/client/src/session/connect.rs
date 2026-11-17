@@ -5,7 +5,7 @@
 //! the browser's WebTransport in a page.
 //!
 //! Over iroh a device that holds its key dials as its device key. A device
-//! whose key stays in custody (a page's, or a test's page-shaped peer) speaks
+//! whose key stays held (a page's, or a test's page-shaped peer) speaks
 //! under a key derived from its store's channel vault — a reload dials as the
 //! same endpoint — and its device signs, for every live session grant, that the
 //! endpoint speaks for it. Over WebTransport there is no endpoint: the device
@@ -48,7 +48,7 @@ pub(super) struct Dial {
     /// Made on the first connect and kept: a reload, and the links beside the
     /// session, dial the same way.
     dialer: Option<Arc<Dialer>>,
-    /// The key a custody-held device's endpoint speaks as over iroh, derived
+    /// The key an ownership-held device's endpoint speaks as over iroh, derived
     /// from its store's channel vault: a reload dials as the same endpoint.
     key: [u8; 32],
     /// This device's signed statement that the endpoint speaks for it.
@@ -178,7 +178,7 @@ pub(super) async fn connect(
 /// The session to `config`'s host, dialled from `dial`'s endpoint — bound there
 /// on the first connect and kept for reconnects. A device that holds its key
 /// dials as its device key, as a native peer does; a page's device key never
-/// leaves custody, so its endpoint speaks under its own key for the device,
+/// leaves ownership, so its endpoint speaks under its own key for the device,
 /// which signs that it does for every live session grant.
 ///
 /// An entry ([`PeerConfig::entering`]) carries `access`, this device's request
@@ -211,7 +211,7 @@ async fn connect_entering(
             ))
         })
         .clone();
-    // Over iroh a custody-held device's endpoint speaks for it by its signed
+    // Over iroh an ownership-held device's endpoint speaks for it by its signed
     // statement, which every live session grant carries; over WebTransport the
     // device proves itself on each link instead.
     #[cfg(not(target_arch = "wasm32"))]
@@ -250,7 +250,7 @@ async fn connect_entering(
 
 /// This device's statement that `endpoint` speaks for `device`, for as long
 /// as [`DELEGATION_LIFETIME_NS`]: empty for a device whose endpoint is its own
-/// key, and the device's own signature otherwise (through custody, which keeps
+/// key, and the device's own signature otherwise (through ownership, which keeps
 /// a page's key unextractable).
 #[cfg(not(target_arch = "wasm32"))]
 async fn sign_delegation(

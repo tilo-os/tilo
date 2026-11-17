@@ -1,5 +1,5 @@
 //! Private Windows recovery-to-media handoff. No identity or replace authority.
-use account_custody::hints::media::Prepared;
+use account_credentials::hints::media::Prepared;
 use serde::{Deserialize, Serialize};
 use std::{
     io,

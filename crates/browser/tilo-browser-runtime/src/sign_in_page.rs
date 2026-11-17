@@ -77,8 +77,8 @@ struct Answer {
 /// canonical bytes of what the service decodes, in base64url without
 /// padding.
 ///
-/// `root` is the person's unlocked root (`identity.mjs`) and `custody` the
-/// device key this page signs with (`device-custody.mjs`); `ask` is JSON:
+/// `root` is the person's unlocked root (`identity.mjs`) and `ownership` the
+/// device key this page signs with (`device-key.mjs`); `ask` is JSON:
 /// `{audience, challenge, client, grantKey?, grantScope?, expiresAtMs?, serverKey?, operateBrowserPages?}`.
 ///
 /// # Errors
@@ -88,12 +88,12 @@ struct Answer {
 #[wasm_bindgen(js_name = signInAnswer)]
 pub async fn sign_in_answer(
     root: JsValue,
-    custody: JsValue,
+    ownership: JsValue,
     ask: String,
 ) -> Result<String, JsError> {
     let ask: Ask = serde_json::from_str(&ask).map_err(js_error)?;
     let root = PageSigner::from_js(&root)?;
-    let device = PageSigner::from_js(&custody)?;
+    let device = PageSigner::from_js(&ownership)?;
     let challenge = device_key(&ask.challenge)?;
     let cert = issue_device_cert(
         &root,

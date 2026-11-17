@@ -1,4 +1,4 @@
-//! Device-local permission custody, not a coherent epoch or export declaration.
+//! Device-local permission ownership, not a coherent epoch or export declaration.
 use super::*;
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
@@ -171,7 +171,7 @@ impl HomeRootSet {
         }
         Ok(())
     }
-    /// Validate permission custody without claiming a content epoch.
+    /// Validate permission ownership without claiming a content epoch.
     pub fn validate(&self, cancel: &AtomicBool) -> io::Result<()> {
         self.locations.validate(cancel)?;
         for (index, approved) in &self.approved {

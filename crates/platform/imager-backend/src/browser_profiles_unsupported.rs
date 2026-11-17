@@ -1,4 +1,4 @@
-//! Browser source custody is unavailable on this host; metadata is not authority.
+//! Browser source ownership is unavailable on this host; metadata is not authority.
 use crate::account_sources::Candidate;
 use browser_continuity::Profile;
 use std::{io, path::Path, sync::atomic::AtomicBool};

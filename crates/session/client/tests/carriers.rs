@@ -162,7 +162,7 @@ impl Ada {
     }
 }
 
-/// A page's session over `carrier`: its device key stays in custody, so it
+/// A page's session over `carrier`: its device key stays held, so it
 /// dials from an endpoint its device delegated.
 fn page(
     host: &TestHost,

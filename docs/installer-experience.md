@@ -306,7 +306,7 @@ known failing essential component is not a successful golden-path install.
   policy, with a defined unlock/recovery path. Never seal another computer's
   secrets to the preparation computer and imply they will work on the target.
 - Preserve canonical authentication, grants, sealed capabilities and source
-  custody. No root credential-vault adoption, arbitrary target-user reassignment,
+  ownership. No root credential-vault adoption, arbitrary target-user reassignment,
   unsigned payloads or plaintext private-state handoffs.
 
 ## Acceptance

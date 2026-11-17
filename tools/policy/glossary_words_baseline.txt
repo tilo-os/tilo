@@ -13,8 +13,5 @@ record 55189
 slot 10899
 gate 7
 lane 4669
-custody 6334
-standing 3509
-ledger 1674
-witness 1897
-seam 584
+standing 687
+seam 7

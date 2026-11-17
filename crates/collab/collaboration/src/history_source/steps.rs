@@ -336,15 +336,15 @@ fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
                     return Kind::Bookkeeping;
                 }
                 OpType::Put(_) | OpType::Make(_) | OpType::Delete => {
-                    let ledger = if matches!(op.action, OpType::Delete) {
+                    let log = if matches!(op.action, OpType::Delete) {
                         &mut redone
                     } else {
                         &mut undone
                     };
                     if let Some(hash) = key.strip_prefix(UNDONE_KEY)
-                        && !ledger.iter().any(|known| known == hash)
+                        && !log.iter().any(|known| known == hash)
                     {
-                        ledger.push(hash.to_owned());
+                        log.push(hash.to_owned());
                     }
                     Some(key.to_string())
                 }
@@ -404,7 +404,7 @@ fn kind_by_diff(doc: &automerge::Automerge, version: &Version) -> Kind {
         .map(|meta| meta.deps.clone())
         .unwrap_or_default();
     let patches = doc.diff(&deps, &[version.hash]);
-    let ledger = |put: bool| -> Vec<String> {
+    let log = |put: bool| -> Vec<String> {
         patches
             .iter()
             .filter(|patch| patch.path.is_empty())
@@ -427,11 +427,11 @@ fn kind_by_diff(doc: &automerge::Automerge, version: &Version) -> Kind {
         // document patch whose inverse could bypass native compensation.
         return Kind::Bookkeeping;
     }
-    let undone = ledger(true);
+    let undone = log(true);
     if !undone.is_empty() {
         return Kind::Undo(undone);
     }
-    let redone = ledger(false);
+    let redone = log(false);
     if !redone.is_empty() {
         return Kind::Redo(redone);
     }

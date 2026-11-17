@@ -148,7 +148,7 @@ fn desktop_delivery_publishes_private_ciphertext_idempotently_without_activation
     );
 }
 #[test]
-fn conflicting_custody_and_cancellation_preserve_existing_data_without_browser_publication() {
+fn conflicting_ownership_and_cancellation_preserve_existing_data_without_browser_publication() {
     let private = root();
     let prepared = fixture(private.path());
     let home = private.path().join("home");

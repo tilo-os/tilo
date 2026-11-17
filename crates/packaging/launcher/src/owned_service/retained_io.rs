@@ -60,13 +60,13 @@ pub trait RetainedIoAuthority: super::ServiceAuthority {
             "Root protected source namespace not independently admitted",
         ))
     }
-    /// Retain namespace custody for recovery after the worker stops.
+    /// Retain namespace ownership for recovery after the worker stops.
     fn retain_native_owner(&self, _owner: RetainedNativeOwner) -> io::Result<()> {
         Ok(())
     }
     /// Confirm that native namespace obligations have been retired.
     fn confirm_native_retirement(&self) -> io::Result<()> {
-        Err(refused("Native source retirement custody is unavailable"))
+        Err(refused("Native source retirement ownership is unavailable"))
     }
     fn target_uid(&self) -> u32;
     fn context_sha256(&self) -> [u8; 32];
@@ -326,7 +326,7 @@ impl RetainedIoAdmission {
         if let Some(workspace) = self
             .workspace
             .lock()
-            .map_err(|_| refused("Worker custody poisoned"))?
+            .map_err(|_| refused("Worker ownership poisoned"))?
             .as_ref()
         {
             workspace.check()?;
@@ -375,7 +375,7 @@ impl RetainedIoAdmission {
         let mut held = self
             .workspace
             .lock()
-            .map_err(|_| refused("Worker custody poisoned"))?;
+            .map_err(|_| refused("Worker ownership poisoned"))?;
         if held.is_some() {
             return Err(refused("Worker already prepared"));
         }
@@ -397,7 +397,7 @@ impl RetainedIoAdmission {
         self.check()?;
         self.workspace
             .lock()
-            .map_err(|_| refused("Worker custody poisoned"))?
+            .map_err(|_| refused("Worker ownership poisoned"))?
             .as_ref()
             .ok_or_else(|| refused("Worker workspace missing"))?
             .paths()
@@ -462,9 +462,9 @@ impl RetainedIoAdmission {
     }
     pub(crate) fn splice_credentials(&self, argv: &mut Vec<String>) -> io::Result<()> {
         self.check()?;
-        super::splice_custody(
+        super::splice_ownership(
             argv,
-            &super::CustodySplice {
+            &super::OwnershipSplice {
                 token_flag: "--retained-io-fd",
                 token_fd: TOKEN_FD,
                 extra_caps: &[],
@@ -518,7 +518,7 @@ fn check_token(token: &File) -> io::Result<()> {
         || seals < 0
         || seals & SEALS != SEALS
     {
-        return Err(refused("Retained token lacks immutable root custody"));
+        return Err(refused("Retained token lacks immutable root ownership"));
     }
     Ok(())
 }

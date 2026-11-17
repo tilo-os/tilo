@@ -47,7 +47,7 @@ thread_local! {
 }
 
 /// Answer what the person's agents on the host of the page's session `peer`
-/// (`WasmPeer::id`, whose device `cert` certifies) ask them, with `custody`:
+/// (`WasmPeer::id`, whose device `cert` certifies) ask them, with `device key`:
 /// the person's root where the page holds it, else the session's own device
 /// key, as any device of theirs answers — the person is asked wherever they
 /// are. Every question and answer goes over that session's own endpoint; the
@@ -55,11 +55,11 @@ thread_local! {
 /// asking again does nothing.
 ///
 /// # Errors
-/// `custody` is no custody, or neither the person's root nor the session's
+/// `device key` is no device key, or neither the person's root nor the session's
 /// device key.
-pub(crate) fn answer_as(peer: u32, custody: &JsValue, cert: &DeviceCert) -> Result<(), JsError> {
+pub(crate) fn answer_as(peer: u32, device_key: &JsValue, cert: &DeviceCert) -> Result<(), JsError> {
     use tilo_relay_client::DeviceSigner as _;
-    let signer = PageSigner::from_js(custody)?;
+    let signer = PageSigner::from_js(device_key)?;
     let key = signer.device_public_key();
     let device = if key == cert.user_public_key {
         None

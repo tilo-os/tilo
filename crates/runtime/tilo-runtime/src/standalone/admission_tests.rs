@@ -86,7 +86,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     }
     let placed = WorkspaceId::new();
     let (joined, directory) = Joined::test_hosting(placed).await;
-    let certificate = joined.custody.device_cert.clone();
+    let certificate = joined.identity.device_cert.clone();
     let actor =
         tilo_action_broker::collab_app_broker::person_id_for_root(certificate.user_public_key);
     let mut workspace = TestWorkspace::new(placed, "Runtime APIs");
@@ -179,10 +179,10 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     );
 }
 
-/// A workspace the runtime no longer holds is a confirmed custody change: the
+/// A workspace the runtime no longer holds is a confirmed ownership change: the
 /// run ends for good, and the client is told that rather than to retry.
 #[tokio::test]
-async fn custody_the_runtime_no_longer_holds_ends_the_run() {
+async fn ownership_the_runtime_no_longer_holds_ends_the_run() {
     let workspace = WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
     let actor = tilo_action_broker::collab_app_broker::person_id_for_root(

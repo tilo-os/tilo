@@ -172,12 +172,12 @@ impl Asker {
         self.retire(questions);
         // The sheet saying what was granted makes way for a question that arrived meanwhile.
         if self.shown.borrow().is_some() && !questions.pending().is_empty() {
-            let standing = self
+            let granted_shown = self
                 .shown
                 .borrow()
                 .as_ref()
                 .is_some_and(|shown| shown.handle.is_none());
-            if standing {
+            if granted_shown {
                 self.dismiss();
             }
         }
@@ -342,7 +342,7 @@ impl Asker {
     /// Take the allowance `app_label` gave `capability` back, through the action the portal
     /// publishes for it.
     fn revoke(&self, app_id: &str, app_label: &str, capability: &str) {
-        fn standing<'a>(
+        fn revoke_action<'a>(
             resources: &'a [ResourceSpec],
             app_id: &str,
             app_label: &str,
@@ -358,11 +358,11 @@ impl Asker {
                         == Some(capability);
                 allowed
                     .then_some(resource)
-                    .or_else(|| standing(&resource.children, app_id, app_label, capability))
+                    .or_else(|| revoke_action(&resource.children, app_id, app_label, capability))
             })
         }
         let published = self.services.borrow().resources();
-        let Some((resource, action)) = standing(&published, app_id, app_label, capability)
+        let Some((resource, action)) = revoke_action(&published, app_id, app_label, capability)
             .and_then(|resource| {
                 resource
                     .actions
@@ -924,7 +924,7 @@ fn step_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
             &[("risk", &tilo_sheets::portal::risk_words(&asked.risk))],
         )
     });
-    // Three answers in one row: Deny (Escape too), the standing grant, and once, the default.
+    // Three answers in one row: Deny (Escape too), the lasting grant, and once, the default.
     dialog.confirm_label = word("portal-allow-once");
     dialog.alternate_label = asked.may_allow_agent.then_some(always);
     Some((dialog, Plan::Choose(vec![ALLOW_ONCE, ALLOW_AGENT])))

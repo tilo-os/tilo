@@ -565,7 +565,7 @@ browser-history-paused-hint = Seiten in diesem Fenster werden nicht im Verlauf g
 browser-service-sign-in-hint = Melde dich an, um dieses Konto fertig zu verbinden.
 
 ## A window without the person's accounts
-browser-no-account-custody = Dieses Fenster surft ohne deine Anmeldungen. Öffne die Seite in einem eigenen Browser-Fenster, um dort deine Konten zu nutzen
+browser-no-account-credentials = Dieses Fenster surft ohne deine Anmeldungen. Öffne die Seite in einem eigenen Browser-Fenster, um dort deine Konten zu nutzen
 
 ## Actions
 

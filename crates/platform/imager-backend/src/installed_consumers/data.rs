@@ -112,7 +112,7 @@ fn shape<'v>(value: &'v Value, keys: &[&str], protocols: &[(&str, i64)]) -> io::
     Ok(value)
 }
 
-/// `root` and `owner` are test seams only; the installed entry points always use
+/// `root` and `owner` are test hooks only; the installed entry points always use
 /// [`Store::installed`].
 pub struct Store {
     root: PathBuf,

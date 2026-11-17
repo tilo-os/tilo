@@ -26,7 +26,7 @@ await images.decode({bytes, source: ticketId, maxDimension: 2048}, async result 
 });
 ```
 
-The consumer's returned promise owns result custody. It must stop retaining the
+The consumer's returned promise owns result ownership. It must stop retaining the
 pixels when it settles. The job/byte reservation stays charged through the
 consumer, including after owner abort; a consumer that never settles retains its
 reservation. Closing rejects promptly and terminates running work. It cannot
@@ -38,7 +38,7 @@ reservations. Each job reserves twice its input plus twice the maximum requested
 two chunks (the consumed callback and the next credited transfer can overlap).
 The two full RGBA reservations cover simultaneous
 worker JS output and page JS staging (WASM linear memory remains separate). Jobs, preparing copies, queued inputs and unconsumed
-results count until their real custody ends. Each accepted active job gets a new
+results count until their real ownership ends. Each accepted active job gets a new
 worker/WASM instance, terminated on result/failure/cancel; there are no idle
 workers or recurring idle timers. Ready owners rotate, preserving FIFO per owner.
 Termination is abort/restart, not pause/resume; no automatic retries occur.
@@ -104,7 +104,7 @@ unchanged and records canonical hashes in the qualification receipt. Never run
 `qualify.mjs` in-place on a product bundle: it writes fixture modules and replaces
 `index.html`. The existing app-sdk Chrome lane qualifies actual release output
 and uploads its receipt. P6 must use canonical scheduler
-policy/owner custody and Rust completion tickets and prove foreground plus 100
+policy/owner ownership and Rust completion tickets and prove foreground plus 100
 actually mounted apps. Standalone page heartbeats do not prove those integration
 checks, OS RSS bounds, 120 Hz performance or Notes end-to-end behavior. Same-origin
 Worker glue is trusted code, not a hostile-JavaScript security sandbox. Image

@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-struct Custody {
+struct Ownership {
     joined: Option<JoinHandle<()>>,
     child: Option<std::process::Child>,
     native_read_key: Option<String>,
@@ -21,7 +21,7 @@ struct Custody {
     _artifact: Option<Arc<PreparedMedia>>,
     _cancel: Option<Arc<AtomicBool>>,
 }
-impl Custody {
+impl Ownership {
     fn is_finished(&mut self) -> bool {
         self.native_read_key
             .as_deref()
@@ -51,7 +51,7 @@ impl Custody {
 }
 struct Retirement {
     key: Option<String>,
-    custody: Mutex<Option<Custody>>,
+    ownership: Mutex<Option<Ownership>>,
     stopped: AtomicBool,
     failed: AtomicBool,
     wake: Condvar,
@@ -64,7 +64,7 @@ fn registry() -> &'static Mutex<Vec<Arc<Retirement>>> {
 impl Retirement {
     fn finish(&self, failed: bool) {
         let _held = self
-            .custody
+            .ownership
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.failed.store(failed, Ordering::Release);
@@ -75,20 +75,20 @@ impl Retirement {
     }
     fn wait_stopped(&self) -> io::Result<()> {
         let mut held = self
-            .custody
+            .ownership
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(mut custody) = held.take() {
+        if let Some(mut ownership) = held.take() {
             drop(held);
-            let result = custody.wait();
-            if custody.child.is_some() || custody.native_read_key.is_some() {
+            let result = ownership.wait();
+            if ownership.child.is_some() || ownership.native_read_key.is_some() {
                 *self
-                    .custody
+                    .ownership
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(custody);
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ownership);
                 self.finish(true);
             } else {
-                drop(custody);
+                drop(ownership);
                 self.finish(false);
             }
             return result;
@@ -108,13 +108,13 @@ impl Retirement {
         }
     }
 
-    fn take_finished(&self) -> Option<Custody> {
-        let mut slot = match self.custody.try_lock() {
+    fn take_finished(&self) -> Option<Ownership> {
+        let mut slot = match self.ownership.try_lock() {
             Ok(slot) => slot,
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => return None,
         };
-        if slot.as_mut().is_some_and(Custody::is_finished) {
+        if slot.as_mut().is_some_and(Ownership::is_finished) {
             slot.take()
         } else {
             None
@@ -129,9 +129,9 @@ pub(super) fn retain(
     artifact: Option<Arc<PreparedMedia>>,
     cancel: Option<Arc<AtomicBool>>,
 ) {
-    retain_custody(
+    retain_ownership(
         key,
-        Custody {
+        Ownership {
             joined: Some(joined),
             child: None,
             native_read_key: None,
@@ -150,9 +150,9 @@ pub(super) fn retain_read_medium(
     file: std::fs::File,
     request: tempfile::TempDir,
 ) {
-    retain_custody(
+    retain_ownership(
         Some(key),
-        Custody {
+        Ownership {
             joined: None,
             child: Some(child),
             native_read_key: None,
@@ -165,9 +165,9 @@ pub(super) fn retain_read_medium(
 }
 
 pub(in crate::setup) fn observe_read_medium(key: String) {
-    retain_custody(
+    retain_ownership(
         Some(key.clone()),
-        Custody {
+        Ownership {
             joined: None,
             child: None,
             native_read_key: Some(key),
@@ -179,10 +179,10 @@ pub(in crate::setup) fn observe_read_medium(key: String) {
     );
 }
 
-fn retain_custody(key: Option<String>, custody: Custody) {
+fn retain_ownership(key: Option<String>, ownership: Ownership) {
     let retirement = Arc::new(Retirement {
         key,
-        custody: Mutex::new(Some(custody)),
+        ownership: Mutex::new(Some(ownership)),
         stopped: AtomicBool::new(false),
         failed: AtomicBool::new(false),
         wake: Condvar::new(),
@@ -201,26 +201,29 @@ fn retain_custody(key: Option<String>, custody: Custody) {
                 {
                     return;
                 }
-                if let Some(mut custody) = observed.take_finished() {
-                    if custody.native_read_key.is_some() {
+                if let Some(mut ownership) = observed.take_finished() {
+                    if ownership.native_read_key.is_some() {
                         let owner = observed.clone();
                         let failed = runtime
                             .spawn_blocking(move || {
-                                let result = custody.wait();
-                                if result.is_err() && custody.native_read_key.is_some() {
+                                let result = ownership.wait();
+                                if result.is_err() && ownership.native_read_key.is_some() {
                                     *owner
-                                        .custody
+                                        .ownership
                                         .lock()
                                         .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                        Some(custody);
+                                        Some(ownership);
                                 }
                                 result
                             })
                             .await;
                         observed.finish(!matches!(failed, Ok(Ok(()))));
                     } else {
-                        let _ = custody.wait();
-                        let failed = runtime.spawn_blocking(move || drop(custody)).await.is_err();
+                        let _ = ownership.wait();
+                        let failed = runtime
+                            .spawn_blocking(move || drop(ownership))
+                            .await
+                            .is_err();
                         observed.finish(failed);
                     }
                     return;
@@ -338,7 +341,7 @@ mod tests {
         assert!(!pending(&format!("target:{}", uuid::Uuid::new_v4())));
         assert!(
             root.join("held-medium-fixture").exists(),
-            "private custody dropped before observed child exit"
+            "private ownership dropped before observed child exit"
         );
         release.write_all(b"release\n").unwrap();
         finish_pending(&key).unwrap();
@@ -434,7 +437,7 @@ mod tests {
         assert!(cancel.load(Ordering::Acquire));
         assert!(
             weak.upgrade().is_some(),
-            "writer custody was released before exit"
+            "writer ownership was released before exit"
         );
         let mut same = Delivery::default();
         same.target = Some(target(id));

@@ -53,7 +53,7 @@ pub(crate) struct Mounted {
     /// Bytes of its files this computer holds.
     pub(crate) local_bytes: u64,
     #[serde(flatten)]
-    pub(crate) standing: tree::Standing,
+    pub(crate) status: tree::TreeStatus,
 }
 
 /// A workspace of the person's, as their list names it.
@@ -387,7 +387,7 @@ impl Peer {
                     shown: shown.showing.shown,
                     read_only: shown.read_only,
                     local_bytes: 0,
-                    standing: shown.replica.standing(),
+                    status: shown.replica.status(),
                 };
                 (mounted, hashes)
             })

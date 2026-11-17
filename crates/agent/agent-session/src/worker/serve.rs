@@ -755,9 +755,7 @@ impl ReadSession {
                 device_id: "canonical-reader".into(),
                 instance_id: INSTANCE,
                 permissions: permissions.clone(),
-                author: MemberId::person(
-                    policy.standing.person_id().unwrap_or_default().to_owned(),
-                ),
+                author: MemberId::person(policy.access.person_id().unwrap_or_default().to_owned()),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &target,

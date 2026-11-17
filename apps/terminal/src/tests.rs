@@ -1095,7 +1095,7 @@ tilo_test_env::scenario! {
                 }
                 assert!(
                     (a.x1 - b.x0).abs() < 1e-9,
-                    "neighbouring cells meet without a seam or overlap"
+                    "neighbouring cells meet without a boundary or overlap"
                 );
             }
         }

@@ -117,7 +117,7 @@ impl AppSheets {
 
     /// Whether a question about the person's apps is up: they are asked one at a time, in front of
     /// what they are doing.
-    fn standing(&self) -> bool {
+    fn is_asking(&self) -> bool {
         self.add
             .as_ref()
             .is_some_and(|state| state.presentation().is_open())
@@ -163,7 +163,7 @@ impl AppSheets {
                 }
             }
         }
-        if self.standing() {
+        if self.is_asking() {
             return;
         }
         let Some(offer) = offers
@@ -217,7 +217,7 @@ impl AppSheets {
                 self.tell_uninstalled(&pending);
             }
         }
-        if self.standing() {
+        if self.is_asking() {
             return;
         }
         let Some(asked) = self.wanted.borrow_mut().pop_front() else {

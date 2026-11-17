@@ -40,7 +40,9 @@ impl OfflineReadAdmission {
             Ok(owned) => owned,
             Err(shared) => {
                 std::mem::forget(shared);
-                return Err(refused("Original read admission still has custody leases"));
+                return Err(refused(
+                    "Original read admission still has ownership leases",
+                ));
             }
         };
         let Self {
@@ -112,10 +114,10 @@ impl OfflineReadAdmission {
         // request path replaces source facts.
         migration::check_cancel(cancel)?;
         let source = migration_handoff::mount_authenticated_read_only(declaration.source())?;
-        let witness = declaration
-            .source_witness()
-            .ok_or_else(|| refused("Source witness missing"))?;
-        let original = match SourceReadContext::review_witness(source.clone(), witness) {
+        let proof = declaration
+            .source_proof()
+            .ok_or_else(|| refused("Source proof missing"))?;
+        let original = match SourceReadContext::review_proof(source.clone(), proof) {
             Ok(original) => {
                 drop(source);
                 original
@@ -125,11 +127,9 @@ impl OfflineReadAdmission {
                 return Err(error);
             }
         };
-        if let Err(error) = original.verify_requested(
-            declaration.source(),
-            witness,
-            declaration.requested_caller(),
-        ) {
+        if let Err(error) =
+            original.verify_requested(declaration.source(), proof, declaration.requested_caller())
+        {
             original.retire()?;
             return Err(error);
         }
@@ -155,11 +155,11 @@ impl OfflineReadAdmission {
                 crate::setup::flatpak_transfer::offline_original::OriginalFlatpakSources::review(
                     &admission.original,
                 )?;
-            if let Some(witness) = admission.declaration.mounted_witness() {
+            if let Some(proof) = admission.declaration.mounted_proof() {
                 admission.mounted = Some(Arc::new(
                     admission
                         .original
-                        .retain_mounted_for_export(witness, cancel)?,
+                        .retain_mounted_for_export(proof, cancel)?,
                 ));
             }
             admission.revalidate(cancel)
@@ -206,7 +206,7 @@ impl OfflineReadAdmission {
         self.original.qualification_owned_root()?;
         self.mounted
             .as_ref()
-            .ok_or_else(|| refused("Qualification lacks approved mounted source witness"))?
+            .ok_or_else(|| refused("Qualification lacks approved mounted source proof"))?
             .qualification_owned_roots(cancel)?;
         if !self.output_flatpak_required(cancel)? {
             return Err(refused(
@@ -240,7 +240,7 @@ impl OfflineReadAdmission {
         &self,
     ) -> io::Result<&crate::imager_model::PreparedSetupExpectation> {
         let pending = self.pending_setup.as_ref().ok_or_else(|| {
-            refused("Original output lacks authenticated pending package custody")
+            refused("Original output lacks authenticated pending package ownership")
         })?;
         pending.validate()?;
         Ok(pending.pending_expectation())
@@ -266,7 +266,7 @@ impl OfflineReadAdmission {
                 flatpak: self.flatpak.as_ref(),
             },
             authority,
-            Arc::new(OriginalReadCustody {
+            Arc::new(OriginalReadOwnership {
                 read: self.clone(),
                 mounted_binding: authority.mounted_binding()?,
             }),
@@ -303,7 +303,7 @@ impl OfflineReadAdmission {
         let request = super::worker::Request {
             schema: authority.required_protocol(),
             operation: self.declaration.source().operation_id.clone(),
-            custody: None,
+            ownership: None,
             command: super::worker::Command::ReviewOriginal {
                 authority: authority.clone(),
             },
@@ -315,7 +315,7 @@ impl OfflineReadAdmission {
         self.revalidate(cancel)?;
         result
     }
-    /// Cleanup-only physical custody: no new permission, no output, no cancellation token.
+    /// Cleanup-only physical ownership: no new permission, no output, no cancellation token.
     pub(super) fn check_output_medium_for_cleanup(&self, media: &File) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt;
         let actual = media.metadata()?;
@@ -323,7 +323,7 @@ impl OfflineReadAdmission {
         if (actual.dev(), actual.ino(), actual.rdev()) != (held.dev(), held.ino(), held.rdev())
             || attest_medium(media, &self.target)? != self.binding
         {
-            return Err(refused("Original cleanup medium custody differs"));
+            return Err(refused("Original cleanup medium ownership differs"));
         }
         Ok(())
     }
@@ -417,9 +417,9 @@ impl OfflineReadAdmission {
         let omissions = self.original.original_omissions()?;
         let exclusions = self.original.original_exclusions()?;
         let manifest = self.setup.manifest();
-        let mounted = match (&self.mounted, self.declaration.mounted_witness()) {
-            (Some(epoch), Some(witness)) => Some(super::worker::OriginalMountedClaim::admitted(
-                witness,
+        let mounted = match (&self.mounted, self.declaration.mounted_proof()) {
+            (Some(epoch), Some(proof)) => Some(super::worker::OriginalMountedClaim::admitted(
+                proof,
                 epoch.table_sha256(cancel)?,
             )?),
             (None, None) => None,
@@ -480,7 +480,7 @@ impl OfflineReadAdmission {
         let selected = self.declaration.source().categories.flatpak;
         if selected != self.flatpak_inventory.is_some() {
             return Err(refused(
-                "Original application consent and inventory custody differ",
+                "Original application consent and inventory ownership differ",
             ));
         }
         let Some(inventory) = &self.flatpak_inventory else {
@@ -497,7 +497,7 @@ impl OfflineReadAdmission {
         let projected = !inventory.inventory().selected().is_empty();
         if projected != self.flatpak.is_some() {
             return Err(refused(
-                "Original selected system scopes lack complete projected custody",
+                "Original selected system scopes lack complete projected ownership",
             ));
         }
         if let Some(sources) = &self.flatpak {
@@ -517,7 +517,7 @@ impl OfflineReadAdmission {
         if let Some(pending) = &self.pending_setup {
             pending.validate()?;
             if !Arc::ptr_eq(&self.setup, &pending.authenticated_setup()) {
-                return Err(refused("Original pending setup custody differs"));
+                return Err(refused("Original pending setup ownership differs"));
             }
         }
         if self.setup.pending_original_declaration()? != self.declaration
@@ -527,19 +527,19 @@ impl OfflineReadAdmission {
                 "Authenticated setup or held medium changed during source admission",
             ));
         }
-        let witness = self
+        let proof = self
             .declaration
-            .source_witness()
-            .ok_or_else(|| refused("Source witness missing"))?;
+            .source_proof()
+            .ok_or_else(|| refused("Source proof missing"))?;
         self.original.verify_requested(
             self.declaration.source(),
-            witness,
+            proof,
             self.declaration.requested_caller(),
         )?;
-        match (&self.mounted, self.declaration.mounted_witness()) {
+        match (&self.mounted, self.declaration.mounted_proof()) {
             (Some(epoch), Some(_)) => epoch.with_sources(cancel, |_| Ok(()))?,
             (None, None) => {}
-            _ => return Err(refused("Mounted declaration and epoch custody differ")),
+            _ => return Err(refused("Mounted declaration and epoch ownership differ")),
         }
         self.check_application_selection_locked()?;
         if let Some(sources) = &self.flatpak {
@@ -573,7 +573,7 @@ impl OriginalApplicationsOutput {
         let inventory = read
             .flatpak_inventory
             .as_ref()
-            .ok_or_else(|| refused("Original application inventory custody was removed"))?;
+            .ok_or_else(|| refused("Original application inventory ownership was removed"))?;
         if inventory.digest() != self.inventory_digest
             || read.flatpak.as_ref().map(|sources| sources.claim()) != self.projections.as_ref()
         {
@@ -594,11 +594,11 @@ impl OriginalApplicationsOutput {
     }
 }
 // Native and private: callback code cannot swap in an unrelated `ServiceAuthority`.
-struct OriginalReadCustody {
+struct OriginalReadOwnership {
     read: Arc<OfflineReadAdmission>,
     mounted_binding: Option<launcher::owned_service::OriginalMountedBinding>,
 }
-impl launcher::owned_service::ServiceAuthority for OriginalReadCustody {
+impl launcher::owned_service::ServiceAuthority for OriginalReadOwnership {
     fn original_mounted_binding(
         &self,
     ) -> io::Result<Option<launcher::owned_service::OriginalMountedBinding>> {
@@ -610,7 +610,7 @@ impl launcher::owned_service::ServiceAuthority for OriginalReadCustody {
     }
 }
 fn attest_medium(media: &File, target: &TargetDrive) -> io::Result<MediaPartitionBinding> {
-    // Read-only custody may be the current system disk; it never prepares, unmounts or formats.
+    // Read-only ownership may be the current system disk; it never prepares, unmounts or formats.
     crate::write::attest_target_descriptor(target, media)?;
     let stable = target
         .stable_id

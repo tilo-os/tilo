@@ -2,7 +2,7 @@
 //!
 //! The assistant is not this app's. It is the agent the person keeps in the workspace (an
 //! item of Chat's `chat.agent`), its thread is the Chat conversation between the two, its
-//! work is issues in Tasks and its standing work is Shortcuts the host runs. The window
+//! work is issues in Tasks and its progress work is Shortcuts the host runs. The window
 //! shows those resources and changes them only through the actions their keepers publish: the
 //! main chat and the sub-agents on the left, the conversation in the middle, drawn by Chat
 //! itself, tasks and scheduled work beside it, and a supervision of what it runs on.

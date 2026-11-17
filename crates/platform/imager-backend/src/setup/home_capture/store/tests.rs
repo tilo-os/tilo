@@ -12,7 +12,7 @@ fn fixture(root: &Path, operation: &str) -> (Store, Record) {
         owner: rustix::process::geteuid().as_raw(),
         filesystem: [1; 16],
         subvolume: [2; 16],
-        custody: None,
+        ownership: None,
         preparation_namespace: None,
     };
     let source = btrfs::SubvolumeIdentity {
@@ -337,7 +337,7 @@ fn original_output_namespace_checkpoint_refuses_unlaunched_foreign_and_duplicate
         .unwrap()
         .parse()
         .unwrap();
-    let facts = launcher::owned_service::ServiceCustody {
+    let facts = launcher::owned_service::ServiceOwnership {
         init_pid: std::process::id(),
         start_ticks,
         namespace_dev: namespace.dev(),
@@ -356,7 +356,7 @@ fn original_output_namespace_checkpoint_refuses_unlaunched_foreign_and_duplicate
             .record_original_output_namespace(&uuid::Uuid::new_v4().to_string(), &output, &facts)
             .is_err()
     );
-    let invalid = launcher::owned_service::ServiceCustody {
+    let invalid = launcher::owned_service::ServiceOwnership {
         init_pid: 1,
         ..facts
     };
@@ -445,7 +445,7 @@ fn uncommitted_original_review_preserves_prepared_state_and_refuses_started_or_c
         assert_eq!(
             lookup_committed_original_selection(&private, &declaration)
                 .err()
-                .expect("Nonroot lookup must refuse root custody")
+                .expect("Nonroot lookup must refuse root ownership")
                 .kind(),
             io::ErrorKind::PermissionDenied
         );

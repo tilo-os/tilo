@@ -2,8 +2,8 @@
 //! about Apple's sign-in endpoints.
 //!
 //! Obtaining a session (the SRP-6a sign-in, two-factor codes, trust tokens,
-//! renewal) is credential custody, not provider work: it lives in
-//! `account-custody` (`account_custody::icloud::auth`), on Apple's SRP from
+//! renewal) is credential storage, not provider work: it lives in
+//! `account-credentials` (`account_credentials::icloud::auth`), on Apple's SRP from
 //! `tilo-crypto`. What remains here is the session's persisted form
 //! ([`StoredSession`]), which a Drive source borrows per request, the
 //! account description `setup.icloud.com` answers with ([`AccountInfo`]),

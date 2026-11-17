@@ -204,8 +204,8 @@ struct TaskLineView: View {
     @Environment(\.wording) private var wording
 
     var body: some View {
-        let said = wording.line(line.standing)
-        let replies = line.standing.replies
+        let said = wording.line(line.state)
+        let replies = line.state.replies
         HStack(alignment: .top, spacing: 7) {
             Glyph(.into).foregroundStyle(Token.ink3).frame(height: 20)
             EyeChip()
@@ -246,7 +246,7 @@ struct TaskLineView: View {
     }
 }
 
-private extension TaskLine.Standing {
+private extension TaskLine.State {
     var replies: Int? {
         if case .replies(let count) = self { count } else { nil }
     }

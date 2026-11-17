@@ -809,15 +809,15 @@ impl Loads for ShellPlatform {
 /// The room a shell's record is decided in: the person's own, on this device.
 const SHELL_ROOM: &str = "shell";
 
-/// `person`'s standing over their own shell `app`: they own its record, and their shell may
+/// `person`'s access over their own shell `app`: they own its record, and their shell may
 /// hand the session its outside effects (`session.*`) without asking each time, as their
 /// chosen shell. The grant is theirs, in the one policy every API decides with.
-fn shell_standing(
+fn shell_access(
     app: &str,
     person: &str,
-) -> impl Fn() -> Option<tilo_action_policy::Standing> + 'static {
+) -> impl Fn() -> Option<tilo_action_policy::MemberAccess> + 'static {
     use tilo_action_policy::{
-        Answer, Grant, Grantee, KindSet, Standing, TreePath, WorkspacePolicy,
+        Answer, Grant, Grantee, KindSet, MemberAccess, TreePath, WorkspacePolicy,
     };
     let mut policy = WorkspacePolicy::new(SHELL_ROOM, person);
     policy.grants.push(Grant::new(
@@ -828,8 +828,8 @@ fn shell_standing(
         Answer::Allow,
         Grantee::person(person),
     ));
-    let standing = Standing::person(policy, person);
-    move || Some(standing.clone())
+    let access = MemberAccess::person(policy, person);
+    move || Some(access.clone())
 }
 
 /// How much work the part did: what its idle and its frames cost.
@@ -986,7 +986,7 @@ impl ShellPart {
             Rc::new(Person),
             Box::new(app_end),
         );
-        instance.set_standing(Rc::new(shell_standing(app, person)));
+        instance.set_access(Rc::new(shell_access(app, person)));
         let origin = Rc::new(RefCell::new(SessionOrigin::new(link)));
         instance.add_origin(Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin);
         {

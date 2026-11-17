@@ -14,7 +14,7 @@ use crate::{EarlierIds, KindSet, TreePath};
 pub enum Answer {
     /// Refuse.
     Deny,
-    /// Pause for the person's approval, witnessed by the host on their device.
+    /// Pause for the person's approval, approved by the host on their device.
     Ask,
     /// Run.
     Allow,

@@ -1,5 +1,5 @@
 //! Native-only qualification in a dedicated container under an ordinary UID.
-//! The fixture binds the actual owner bus path; no host keyring or routing seam.
+//! The fixture binds the actual owner bus path; no host keyring or routing boundary.
 use super::*;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -245,7 +245,7 @@ fn qualify_scenario(scenario: Scenario) {
         IDENTITY,
     )
     .unwrap();
-    let source_path = profile.path().join("source-witness");
+    let source_path = profile.path().join("source-proof");
     std::fs::write(&source_path, b"untouched synthetic source").unwrap();
     let source_metadata = std::fs::metadata(&source_path).unwrap();
     let foreign = std::fs::File::open("/run").unwrap();

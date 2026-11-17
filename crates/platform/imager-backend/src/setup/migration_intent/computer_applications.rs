@@ -93,7 +93,7 @@ impl MigrationIntent {
     pub(super) fn validate_computer_applications(&self) -> io::Result<()> {
         let Some(apps) = &self.computer_applications else {
             if self.grant.computer_applications.is_some() {
-                return Err(error("Computer applications custody is missing"));
+                return Err(error("Computer applications ownership is missing"));
             }
             return Ok(());
         };
@@ -133,7 +133,7 @@ mod tests {
     tilo_test_env::scenario! {
         /// The authority a computer's applications are transferred under.
         /// Each phase was a test of its own and builds its own fixture.
-        fn computer_applications_need_real_secondary_custody_and_stay_inside_their_grant;
+        fn computer_applications_need_real_secondary_ownership_and_stay_inside_their_grant;
 
         phase serialized_child_cannot_escape_private_grant_or_discover_recursive_authority;
         {
@@ -145,7 +145,7 @@ mod tests {
             assert!(std::fs::read_dir(other.path()).unwrap().next().is_none());
         }
 
-        phase metadata_without_real_secondary_custody_never_authorizes_applications;
+        phase metadata_without_real_secondary_ownership_never_authorizes_applications;
         {
             let (_root, mut main, _) = super::super::tests::fixture();
             main.grant.computer_applications =

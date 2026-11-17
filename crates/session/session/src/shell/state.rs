@@ -455,7 +455,7 @@ impl ShellService {
             .surfaces
             .overlays
             .place(Part::WindowMenu)
-            .map_or(ui::kurbo::Point::ZERO, |standing| standing.room.origin());
+            .map_or(ui::kurbo::Point::ZERO, |placement| placement.room.origin());
         Some(Anchor {
             x: x - corner.x,
             y: y - corner.y,
@@ -732,11 +732,11 @@ impl ShellService {
                         width: entry.size.width,
                         height: entry.size.height,
                     },
-                    place: entry.place.map(|standing| Area {
-                        x: standing.room.x0,
-                        y: standing.room.y0,
-                        w: standing.room.width(),
-                        h: standing.room.height(),
+                    place: entry.place.map(|placement| Area {
+                        x: placement.room.x0,
+                        y: placement.room.y0,
+                        w: placement.room.width(),
+                        h: placement.room.height(),
                     }),
                 })
                 .collect(),

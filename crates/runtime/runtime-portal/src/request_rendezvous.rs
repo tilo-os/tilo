@@ -26,7 +26,7 @@ fn current_uid() -> u32 {
 }
 
 /// Each caller supplies its existing held directory ancestry, preserving its
-/// original admission/validation rather than deriving custody from a pathname.
+/// original admission/validation rather than deriving ownership from a pathname.
 pub trait DirectoryPin: Send + Sync {
     fn file(&self) -> &File;
     fn readable_file(&self) -> io::Result<File>;

@@ -22,7 +22,7 @@
 "today-at" = "Today {time}";
 "yesterday-at" = "Yesterday {time}";
 "line-scheduled" = "scheduled, {when}";
-"line-acted-alone" = "done, by your standing instruction";
+"line-acted-alone" = "done, by your lasting instruction";
 "reply-one" = "1 reply";
 "reply-many" = "{count} replies";
 "important" = "Important";

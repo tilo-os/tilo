@@ -144,7 +144,7 @@ impl VerifiedOriginalHome {
             return Err(refused("Completed setup marker hash differs"));
         }
         // The closed marker schema and same-origin package are authenticated by
-        // the canonical carrier; this seam proves the bytes and journal inode.
+        // the canonical carrier; this boundary proves the bytes and journal inode.
         self.transaction
             .store
             .lock()

@@ -1,5 +1,5 @@
 //! Fixed-retention comparison of actual materialized invocation encoders.
-//! This is comparison evidence, never permission or a document-basis witness.
+//! This is comparison evidence, never permission or a document-basis observation.
 use tilo_actions::{
     ActionInput, ActionSpec, ContinuationArguments, ContinuationEvidence, ContinuationQuery,
     EncodedAction, ExecutionLocus, ResourceSpec,

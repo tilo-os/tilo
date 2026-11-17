@@ -22,7 +22,7 @@ use crate::workspace::Workspace;
 
 /// Who asks, and the role the workspace holds them to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Standing<'a> {
+pub struct Requester<'a> {
     /// The person, by the id the desktop's authors name them by.
     pub person: &'a str,
     /// Their role in the workspace, as its host answers it or its policy reads;
@@ -34,7 +34,7 @@ pub struct Standing<'a> {
     pub members: Option<&'a std::collections::BTreeSet<String>>,
 }
 
-impl Standing<'_> {
+impl Requester<'_> {
     /// Whether they govern the workspace: its owner or a moderator.
     #[must_use]
     pub fn governs(&self) -> bool {
@@ -92,23 +92,23 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
-fn govern(standing: &Standing<'_>, what: Governed) -> Result<(), Refusal> {
-    if standing.governs() {
+fn govern(requester: &Requester<'_>, what: Governed) -> Result<(), Refusal> {
+    if requester.governs() {
         Ok(())
     } else {
         Err(Refusal::Governed(what))
     }
 }
 
-fn write(standing: &Standing<'_>) -> Result<(), Refusal> {
-    if standing.writes() {
+fn write(requester: &Requester<'_>) -> Result<(), Refusal> {
+    if requester.writes() {
         Ok(())
     } else {
         Err(Refusal::ReadOnly)
     }
 }
 
-/// Whether `standing` may close, move or reorder the window `tab`: they
+/// Whether `requester` may close, move or reorder the window `tab`: they
 /// opened it, whoever did has left the workspace, or they govern the workspace.
 ///
 /// # Errors
@@ -116,13 +116,13 @@ fn write(standing: &Standing<'_>) -> Result<(), Refusal> {
 /// [`Refusal::Others`] for a window someone else (or nobody) opened;
 /// [`Refusal::ReadOnly`] for a viewer's.
 pub fn may_rearrange_window(
-    standing: &Standing<'_>,
+    requester: &Requester<'_>,
     authors: &Authors,
     tab: u64,
 ) -> Result<(), Refusal> {
-    if standing.governs()
-        || made_by(authors, tab, standing.person)
-        || (standing.writes() && released(authors, tab, standing.members))
+    if requester.governs()
+        || made_by(authors, tab, requester.person)
+        || (requester.writes() && released(authors, tab, requester.members))
     {
         Ok(())
     } else {
@@ -133,37 +133,37 @@ pub fn may_rearrange_window(
     }
 }
 
-/// Whether `standing` may rename, move or remove the strip `strip`: they
+/// Whether `requester` may rename, move or remove the strip `strip`: they
 /// made it, whoever did has left the workspace, or they govern the workspace.
 ///
 /// # Errors
 ///
 /// [`Refusal::Governed`] for a strip they did not make.
 pub fn may_manage_strip(
-    standing: &Standing<'_>,
+    requester: &Requester<'_>,
     authors: &Authors,
     strip: u64,
 ) -> Result<(), Refusal> {
-    if made_by(authors, strip, standing.person)
-        || (standing.writes() && released(authors, strip, standing.members))
+    if made_by(authors, strip, requester.person)
+        || (requester.writes() && released(authors, strip, requester.members))
     {
         Ok(())
     } else {
-        govern(standing, Governed::Strips)
+        govern(requester, Governed::Strips)
     }
 }
 
-/// Whether `standing` may add a workspace beside this one: whoever governs it,
+/// Whether `requester` may add a workspace beside this one: whoever governs it,
 /// as for its strips.
 ///
 /// # Errors
 ///
 /// The [`Refusal`] to show the person.
-pub fn may_create_workspace(standing: &Standing<'_>) -> Result<(), Refusal> {
-    govern(standing, Governed::Workspaces)
+pub fn may_create_workspace(requester: &Requester<'_>) -> Result<(), Refusal> {
+    govern(requester, Governed::Workspaces)
 }
 
-/// Whether `standing` may ask for `command` on `workspace`, whose strips
+/// Whether `requester` may ask for `command` on `workspace`, whose strips
 /// and windows `authors` made. Hosts ask before they offer the control
 /// that sends it, and again before they apply it.
 ///
@@ -171,32 +171,32 @@ pub fn may_create_workspace(standing: &Standing<'_>) -> Result<(), Refusal> {
 ///
 /// The [`Refusal`] to show the person.
 pub fn may_command(
-    standing: &Standing<'_>,
+    requester: &Requester<'_>,
     authors: &Authors,
     workspace: &Workspace,
     command: &DesktopCommand,
 ) -> Result<(), Refusal> {
     match command {
-        DesktopCommand::RenameWorkspace { .. } => govern(standing, Governed::Name),
+        DesktopCommand::RenameWorkspace { .. } => govern(requester, Governed::Name),
         // How the workspace lays out its windows is everyone's: as much
         // the workspace's layout as its strips.
         DesktopCommand::CreateStrip { .. } | DesktopCommand::SetLayout { .. } => {
-            govern(standing, Governed::Strips)
+            govern(requester, Governed::Strips)
         }
         DesktopCommand::RenameStrip { strip, .. }
         | DesktopCommand::RemoveStrip { strip }
-        | DesktopCommand::MoveStrip { strip, .. } => may_manage_strip(standing, authors, *strip),
+        | DesktopCommand::MoveStrip { strip, .. } => may_manage_strip(requester, authors, *strip),
         DesktopCommand::OpenTab { .. }
         | DesktopCommand::OpenApp { .. }
         | DesktopCommand::DuplicateTab { .. }
         // A window that comes back is a window opened: whoever closes and
         // opens here may undo a close of their own.
-        | DesktopCommand::ReopenClosed { .. } => write(standing),
+        | DesktopCommand::ReopenClosed { .. } => write(requester),
         DesktopCommand::CloseTab { location }
         | DesktopCommand::ReorderTab { location, .. }
         | DesktopCommand::MoveTab { location, .. }
         | DesktopCommand::SplitTab { location, .. } => {
-            may_rearrange_window(standing, authors, location.tab)
+            may_rearrange_window(requester, authors, location.tab)
         }
         DesktopCommand::ReorderGroup { group, .. }
         | DesktopCommand::MoveGroup { group, .. }
@@ -207,7 +207,7 @@ pub fn may_command(
             .flat_map(|strip| &strip.window_groups)
             .filter(|candidate| candidate.id == *group)
             .flat_map(|candidate| &candidate.tabs)
-            .try_for_each(|tab| may_rearrange_window(standing, authors, tab.id)),
+            .try_for_each(|tab| may_rearrange_window(requester, authors, tab.id)),
         DesktopCommand::RetiredSaveShortcut { .. }
         | DesktopCommand::RetiredDeleteShortcut { .. }
         | DesktopCommand::ClaimNamespace { .. }
@@ -228,23 +228,23 @@ mod tests {
 
     /// A guest who came in through a public workspace's entry: the workspace
     /// lets guests write, as members do.
-    const GUEST: Standing<'static> = Standing {
+    const GUEST: Requester<'static> = Requester {
         person: "guest",
         role: Some(Role::Editor),
         members: None,
     };
     const OTHER_GUEST: &str = "other-guest";
-    const MEMBER: Standing<'static> = Standing {
+    const MEMBER: Requester<'static> = Requester {
         person: "member",
         role: Some(Role::Editor),
         members: None,
     };
-    const MODERATOR: Standing<'static> = Standing {
+    const MODERATOR: Requester<'static> = Requester {
         person: "moderator",
         role: Some(Role::Moderator),
         members: None,
     };
-    const OWNER: Standing<'static> = Standing {
+    const OWNER: Requester<'static> = Requester {
         person: "owner",
         role: Some(Role::Owner),
         members: None,
@@ -297,9 +297,9 @@ mod tests {
         }
     }
 
-    fn asks(standing: &Standing<'_>, command: &DesktopCommand) -> Result<(), Refusal> {
+    fn asks(requester: &Requester<'_>, command: &DesktopCommand) -> Result<(), Refusal> {
         let (workspace, authors) = lounge();
-        may_command(standing, &authors, &workspace, command)
+        may_command(requester, &authors, &workspace, command)
     }
 
     tilo_test_env::scenario! {
@@ -321,7 +321,7 @@ mod tests {
             assert_eq!(asks(&MODERATOR, &rename), Ok(()));
             assert_eq!(asks(&OWNER, &rename), Ok(()));
             // Not known yet is not leave to rename.
-            let unknown = Standing {
+            let unknown = Requester {
                 person: "guest",
                 role: None,
                 members: None,
@@ -376,11 +376,11 @@ mod tests {
             let still_here: std::collections::BTreeSet<String> =
                 ["guest", OTHER_GUEST].map(str::to_owned).into();
             let left: std::collections::BTreeSet<String> = ["guest"].map(str::to_owned).into();
-            let guest = |members| Standing { members, ..GUEST };
+            let guest = |members| Requester { members, ..GUEST };
             assert!(asks(&guest(None), &theirs).is_err(), "members not known");
             assert!(asks(&guest(Some(&still_here)), &theirs).is_err());
             assert_eq!(asks(&guest(Some(&left)), &theirs), Ok(()));
-            let viewer = Standing {
+            let viewer = Requester {
                 role: Some(Role::Viewer),
                 ..guest(Some(&left))
             };
@@ -436,9 +436,9 @@ mod tests {
 
         phase only_owner_and_moderators_add_workspaces;
         {
-            for standing in [GUEST, MEMBER] {
+            for requester in [GUEST, MEMBER] {
                 assert_eq!(
-                    may_create_workspace(&standing),
+                    may_create_workspace(&requester),
                     Err(Refusal::Governed(Governed::Workspaces))
                 );
             }
@@ -454,7 +454,7 @@ mod tests {
             };
             assert_eq!(asks(&GUEST, &open), Ok(()));
             assert_eq!(asks(&MEMBER, &open), Ok(()));
-            let viewer = Standing {
+            let viewer = Requester {
                 person: "viewer",
                 role: Some(Role::Viewer),
                 members: None,

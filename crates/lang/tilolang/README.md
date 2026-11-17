@@ -973,7 +973,7 @@ and writes each as a signed `.tapp`:
   uses as `reads`), and the icon.
 
 The runtime compiles nothing: it loads the one module it was started for, under the id the
-package was signed as. Each app has its own window, record, custody and permissions. It reads
+package was signed as. Each app has its own window, record, ownership and permissions. It reads
 another app's records only as its surface declares (`reads`), read-only; it changes another
 app's resources only by invoking that app's actions.
 

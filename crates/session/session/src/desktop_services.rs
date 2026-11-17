@@ -591,7 +591,7 @@ async fn network_secrets(
     questions: Questions,
     roaming: RoamingWifiSlot,
 ) -> zbus::Result<tilo_network_secret_agent::service::AgentHandle> {
-    // Choosing the vault's custody probes the secret store over a blocking D-Bus call, which must
+    // Choosing the vault's ownership probes the secret store over a blocking D-Bus call, which must
     // not run on a runtime thread.
     let store = tokio::task::spawn_blocking(move || VaultStore::for_session(roaming))
         .await

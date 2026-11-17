@@ -277,7 +277,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it;
+    phase a_keyless_owner_keeps_ownership_of_its_own_sealed_write_without_renewing_it;
     {
         let (mut member, _, b, now) = host();
         let author = b.verifying_key().to_bytes();

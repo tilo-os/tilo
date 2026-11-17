@@ -78,7 +78,7 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
 # ---- Programs ---------------------------------------------------------------
 # Host image ships the relay, the authenticated filesystem replica and the enroll
 # program as one composite always-on home peer; the hosted-VM service with its
-# jail helper; the API server; and the boot tools the update ledger needs.
+# jail helper; the API server; and the boot tools the update log needs.
 COPY bin/tilo-relay bin/tilo-relay-admin bin/tilo-enroll /usr/libexec/tilo/
 COPY bin/fs /usr/bin/fs
 COPY bin/tilo-api /usr/libexec/tilo/tilo-api

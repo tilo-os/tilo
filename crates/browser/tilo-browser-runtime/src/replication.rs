@@ -175,7 +175,7 @@ pub(crate) struct Joined {
     moderation_due_ms: Arc<std::sync::atomic::AtomicU64>,
     /// The role the workspace last answered this page's person holds: the
     /// attached desktop's, so its policy offers what the workspace allows.
-    standing: crate::desktop::Standing,
+    role: crate::desktop::SharedRole,
     /// The standing the mounts' permissions were last set to.
     followed: u8,
     /// Nodes below the workspace the page's windows asked whether its person may
@@ -246,7 +246,7 @@ pub(crate) fn open(
         invitable: Arc::default(),
         administers: Arc::default(),
         moderation_due_ms: Arc::default(),
-        standing: crate::desktop::Standing::unknown(),
+        role: crate::desktop::SharedRole::unknown(),
         followed: 0,
         permitted: BTreeMap::new(),
         permit_answers: Arc::default(),
@@ -570,7 +570,7 @@ pub(crate) fn permit(id: u32, node: &str, may: bool) {
     };
     let mut joined = joined.borrow_mut();
     if joined.note_permit(node, may) {
-        joined.apply_standing();
+        joined.apply_role();
         for mounted in joined.mounts.values() {
             (mounted.attachment.notify)();
         }
@@ -595,7 +595,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             joined.moderates = Arc::clone(&shared.moderates);
             joined.invitable = Arc::clone(&shared.invitable);
             joined.administers = Arc::clone(&shared.administers);
-            joined.standing.share(&shared.standing);
+            joined.role.share(&shared.role);
         }
         joined.moderation_due_ms.store(0, Ordering::Relaxed);
         // The new mount's apps learn what the workspace answered.
@@ -649,8 +649,8 @@ pub(crate) fn publish(id: u32) {
         joined.ask_content();
         // Every frame passes here, so the workspace is asked again on time
         // whether or not anything arrived from it.
-        joined.ask_standing_when_due();
-        joined.follow_standing();
+        joined.ask_role_when_due();
+        joined.follow_role();
     }
 }
 
@@ -660,7 +660,7 @@ pub(crate) fn publish(id: u32) {
 /// idle page draws it at once instead of whenever something else wakes it.
 pub(crate) fn follow_answers(id: u32) {
     if let Some(joined) = replica_of(id) {
-        joined.borrow_mut().follow_standing();
+        joined.borrow_mut().follow_role();
     }
 }
 
@@ -693,7 +693,7 @@ impl Joined {
     /// close and move what others made on its shared desktop) and govern
     /// it. The answers set the desktop's flag and the role the mounts' apps
     /// follow, and wake them.
-    fn ask_standing_when_due(&self) {
+    fn ask_role_when_due(&self) {
         if !self.ready || self.mounts.is_empty() {
             return;
         }
@@ -729,7 +729,7 @@ impl Joined {
         for (index, node) in asked.into_iter().enumerate() {
             let answers = Arc::clone(&answers);
             let moderates = Arc::clone(&self.moderates);
-            let standing = self.standing.clone();
+            let role = self.role.clone();
             let due = Arc::clone(&self.moderation_due_ms);
             let wake = wake.clone();
             let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
@@ -765,7 +765,7 @@ impl Joined {
                 };
                 let role = tilo_action_policy::roles::role_answered([writes, moderating, governs]);
                 let moved = moderates.swap(moderating, Ordering::Relaxed) != moderating;
-                if standing.set(Some(role)) || moved {
+                if role.set(Some(role)) || moved {
                     for wake in &wake {
                         wake();
                     }
@@ -784,7 +784,7 @@ impl Joined {
     /// Ask the workspace whether this page's person may invite others here:
     /// the node its governance decides inviting by. Its bar's invite button
     /// and its invite sheet offer a link only where the workspace says so,
-    /// asked again with the rest of the standing, so a role granted while
+    /// asked again with the rest of the role, so a role granted while
     /// the page is open reaches it.
     ///
     /// Whether they may make administrators is asked the same way, of the
@@ -909,7 +909,7 @@ impl Joined {
 
     /// Give every mount's apps the role the workspace last answered, once per
     /// answer that changed it.
-    fn follow_standing(&mut self) {
+    fn follow_role(&mut self) {
         let answers = std::mem::take(
             &mut *self
                 .permit_answers
@@ -921,25 +921,25 @@ impl Joined {
             changed |= self.note_permit(&node, may);
         }
         if changed {
-            self.apply_standing();
+            self.apply_role();
             for mounted in self.mounts.values() {
                 (mounted.attachment.notify)();
             }
         }
-        let standing = self.standing.code();
-        if standing == self.followed {
+        let role = self.role.code();
+        if role == self.followed {
             return;
         }
-        self.apply_standing();
+        self.apply_role();
     }
 
     /// Set every mount's permissions to the role the workspace last answered,
     /// with what it permits beyond it.
-    fn apply_standing(&mut self) {
-        let Some(role) = self.standing.role() else {
+    fn apply_role(&mut self) {
+        let Some(role) = self.role.role() else {
             return;
         };
-        self.followed = self.standing.code();
+        self.followed = self.role.code();
         for mounted in self.mounts.values() {
             let attachment = &mounted.attachment;
             attachment

@@ -133,9 +133,9 @@ pub fn hosting_relevant(hosts: &[HostAccount]) -> bool {
         host.kind != HostKind::Device
             || host.sells()
             || host
-                .standing
+                .subscription
                 .as_ref()
-                .is_some_and(|standing| standing.usage.vm_seconds() > 0)
+                .is_some_and(|subscription| subscription.usage.vm_seconds() > 0)
     })
 }
 
@@ -161,7 +161,7 @@ pub fn usage_line(hosts: &[HostAccount], workspace: &str) -> Option<String> {
         return None;
     }
     hosts.iter().find_map(|host| {
-        let usage = host.standing.as_ref()?.usage.of(workspace)?;
+        let usage = host.subscription.as_ref()?.usage.of(workspace)?;
         Some(if usage.vm_seconds > 0 {
             t_args(
                 "overview-tilo-workspace-usage",
@@ -184,10 +184,10 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
         HostKind::Provider => Icon::Cloud,
     };
     let mut facts: Vec<Fact> = Vec::new();
-    match (&host.standing, host.plan()) {
-        (Some(standing), Some(plan)) => {
-            let used = standing.usage.vm_seconds();
-            let included = standing
+    match (&host.subscription, host.plan()) {
+        (Some(subscription), Some(plan)) => {
+            let used = subscription.usage.vm_seconds();
+            let included = subscription
                 .limits
                 .as_ref()
                 .and_then(|limits| limits.included_vm_seconds);
@@ -207,7 +207,7 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
                 ),
             }));
         }
-        (Some(standing), None) if standing.payment_method.is_none() => {
+        (Some(subscription), None) if subscription.payment_method.is_none() => {
             facts.push(Fact::text(t("overview-tilo-no-card")));
         }
         (Some(_), None) => facts.push(Fact::text(t("overview-tilo-no-plan"))),
@@ -217,7 +217,7 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
             HostKind::Provider => "overview-tilo-host-provider",
         }))),
     }
-    if let Some(credit) = host.standing.as_ref().and_then(|s| s.credit.clone()) {
+    if let Some(credit) = host.subscription.as_ref().and_then(|s| s.credit.clone()) {
         facts.push(Fact::text(t_args(
             "overview-tilo-credit",
             &[("amount", credit.into())],

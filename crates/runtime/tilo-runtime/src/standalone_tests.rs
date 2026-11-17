@@ -247,7 +247,7 @@ pub(super) fn isolated_home(root: &Path) -> PathBuf {
     root.join("environment").join("home")
 }
 
-/// Provision only the receipt signer's host custody in an isolated process.
+/// Provision only the receipt signer's host ownership in an isolated process.
 /// The synthetic caller still uses its independently certified admission.
 pub(super) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
     let root = isolated_root(test)?;
@@ -1035,7 +1035,7 @@ tilo_test_env::scenario! {
         assert!(!retained.same_origin(&replacement.capture().unwrap()));
         assert!(
             retained.now_ns().is_err(),
-            "a new runtime clock cannot revive the original custody"
+            "a new runtime clock cannot revive the original ownership"
         );
     }
 }

@@ -227,7 +227,7 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
         } catch (error) {
           // Other tabs of this browser hold every device key the account has here:
           // not the host's answer, and not no access.
-          const held = error?.name === 'CustodyError' && error.code === 'custody-busy';
+          const held = error?.name === 'DeviceKeyError' && error.code === 'device-key-busy';
           // The host's reason could tell "no such workspace" from "not a member".
           if (!held) console.warn('admission: connecting failed', error?.code ?? error?.name ?? 'error');
           busy = held ? error : busy;
@@ -250,7 +250,7 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
         } catch (error) {
           // Other tabs hold every device key this browser can get in with: not
           // the host's answer.
-          held = error?.name === 'CustodyError' && error.code === 'custody-busy';
+          held = error?.name === 'DeviceKeyError' && error.code === 'device-key-busy';
           busy = held ? error : busy;
           // As below: the host's reason could tell a missing workspace from a private one.
           if (!held) console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');

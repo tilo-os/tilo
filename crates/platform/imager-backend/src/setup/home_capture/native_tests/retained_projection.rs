@@ -249,10 +249,10 @@ impl Bridge {
     ) -> Result<T, String> {
         let result: io::Result<T> = (|| {
             let client = self.client.lock().map_err(|_| denied())?;
-            self.source.custody()?;
+            self.source.ownership()?;
             self.target.check()?;
             let value = call(client.as_ref().ok_or_else(denied)?)?;
-            self.source.custody()?;
+            self.source.ownership()?;
             self.target.check()?;
             Ok(value)
         })();
@@ -575,7 +575,7 @@ fn signed_private_projection_preserves_source_identity_and_normal_target_credent
     drop(runtime);
     let client = bridge.client.lock().unwrap().take().unwrap();
     client.retire().unwrap();
-    // Release the endpoint's held mounted view and all root transport custody
+    // Release the endpoint's held mounted view and all root transport ownership
     // before retiring the original source service namespace.
     drop(bridge);
     drop(projection);

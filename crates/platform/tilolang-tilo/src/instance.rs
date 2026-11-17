@@ -354,8 +354,8 @@ pub struct Instance {
     device: Option<String>,
     index_dir: Option<std::path::PathBuf>,
     document_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
-    /// Where the host reads the person's standing in the workspace, once its embedder has one.
-    standing: Rc<RefCell<Option<Rc<crate::authority::StandingSource>>>>,
+    /// Where the host reads the person's access in the workspace, once its embedder has one.
+    access: Rc<RefCell<Option<Rc<crate::authority::AccessSource>>>>,
     /// Whether the instance shows the workspace before its document, over its indexes.
     opening: bool,
     platform: Rc<dyn Platform>,
@@ -484,7 +484,7 @@ impl Instance {
             index_dir: config.index_dir,
             opening: config.document_loader.is_some(),
             document_loader: config.document_loader,
-            standing: Rc::default(),
+            access: Rc::default(),
             platform,
             names: Rc::clone(&told) as Rc<dyn NameHost>,
             told,
@@ -564,11 +564,11 @@ impl Instance {
         self.rootless = true;
     }
 
-    /// Read the person's standing in the workspace from `source`: what the runtime invokes is decided
+    /// Read the person's access in the workspace from `source`: what the runtime invokes is decided
     /// by the workspace's policy with it. May come after the host started (a window shown before its
     /// host gave it one).
-    pub fn set_standing(&self, source: Rc<crate::authority::StandingSource>) {
-        *self.standing.borrow_mut() = Some(source);
+    pub fn set_access(&self, source: Rc<crate::authority::AccessSource>) {
+        *self.access.borrow_mut() = Some(source);
     }
 
     /// Send the outside effects the instance settles to `sink`. Before the host starts.
@@ -904,9 +904,9 @@ impl Instance {
             // version is drawn from its index in the frame that opens it: no later frame wakes.
             wake: (self.mode != Mode::Past).then(|| self.platform.waker()),
         };
-        let standing = Rc::clone(&self.standing);
+        let access = Rc::clone(&self.access);
         let built = Host::open(opening, self.me_actor(), move || {
-            standing.borrow().as_ref().and_then(|source| source())
+            access.borrow().as_ref().and_then(|source| source())
         });
         let host = match built {
             Ok(host) => host,
@@ -2441,23 +2441,23 @@ impl Instance {
         let Some(host) = self.host() else {
             return false;
         };
-        let standing = self.standing.borrow().as_ref().and_then(|source| source());
-        let Some(standing) = standing else {
+        let access = self.access.borrow().as_ref().and_then(|source| source());
+        let Some(access) = access else {
             return false;
         };
         let seen = self.members_from.as_ref().is_some_and(|(person, policy)| {
-            *person == standing.person_id().unwrap_or_default() && *policy == *standing.policy
+            *person == access.person_id().unwrap_or_default() && *policy == *access.policy
         });
         if seen {
             return false;
         }
         host.runtime().set_members(
-            crate::members::members_of(&standing, &self.me),
-            Some(crate::members::reads_of(&standing, &self.me, &host)),
+            crate::members::members_of(&access, &self.me),
+            Some(crate::members::reads_of(&access, &self.me, &host)),
         );
         self.members_from = Some((
-            standing.person_id().unwrap_or_default().to_owned(),
-            std::sync::Arc::unwrap_or_clone(standing.policy),
+            access.person_id().unwrap_or_default().to_owned(),
+            std::sync::Arc::unwrap_or_clone(access.policy),
         ));
         true
     }

@@ -80,7 +80,7 @@ pub(super) fn inspect(cache: &Path) -> Result<WorkspaceStatus> {
     })
 }
 
-/// Reuse a validated, signed authority even when root custody is outside the daemon. A missing
+/// Reuse a validated, signed authority even when root ownership is outside the daemon. A missing
 /// authority still requires the explicit signer; no policy is synthesized during recovery.
 pub(super) fn owner_authority(
     cache: &Path,

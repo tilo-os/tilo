@@ -15,7 +15,7 @@
 //!
 //! The check runs on the session's pass, off the loop, once the fabric is
 //! up and the certificate is due. A renewal that fails waits for what it
-//! failed on — the fabric coming back, custody becoming available — through
+//! failed on — the fabric coming back, ownership becoming available — through
 //! [`tilo_identity_host::provisioning::RENEWAL_CAUSES`], and the running
 //! renewal loop picks up the new expiry on its own.
 //!
@@ -234,7 +234,7 @@ fn ask(
                         outcome = "renewed",
                         "renewal: this device's certificate was renewed through the person's devices"
                     );
-                    // The renewal loop and any enrollment waiting on custody may look again now.
+                    // The renewal loop and any enrollment waiting on ownership may look again now.
                     RENEWAL_CAUSES.changed();
                 }
                 Err(error) => tracing::warn!(

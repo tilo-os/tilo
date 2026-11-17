@@ -211,7 +211,7 @@ class Departures final : public std::enable_shared_from_this<Departures> {
 class HoldResourceHandler final : public CefResourceRequestHandler {
  public:
   HoldResourceHandler(int tab,std::shared_ptr<Departures> departures,int64_t wait_ms):tab_(tab),departures_(std::move(departures)),wait_ms_(wait_ms) {}
-  // Chromium calls this on its IO thread and the ledger is the UI thread's
+  // Chromium calls this on its IO thread and the log is the UI thread's
   // (see Departures), so the hold is recorded there: the load stays paused
   // until that hold is answered.
   cef_return_value_t OnBeforeResourceLoad(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,

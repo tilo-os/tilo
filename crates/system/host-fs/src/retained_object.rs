@@ -40,7 +40,7 @@ impl ObservedObject {
 }
 
 /// An actual owned descriptor, kept from selection until the host's capture
-/// reply. Only the host's existing grants and caller custody confer authority.
+/// reply. Only the host's existing grants and caller ownership confer authority.
 pub struct RetainedObject {
     file: File,
     observed: ObservedObject,

@@ -264,10 +264,9 @@ mod tests {
     fn actual_bind_alias_coordinates_refuse_scratch_overlap_and_preserve_siblings() {
         const CHILD: &str = "TILO_SCRATCH_COORDINATE_CHILD";
         if std::env::var_os(CHILD).is_none() {
-            let witness = tempfile::tempdir().unwrap();
-            std::fs::set_permissions(witness.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
-            let marker = witness.path().join("complete");
+            let proof = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(proof.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let marker = proof.path().join("complete");
             let mut child = std::process::Command::new("/usr/bin/unshare")
                 .args(["--mount", "--propagation", "private"])
                 .arg(std::env::current_exe().unwrap())
@@ -422,7 +421,7 @@ mod tests {
     impl Drop for OwnedChild {
         fn drop(&mut self) {
             if let Some(mut child) = self.0.take() {
-                // Keep exact task custody until a successful wait observes retirement.
+                // Keep exact task ownership until a successful wait observes retirement.
                 loop {
                     let _ = child.kill();
                     match child.wait() {
@@ -441,8 +440,8 @@ mod tests {
         const CHILD: &str = "TILO_BTRFS_COORDINATE_CHILD";
         const EXACT: &str = "owned_service::capture::inventory_scratch::coordinate::tests::actual_btrfs_subvolume_coordinates_refuse_ancestor_and_alias_overlap";
         if std::env::var_os(CHILD).is_none() {
-            let witness = tempfile::tempdir().unwrap();
-            let marker = witness.path().join("complete");
+            let proof = tempfile::tempdir().unwrap();
+            let marker = proof.path().join("complete");
             let executable = File::open("/proc/self/exe").unwrap();
             let executable_path =
                 format!("/proc/{}/fd/{}", std::process::id(), executable.as_raw_fd());
@@ -472,18 +471,18 @@ mod tests {
             return;
         }
         assert_eq!(rustix::process::geteuid().as_raw(), 0);
-        // The native runner supplies only this private writable Btrfs witness, independently from the
+        // The native runner supplies only this private writable Btrfs proof, independently from the
         // readonly signed artifacts and SDK closure.
-        let witness = Path::new("/run/tilo/btrfs-coordinate-witness");
-        let held = reopen(witness).unwrap();
+        let proof = Path::new("/run/tilo/btrfs-coordinate-proof");
+        let held = reopen(proof).unwrap();
         let facts = held.metadata().unwrap();
         assert!(facts.is_dir());
         assert_eq!(facts.uid(), 0);
         assert_eq!(facts.gid(), 0);
         assert_eq!(facts.mode() & 0o7777, 0o700);
-        let root = tempfile::tempdir_in(witness).unwrap();
+        let root = tempfile::tempdir_in(proof).unwrap();
         assert_eq!(
-            identity(&reopen(witness).unwrap()).unwrap(),
+            identity(&reopen(proof).unwrap()).unwrap(),
             identity(&held).unwrap()
         );
         assert_eq!(
@@ -521,7 +520,7 @@ mod tests {
             "rootless Btrfs destroy prerequisite absent; no subvolume created"
         );
         assert_eq!(
-            identity(&reopen(witness).unwrap()).unwrap(),
+            identity(&reopen(proof).unwrap()).unwrap(),
             identity(&held).unwrap()
         );
         let mut source = Subvolume::new(root.path(), "source");

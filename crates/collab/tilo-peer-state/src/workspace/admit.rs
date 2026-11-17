@@ -14,9 +14,9 @@ use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 
 use super::media;
 
-/// How the receiver knows the sender's standing in the workspace.
+/// How the receiver knows the sender's access in the workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Standing {
+pub enum SenderAccess {
     /// The receiver resolved the sender to this person root, from a device
     /// held to the foreign-device bound or not. The batch needs undoable
     /// changes on the workspace allowed under the policy the receiver already
@@ -35,14 +35,14 @@ pub struct Writer<'a> {
     /// The authenticated sender key, spelt the way the topology registry
     /// names it.
     pub key: &'a str,
-    pub standing: Standing,
+    pub access: SenderAccess,
 }
 
 impl Writer<'_> {
     fn person(&self) -> Option<&[u8; 32]> {
-        match &self.standing {
-            Standing::Member { person, .. } => Some(person),
-            Standing::TransportAuthorized => None,
+        match &self.access {
+            SenderAccess::Member { person, .. } => Some(person),
+            SenderAccess::TransportAuthorized => None,
         }
     }
 
@@ -185,7 +185,7 @@ impl From<WorkspaceRefusal> for AdmissionFailure {
 /// workspace document must pass, in one place for every receiver.
 ///
 /// 1. The sender may make undoable changes on the workspace, unless it is the
-///    owner's device (who may grant itself anything) — [`Standing`].
+///    owner's device (who may grant itself anything) — [`SenderAccess`].
 /// 2. The batch decodes under the shared incoming limits ([`super::candidate`]).
 /// 3. Then [`check_candidate`].
 ///
@@ -399,7 +399,7 @@ fn may_write(
     source: &Writer<'_>,
     now_ns: u64,
 ) -> Result<bool, WorkspaceRefusal> {
-    let Standing::Member { person, foreign } = source.standing else {
+    let SenderAccess::Member { person, foreign } = source.access else {
         return Ok(true);
     };
     let before = before.ok_or(WorkspaceRefusal::GovernanceMissing)?;

@@ -578,16 +578,16 @@ impl QuickTile {
 }
 
 impl crate::widget::controls::ActionControls for QuickTile {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         for emitter in [&mut self.switch_action, &mut self.details_action]
             .into_iter()
             .flatten()
         {
-            let _ = emitter.install_custody(domain, attachment);
+            let _ = emitter.attach(domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

@@ -17,9 +17,9 @@ struct CertifiedLocalActionHost {
 }
 
 impl AppBrokerState {
-    /// Resolve a native device's projected Person through protected host custody.
+    /// Resolve a native device's projected Person through protected host ownership.
     /// `None` means this broker has no native device (and grants no certificate
-    /// custody); a configured service's refusal is never a compatibility fallback.
+    /// ownership); a configured service's refusal is never a compatibility fallback.
     pub fn native_local_person_certificate(
         &self,
         caller: &Caller,
@@ -59,7 +59,7 @@ impl AppBrokerState {
     /// the device as the person — and the palette itself. Network, MCP and app transports never
     /// reach it: an agent, or a person acting over one of them, invokes through
     /// [`Self::action_invoke`] as itself, so the broker's per-action and per-role permissions
-    /// decide, and custody is refused to anything but a person at the native device.
+    /// decide, and ownership is refused to anything but a person at the native device.
     pub fn action_invoke_local_person(
         self: &Arc<Self>,
         caller: &Caller,
@@ -75,7 +75,7 @@ impl AppBrokerState {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
         // Hosts without a native-device service retain the pre-existing ordinary
-        // action api. It supplies no original certificate custody, so no
+        // action api. It supplies no original certificate ownership, so no
         // privileged continuation can mistake it for native-person evidence.
         // An installed service that refuses NEVER takes this compatibility path.
         if self.services.local_person.is_none() {
@@ -241,7 +241,7 @@ impl AppBrokerState {
         }
         let certificate = self
             .native_local_person_certificate(&projection)?
-            .ok_or("native device custody unavailable")?;
+            .ok_or("native device identity unavailable")?;
         if checked.admission.admitted.certificate.as_ref() != Some(&certificate) {
             let admitted = checked.admission.admitted.certificate.as_ref();
             tracing::debug!(
@@ -267,7 +267,7 @@ impl AppBrokerState {
     /// Every read and control revalidates the original session admission.
     ///
     /// # Errors
-    /// Refuses the same invalid or expired custody as `certified_local_action_host`.
+    /// Refuses the same invalid or expired ownership as `certified_local_action_host`.
     pub fn certified_action_lifecycle(
         self: &Arc<Self>,
         caller: &Caller,
@@ -507,7 +507,7 @@ impl CertifiedLocalActionHost {
         {
             return Err(ActionHostError::NotPermitted);
         }
-        // Native custody was acquired at admission. Lifecycle reads must not
+        // Native ownership was acquired at admission. Lifecycle reads must not
         // resolve the device's identity files again; `check` below validates the
         // retained admission against current revocation and membership state.
         if self.native_projection.as_ref().is_some_and(|projection| {
@@ -545,7 +545,7 @@ impl ActionHost for CertifiedLocalActionHost {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
-        // Allow only apis that retain original custody through application
+        // Allow only apis that retain original ownership through application
         // dispatch or the host-side admission barrier.
         if query.provider.as_ref().is_some_and(|provider| {
             !certified_provider(provider)
@@ -623,7 +623,7 @@ impl ActionHost for CertifiedLocalActionHost {
             Ok(None) => {}
         }
         // Only lend a live admission to synchronous work. A newly queued
-        // dispatch verifies its original custody on the broker turn instead.
+        // dispatch verifies its original ownership on the broker turn instead.
         let invoke = || {
             self.state.action_invoke_with_origin(
                 &self.effective,
@@ -651,7 +651,7 @@ impl ActionHost for CertifiedLocalActionHost {
         if !certified_target(&request.target.provider, &request.target.address) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
-        self.state.request_witness(&self.effective, None, request)
+        self.state.request_approval(&self.effective, None, request)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
@@ -717,11 +717,11 @@ fn certified_target(provider: &str, _address: &tilo_actions::ActionAddress) -> b
     certified_provider(provider)
 }
 
-// Only provider forms with preserved original dispatch/admission custody.
+// Only provider forms with preserved original dispatch/admission ownership.
 // Workspace tokens are browsable, but their rows and requests need target checks.
 fn certified_provider(provider: &str) -> bool {
     // This is only api classification. The action host independently looks
-    // up the opaque token and revalidates its live registration/custody.
+    // up the opaque token and revalidates its live registration/ownership.
     if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
         return true;
     }

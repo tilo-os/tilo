@@ -4844,7 +4844,7 @@ pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Colo
 }
 
 /// Snap `rect` to whole device pixels so a cell fill has crisp edges and adjacent runs tile without
-/// a seam.
+/// a boundary.
 pub(crate) fn snap_to_device_pixels(transform: Affine, rect: Rect) -> Rect {
     let [sx, _, _, sy, tx, ty] = transform.as_coeffs();
     if sx == 0.0 || sy == 0.0 {

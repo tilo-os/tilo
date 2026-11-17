@@ -976,7 +976,7 @@ impl ActionFixture {
         fixture.app.collaboration.manager =
             super::semantic_tree_app_tests::admitted_delivery_manager();
         fixture.app.actions.bound_broker_route_for_test =
-            Some(crate::collaboration::PrimaryRouteWitness {
+            Some(crate::collaboration::AcceptedRoute {
                 route: fixture.bindings[0].broker_route().unwrap(),
                 epoch: uuid::Uuid::new_v4(),
             });
@@ -1570,7 +1570,7 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
 }
 
 #[test]
-fn compound_bound_effects_preserve_typing_custody_and_redo() {
+fn compound_bound_effects_preserve_typing_ownership_and_redo() {
     {
         for (action, mode) in [("view", 0), ("follow-up", 2), ("view", 1)] {
             COMPOUND_MODE.set(mode);
@@ -2196,10 +2196,10 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one controlled lifetime traces publication through refusal and delivery; one broker-route refusal test exercises every invalid witness against the same fixture"
+    reason = "one controlled lifetime traces publication through refusal and delivery; one broker-route refusal test exercises every invalid observation against the same fixture"
 )]
 #[test]
-fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
+fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
     {
         let mut fixture = ActionFixture::broker();
         let target = fixture.target(1, "follow-up");
@@ -2207,7 +2207,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
         let evidence = serde_json::json!({"token": "controlled-confirmation"});
         let mut requests = Vec::new();
-        // This seam captures submission only; no broker acceptance is simulated.
+        // This boundary captures submission only; no broker acceptance is simulated.
         fixture
             .app
             .invoke_bound_target_with_broker(
@@ -2428,13 +2428,19 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         wrong_workspace.route.cluster_id = uuid::Uuid::nil();
         let mut wrong_resource = matching.clone();
         wrong_resource.route.document = Some("different-record".into());
-        for witness in [
+        for observation in [
             Some(wrong_app),
             Some(wrong_workspace),
             Some(wrong_resource),
             None,
         ] {
-            assert_bound_broker_route_refused(&mut fixture, &target, &alias, &revision, witness);
+            assert_bound_broker_route_refused(
+                &mut fixture,
+                &target,
+                &alias,
+                &revision,
+                observation,
+            );
         }
         let mut replacement = matching;
         replacement.epoch = uuid::Uuid::new_v4();
@@ -2454,9 +2460,9 @@ fn assert_bound_broker_route_refused(
     target: &crate::bound_dispatch::BoundActionTarget,
     alias: &str,
     revision: &str,
-    witness: Option<crate::collaboration::PrimaryRouteWitness>,
+    observation: Option<crate::collaboration::AcceptedRoute>,
 ) {
-    fixture.app.actions.bound_broker_route_for_test = witness;
+    fixture.app.actions.bound_broker_route_for_test = observation;
     let resources = fixture.app.publication_resources();
     assert!(resources.iter().all(|resource| {
         !resource

@@ -154,13 +154,13 @@ impl NativeWorkspaceOwner {
         {
             let current = self.0.current.read();
             if current.fenced || current.denied.contains(&workspace) || !self.0.store.healthy() {
-                return Err("native enrollment custody is fenced".into());
+                return Err("native enrollment ownership is fenced".into());
             }
         }
         let mut next = self.0.authority.read().clone();
         if next.workspaces.contains_key(&workspace) {
             return Err(
-                "workspace is already enrolled; identity replacement requires explicit custody handoff"
+                "workspace is already enrolled; identity replacement requires explicit ownership handoff"
                     .into(),
             );
         }
@@ -391,7 +391,7 @@ impl NativeWorkspaceOwner {
             effect_receipts: std::collections::BTreeMap::new(),
             shortcut_change: None,
             effect_history_root: None,
-            join_ledger: crate::join_ledger::JoinLedger::default(),
+            join_log: crate::join_log::JoinLog::default(),
             join_admissions: std::collections::BTreeMap::new(),
         };
         Ok(self.publish_workspace(

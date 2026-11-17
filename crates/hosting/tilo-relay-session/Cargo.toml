@@ -21,7 +21,7 @@ ignored = ["getrandom", "getrandom03"]
 [dependencies]
 # Handshake, wire messages and live frames shared with the daemon.
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
-# Frame codec, co-edit payloads and the device-signer seam.
+# Frame codec, co-edit payloads and the device-signer boundary.
 tilo-relay-client = { path = "../tilo-relay-client" }
 # The remote-action vocabulary a workspace's governance answers in.
 tilo-actions = { path = "../../collab/actions" }

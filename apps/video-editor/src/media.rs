@@ -221,7 +221,7 @@ mod tests {
             // With the override pointing at a directory holding the file, it
             // resolves local.
             let dir = std::env::temp_dir();
-            let name = format!("tilo-ve-seam-{}.bin", std::process::id());
+            let name = format!("tilo-ve-boundary-{}.bin", std::process::id());
             let f = dir.join(&name);
             std::fs::write(&f, b"x").unwrap();
             serve_sample_media(Some(dir));

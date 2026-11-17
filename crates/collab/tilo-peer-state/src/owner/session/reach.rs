@@ -9,7 +9,7 @@ use crate::join_transport::{LocalJoinService, WorkspaceJoinClient};
 use collab_types::signer::DeviceSigner;
 use std::{sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity_host::identity_store::HostIdentity;
 
 /// This device's own workspace host, running in this process: a workspace placed on
 /// this device is linked through it, as an endpoint cannot dial itself.
@@ -65,7 +65,7 @@ impl Linked {
 
 impl Reach {
     /// Link `connect`'s workspace to its host at `via` as the device `signer`
-    /// is the custody of: in process when `via` is this device's own host,
+    /// is the ownership of: in process when `via` is this device's own host,
     /// and over [`DIRECT_ALPN`](crate::direct::DIRECT_ALPN) otherwise.
     ///
     /// # Errors
@@ -127,7 +127,7 @@ impl Reach {
     }
 
     /// Prove this device's membership of `connect`'s workspace with the renewal
-    /// of the certificate its record holds, when custody holds one
+    /// of the certificate its record holds, when ownership holds one
     /// ([`crate::owner::enroll::renew_membership`]). Answers whether it
     /// renewed.
     pub async fn renew(&self, connect: &Connect, identity: &HostIdentity) -> Result<bool, String> {

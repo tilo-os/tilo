@@ -52,7 +52,7 @@ impl AppBrokerState {
 }
 
 impl AppBrokerState {
-    /// The workspace's `open` of `app`, started in `workspace`, admitted under the caller's custody,
+    /// The workspace's `open` of `app`, started in `workspace`, admitted under the caller's ownership,
     /// and `None` when the action is not an app's `open` at all.
     pub(super) fn start_app_open(
         self: &Arc<Self>,

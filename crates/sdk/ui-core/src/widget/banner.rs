@@ -1661,14 +1661,14 @@ mod tests;
 /// The dismiss control is a part of the banner: what the view bound to it is carried out here,
 /// where the banner's controls answer for it.
 impl crate::widget::controls::ActionControls for Banner {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        self.dismiss_press.install_custody(domain, attachment);
+        self.dismiss_press.attach(domain, attachment);
         for child in Widget::children_mut(self) {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 

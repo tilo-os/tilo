@@ -376,7 +376,7 @@ pub struct ListFace<'a> {
     /// Whether `lines` are an owner's own, which it never changes: then the
     /// slice is the conversation's identity and a kept layout stands while it
     /// does, without comparing a thread to itself every frame.
-    standing: bool,
+    owned: bool,
 }
 
 impl<'a> ListFace<'a> {
@@ -385,7 +385,7 @@ impl<'a> ListFace<'a> {
         Self {
             lines,
             clock,
-            standing: false,
+            owned: false,
         }
     }
 
@@ -395,11 +395,11 @@ impl<'a> ListFace<'a> {
     /// A fresh slice with the same contents is *not* the same conversation — a
     /// caller may edit a line in place — so only an owner that keeps its lines
     /// may say this, and it is not part of the public face.
-    pub(crate) fn standing(lines: &'a [ConversationLine], clock: ConversationClock) -> Self {
+    pub(crate) fn owned(lines: &'a [ConversationLine], clock: ConversationClock) -> Self {
         Self {
             lines,
             clock,
-            standing: true,
+            owned: true,
         }
     }
 
@@ -416,7 +416,7 @@ impl<'a> ListFace<'a> {
     }
 
     fn is_the_same_lines(&self, placed: &Placed) -> bool {
-        if self.standing {
+        if self.owned {
             return placed.at == self.lines.as_ptr().addr() && placed.len == self.lines.len();
         }
         placed.lines == self.lines
@@ -444,7 +444,7 @@ impl<'a> ListFace<'a> {
         Placed {
             at,
             len,
-            lines: if self.standing {
+            lines: if self.owned {
                 Vec::new()
             } else {
                 self.lines.to_vec()
@@ -1049,7 +1049,7 @@ impl Widget for ConversationList {
             taffy::AvailableSpace::Definite(w) => w,
             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => 0.0,
         });
-        let face = ListFace::standing(&self.lines, ConversationClock::local());
+        let face = ListFace::owned(&self.lines, ConversationClock::local());
         let height = face.height_in(&mut self.cache, text_renderer, theme, f64::from(width));
         taffy::Size {
             width,
@@ -1070,7 +1070,7 @@ impl Widget for ConversationList {
         if presence.should_cull(self.rect) {
             return;
         }
-        let face = ListFace::standing(&self.lines, ConversationClock::local());
+        let face = ListFace::owned(&self.lines, ConversationClock::local());
         let mut paint = PaintCtx::new(scene, transform, text_renderer, theme);
         face.paint_in(&mut paint, self.rect, presence.viewport(), &mut self.cache);
     }

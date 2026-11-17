@@ -12,7 +12,7 @@
 //!   which maps one request frame onto a host. Answers that need an
 //!   application's help arrive later as a [`Pending`], so no caller blocks.
 //! - [`CatalogueQuery`] — paged, filtered browsing of what a host offers.
-//! - [`InvocationLedger`] — the idempotency rule every host shares: an
+//! - [`InvocationLog`] — the idempotency rule every host shares: an
 //!   invocation is keyed by its caller-chosen [`InvocationId`], so a retry
 //!   after a lost reply observes the original invocation instead of running
 //!   the action twice.
@@ -148,8 +148,8 @@ pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
 /// [`MAX_REMOTE_ACTION_FRAME_BYTES`]. A caller splits anything larger.
 pub const MAX_CONTENT_FRAME_BYTES: usize = 384 * 1024;
 
-/// Default number of invocations an [`InvocationLedger`] remembers.
-pub const DEFAULT_LEDGER_CAPACITY: usize = 1024;
+/// Default number of invocations an [`InvocationLog`] remembers.
+pub const DEFAULT_LOG_CAPACITY: usize = 1024;
 
 /// Host-owned execution lifetime. Clones share closure, never authority.
 /// Equality and hashing use the immutable minted identity, not liveness.
@@ -461,7 +461,7 @@ pub struct InvokeRequest {
     /// milliseconds pass (at most [`MAX_REMOTE_WAIT`]), so a quick action
     /// answers in one round trip. How the answer travels, not what runs:
     /// [`serve`] takes it off the request before the host sees it, and
-    /// [`InvocationLedger`] ignores it. A host that predates it answers at
+    /// [`InvocationLog`] ignores it. A host that predates it answers at
     /// admission, as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_ms: Option<u32>,
@@ -855,7 +855,7 @@ impl From<WireHostError> for ActionHostError {
 /// Implementations resolve authority from `caller` alone and must be
 /// idempotent per [`InvocationId`]: invoking an id again with the same
 /// request reports the original invocation, with a different request fails
-/// with [`ActionHostError::InvocationConflict`]. [`InvocationLedger`]
+/// with [`ActionHostError::InvocationConflict`]. [`InvocationLog`]
 /// implements that rule.
 pub trait ActionHost {
     /// End this admitted transport run without cancelling its app jobs.
@@ -939,7 +939,7 @@ pub trait ActionHost {
 
     /// Ask the person `caller` acts for to confirm `request` on their own
     /// device, as the host shows it to them. The answer carries a
-    /// [`Confirmation::Witnessed`] that `caller` invokes `request` again
+    /// [`Confirmation::Approved`] that `caller` invokes `request` again
     /// with, and the arguments as the person changed them, if they did
     /// ([`ConfirmedInvocation::apply`]); a caller never confirms by its own
     /// word. A host with nobody to ask answers
@@ -1622,15 +1622,15 @@ pub fn refuse(
     })
 }
 
-struct LedgerEntry<T> {
+struct LogEntry<T> {
     caller: Caller,
     request: InvokeRequest,
-    /// `None` while a start begun with [`InvocationLedger::reserve`] is in
+    /// `None` while a start begun with [`InvocationLog::reserve`] is in
     /// flight.
     handle: Option<T>,
 }
 
-/// The idempotency ledger behind [`ActionHost::invoke`].
+/// The idempotency log behind [`ActionHost::invoke`].
 ///
 /// Maps each admitted [`InvocationId`] to the caller and request that
 /// admitted it and to the host's own handle for the running job. A retry
@@ -1639,19 +1639,19 @@ struct LedgerEntry<T> {
 /// invocations are remembered — a refused one ran nothing, so retrying it
 /// may be admitted later. At `capacity`, the oldest entry whose admission
 /// completed is forgotten. In-flight reservations are never evicted.
-pub struct InvocationLedger<T> {
-    entries: HashMap<InvocationId, LedgerEntry<T>>,
+pub struct InvocationLog<T> {
+    entries: HashMap<InvocationId, LogEntry<T>>,
     order: VecDeque<InvocationId>,
     capacity: usize,
 }
 
-impl<T> Default for InvocationLedger<T> {
+impl<T> Default for InvocationLog<T> {
     fn default() -> Self {
-        Self::with_capacity(DEFAULT_LEDGER_CAPACITY)
+        Self::with_capacity(DEFAULT_LOG_CAPACITY)
     }
 }
 
-/// What [`InvocationLedger::reserve`] found.
+/// What [`InvocationLog::reserve`] found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reservation {
     /// The id is newly claimed; the caller must now start the job.
@@ -1660,15 +1660,15 @@ pub enum Reservation {
     Admitted,
 }
 
-/// Whether [`InvocationLedger::admit`] started a job or found one.
+/// Whether [`InvocationLog::admit`] started a job or found one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Admission {
     Started,
     Retried,
 }
 
-impl<T> InvocationLedger<T> {
-    /// A ledger remembering at most `capacity` invocations (at least one).
+impl<T> InvocationLog<T> {
+    /// A log remembering at most `capacity` invocations (at least one).
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -1759,7 +1759,7 @@ impl<T> InvocationLedger<T> {
         self.order.push_back(id);
         self.entries.insert(
             id,
-            LedgerEntry {
+            LogEntry {
                 caller: caller.clone(),
                 request: InvokeRequest {
                     wait_ms: None,
@@ -2026,14 +2026,14 @@ mod tests {
     /// how many times the action actually started.
     struct CountingHost {
         runs: AtomicU32,
-        ledger: Mutex<InvocationLedger<Mutex<InvocationUpdate>>>,
+        log: Mutex<InvocationLog<Mutex<InvocationUpdate>>>,
     }
 
     impl CountingHost {
         fn new() -> Self {
             Self {
                 runs: AtomicU32::new(0),
-                ledger: Mutex::new(InvocationLedger::default()),
+                log: Mutex::new(InvocationLog::default()),
             }
         }
 
@@ -2042,7 +2042,7 @@ mod tests {
         }
 
         fn finish(&self, caller: &Caller, id: &InvocationId) {
-            if let Some(update) = self.ledger.lock().unwrap().get(caller, id) {
+            if let Some(update) = self.log.lock().unwrap().get(caller, id) {
                 *update.lock().unwrap() = InvocationUpdate::Succeeded {
                     invocation: *id,
                     output: ActionOutput::default(),
@@ -2053,8 +2053,8 @@ mod tests {
 
     impl CountingHost {
         fn cancel_now(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-            let ledger = self.ledger.lock().unwrap();
-            let mut update = ledger
+            let log = self.log.lock().unwrap();
+            let mut update = log
                 .get(caller, id)
                 .ok_or(ActionHostError::UnknownInvocation)?
                 .lock()
@@ -2069,7 +2069,7 @@ mod tests {
                 message: None,
             };
             drop(update);
-            drop(ledger);
+            drop(log);
             Ok(())
         }
     }
@@ -2097,15 +2097,15 @@ mod tests {
                     return Err(ActionHostError::UnknownAction);
                 }
                 let update = {
-                    let mut ledger = self.ledger.lock().unwrap();
-                    let (update, _) = ledger.admit(caller, &request, || {
+                    let mut log = self.log.lock().unwrap();
+                    let (update, _) = log.admit(caller, &request, || {
                         self.runs.fetch_add(1, Ordering::SeqCst);
                         Ok(Mutex::new(InvocationUpdate::Accepted {
                             invocation: request.invocation,
                         }))
                     })?;
                     let update = update.lock().unwrap().clone();
-                    drop(ledger);
+                    drop(log);
                     update
                 };
                 Ok(InvocationState::new(request.invocation, update).receipt())
@@ -2113,7 +2113,7 @@ mod tests {
         }
 
         fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-            self.ledger
+            self.log
                 .lock()
                 .unwrap()
                 .get(caller, id)
@@ -2512,24 +2512,24 @@ mod tests {
     }
 
     fn a_refused_invocation_is_not_remembered() {
-        let mut ledger = InvocationLedger::<u32>::default();
+        let mut log = InvocationLog::<u32>::default();
         let request = archive(InvocationId::new());
         assert_eq!(
-            ledger.admit(&alice(), &request, || Err(ActionHostError::NotPermitted)),
+            log.admit(&alice(), &request, || Err(ActionHostError::NotPermitted)),
             Err(ActionHostError::NotPermitted)
         );
-        let (handle, admission) = ledger.admit(&alice(), &request, || Ok(5)).unwrap();
+        let (handle, admission) = log.admit(&alice(), &request, || Ok(5)).unwrap();
         assert_eq!((*handle, admission), (5, Admission::Started));
     }
 
-    fn the_ledger_forgets_oldest_invocations_past_capacity() {
-        let mut ledger = InvocationLedger::<u32>::with_capacity(2);
+    fn the_log_forgets_oldest_invocations_past_capacity() {
+        let mut log = InvocationLog::<u32>::with_capacity(2);
         let requests: Vec<_> = (0..3).map(|_| archive(InvocationId::new())).collect();
         for (n, request) in (0u32..).zip(&requests) {
-            ledger.admit(&alice(), request, || Ok(n)).unwrap();
+            log.admit(&alice(), request, || Ok(n)).unwrap();
         }
-        assert_eq!(ledger.get(&alice(), &requests[0].invocation), None);
-        assert_eq!(ledger.get(&alice(), &requests[2].invocation), Some(&2));
+        assert_eq!(log.get(&alice(), &requests[0].invocation), None);
+        assert_eq!(log.get(&alice(), &requests[2].invocation), Some(&2));
     }
 
     fn serve_answers_requests_and_ignores_responses() {
@@ -2810,14 +2810,14 @@ mod tests {
 
         phase remote_invocations_run_at_most_once_per_owned_id;
         // A retried invocation reports the original and runs once; ids cannot be reused or borrowed;
-        // refusals are not remembered; the ledger forgets the oldest past capacity; a reservation holds
+        // refusals are not remembered; the log forgets the oldest past capacity; a reservation holds
         // the id until the start completes.
         // Invocations each phase below in order; every phase builds its own fixture.
         {
             a_retried_invocation_reports_the_original_and_runs_once();
             an_invocation_id_cannot_be_reused_or_borrowed();
             a_refused_invocation_is_not_remembered();
-            the_ledger_forgets_oldest_invocations_past_capacity();
+            the_log_forgets_oldest_invocations_past_capacity();
             a_reservation_holds_the_id_until_the_start_completes();
         }
 
@@ -2881,41 +2881,41 @@ mod tests {
         phase capacity_churn_preserves_in_flight_deduplication;
         {
             let caller = alice();
-            let mut ledger = InvocationLedger::<u32>::with_capacity(3);
+            let mut log = InvocationLog::<u32>::with_capacity(3);
             let pending = archive(InvocationId::new());
-            assert_eq!(ledger.reserve(&caller, &pending), Ok(Reservation::Reserved));
+            assert_eq!(log.reserve(&caller, &pending), Ok(Reservation::Reserved));
             let mut completed = VecDeque::new();
             for n in 0..8 {
                 let request = archive(InvocationId::new());
                 assert_eq!(
-                    ledger.admit(&caller, &request, || Ok(n)),
+                    log.admit(&caller, &request, || Ok(n)),
                     Ok((&n, Admission::Started))
                 );
                 completed.push_back(request.invocation);
                 if completed.len() > 2 {
                     let evicted = completed.pop_front().unwrap();
-                    assert_eq!(ledger.get(&caller, &evicted), None);
+                    assert_eq!(log.get(&caller, &evicted), None);
                 }
                 for id in &completed {
-                    assert!(ledger.get(&caller, id).is_some());
+                    assert!(log.get(&caller, id).is_some());
                 }
                 assert!(matches!(
-                    ledger.admit(&caller, &pending, || panic!("duplicate dispatch")),
+                    log.admit(&caller, &pending, || panic!("duplicate dispatch")),
                     Err(ActionHostError::Unavailable { .. })
                 ));
                 assert_eq!(
-                    ledger.reserve(&mallory(), &pending),
+                    log.reserve(&mallory(), &pending),
                     Err(ActionHostError::InvocationConflict)
                 );
             }
-            ledger.complete(&pending.invocation, 99);
+            log.complete(&pending.invocation, 99);
             assert_eq!(
-                ledger.admit(&caller, &pending, || panic!("duplicate dispatch")),
+                log.admit(&caller, &pending, || panic!("duplicate dispatch")),
                 Ok((&99, Admission::Retried))
             );
             let next = archive(InvocationId::new());
-            assert_eq!(ledger.reserve(&caller, &next), Ok(Reservation::Reserved));
-            assert_eq!(ledger.get(&caller, &pending.invocation), None);
+            assert_eq!(log.reserve(&caller, &next), Ok(Reservation::Reserved));
+            assert_eq!(log.get(&caller, &pending.invocation), None);
         }
 
         phase capacity_churn_refuses_new_ids_when_every_slot_is_reserved;
@@ -2923,69 +2923,63 @@ mod tests {
             let caller = alice();
             // Zero capacity is clamped to one, which must still protect its reservation.
             for capacity in 0..=2 {
-                let mut ledger = InvocationLedger::<u32>::with_capacity(capacity);
+                let mut log = InvocationLog::<u32>::with_capacity(capacity);
                 let pending: Vec<_> = (0..capacity.max(1))
                     .map(|_| archive(InvocationId::new()))
                     .collect();
                 for request in &pending {
-                    assert_eq!(ledger.reserve(&caller, request), Ok(Reservation::Reserved));
+                    assert_eq!(log.reserve(&caller, request), Ok(Reservation::Reserved));
                 }
                 let refused = archive(InvocationId::new());
                 for _ in 0..4 {
                     assert!(matches!(
-                        ledger.admit(&caller, &refused, || panic!("dispatch at capacity")),
+                        log.admit(&caller, &refused, || panic!("dispatch at capacity")),
                         Err(ActionHostError::Unavailable { .. })
                     ));
                     for request in &pending {
                         assert!(matches!(
-                            ledger.admit(&caller, request, || panic!("duplicate dispatch")),
+                            log.admit(&caller, request, || panic!("duplicate dispatch")),
                             Err(ActionHostError::Unavailable { .. })
                         ));
                     }
                 }
                 for (n, request) in pending.iter().enumerate() {
                     let n = u32::try_from(n).unwrap();
-                    ledger.complete(&request.invocation, n);
+                    log.complete(&request.invocation, n);
                     assert_eq!(
-                        ledger.admit(&caller, request, || panic!("duplicate dispatch")),
+                        log.admit(&caller, request, || panic!("duplicate dispatch")),
                         Ok((&n, Admission::Retried))
                     );
                 }
                 // Capacity refusals are not remembered and can be retried later.
-                assert_eq!(ledger.reserve(&caller, &refused), Ok(Reservation::Reserved));
-                ledger.abandon(&refused.invocation);
-                assert_eq!(ledger.reserve(&caller, &refused), Ok(Reservation::Reserved));
+                assert_eq!(log.reserve(&caller, &refused), Ok(Reservation::Reserved));
+                log.abandon(&refused.invocation);
+                assert_eq!(log.reserve(&caller, &refused), Ok(Reservation::Reserved));
             }
         }
     }
 
     fn a_reservation_holds_the_id_until_the_start_completes() {
-        let mut ledger = InvocationLedger::<u32>::default();
+        let mut log = InvocationLog::<u32>::default();
         let request = archive(InvocationId::new());
-        assert_eq!(
-            ledger.reserve(&alice(), &request),
-            Ok(Reservation::Reserved)
-        );
+        assert_eq!(log.reserve(&alice(), &request), Ok(Reservation::Reserved));
         assert!(
             matches!(
-                ledger.reserve(&alice(), &request),
+                log.reserve(&alice(), &request),
                 Err(ActionHostError::Unavailable { .. })
             ),
             "a retry during the start neither runs twice nor pretends to be admitted"
         );
-        assert_eq!(ledger.get(&alice(), &request.invocation), None);
-        ledger.complete(&request.invocation, 9);
-        assert_eq!(
-            ledger.reserve(&alice(), &request),
-            Ok(Reservation::Admitted)
-        );
-        assert_eq!(ledger.get(&alice(), &request.invocation), Some(&9));
+        assert_eq!(log.get(&alice(), &request.invocation), None);
+        log.complete(&request.invocation, 9);
+        assert_eq!(log.reserve(&alice(), &request), Ok(Reservation::Admitted));
+        assert_eq!(log.get(&alice(), &request.invocation), Some(&9));
 
         let failed = archive(InvocationId::new());
-        assert_eq!(ledger.reserve(&alice(), &failed), Ok(Reservation::Reserved));
-        ledger.abandon(&failed.invocation);
+        assert_eq!(log.reserve(&alice(), &failed), Ok(Reservation::Reserved));
+        log.abandon(&failed.invocation);
         assert_eq!(
-            ledger.reserve(&alice(), &failed),
+            log.reserve(&alice(), &failed),
             Ok(Reservation::Reserved),
             "an abandoned start ran nothing and may be admitted again"
         );

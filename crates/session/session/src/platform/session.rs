@@ -47,7 +47,7 @@ pub use crate::run::{Backend, Reach};
 pub use crate::search::{AppActions, SearchOptions};
 pub use crate::setup::BeforeShell;
 pub use crate::vpn::Vpn;
-pub use crate::wake::{Seams as WakeSeams, WakeInterfaces};
+pub use crate::wake::{Services as WakeIo, WakeInterfaces};
 pub use crate::workspace_keys::KeyLink;
 pub use tilo_service::{Service, Services};
 
@@ -909,7 +909,7 @@ impl Session {
         // The shell as the session publishes it, which the shell reads through the API.
         let chrome_surface = crate::shell::chrome_surface(options.shell, &chrome, surfaces.clone());
         published.add(Rc::clone(&chrome_surface));
-        // The seam the MCP server's connections ask this session's own services on: made before
+        // The service the MCP server's connections ask this session's own services on: made before
         // the app wire starts, which serves the programs.
         let session_services = std::sync::Arc::new(crate::mcp_server::SessionServices::new(
             options.wake.handle(),
@@ -1611,7 +1611,7 @@ impl Session {
             devices: crate::devices::press::Devices::default(),
             bluetooth: crate::bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
-            waking: crate::wake::Wake::new(&options.wake_seams),
+            waking: crate::wake::Wake::new(&options.wake_io),
             keyboard_and_pointer: shared_input,
             wake_handle: options.wake.handle(),
             music,

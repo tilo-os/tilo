@@ -4,7 +4,7 @@ The person makes two workspaces, opens Terminal in each, makes an environment in
 Terminal and starts an MCP client in each environment's shell, configured as a person
 configures Claude Code: `{"command": "tilo-runtime", "args": ["--connect"]}`. The client
 (`guest/mcp_agent.sh`, bash: the environment's runtime has no python) names itself
-`claude-code`; what it sends comes from the harness, one request at a time, standing in for
+`claude-code`; what it sends comes from the harness, one request at a time, access in for
 the model. The person answers each admission on the sheet.
 
 Everything goes through the production paths: the shell's `new-workspace` and

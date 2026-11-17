@@ -369,7 +369,7 @@ fn validate_checkpoint(checkpoint: &RunCheckpoint) -> Result<String, String> {
         .process
         .container
         .as_ref()
-        .ok_or("missing checkpoint custody")?;
+        .ok_or("missing checkpoint ownership")?;
     owned.validate()?;
     if checkpoint.schema != 1
         || checkpoint.process.id != owned.unit()
@@ -449,7 +449,7 @@ fn read_retained(root: &Path) -> Result<Vec<RunCheckpoint>, String> {
         if path.file_name().and_then(|name| name.to_str())
             != Some(validate_checkpoint(&record)?.as_str())
         {
-            return Err("retained checkpoint filename differs from custody".into());
+            return Err("retained checkpoint filename differs from ownership".into());
         }
         records.push(record);
     }

@@ -16,7 +16,7 @@ use tilo_desktop::launchpad::LaunchpadAction;
 use tilo_desktop::overlays::{Overlays, Part, Target};
 use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::Layout;
-use tilo_desktop_model::commands::Standing;
+use tilo_desktop_model::commands::Requester;
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
@@ -511,8 +511,8 @@ impl ChromeSource for SessionChrome {
 
     /// The person at this device owns its desktop: the desktop's one policy answers what they may
     /// change, as it answers a workspace's owner.
-    fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R {
-        answer(&Standing {
+    fn with_requester<R>(&self, answer: impl FnOnce(&Requester<'_>) -> R) -> R {
+        answer(&Requester {
             person: &self.person,
             role: Some(Role::Owner),
             members: None,

@@ -104,8 +104,8 @@ static RENEWING: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex
 /// ([`tilo_identity_host::provisioning::keep_device_certificates_renewed`]),
 /// on a thread of its own that sleeps until the next one is due. Started
 /// once per session; a session whose certificates never expire ends it at
-/// once. Called again, as when custody is provisioned anew, it tells a
-/// renewal waiting on what it failed on that custody changed.
+/// once. Called again, as when ownership is provisioned anew, it tells a
+/// renewal waiting on what it failed on that ownership changed.
 pub fn keep_device_certificates_renewed(identity_dir: &Path) {
     use tilo_identity_host::provisioning::RENEWAL_CAUSES;
     static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

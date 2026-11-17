@@ -1,4 +1,4 @@
-//! Device-local identity work. Custody persists independently of this controller.
+//! Device-local identity work. Ownership persists independently of this controller.
 
 use imager_backend::prepared_identity::PreparedIdentity;
 use std::{
@@ -433,7 +433,7 @@ impl Personal {
                 )
                 .map_err(|_| ())?
                 {
-                    manifest.account_custody_protocol = Some(1);
+                    manifest.account_credentials_protocol = Some(1);
                 }
             }
             manifest.write(&root).map_err(|_| ())?;
@@ -549,7 +549,7 @@ mod state_root_tests {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     tilo_test_env::scenario! {
-        fn the_state_root_is_reached_only_through_its_own_custody;
+        fn the_state_root_is_reached_only_through_its_own_ownership;
 
         phase home_alias_with_missing_state_root_opens_a_fresh_draft;
         {
@@ -563,17 +563,17 @@ mod state_root_tests {
             symlink(&actual, &alias).unwrap();
             env.set("HOME", &alias);
             env.remove("XDG_STATE_HOME");
-            let custody = preparation_directory().unwrap();
-            assert!(custody.starts_with(actual.join(".local/state/tilo/installer/preparations")));
+            let ownership = preparation_directory().unwrap();
+            assert!(ownership.starts_with(actual.join(".local/state/tilo/installer/preparations")));
             let store = super::super::draft::DraftStore::for_session().unwrap();
             assert!(matches!(
                 store.review().unwrap(),
                 super::super::draft::DraftStatus::Missing
             ));
-            assert!(!custody.exists());
+            assert!(!ownership.exists());
         }
 
-        phase explicit_state_alias_does_not_relax_custody_symlinks_or_replacement;
+        phase explicit_state_alias_does_not_relax_ownership_symlinks_or_replacement;
         {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().canonicalize().unwrap();
@@ -584,14 +584,14 @@ mod state_root_tests {
             symlink(&state, &alias).unwrap();
             let resolved = resolve_state_root(&alias).unwrap();
             assert_eq!(resolved, state);
-            let custody = resolved.join("tilo/installer/preparations");
-            let pin = ensure_private_tree(&custody).unwrap();
-            std::fs::rename(&custody, custody.with_file_name("retained")).unwrap();
-            std::fs::create_dir(&custody).unwrap();
+            let ownership = resolved.join("tilo/installer/preparations");
+            let pin = ensure_private_tree(&ownership).unwrap();
+            std::fs::rename(&ownership, ownership.with_file_name("retained")).unwrap();
+            std::fs::create_dir(&ownership).unwrap();
             assert!(pin.validate_destination().is_err());
-            std::fs::remove_dir(&custody).unwrap();
-            symlink(custody.with_file_name("retained"), &custody).unwrap();
-            assert!(ensure_private_tree(&custody).is_err());
+            std::fs::remove_dir(&ownership).unwrap();
+            symlink(ownership.with_file_name("retained"), &ownership).unwrap();
+            assert!(ensure_private_tree(&ownership).is_err());
             assert!(resolve_state_root(std::path::Path::new("relative/state")).is_err());
         }
     }

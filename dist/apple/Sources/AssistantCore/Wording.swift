@@ -52,8 +52,8 @@ public struct Wording: Sendable {
     // MARK: The conversation
 
     /// What a task's line says after the task's name.
-    public func line(_ standing: TaskLine.Standing) -> String? {
-        switch standing {
+    public func line(_ state: TaskLine.State) -> String? {
+        switch state {
         case .none: nil
         case .scheduled(let when): W.lineScheduled.said(["when": when])
         case .actedAlone: W.lineActedAlone.said
@@ -72,8 +72,8 @@ public struct Wording: Sendable {
     // MARK: Sub-agents
 
     /// "working", "needs you", "done yesterday"
-    public func standing(_ agent: SubAgent) -> String {
-        switch agent.standing {
+    public func state(_ agent: SubAgent) -> String {
+        switch agent.state {
         case .working: return W.working.said
         case .needsYou: return W.needsYou.said
         case .failed: return W.failed.said
@@ -88,7 +88,7 @@ public struct Wording: Sendable {
 
     /// The line under a sub-agent's name in the sidebar: "Coder · working".
     public func sidebarLine(_ agent: SubAgent) -> String {
-        joined([agent.role, standing(agent)])
+        joined([agent.role, state(agent)])
     }
 
     /// The line under a sub-agent's name in its own window: who it is, where it runs, when it

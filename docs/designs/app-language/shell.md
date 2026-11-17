@@ -237,7 +237,7 @@ decides placement and focus; surface apps reach the screen as `SurfaceHost` laye
 (`desktop_host`, `topbar`, `overview`, `window_switcher`, …) over `tilo-desktop-model`, and
 everything a person can do is a published action (`Session::resources`, `Session::invoke`).
 The tilolang shell takes the place of `tilo-desktop`'s widgets, one part at a time, on the same
-seams:
+boundaries:
 
 - **Shell views on layers.** A shell package's views run in the tilolang host like any app's
   and draw through the same UI host; a `SurfaceHost` shows each part (bar, layout, overlays) as
@@ -357,7 +357,7 @@ no run and no transcript; it places the channel like any resource.
   script run. It lands in their direct conversation with the agent, and Chat opens that
   conversation on the shell, started without a window first when it was not running.
 - **Asking from search.** The palette offers the same send for what was typed: one row, "Send to
-  {agent}: …", standing after everything the query names. Choosing it runs
+  {agent}: …", access after everything the query names. Choosing it runs
   `session:send-to#send` with the agent the person keeps in the workspace the search was opened
   in (a new one when they keep none), so the request lands in their conversation with it exactly
   as the canvas's text does. It is a row every query is offered, so text that names nothing is a

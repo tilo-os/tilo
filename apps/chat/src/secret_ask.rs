@@ -32,7 +32,7 @@ use crate::i18n::{t, t_args};
 use crate::messages::{NewMessage, chat_part};
 use crate::model::Message;
 use crate::parts::ChatPart;
-use crate::question::{DECLINED, FILLED, Question, SECRET, Standing};
+use crate::question::{DECLINED, FILLED, Question, QuestionState, SECRET};
 use crate::question_card::{Line, QuestionShown, Reader};
 
 /// The most places one question names, as the vault keeps at most.
@@ -147,17 +147,17 @@ pub fn shown(question: &Question, reader: &Reader<'_>) -> QuestionShown {
             .map_or_else(|| t("chat-secret-unreadable"), title),
         Line::Title,
     ));
-    let standing = match question.standing() {
-        Standing::Waiting if asked.is_none() => None,
-        Standing::Waiting if reader.mine => Some((t("chat-secret-waiting-mine"), Line::Field)),
-        Standing::Waiting => Some((
+    let state = match question.state() {
+        QuestionState::Waiting if asked.is_none() => None,
+        QuestionState::Waiting if reader.mine => Some((t("chat-secret-waiting-mine"), Line::Field)),
+        QuestionState::Waiting => Some((
             reader.name.map_or_else(
                 || t("chat-question-waiting-someone"),
                 |name| t_args("chat-question-waiting", &[("name", name.into())]),
             ),
             Line::Status,
         )),
-        Standing::Answered(given) | Standing::Settled(given, _) => Some((
+        QuestionState::Answered(given) | QuestionState::Settled(given, _) => Some((
             t(if given.answer.0 == FILLED {
                 "chat-secret-filled"
             } else {
@@ -165,7 +165,7 @@ pub fn shown(question: &Question, reader: &Reader<'_>) -> QuestionShown {
             }),
             Line::Status,
         )),
-        Standing::Withdrawn(withdrawn) => Some((
+        QuestionState::Withdrawn(withdrawn) => Some((
             if withdrawn.why.is_empty() {
                 t("chat-question-withdrawn")
             } else {
@@ -177,7 +177,7 @@ pub fn shown(question: &Question, reader: &Reader<'_>) -> QuestionShown {
             Line::Status,
         )),
     };
-    shown.lines.extend(standing);
+    shown.lines.extend(state);
     shown
 }
 

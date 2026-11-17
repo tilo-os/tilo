@@ -7,7 +7,7 @@
 //! for every layer someone shows, as the [`Sink`] it was started with says
 //! ([`super::live_pictures`] publishes them). A layer nobody shows is not
 //! encoded, and a layer that starts being shown starts at a keyframe: the
-//! standing one while the picture has not changed since, so a still screen
+//! last_keyframe one while the picture has not changed since, so a still screen
 //! costs no encode, or one encoded from the last frame at once.
 //!
 //! **Receiving.** The workspace's live session seals a picture per layer and
@@ -248,7 +248,7 @@ struct LayerEncoder {
     output: (u16, u16),
     sequence: u64,
     /// The newest unit while it is a keyframe: a new reader starts at it.
-    standing: Option<VideoObject>,
+    last_keyframe: Option<VideoObject>,
 }
 
 impl LayerEncoder {
@@ -269,7 +269,7 @@ impl LayerEncoder {
                 u16::try_from(height).map_err(|_| "picture too tall")?,
             ),
             sequence: 0,
-            standing: None,
+            last_keyframe: None,
         })
     }
 }
@@ -370,12 +370,12 @@ fn encode(source: Source, fps: u32, feed: &Feed, sink: &Weak<dyn Sink>) {
                 if !asked.contains(layer) {
                     continue;
                 }
-                if let Some(standing) = &encoder.standing {
+                if let Some(last_keyframe) = &encoder.last_keyframe {
                     if shown_here {
-                        sink.sent(source, standing);
+                        sink.sent(source, last_keyframe);
                     }
                     if own_here {
-                        sink.own(standing);
+                        sink.own(last_keyframe);
                     }
                     continue;
                 }
@@ -412,7 +412,7 @@ fn encode(source: Source, fps: u32, feed: &Feed, sink: &Weak<dyn Sink>) {
                     payload: unit.data,
                 };
                 encoder.sequence = encoder.sequence.saturating_add(1);
-                encoder.standing = object.keyframe.then(|| object.clone());
+                encoder.last_keyframe = object.keyframe.then(|| object.clone());
                 if shown_here {
                     sink.sent(source, &object);
                 }

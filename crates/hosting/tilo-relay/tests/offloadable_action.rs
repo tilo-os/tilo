@@ -1,6 +1,6 @@
 //! An offloadable action — thumbnailing a batch of large images — invoked on a
 //! device of a workspace runs on the workspace's host when the offer round
-//! picks it there: the host answers with its own standing and the inputs it
+//! picks it there: the host answers with its own access and the inputs it
 //! already keeps, the invocation runs there as a compute job over that
 //! content, and the answer is exactly what the action's own handler answered
 //! on the invoking device. A host that does not hold the inputs is no quicker

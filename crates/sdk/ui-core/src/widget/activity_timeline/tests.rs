@@ -1133,7 +1133,7 @@ tilo_test_env::scenario! {
 
         fn row_at_agrees_with_row_rect_at_the_boundaries() {
             // `row_at` binary-searches the cumulative row tops; must still agree
-            // with `row_rect` one pixel either side of a seam between two rows
+            // with `row_rect` one pixel either side of a boundary between two rows
             // of *different* heights.
             let entries: Vec<HistoryEntry> = (0u8..40)
                 .map(|i| entry(EntryKind::Text, "Alice", u64::from(i), i))

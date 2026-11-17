@@ -288,7 +288,7 @@ pub fn open_frame(
 
 /// A record as its writer reads it: `base`, the record's saved bytes as the replica holds them
 /// (`None` when it holds none of it, or cannot open it yet), with `frames`, writes of `author` the
-/// replica has not taken in yet (they wait for the record's keys or for workspace in custody), merged
+/// replica has not taken in yet (they wait for the record's keys or for workspace held), merged
 /// over it. Only the writer reads these: nobody else holds them until they land.
 ///
 /// # Errors

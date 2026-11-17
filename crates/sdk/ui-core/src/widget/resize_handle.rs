@@ -1,4 +1,4 @@
-//! `ResizeHandle` — the seam between two adjacent `WindowGroup`s inside a [`GroupRow`]: the
+//! `ResizeHandle` — the border between two adjacent `WindowGroup`s inside a [`GroupRow`]: the
 //! slot that spaces them, and the thin rule painted in it. It resizes nothing itself.
 
 use std::collections::HashMap;
@@ -19,8 +19,8 @@ pub const HANDLE_VISIBLE_PX: f64 = 2.0;
 /// the strip's canvas (`GroupRow::usable_per_group`) has to step by this
 /// between adjacent groups.
 pub const HANDLE_SLOT_PX: f64 = 8.0;
-/// The seam's hit zone is the slot plus one grab zone of each neighbour (`RESIZE_HANDLE_PX`
-/// inside each window), so every window edge, seam or outer, has the same size of target.
+/// The border's hit zone is the slot plus one grab zone of each neighbour (`RESIZE_HANDLE_PX`
+/// inside each window), so every window edge, border or outer, has the same size of target.
 pub const HANDLE_HIT_HALF_PX: f64 = HANDLE_SLOT_PX / 2.0 + crate::widget::RESIZE_HANDLE_PX;
 
 /// The `GroupRow` constructs one per inter-group gap (N-1 handles for N
@@ -32,7 +32,7 @@ pub struct ResizeHandle {
     /// paint/event cycle.
     left_rect: Rect,
     right_rect: Rect,
-    /// The seam's grab zone: the gap between the neighbours, extended by
+    /// The border's grab zone: the gap between the neighbours, extended by
     /// `HANDLE_HIT_HALF_PX` on each side, so it is exactly the two windows'
     /// edge grips plus the gap.
     rect: Rect,
@@ -81,7 +81,7 @@ impl Default for ResizeHandle {
 }
 
 impl Widget for ResizeHandle {
-    /// The seam it paints, as the separator between two windows' groups.
+    /// The border it paints, as the separator between two windows' groups.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("div");
         cx.picture();
@@ -133,7 +133,7 @@ impl Widget for ResizeHandle {
         _presence: &PresenceCtx,
     ) {
         // Always the idle rule: under the pointer it is the owning window's
-        // own edge that lights up, so the seam never suggests that
+        // own edge that lights up, so the border never suggests that
         // the gap itself, or both windows, will move.
         let thickness = HANDLE_VISIBLE_PX;
         let mid_x = f64::midpoint(self.left_rect.x1, self.right_rect.x0);
@@ -179,7 +179,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_page_gets_the_seam_as_a_separator() {
+    fn a_page_gets_the_border_as_a_separator() {
         let mut handle = ResizeHandle::new();
         handle.set_neighbour_rects(
             Rect::new(0.0, 0.0, 600.0, 400.0),
@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn the_seam_zone_is_both_edge_grips_plus_the_gap() {
+    fn the_border_zone_is_both_edge_grips_plus_the_gap() {
         let mut h = ResizeHandle::new();
         h.set_neighbour_rects(
             Rect::new(0.0, 0.0, 600.0, 400.0),

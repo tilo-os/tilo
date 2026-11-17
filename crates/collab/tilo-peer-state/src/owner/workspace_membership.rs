@@ -15,7 +15,7 @@ pub(crate) struct StoredMembershipReceipt {
 
 impl NativeWorkspaceOwner {
     /// Commit a typed membership command as this device, signed by `signer`,
-    /// its custody of its key, outside the owner's turn: the workspace's admission decides it against the caller's
+    /// its ownership of its key, outside the owner's turn: the workspace's admission decides it against the caller's
     /// grants, here and on every device that receives it. A device of the
     /// workspace's owner publishes the governance as a checkpoint; any other
     /// member publishes the changes it made, which every key holder admits
@@ -23,7 +23,7 @@ impl NativeWorkspaceOwner {
     /// invocation reuse never changes policy.
     ///
     /// A workspace this device hosts itself has no host to publish to: its
-    /// device is its keeper, and holds no link that carries its custody. What
+    /// device is its keeper, and holds no link that carries its ownership. What
     /// the command changed goes to the members linked to this device now
     /// ([`crate::owner::NativeKeptHereObserver`]), as its record writes do; a
     /// member that links later reads it in the governance its catch-up brings.
@@ -59,7 +59,7 @@ impl NativeWorkspaceOwner {
                 return Ok(existing.receipt.clone());
             }
             if candidate.record.workspace_memberships.len() >= MAX_COMMANDS {
-                return Err("native membership custody capacity exhausted".into());
+                return Err("native membership ownership capacity exhausted".into());
             }
             // What this device signs, it publishes: a device of the workspace's owner
             // its governance as a checkpoint, carrying its durable state; any
@@ -327,7 +327,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn changed_caller_certificate_cannot_borrow_governor_signing_custody() {
+    async fn changed_caller_certificate_cannot_borrow_governor_signing_ownership() {
         let fixture = fixture();
         let mut add = request(&fixture, agent_grant());
         if let CommitOperation::WorkspaceMembershipCommand { caller, .. } = &mut add.operation {

@@ -1623,16 +1623,16 @@ tilo_test_env::scenario! {
             request_id,
             role: crate::join::Role::Viewer,
         };
-        let ledgered = |receipt| crate::state::LedgerReceipt {
+        let logged = |receipt| crate::state::StoredReceipt {
             receipt,
             invitation: vec![],
         };
-        let ledgered = |receipt| ledgered(receipt).encode().unwrap();
+        let logged = |receipt| logged(receipt).encode().unwrap();
         left.set_actor(automerge::ActorId::from(vec![98; 32]));
         left.put(
             &invitation_receipts,
             hex::encode(invite_id),
-            automerge::ScalarValue::Bytes(ledgered(receipt([99; 32], [100; 32]))),
+            automerge::ScalarValue::Bytes(logged(receipt([99; 32], [100; 32]))),
         )
         .unwrap();
         left.commit_edit("fixture", "fixture");
@@ -1641,7 +1641,7 @@ tilo_test_env::scenario! {
             .put(
                 &invitation_receipts,
                 hex::encode(invite_id),
-                automerge::ScalarValue::Bytes(ledgered(receipt([102; 32], [103; 32]))),
+                automerge::ScalarValue::Bytes(logged(receipt([102; 32], [103; 32]))),
             )
             .unwrap();
         right.commit_edit("fixture", "fixture");

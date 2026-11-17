@@ -163,7 +163,7 @@ async fn grant(fixture: &Fixture, id: &str) {
         .unwrap();
 }
 
-/// One write of this device's record, committed to its custody.
+/// One write of this device's record, committed to its ownership.
 fn publish_write(fixture: &Fixture, workspace: crate::owner::WorkspaceId, key: &str) {
     fixture
         .owner
@@ -255,13 +255,13 @@ async fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() 
     publish_write(&fixture, workspace, "first");
     publish_write(&fixture, workspace, "second");
     let reopened = open_file(&path).unwrap();
-    let custody = reopened.outgoing_status(workspace, fixture.now).unwrap();
+    let ownership = reopened.outgoing_status(workspace, fixture.now).unwrap();
     assert_eq!(
-        custody.pending, 4,
+        ownership.pending, 4,
         "the authorship grant, the record's creation and two writes"
     );
     assert_eq!(
-        custody.blocked, 0,
+        ownership.blocked, 0,
         "every retained frame publishes as it was signed"
     );
     reopened.retire_outgoing(workspace).unwrap();
@@ -408,7 +408,7 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
             wholes.push(whole());
         }
         if n % 50 == 49 {
-            // The host took what custody held, as a linked device's does.
+            // The host took what ownership held, as a linked device's does.
             fixture.owner.retire_outgoing(workspace).unwrap();
         }
     }

@@ -194,7 +194,7 @@ impl BrowserWidget {
         self.engine.send(WebViewCommand::Page {
             request_id: self.page_request_seq,
             actor: None,
-            request: PageRequest::Ledger {
+            request: PageRequest::Log {
                 since: self.page_resource.cursor(),
             },
         });
@@ -204,11 +204,11 @@ impl BrowserWidget {
     /// what it set down since this window last read it, whatever place the
     /// caller reads on from. The caller's place is answered by the resource.
     pub(super) fn page_resource_request(&mut self, asked: PageRequest) -> PageRequest {
-        if !self.page_resource.attached() || !matches!(asked, PageRequest::Ledger { .. }) {
+        if !self.page_resource.attached() || !matches!(asked, PageRequest::Log { .. }) {
             return asked;
         }
         self.page_resource.engine_is(self.page_engine());
-        PageRequest::Ledger {
+        PageRequest::Log {
             since: self.page_resource.cursor(),
         }
     }
@@ -224,7 +224,7 @@ impl BrowserWidget {
         asked: &PageRequest,
         engine: Result<PageReply, PageFailure>,
     ) -> Result<PageReply, PageFailure> {
-        let PageRequest::Ledger { since } = asked else {
+        let PageRequest::Log { since } = asked else {
             return engine;
         };
         if !self.page_resource.attached() {

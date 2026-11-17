@@ -23,7 +23,7 @@ pub fn encode_profile_block(profile: &InstallProfile) -> io::Result<Vec<u8>> {
 
 pub fn encode_profile_block_with_windows(
     profile: &InstallProfile,
-    windows: Option<&account_custody::hints::media::Prepared>,
+    windows: Option<&account_credentials::hints::media::Prepared>,
 ) -> io::Result<Vec<u8>> {
     profile
         .validate_media_profile()
@@ -91,7 +91,7 @@ pub fn write_windows_profile_block_bound(
     dst: &Path,
     target_size: u64,
     profile: &InstallProfile,
-    windows: Option<&account_custody::hints::media::Prepared>,
+    windows: Option<&account_credentials::hints::media::Prepared>,
     should_cancel: &impl Fn() -> bool,
 ) -> io::Result<()> {
     let block = encode_profile_block_with_windows(profile, windows)?;
@@ -154,7 +154,7 @@ fn cancelled_error() -> io::Error {
 #[cfg(test)]
 mod windows_tests {
     use super::*;
-    use account_custody::hints::{AccountHint, HintSources, Provider, media};
+    use account_credentials::hints::{AccountHint, HintSources, Provider, media};
 
     #[test]
     fn production_writer_and_reader_bind_exact_private_hints_and_recovery() {

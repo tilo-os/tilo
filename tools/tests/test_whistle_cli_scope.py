@@ -51,12 +51,12 @@ class WhistleScopeTests(unittest.TestCase):
                     scope.verified_fixture(manifest, 'fr_fr-0')
 
     def test_runtime_symlink_is_refused_before_untrusted_bytes_are_read(self):
-        ledger = json.loads((RELEASE.parents[1] / 'docs/architecture/dictation-whistle-review.json').read_text())
+        manifest = json.loads((RELEASE.parents[1] / 'docs/architecture/dictation-whistle-review.json').read_text())
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'needle').symlink_to('/nonexistent-private-runtime')
             with self.assertRaisesRegex(RuntimeError, 'owned regular file'):
-                scope.verified_runtime(root, ledger)
+                scope.verified_runtime(root, manifest)
 
 
 if __name__ == '__main__':

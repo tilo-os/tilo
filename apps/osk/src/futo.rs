@@ -1,5 +1,5 @@
 //! `FutoSwipeModel` — the real FUTO `ExecuTorch` swipe decoder, wired into the
-//! OSK's [`SwipeModel`] seam via the `swipe`
+//! OSK's [`SwipeModel`] boundary via the `swipe`
 //! crate (C++/ExecuTorch over FFI).
 //!
 //! The encoder is universal; we pair it with the `en_qwerty` decoder + the

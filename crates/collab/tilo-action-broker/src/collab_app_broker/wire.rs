@@ -35,7 +35,7 @@ use presence::presence_event;
 
 /// What a subscription receives from the broker's fanout. A host worker's
 /// feed ends with an error once that worker is no longer current, and a
-/// native window's once its workspace or document custody ended, checked on
+/// native window's once its workspace or document ownership ended, checked on
 /// both sides of every wait.
 pub(super) struct Feed<T> {
     native_guard: Option<NativeContextReadGuard>,
@@ -809,7 +809,7 @@ impl JoinedChannel {
 
     /// Answer a private service-session command from an app's own route:
     /// the Browser's website sessions, or an account secret for the app the
-    /// custodian releases it to.
+    /// owner releases it to.
     pub(super) fn browser_service_session_dispatch(
         &self,
         bytes: &[u8],
@@ -939,7 +939,7 @@ impl JoinedChannel {
         let person = current.caller(&route.cluster_id);
         // An app's request continuing an invocation someone asked of it (an
         // edit its effect submits, another app's action its effect calls) is
-        // decided as that invocation's caller, under its custody; its open
+        // decided as that invocation's caller, under its ownership; its open
         // of an application, else as the person whose press it follows.
         // Anything else, including what continues an invocation the app made
         // of itself, is the app's own API's to decide.
@@ -1036,7 +1036,7 @@ impl JoinedChannel {
         }
         // An invocation the caller may not confirm itself is put to the
         // person who admitted the connection, on their own device.
-        let answer = super::witness::serve_answering(
+        let answer = super::approval::serve_answering(
             Arc::clone(&self.state),
             host,
             caller,
@@ -1319,7 +1319,7 @@ impl JoinedChannel {
             .map_err(|_| unavailable())?
             .insert(peer_id, surface.clone());
         self.state
-            .advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
+            .advance_approval_publication(peer_id, ApprovalPublicationKind::Surface);
         self.state
             .surface_republished(peer_id, &surface, previous.as_ref());
         // A catalogue offering its record is what an `open` of it waits for:
@@ -1500,7 +1500,7 @@ impl JoinedChannel {
             );
         }
         self.state
-            .advance_witness_publication(self.peer_id, WitnessPublicationKind::Directory);
+            .advance_approval_publication(self.peer_id, ApprovalPublicationKind::Directory);
         self.retain_native_checkout(&route);
         self.state.refresh_action_directory_root_snapshot();
         // The directory can alter remote discoverability without an eager

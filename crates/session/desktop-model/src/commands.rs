@@ -23,8 +23,10 @@ mod admission;
 mod placement;
 pub mod policy;
 pub use admission::{check_owned, namespace_counter, resolve_open_app};
-pub use placement::{GroupSpan, OpenContext, OpenIntent, Seam, StripViewport, open_app_placement};
-pub use policy::{Refusal, Standing, may_command, may_create_workspace};
+pub use placement::{
+    Border, GroupSpan, OpenContext, OpenIntent, StripViewport, open_app_placement,
+};
+pub use policy::{Refusal, Requester, may_command, may_create_workspace};
 
 pub const APP_ID: &str = "so.tilo.desktop";
 pub const RESOURCE: &str = "desktop:session";

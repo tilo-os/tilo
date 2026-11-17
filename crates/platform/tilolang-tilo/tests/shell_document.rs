@@ -967,7 +967,7 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
 }
 
 #[test]
-fn resources_standing_as_content_stand_on_the_frameless_canvas() {
+fn resources_shown_as_content_stand_on_the_frameless_canvas() {
     let mut r = workspace();
     r.host.root_of("so.tilo.lang.notes").unwrap();
     r.commit();

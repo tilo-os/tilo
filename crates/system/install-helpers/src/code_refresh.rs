@@ -302,7 +302,7 @@ pub fn bootstrap_receive(stream: &mut dyn Stream) -> Result<(Files, Value)> {
 }
 
 /// The development VM the daemon refreshes. The provided methods are the
-/// production behaviour; tests replace the seams.
+/// production behaviour; tests replace the boundaries.
 pub trait Guest {
     fn base(&self) -> PathBuf {
         PathBuf::from("/run/tilo-installer/code-refresh")

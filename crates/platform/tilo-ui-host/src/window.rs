@@ -855,7 +855,7 @@ impl AppWindow {
                 wanted.push(Rows::new(prefix, lane, &list, item, heading));
             }
         }
-        // A row a list holds can hold a list of its own — the document of a row standing open where
+        // A row a list holds can hold a list of its own — the document of a row held open where
         // it stands — and so can that list's rows.
         let mut at = 0;
         while let Some(rows) = wanted.get(at) {

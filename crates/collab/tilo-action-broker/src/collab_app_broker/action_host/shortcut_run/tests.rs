@@ -396,7 +396,7 @@ async fn direct_entry_points_refuse_missing_journal_before_spawning() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn direct_palette_refuses_native_custody_mismatch_without_fallback() {
+async fn direct_palette_refuses_native_ownership_mismatch_without_fallback() {
     let mut fixture = Fixture::new();
     let workspace = fixture.caller.workspace().unwrap().to_string();
     fixture.caller = Caller::local_person("another-person").in_workspace(workspace);
@@ -559,7 +559,7 @@ async fn nested_steps_keep_original_owner_and_sign_each_steps_own_uuid() {
         let evidence = record
             .admission
             .as_ref()
-            .expect("each step has signed custody");
+            .expect("each step has signed ownership");
         // Guarded history retains a request digest, not the private request.
         // The signed receipt must still identify this step's own UUID.
         assert_eq!(evidence.public_receipt().facts.invocation, key.invocation);
@@ -570,7 +570,7 @@ async fn nested_steps_keep_original_owner_and_sign_each_steps_own_uuid() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn propagated_custody_does_not_bypass_the_shortcut_grant() {
+async fn propagated_ownership_does_not_bypass_the_shortcut_grant() {
     let mut fixture = Fixture::new();
     fixture.request.target.address.resource = tilo_automation::shortcut_resource_id("denied");
     fixture.invoke().await.unwrap();
@@ -760,7 +760,7 @@ async fn stopping_a_shortcut_that_is_not_running_stops_nothing_and_is_no_error()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_unscoped_broker_api_does_not_invent_native_custody() {
+async fn an_unscoped_broker_api_does_not_invent_native_ownership() {
     let fixture = Fixture::new();
     let api = BrokerApi::new(fixture.state.clone());
     assert!(
@@ -768,7 +768,7 @@ async fn an_unscoped_broker_api_does_not_invent_native_custody() {
             .await
             .unwrap()
             .is_err(),
-        "an identity-bearing host requires original custody"
+        "an identity-bearing host requires original ownership"
     );
     assert!(!fixture.state.has_finished_shortcut_runs());
     assert!(

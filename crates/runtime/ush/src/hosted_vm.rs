@@ -9,7 +9,7 @@
 //! their run records are the same as on a device.
 //!
 //! A refused VM is typed ([`host_account::Refusal`]) and says what would let it through: a
-//! person's command the account's standing would admit waits and runs once the host's
+//! person's command the account's access would admit waits and runs once the host's
 //! plans file names the account ([`held_mark`], Terminal showing the prompt), while an
 //! agent's command fails at once with the refusal and what to ask the person. When the
 //! hosts have no room ([`Reply::Busy`]) a command waits after one line saying so, and

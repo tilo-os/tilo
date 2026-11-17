@@ -26,7 +26,7 @@ AREAS = {
     "agents-e2e": "Coding agents in two workspaces, end to end (e2e-agents)",
     "ws-branch-e2e": "A workspace set up once and branched, end to end (e2e-ws-branch)",
     "input": "Input fidelity: real device descriptors, layouts, touchpad",
-    "secrets": "Security and identity: secret custody",
+    "secrets": "Security and identity: secret storage",
 }
 
 

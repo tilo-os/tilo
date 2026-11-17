@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 # Decide whether this boot counts as a success.
 #
-# Ordered before boot-complete.target and required by it, which is the seam
+# Ordered before boot-complete.target and required by it, which is the boundary
 # systemd provides for exactly this: systemd-bless-boot.service is ordered AFTER
 # boot-complete.target and Requires= it, so a failure here means the boot loader
 # entry keeps its decremented counter. Three such boots and sd-boot stops offering

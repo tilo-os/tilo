@@ -1,4 +1,4 @@
-//! Absolute, non-renewable proof transport deadlines and shutdown-only custody.
+//! Absolute, non-renewable proof transport deadlines and shutdown-only ownership.
 //! This module never admits a person or source; successful IO is not authority.
 use super::workspace::ControlStream;
 use std::{

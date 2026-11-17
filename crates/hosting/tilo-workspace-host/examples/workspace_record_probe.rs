@@ -23,7 +23,7 @@ struct Record {
     generation: u64,
     outgoing: Vec<Publication>,
     published: usize,
-    collaboration: Ledger,
+    collaboration: Log,
     /// How many publications and join receipts the files beside the record
     /// hold (`<record>.published`, `<record>.joins`): the record holds those
     /// after them.
@@ -32,7 +32,7 @@ struct Record {
 }
 
 #[derive(Deserialize)]
-struct Ledger {
+struct Log {
     invitations: Vec<InvitationEntry>,
     join_challenges: Vec<JoinChallengeRecord>,
     join_completions: Vec<JoinCompletionRecord>,
@@ -159,14 +159,11 @@ fn main() {
     let count = match postcard::take_from_bytes::<usize>(rest) {
         Ok((count, tail)) => {
             rest = tail;
-            println!(
-                "  {:<28} ok, {count} invitation(s)",
-                "ledger.invitations.len"
-            );
+            println!("  {:<28} ok, {count} invitation(s)", "log.invitations.len");
             count
         }
         Err(error) => {
-            println!("  {:<28} FAILS: {error}", "ledger.invitations.len");
+            println!("  {:<28} FAILS: {error}", "log.invitations.len");
             return;
         }
     };
@@ -181,13 +178,10 @@ fn main() {
     if before == rest.len() {
         println!("  ({count} invitations took no bytes?)");
     }
-    step!(Vec<JoinChallengeRecord>, "ledger.join_challenges");
-    step!(Vec<JoinCompletionRecord>, "ledger.join_completions");
-    step!(
-        Vec<MembershipChallengeRecord>,
-        "ledger.membership_challenges"
-    );
-    step!(Vec<AdministrationRecord>, "ledger.administration");
+    step!(Vec<JoinChallengeRecord>, "log.join_challenges");
+    step!(Vec<JoinCompletionRecord>, "log.join_completions");
+    step!(Vec<MembershipChallengeRecord>, "log.membership_challenges");
+    step!(Vec<AdministrationRecord>, "log.administration");
     step!(u64, "filed_publications");
     step!(u64, "filed_receipts");
     println!("  every field reads; {} bytes left", rest.len());

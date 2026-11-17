@@ -2,7 +2,7 @@
 //!
 //! This crate stores *descriptions* of model providers, never a
 //! bearer token. A profile can point at a system-vault item via
-//! [`SecretReference`], or name a sign-in held by account custody via
+//! [`SecretReference`], or name a sign-in held by account credentials via
 //! [`SignInCredential`], while the process that owns the secret service is
 //! responsible for resolving either at call time. Keeping this
 //! boundary here makes the same profile safe to render in Settings, sync as
@@ -213,7 +213,7 @@ impl SignInIssuer {
     }
 }
 
-/// A sign-in held by account custody in place of an API key: the gateway
+/// A sign-in held by account credentials in place of an API key: the gateway
 /// mints a short-lived access token from it for each request and refreshes
 /// it when due. The grant itself lives in this device's vault under
 /// [`sign_in_grant_id`], derived from the profile id so a profile cannot

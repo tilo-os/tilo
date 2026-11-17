@@ -1,6 +1,6 @@
 //! One notice a role tells the person, as this host shows it.
 //!
-//! The notice and the [`Notices`] seam are the session core's ([`tilo_session_core::notice`]):
+//! The notice and the [`Notices`] service are the session core's ([`tilo_session_core::notice`]):
 //! what it says, where choosing it lands, and what the person chose. This is the page's own way
 //! of showing one — the notifier its host serves — and the address an open of a notice's place is
 //! carried at.

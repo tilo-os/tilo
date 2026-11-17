@@ -40,9 +40,9 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// Hold the item `item` open where its row stands, as a host keeping which item is open asks
-    /// it to, or none. An item no row of the list shows closes the row standing open. An item
+    /// it to, or none. An item no row of the list shows closes the row held open. An item
     /// the rows cannot answer for yet — the app is reading them, or its row has not arrived, so
-    /// whether it opens where it stands is unknown — leaves the row standing open as it is, and
+    /// whether it opens where it stands is unknown — leaves the row held open as it is, and
     /// opens as its row arrives: a window that moves to another place to show an item names
     /// the item before the place's rows are there.
     pub fn hold_open(&mut self, item: Option<&str>) {

@@ -115,7 +115,7 @@ fn workspace_signed_through(
         identity,
         Some(directory.path()),
         std::iter::empty(),
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this device's engine opens");
     let governor = TestGovernor::empty_interactive(cert.clone(), person_key.clone(), WORKSPACE)
@@ -203,7 +203,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
         identity(&a_cert, &a_key),
         Some(a_state.path()),
         std::iter::empty(),
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("the owner's engine opens");
     let mut governor = testing::enroll_into(governor, a_engine.owner(), &a_key, &a_cert)
@@ -217,7 +217,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
         identity(&b_cert, &b_key),
         Some(b_state.path()),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this session's engine opens");
     governor = testing::enroll_into(governor, b_engine.owner(), &b_key, &b_cert)
@@ -1005,7 +1005,7 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
             identity(&cert, &key),
             Some(state.path()),
             [workspace_id],
-            crate::platform::custody::of_this_session(),
+            crate::platform::membership_check::of_this_session(),
         )
         .expect("this computer's engine opens");
         the_fixture_governs(&engine, workspace_id);
@@ -1189,7 +1189,7 @@ fn a_second_device(
         identity(&her, &her_key),
         Some(her_state),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("her engine opens");
     // This computer's device governs the workspace, and admits her.
@@ -1197,7 +1197,7 @@ fn a_second_device(
         identity(cert, key),
         Some(state),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this computer's engine opens");
     // The workspace the session made is this computer's own already: a fixture host governs it
@@ -1328,7 +1328,7 @@ fn her_device_takes(
         identity(cert, key),
         Some(state),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this computer's engine opens");
     let written = mine
@@ -1517,7 +1517,7 @@ fn an_agent_cannot_change_a_workspaces_people() {
         crate::sync::device_identity().expect("this computer is a device"),
         Some(state.path()),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this computer's engine opens");
     assert!(
@@ -1543,7 +1543,7 @@ fn invite_from_this_device(
         identity(cert, key),
         Some(state),
         [workspace_id],
-        crate::platform::custody::of_this_session(),
+        crate::platform::membership_check::of_this_session(),
     )
     .expect("this computer's engine opens");
     let now = tilo_clock::wall();

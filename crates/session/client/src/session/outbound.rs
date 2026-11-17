@@ -1,15 +1,15 @@
-//! What this session writes: its custody of a device's writes.
+//! What this session writes: its ownership of a device's writes.
 //!
 //! A write a page publishes is committed to this device's replica sealed with
 //! its record's keys ([`Task::commit_held`]); never in the clear, so frames
-//! wait for the keys. The replica's custody is what this session owes its
-//! host: it is sent as commits ([`Task::send_custody`]) and retired as the
+//! wait for the keys. The replica's ownership is what this session owes its
+//! host: it is sent as commits ([`Task::send_ownership`]) and retired as the
 //! host answers them ([`Task::retire_answered`]), and a barrier completes once
-//! everything in custody when it was asked is answered.
+//! everything held when it was asked is answered.
 
 use super::{
-    Answered, BTreeMap, BTreeSet, CoeditPayload, Completion, CustodyEntry, DocumentRoute, Envelope,
-    FailureKind, RelayClient, Task,
+    Answered, BTreeMap, BTreeSet, CoeditPayload, Completion, DocumentRoute, Envelope, FailureKind,
+    OwnershipEntry, RelayClient, Task,
 };
 use tilo_peer_state::owner::WriteRefusal;
 use tilo_relay_protocol::WorkspaceId;
@@ -91,10 +91,10 @@ impl Task {
         self.release_barriers(&refused);
     }
 
-    /// Seal, sign and commit `frames` of `route` into this device's custody, in one owner turn.
+    /// Seal, sign and commit `frames` of `route` into this device's ownership, in one owner turn.
     /// Answers `None` while they stay held, and once it is done with them, whether they were
     /// committed or refused for good, and why. Writes its record cannot take yet (its keys went
-    /// away, its history is full, or the signer did not sign) stay held. What this device writes, its readers read at once, and custody keeps however long
+    /// away, its history is full, or the signer did not sign) stay held. What this device writes, its readers read at once, and ownership keeps however long
     /// its host is away.
     /// A change needs the record it changes. The keys of a record this device opened can come
     /// before the record does, and a change drafted then would be refused and let go, while the
@@ -136,7 +136,7 @@ impl Task {
         let author = self.signer.device_public_key();
         let now = crate::clock::system_time(tilo_clock::unix_now_ns());
         let written = (route.app_id.as_str(), route.document.as_str());
-        // Drafted in the owner's turn, signed by this device's custody outside it.
+        // Drafted in the owner's turn, signed by this device's ownership outside it.
         let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
             frames
                 .iter()
@@ -214,12 +214,15 @@ impl Task {
             .collect();
         // What this device publishes, its own replica holds.
         self.note_delivered(route, &ids);
-        self.count_custody();
+        self.count_ownership();
         Some(Ok(()))
     }
 
-    /// `workspace`'s writes in this device's custody: id, bytes, channel and retention.
-    pub(super) fn custody(&self, workspace: tilo_desktop_model::WorkspaceId) -> Vec<CustodyEntry> {
+    /// `workspace`'s writes in this device's ownership: id, bytes, channel and retention.
+    pub(super) fn ownership(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+    ) -> Vec<OwnershipEntry> {
         self.replicas
             .owner()
             .with_outgoing(workspace, tilo_clock::wall(), |_, outgoing| {
@@ -238,10 +241,14 @@ impl Task {
             .unwrap_or_default()
     }
 
-    /// Send `workspace_id`'s writes in this device's custody its host was not sent on this
+    /// Send `workspace_id`'s writes in this device's ownership its host was not sent on this
     /// connection, as far as the transport takes them; the rest go as the host's answers make
     /// workspace. Returns `false` when the transport took no more.
-    pub(super) fn send_custody(&mut self, workspace_id: WorkspaceId, client: &RelayClient) -> bool {
+    pub(super) fn send_ownership(
+        &mut self,
+        workspace_id: WorkspaceId,
+        client: &RelayClient,
+    ) -> bool {
         let Some(workspace) = self.replicas.workspace(workspace_id) else {
             return true;
         };
@@ -278,13 +285,13 @@ impl Task {
                 },
             )
             .unwrap_or(true);
-        self.count_custody();
+        self.count_ownership();
         delivered
     }
 
-    /// Count what this device's custody still owes its hosts, over every workspace, and follow
-    /// the writes that left it unanswered ([`Self::follow_custody`]).
-    pub(super) fn count_custody(&mut self) {
+    /// Count what this device's ownership still owes its hosts, over every workspace, and follow
+    /// the writes that left it unanswered ([`Self::follow_ownership`]).
+    pub(super) fn count_ownership(&mut self) {
         let owner = self.replicas.owner();
         let pending = self
             .workspaces
@@ -294,14 +301,14 @@ impl Task {
             .sum();
         self.reports
             .change(|status| status.outgoing_pending = pending);
-        self.follow_custody();
+        self.follow_ownership();
     }
 
-    /// Writes leave custody unanswered when another write carries them: a compaction of their
+    /// Writes leave ownership unanswered when another write carries them: a compaction of their
     /// record folds the ones it covers, and a renewal carries the change of the write it renews.
-    /// A barrier owed one of them is owed what custody holds now, which carries it, and
+    /// A barrier owed one of them is owed what ownership holds now, which carries it, and
     /// completes once that is answered; its writes never come back to be answered themselves.
-    fn follow_custody(&mut self) {
+    fn follow_ownership(&mut self) {
         if self.barriers.is_empty() {
             return;
         }
@@ -321,9 +328,9 @@ impl Task {
         }
     }
 
-    /// Complete `done` once every write now in this device's custody is answered by its host, or
-    /// the write that carries it is ([`Self::follow_custody`]).
-    pub(super) fn await_custody(&mut self, done: Completion, refused: Option<String>) {
+    /// Complete `done` once every write now in this device's ownership is answered by its host, or
+    /// the write that carries it is ([`Self::follow_ownership`]).
+    pub(super) fn await_ownership(&mut self, done: Completion, refused: Option<String>) {
         let owed = self.owed();
         if owed.is_empty() {
             let _ = done.send(refused.map_or(Ok(()), Err));
@@ -332,7 +339,7 @@ impl Task {
         }
     }
 
-    /// Every write in this device's custody, over every workspace, sendable now or not.
+    /// Every write in this device's ownership, over every workspace, sendable now or not.
     fn owed(&self) -> BTreeSet<[u8; 32]> {
         let owner = self.replicas.owner();
         self.workspaces
@@ -342,10 +349,10 @@ impl Task {
             .collect()
     }
 
-    /// Renew this device's sealed writes that expired in custody while its host was away, so
+    /// Renew this device's sealed writes that expired held while its host was away, so
     /// they still go; a barrier owed the original is owed nothing more for it, as the renewal
     /// carries the same change.
-    pub(super) async fn renew_custody(&mut self) {
+    pub(super) async fn renew_ownership(&mut self) {
         let now = crate::clock::system_time(tilo_clock::unix_now_ns());
         let mut renewed = 0usize;
         for workspace_id in self.workspaces.clone() {
@@ -363,7 +370,7 @@ impl Task {
             }
         }
         if renewed > 0 {
-            self.count_custody();
+            self.count_ownership();
         }
     }
 
@@ -378,12 +385,12 @@ impl Task {
         self.held_barriers = waiting;
         for (routes, done) in released {
             let why = routes.iter().find_map(|route| refused.get(route)).cloned();
-            self.await_custody(done, why);
+            self.await_ownership(done, why);
         }
     }
 
     /// Take the host's answer to the write it answered as `op`: durable, or refused with the
-    /// host's `refusal` (it can never become durable). Answers retire from custody together
+    /// host's `refusal` (it can never become durable). Answers retire from ownership together
     /// ([`Self::retire_answered`]).
     pub(super) fn acknowledge(
         &mut self,
@@ -398,7 +405,7 @@ impl Task {
             return;
         };
         // A host that was not ready for the write takes it once it says the workspace is ready:
-        // the write stays in custody and goes again then. One the host refuses as not ready
+        // the write stays held and goes again then. One the host refuses as not ready
         // after it said it was is refused: the host will not take it on this connection.
         if let Err(refusal) = &outcome
             && refusal.passes_once_ready()
@@ -418,10 +425,10 @@ impl Task {
         }
         self.not_ready.remove(&id);
         // What the refused write would have brought, as its envelope claims it: read before the
-        // entry leaves custody, so whoever holds the record withdraws exactly those changes.
+        // entry leaves ownership, so whoever holds the record withdraws exactly those changes.
         let withdrawn = match &outcome {
             Err(reason) => self
-                .custody(workspace)
+                .ownership(workspace)
                 .into_iter()
                 .find(|entry| entry.0 == id)
                 .and_then(|entry| {
@@ -441,7 +448,7 @@ impl Task {
         });
     }
 
-    /// Retire every write the host answered from custody, in one owner turn per workspace, then
+    /// Retire every write the host answered from ownership, in one owner turn per workspace, then
     /// tell whoever waited for them.
     pub(super) fn retire_answered(&mut self) {
         if self.answered.is_empty() {
@@ -495,9 +502,9 @@ impl Task {
                 let _ = complete.send(refused.map_or(Ok(()), Err));
             }
         }
-        // Counted once the answers took their writes off the barriers: a write that left custody
+        // Counted once the answers took their writes off the barriers: a write that left ownership
         // answered is not one another write carries.
-        self.count_custody();
+        self.count_ownership();
     }
 }
 

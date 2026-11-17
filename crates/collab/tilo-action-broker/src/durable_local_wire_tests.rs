@@ -345,7 +345,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                     .is_empty(),
                 "an actor name alone discloses no authenticated invocation"
             );
-            // Its session is its person's: revoking their standing ends the
+            // Its session is its person's: revoking their access ends the
             // agent's with it.
             env.membership.write().workspaces[0].revoke_grant(&person_grant);
             assert!(!matches!(
@@ -649,7 +649,7 @@ impl wire::DirectorySource for HeldDirectory {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn durable_admission_rechecks_original_custody_after_the_directory_answers() {
+async fn durable_admission_rechecks_original_ownership_after_the_directory_answers() {
     tokio::task::LocalSet::new()
         .run_until(async {
             for mode in ["worker", "stream", "clock", "revocation", "retired"] {
@@ -805,7 +805,7 @@ async fn an_agent_on_another_device_neither_sees_the_persons_invocation_nor_outl
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn host_execution_retirement_refuses_actual_retained_worker_custody() {
+async fn host_execution_retirement_refuses_actual_retained_worker_ownership() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();
@@ -866,7 +866,7 @@ async fn host_execution_retirement_refuses_actual_retained_worker_custody() {
             );
             assert!(
                 (rig.authorize)(&request).is_err(),
-                "the same delivered request cannot mint custody again"
+                "the same delivered request cannot mint ownership again"
             );
             rig.stop().await;
         })

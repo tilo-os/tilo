@@ -81,13 +81,13 @@ async fn local_host_lease(
             caller.execution_id().unwrap(),
         )),
     };
-    let lease = (rig.authorize)(&request).expect("actual worker receives original custody");
+    let lease = (rig.authorize)(&request).expect("actual worker receives original ownership");
     lease.check().unwrap();
     lease
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn certified_local_host_preserves_eager_and_directory_original_custody() {
+async fn certified_local_host_preserves_eager_and_directory_original_ownership() {
     tokio::task::LocalSet::new()
         .run_until(async {
             for (directory, member_worker) in [(false, false), (true, false), (true, true)] {
@@ -385,7 +385,7 @@ async fn certified_local_host_requires_a_registered_policy_origin() {
             let error = state
                 .certified_local_action_host(&caller, &evidence)
                 .err()
-                .expect("a legacy wall clock is not original custody");
+                .expect("a legacy wall clock is not original ownership");
             assert_eq!(error, "original policy clock unavailable");
             state.stop();
         })
@@ -680,7 +680,7 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
             assert_eq!(
                 verifications(),
                 before,
-                "UI enqueue retains inert custody without certificate work"
+                "UI enqueue retains inert ownership without certificate work"
             );
             let receipt = local_host_answer(pending).await.unwrap();
             assert_eq!(
@@ -731,7 +731,7 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
 }
 
 /// The real signer waits for a separate UI thread to perform its ordinary
-/// lookup, cancellation and enqueue calls. A ledger held across signing would
+/// lookup, cancellation and enqueue calls. A log held across signing would
 /// deadlock that thread before it can acknowledge the check.
 #[tokio::test(flavor = "current_thread")]
 async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {

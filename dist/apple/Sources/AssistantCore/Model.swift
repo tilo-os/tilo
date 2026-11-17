@@ -101,20 +101,20 @@ public struct Item: Identifiable, Equatable, Sendable {
 public struct TaskLine: Equatable, Sendable {
     public var task: AssistantTask.ID
     public var title: String
-    public var standing: Standing
+    public var state: State
 
-    public init(task: AssistantTask.ID, title: String, standing: Standing = .none) {
+    public init(task: AssistantTask.ID, title: String, state: State = .none) {
         self.task = task
         self.title = title
-        self.standing = standing
+        self.state = state
     }
 
     /// What the line says after the task's name.
-    public enum Standing: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         case none
         /// It came at its time. The words say how often, as the source says it: "every day".
         case scheduled(String)
-        /// The assistant acted alone, on a standing instruction.
+        /// The assistant acted alone, on a lasting instruction.
         case actedAlone
         /// The task has this many replies, more than stand here.
         case replies(Int)
@@ -231,17 +231,17 @@ public struct SecretRequest: Identifiable, Equatable, Sendable {
     public var name: String
     /// The person's password manager by name, when one is connected.
     public var manager: String?
-    public var standing: Standing
+    public var state: State
 
-    public init(id: ID, text: String, name: String, manager: String? = nil, standing: Standing = .waiting) {
+    public init(id: ID, text: String, name: String, manager: String? = nil, state: State = .waiting) {
         self.id = id
         self.text = text
         self.name = name
         self.manager = manager
-        self.standing = standing
+        self.state = state
     }
 
-    public enum Standing: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         case waiting
         /// The vault has it now.
         case kept
@@ -259,17 +259,17 @@ public struct ConnectionOffer: Identifiable, Equatable, Sendable {
     public var name: String
     /// How many commands it offers once the person is signed in, when it says so.
     public var commands: Int?
-    public var standing: Standing
+    public var state: State
 
-    public init(id: ID, text: String, name: String, commands: Int? = nil, standing: Standing = .waiting) {
+    public init(id: ID, text: String, name: String, commands: Int? = nil, state: State = .waiting) {
         self.id = id
         self.text = text
         self.name = name
         self.commands = commands
-        self.standing = standing
+        self.state = state
     }
 
-    public enum Standing: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         case waiting
         case connected
         case declined
@@ -322,7 +322,7 @@ public struct SubAgent: Identifiable, Equatable, Sendable {
     public var title: String
     /// What the main agent made it: "Coder". Empty until it has chosen.
     public var role: String
-    public var standing: Standing
+    public var state: State
     /// What runs it and where: "Claude Code on the cloud machine".
     public var runsOn: String
     public var started: Date
@@ -332,12 +332,12 @@ public struct SubAgent: Identifiable, Equatable, Sendable {
     /// A live view of what it works on, when the source has one.
     public var live: LiveThing?
 
-    public init(id: ID, title: String, role: String = "", standing: Standing = .working, runsOn: String = "",
+    public init(id: ID, title: String, role: String = "", state: State = .working, runsOn: String = "",
                 started: Date, startedBy: Starter = .mainAgent, finished: Date? = nil, live: LiveThing? = nil) {
         self.id = id
         self.title = title
         self.role = role
-        self.standing = standing
+        self.state = state
         self.runsOn = runsOn
         self.started = started
         self.startedBy = startedBy
@@ -345,7 +345,7 @@ public struct SubAgent: Identifiable, Equatable, Sendable {
         self.live = live
     }
 
-    public enum Standing: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         case working
         case needsYou
         case done
@@ -366,24 +366,24 @@ public struct AssistantTask: Identifiable, Equatable, Sendable {
     public typealias ID = Identifier<AssistantTask>
     public var id: ID
     public var title: String
-    public var standing: Standing
+    public var state: State
     public var isImportant: Bool
     /// What it waits for, or one line about it: "Two versions exist. Which one?"
     public var note: String?
     /// Where it stands in the main chat, when it does.
     public var item: Item.ID?
 
-    public init(id: ID, title: String, standing: Standing, isImportant: Bool = false, note: String? = nil,
+    public init(id: ID, title: String, state: State, isImportant: Bool = false, note: String? = nil,
                 item: Item.ID? = nil) {
         self.id = id
         self.title = title
-        self.standing = standing
+        self.state = state
         self.isImportant = isImportant
         self.note = note
         self.item = item
     }
 
-    public enum Standing: Equatable, Sendable, CaseIterable {
+    public enum State: Equatable, Sendable, CaseIterable {
         case readyForReview
         case needsInput
         case inProgress

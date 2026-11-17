@@ -14,7 +14,7 @@ impl SpotifyBackend {
             (STREAMING_ACCOUNT, &["streaming", "user-read-private"][..]),
         ] {
             let scopes = self
-                .custody
+                .ownership
                 .oauth_scopes(&super::AccountId::from(account.to_string()))
                 .map_err(|_| {
                     BackendError("Spotify account diagnostic authorization is unavailable".into())
@@ -170,7 +170,7 @@ impl SpotifyBackend {
 
     fn require_scope(&self, required: &str) -> Result<(), BackendError> {
         if let Some(scope) = self
-            .custody
+            .ownership
             .oauth_scopes(&super::AccountId::from(ACCOUNT.to_string()))
             .map_err(|_| BackendError("Connect Spotify again to use this action".into()))?
             && !scope.split_whitespace().any(|scope| scope == required)
@@ -205,7 +205,7 @@ impl SpotifyBackend {
         }
         let albums = self.get("me/albums", &[("limit", "50"), ("offset", &offset_arg)])?;
         let scope = self
-            .custody
+            .ownership
             .oauth_scopes(&super::AccountId::from(ACCOUNT.to_string()))
             .map_err(|_| BackendError("Connect Spotify again to browse your library".into()))?;
         let playlists = if scope.as_deref().is_none_or(|scope| {

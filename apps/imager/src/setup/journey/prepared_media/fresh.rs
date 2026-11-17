@@ -19,7 +19,7 @@ impl PreparedMedia {
         let mut generation = self
             .transfer_generation
             .lock()
-            .map_err(|_| io::Error::other("Transfer preparation custody unavailable"))?;
+            .map_err(|_| io::Error::other("Transfer preparation ownership unavailable"))?;
         if let Some(prepared) = &*generation {
             prepared.validate_for_write(cancel)?;
             return Ok(Arc::clone(prepared));
@@ -31,7 +31,7 @@ impl PreparedMedia {
         let password = self
             .browser_password
             .as_ref()
-            .ok_or_else(|| io::Error::other("Browser preparation custody missing"))?;
+            .ok_or_else(|| io::Error::other("Browser preparation ownership missing"))?;
         let prepared = self.refresh_browser_uncached(password, cancel)?;
         *generation = Some(Arc::clone(&prepared));
         Ok(prepared)
@@ -46,11 +46,11 @@ impl PreparedMedia {
         let browser = self
             .browser
             .as_ref()
-            .ok_or_else(|| io::Error::other("Browser custody missing"))?;
-        let custody = imager_backend::session::BackendSession::create(
+            .ok_or_else(|| io::Error::other("Browser ownership missing"))?;
+        let ownership = imager_backend::session::BackendSession::create(
             imager_backend::session::SessionIntent::PrepareMedia,
         )?;
-        let root = custody.path().to_path_buf();
+        let root = ownership.path().to_path_buf();
         let original = root.join("source-parent.sealed");
         let mut output = OpenOptions::new()
             .read(true)
@@ -60,7 +60,7 @@ impl PreparedMedia {
             .open(&original)?;
         self.delivery
             .lock()
-            .map_err(|_| io::Error::other("Prepared setup custody unavailable"))?
+            .map_err(|_| io::Error::other("Prepared setup ownership unavailable"))?
             .copy_preparation_ciphertext(&mut output, cancel)?;
         drop(output);
         let quarantine = root.join("authenticated-parent");
@@ -108,7 +108,7 @@ impl PreparedMedia {
             .map(|home| {
                 home.lock()
                     .map(|home| home.reservation)
-                    .map_err(|_| io::Error::other("Home custody unavailable"))
+                    .map_err(|_| io::Error::other("Home ownership unavailable"))
             })
             .transpose()?
             .unwrap_or(0);
@@ -133,7 +133,7 @@ impl PreparedMedia {
             source.validate()?;
         }
         let prepared = Arc::new(Self::from_native(NativePreparedMedia {
-            _custody: custody,
+            _ownership: ownership,
             delivery: Mutex::new(delivery),
             public_key: self.public_key,
             account_ids: self.account_ids.clone(),
@@ -158,7 +158,7 @@ impl PreparedMedia {
             recovery: Mutex::new(
                 self.recovery
                     .lock()
-                    .map_err(|_| io::Error::other("Recovery custody unavailable"))?
+                    .map_err(|_| io::Error::other("Recovery ownership unavailable"))?
                     .clone(),
             ),
             transfer_generation: Mutex::new(None),
@@ -253,10 +253,14 @@ mod tests {
             .unwrap()
             .verify_held_ciphertext(&cancel)
             .unwrap();
-        let browser_bytes =
-            fs::metadata(original._custody.path().join(&browser.expectation.filename))
-                .unwrap()
-                .len();
+        let browser_bytes = fs::metadata(
+            original
+                ._ownership
+                .path()
+                .join(&browser.expectation.filename),
+        )
+        .unwrap()
+        .len();
         assert_eq!(browser_bytes, browser.expectation.sealed_bytes);
         let parent_bound = prepared_setup::LIMITS.sealed_bound().unwrap();
         let non_home = 2 * parent_bound + browser_bytes + 128 * 1024;
@@ -323,9 +327,12 @@ mod tests {
         let projection = imager_backend::setup::browser_transfer::extract(
             &browser.expectation,
             &browser.plan,
-            &selected._custody.path().join(&browser.expectation.filename),
+            &selected
+                ._ownership
+                .path()
+                .join(&browser.expectation.filename),
             Zeroizing::new(PASSWORD.as_bytes().to_vec()),
-            selected._custody.path(),
+            selected._ownership.path(),
             &cancel,
         )
         .unwrap();
@@ -381,9 +388,9 @@ mod tests {
         let projection = imager_backend::setup::browser_transfer::extract(
             &browser.expectation,
             &browser.plan,
-            &fresh._custody.path().join(&browser.expectation.filename),
+            &fresh._ownership.path().join(&browser.expectation.filename),
             Zeroizing::new(PASSWORD.as_bytes().to_vec()),
-            fresh._custody.path(),
+            fresh._ownership.path(),
             &cancel,
         )
         .unwrap();
@@ -430,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_or_redirected_browser_refresh_preserves_original_custody() {
+    fn cancelled_or_redirected_browser_refresh_preserves_original_ownership() {
         let root = tempfile::Builder::new()
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir()
@@ -450,7 +457,7 @@ mod tests {
             fs::read(profile.join("Cookies")).unwrap(),
             b"excluded credentials"
         );
-        assert!(original._custody.path().read_dir().unwrap().all(|entry| {
+        assert!(original._ownership.path().read_dir().unwrap().all(|entry| {
             !entry
                 .unwrap()
                 .file_name()

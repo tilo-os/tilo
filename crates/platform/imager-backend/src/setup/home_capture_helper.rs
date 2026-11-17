@@ -1,5 +1,5 @@
 //! Declared source-capture helper protocol. Requests are caller-private claims;
-//! source scope and protected durable capture custody are independently checked.
+//! source scope and protected durable capture ownership are independently checked.
 use super::{
     home_capture::{Broker, Grant, Rendezvous, RpcAction, RpcReply, Status},
     migration::PinnedDirectory,
@@ -396,7 +396,7 @@ fn execute(request: Request, caller: u32, request_directory: &Path) -> io::Resul
     if matches!(request.action, Action::Cancel | Action::Release) {
         return emit(&Broker::release_existing(&request.grant, caller)?);
     }
-    // Admit the exact signed worker contract before creating snapshot custody.
+    // Admit the exact signed worker contract before creating snapshot ownership.
     super::home_capture::require_provider()?;
     let cancel = Arc::new(AtomicBool::new(false));
     let input = commands(Arc::clone(&cancel));
@@ -552,7 +552,7 @@ fn execute_original(request: OriginalRequest, caller: u32, directory: &Path) -> 
     request.plan.bytes()?; // existing reboot Plan bound, no dropped inventory
     let cancel = Arc::new(AtomicBool::new(false));
     let input = commands(cancel.clone());
-    let (mut session, (witness, original_caller)) =
+    let (mut session, (proof, original_caller)) =
         super::home_capture::RootSession::connect_original(
             &request.channel,
             directory,
@@ -588,7 +588,7 @@ fn execute_original(request: OriginalRequest, caller: u32, directory: &Path) -> 
                 let reply = match incoming.call.action {
                     RpcAction::RegisterOriginal if incoming.mounted.is_none() => {
                         RpcReply::OriginalRegistered {
-                            witness,
+                            proof,
                             original_caller,
                         }
                     }
@@ -601,7 +601,7 @@ fn execute_original(request: OriginalRequest, caller: u32, directory: &Path) -> 
                         }
                         RpcReply::MountedOriginalRegistered {
                             generation,
-                            witness: mounted,
+                            proof: mounted,
                             original_caller,
                         }
                     }
@@ -733,7 +733,7 @@ mod tests {
             "inode":std::fs::metadata(directory.path()).unwrap().ino(),"owner":uid,
             "filesystem":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
             "subvolume":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-            "custody":null,"preparation_namespace":null
+            "ownership":null,"preparation_namespace":null
         }))
         .unwrap();
         let request = Request {

@@ -97,7 +97,7 @@ streams with the tree's own `tilo-vm` (`layer_artifacts.py produce`), and
 head, fetched from the forge, and checks the handoff with main's `layer_artifacts.py`: the
 code under test never verifies its own artifacts. The receipt names an exact clean commit,
 so the producer refuses a working tree with uncommitted changes. The handoff's identity (the
-source commit, the builder image, a random handoff number standing for the
+source commit, the builder image, a random handoff number access for the
 workflow run, and the receipt's SHA256) travels in the producer's outputs; the consumer checks them, the architecture and the
 component completeness before the VM is created, and verifies and imports through the normal
 signed cohort path. Any artifact error fails without a build fallback; account readback and P01
@@ -198,14 +198,14 @@ report descriptor (see `crates/dev/tilo-vm-protocol/src/profile.rs`).
 Pull requests touching the input path, tilo-vm(d), the profiles or the MCP server run only
 these areas (`ci_select.py`).
 
-### Secret custody (C01, C02)
+### Secret ownership (C01, C02)
 
 The compositor loads the device key and is therefore non-dumpable, so the store cannot read
 its executable; it proves the device key on each bus connection instead
 (docs/identity-security.md). C01 (`checks/secrets.py`) judges that in the account: its
 `/proc/<pid>/exe` is hidden from its own user, `tilo-secret-service apps list` names
 `binary:/usr/bin/tilo-session` with the MLS key it keeps, the sealed MLS state sits in an
-owner-only directory with no custody warning in the session log, and Passwords' portal
+owner-only directory with no ownership warning in the session log, and Passwords' portal
 secret (`org.freedesktop.portal.Secret`, asked on the app's own `xdg-dbus-proxy` socket, the
 bus its sandbox has) comes from the store, and comes back the same after
 `tilo-secret-service` restarts under the running compositor. C02 takes the dev account

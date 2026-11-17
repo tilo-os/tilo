@@ -511,7 +511,7 @@ fn bots(agents: &Agents, parts: &Parts) -> Element {
 }
 
 /// One agent's review in the roster's place: Back, then each app's
-/// answers, its model and its standing exceptions.
+/// answers, its model and its access exceptions.
 fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
     let mut groups: Vec<Element> = vec![Box::new(
         Row::new()

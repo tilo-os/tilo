@@ -65,12 +65,12 @@ pub use workspace::paint_tilo_mark;
 /// Where a layout stood the bar: in the column above the windows, or over it, hidden by the person
 /// and shown while reached for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BarStanding {
+enum BarPlacement {
     InColumn,
     OverColumn,
 }
 
-impl BarStanding {
+impl BarPlacement {
     fn of(overlays: bool) -> Self {
         if overlays {
             Self::OverColumn
@@ -336,7 +336,7 @@ pub struct TopBarChrome {
     explicit_local_user: Option<String>,
     rect: Rect,
     /// Where the last layout stood the bar.
-    laid_out: BarStanding,
+    laid_out: BarPlacement,
     /// The compact bar a display other than the primary carries: workspace navigation and the
     /// centre widget only. Session controls, the tray and who is here live on the primary
     /// display's full bar.
@@ -537,7 +537,7 @@ impl TopBarChrome {
         let mut this = Self {
             explicit_local_user,
             rect: Rect::ZERO,
-            laid_out: BarStanding::InColumn,
+            laid_out: BarPlacement::InColumn,
             variant: BarVariant::Full,
             display: None,
             presence: TopBarPresence::Docked,
@@ -1147,7 +1147,7 @@ impl TopBarChrome {
 
     /// Whether the last layout stood the bar in or over the column other than it stands now.
     fn overlay_layout_stale(&self) -> bool {
-        self.laid_out != BarStanding::of(self.presence().overlays())
+        self.laid_out != BarPlacement::of(self.presence().overlays())
     }
 
     /// Whether the bar, hidden by the person, must stay shown for its own sake: the keyboard is in
@@ -1301,7 +1301,7 @@ impl Widget for TopBarChrome {
         // over the column rather than in it: the window keeps its whole size,
         // and showing the bar later moves nothing.
         let overlays = self.presence().overlays();
-        self.laid_out = BarStanding::of(overlays);
+        self.laid_out = BarPlacement::of(overlays);
         let style = bar_style(self.presence(), theme);
         let node = match taffy.new_leaf(style) {
             Ok(node) => node,

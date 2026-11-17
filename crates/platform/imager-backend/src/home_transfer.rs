@@ -185,5 +185,5 @@ mod root_tests {
 
 /// On-disk home adoption facts shared with recovery helpers.
 pub mod protocol;
-/// Durable installed-home seed authority and witnesses.
+/// Durable installed-home seed authority and proofs.
 pub mod seeds;

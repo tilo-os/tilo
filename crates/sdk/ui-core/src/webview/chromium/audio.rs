@@ -27,7 +27,7 @@ const CHANNELS_USIZE: usize = CHANNELS as usize;
 type Open = Arc<dyn Fn() -> Result<Box<dyn Output>, String> + Send + Sync>;
 
 /// Converts one tab's PCM to 48 kHz stereo, keeping resampler state between packets so a
-/// stream's seams do not click.
+/// stream's boundaries do not click.
 struct Converter {
     rate: u32,
     channels: usize,

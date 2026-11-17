@@ -15,7 +15,7 @@ pub mod governance;
 pub mod governance_work;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_answer;
-pub mod join_ledger;
+pub mod join_log;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_transport;
 mod kept_states;

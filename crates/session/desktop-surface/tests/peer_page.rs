@@ -19,8 +19,8 @@ use std::time::Duration;
 use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent as ModelTile, Workspace};
 use tilo_desktop_surface::page_view::PageStream;
 use tilo_desktop_surface::{
-    DesktopHandle, DesktopSurface, NeighbourMsg, PeerId, PeerStreamStart, PeerSurfaces, Standing,
-    SurfaceId, TileSource, seed_tree,
+    DesktopHandle, DesktopSurface, NeighbourMsg, PeerId, PeerStreamStart, PeerSurfaces,
+    StreamState, SurfaceId, TileSource, seed_tree,
 };
 use ui::headless::FrameHarness;
 use ui::offscreen::OffscreenRenderer;
@@ -372,7 +372,7 @@ fn a_page_stream_takes_the_tab_of_its_window_and_lets_it_go_when_it_ends() {
     assert_eq!(surfaces.start(&tree, &started), Some(tab));
     let read = surfaces.read(tab).expect("the tab holds the tile");
     assert!(read.page, "the tile draws the window's page");
-    assert_eq!(read.standing, tilo_desktop_surface::Standing::Started);
+    assert_eq!(read.state, tilo_desktop_surface::StreamState::Started);
 
     let engine = engine();
     let objects = payloads(&engine);
@@ -393,7 +393,7 @@ fn a_page_stream_takes_the_tab_of_its_window_and_lets_it_go_when_it_ends() {
         "another device's stream is not this tile's"
     );
     let read = surfaces.read(tab).expect("the tab holds the tile");
-    assert_eq!(read.standing, tilo_desktop_surface::Standing::Pictured);
+    assert_eq!(read.state, tilo_desktop_surface::StreamState::Pictured);
     assert_eq!(
         surfaces.end(
             PUBLISHER,
@@ -447,8 +447,8 @@ fn a_tile_draws_the_page_the_shell_gives_it() {
         peers.borrow_mut().push_page(PUBLISHER, SURFACE, &object);
     }
     assert_eq!(
-        peers.borrow().read(tab).map(|read| read.standing),
-        Some(tilo_desktop_surface::Standing::Pictured)
+        peers.borrow().read(tab).map(|read| read.state),
+        Some(tilo_desktop_surface::StreamState::Pictured)
     );
 }
 
@@ -571,8 +571,8 @@ fn the_tab_listing_a_window_leaves_its_arriving_card_for_the_page_that_came() {
         "a page of which only the start came waits in the arriving card: {waiting:?}"
     );
     assert_eq!(
-        handle.peer_surface_read(tab).map(|read| read.standing),
-        Some(Standing::Started)
+        handle.peer_surface_read(tab).map(|read| read.state),
+        Some(StreamState::Started)
     );
     let texts = ui::a11y::texts(driver.root_widget());
     assert!(
@@ -596,8 +596,8 @@ fn the_tab_listing_a_window_leaves_its_arriving_card_for_the_page_that_came() {
         "the tile draws the page that came, and no placeholder: {drawn:?}"
     );
     assert_eq!(
-        handle.peer_surface_read(tab).map(|read| read.standing),
-        Some(Standing::Pictured)
+        handle.peer_surface_read(tab).map(|read| read.state),
+        Some(StreamState::Pictured)
     );
     let texts = ui::a11y::texts(driver.root_widget());
     assert!(

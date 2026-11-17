@@ -30,10 +30,10 @@ view dock(s: Shell) {
 /// now stand beside it (`dock_running_tiles`): a running app the person never pinned names no
 /// document, so a drop could carry nothing of it — it is drawn, and pressed, and not dragged.
 view dock_run(s: Shell) {
-    let standing = s.dock_edge == .left or s.dock_edge == .right
+    let access = s.dock_edge == .left or s.dock_edge == .right
     let across = s.dock_fit == .full
     let running = unfiled_running(s)
-    if standing {
+    if access {
         stack(gap: .tight, align: .center) {
             ui.DragRun(axis: .vertical, distribute: .center) {
                 on drop(moved: DockItem, at: Int): place_item(s, moved, at)

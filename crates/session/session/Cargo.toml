@@ -89,7 +89,7 @@ tilo-desktop-policy = { path = "../desktop-policy" }
 # This device's identity: the certificate it presents and the key it signs with, from the store its
 # host keeps them in.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
-# The action broker's half every host runs: what a step is taken by, the step seam, the route.
+# The action broker's half every host runs: what a step is taken by, the step service, the route.
 tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-desktop-surface = { path = "../desktop-surface" }
 # Settings' pages are every desktop's own, the page's included: its search offers them wherever
@@ -258,14 +258,14 @@ tilo-identity-authority = { path = "../identity-authority" }
 # is the only holder of either, and answers Browser, Settings and Mail from
 # them on the apps' own routes.
 accounts = { path = "../../system/accounts" }
-account-custody = { path = "../../system/account-custody" }
-# The website session a selected custody entry holds, and what it opens.
+account-credentials = { path = "../../system/account-credentials" }
+# The website session a selected ownership entry holds, and what it opens.
 browser-continuity = { path = "../../browser/browser-continuity" }
 # The machine's readings, served to the apps the launcher connects at the
 # socket they dial.
 tilo-system-stats = { path = "../../system/system-stats" }
 # The broker that serves the socket this session's apps speak on, and the
-# provider seam it asks for what the services publish. Its channel encryption
+# provider service it asks for what the services publish. Its channel encryption
 # service governs the sealed channels a workspace's content is carried in.
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The person's other devices: what was copied here is shared through
@@ -354,7 +354,7 @@ tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 # The render service an app hands its frames to, started by this session as
 # a mode of its own binary.
 tilo-render-service = { path = "../render-service" }
-# The kernel-attested custody of an executing app process a launch is
+# The kernel-attested ownership of an executing app process a launch is
 # admitted by.
 runtime-portal = { path = "../../runtime/runtime-portal" }
 # The wire the apps speak to the session's services, and where the launcher

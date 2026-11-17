@@ -338,22 +338,22 @@ test('desktop search chords follow the platform command key',async()=>{
 });
 
 
-test('persistence flushes credential custody before publishing document writes',async()=>{
+test('persistence flushes credential device key before publishing document writes',async()=>{
  const f=await fixture();const order=[];
  const storage=globalThis.__hostFixture.storage;
  storage.status={pendingWrites:1};
  storage.commit=async()=>{order.push('document');};
  storage.flush=async()=>{order.push('document-flush');};
- f.runtime.flush_files=async()=>{order.push('custody');throw Error('quota exceeded');};
+ f.runtime.flush_files=async()=>{order.push('device key');throw Error('quota exceeded');};
  f.runtime.pending_writes=()=>[{revision:1n,key:'dependent-reference'}];
  await assert.rejects(f.host.flush(),/quota exceeded/);
- assert.deepEqual(order,['custody'],'failed custody must prevent document commit');
- order.length=0;f.runtime.flush_files=async()=>{order.push('custody');};
+ assert.deepEqual(order,['device key'],'failed device key must prevent document commit');
+ order.length=0;f.runtime.flush_files=async()=>{order.push('device key');};
  await f.host.flush();
- assert.deepEqual(order,['custody','custody','document']);
+ assert.deepEqual(order,['device key','device key','document']);
  order.length=0;f.runtime.close=()=>[{revision:2n,key:'closing-reference'}];
  await f.host.cleanup();
- assert.deepEqual(order,['custody','custody','document'],'close must also persist custody first');
+ assert.deepEqual(order,['device key','device key','document'],'close must also persist device key first');
 });
 test('frames without writes neither flush nor commit, and a burst coalesces into one round trip',async()=>{
  const f=await fixture();let commits=0,flushes=0,fileFlushes=0,blocked=null,drains=0;

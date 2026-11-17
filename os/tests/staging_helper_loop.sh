@@ -18,7 +18,7 @@
 # Needs root and loop devices (CI disk runners). A run that cannot observe the
 # real disk path fails instead of skipping. The imager must be a debug build
 # (or built with TILO_IMAGER_STAGING_TEST_OVERRIDES=1) so the TILO_STAGING_TEST_*
-# seams are honoured; release builds ignore them. Set IMAGER to a prebuilt
+# boundaries are honoured; release builds ignore them. Set IMAGER to a prebuilt
 # binary, otherwise it is built here.
 set -euo pipefail
 

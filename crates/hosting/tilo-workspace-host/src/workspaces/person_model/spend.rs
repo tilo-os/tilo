@@ -56,11 +56,11 @@ type Days = BTreeMap<String, Counted>;
 
 /// The days of every person this host asked a model for, by their store.
 #[derive(Default)]
-pub(super) struct Ledger {
+pub(super) struct Log {
     people: Mutex<BTreeMap<PathBuf, Days>>,
 }
 
-impl Ledger {
+impl Log {
     /// What `spender` spent on its day so far, in millionths of the
     /// currency: nothing on a day not counted yet.
     pub(super) fn spent(&self, root: &Path, spender: &Spender) -> u64 {

@@ -279,7 +279,7 @@ fn prepare_admission(
     session.claim_mutation()?;
     let active = ActiveSession(session.clone());
     // One active mutation serializes registration. Reserve capacity before a
-    // genuine create can publish a sibling whose custody cannot be retained.
+    // genuine create can publish a sibling whose ownership cannot be retained.
     let id = owner.admit(session.mount_id(), count)?;
     let control = Arc::new(Control {
         cancel: AtomicBool::new(false),
@@ -1201,9 +1201,9 @@ fn restore_namespace(
 ) -> ItemOutcome {
     let result = (|| {
         let locator = saved.stage.as_ref().ok_or(FsError::StaleEntry)?;
-        let custody = ctx.session().recovery_custody(parent, locator)?;
+        let ownership = ctx.session().recovery_ownership(parent, locator)?;
         let stage_name = EntryName::new(OsString::from_vec(locator.name.clone()))?;
-        let observed = custody
+        let observed = ownership
             .directory
             .symlink_metadata(stage_name.as_os_str())
             .map_err(io_error)?;
@@ -1224,15 +1224,17 @@ fn restore_namespace(
         ctx.checkpoint(&mut step, "CapturedRestoreStarted")?;
         let mut published = false;
         ctx.cancelled()?;
-        let result = ctx.session().captured_restore_effect(&custody, parent, || {
-            ctx.cancelled()?;
-            check_named(&custody.directory, &stage_name, identity)?;
-            no_replace(&custody.directory, &stage_name, &destination, name)
-                .map_err(|error| io_error(error.into()))?;
-            published = true;
-            sync_dir(&custody.directory)?;
-            sync_dir(&destination)
-        });
+        let result = ctx
+            .session()
+            .captured_restore_effect(&ownership, parent, || {
+                ctx.cancelled()?;
+                check_named(&ownership.directory, &stage_name, identity)?;
+                no_replace(&ownership.directory, &stage_name, &destination, name)
+                    .map_err(|error| io_error(error.into()))?;
+                published = true;
+                sync_dir(&ownership.directory)?;
+                sync_dir(&destination)
+            });
         let grant = published
             .then(|| ctx.session().mutation_result(parent, name).ok())
             .flatten();
@@ -1536,7 +1538,7 @@ pub(super) mod tests {
     #[derive(Clone, Default)]
     #[allow(
         clippy::struct_excessive_bools,
-        reason = "independent cfg(test) syscall failure seams"
+        reason = "independent cfg(test) syscall failure hooks"
     )]
     pub(crate) struct Hooks {
         pub fail_checkpoint: Option<&'static str>,

@@ -198,7 +198,7 @@ impl ResourceOperations for HostedActions {
         _doc: &mut Edits<'_>,
         _path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        let (request, _custody) = op.with_custody();
+        let (request, _ownership) = op.with_ownership();
         if request.type_id != self.link.operation {
             return Ok(None);
         }

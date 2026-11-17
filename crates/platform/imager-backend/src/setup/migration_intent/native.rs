@@ -376,7 +376,7 @@ impl MigrationIntent {
         self.grant.plan.clone()
     }
 
-    /// Changes only the plan's opaque locator; source custody, identity and selection authority stay
+    /// Changes only the plan's opaque locator; source ownership, identity and selection authority stay
     /// with the existing intent. Refuses a locator that does not match the reviewed UID 1000 plan.
     pub fn attach_deferred_handoff(
         &self,
@@ -545,7 +545,11 @@ impl MigrationIntent {
                 current.flatpak_inventory = Some(serde_json::from_slice(bytes)?);
             }
             (None, false) => {}
-            _ => return Err(error("Pending application selection custody is incomplete")),
+            _ => {
+                return Err(error(
+                    "Pending application selection ownership is incomplete",
+                ));
+            }
         }
         current.validate()?;
         self.source_pin.validate()?;

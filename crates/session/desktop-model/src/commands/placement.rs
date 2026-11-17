@@ -5,7 +5,7 @@
 //!    end of the strip.
 //! 2. **Into the group you're in, when it's tabbed** — a tab of several means
 //!    the person is working *inside* that group.
-//! 3. **At a seam, when nothing is selected** — the visible border between
+//! 3. **At a border, when nothing is selected** — the visible border between
 //!    two groups, else the next one rightwards.
 //!
 //! An app chosen from search follows rule 1 and skips rule 2: it opens as
@@ -27,7 +27,7 @@ use crate::tree::Layout;
 use crate::workspace::Workspace;
 
 /// One group's horizontal extent, in the strip's **unscrolled canvas
-/// space**, so a seam's position doesn't move when the strip is panned.
+/// space**, so a border's position doesn't move when the strip is panned.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroupSpan {
     pub id: GroupId,
@@ -35,12 +35,12 @@ pub struct GroupSpan {
     pub x1: f64,
 }
 
-/// A border between windows. The seam *after* the last group counts — the
+/// A border between windows. The border *after* the last group counts — the
 /// strip is unbounded to the right, so the trailing edge is a border against
 /// open space, which is where "rightwards" terminates.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Seam {
-    /// The group whose right edge this seam is.
+pub struct Border {
+    /// The group whose right edge this border is.
     pub after: GroupId,
     pub x: f64,
 }
@@ -59,34 +59,34 @@ pub struct StripViewport {
 
 impl StripViewport {
     /// Left to right, including the one after the last group.
-    pub fn seams(&self) -> impl DoubleEndedIterator<Item = Seam> + '_ {
-        self.groups.iter().map(|g| Seam {
+    pub fn borders(&self) -> impl DoubleEndedIterator<Item = Border> + '_ {
+        self.groups.iter().map(|g| Border {
             after: g.id,
             x: g.x1,
         })
     }
 
-    fn on_screen(&self, seam: &Seam) -> bool {
-        seam.x > self.visible_x0 && seam.x < self.visible_x1
+    fn on_screen(&self, border: &Border) -> bool {
+        border.x > self.visible_x0 && border.x < self.visible_x1
     }
 
     /// The leftmost border **between two windows** actually visible.
-    /// Excludes a seam sitting exactly on the screen edge (falls through to
-    /// [`Self::next_seam_rightwards`]) and the one after the *last* window, a
+    /// Excludes a border sitting exactly on the screen edge (falls through to
+    /// [`Self::next_border_rightwards`]) and the one after the *last* window, a
     /// border against open space.
-    pub fn visible_seam(&self) -> Option<Seam> {
+    pub fn visible_border(&self) -> Option<Border> {
         let between_windows = self.groups.len().saturating_sub(1);
-        self.seams()
+        self.borders()
             .take(between_windows)
             .find(|s| self.on_screen(s))
     }
 
-    /// Falls back to the rightmost seam when every seam is behind the
-    /// viewport — the end of the strip is still a seam.
-    pub fn next_seam_rightwards(&self) -> Option<Seam> {
-        self.seams()
+    /// Falls back to the rightmost border when every border is behind the
+    /// viewport — the end of the strip is still a border.
+    pub fn next_border_rightwards(&self) -> Option<Border> {
+        self.borders()
             .find(|s| s.x >= self.visible_x1)
-            .or_else(|| self.seams().last())
+            .or_else(|| self.borders().last())
     }
 }
 
@@ -175,11 +175,11 @@ pub fn open_app_placement(
         strip: strip.id.0,
         after,
     };
-    let seam = |pick: fn(&StripViewport) -> Option<Seam>| {
+    let border = |pick: fn(&StripViewport) -> Option<Border>| {
         at.viewport
             .filter(|view| view.strip == strip.id)
-            .and_then(|view| pick(view).or_else(|| view.next_seam_rightwards()))
-            .map(|seam| seam.after)
+            .and_then(|view| pick(view).or_else(|| view.next_border_rightwards()))
+            .map(|border| border.after)
             .filter(|group| owns(*group))
     };
     let selected = at
@@ -196,7 +196,7 @@ pub fn open_app_placement(
                 }
             }
             Some(group) => new_group(Some(group.id)),
-            None => new_group(seam(StripViewport::visible_seam)),
+            None => new_group(border(StripViewport::visible_border)),
         },
         OpenIntent::Beside => new_group(
             at.selected
@@ -302,7 +302,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn where_an_opened_window_is_placed;
 
-        phase a_launch_follows_the_selection_or_the_visible_seam;
+        phase a_launch_follows_the_selection_or_the_visible_border;
         {
             use OpenIntent::Launch;
             let (w, ids) = workspace(&[1, 1, 1]);
@@ -318,7 +318,7 @@ mod tests {
                 },
             );
 
-            // Canvas 150..280: the seam at 200 is on screen, 100 is off it.
+            // Canvas 150..280: the border at 200 is on screen, 100 is off it.
             let view = viewport(&ids, (150.0, 280.0));
             assert_eq!(place(&w, Launch, None, Some(&view)), right_of(ids[1]));
             // Inside group 1: no border on screen, so the next one rightwards.
@@ -326,7 +326,7 @@ mod tests {
             assert_eq!(place(&w, Launch, None, Some(&view)), right_of(ids[1]));
             // A border exactly on the screen edge is not a space you can see.
             let view = viewport(&ids, (0.0, 100.0));
-            assert_eq!(view.visible_seam(), None);
+            assert_eq!(view.visible_border(), None);
             assert_eq!(place(&w, Launch, None, Some(&view)), right_of(ids[0]));
 
             let (lone, lone_ids) = workspace(&[1]);
@@ -369,7 +369,7 @@ mod tests {
             );
             assert_eq!(place(&w, Search, Some(ids[1]), None), right_of(ids[1]));
 
-            // Nothing selected: the seam in view, like a launch.
+            // Nothing selected: the border in view, like a launch.
             let (three, three_ids) = workspace(&[1, 1, 1]);
             let view = viewport(&three_ids, (150.0, 280.0));
             assert_eq!(

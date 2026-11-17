@@ -12,15 +12,15 @@ const MAX_BYTES: usize = 4096 * 8;
 const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 
 /// Which service holds a baseline: it names the refusals and the memfd, and checks the caller's root
-/// custody its own way.
+/// ownership its own way.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Custody {
+pub(super) struct Ownership {
     pub label: &'static str,
     pub memfd: &'static CStr,
     pub root: fn() -> io::Result<()>,
 }
 
-impl Custody {
+impl Ownership {
     fn refused(self, what: &str) -> io::Error {
         io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -36,13 +36,13 @@ pub(super) struct Binding {
     pub bytes: u32,
 }
 impl Binding {
-    pub(super) fn validate(&self, custody: Custody) -> io::Result<()> {
+    pub(super) fn validate(&self, ownership: Ownership) -> io::Result<()> {
         if self.sha256 == [0; 32]
             || self.bytes == 0
             || self.bytes as usize > MAX_BYTES
             || !self.bytes.is_multiple_of(8)
         {
-            return Err(custody.refused("baseline binding shape differs"));
+            return Err(ownership.refused("baseline binding shape differs"));
         }
         Ok(())
     }
@@ -50,18 +50,18 @@ impl Binding {
 pub(super) struct Filter {
     file: File,
     binding: Binding,
-    custody: Custody,
+    ownership: Ownership,
 }
-fn read_bytes(custody: Custody, file: &File) -> io::Result<Vec<u8>> {
+fn read_bytes(ownership: Ownership, file: &File) -> io::Result<Vec<u8>> {
     let metadata = file.metadata()?;
     let length = usize::try_from(metadata.len()).map_err(io::Error::other)?;
     if !metadata.is_file() || length == 0 || length > MAX_BYTES || !length.is_multiple_of(8) {
-        return Err(custody.refused("baseline filter shape differs"));
+        return Err(ownership.refused("baseline filter shape differs"));
     }
     let mut bytes = vec![0; length];
     file.read_exact_at(&mut bytes, 0)?;
     if file.metadata()?.len() != metadata.len() {
-        return Err(custody.refused("baseline filter length changed"));
+        return Err(ownership.refused("baseline filter length changed"));
     }
     Ok(bytes)
 }
@@ -71,8 +71,8 @@ fn binding(bytes: &[u8]) -> io::Result<Binding> {
         bytes: u32::try_from(bytes.len()).map_err(io::Error::other)?,
     })
 }
-fn verify(custody: Custody, file: &File, expected: &Binding) -> io::Result<Vec<u8>> {
-    expected.validate(custody)?;
+fn verify(ownership: Ownership, file: &File, expected: &Binding) -> io::Result<Vec<u8>> {
+    expected.validate(ownership)?;
     let metadata = file.metadata()?;
     // SAFETY: fcntl inspects the held descriptor; no pointer argument is used.
     let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
@@ -84,28 +84,28 @@ fn verify(custody: Custody, file: &File, expected: &Binding) -> io::Result<Vec<u
         || seals & SEALS != SEALS
         || !name.as_os_str().as_bytes().starts_with(b"/memfd:")
     {
-        return Err(custody.refused("baseline filter is not sealed root custody"));
+        return Err(ownership.refused("baseline filter is not sealed root ownership"));
     }
-    let bytes = read_bytes(custody, file)?;
+    let bytes = read_bytes(ownership, file)?;
     if binding(&bytes)? != *expected {
-        return Err(custody.refused("baseline filter binding differs"));
+        return Err(ownership.refused("baseline filter binding differs"));
     }
     Ok(bytes)
 }
 impl Filter {
     /// Called only by the root runner with its canonical compiler descriptor.
-    pub(super) fn capture(custody: Custody, source: &OwnedFd) -> io::Result<Self> {
-        (custody.root)()?;
+    pub(super) fn capture(ownership: Ownership, source: &OwnedFd) -> io::Result<Self> {
+        (ownership.root)()?;
         let source = File::from(source.try_clone()?);
         if source.metadata()?.uid() != 0 {
-            return Err(custody.refused("compiler filter is not root owned"));
+            return Err(ownership.refused("compiler filter is not root owned"));
         }
-        let bytes = read_bytes(custody, &source)?;
+        let bytes = read_bytes(ownership, &source)?;
         let binding = binding(&bytes)?;
         // SAFETY: the static name and fixed flags create a private sealable memfd.
         let raw = unsafe {
             libc::memfd_create(
-                custody.memfd.as_ptr(),
+                ownership.memfd.as_ptr(),
                 libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
             )
         };
@@ -119,11 +119,11 @@ impl Filter {
         if unsafe { libc::fcntl(raw, libc::F_ADD_SEALS, SEALS) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        verify(custody, &file, &binding)?;
+        verify(ownership, &file, &binding)?;
         Ok(Self {
             file,
             binding,
-            custody,
+            ownership,
         })
     }
     pub(super) fn binding(&self) -> Binding {
@@ -133,8 +133,8 @@ impl Filter {
         self.file.as_raw_fd()
     }
     /// Binding comes exclusively from the already authenticated sealed Bootstrap.
-    pub(super) fn receive(custody: Custody, binding: &Binding) -> io::Result<Self> {
-        (custody.root)()?;
+    pub(super) fn receive(ownership: Ownership, binding: &Binding) -> io::Result<Self> {
+        (ownership.root)()?;
         // SAFETY: duplicate exactly the reserved inherited baseline descriptor.
         let raw = unsafe { libc::fcntl(CHILD_FD, libc::F_DUPFD_CLOEXEC, 128) };
         if raw < 0 {
@@ -142,17 +142,17 @@ impl Filter {
         }
         // SAFETY: fcntl returned a new uniquely owned descriptor.
         let file = unsafe { File::from_raw_fd(raw) };
-        verify(custody, &file, binding)?;
+        verify(ownership, &file, binding)?;
         Ok(Self {
             file,
             binding: binding.clone(),
-            custody,
+            ownership,
         })
     }
-    /// Consumes custody and reinstalls the exact full baseline before worker drop.
+    /// Consumes ownership and reinstalls the exact full baseline before worker drop.
     pub(super) fn install(self) -> io::Result<()> {
-        (self.custody.root)()?;
-        let bytes = verify(self.custody, &self.file, &self.binding)?;
+        (self.ownership.root)()?;
+        let bytes = verify(self.ownership, &self.file, &self.binding)?;
         sandbox_core::seccomp::install_bytes(&bytes).map_err(io::Error::other)
     }
 }
@@ -160,7 +160,7 @@ impl Filter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const CUSTODY: Custody = Custody {
+    const OWNERSHIP: Ownership = Ownership {
         label: "Test",
         memfd: c"tilo-test-baseline",
         root: || Ok(()),
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn ordinary_and_unsealed_filters_cannot_satisfy_sealed_baseline_binding() {
         let ordinary = tempfile::tempfile().unwrap();
-        assert!(verify(CUSTODY, &ordinary, &binding(&[0; 8]).unwrap()).is_err());
+        assert!(verify(OWNERSHIP, &ordinary, &binding(&[0; 8]).unwrap()).is_err());
         // SAFETY: literal name and fixed flags create an owned test-only memfd.
         let raw =
             unsafe { libc::memfd_create(c"unsealed-baseline-test".as_ptr(), libc::MFD_CLOEXEC) };
@@ -176,10 +176,10 @@ mod tests {
         // SAFETY: the successful syscall transferred a new descriptor to this test.
         let mut unsealed = unsafe { File::from_raw_fd(raw) };
         unsealed.write_all(&[0; 8]).unwrap();
-        assert!(verify(CUSTODY, &unsealed, &binding(&[0; 8]).unwrap()).is_err());
-        assert!(read_bytes(CUSTODY, &ordinary).is_err());
+        assert!(verify(OWNERSHIP, &unsealed, &binding(&[0; 8]).unwrap()).is_err());
+        assert!(read_bytes(OWNERSHIP, &ordinary).is_err());
         unsealed.set_len(9).unwrap();
-        assert!(read_bytes(CUSTODY, &unsealed).is_err());
+        assert!(read_bytes(OWNERSHIP, &unsealed).is_err());
     }
     #[test]
     #[cfg(feature = "managed-tree-test")]
@@ -193,14 +193,17 @@ mod tests {
         let mut source = tempfile::tempfile().unwrap();
         source.write_all(&bytes).unwrap();
         let source: OwnedFd = source.into();
-        let held = Filter::capture(CUSTODY, &source).unwrap();
-        assert_eq!(verify(CUSTODY, &held.file, &held.binding()).unwrap(), bytes);
+        let held = Filter::capture(OWNERSHIP, &source).unwrap();
+        assert_eq!(
+            verify(OWNERSHIP, &held.file, &held.binding()).unwrap(),
+            bytes
+        );
         let mut changed = held.binding();
         changed.sha256[0] ^= 1;
-        assert!(verify(CUSTODY, &held.file, &changed).is_err());
+        assert!(verify(OWNERSHIP, &held.file, &changed).is_err());
         changed = held.binding();
         changed.bytes += 8;
-        assert!(verify(CUSTODY, &held.file, &changed).is_err());
+        assert!(verify(OWNERSHIP, &held.file, &changed).is_err());
         assert_eq!(
             unsafe { libc::fcntl(held.descriptor(), libc::F_GETFD) } & libc::FD_CLOEXEC,
             libc::FD_CLOEXEC

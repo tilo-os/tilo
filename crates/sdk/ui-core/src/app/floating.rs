@@ -288,7 +288,7 @@ impl App {
 
     /// Publish queued Present requests before comparing the composing source's
     /// IME projection. This deliberately does not read host lifecycle messages:
-    /// Prepare must be applied by the native runner before pending custody ends.
+    /// Prepare must be applied by the native runner before pending ownership ends.
     #[cfg(feature = "native")]
     fn flush_floating_present_requests_before_ime(&mut self) {
         let Some(mut client) = self.floating.client.take() else {

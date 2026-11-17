@@ -369,7 +369,7 @@ impl WorkspaceDocumentIndexPager {
         not(test),
         allow(
             clippy::unused_self,
-            reason = "the receiver is used by the test-only synthetic authority seam"
+            reason = "the receiver is used by the test-only synthetic authority hook"
         )
     )]
     fn v2_manifest(&self, root: &Path) -> Option<DocumentIndexManifestV2> {
@@ -391,7 +391,7 @@ impl WorkspaceDocumentIndexPager {
         not(test),
         allow(
             clippy::unused_self,
-            reason = "the receiver is used by the test-only synthetic authority seam"
+            reason = "the receiver is used by the test-only synthetic authority hook"
         )
     )]
     fn v2_page(

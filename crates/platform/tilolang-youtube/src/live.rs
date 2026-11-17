@@ -261,7 +261,7 @@ pub fn search(client: &LiveClient, query: &str) -> Result<SearchPage, ServiceErr
 /// What the client's items become for the client: each still held as content, and every field
 /// of it the package's kinds read. `query` is what a search found them for.
 ///
-/// This is the seam a recorded answer is mapped at: [`LiveClient::over`] takes a test's own
+/// This is the boundary a recorded answer is mapped at: [`LiveClient::over`] takes a test's own
 /// fetch and store, and `page_of` turns the client's own items — the ones a recording's rows
 /// deserialize to — into the page the origin writes.
 #[must_use]

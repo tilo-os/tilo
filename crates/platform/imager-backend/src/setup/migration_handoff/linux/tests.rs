@@ -106,29 +106,29 @@ tilo_test_env::scenario! {
         assert_eq!(fs::read_dir(&base).unwrap().count(), 1);
     }
 
-    phase owned_source_mount_witness_refuses_replacement_alias_and_namespace_change;
+    phase owned_source_mount_proof_refuses_replacement_alias_and_namespace_change;
     {
         let temp = tempfile::tempdir().unwrap();
         let mut current = facts(temp.path(), true);
         let namespace = (4, 8);
-        let witness = OwnedMountWitness::capture(&current, temp.path(), namespace).unwrap();
-        witness.validate(&current, namespace).unwrap();
-        assert!(witness.validate(&current, (4, 9)).is_err());
+        let proof = OwnedMountProof::capture(&current, temp.path(), namespace).unwrap();
+        proof.validate(&current, namespace).unwrap();
+        assert!(proof.validate(&current, (4, 9)).is_err());
         current.mounts[0].id += 1;
-        assert!(witness.validate(&current, namespace).is_err());
+        assert!(proof.validate(&current, namespace).is_err());
         current.mounts[0].id -= 1;
         let mut alias = current.mounts[0].clone();
         alias.id += 1;
         alias.point = temp.path().join("alias");
         current.mounts.push(alias);
-        assert!(witness.validate(&current, namespace).is_err());
-        assert!(OwnedMountWitness::capture(&current, temp.path(), namespace).is_err());
+        assert!(proof.validate(&current, namespace).is_err());
+        assert!(OwnedMountProof::capture(&current, temp.path(), namespace).is_err());
         current.mounts.pop();
         let mut stacked = current.mounts[0].clone();
         stacked.id += 1;
         stacked.number = "8:2".into();
         current.mounts.push(stacked);
-        assert!(witness.validate(&current, namespace).is_err());
+        assert!(proof.validate(&current, namespace).is_err());
     }
 }
 
@@ -627,12 +627,12 @@ fn original_source_retirement_closes_descriptors_confirms_release_and_quarantine
     assert_eq!(
         calls.load(Ordering::SeqCst),
         0,
-        "no unmount with shared source custody"
+        "no unmount with shared source ownership"
     );
     assert_eq!(
         drops.load(Ordering::SeqCst),
         0,
-        "retain nonunique custody after failure"
+        "retain nonunique ownership after failure"
     );
 }
 
@@ -744,7 +744,7 @@ mod retirement_batch {
             }
         }
 
-        phase external_same_volume_custody_refuses_that_release_and_retires_unrelated_mount;
+        phase external_same_volume_ownership_refuses_that_release_and_retires_unrelated_mount;
         {
             let temp = tempfile::tempdir().unwrap();
             let base = temp.path().canonicalize().unwrap();
@@ -776,12 +776,12 @@ mod retirement_batch {
             assert_eq!(
                 held_calls.load(Ordering::SeqCst),
                 0,
-                "no release with same-volume external custody"
+                "no release with same-volume external ownership"
             );
             assert_eq!(
                 held_drops.load(Ordering::SeqCst),
                 0,
-                "retain exact shared mount custody"
+                "retain exact shared mount ownership"
             );
         }
     }

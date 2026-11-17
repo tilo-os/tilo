@@ -1,4 +1,4 @@
-//! Renew a home adoption from the sealed Home unit and relocation witnesses.
+//! Renew a home adoption from the sealed Home unit and relocation proofs.
 use super::*;
 use crate::setup::home_transfer::promotion::PromotionReview;
 pub fn recover_promotion(
@@ -56,24 +56,24 @@ fn recover_promotion_inner(
     }
     let promotion = PromotionReview::recover(&request.target_home, active_home, adoption_journal)?
         .with_application_consent(request.copy_flatpak)?;
-    let witness = promotion.witness()?;
+    let proof = promotion.proof()?;
     if !request.copy_home {
-        witness.validate_application_namespace()?;
+        proof.validate_application_namespace()?;
     }
     let unit = SealedHome::reopen_adopted(
         &request.home_workspace(),
         &request.target_home,
-        &witness,
+        &proof,
         applications_started,
         &AtomicBool::new(false),
     )
     .map_err(|error| error.to_string())?;
     if applications_started {
         applications::validate_recovery(&request)?;
-        applications::verify_adopted_output(&request, witness.application_home()?, runner)?;
+        applications::verify_adopted_output(&request, proof.application_home()?, runner)?;
     }
     let identity = storage::target_identity(
-        &witness
+        &proof
             .mapped_path(std::path::Path::new(""))
             .map_err(|e| e.to_string())?,
     )?;

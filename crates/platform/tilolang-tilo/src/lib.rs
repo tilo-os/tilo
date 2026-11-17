@@ -1,6 +1,6 @@
 //! Tilo platform integration for tilolang apps.
 //!
-//! The tilolang compiler and runtime know nothing of Tilo. This crate is the seam to the
+//! The tilolang compiler and runtime know nothing of Tilo. This crate is the boundary to the
 //! platform:
 //!
 //! * [`resource`]: `DynResource`, a tilolang resource as a `tilo_resource` model, so resources live

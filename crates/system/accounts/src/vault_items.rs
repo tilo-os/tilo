@@ -463,7 +463,7 @@ pub struct VaultItems {
 
 impl VaultItems {
     /// The items kept in the vault under the config root `root`; see
-    /// [`SecretVault::open_person`] for what each root's custody is.
+    /// [`SecretVault::open_person`] for what each root's ownership is.
     pub fn open_in(root: &Path) -> Result<Self, ItemError> {
         let vault = SecretVault::open_person(Some(root));
         if let Some(error) = vault.recovery_error() {

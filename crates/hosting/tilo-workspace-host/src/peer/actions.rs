@@ -116,7 +116,7 @@ pub(super) async fn handle_remote_action(
                 route,
             );
         }
-        let standing = super::change_standing(peer, &wr);
+        let ownership = super::change_ownership(peer, &wr);
         // Never hold the workspace across the app action server: it may take its time.
         drop(wr);
         let Some(server) = session.app_serving else {
@@ -125,7 +125,7 @@ pub(super) async fn handle_remote_action(
         let local = Local {
             server: server.as_ref(),
             workspace_id,
-            standing,
+            ownership,
         };
         return serve_locally(peer, session, &local, &frame).unwrap_or_else(refuse);
     }
@@ -367,9 +367,9 @@ pub(super) fn handle_host_action(
             peer,
             session,
             if super::of_backend(&peer.cert) {
-                crate::member_limits::Standing::Owner
+                crate::member_limits::Ownership::Owner
             } else {
-                crate::member_limits::Standing::Guest
+                crate::member_limits::Ownership::Guest
             },
         )
     {
@@ -456,11 +456,11 @@ fn answer_later(
 }
 
 /// Where [`serve_locally`] answers: the relay's app action server, in one
-/// workspace, for a caller of the standing the change budget sees there.
+/// workspace, for a caller of the ownership the change budget sees there.
 struct Local<'a> {
     server: &'a dyn crate::app_serving::AppActionServer,
     workspace_id: WorkspaceId,
-    standing: crate::member_limits::Standing,
+    ownership: crate::member_limits::Ownership,
 }
 
 /// Answer a frame addressed to this relay through its app action server,
@@ -479,7 +479,7 @@ fn serve_locally(
     let Local {
         server,
         workspace_id,
-        standing,
+        ownership,
     } = *local;
     let request = RemoteActionFrame::decode(frame)
         .map_err(|_| Refusal::Invalid("malformed remote action frame".into()))?;
@@ -495,7 +495,7 @@ fn serve_locally(
         request.message,
         tilo_actions::remote::RemoteActionMessage::Invoke(_)
     ) && let Some(crate::member_limits::Limited::Changes { retry_after }) =
-        super::over_change_limit(peer, session, standing)
+        super::over_change_limit(peer, session, ownership)
     {
         return Err(Refusal::too_fast(retry_after));
     }

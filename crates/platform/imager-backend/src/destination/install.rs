@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     fn account_transport_drains_progress_while_feeding_private_frame() {
-        use account_custody::portable::{self, PortableBinding};
+        use account_credentials::portable::{self, PortableBinding};
         use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
         use sha2::{Digest, Sha256};
         let source = tempfile::tempdir().unwrap();

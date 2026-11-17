@@ -1,5 +1,5 @@
 //! Exact retained inputs for multiline preparation. Text is compared by value:
-//! local edits, CRDT reconciliation and callers without a mutation witness all
+//! local edits, CRDT reconciliation and callers without a mutation observation all
 //! take the same conservative path. No display text/spans are built on a hit.
 use super::{Arc, TextAlign, TextInput, TextStyle};
 use crate::tokens::SyntaxPalette;
@@ -22,7 +22,7 @@ impl Preparation {
         syntax: Option<&SyntaxPalette>,
     ) -> Option<Self> {
         // Do not retain another plaintext copy of a secret, even while revealed.
-        // A custom hyphenator can mutate behind its Arc without a frozen witness.
+        // A custom hyphenator can mutate behind its Arc without a frozen observation.
         if input.secret
             || matches!(
                 style.hyphenation,

@@ -1,12 +1,12 @@
-//! Durable capture custody composes native supervision with app-owned cleanup.
+//! Durable capture ownership composes native supervision with app-owned cleanup.
 pub(super) use crate::capture::process::Incarnation;
-use crate::capture::process::{Custody as NativeCustody, Namespace};
+use crate::capture::process::{Namespace, Ownership as NativeOwnership};
 use serde::{Deserialize, Serialize};
 use std::io;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Custody {
+pub(super) struct Ownership {
     pub(super) host: Incarnation,
     pub(super) namespace: Option<Namespace>,
     #[serde(default)]
@@ -16,9 +16,9 @@ pub(super) struct Custody {
     #[serde(default)]
     pub(super) inventory_scratch: Option<super::store::ScratchReceipt>,
 }
-impl Custody {
-    fn native(&self) -> NativeCustody {
-        NativeCustody {
+impl Ownership {
+    fn native(&self) -> NativeOwnership {
+        NativeOwnership {
             host: self.host,
             namespace: self.namespace,
             launch_acknowledged: self.launch_acknowledged,

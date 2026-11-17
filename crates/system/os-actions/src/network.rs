@@ -503,7 +503,7 @@ pub fn wifi_change_outcome(enabled: bool, radios: &RadioState) -> Result<(), Str
     }
 }
 
-/// The two layers that hold Wi-Fi, behind one seam so the sequence in [`set_wifi_radio_with`] is tested
+/// The two layers that hold Wi-Fi, behind one boundary so the sequence in [`set_wifi_radio_with`] is tested
 /// against a fake `NetworkManager`.
 trait WifiRadioHost {
     fn kill_switches(&self) -> crate::rfkill::RfkillState;

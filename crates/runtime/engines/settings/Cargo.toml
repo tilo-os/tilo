@@ -65,7 +65,7 @@ settings-sections = { path = "../../../system/settings-sections", optional = tru
 settings = { path = "../../../../apps/settings", optional = true }
 # The SDK entry the app's binary calls (`ui::engine_main!`).
 ui = { package = "tilo-app", path = "../../../sdk/tilo-app", optional = true }
-# Account custody and the IMAP client, which Settings uses, come from
+# Account credentials and the IMAP client, which Settings uses, come from
 # their own engine library: one copy of each in the app's process.
 tilo-accounts-engine = { path = "../accounts", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole

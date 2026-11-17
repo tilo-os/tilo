@@ -80,7 +80,7 @@ impl UndoInvocation {
 }
 
 /// What a record's history says of an invocation group.
-struct Standing {
+struct GroupEffect {
     /// The group's changes still in effect, oldest first.
     changes: Vec<String>,
     /// Someone else's change made after the group's last, in effect: why it is not taken back.
@@ -100,11 +100,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut plans = Vec::new();
         let mut refusals = Vec::new();
         for target in targets {
-            let standing = self.standing(&target, &group).await?;
-            if let Some(over) = &standing.over {
+            let effect = self.effect(&target, &group).await?;
+            if let Some(over) = &effect.over {
                 refusals.push(refusal(&target.path, over));
-            } else if !standing.changes.is_empty() {
-                plans.push((target, standing.changes));
+            } else if !effect.changes.is_empty() {
+                plans.push((target, effect.changes));
             }
         }
         if !refusals.is_empty() {
@@ -132,7 +132,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 };
                 self.undo_step(&target, &first).await?;
                 taken.push(first);
-                let left = self.standing(&target, &group).await?.changes;
+                let left = self.effect(&target, &group).await?.changes;
                 // A step its undo did not take is left as it is, never asked again.
                 changes = left
                     .into_iter()
@@ -246,13 +246,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// What `target`'s history says of the group whose calls are `invocations`.
-    async fn standing(&self, target: &Target, group: &UndoInvocation) -> Result<Standing, String> {
+    async fn effect(&self, target: &Target, group: &UndoInvocation) -> Result<GroupEffect, String> {
         let mut arguments = serde_json::Map::new();
         arguments.insert("last".into(), json!(HISTORY_READ));
         let value = self.on_resource(target, "history", arguments).await?;
         let entries = history_entries(&value)
             .ok_or_else(|| format!("{} answered no history to find the group in", target.path))?;
-        Ok(standing(&entries, |entry| group.made(entry)))
+        Ok(effect(&entries, |entry| group.made(entry)))
     }
 
     /// Take back the step of `target`'s record that the change `change` is part of.
@@ -298,7 +298,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 /// What a record's history `entries` (oldest first, each whole) say of the group whose changes
 /// `of_invocation` tells: its changes still in effect, and a change someone else made after its last
 /// one that is still in effect.
-fn standing(entries: &[Value], of_invocation: impl Fn(&Value) -> bool) -> Standing {
+fn effect(entries: &[Value], of_invocation: impl Fn(&Value) -> bool) -> GroupEffect {
     let in_effect = |entry: &&Value| entry.get("undone").and_then(Value::as_bool) != Some(true);
     let changes: Vec<String> = entries
         .iter()
@@ -324,7 +324,7 @@ fn standing(entries: &[Value], of_invocation: impl Fn(&Value) -> bool) -> Standi
             .find(|entry| !of_invocation(entry))
             .cloned()
     });
-    Standing { changes, over }
+    GroupEffect { changes, over }
 }
 
 /// Why the group is not taken back in the record at `path`: `over`, the change
@@ -367,7 +367,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn an_invocation_takes_back_only_its_own_standing_changes;
+        fn an_invocation_takes_back_only_its_own_changes_in_effect;
 
         phase an_invocation_finds_its_own_changes_in_effect;
         {
@@ -377,15 +377,15 @@ mod tests {
                 json!({"change": "b2", "invocation": "run", "undone": true}),
                 entry("b3", "run"),
             ];
-            let standing = standing(&entries, named(&["run"]));
-            assert_eq!(standing.changes, ["b1", "b3"]);
-            assert!(standing.over.is_none());
+            let effect = effect(&entries, named(&["run"]));
+            assert_eq!(effect.changes, ["b1", "b3"]);
+            assert!(effect.over.is_none());
         }
 
         phase someone_elses_change_on_top_holds_the_invocation;
         {
             let entries = [entry("b1", "run"), entry("c1", "theirs")];
-            let held = standing(&entries, named(&["run"]));
+            let held = effect(&entries, named(&["run"]));
             assert_eq!(held.over.as_ref().unwrap()["change"], "c1");
             assert_eq!(
                 refusal("word-processor", held.over.as_ref().unwrap()),
@@ -399,15 +399,15 @@ mod tests {
                 json!({"change": "c1", "invocation": "theirs", "undone": true}),
                 json!({"change": "c2", "change_kind": "housekeeping"}),
             ];
-            assert!(standing(&entries, named(&["run"])).over.is_none());
+            assert!(effect(&entries, named(&["run"])).over.is_none());
         }
 
         phase every_call_of_a_named_invocation_is_its_own;
         {
             let entries = [entry("b1", "open"), entry("b2", "append")];
-            let standing = standing(&entries, named(&["open", "append"]));
-            assert_eq!(standing.changes, ["b1", "b2"]);
-            assert!(standing.over.is_none());
+            let effect = effect(&entries, named(&["open", "append"]));
+            assert_eq!(effect.changes, ["b1", "b2"]);
+            assert!(effect.over.is_none());
         }
 
         phase a_change_is_the_groups_by_its_recorded_step;

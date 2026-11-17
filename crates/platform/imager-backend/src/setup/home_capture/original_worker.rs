@@ -62,7 +62,7 @@ impl<O: OriginalWorkerOwner> Drop for OriginalWorkerRun<O> {
             || self.exchange.as_ref().is_some_and(|job| !job.is_finished())
         {
             if let Some(working) = self.working.take() {
-                // Unknown namespace custody cannot authorize deleting its
+                // Unknown namespace ownership cannot authorize deleting its
                 // protected working ancestry. Keep it quarantined for recovery.
                 UNKNOWN_RETIREMENT.store(true, std::sync::atomic::Ordering::Release);
                 let _ = working.keep();
@@ -106,7 +106,7 @@ impl<O: OriginalWorkerOwner> OriginalWorkerRun<O> {
         self.working
             .as_ref()
             .map(|working| working.path())
-            .ok_or_else(|| refused("Original working custody was retired"))
+            .ok_or_else(|| refused("Original working ownership was retired"))
     }
     pub(in crate::setup::home_capture) fn quiescent_response(
         &self,
@@ -132,7 +132,7 @@ pub(in crate::setup::home_capture) fn launch<O: OriginalWorkerOwner>(
 ) -> io::Result<OriginalWorkerRun<O>> {
     transaction.check()?;
     request.validate_protocol()?;
-    if request.custody.is_some()
+    if request.ownership.is_some()
         || request.operation != transaction.operation()
         || admission.original_read_claim_digest() != Some(transaction.read_claim_digest())
     {
@@ -244,7 +244,7 @@ pub(in crate::setup::home_capture) fn launch<O: OriginalWorkerOwner>(
         Some(connected),
     );
     // Construct the strong working/owner guard BEFORE every fallible exchange
-    // collection. A missing shutdown witness cannot delete ancestry on error.
+    // collection. A missing shutdown proof cannot delete ancestry on error.
     let mut run = OriginalWorkerRun {
         supervised,
         response: Err(refused("Original worker provider was not admitted")),
@@ -255,7 +255,7 @@ pub(in crate::setup::home_capture) fn launch<O: OriginalWorkerOwner>(
         invalid_exchange: false,
     };
     // Recovering a poisoned INTERNAL slot transfers only owned JoinHandle
-    // custody. It does not authenticate a worker response or an output grant.
+    // ownership. It does not authenticate a worker response or an output grant.
     let poisoned = match jobs.lock() {
         Ok(mut jobs) => {
             run.exchange = jobs.take();

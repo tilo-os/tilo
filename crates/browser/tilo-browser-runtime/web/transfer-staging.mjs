@@ -1,6 +1,6 @@
 import {transactionComplete} from './host-core.mjs';
 
-// Private custody, not authority: only Rust validates manifests, digests, native
+// Private device key, not authority: only Rust validates manifests, digests, native
 // admission and the cut. These rows must never be document hydration inputs.
 // No DB version bump: array keys are disjoint from the v1 canonical string keys.
 export const TRANSFER_CHUNK_BYTES=240*1024;

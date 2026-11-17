@@ -357,7 +357,7 @@ impl Drop for HostOutput {
 
 #[cfg(test)]
 mod tests {
-    //! SDK wire scheduling fixtures, not proofs of native launcher custody or device output.
+    //! SDK wire scheduling fixtures, not proofs of native launcher ownership or device output.
     use super::*;
     use std::{
         cell::{Cell, RefCell},

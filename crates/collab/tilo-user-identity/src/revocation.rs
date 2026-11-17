@@ -143,7 +143,7 @@ pub fn sign_revocation_entry(
 }
 
 /// [`sign_revocation_entry`] with a key that answers only later: a page's root
-/// lives in `WebCrypto` custody and signs through a promise.
+/// lives in `WebCrypto` ownership and signs through a promise.
 ///
 /// # Errors
 ///

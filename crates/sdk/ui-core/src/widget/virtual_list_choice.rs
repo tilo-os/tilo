@@ -156,16 +156,16 @@ impl<M: ListModel + 'static> crate::resources::PublishesResources for VirtualLis
 }
 
 impl<M: ListModel + 'static> crate::widget::controls::ActionControls for VirtualList<M> {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         for (choice, _) in self.view.iter_mut().chain(self.opens.iter_mut()) {
-            choice.install_custody(domain, attachment);
+            choice.attach(domain, attachment);
         }
         for child in Widget::children_mut(self) {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 

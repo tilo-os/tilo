@@ -337,7 +337,7 @@ async function openKept(storage, record, persist, runtime) {
  * `create: false` and none kept.
  */
 export async function browserIdentity({storage, create = true, persist = globalThis.navigator?.storage} = {}) {
-  storage ??= (await import('./device-custody.mjs')).idbStorage();
+  storage ??= (await import('./device-key.mjs')).idbStorage();
   const runtime = await pageRuntime();
   let record = await storage.get(BROWSER_RECORD);
   if (!record) {
@@ -360,7 +360,7 @@ export async function browserIdentity({storage, create = true, persist = globalT
  * the person agrees to anything) asks this instead.
  */
 export async function keptIdentity({storage} = {}) {
-  storage ??= (await import('./device-custody.mjs')).idbStorage();
+  storage ??= (await import('./device-key.mjs')).idbStorage();
   const record = await storage.get(BROWSER_RECORD);
   return record ? {rootPublicKey: record.rootPublicKey, held: record.held} : null;
 }
@@ -391,7 +391,7 @@ export async function storagePersisted(storage = globalThis.navigator?.storage) 
  */
 export async function signInWithPasskey({rpId = globalThis.location?.hostname, fetchEnvelope: find, storage, credentials, persist = globalThis.navigator?.storage, runtime, now} = {}) {
   if (typeof find !== 'function') throw new TypeError('signInWithPasskey needs fetchEnvelope');
-  storage ??= (await import('./device-custody.mjs')).idbStorage();
+  storage ??= (await import('./device-key.mjs')).idbStorage();
   runtime ??= await pageRuntime();
   credentials = credentialsOf({credentials});
   if (!credentials?.get) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');

@@ -2,7 +2,7 @@
 # Whether this boot of a Tilo server is serving what it is for.
 #
 # tilo-boot-health.service judges the server by this unit (the host image's
-# drop-in names it in TILO_BOOT_HEALTH_UNIT, the same seam an always-on board
+# drop-in names it in TILO_BOOT_HEALTH_UNIT, the same boundary an always-on board
 # uses for its own session): a oneshot that succeeds when the machine serves and
 # fails when it does not. A failed update needs no rollback command — the boot
 # loader keeps the try it spent and stops offering the entry after its tries —

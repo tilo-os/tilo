@@ -54,12 +54,12 @@ class OwnedChildBoundaries(unittest.TestCase):
             with mock.patch.object(child, 'wait', side_effect=subprocess.TimeoutExpired(child.args, .01)):
                 with self.assertRaisesRegex(RuntimeError, 'retirement unknown'):
                     native.retire_child(child, timeout=.01)
-            self.assertIs(native._OUTSTANDING[id(child)], child)
+            self.assertIs(native._OUTACCESS[id(child)], child)
             with self.assertRaisesRegex(RuntimeError, 'retirement unknown'):
                 native.assert_children_retired()
             child.kill()
             child.wait(timeout=HANG_BOUND)
-            del native._OUTSTANDING[id(child)]
+            del native._OUTACCESS[id(child)]
             native.assert_children_retired()
         finally:
             if child.returncode is None:

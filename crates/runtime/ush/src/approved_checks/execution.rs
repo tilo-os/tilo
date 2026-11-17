@@ -612,7 +612,7 @@ pub(super) fn run(
         output = collect_stopped_capture(&mut child, &mut outcome, &mut error);
     }
     // Final informational drain never changes independently observed execution.
-    // Revoked custody refuses all remaining callbacks, including terminal copies.
+    // Revoked ownership refuses all remaining callbacks, including terminal copies.
     if reports.drain(&mut child, &authority, &report).is_ok() {
         reports.finish();
         let _ = reports.publish(&authority, &report);

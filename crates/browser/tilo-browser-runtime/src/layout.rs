@@ -49,7 +49,7 @@ impl PageActions {
             Rc::new(tilo_desktop_search::names::window_name),
             tilo_session_core::layout::source_words(),
         )));
-        // Nothing here answers a search or has an agent to ask, so both seams are honestly empty: a
+        // Nothing here answers a search or has an agent to ask, so both boundaries are honestly empty: a
         // place made by text is the page's palette's to open, never a second index of its own. The
         // empty find answers at once with nothing, as a search over no source would.
         let find: Find = Rc::new(|_: &str, done: FindDone| done(Vec::new()));

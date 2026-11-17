@@ -428,7 +428,7 @@ pub fn deliver_retained(
     let Some(plan) = plan else { return Ok(()) };
     let data = canonical(plan);
     let mut directory = open_directory_chain(target_var)?;
-    safe_directory(&directory, "installed /var custody is unsafe")?;
+    safe_directory(&directory, "installed /var ownership is unsafe")?;
     for component in ["lib", "tilo"] {
         match fs::mkdirat(&directory, component, Mode::from_raw_mode(0o755)) {
             Ok(()) => fs::fsync(&directory)?,

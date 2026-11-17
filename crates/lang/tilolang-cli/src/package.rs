@@ -108,7 +108,7 @@ fn sandbox(origins: &[&str]) -> (&'static str, &'static str, &'static str) {
             "mode = \"off\"",
         );
     }
-    // The mail origin also reads the account's credentials from custody; the others hold none.
+    // The mail origin also reads the account's credentials from ownership; the others hold none.
     let capabilities = if origins.contains(&"imap") {
         "required = [\"network.http\"]\noptional = [\"secrets\"]"
     } else {

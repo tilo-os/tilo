@@ -75,19 +75,19 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
                 () = certified_launch_wait(&started_rx) => {},
                 result = &mut pending => panic!("original launch refused before host admission: {result:?}"),
             }
-            let custody = launcher
+            let ownership = launcher
                 .original
                 .lock()
                 .unwrap()
                 .clone()
                 .expect("real original is retained");
             let workspace = env.membership.read().workspaces[0].clone();
-            assert!(custody.matches("so.tilo.word-processor", Some(&root), &workspace));
-            assert!(!custody.matches("so.tilo.chat", Some(&root), &workspace));
-            assert!(!custody.matches("so.tilo.word-processor", None, &workspace));
-            assert_eq!(custody.certificate().unwrap(),
+            assert!(ownership.matches("so.tilo.word-processor", Some(&root), &workspace));
+            assert!(!ownership.matches("so.tilo.chat", Some(&root), &workspace));
+            assert!(!ownership.matches("so.tilo.word-processor", None, &workspace));
+            assert_eq!(ownership.certificate().unwrap(),
                 *env.authority.additional_certificates.lock().unwrap().last().unwrap());
-            let certificate = custody.certificate().unwrap();
+            let certificate = ownership.certificate().unwrap();
             let statuses = rig.state.invocation_statuses_for_owner(&crate::collab_app_broker::invocation_journal::InvocationOwner::Certified {
                 root: certificate.user_public_key,
                 device: certificate.device_public_key,
@@ -112,11 +112,11 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
             );
             assert!(record.admitted_request_is(&serde_json::to_value(expected).unwrap()));
             drop(guard);
-            assert!(!pending.is_finished(), "custody is not actual adoption");
+            assert!(!pending.is_finished(), "ownership is not actual adoption");
             let grants = std::mem::take(&mut env.membership.write().workspaces[0].policy.grants);
-            assert!(custody.certificate().is_err(), "fresh rights, not the launch snapshot, govern admission");
+            assert!(ownership.certificate().is_err(), "fresh rights, not the launch snapshot, govern admission");
             env.membership.write().workspaces[0].policy.grants = grants;
-            assert!(custody.certificate().is_ok());
+            assert!(ownership.certificate().is_ok());
             host.cancel(&person, &original)
                 .wait_timeout(std::time::Duration::from_secs(5))
                 .ok()
@@ -124,7 +124,7 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
                 .expect("answered")
                 .unwrap();
             assert!(
-                custody.certificate().is_err(),
+                ownership.certificate().is_err(),
                 "cancelled original cannot be reused"
             );
             adopt.send(Ok(())).unwrap();
@@ -454,7 +454,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                 assert!(rig.state.invocation_statuses_for_owner(&owner).iter()
                     .any(|(id, _)| *id == launch_id));
                 assert!(rig.state.invocation_statuses(&tilo_actions::MemberId::agent("scribe")).is_empty(),
-                    "signed launches never acquire actor-only observation custody");
+                    "signed launches never acquire actor-only observation ownership");
             }
         })
         .await;

@@ -32,6 +32,7 @@
 )]
 
 pub mod account;
+pub(crate) mod account_secrets;
 pub mod actions;
 pub(crate) mod address_book;
 pub mod app;
@@ -42,7 +43,6 @@ pub mod compose;
 #[cfg(feature = "live")]
 pub(crate) mod connect;
 pub mod copies;
-pub(crate) mod custody;
 pub mod engine;
 #[cfg(all(feature = "live", any(test, feature = "fake-servers")))]
 #[allow(

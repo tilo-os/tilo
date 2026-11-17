@@ -226,8 +226,8 @@ that shows Chat alone, which has no desktop and writes nothing into a workspace'
 page is the device: its key, its pairing, its connection, its records. The engine gives the app
 what a resource reads as (`read`), word that something changed (`changes`), and the typed
 actions with their answers (`invoke`), through the page's own mount: the entry its palette,
-agents and assistive technology use, under the person's own standing. It pairs from a link
-"Pair a new device" made (`pair`), and says where it stands (`standings`): the code to compare,
+agents and assistive technology use, under the person's own access. It pairs from a link
+"Pair a new device" made (`pair`), and says where it stands (`states`): the code to compare,
 in, or the site's own refusal. It hands the app no key. It opens its one site and nothing else,
 and hears only that site's page in the main frame.
 
@@ -370,7 +370,7 @@ what did not interrupt is listed without a sound, with the assistant's reason. A
 first answer is the system's own button beside Open, and a secret is never asked for there.
 `LiveActivityPlan` says what earns a live activity on an iPhone: a reminder that comes once
 within the hour, a brief before something begins, and work the person waits on. The
-assistant's standing work earns none, because an activity that is always there says nothing.
+assistant's lasting work earns none, because an activity that is always there says nothing.
 The app tells both while it runs.
 
 **Told while the app is closed** takes what nothing here makes: an App ID for

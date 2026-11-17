@@ -839,7 +839,7 @@ impl LibraryIndex {
     pub(crate) fn take_fetched(&mut self) -> Option<(String, Read<crate::content::LoadedBook>)> {
         let (id, read) = self.fetched.try_iter().last()?;
         let fetch = self.fetching.as_mut().filter(|fetch| fetch.entry.id == id);
-        let standing = match read {
+        let state = match read {
             Read::OnItsWay => Arrival::Pending { from: elsewhere() },
             Read::Waiting => Arrival::Failed(BookUnreachable::Waiting),
             Read::Unavailable => Arrival::Failed(BookUnreachable::Unavailable),
@@ -854,8 +854,8 @@ impl LibraryIndex {
             fetch.reading = false;
             // Found on its way again after it could not come, it is asked
             // anew: its bar starts over.
-            if fetch.text.with(|now| *now != standing) {
-                fetch.text.stand(standing);
+            if fetch.text.with(|now| *now != state) {
+                fetch.text.stand(state);
             }
         }
         None

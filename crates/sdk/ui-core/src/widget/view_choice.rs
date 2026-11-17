@@ -154,12 +154,12 @@ impl ViewChoice {
         Ok((payload.control == self.id).then_some(payload.entry))
     }
 
-    pub(crate) fn install_custody(
+    pub(crate) fn attach(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        let _ = self.action.install_custody(domain, attachment);
+        let _ = self.action.attach(domain, attachment);
     }
 
     pub(crate) fn emit(&mut self, entry: String) {

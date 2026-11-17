@@ -395,10 +395,10 @@ fn flush(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-// Cleanup borrows custody only until publication submission. This separates
+// Cleanup borrows ownership only until publication submission. This separates
 // potentially deleting prepublication cleanup from the non-deleting commit guard.
 struct StageCleanup<'a> {
-    custody: &'a CommitGuard,
+    ownership: &'a CommitGuard,
     name: OsString,
     armed: bool,
 }
@@ -406,9 +406,9 @@ impl Drop for StageCleanup<'_> {
     fn drop(&mut self) {
         if self.armed {
             let _ = self
-                .custody
+                .ownership
                 ._parent
-                .remove_owned(&self.name, &self.custody.file);
+                .remove_owned(&self.name, &self.ownership.file);
         }
     }
 }
@@ -458,7 +458,7 @@ pub(crate) fn publish(
         _parent: parent,
     };
     let mut cleanup = StageCleanup {
-        custody: &guard,
+        ownership: &guard,
         name,
         armed: true,
     };
@@ -488,7 +488,7 @@ pub(crate) fn publish(
     // failure. Keep semantics identical to the Unix backend's fault model.
     checkpoint(CheckpointKind::AfterPublish, &guard.file).map_err(unknown)?;
     drop(cleanup);
-    // Custody moves without allocation, native reopen or fallible transfer.
+    // Ownership moves without allocation, native reopen or fallible transfer.
     let guard = PublicCommitGuard::new(guard);
     if let Err(error) = guard.commit() {
         return Err(PublicationError::pending(error, guard));

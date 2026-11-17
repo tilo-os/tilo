@@ -243,7 +243,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_share_reaches_one_item_within_its_sharers_standing;
+        fn a_share_reaches_one_item_within_its_sharers_access;
 
         phase an_edit_share_lets_a_viewer_change_that_item_only;
         {

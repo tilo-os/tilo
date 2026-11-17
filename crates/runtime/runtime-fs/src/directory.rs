@@ -13,7 +13,7 @@ use crate::{
 };
 use std::sync::{Arc, Mutex};
 
-/// Opaque native directory custody; cannot be recovered from a selected file.
+/// Opaque native directory ownership; cannot be recovered from a selected file.
 pub struct DirectoryCapability {
     session: FsSession,
     root: DirectoryGrant,

@@ -3,7 +3,7 @@
 //! A `#[view]` function builds [`tilo_view::Node`]s, described components checked against the
 //! catalogue. The runtime draws a resource of a Rust app's type through its view the way it draws
 //! a tilolang package's: a boundary, keyed and wired, whose tree the host builds from the one
-//! catalogue (one-app-model.md §2). This module is the seam: it takes the views a crate registered
+//! catalogue (one-app-model.md §2). This module is the boundary: it takes the views a crate registered
 //! ([`tilo_view::ViewRegistry`]) and hands the runtime a [`RustViews`] over them, converting each
 //! tree the view builds into the runtime's own node kinds, props and events.
 

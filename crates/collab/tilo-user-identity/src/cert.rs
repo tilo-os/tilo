@@ -1392,7 +1392,7 @@ pub fn sign_device_cert(
 }
 
 /// [`sign_device_cert`] with a key that answers only later: a page's device key
-/// lives in `WebCrypto` custody and signs through a promise, the same bytes
+/// lives in `WebCrypto` ownership and signs through a promise, the same bytes
 /// under the same checks.
 ///
 /// # Errors

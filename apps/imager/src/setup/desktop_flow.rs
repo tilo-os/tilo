@@ -569,7 +569,7 @@ mod tests {
             url: "https://code.tilo.so/tilo/releases/fixture.rpm".into(),
             byte_size: 7,
             sha256: sha256.clone(),
-            account_custody: None,
+            account_credentials: None,
             verified_runtime: Some(RuntimeEvidence {
                 schema: 1,
                 reference: "fixture evidence".into(),
@@ -677,7 +677,7 @@ mod tests {
                 service_sessions: None,
             };
             let mut supported = legacy.clone();
-            supported.account_custody = Some(proof);
+            supported.account_credentials = Some(proof);
             flow.state = DesktopFlowState::Ready(selection(supported.clone()));
             flow.start_install().unwrap();
             assert!(flow.has_pending_operation());

@@ -1,4 +1,4 @@
-//! The seams a host serves an app's identity through: the committed workspaces a request is
+//! The boundaries a host serves an app's identity through: the committed workspaces a request is
 //! authorized against, the key service that hands a route its keys, and the person-record kinds
 //! an app's surface declares. Every host runs them; the Unix broker below is one host's.
 

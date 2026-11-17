@@ -193,12 +193,12 @@ tilo_test_env::scenario! {
         std::fs::create_dir_all(original.join(".config/tilo/identity")).unwrap();
         std::fs::write(
             original.join(".config/tilo/identity/primary.json"),
-            b"old custody",
+            b"old ownership",
         )
         .unwrap();
         std::fs::write(
             target.join(".config/tilo/primary.json"),
-            b"selected custody",
+            b"selected ownership",
         )
         .unwrap();
         std::fs::write(original.join("keep"), b"old document").unwrap();
@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
         assert!(report.collisions.contains(&PathBuf::from("keep")));
         assert!(
             report
-                .inactive_custody
+                .inactive_ownership
                 .contains(&PathBuf::from(".config/tilo/identity/primary.json"))
         );
         assert_eq!(std::fs::read(target.join("keep")).unwrap(), b"new document");
@@ -230,11 +230,11 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             std::fs::read(target.join(".config/tilo/primary.json")).unwrap(),
-            b"selected custody"
+            b"selected ownership"
         );
         assert_eq!(
             std::fs::read(quarantine.join(".config/tilo/identity/primary.json")).unwrap(),
-            b"old custody"
+            b"old ownership"
         );
         assert_eq!(
             std::fs::metadata(target.join("launch"))
@@ -278,10 +278,10 @@ tilo_test_env::scenario! {
         let promotion =
             PromotionReview::review(&quarantine, &root.path().join("target"), &journal).unwrap();
         promotion.move_one_for_test(&relative.join("new")).unwrap();
-        let witness = promotion.witness().unwrap();
-        assert!(witness.application_home().is_err());
+        let proof = promotion.proof().unwrap();
+        assert!(proof.application_home().is_err());
         assert!(
-            witness
+            proof
                 .uniform_target(Path::new(".local/share/flatpak"))
                 .is_err()
         );
@@ -295,7 +295,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase completed_application_witness_defers_only_repository_digest_and_keeps_move_identity;
+    phase completed_application_proof_defers_only_repository_digest_and_keeps_move_identity;
     {
         let root = fixture();
         let original = root.path().join("original");
@@ -309,7 +309,7 @@ tilo_test_env::scenario! {
         std::fs::write(original.join("document"), b"original document").unwrap();
         std::fs::write(original.join(".local/personal"), b"personal original").unwrap();
         let quarantine = copy(root.path());
-        let journal = root.path().join("journals/application-witness");
+        let journal = root.path().join("journals/application-proof");
         let review = PromotionReview::review(&quarantine, &target, &journal).unwrap();
         assert!(
             review
@@ -325,46 +325,46 @@ tilo_test_env::scenario! {
         .unwrap();
         assert!(review.verify_completed().is_err());
         let recovered = PromotionReview::recover(&quarantine, &target, &journal).unwrap();
-        let witness = recovered.completed_application_witness().unwrap();
-        assert_eq!(witness.application_home().unwrap(), target);
+        let proof = recovered.completed_application_proof().unwrap();
+        assert_eq!(proof.application_home().unwrap(), target);
         std::fs::write(
             target.join(".local/share/flatpak/repo/new-approved-output"),
             b"independently verified output",
         )
         .unwrap();
-        recovered.completed_application_witness().unwrap();
+        recovered.completed_application_proof().unwrap();
         std::fs::write(
             target.join(".local/personal"),
             b"unapproved personal change",
         )
         .unwrap();
-        assert!(recovered.completed_application_witness().is_err());
+        assert!(recovered.completed_application_proof().is_err());
         std::fs::write(target.join(".local/personal"), b"personal original").unwrap();
-        recovered.completed_application_witness().unwrap();
+        recovered.completed_application_proof().unwrap();
 
-        // This structural witness deliberately leaves repository bytes to the
+        // This structural proof deliberately leaves repository bytes to the
         // independently authenticated original/archive and signed-output verifier.
         std::fs::write(target.join("document"), b"unapproved change").unwrap();
-        assert!(recovered.completed_application_witness().is_err());
+        assert!(recovered.completed_application_proof().is_err());
         std::fs::write(target.join("document"), b"original document").unwrap();
-        recovered.completed_application_witness().unwrap();
+        recovered.completed_application_proof().unwrap();
         let installation = target.join(".local/share/flatpak");
         let mode = std::fs::metadata(&installation)
             .unwrap()
             .permissions()
             .mode();
         std::fs::set_permissions(&installation, std::fs::Permissions::from_mode(mode ^ 0o100)).unwrap();
-        assert!(recovered.completed_application_witness().is_err());
+        assert!(recovered.completed_application_proof().is_err());
         std::fs::set_permissions(&installation, std::fs::Permissions::from_mode(mode)).unwrap();
-        recovered.completed_application_witness().unwrap();
+        recovered.completed_application_proof().unwrap();
         let retained_installation = installation.with_extension("original-held");
         std::fs::rename(&installation, &retained_installation).unwrap();
         std::fs::create_dir(&installation).unwrap();
         std::fs::set_permissions(&installation, std::fs::Permissions::from_mode(mode)).unwrap();
-        assert!(recovered.completed_application_witness().is_err());
+        assert!(recovered.completed_application_proof().is_err());
         std::fs::remove_dir(&installation).unwrap();
         std::fs::rename(&retained_installation, &installation).unwrap();
-        recovered.completed_application_witness().unwrap();
+        recovered.completed_application_proof().unwrap();
         crate::portable_transfer::acl::set_test_acl(
             &installation,
             true,
@@ -380,7 +380,7 @@ tilo_test_env::scenario! {
             mode & 0o777,
             "default ACL change must leave access mode unchanged"
         );
-        assert!(recovered.completed_application_witness().is_err());
+        assert!(recovered.completed_application_proof().is_err());
 
         assert_eq!(
             std::fs::read(original.join("document")).unwrap(),

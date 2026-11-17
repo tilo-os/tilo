@@ -1361,7 +1361,7 @@ fn a_hit_chosen_in_an_apps_search_opens_inside_that_app() {
 }
 
 /// An app's action chosen in search over everything runs inside that app,
-/// under its custody, not at the desktop's API, and its window comes
+/// under its ownership, not at the desktop's API, and its window comes
 /// forward to show it.
 #[test]
 fn an_apps_action_chosen_in_search_over_everything_runs_in_its_window() {

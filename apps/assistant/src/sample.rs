@@ -4,7 +4,7 @@
 use ui::prelude::*;
 
 use crate::panel::Tab;
-use crate::sources::{Assistant, Event, Scheduled, Stage, Staged, Standing, SubAgent, Task};
+use crate::sources::{Assistant, Event, Progress, Scheduled, Stage, Staged, SubAgent, Task};
 use crate::{Nav, Place, Window};
 
 pub(crate) const SCENARIOS: &[&str] = &[
@@ -19,12 +19,12 @@ pub(crate) const SCENARIOS: &[&str] = &[
 
 const USAGE_DROP: &str = "usage-drop";
 
-fn sub_agent(id: &str, job: &str, role: &str, standing: Standing) -> SubAgent {
+fn sub_agent(id: &str, job: &str, role: &str, progress: Progress) -> SubAgent {
     SubAgent {
         id: id.to_owned(),
         job: job.to_owned(),
         role: role.to_owned(),
-        standing,
+        progress,
     }
 }
 
@@ -54,25 +54,25 @@ fn sub_agents() -> Vec<SubAgent> {
             USAGE_DROP,
             "Usage drop: investigate",
             "Coder",
-            Standing::Working,
+            Progress::Working,
         ),
         sub_agent(
             "board-deck",
             "Find the third-quarter board deck",
             "Researcher",
-            Standing::NeedsYou,
+            Progress::NeedsYou,
         ),
         sub_agent(
             "competitors",
             "Competitors' posts this week",
             "Researcher",
-            Standing::Working,
+            Progress::Working,
         ),
         sub_agent(
             "data-room",
             "Data room: open requests",
             "Researcher",
-            Standing::Done {
+            Progress::Done {
                 when: "yesterday".to_owned(),
             },
         ),

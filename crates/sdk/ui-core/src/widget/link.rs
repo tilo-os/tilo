@@ -202,7 +202,7 @@ impl Link {
 }
 
 impl crate::widget::controls::ActionControls for Link {
-    crate::widget::controls::optional_emitter_controls!(custody);
+    crate::widget::controls::optional_emitter_controls!(ownership);
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         self.action
             .as_ref()

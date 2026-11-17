@@ -16,7 +16,7 @@ use secret_vault::VaultFormat;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::{AccountId, SecretCustody};
+use crate::{AccountId, VaultBackend};
 
 const FORMAT: VaultFormat = VaultFormat {
     name: "account-handoff",
@@ -115,7 +115,7 @@ impl HandoffCredential {
 #[derive(Clone, Debug)]
 pub struct HandoffStore {
     dir: PathBuf,
-    custody: SecretCustody,
+    backend: VaultBackend,
     config_root: Option<PathBuf>,
 }
 
@@ -124,12 +124,12 @@ pub fn handoff_dir_in(config_root: &Path) -> PathBuf {
 }
 
 impl HandoffStore {
-    /// The store at the default config root with the session's key custody.
+    /// The store at the default config root with the session's key storage.
     /// `None` when no config directory resolves.
     pub fn open() -> Option<Self> {
         crate::config_root().map(|root| Self {
             dir: handoff_dir_in(&root),
-            custody: SecretCustody::for_session(),
+            backend: VaultBackend::for_session(),
             config_root: None,
         })
     }
@@ -146,12 +146,12 @@ impl HandoffStore {
         }
     }
 
-    /// The store under an explicit config root, with the same key custody
+    /// The store under an explicit config root, with the same key storage
     /// as [`crate::SecretVault::open_in`].
     pub fn open_in(config_root: &Path) -> Self {
         Self {
             dir: handoff_dir_in(config_root),
-            custody: crate::vault::explicit_root_custody(),
+            backend: crate::vault::explicit_root_backend(),
             config_root: Some(config_root.to_path_buf()),
         }
     }
@@ -168,7 +168,7 @@ impl HandoffStore {
         std::fs::create_dir_all(&self.dir)
             .map_err(|error| format!("could not create the handoff directory: {error}"))?;
         let key = FORMAT
-            .load_or_create_key(&self.dir, self.custody)
+            .load_or_create_key(&self.dir, self.backend)
             .ok_or_else(|| "no handoff key is available".to_string())?;
         let plaintext = Zeroizing::new(
             serde_json::to_vec(credential)
@@ -188,7 +188,7 @@ impl HandoffStore {
             Err(error) => return Err(format!("could not read the handoff credential: {error}")),
         };
         let key = FORMAT
-            .load_or_create_key(&self.dir, self.custody)
+            .load_or_create_key(&self.dir, self.backend)
             .ok_or_else(|| "the handoff key is unavailable".to_string())?;
         let plaintext = FORMAT
             .open(&key, &sealed)

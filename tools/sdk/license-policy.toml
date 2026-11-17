@@ -94,7 +94,7 @@ client_side = [
     "tilo-paths",
     "tilo-platform-caps",
     "tilo-reference",          # the links an invitation is written as
-    "tilo-relay-client",       # device certification and the device-signer seam
+    "tilo-relay-client",       # device certification and the device-signer boundary
     "tilo-relay-protocol",     # the relay's handshake and wire messages
     "tilo-relay-session",
     "tilo-resource",           # a resource's fields, as an app publishes them

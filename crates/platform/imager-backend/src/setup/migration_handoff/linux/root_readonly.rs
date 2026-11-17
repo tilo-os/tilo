@@ -10,8 +10,8 @@ use std::{
     sync::Mutex,
 };
 
-pub(super) struct RootReadOnlyMount(Mutex<Option<Custody>>);
-struct Custody {
+pub(super) struct RootReadOnlyMount(Mutex<Option<Ownership>>);
+struct Ownership {
     parent: PathBuf,
     parent_pin: fs::File,
     point: PathBuf,
@@ -21,7 +21,7 @@ struct Custody {
     namespace: fs::File,
     volume: SourceVolume,
     device: String,
-    witness: Option<OwnedMountWitness>,
+    proof: Option<OwnedMountProof>,
     root: Option<fs::File>,
 }
 fn denied(message: &'static str) -> io::Error {
@@ -72,7 +72,7 @@ fn validate_selected_block(
     }
     Ok(())
 }
-impl Custody {
+impl Ownership {
     fn namespace(&self) -> io::Result<(u64, u64)> {
         let held = self.namespace.metadata()?;
         let current = fs::metadata("/proc/self/ns/mnt")?;
@@ -96,11 +96,11 @@ impl Custody {
     fn bind(&self, facts: &mut Facts) -> io::Result<()> {
         self.validate_parent()?;
         let namespace = self.namespace()?;
-        let witness = self
-            .witness
+        let proof = self
+            .proof
             .as_ref()
-            .ok_or_else(|| denied("Root readonly source has no initial mount witness"))?;
-        witness.validate(facts, namespace)?;
+            .ok_or_else(|| denied("Root readonly source has no initial mount proof"))?;
+        proof.validate(facts, namespace)?;
         if facts.matching_volume(&self.volume)? != self.device
             || stamp(&self.block)? != self.block_stamp
         {
@@ -117,15 +117,15 @@ impl Custody {
             .ok_or_else(|| denied("Root readonly mount root is unavailable"))?;
         let named = readable(&self.point)?;
         if stamp(root)? != stamp(&named)?
-            || fs_native::snapshot_lease::mount_id(root)? != witness.id
-            || fs_native::snapshot_lease::mount_id(&named)? != witness.id
+            || fs_native::snapshot_lease::mount_id(root)? != proof.id
+            || fs_native::snapshot_lease::mount_id(&named)? != proof.id
         {
             return Err(denied("Root readonly mount root changed"));
         }
         let mount = facts
             .mounts
             .iter()
-            .find(|m| m.id == witness.id)
+            .find(|m| m.id == proof.id)
             .ok_or_else(|| denied("Root readonly source mount absent"))?;
         let fsname = match self.volume.filesystem {
             Filesystem::Ext4 => "ext4",
@@ -163,7 +163,7 @@ impl Custody {
             // Btrfs subvolumes can have different anonymous device numbers.
             // Inspect actual kernel membership, never cached mount source text.
             for alias in &facts.mounts {
-                if alias.filesystem == "btrfs" && alias.id != witness.id {
+                if alias.filesystem == "btrfs" && alias.id != proof.id {
                     let directory = readable(&alias.point)?;
                     if fs_native::snapshot_lease::mount_id(&directory)? != alias.id {
                         return Err(denied(
@@ -194,7 +194,7 @@ impl Custody {
                 return Err(denied("Root readonly mount has another physical device"));
             }
         }
-        facts.owned_bindings.push((witness.id, self.device.clone()));
+        facts.owned_bindings.push((proof.id, self.device.clone()));
         Ok(())
     }
 }
@@ -281,7 +281,7 @@ impl RootReadOnlyMount {
         let point = parent.join("source");
         fs::create_dir(&point)?;
         let underlying = readable(&point)?;
-        let custody = Custody {
+        let ownership = Ownership {
             parent,
             parent_pin,
             point: point.clone(),
@@ -291,11 +291,11 @@ impl RootReadOnlyMount {
             namespace,
             volume: volume.clone(),
             device: device.clone(),
-            witness: None,
+            proof: None,
             root: None,
         };
-        custody.validate_parent()?;
-        let source = CString::new(format!("/proc/self/fd/{}", custody.block.as_raw_fd()))
+        ownership.validate_parent()?;
+        let source = CString::new(format!("/proc/self/fd/{}", ownership.block.as_raw_fd()))
             .map_err(io::Error::other)?;
         let target = cpath(&point)?;
         let (filesystem, options) = match volume.filesystem {
@@ -319,7 +319,7 @@ impl RootReadOnlyMount {
         } != 0
         {
             let error = io::Error::last_os_error();
-            drop(custody);
+            drop(ownership);
             fs::remove_dir(&point)?;
             fs::remove_dir(
                 point
@@ -328,35 +328,35 @@ impl RootReadOnlyMount {
             )?;
             return Err(error);
         }
-        // Store actual custody immediately after a successful kernel effect.
+        // Store actual ownership immediately after a successful kernel effect.
         // Failed observation is quarantined by backend Drop, never unmounted
-        // against an invented witness or traversed by TempDir cleanup.
-        let backend = RootReadOnlyMount(Mutex::new(Some(custody)));
+        // against an invented proof or traversed by TempDir cleanup.
+        let backend = RootReadOnlyMount(Mutex::new(Some(ownership)));
         let observed = (|| {
             let mut current = Facts::read()?;
             let mut held = backend
                 .0
                 .lock()
-                .map_err(|_| denied("Root readonly custody poisoned"))?;
-            let custody = held
+                .map_err(|_| denied("Root readonly ownership poisoned"))?;
+            let ownership = held
                 .as_mut()
-                .ok_or_else(|| denied("Root readonly custody absent"))?;
-            custody.witness = Some(OwnedMountWitness::capture(
+                .ok_or_else(|| denied("Root readonly ownership absent"))?;
+            ownership.proof = Some(OwnedMountProof::capture(
                 &current,
                 &point,
-                custody.namespace()?,
+                ownership.namespace()?,
             )?);
-            custody.root = Some(readable(&point)?);
-            custody.bind(&mut current)
+            ownership.root = Some(readable(&point)?);
+            ownership.bind(&mut current)
         })();
         observed?;
         let owned = Arc::new(MountedVolume {
             service: Box::new(backend),
             device,
             // Construction has observed this exact readonly mount, namespace,
-            // underlying point and kernel witness. The last lease must retire
+            // underlying point and kernel proof. The last lease must retire
             // it on constructor refusal as well as explicit success; release
-            // revalidates custody and quarantines any actual uncertainty.
+            // revalidates ownership and quarantines any actual uncertainty.
             automatic_release: true,
         });
         Ok((point, owned))
@@ -369,68 +369,68 @@ impl MountRelease for RootReadOnlyMount {
     fn bind_facts(&self, facts: &mut Facts) -> io::Result<()> {
         self.0
             .lock()
-            .map_err(|_| denied("Root readonly custody poisoned"))?
+            .map_err(|_| denied("Root readonly ownership poisoned"))?
             .as_ref()
-            .ok_or_else(|| denied("Root readonly custody retired"))?
+            .ok_or_else(|| denied("Root readonly ownership retired"))?
             .bind(facts)
     }
     fn release(&self, device: &str) -> io::Result<()> {
         let mut guard = self
             .0
             .lock()
-            .map_err(|_| denied("Root readonly custody poisoned"))?;
-        let custody = guard
+            .map_err(|_| denied("Root readonly ownership poisoned"))?;
+        let ownership = guard
             .as_mut()
-            .ok_or_else(|| denied("Root readonly custody retired"))?;
-        if device != custody.device {
+            .ok_or_else(|| denied("Root readonly ownership retired"))?;
+        if device != ownership.device {
             return Err(denied("Root readonly release device differs"));
         }
         let mut facts = Facts::read()?;
-        custody.bind(&mut facts)?;
-        let id = custody
-            .witness
+        ownership.bind(&mut facts)?;
+        let id = ownership
+            .proof
             .as_ref()
-            .ok_or_else(|| denied("Root readonly witness absent"))?
+            .ok_or_else(|| denied("Root readonly proof absent"))?
             .id;
         // Close our own active mount reference before ordinary unmount. The
         // root-private named point and underlying directory remain pinned.
-        drop(custody.root.take());
-        custody.validate_parent()?;
+        drop(ownership.root.take());
+        ownership.validate_parent()?;
         let latest = Facts::read()?;
-        custody
-            .witness
+        ownership
+            .proof
             .as_ref()
-            .ok_or_else(|| denied("Root readonly mount witness absent"))?
-            .validate(&latest, custody.namespace()?)?;
-        let named = readable(&custody.point)?;
+            .ok_or_else(|| denied("Root readonly mount proof absent"))?
+            .validate(&latest, ownership.namespace()?)?;
+        let named = readable(&ownership.point)?;
         if fs_native::snapshot_lease::mount_id(&named)? != id {
-            custody.root = Some(named);
+            ownership.root = Some(named);
             return Err(denied("Root readonly named mount changed before unmount"));
         }
         drop(named);
-        let target = cpath(&custody.point)?;
+        let target = cpath(&ownership.point)?;
         // SAFETY: exact root-private previously attested point; no force/lazy.
         if unsafe { libc::umount2(target.as_ptr(), 0) } != 0 {
             let error = io::Error::last_os_error();
-            custody.root = readable(&custody.point).ok();
+            ownership.root = readable(&ownership.point).ok();
             return Err(error);
         }
         let after = Facts::read()?;
         if after
             .mounts
             .iter()
-            .any(|m| m.id == id || m.point == custody.point)
-            || stamp(&readable(&custody.point)?)? != stamp(&custody.underlying)?
+            .any(|m| m.id == id || m.point == ownership.point)
+            || stamp(&readable(&ownership.point)?)? != stamp(&ownership.underlying)?
         {
             return Err(denied("Root readonly source retirement cannot be observed"));
         }
         let number = format!(
             "{}:{}",
-            libc::major(custody.block_stamp.2),
-            libc::minor(custody.block_stamp.2)
+            libc::major(ownership.block_stamp.2),
+            libc::minor(ownership.block_stamp.2)
         );
         for alias in &after.mounts {
-            if custody.volume.filesystem == Filesystem::Btrfs && alias.filesystem == "btrfs" {
+            if ownership.volume.filesystem == Filesystem::Btrfs && alias.filesystem == "btrfs" {
                 let directory = readable(&alias.point)?;
                 if fs_native::snapshot_lease::mount_id(&directory)? != alias.id {
                     return Err(denied("Btrfs alias changed during source retirement"));
@@ -439,9 +439,9 @@ impl MountRelease for RootReadOnlyMount {
                     fs_native::btrfs::subvolume_identity(directory.as_fd())?.filesystem,
                 )
                 .to_string()
-                    == custody.volume.filesystem_uuid.to_lowercase()
+                    == ownership.volume.filesystem_uuid.to_lowercase()
                     && fs_native::btrfs::single_device_identity(directory.as_fd())?.rdev
-                        == custody.block_stamp.2
+                        == ownership.block_stamp.2
                 {
                     return Err(denied(
                         "Retired readonly Btrfs source still has a mounted alias",
@@ -451,24 +451,24 @@ impl MountRelease for RootReadOnlyMount {
                 return Err(denied("Retired readonly source still has a mounted alias"));
             }
         }
-        custody.validate_parent()?;
-        fs::remove_dir(&custody.point)?;
-        fs::remove_dir(&custody.parent)?;
+        ownership.validate_parent()?;
+        fs::remove_dir(&ownership.point)?;
+        fs::remove_dir(&ownership.parent)?;
         drop(guard.take());
         Ok(())
     }
 }
 impl Drop for RootReadOnlyMount {
     fn drop(&mut self) {
-        let custody = match self.0.get_mut() {
+        let ownership = match self.0.get_mut() {
             Ok(held) => held.take(),
             Err(poison) => poison.into_inner().take(),
         };
-        if let Some(custody) = custody {
-            static UNKNOWN: Mutex<Vec<Custody>> = Mutex::new(Vec::new());
+        if let Some(ownership) = ownership {
+            static UNKNOWN: Mutex<Vec<Ownership>> = Mutex::new(Vec::new());
             match UNKNOWN.lock() {
-                Ok(mut held) if held.len() < 64 => held.push(custody),
-                _ => std::mem::forget(custody),
+                Ok(mut held) if held.len() < 64 => held.push(ownership),
+                _ => std::mem::forget(ownership),
             }
         }
     }

@@ -15,7 +15,7 @@ fn record(schema: u32) -> serde_json::Value {
             "share_index": 0,
             "secret_bytes": {"not": "a decoded signing share"}
         },
-        "secret_ref": {"backend": "unavailable", "locator": "/not/a/custody/path"}
+        "secret_ref": {"backend": "unavailable", "locator": "/not/a/ownership/path"}
     })
 }
 

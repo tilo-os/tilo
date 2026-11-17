@@ -48,9 +48,9 @@ fn owned(path: &Path, uid: u32, gid: u32, mode: u32) {
 }
 fn run_mounted_child(child_env: &str) -> bool {
     if std::env::var_os(child_env).is_none() {
-        let witness = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(witness.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let marker = witness.path().join("complete");
+        let proof = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(proof.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = proof.path().join("complete");
         let mut child = std::process::Command::new("/usr/bin/unshare")
             .args(["--mount", "--propagation", "private"])
             .arg(std::env::current_exe().unwrap())
@@ -174,7 +174,7 @@ fn signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs
     };
     passthrough_argv[0] = "--original-mounted-read".into();
     let key = ServiceLeaseKey::default();
-    let exit = returning_callback_retains_original_custody(
+    let exit = returning_callback_retains_original_ownership(
         launch,
         admission,
         File::open(&source).unwrap(),

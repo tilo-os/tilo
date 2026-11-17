@@ -44,7 +44,7 @@ fn validate(record: &Record) -> io::Result<()> {
     )
 }
 
-/// Root-only native custody. Only authenticated installation can publish it;
+/// Root-only native ownership. Only authenticated installation can publish it;
 /// the constructor is private and no deserialized Record is an admission.
 pub struct AuthenticatedInstalledRetained {
     lease: crate::prepared_setup::installed_namespace::InstalledRecordLease,

@@ -21,7 +21,7 @@ TESTS = (
     'setup::journey::main_story_tests::guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage',
     'setup::journey::main_story_tests::guided_existing_backup_migrates_this_home_without_creating_another_identity',
     'setup::journey::source_change_tests::changed_document_has_published_recovery_and_fresh_review_preserves_identity_and_accounts',
-    'setup::journey::prepared_media_native::recovery_tests::prepared_stage_rechecks_recovery_custody_at_actual_write_admission',
+    'setup::journey::prepared_media_native::recovery_tests::prepared_stage_rechecks_recovery_ownership_at_actual_write_admission',
 )
 
 
@@ -144,19 +144,19 @@ def main():
     if args.namespace_fd is not None:
         return inner(args)
     # Hold the real initial PID namespace before entering the child namespace.
-    witness = os.open('/proc/self/ns/pid', os.O_RDONLY | os.O_CLOEXEC)
+    proof = os.open('/proc/self/ns/pid', os.O_RDONLY | os.O_CLOEXEC)
     try:
         status, out, err = bounded([
             '/usr/bin/unshare', '--mount', '--pid', '--fork', '--kill-child=KILL',
             '--net', '--mount-proc', '--propagation', 'private',
             '/usr/bin/python3', str(Path(__file__).resolve()),
-            *sys.argv[1:], '--namespace-fd', str(witness),
-        ], timeout=900, limit=16 * 1024 * 1024, pass_fds=(witness,))
+            *sys.argv[1:], '--namespace-fd', str(proof),
+        ], timeout=900, limit=16 * 1024 * 1024, pass_fds=(proof,))
         sys.stdout.buffer.write(out)
         sys.stderr.buffer.write(err)
         return status
     finally:
-        os.close(witness)
+        os.close(proof)
 
 
 if __name__ == '__main__':

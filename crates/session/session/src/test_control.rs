@@ -568,7 +568,7 @@ impl Control {
             host,
             caller: Caller::local_person(options.person.clone()).in_new_execution(),
             front: Front::default(),
-            ledger: Mutex::new(BTreeMap::new()),
+            log: Mutex::new(BTreeMap::new()),
             next: AtomicU64::new(1),
             locked: AtomicBool::new(false),
         });
@@ -1409,7 +1409,7 @@ struct Actions {
     /// The workspace in front, as the loop last served it: what an invocation opens into.
     front: Front,
     /// The number a tool was answered with, and the invocation it names.
-    ledger: Mutex<BTreeMap<u64, InvocationId>>,
+    log: Mutex<BTreeMap<u64, InvocationId>>,
     next: AtomicU64,
     /// Whether the screen is locked, as the loop last read it: the owner's socket invokes nothing
     /// there.
@@ -1499,7 +1499,7 @@ impl Actions {
     /// Remember `invocation` under a fresh number for the tools.
     fn remember(&self, invocation: InvocationId) -> u64 {
         let number = self.next.fetch_add(1, Ordering::Relaxed);
-        self.ledger.lock_recover().insert(number, invocation);
+        self.log.lock_recover().insert(number, invocation);
         number
     }
 
@@ -1514,7 +1514,7 @@ impl Actions {
 
     /// The invocation a tool's number names, while this session remembers it.
     fn invocation(&self, number: u64) -> Option<InvocationId> {
-        self.ledger.lock_recover().get(&number).copied()
+        self.log.lock_recover().get(&number).copied()
     }
 }
 

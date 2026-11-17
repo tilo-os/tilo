@@ -132,8 +132,8 @@ mod tests {
                     w.admit(member, role);
                 }
                 let person = if role == Role::Owner { OWNER } else { member };
-                let window = ui::permissions::PermissionContext::from_standing(
-                    tilo_action_policy::Standing::person(w.policy.clone(), person),
+                let window = ui::permissions::PermissionContext::from_access(
+                    tilo_action_policy::MemberAccess::person(w.policy.clone(), person),
                 )
                 .at_unix_time(10);
                 for (id, contract) in &contracts {

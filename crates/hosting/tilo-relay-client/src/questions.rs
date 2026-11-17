@@ -3,7 +3,7 @@
 //! An agent a host runs for a person never confirms an action its grants
 //! leave to them by its own word: the host asks the person's approving
 //! devices about that one invocation ([`PendingConfirmation`]). A device or
-//! page holding the person's root custody keeps an approver session with the
+//! page holding the person's root ownership keeps an approver session with the
 //! host ([`answer_questions`]): it puts every question the host lists on its
 //! question sheet once, hands each answer back, and takes the sheet away
 //! when the host stops listing the question (answered elsewhere, withdrawn

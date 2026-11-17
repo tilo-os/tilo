@@ -52,7 +52,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
 ## Authority
 
 - The invoker's own verdict is `Allow` in the window: permission to change the workspace is decided
-  where the change is committed (the API refuses a viewer's `commit`). The seam is
+  where the change is committed (the API refuses a viewer's `commit`). The boundary is
   `TiloAuthority::new(invoker_verdict)` for a host that wants the verdict earlier.
 - A foreign author in the chain asks (the runtime's rule); the Ask bar offers Allow, Decline and
   Always allow (trust the code that asked). The bar shows the action and who asked. A proposal
@@ -79,11 +79,11 @@ Each entry is the closest working design to `docs/designs/app-language`.
   commits is queued under the effect's invocation, so the framework applies it for that invoker in
   the context it carries (group, on behalf of): history and undo group it by task.
 - **One policy.** What the runtime invokes is decided by `tilo_action_policy`, as every api
-  decides: the person's standing in the workspace (the window's, from its host), bounded by an agent's
+  decides: the person's access in the workspace (the window's, from its host), bounded by an agent's
   delegation and the answers the person gave that agent in the workspace, and by each author of the
   code that led to the action (`tilo_action_policy::authorship`: a package's code is its app,
   `Target::App`; a block's is its writer). Installed and built-in packages are trusted, an
-  admitted agent's code as far as its standing goes. Without a standing the person's own part is
+  admitted agent's code as far as its access goes. Without an access the person's own part is
   the API's to decide, as for a native window's detached dispatcher; the bounds still apply.
   What asks is a suggestion: a recorded `Invocation` (a block, a verb) or a run that stopped at
   a call, decided by a person, through the Ask bar or the API's `resolve`, never by an agent.

@@ -141,7 +141,7 @@ fn effect(root: &std::path::Path) {
 }
 
 /// Status, retry and the effect barrier re-verify the caller's own
-/// custody. A delegated caller's recheck must pass while it stays the
+/// ownership. A delegated caller's recheck must pass while it stays the
 /// same person on the same device, and every other continuation — the
 /// person without that delegation, or another agent — must be refused
 /// by the same sites.
@@ -229,7 +229,7 @@ async fn a_delegated_callers_continuation_passes_reverification_and_others_do_no
                 assert_ne!(retried.key, started.key);
             }
             assert!(fixture.invocation_rx.try_recv().is_err());
-            // Retry: the same request under the agent's custody is the
+            // Retry: the same request under the agent's ownership is the
             // same admission, never a second delivery.
             let retry = fixture
                 .state
@@ -559,7 +559,7 @@ async fn invocation_journal_real_effect_once_across_concurrent_duplicate_respons
                 .complete_invocation(delivered_id, &terminal)
                 .await
                 .unwrap();
-            // Discard the original response and retry under freshly verified caller custody.
+            // Discard the original response and retry under freshly verified caller ownership.
             let duplicate = fixture
                 .state
                 .start_verified_invocation(&caller, &request, None)

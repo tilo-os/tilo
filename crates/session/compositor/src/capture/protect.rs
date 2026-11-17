@@ -111,11 +111,11 @@ mod tests {
         phase an_app_the_session_marks_private_stays_private_until_it_says_otherwise;
         {
             let mut protection = Protection::default();
-            protection.app("org.example.ledger", true);
-            assert!(protection.covers(Some("org.example.ledger")));
+            protection.app("org.example.log", true);
+            assert!(protection.covers(Some("org.example.log")));
             assert!(!protection.covers(Some("org.example.notes")));
-            protection.app("org.example.ledger", false);
-            assert!(!protection.covers(Some("org.example.ledger")));
+            protection.app("org.example.log", false);
+            assert!(!protection.covers(Some("org.example.log")));
         }
     }
 }

@@ -212,11 +212,11 @@ fn fixture_controller(
     let mut provider = server.provider();
     provider.authorization_endpoint = page.endpoint();
     let opener = Arc::new(LiveBrowserOpener::new().unwrap());
-    let controller = AccountsController::fixture(root, opener.clone(), |custody| {
-        custody.with_provider(
+    let controller = AccountsController::fixture(root, opener.clone(), |ownership| {
+        ownership.with_provider(
             OAuthCloud::GoogleDrive,
             provider,
-            account_custody::Registration::public("native-browser-fixture"),
+            account_credentials::Registration::public("native-browser-fixture"),
         )
     })
     .unwrap();

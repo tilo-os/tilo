@@ -82,8 +82,8 @@ tilo_test_env::scenario! {
             );
             assert_eq!(row.output_of_group(id), Some(1));
         }
-        let seam = row.handle_at(2).expect("handle after the third group");
-        assert!(seam.get_rect().area() <= 0.0, "{:?}", seam.get_rect());
+        let border = row.handle_at(2).expect("handle after the third group");
+        assert!(border.get_rect().area() <= 0.0, "{:?}", border.get_rect());
         assert_eq!(row.group_ids_on(1), vec![400, 500, 600]);
     }
 

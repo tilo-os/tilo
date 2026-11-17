@@ -1,4 +1,4 @@
-//! Specific external moderation completion under retained action custody.
+//! Specific external moderation completion under retained action ownership.
 use super::{AppBrokerState, Arc, JoinedChannel, OriginalInvocation};
 use registry_types::ModerationCase;
 use runtime_collab::external_moderation::{MAX_WIRE_BYTES, Request, validate_receipt};
@@ -8,7 +8,7 @@ use std::sync::Weak;
 use std::time::Duration;
 
 // Tests may add a CA for an exact ephemeral loopback destination. No URL,
-// signature, identity, custody or server verification is replaced.
+// signature, identity, ownership or server verification is replaced.
 #[cfg(test)]
 pub(super) static TEST_ROOTS: std::sync::Mutex<Vec<(String, Vec<u8>)>> =
     std::sync::Mutex::new(Vec::new());
@@ -135,7 +135,7 @@ impl Context {
             .build()
             .map_err(|error| error.to_string())?;
         // The identity is loaded afresh for every operation. Revocation, identity
-        // selection and device removal invalidate custody; no signing key is cached.
+        // selection and device removal invalidate ownership; no signing key is cached.
         let (device, certificate) =
             tilo_identity_host::broker::trusted_current_device(&self.original.route().cluster_id)
                 .map_err(|error| error.to_string())?;

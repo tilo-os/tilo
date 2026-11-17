@@ -722,18 +722,18 @@ tilo_test_env::scenario! {
         assert!(!workspace.is_blocked(ALICE), "the owner is never blocked");
     }
 
-    phase a_standing_carries_the_person_and_every_bound;
+    phase an_access_carries_the_person_and_every_bound;
     {
-        use tilo_action_policy::Standing;
+        use tilo_action_policy::MemberAccess;
         let workspace = workspace_with_members(&[(BOB, Role::Editor)]);
         let relative = TreePath::root().app("mail").action("send");
-        let bob = Standing::person(workspace.clone(), BOB);
+        let bob = MemberAccess::person(workspace.clone(), BOB);
         assert_eq!(bob.node(&relative), mail().action("send"));
         assert_eq!(
             bob.answer(&bob.node(&relative), ActionKind::Outside, &cx()),
             Answer::Ask
         );
-        let agent = Standing::new(
+        let agent = MemberAccess::new(
             workspace.clone(),
             Acting::agent("ag").acting_for(Acting::person(BOB)),
         )
@@ -753,7 +753,7 @@ tilo_test_env::scenario! {
             agent.answer(&notes, ActionKind::Undoable, &cx()),
             Answer::Deny
         );
-        let owner = Standing::person(workspace, ALICE).on_foreign_device();
+        let owner = MemberAccess::person(workspace, ALICE).on_foreign_device();
         let invite = roles::governance_action("r", governance::INVITE);
         assert_eq!(
             owner.answer(&invite, roles::GOVERNANCE_KIND, &cx()),
@@ -764,7 +764,7 @@ tilo_test_env::scenario! {
             Answer::Ask
         );
         let json = serde_json::to_string(&owner).unwrap();
-        assert_eq!(serde_json::from_str::<Standing>(&json).unwrap(), owner);
+        assert_eq!(serde_json::from_str::<MemberAccess>(&json).unwrap(), owner);
     }
 
     phase a_member_leaves_their_workspace_without_being_able_to_remove_anyone;
@@ -1117,7 +1117,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase ask_needs_a_witnessed_approval;
+    phase ask_needs_a_approved_approval;
     {
         let mut workspace = workspace_with_members(&[(BOB, Role::Editor)]);
         workspace.grants.push(Grant::new(
@@ -1599,11 +1599,11 @@ tilo_test_env::scenario! {
     // delegation, the Editor preset: an owner's agent changes the workspace but does
     // not govern it, and a viewer's agent changes nothing.
     {
-        use tilo_action_policy::Standing;
+        use tilo_action_policy::MemberAccess;
         let workspace = workspace_with_members(&[(BOB, Role::Viewer)]);
         let resources = TreePath::workspace("r").app("notes").action("append");
         let set_role = roles::governance_action("r", governance::SET_ROLE);
-        let owner_agent = Standing::new(
+        let owner_agent = MemberAccess::new(
             workspace.clone(),
             Acting::agent("scribe").acting_for(Acting::person(ALICE)),
         )
@@ -1617,11 +1617,11 @@ tilo_test_env::scenario! {
             Answer::Deny
         );
         assert_eq!(
-            Standing::person(workspace.clone(), ALICE).answer(&set_role, roles::GOVERNANCE_KIND, &cx()),
+            MemberAccess::person(workspace.clone(), ALICE).answer(&set_role, roles::GOVERNANCE_KIND, &cx()),
             Answer::Allow,
             "the owner governs"
         );
-        let viewer_agent = Standing::new(
+        let viewer_agent = MemberAccess::new(
             workspace,
             Acting::agent("scribe").acting_for(Acting::person(BOB)),
         )

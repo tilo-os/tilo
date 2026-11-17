@@ -80,7 +80,7 @@ impl BrowserWidget {
         // The engine counts what waits behind the request it runs. This tab
         // sends it one at a time, so the actions waiting their turn here are
         // the ones a reader of the resource is asking about.
-        if let (PageRequest::Ledger { .. }, Some(serde_json::Value::Object(data))) =
+        if let (PageRequest::Log { .. }, Some(serde_json::Value::Object(data))) =
             (request, value.get_mut("data"))
         {
             let behind_the_engine = data

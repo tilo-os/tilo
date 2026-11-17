@@ -5,7 +5,7 @@ use tilo_peer_state::join::invitations::IssuedInvitation;
 use tilo_peer_state::join::{
     InviteGrant, JoinBootstrap, JoinChallenge, MembershipChallenge, Role, TransportHint,
 };
-use tilo_peer_state::join_ledger::CancellationRecord;
+use tilo_peer_state::join_log::CancellationRecord;
 use tilo_user_identity::DeviceCapabilities;
 
 /// A device certificate as the kept record holds it: its fields fixed, its
@@ -28,8 +28,8 @@ fn kept_workspace() -> WorkspaceId {
     WorkspaceId::parse("302d59e0-f586-42e1-a59e-3aa613f0f866").unwrap()
 }
 
-/// A ledger as this build keeps it, one of each thing it holds.
-fn kept_ledger() -> JoinLedger {
+/// A log as this build keeps it, one of each thing it holds.
+fn kept_log() -> JoinLog {
     let workspace = kept_workspace();
     let issuer = kept_cert(1);
     let joiner = kept_cert(2);
@@ -114,7 +114,7 @@ fn kept_ledger() -> JoinLedger {
         request_digest: [22; 32],
         generation: 2,
     }];
-    JoinLedger {
+    JoinLog {
         invitations: invitations.into(),
         join_challenges: join_challenges.into(),
         join_completions: join_completions.into(),
@@ -123,11 +123,11 @@ fn kept_ledger() -> JoinLedger {
     }
 }
 
-/// A record as this build writes it, one of each thing its ledger holds.
+/// A record as this build writes it, one of each thing its log holds.
 fn kept_document() -> Vec<u8> {
     let workspace = kept_workspace();
     let issuer = kept_cert(1);
-    let ledger = kept_ledger();
+    let log = kept_log();
     let peer = [
         super::super::peer_parts::PeerPart::Inline(vec![0x85, 0x6f]),
         super::super::peer_parts::PeerPart::Stored {
@@ -148,12 +148,12 @@ fn kept_document() -> Vec<u8> {
         generation: 3,
         outgoing: &outgoing,
         published: 1,
-        collaboration: LedgerRef {
-            invitations: &ledger.invitations,
-            join_challenges: &ledger.join_challenges,
-            join_completions: &ledger.join_completions,
-            membership_challenges: &ledger.membership_challenges,
-            administration: &ledger.administration,
+        collaboration: LogRef {
+            invitations: &log.invitations,
+            join_challenges: &log.join_challenges,
+            join_completions: &log.join_completions,
+            membership_challenges: &log.membership_challenges,
+            administration: &log.administration,
         },
         filed_publications: 4,
         filed_receipts: 5,
@@ -166,7 +166,7 @@ fn kept_document() -> Vec<u8> {
 const KEPT_V4: &str = "042433303264353965302d663538362d343265312d613539652d33616136313366306638363610302d59e0f58642e1a59e3aa613f0f866064c6f756e6765010101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202020864657669636520310100000001004001010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101020002856f011717171717171717171717171717171717171717171717171717171717171717050301030102030101010909090909090909090909090909090909090909090909090909090909090909080808080808080808080808080808080808080808080808080808080808080807070707070707070707070707070707070707070707070707070707070707070303010410302d59e0f58642e1a59e3aa613f0f86601010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202086465766963652031010000000100400101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010102040404040404040404040404040404040105050505050505050505050505050505050505050505050505050505050505050103416e61ffffffffffffffffff01010572656c6179027b7d01010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202086465766963652031010000000100400101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010106060606060606060606060606060606060606060606060606060606060606064006060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606010a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b010c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d020202020202020202020202020202020202020202020202020202020202020203030303030303030303030303030303030303030303030303030303030303030864657669636520320100000001004002020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202010303010410302d59e0f58642e1a59e3aa613f0f866020202020202020202020202020202020202020202020202020202020202020203030303030303030303030303030303030303030303030303030303030303030e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f63010c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e10101010101010101010101010101010101010101010101010101010101010100107070707070707070707070707070707070707070707070707070707070707070202020202020202020202020202020202020202020202020202020202020202030303030303030303030303030303030303030303030303030303030303030308646576696365203201000000010040020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020210302d59e0f58642e1a59e3aa613f0f866010101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202020864657669636520310100000001004001010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101000000000301111111111111111111111111111111111111111111111111111111111111111112121212121212121212121212121212121212121212121212121212121212120202020202020202020202020202020202020202020202020202020202020202030303030303030303030303030303030303030303030303030303030303030308646576696365203201000000010040020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020110302d59e0f58642e1a59e3aa613f0f86602020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202030303030303030303030303030303030303030303030303030303030303030313131313131313131313131313131313131313131313131313131313131313131414141414141414141414141414141414141414141414141414141414141414630115151515151515151515151515151515151515151515151515151515151515151616161616161616161616161616161616161616161616161616161616161616020405";
 
 /// A version 4 record comes up to the one this build writes: its name goes,
-/// and everything after it, its ledger and the peer state it holds, reads as
+/// and everything after it, its log and the peer state it holds, reads as
 /// it was.
 #[test]
 fn the_version_four_record_kept_here_comes_up_without_its_name() {
@@ -181,11 +181,11 @@ fn the_version_four_record_kept_here_comes_up_without_its_name() {
             assert_eq!(record.workspace_id, kept_workspace());
             assert_eq!(record.workspace, kept_workspace().to_string());
             assert_eq!((record.filed_publications, record.filed_receipts), (4, 5));
-            let ledger = &record.collaboration;
-            assert_eq!(ledger.invitations[0].grant.workspace_id, kept_workspace());
-            assert_eq!(ledger.join_completions[0].bootstrap.generation, 3);
+            let log = &record.collaboration;
+            assert_eq!(log.invitations[0].grant.workspace_id, kept_workspace());
+            assert_eq!(log.join_completions[0].bootstrap.generation, 3);
             assert_eq!(
-                ledger.membership_challenges[0].challenge.workspace_id,
+                log.membership_challenges[0].challenge.workspace_id,
                 kept_workspace()
             );
             assert_eq!(&*record.outgoing[0].bytes, &[1, 2, 3]);
@@ -237,13 +237,13 @@ fn kept() -> StoredResource {
             checkpoint: false,
         }],
         published: 0,
-        collaboration: JoinLedger {
+        collaboration: JoinLog {
             administration: vec![AdministrationRecord {
                 request_id: [7; 32],
                 request_digest: [8; 32],
                 generation: 9,
             }],
-            ..JoinLedger::default()
+            ..JoinLog::default()
         },
         filed_publications: 0,
         filed_receipts: 0,
@@ -261,7 +261,7 @@ fn written(record: &StoredResource) -> Vec<u8> {
         generation: record.generation,
         outgoing: &record.outgoing,
         published: record.published,
-        collaboration: LedgerRef {
+        collaboration: LogRef {
             invitations: &record.collaboration.invitations,
             join_challenges: &record.collaboration.join_challenges,
             join_completions: &record.collaboration.join_completions,

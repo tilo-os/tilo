@@ -1,4 +1,4 @@
-//! Sealed local secret vaults and the custody of their key.
+//! Sealed local secret vaults and the ownership of their key.
 //!
 //! A vault is one file, `vault.enc`, sealed as a `tilo-seal` at-rest envelope
 //! (XChaCha20-Poly1305, versioned authenticated header, random 192-bit nonce)
@@ -8,18 +8,18 @@
 //! and the DPAPI entropy are all part of it, and changing any strands every
 //! existing vault of that format.
 //!
-//! # Key custody
+//! # Key ownership
 //!
-//! - [`Custody::System`]: the platform's secret store through `tilo-secrets` (the
+//! - [`VaultBackend::System`]: the platform's secret store through `tilo-secrets` (the
 //!   Secret Service on Linux, the Keychain on macOS) holds the key apart from the
-//!   ciphertext. An owner-only `vault.key` left by local custody migrates only
+//!   ciphertext. An owner-only `vault.key` left by local ownership migrates only
 //!   after a verified round-trip.
-//! - [`Custody::LocalFile`]: an owner-only `vault.key` beside the vault, for
+//! - [`VaultBackend::LocalFile`]: an owner-only `vault.key` beside the vault, for
 //!   headless and test environments without Secret Service.
-//! - `Custody::WindowsDpapi`: current-user DPAPI with a private
+//! - `VaultBackend::WindowsDpapi`: current-user DPAPI with a private
 //!   `vault.key.dpapi`; a DPAPI failure never falls back to plaintext.
 //!
-//! Every custody refuses to replace a key it cannot read, and refuses to mint a
+//! Every backend refuses to replace a key it cannot read, and refuses to mint a
 //! key when `vault.enc` already exists without one: a fresh key would make the
 //! existing vault permanently undecryptable. New local keys are published with an
 //! exclusive create, so concurrent creators all converge on the key that reached
@@ -50,7 +50,7 @@ fn key_from_bytes(bytes: &[u8]) -> Option<VaultKey> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Custody {
+pub enum VaultBackend {
     /// The platform's secret store through `tilo-secrets`: the Secret
     /// Service on Linux, the Keychain on macOS.
     System,
@@ -59,7 +59,7 @@ pub enum Custody {
     WindowsDpapi,
 }
 
-impl Custody {
+impl VaultBackend {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
@@ -75,7 +75,7 @@ impl Custody {
         }
     }
 
-    /// The strongest custody this session offers: DPAPI on Windows,
+    /// The strongest backend this session offers: DPAPI on Windows,
     /// otherwise the platform's secret store when it answers, else a local
     /// key.
     pub fn for_session() -> Self {
@@ -137,14 +137,14 @@ impl VaultFormat {
 
     /// Read an existing key without creating files, changing permissions, locking,
     /// publishing or migrating. A missing or invalid key fails closed.
-    pub fn read_existing_key(&self, dir: &Path, custody: Custody) -> Option<VaultKey> {
-        match custody {
-            Custody::System => self.lookup_system_key(&self.system_store()).ok().flatten(),
-            Custody::LocalFile => {
+    pub fn read_existing_key(&self, dir: &Path, backend: VaultBackend) -> Option<VaultKey> {
+        match backend {
+            VaultBackend::System => self.lookup_system_key(&self.system_store()).ok().flatten(),
+            VaultBackend::LocalFile => {
                 key_from_bytes(read_key_bytes(&dir.join(KEY_FILE)).ok()?.as_slice())
             }
             #[cfg(windows)]
-            Custody::WindowsDpapi => {
+            VaultBackend::WindowsDpapi => {
                 key_from_bytes(windows::read_existing_key(self, dir).ok()?.as_slice())
             }
         }
@@ -155,12 +155,12 @@ impl VaultFormat {
     /// `None` when the key can neither be read nor safely created: an
     /// existing key that cannot be read or is malformed is never replaced,
     /// and no key is minted while `vault.enc` exists without one.
-    pub fn load_or_create_key(&self, dir: &Path, custody: Custody) -> Option<VaultKey> {
-        match custody {
-            Custody::System => self.system_key(dir, &self.system_store()),
-            Custody::LocalFile => self.local_file_key(dir),
+    pub fn load_or_create_key(&self, dir: &Path, backend: VaultBackend) -> Option<VaultKey> {
+        match backend {
+            VaultBackend::System => self.system_key(dir, &self.system_store()),
+            VaultBackend::LocalFile => self.local_file_key(dir),
             #[cfg(windows)]
-            Custody::WindowsDpapi => match windows::load_or_create_key(self, dir) {
+            VaultBackend::WindowsDpapi => match windows::load_or_create_key(self, dir) {
                 Ok(key) => key_from_bytes(key.as_slice()),
                 Err(error) => {
                     tracing::warn!(vault = self.name, %error, "Windows protected key unavailable; refusing fallback");
@@ -177,7 +177,7 @@ impl VaultFormat {
         self.system_only_key(vault_exists, &self.system_store())
     }
 
-    /// Browser custody with acknowledged creation, serialized across tabs.
+    /// Browser ownership with acknowledged creation, serialized across tabs.
     /// The legacy format's key name and encoding remain authoritative.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[allow(
@@ -198,7 +198,7 @@ impl VaultFormat {
             candidate.as_ref().map(|encoded| encoded.as_bytes()),
         )
         .await
-        .map_err(|error| format!("vault key custody failed: {error}"))?;
+        .map_err(|error| format!("vault key storage failed: {error}"))?;
         let encoded = std::str::from_utf8(stored.expose()).map_err(|_| "vault key is not UTF-8")?;
         decode_key(encoded.trim())
     }

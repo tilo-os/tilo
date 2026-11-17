@@ -15,7 +15,7 @@ impl Workspaces {
     /// change to that record.
     ///
     /// # Errors
-    /// Refuses other certificates, stale custody, incomplete records, sealed
+    /// Refuses other certificates, stale ownership, incomplete records, sealed
     /// ones whose channel this relay does not take part in, failed changes or
     /// oversized publication.
     #[expect(
@@ -38,7 +38,7 @@ impl Workspaces {
         )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
-                "record authoring requires exact governor custody",
+                "record authoring requires exact governor ownership",
             ));
         }
         let state = self.workspace(workspace).await?;

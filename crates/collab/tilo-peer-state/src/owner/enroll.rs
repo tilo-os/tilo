@@ -1,5 +1,5 @@
 //! Redeeming an invitation with the host it names: the typed canonical
-//! exchange. The caller supplies its real endpoint and custody.
+//! exchange. The caller supplies its real endpoint and ownership.
 use crate::join::WorkspaceId;
 use crate::join::{
     self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
@@ -12,7 +12,7 @@ use crate::owner::{
 };
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity_host::identity_store::HostIdentity;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 fn current(
@@ -22,7 +22,7 @@ fn current(
 ) -> Result<(), String> {
     let (certificate, _) = identity.current_material(topic)?;
     if &certificate != expected {
-        return Err("native enrollment custody changed during exchange".into());
+        return Err("native enrollment ownership changed during exchange".into());
     }
     Ok(())
 }
@@ -86,7 +86,7 @@ pub async fn prepare_and_complete(
                 != invitation
         {
             return Err(
-                "native retry differs from persisted invitation or selected custody".into(),
+                "native retry differs from persisted invitation or selected ownership".into(),
             );
         }
         // Reuse the recorded proof even when its original challenge has expired.
@@ -207,7 +207,7 @@ pub async fn prepare_and_complete(
     active(&owner, &intent, &id)?;
     match response {
         // Admitted with the certificate the proof was made with, which
-        // custody has renewed since: the workspace takes the renewal through the
+        // ownership has renewed since: the workspace takes the renewal through the
         // membership exchange before the device takes the workspace in, so the
         // host holds the certificate this device presents from now on.
         JoinTransportResponse::Complete(bootstrap) if bootstrap.device_cert != device => {
@@ -233,7 +233,7 @@ pub async fn prepare_and_complete(
         // exchange. Resending the proof would be refused forever, keeping
         // this device from the workspace it joined. A host from before it said so
         // for a certificate that ran out since refuses that certificate
-        // instead; custody has renewed it, and the exchange presents the
+        // instead; ownership has renewed it, and the exchange presents the
         // renewal.
         JoinTransportResponse::Error { code, message }
             if completed(code, &message)
@@ -259,7 +259,7 @@ pub async fn prepare_and_complete(
         // at all, through a new challenge.
         JoinTransportResponse::Error { code, message } if lapsed(code, &message) => {
             owner.drop_lapsed_enrollment(intent.workspace(), &id)?;
-            // The proof carried the certificate custody has renewed since:
+            // The proof carried the certificate ownership has renewed since:
             // the invitation is asked for again at once, with the renewal.
             if intent.local_device() != &device {
                 return Box::pin(prepare_and_complete(
@@ -393,7 +393,7 @@ pub async fn admit_as_member(
 }
 
 /// Prove this device's membership of `workspace`, a workspace it joined, with the
-/// renewal of the certificate the workspace's record holds, when its custody
+/// renewal of the certificate the workspace's record holds, when its ownership
 /// holds one, and take the governor's answer in
 /// ([`NativeWorkspaceOwner::renew_membership`]). Answers whether it renewed.
 pub async fn renew_membership(

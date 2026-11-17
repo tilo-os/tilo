@@ -1,6 +1,6 @@
 //! When alarms and timers ring on this device. What rings is the person's
 //! [`Clocks`], the same on every device; whether this device has rung it is not,
-//! so each keeps its own delivery ledger in the [`ClocksOnDevices`] resource beside
+//! so each keeps its own delivery log in the [`ClocksOnDevices`] resource beside
 //! the clocks and writes only its own entry. Wall time is passed in, so suspend,
 //! clock corrections and tests are deterministic.
 
@@ -16,7 +16,7 @@ use ui::prelude::*;
 use crate::model::{Alarm, Clocks, instant};
 
 /// What Clocks keeps for one device alone: the clocks floating there, and the
-/// ledger of what it has rung or handed to the platform.
+/// log of what it has rung or handed to the platform.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OnThisDevice {
     #[serde(default)]

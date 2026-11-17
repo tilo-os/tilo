@@ -24,7 +24,7 @@ export function indexedDbStorage(idb=globalThis.indexedDB){
     request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
   });
   // A successful request is not a committed write: quota/IO errors can still
-  // abort the transaction afterwards. Never acknowledge custody before commit.
+  // abort the transaction afterwards. Never acknowledge ownership before commit.
   const run=async(store,mode,op)=>{
     const tx=(await db()).transaction(store,mode,{durability:'strict'});
     const committed=new Promise((resolve,reject)=>{
@@ -65,9 +65,9 @@ const bound=(app,key)=>new TextEncoder().encode(`${app}\u0000${key}`);
 async function appKey({storage,subtle},app,create){
   const existing=await storage.get(KEYS,app);
   if(existing||!create)return existing??null;
-  // Losing custody is not an empty store. A replacement key would strand all
+  // Losing ownership is not an empty store. A replacement key would strand all
   // existing records, including ones this write does not touch.
-  if(!storage.entries)throw Error('secret storage cannot verify existing custody');
+  if(!storage.entries)throw Error('secret storage cannot verify existing ownership');
   if((await storage.entries(ITEMS)).some(([[owner]])=>owner===app)){
     throw Error('the key for this app\'s secrets is gone; recovery is required');
   }
@@ -100,7 +100,7 @@ export async function putSecret(app,key,bytes,env={}){
   });
 }
 
-/** Read or durably create a key under the app lock. Never replace custody.
+/** Read or durably create a key under the app lock. Never replace ownership.
  * `bytes` null forbids creation when ciphertext already exists.
  */
 export async function getOrCreateSecret(app,key,bytes,env={}){

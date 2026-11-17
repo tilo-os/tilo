@@ -5,7 +5,7 @@
 //! Apps hand them over through the daemon (`XTiloScheduleNotification` and
 //! its siblings, as `tilo-notify` calls them), the person through the
 //! published resources. Each deadline belongs to the app and the workspace
-//! that scheduled it: only they read, replace or cancel it. The ledger is
+//! that scheduled it: only they read, replace or cancel it. The log is
 //! kept in the person's private state and every claim on it (a delivery,
 //! a snooze) is written before it takes effect, so a deadline neither
 //! repeats nor goes missing across restarts, suspend or clock changes.
@@ -276,13 +276,13 @@ fn valid_token(token: &str) -> bool {
     token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// The ledger: every deadline, as last written.
-struct Ledger {
+/// The log: every deadline, as last written.
+struct Log {
     entries: Vec<Entry>,
     path: Option<PathBuf>,
 }
 
-impl Ledger {
+impl Log {
     fn open(path: Option<PathBuf>) -> Result<Self, String> {
         let entries = match &path {
             Some(path) => match std::fs::metadata(path) {
@@ -302,7 +302,7 @@ impl Ledger {
         Ok(Self { entries, path })
     }
 
-    /// Write `entries`, then take them as the ledger. A failed write
+    /// Write `entries`, then take them as the log. A failed write
     /// changes nothing.
     fn commit(&mut self, entries: Vec<Entry>) -> Result<(), String> {
         if let Some(path) = &self.path {
@@ -624,9 +624,9 @@ fn ringing(id: u32, entry: &Entry, at_ms: i64) -> Notification {
 /// resources. Cloning shares them.
 #[derive(Clone)]
 pub struct Schedules {
-    /// `None` when the ledger could not be opened: scheduling is refused
+    /// `None` when the log could not be opened: scheduling is refused
     /// rather than kept where it would be lost.
-    ledger: Arc<Mutex<Option<Ledger>>>,
+    log: Arc<Mutex<Option<Log>>>,
     /// Wakes the delivery when a deadline was added or moved.
     wake: Arc<tokio::sync::Notify>,
     /// The alarms delivered, by notification id: what their Snooze and
@@ -637,7 +637,7 @@ pub struct Schedules {
 impl std::fmt::Debug for Schedules {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Schedules")
-            .field("available", &self.ledger.lock_recover().is_some())
+            .field("available", &self.log.lock_recover().is_some())
             .finish_non_exhaustive()
     }
 }
@@ -664,8 +664,8 @@ impl Schedules {
     /// Deadlines kept at `path`, when there is one.
     #[must_use]
     pub fn open(path: Option<PathBuf>) -> Self {
-        match Ledger::open(path) {
-            Ok(ledger) => Self::over(Some(ledger)),
+        match Log::open(path) {
+            Ok(log) => Self::over(Some(log)),
             Err(error) => {
                 tracing::warn!(target: "notifications", %error, "notification schedules unavailable");
                 Self::unavailable()
@@ -677,16 +677,16 @@ impl Schedules {
         Self::over(None)
     }
 
-    fn over(ledger: Option<Ledger>) -> Self {
+    fn over(log: Option<Log>) -> Self {
         Self {
-            ledger: Arc::new(Mutex::new(ledger)),
+            log: Arc::new(Mutex::new(log)),
             wake: Arc::default(),
             rung: Arc::default(),
         }
     }
 
-    fn with<T>(&self, f: impl FnOnce(&mut Ledger) -> Result<T, String>) -> Result<T, String> {
-        self.ledger
+    fn with<T>(&self, f: impl FnOnce(&mut Log) -> Result<T, String>) -> Result<T, String> {
+        self.log
             .lock_recover()
             .as_mut()
             .ok_or_else(|| "durable notification scheduler unavailable".to_owned())
@@ -697,10 +697,10 @@ impl Schedules {
     /// tag.
     ///
     /// # Errors
-    /// The request is malformed, the limits are reached, or the ledger
+    /// The request is malformed, the limits are reached, or the log
     /// could not be written.
     pub fn schedule(&self, owner: &Owner, request: ScheduleRequest) -> Result<(), String> {
-        self.with(|ledger| ledger.schedule(owner, request))?;
+        self.with(|log| log.schedule(owner, request))?;
         self.wake.notify_one();
         Ok(())
     }
@@ -708,9 +708,9 @@ impl Schedules {
     /// Cancel `owner`'s deadline `tag`.
     ///
     /// # Errors
-    /// The ledger could not be written.
+    /// The log could not be written.
     pub fn cancel(&self, owner: &Owner, tag: &str) -> Result<(), String> {
-        self.with(|ledger| ledger.cancel(owner, tag))?;
+        self.with(|log| log.cancel(owner, tag))?;
         self.wake.notify_one();
         Ok(())
     }
@@ -719,10 +719,10 @@ impl Schedules {
     /// cancelling it. Whether there was one.
     ///
     /// # Errors
-    /// The ledger could not be written.
+    /// The log could not be written.
     pub fn cancel_token(&self, token: &str) -> Result<bool, String> {
-        let owner = self.with(|ledger| {
-            Ok(ledger
+        let owner = self.with(|log| {
+            Ok(log
                 .entries
                 .iter()
                 .find(|entry| entry.token == token)
@@ -747,10 +747,10 @@ impl Schedules {
     /// not ring again until its next day. Whether one was snoozed.
     ///
     /// # Errors
-    /// The ledger could not be written.
+    /// The log could not be written.
     pub fn dismiss_snooze(&self, token: &str, now_ms: i64) -> Result<bool, String> {
-        let target = self.with(|ledger| {
-            Ok(ledger
+        let target = self.with(|log| {
+            Ok(log
                 .entries
                 .iter()
                 .find(|entry| entry.token == token)
@@ -778,37 +778,36 @@ impl Schedules {
     /// `owner`'s deadlines still to fall due: `(tag, at_ms)`.
     ///
     /// # Errors
-    /// The ledger is unavailable.
+    /// The log is unavailable.
     pub fn pending(&self, owner: &Owner) -> Result<Vec<(String, i64)>, String> {
-        self.with(|ledger| Ok(ledger.pending(owner)))
+        self.with(|log| Ok(log.pending(owner)))
     }
 
     /// `owner`'s alarms and what the daemon delivered of them.
     ///
     /// # Errors
-    /// The ledger is unavailable.
+    /// The log is unavailable.
     pub fn alarm_states(&self, owner: &Owner) -> Result<Vec<AlarmStateWire>, String> {
-        self.with(|ledger| Ok(ledger.alarm_states(owner)))
+        self.with(|log| Ok(log.alarm_states(owner)))
     }
 
     /// Every deadline, as published.
     #[must_use]
     pub fn deadlines(&self) -> Vec<Deadline> {
-        self.with(|ledger| Ok(ledger.deadlines()))
-            .unwrap_or_default()
+        self.with(|log| Ok(log.deadlines())).unwrap_or_default()
     }
 
     /// When the next deadline falls due, if any.
     #[must_use]
     pub fn next_at_ms(&self) -> Option<i64> {
-        self.with(|ledger| Ok(ledger.next_at_ms())).ok().flatten()
+        self.with(|log| Ok(log.next_at_ms())).ok().flatten()
     }
 
     /// Snooze or dismiss occurrence `target` of `app_id`'s alarm, at
     /// `now_ms`.
     ///
     /// # Errors
-    /// It is no alarm of that app, the occurrence is stale, or the ledger
+    /// It is no alarm of that app, the occurrence is stale, or the log
     /// could not be written.
     pub fn act(
         &self,
@@ -817,7 +816,7 @@ impl Schedules {
         action: AlarmAction,
         now_ms: i64,
     ) -> Result<(), String> {
-        self.with(|ledger| ledger.act(app_id, target, action, now_ms))?;
+        self.with(|log| log.act(app_id, target, action, now_ms))?;
         self.wake.notify_one();
         Ok(())
     }
@@ -826,14 +825,14 @@ impl Schedules {
     /// ids from `alloc`.
     ///
     /// # Errors
-    /// The ledger is unavailable or could not be written; nothing was
+    /// The log is unavailable or could not be written; nothing was
     /// claimed.
     pub fn take_due<Tz: TimeZone>(
         &self,
         now: &DateTime<Tz>,
         alloc: impl FnMut() -> u32,
     ) -> Result<Vec<Notification>, String> {
-        let due = self.with(|ledger| ledger.take_due(now, alloc))?;
+        let due = self.with(|log| log.take_due(now, alloc))?;
         let mut rung = self.rung.lock_recover();
         for notification in &due {
             if let Some(occurrence) = notification

@@ -839,8 +839,7 @@ async fn directory_entry(
     client: std::net::IpAddr,
 ) -> Result<Response<Body>, Response<Body>> {
     use tilo_relay_protocol::directory::{
-        EntryReport, WAIT_LIST, WAIT_LIST_CONFIRM, WAIT_LIST_REMOVE, WAIT_LIST_STANDING,
-        entry_route,
+        EntryReport, WAIT_LIST, WAIT_LIST_CONFIRM, WAIT_LIST_REMOVE, WAIT_LIST_STATUS, entry_route,
     };
     let (workspace, step) =
         entry_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
@@ -850,7 +849,7 @@ async fn directory_entry(
     // left, confirmed, taken off, and where it stands.
     if matches!(
         step,
-        WAIT_LIST | WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STANDING
+        WAIT_LIST | WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STATUS
     ) {
         let Some(wait_list) = &web.wait_list else {
             return Err(refused(

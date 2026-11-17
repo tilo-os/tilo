@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Emit the canonical short-lived freshness predicate attached to a Tilo release.
-# This is signed as an in-toto attestation. Independent witnesses can reproduce
+# This is signed as an in-toto attestation. Independent proofs can reproduce
 # and sign the same schema without sharing the release-signing key.
 set -euo pipefail
 

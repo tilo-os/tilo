@@ -224,18 +224,18 @@ pub enum ReplicaActor {
     Owner,
     /// A delegated agent, at the cap its record bounds it to.
     Agent,
-    /// An installed bot: its installer's standing bounded by the bot's
+    /// An installed bot: its installer's access bounded by the bot's
     /// grants, built by the host from the workspace's policy before each run.
     Bot {
         /// The installation the bot runs as.
         installation: String,
         /// The person who installed it, whom its invocations are for.
         installer: String,
-        /// The installer's standing bounded by the bot's grants.
-        standing: policy::Standing,
+        /// The installer's access bounded by the bot's grants.
+        access: policy::MemberAccess,
     },
     /// A person whose action the host runs for them, or an agent acting for
-    /// them: their own current standing and the workspace's sandbox, as the
+    /// them: their own current access and the workspace's sandbox, as the
     /// workspace's policy gave them to the host, bounded as the host reads
     /// the caller ([`tilo_actions::remote::Caller::invoker`]: an agent's by
     /// the editor preset at most). An agent is offered only what reaches
@@ -243,7 +243,7 @@ pub enum ReplicaActor {
     Member {
         /// The person's current standing in the workspace, bounded by
         /// whoever acts for them.
-        standing: policy::Standing,
+        access: policy::MemberAccess,
         /// The workspace's sandbox capabilities.
         sandbox: Vec<collab_types::caps::CapOverride>,
         /// When the policy was read, for grant expiry.
@@ -477,7 +477,7 @@ impl Replica {
         let automated =
             for_agent || matches!(actor, ReplicaActor::Agent | ReplicaActor::Bot { .. });
         let runs_views = matches!(actor, ReplicaActor::Agent | ReplicaActor::Member { .. });
-        let (invoker, permissions) = replica_standing(actor, workspace, member);
+        let (invoker, permissions) = replica_access(actor, workspace, member);
         let creator = invoker
             .acting
             .by
@@ -1132,7 +1132,7 @@ impl Replica {
         self.view.take_changes().map_err(AppError::Merge)
     }
 
-    /// A member's standing read again at a later time, the standing and
+    /// A member's access read again at a later time, the access and
     /// sandbox unchanged: what was granted until a time is held to the new
     /// one, and nothing of the record is opened again for it, which costs
     /// more the more it holds.
@@ -1142,18 +1142,16 @@ impl Replica {
     /// [`AppError::Launch`] for any actor but a member.
     pub fn renew(&mut self, actor: ReplicaActor) -> Result<(), AppError> {
         let ReplicaActor::Member {
-            standing,
+            access,
             sandbox,
             unix_time,
             ..
         } = actor
         else {
-            return Err(AppError::Launch(
-                "only a member's standing is renewed".into(),
-            ));
+            return Err(AppError::Launch("only a member's access is renewed".into()));
         };
         self.view
-            .set_permissions(member_permissions(standing, sandbox, unix_time));
+            .set_permissions(member_permissions(access, sandbox, unix_time));
         Ok(())
     }
 
@@ -1490,8 +1488,8 @@ fn discover_views(
 
 /// Who a replica acts as and what it may do in `workspace`: an agent with the
 /// operator preset under its person, an owner, a bot acting for whoever
-/// installed it, or a member with their standing.
-fn replica_standing(
+/// installed it, or a member with their access.
+fn replica_access(
     actor: ReplicaActor,
     workspace: &str,
     member: &MemberId,
@@ -1505,34 +1503,32 @@ fn replica_standing(
                 policy::Acting::agent(id).acting_for(policy::Acting::member(member.clone()));
             let granted = policy::roles::agent_grants(workspace, id, id, &[]);
             match permissions
-                .standing()
+                .access()
                 .clone()
                 .as_acting(acting)
-                .map(|standing| standing.granted(granted))
+                .map(|access| access.granted(granted))
             {
-                Some(standing) => permissions.with_standing(standing),
+                Some(access) => permissions.with_access(access),
                 None => permissions.read_only(),
             }
         }
         ReplicaActor::Owner => PermissionContext::member_of(workspace, member, Role::Owner),
         ReplicaActor::Bot {
-            installer,
-            standing,
-            ..
+            installer, access, ..
         } => {
             invoker = invoker.acting_for(installer);
-            PermissionContext::from_standing(standing)
+            PermissionContext::from_access(access)
         }
         ReplicaActor::Member {
-            standing,
+            access,
             sandbox,
             unix_time,
             agent,
             agent_name,
             agent_session,
         } => {
-            let person = standing.person_id().unwrap_or_default().to_owned();
-            let permissions = member_permissions(standing, sandbox, unix_time);
+            let person = access.person_id().unwrap_or_default().to_owned();
+            let permissions = member_permissions(access, sandbox, unix_time);
             if let Some(agent) = agent {
                 // Named as the host admitted it (`Caller::acting`), so
                 // History reads the agent, for the person.
@@ -1549,16 +1545,16 @@ fn replica_standing(
     (invoker, permissions)
 }
 
-/// A member's permissions on `standing`: the host bounded the standing as it
+/// A member's permissions on `access`: the host bounded the standing as it
 /// reads the caller (`Caller::invoker`), and puts an ask to the person on
 /// their own devices when their agent acts.
 fn member_permissions(
-    standing: policy::Standing,
+    access: policy::MemberAccess,
     sandbox: Vec<collab_types::caps::CapOverride>,
     unix_time: u64,
 ) -> PermissionContext {
-    let person = standing.person_id().unwrap_or_default().to_owned();
-    PermissionContext::new(ui::permissions::Acting::person(person), sandbox, standing)
+    let person = access.person_id().unwrap_or_default().to_owned();
+    PermissionContext::new(ui::permissions::Acting::person(person), sandbox, access)
         .at_unix_time(unix_time)
         .reaching_person()
 }

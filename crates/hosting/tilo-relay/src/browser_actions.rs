@@ -1,7 +1,7 @@
 //! What hosted Browser runs free, and the card it asks for past that.
 //!
 //! The relay runs a workspace's Browser page actions on the host's pool, and
-//! counts them per account and billing period in a ledger beside its state
+//! counts them per account and billing period in a log beside its state
 //! ([`BrowserMeter`]): [`BrowserMeter::admit`] before an action runs,
 //! [`BrowserMeter::record`] the moment one ran. The plans file
 //! (`TILO_HOSTED_PLANS`, the one the hosted-VM service admits by) sets the
@@ -22,49 +22,49 @@ use std::sync::Mutex;
 
 use legacy_vm::hosted::plan::{self, Plans};
 use tilo_actions::remote::host_account;
-use tilo_host_account::browser_actions::{Ledger, PageAction};
-use tilo_host_account::{LEDGER_ENV, PLANS_ENV, period};
+use tilo_host_account::browser_actions::{Log, PageAction};
+use tilo_host_account::{ACTIONS_LOG_ENV, PLANS_ENV, period};
 
-/// The page actions of hosted Browser, counted in the ledger the host's
+/// The page actions of hosted Browser, counted in the log the host's
 /// environment names.
 pub struct BrowserMeter {
     /// The plans file, reread on every admission.
     plans: PathBuf,
     /// The page actions the account ran.
-    ledger: Ledger,
-    /// One line of the ledger at a time, so threads never interleave their
+    log: Log,
+    /// One line of the log at a time, so threads never interleave their
     /// writes.
     recording: Mutex<()>,
 }
 
 impl BrowserMeter {
-    /// The meter that reads `plans` and keeps its count in `ledger`, a file
+    /// The meter that reads `plans` and keeps its count in `log`, a file
     /// the relay puts in its state directory.
     #[must_use]
-    pub fn new(plans: PathBuf, ledger: PathBuf) -> Self {
+    pub fn new(plans: PathBuf, log: PathBuf) -> Self {
         Self {
             plans,
-            ledger: Ledger::new(ledger),
+            log: Log::new(log),
             recording: Mutex::new(()),
         }
     }
 
     /// The meter the host's environment names: the plans file
-    /// ([`PLANS_ENV`]) and the ledger of the page actions it counts
-    /// ([`LEDGER_ENV`]). `None` without a ledger: the host runs no hosted
+    /// ([`PLANS_ENV`]) and the log of the page actions it counts
+    /// ([`ACTIONS_LOG_ENV`]). `None` without a log: the host runs no hosted
     /// Browser, or counts none of its actions.
     ///
     /// # Errors
     ///
-    /// A ledger is named and the plans file is not.
+    /// A log is named and the plans file is not.
     pub fn from_env() -> Result<Option<Self>, String> {
-        let Some(ledger) = std::env::var_os(LEDGER_ENV) else {
+        let Some(log) = std::env::var_os(ACTIONS_LOG_ENV) else {
             return Ok(None);
         };
         let plans = std::env::var_os(PLANS_ENV).ok_or_else(|| {
-            format!("{LEDGER_ENV} is set, so {PLANS_ENV} must name the plans file")
+            format!("{ACTIONS_LOG_ENV} is set, so {PLANS_ENV} must name the plans file")
         })?;
-        Ok(Some(Self::new(PathBuf::from(plans), PathBuf::from(ledger))))
+        Ok(Some(Self::new(PathBuf::from(plans), PathBuf::from(log))))
     }
 
     /// Whether `account` may run a page action at `now_ms`, and why not when
@@ -89,19 +89,19 @@ impl BrowserMeter {
             .map_err(|refusal| refusal.typed(plans.sells.as_ref(), account))
     }
 
-    /// Count a page action of `account` in `workspace` at `now_ms`. A ledger
+    /// Count a page action of `account` in `workspace` at `now_ms`. A log
     /// that cannot be written is the caller's to tell: the action still ran,
     /// and the next admission counts it only if this came back `Ok`.
     ///
     /// # Errors
     ///
-    /// The ledger cannot be written.
+    /// The log cannot be written.
     pub fn record(&self, account: &str, workspace: &str, now_ms: u64) -> std::io::Result<()> {
         let _recording = self
             .recording
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.ledger.record(&PageAction {
+        self.log.record(&PageAction {
             account: account.to_owned(),
             workspace: workspace.to_owned(),
             at_ms: now_ms,
@@ -111,11 +111,11 @@ impl BrowserMeter {
     /// The page actions `account` ran in its billing period around `now_ms`.
     fn used(&self, plans: &Plans, account: &str, now_ms: u64) -> u64 {
         let (from_ms, to_ms) = period(plans, account, now_ms);
-        self.ledger.count(account, from_ms, to_ms)
+        self.log.count(account, from_ms, to_ms)
     }
 }
 
-/// The ledger is what the relay places Browser with: a page action is
+/// The log is what the relay places Browser with: a page action is
 /// admitted for the account of the workspace it is booked to, counted at the
 /// moment it ran.
 impl crate::hosted_browser::BrowserMeter for BrowserMeter {
@@ -124,7 +124,7 @@ impl crate::hosted_browser::BrowserMeter for BrowserMeter {
     }
 
     fn record(&self, workspace: &str, account: &str) {
-        // The action ran: the ledger says so, and one it cannot write is
+        // The action ran: the log says so, and one it cannot write is
         // said rather than taken out on the caller.
         if let Err(error) =
             BrowserMeter::record(self, account, workspace, tilo_clock::unix_now_ms())
@@ -163,16 +163,16 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let plans = plans(dir.path(), Some(2));
-            let ledger = dir.path().join("browser-actions.jsonl");
+            let log = dir.path().join("browser-actions.jsonl");
             {
-                let meter = BrowserMeter::new(plans.clone(), ledger.clone());
+                let meter = BrowserMeter::new(plans.clone(), log.clone());
                 assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
                 meter.record("acct-1", "ws1", NOW_MS).unwrap();
                 meter.record("acct-1", "ws2", NOW_MS).unwrap();
             }
-            // phase: a new meter on the same ledger counts what the old one did
+            // phase: a new meter on the same log counts what the old one did
             {
-                let meter = BrowserMeter::new(plans.clone(), ledger.clone());
+                let meter = BrowserMeter::new(plans.clone(), log.clone());
                 let refusal = meter.admit("acct-1", NOW_MS).unwrap_err();
                 assert_eq!(
                     refusal.message,
@@ -189,7 +189,7 @@ mod tests {
             }
             // phase: a new period counts nothing
             {
-                let meter = BrowserMeter::new(plans, ledger);
+                let meter = BrowserMeter::new(plans, log);
                 let next_month = MONTH_START_MS + 31 * 86_400_000;
                 assert_eq!(meter.admit("acct-1", next_month), Ok(()));
             }
@@ -220,10 +220,10 @@ mod tests {
             for thread in threads {
                 thread.join().unwrap();
             }
-            let ledger = Ledger::new(dir.path().join("browser-actions.jsonl"));
+            let log = Log::new(dir.path().join("browser-actions.jsonl"));
             let (from_ms, to_ms) = (MONTH_START_MS, MONTH_START_MS + 30 * 86_400_000);
-            assert_eq!(ledger.count("acct-1", from_ms, to_ms), 200);
-            assert_eq!(ledger.count("acct-2", from_ms, to_ms), 200);
+            assert_eq!(log.count("acct-1", from_ms, to_ms), 200);
+            assert_eq!(log.count("acct-2", from_ms, to_ms), 200);
             assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
             assert_eq!(meter.admit("acct-2", NOW_MS), Ok(()));
         }
@@ -231,14 +231,14 @@ mod tests {
         phase a_host_that_sells_nothing_counts_nothing;
         {
             let dir = tempfile::tempdir().unwrap();
-            let ledger = dir.path().join("browser-actions.jsonl");
-            let meter = BrowserMeter::new(dir.path().join("plans.json"), ledger.clone());
+            let log = dir.path().join("browser-actions.jsonl");
+            let meter = BrowserMeter::new(dir.path().join("plans.json"), log.clone());
             assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
             meter.record("acct-1", "ws1", NOW_MS).unwrap();
             assert_eq!(meter.admit("acct-1", NOW_MS), Ok(()));
             // and an account the file names has a card, so it is never stopped
             let plans = plans(dir.path(), Some(0));
-            let meter = BrowserMeter::new(plans, ledger);
+            let meter = BrowserMeter::new(plans, log);
             assert!(meter.admit("acct-1", NOW_MS).is_err());
             let mut file: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(dir.path().join("plans.json")).unwrap()).unwrap();

@@ -22,7 +22,7 @@ use tilo_actions::remote::{ActorPlace, InvocationReceipt, InvocationState};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
-use super::{Job, Ledger, Needs, Outcome, Performed, Shared, Worker};
+use super::{InvocationLog, Job, Needs, Outcome, Performed, Shared, Worker};
 use tilo_relay_protocol::WorkspaceId;
 
 /// The record at `route` as the session's replica holds it, and whether the
@@ -377,16 +377,16 @@ impl Worker {
         (output, left_at): (ActionOutput, Option<ActorPlace>),
         unsaved: Unsaved,
     ) -> InvocationReceipt {
-        let mut ledger = self.ledger();
-        ledger.running.remove(&invocation);
-        if let Some(entry) = ledger.entries.get_mut(&invocation) {
+        let mut log = self.log();
+        log.running.remove(&invocation);
+        if let Some(entry) = log.entries.get_mut(&invocation) {
             entry.saving = true;
             entry.left_at = left_at;
         }
-        drop(ledger);
+        drop(log);
         let shared = Arc::clone(&self.shared);
         unsaved.settle(move |saved| {
-            settle_saved(&shared.ledger, invocation, output, saved);
+            settle_saved(&shared.log, invocation, output, saved);
         });
         InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt()
     }
@@ -708,13 +708,13 @@ fn queue_rename(
 /// as the save did: done with `output` once the host holds it, or failed
 /// with why it does not, or that it was not confirmed in time.
 pub(super) fn settle_saved(
-    ledger: &Mutex<Ledger>,
+    log: &Mutex<InvocationLog>,
     invocation: InvocationId,
     output: ActionOutput,
     saved: Result<(), ActionFailure>,
 ) {
-    let mut ledger = ledger.lock_recover();
-    if let Some(entry) = ledger.entries.get_mut(&invocation) {
+    let mut log = log.lock_recover();
+    if let Some(entry) = log.entries.get_mut(&invocation) {
         entry.saving = false;
         entry.update = match saved {
             Ok(()) => InvocationUpdate::Succeeded { invocation, output },

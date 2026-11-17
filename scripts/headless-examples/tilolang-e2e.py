@@ -11,7 +11,7 @@ app gets on a real system:
   launch     each runs its own process from the tilolang runtime bundle, in its
              own sandbox (user, mount and pid namespaces of its own), and the
              compositor admits its window under its own app id: a sandboxed
-             client reaches the compositor only through verified launch custody
+             client reaches the compositor only through verified launch ownership
   gpu        the shell, its render service and every app load no Vulkan driver
              but lavapipe
   actions    each app publishes its actions; a "New ..." action changes the
@@ -131,7 +131,7 @@ LANGUAGE = session_language()
 
 def fluent(path: Path) -> dict[str, str]:
     """The messages and attributes of the Fluent catalogue at `path` (`key`, `key.attr`), each its
-    pattern on one line, the default variant of a selector standing for the selector."""
+    pattern on one line, the default variant of a selector access for the selector."""
     found: dict[str, str] = {}
     key = base = None
     if not path.is_file():
@@ -728,7 +728,7 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     into Tasks' Today since: Today reads them from Tasks' own record, live, and its window names
     them as its own controls. Two of them are finished in Tasks: one by its box, the other from its
     row's menu, opened where the row stands and run by the command a tool presses by name, both
-    standing in Tasks' history. Its "Morning cleanup" is a control of that window too: it runs
+    access in Tasks' history. Its "Morning cleanup" is a control of that window too: it runs
     Today's action on Tasks' record, so it is found by that action and that record's kind and
     pressed where it stands, as a tool or an assistive technology presses it: with tasks done in
     Tasks it clears them and files "Morning: 2 done" in Notes, or asks the person's leave to
@@ -1105,7 +1105,7 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
         shutil.copytree(out / "build" / name / "payload", staged / "payload")
         (staged / "payload/probe-routes").write_text("\n".join(routes) + "\n")
         manifest = (out / "build" / name / "manifest.toml").read_text()
-        # The probe runs as an app launched with that app's own custody, as any app's process
+        # The probe runs as an app launched with that app's own ownership, as any app's process
         # is: its entrypoint names the probe's runtime, not tilolang's, so the session starts it
         # as an app process rather than handing a tilolang host its instance.
         manifest, n = re.subn(r'(?m)^optional-runtimes = \["([^"]*)"\]',

@@ -2,7 +2,7 @@
 use super::*;
 impl PreparedMedia {
     /// Only the retained selected app intent enters this phase. Root registration
-    /// supplies original caller/witness; selected medium supplies export budget.
+    /// supplies original caller/proof; selected medium supplies export budget.
     pub(in crate::setup) fn prepare_applications_offline(
         self: &Arc<Self>,
         media: &Arc<OfflineMediaReview>,
@@ -51,7 +51,7 @@ impl PreparedMedia {
             browser
                 .archive
                 .lock()
-                .map_err(|_| io::Error::other("Browser custody unavailable"))?
+                .map_err(|_| io::Error::other("Browser ownership unavailable"))?
                 .verify_held_ciphertext(cancel)?;
         }
         let source_geometry = original_source_plans(&plan)?;
@@ -70,9 +70,9 @@ impl PreparedMedia {
             registered.original_caller,
             reservation,
         )?
-        .with_source_witness(registered.witness)?;
+        .with_source_proof(registered.proof)?;
         if let Some(mounted) = registered.mounted {
-            declaration = declaration.with_mounted_witness(mounted)?;
+            declaration = declaration.with_mounted_proof(mounted)?;
         }
         let prepared = reseal_selection(
             selected,

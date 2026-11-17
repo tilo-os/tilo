@@ -1,4 +1,4 @@
-//! Privileged custody for an approved raw Home epoch: the app receives only an operation and status,
+//! Privileged ownership for an approved raw Home epoch: the app receives only an operation and status,
 //! and snapshot paths and descriptors stay inside the broker.
 use super::{
     migration::PinnedDirectory, migration_durability::readable_directory,
@@ -60,8 +60,8 @@ pub use store::retained::{RetainedSourceAuthority, RetainedSourceProjection, Roo
 mod transport;
 mod worker;
 pub use crate::capture::{State, Status};
-pub use store::MountedWitness;
-pub use store::original::SourceWitness;
+pub use store::MountedProof;
+pub use store::original::SourceProof;
 use store::{Record, Store};
 pub use worker::OriginalReadClaim;
 pub use worker::Request as OriginalReaderRequest;
@@ -122,7 +122,7 @@ pub struct Grant {
     owner: u32,
     filesystem: [u8; 16],
     subvolume: [u8; 16],
-    custody: Option<super::migration_review::CaptureCustody>,
+    ownership: Option<super::migration_review::CaptureOwnership>,
     preparation_namespace: Option<NativePath>,
 }
 
@@ -137,7 +137,7 @@ struct GrantWire {
     owner: u32,
     filesystem: [u8; 16],
     subvolume: [u8; 16],
-    custody: Option<super::migration_review::CaptureCustody>,
+    ownership: Option<super::migration_review::CaptureOwnership>,
     preparation_namespace: Option<NativePath>,
 }
 
@@ -153,7 +153,7 @@ impl TryFrom<GrantWire> for Grant {
             owner: wire.owner,
             filesystem: wire.filesystem,
             subvolume: wire.subvolume,
-            custody: wire.custody,
+            ownership: wire.ownership,
             preparation_namespace: wire.preparation_namespace,
         };
         operation(&value.operation)?;
@@ -161,9 +161,9 @@ impl TryFrom<GrantWire> for Grant {
             || value.caller != value.owner
             || value.inode == 0
             || value
-                .custody
+                .ownership
                 .as_ref()
-                .is_some_and(super::migration_review::CaptureCustody::has_preparation)
+                .is_some_and(super::migration_review::CaptureOwnership::has_preparation)
                 != value.preparation_namespace.is_some()
             || !value.home.decode().map_err(io::Error::other)?.is_absolute()
         {
@@ -188,10 +188,10 @@ impl Grant {
             return Err(failure("capture home must belong to its original user"));
         }
         let identity = btrfs::subvolume_identity(readable_directory(&pin.file)?.as_fd())?;
-        let custody = super::migration_review::CaptureCustody::review(home)?;
-        let preparation_namespace = if custody
+        let ownership = super::migration_review::CaptureOwnership::review(home)?;
+        let preparation_namespace = if ownership
             .as_ref()
-            .is_some_and(super::migration_review::CaptureCustody::has_preparation)
+            .is_some_and(super::migration_review::CaptureOwnership::has_preparation)
         {
             Some(NativePath::encode(
                 &crate::session::preparation_namespace()
@@ -210,7 +210,7 @@ impl Grant {
             owner: metadata.uid(),
             filesystem: identity.filesystem,
             subvolume: identity.uuid,
-            custody,
+            ownership,
             preparation_namespace,
         })
     }
@@ -224,7 +224,7 @@ impl Grant {
         }
         let home = self.home.decode().map_err(io::Error::other)?;
         let approved = PinnedDirectory::open_absolute(&home)?;
-        if let Some(custody) = &self.custody {
+        if let Some(ownership) = &self.ownership {
             let namespace = self
                 .preparation_namespace
                 .as_ref()
@@ -238,7 +238,7 @@ impl Grant {
                     Ok(namespace)
                 })
                 .transpose()?;
-            custody.validate_original(&home, namespace.as_ref())?;
+            ownership.validate_original(&home, namespace.as_ref())?;
         } else if self.preparation_namespace.is_some() {
             return Err(failure("unattested preparation namespace"));
         }
@@ -470,13 +470,13 @@ impl Broker {
         }
     }
 
-    /// Source identity and the only permitted omission come from protected broker custody, never a
+    /// Source identity and the only permitted omission come from protected broker ownership, never a
     /// caller-authored provider command.
     fn worker_request(&self, command: worker::Command) -> io::Result<zeroize::Zeroizing<Vec<u8>>> {
         let request = worker::Request {
             schema: worker::WORKER_PROTOCOL,
             operation: self.record.grant.operation.clone(),
-            custody: self.record.grant.custody.clone(),
+            ownership: self.record.grant.ownership.clone(),
             command,
         };
         request.require_capture_route()?;
@@ -582,8 +582,8 @@ impl Broker {
         if let Some(worker) = self.worker.as_mut() {
             worker.cancel_and_reap()?;
         }
-        if let Some(custody) = &self.record.worker {
-            custody.require_stopped()?;
+        if let Some(ownership) = &self.record.worker {
+            ownership.require_stopped()?;
         }
         self.worker = None;
         self.record.worker = None;
@@ -619,7 +619,7 @@ pub use store::{
     review_uncommitted_original_applications_selection, review_uncommitted_original_selection,
 };
 
-pub use store::BackingWitness;
+pub use store::BackingProof;
 
 pub fn installed_copy_retirement_pending() -> bool {
     original_worker::retirement_pending()

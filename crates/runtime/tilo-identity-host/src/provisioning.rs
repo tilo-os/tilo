@@ -13,7 +13,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
 use tilo_identity_ceremony::IdentityRecord;
-use tilo_user_identity::persist::DeviceKeyCustody;
+use tilo_user_identity::persist::DeviceKeyOwnership;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -60,10 +60,10 @@ impl IdentityStorage {
     /// Where the device key is kept under this storage.
     #[cfg(target_os = "macos")]
     #[must_use]
-    pub fn device_key_custody(self) -> DeviceKeyCustody {
+    pub fn device_key_ownership(self) -> DeviceKeyOwnership {
         match self {
-            Self::Platform => DeviceKeyCustody::Keychain,
-            Self::Files => DeviceKeyCustody::File,
+            Self::Platform => DeviceKeyOwnership::Keychain,
+            Self::Files => DeviceKeyOwnership::File,
         }
     }
 
@@ -71,9 +71,9 @@ impl IdentityStorage {
     /// OS shares between the root filesystem daemon and the session.
     #[cfg(not(target_os = "macos"))]
     #[must_use]
-    pub fn device_key_custody(self) -> DeviceKeyCustody {
+    pub fn device_key_ownership(self) -> DeviceKeyOwnership {
         match self {
-            Self::Platform | Self::Files => DeviceKeyCustody::File,
+            Self::Platform | Self::Files => DeviceKeyOwnership::File,
         }
     }
 }
@@ -1221,7 +1221,7 @@ pub fn ensure_device_certificate_for_record(
 /// `device_label` when it is issued now. A device presents one certificate
 /// per identity: for the identity that owns the device it is written both
 /// as the device's system-facing certificate (`device_cert`) and as the
-/// identity-keyed one, the same bytes, so the network's custody and the
+/// identity-keyed one, the same bytes, so the network's identity store and the
 /// broker's trusted device are the same certificate. A certificate already
 /// held for the device's key is kept (the system-facing one first) and
 /// written wherever the other copy differs; a new one is issued only when
@@ -1430,12 +1430,12 @@ pub fn verify_collaboration_identity(
 
 /// Resolve the system identity root, with the same test/development override
 /// used by the filesystem synchroniser, and this session's device-key
-/// custody ([`IdentityStorage::for_session`]).
+/// identity store ([`IdentityStorage::for_session`]).
 pub fn collaboration_identity_paths() -> IdentityPaths {
     std::env::var_os("TILO_IDENTITY_ROOT")
         .filter(|value| !value.is_empty())
         .map_or_else(IdentityPaths::default_system, IdentityPaths::under)
-        .with_device_key_custody(IdentityStorage::for_session().device_key_custody())
+        .with_device_key_ownership(IdentityStorage::for_session().device_key_ownership())
 }
 
 fn import_primary_identity(
@@ -1537,7 +1537,7 @@ mod tests {
             );
         }
 
-        phase installer_device_label_is_signed_once_and_existing_custody_is_unchanged;
+        phase installer_device_label_is_signed_once_and_existing_ownership_is_unchanged;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(runtime_identity::FILE_SECRETS_ENV, "1");

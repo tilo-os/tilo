@@ -286,23 +286,23 @@ struct InProcess {
     woken: Arc<Woken>,
     /// What a search hit or an agent's `open` asked the window to show, for its instance.
     reveals: Rc<RefCell<Vec<String>>>,
-    /// The person's standing in the workspace as the window's host keeps it, read each turn,
+    /// The person's access in the workspace as the window's host keeps it, read each turn,
     /// and what the instance was last told of it: it offers and invokes by that.
-    standing: Option<StandingSource>,
-    told_standing: Option<ui::permissions::Standing>,
+    access: Option<AccessSource>,
+    told_access: Option<ui::permissions::MemberAccess>,
 }
 
-/// Where a window running its instance in this process reads the person's standing from.
-type StandingSource = Box<dyn Fn() -> Option<ui::permissions::Standing>>;
+/// Where a window running its instance in this process reads the person's access from.
+type AccessSource = Box<dyn Fn() -> Option<ui::permissions::MemberAccess>>;
 
 impl InProcess {
     /// The host's turns until it has nothing more to take in now. Whether anything changed.
     fn turn(&mut self) -> bool {
-        if let Some(source) = &self.standing {
-            let standing = source();
-            if standing != self.told_standing {
-                self.host.set_standing(&self.app, standing.as_ref());
-                self.told_standing = standing;
+        if let Some(source) = &self.access {
+            let access = source();
+            if access != self.told_access {
+                self.host.set_access(&self.app, access.as_ref());
+                self.told_access = access;
             }
         }
         for anchor in self.reveals.borrow_mut().drain(..) {
@@ -466,21 +466,21 @@ impl HostedWindow {
             app,
             woken,
             reveals: Rc::default(),
-            standing: None,
-            told_standing: None,
+            access: None,
+            told_access: None,
         });
         Ok(window)
     }
 
-    /// Have the instance running in this process offer and invoke by the person's standing in
+    /// Have the instance running in this process offer and invoke by the person's access in
     /// the workspace, as `source` reads it when the window turns: what a session tells a hosted
     /// window on its launch and whenever the workspace's policy changes.
-    pub fn follow_standing(
+    pub fn follow_access(
         &mut self,
-        source: impl Fn() -> Option<ui::permissions::Standing> + 'static,
+        source: impl Fn() -> Option<ui::permissions::MemberAccess> + 'static,
     ) {
         if let Some(running) = &mut self.in_process {
-            running.standing = Some(Box::new(source));
+            running.access = Some(Box::new(source));
         }
     }
 

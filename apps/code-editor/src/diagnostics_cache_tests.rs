@@ -262,7 +262,7 @@ fn diagnostics_leave_zero_operation_transactions_and_patch_history_untouched() {
 
 #[test]
 #[ignore = "manual cost comparison, not a timing correctness assertion"]
-fn diagnostics_clone_witness_cost() {
+fn diagnostics_clone_observation_cost() {
     let (mut app, mut doc, key) = fixture();
     let source = (0..2000).fold(String::new(), |mut source, i| {
         use std::fmt::Write as _;

@@ -1,7 +1,7 @@
 //! Consuming permission bundle for the root broker's future multi-root admission.
 //!
 //! This holds approved descriptors and original placements, not snapshots, saved
-//! credentials, volume witnesses, or an export receipt. The single-root broker
+//! credentials, volume proofs, or an export receipt. The single-root broker
 //! must not treat this bundle alone as an original-source read admission.
 use super::*;
 mod transferred;
@@ -74,9 +74,9 @@ impl GrantedHomeRoots {
         self.grants.validate(cancel)
     }
 
-    /// Root-broker integration seam: all descriptors remain borrowed from this
+    /// Root-broker integration boundary: all descriptors remain borrowed from this
     /// bundle and are reattested on both sides of the operation. A callback error
-    /// never skips the final source check. This does not mint a protected witness.
+    /// never skips the final source check. This does not mint a protected proof.
     pub fn with_roots<T>(
         &self,
         cancel: &AtomicBool,

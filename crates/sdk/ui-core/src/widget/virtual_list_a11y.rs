@@ -92,10 +92,10 @@ impl<M: ListModel> VirtualList<M> {
     /// alone does not reach. A row of words stays summarized: the row states it, and its words
     /// are not read twice.
     pub(super) fn handing_controls(&self, row: &MountedRow<M::Key>) -> bool {
-        self.standing_open(row) || holds_controls(row.widget.as_ref())
+        self.held_open(row) || holds_controls(row.widget.as_ref())
     }
 
-    fn standing_open(&self, row: &MountedRow<M::Key>) -> bool {
+    fn held_open(&self, row: &MountedRow<M::Key>) -> bool {
         self.open.as_ref() == Some(&row.key)
     }
 
@@ -106,10 +106,10 @@ impl<M: ListModel> VirtualList<M> {
     ) -> crate::a11y::AccessNode {
         let count = self.model.len();
         let child = crate::a11y::stated_node(row.widget.as_ref());
-        // The item standing open in its row is still the row: it is named by the title its
+        // The item held open in its row is still the row: it is named by the title its
         // document states, never by the name of the field the document happens to begin with.
         let name = self
-            .standing_open(row)
+            .held_open(row)
             .then(|| first_page_title(row.widget.as_ref()))
             .flatten()
             .or_else(|| child.as_ref().and_then(|node| node.name.clone()))
@@ -153,7 +153,7 @@ impl<M: ListModel> VirtualList<M> {
                 item.state.expanded = Some(!marks.is_folded(&row.key));
             }
         }
-        if self.standing_open(row) {
+        if self.held_open(row) {
             item.state.expanded = Some(true);
         }
         match &row.state {
@@ -429,7 +429,7 @@ impl<M: ListModel> VirtualList<M> {
             ),
             None => (None, None),
         };
-        let expanded = if self.standing_open(row) {
+        let expanded = if self.held_open(row) {
             Some(true)
         } else {
             folded

@@ -25,7 +25,7 @@ fn in_a_conversation(
     let workspace = route.cluster_id.to_string();
     let mut spec = spec_of(&route, "ada");
     if let Some(policy) = policy(&workspace) {
-        spec = spec.standing(policy::Standing::person(policy, "ada"));
+        spec = spec.access(policy::MemberAccess::person(policy, "ada"));
     }
     let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
     let mut session = Session::on_bus(&bus, &route, spec, chunks);

@@ -46,7 +46,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase placeholders_and_badges_paint_without_seams;
+    phase placeholders_and_badges_paint_without_boundaries;
     {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();

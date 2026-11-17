@@ -1,7 +1,7 @@
 //! What a hosted VM used, as records an account's bill is made from: a VM is billed
 //! per second while its hypervisor runs, a held snapshot by size and time. Times
 //! are wall-clock milliseconds, and whole seconds are billed with the remainder
-//! carried to the next run ([`Ledger`] keeps the records, [`summarize`] sums them;
+//! carried to the next run ([`Log`] keeps the records, [`summarize`] sums them;
 //! nothing here knows prices).
 
 use std::fs::{File, OpenOptions};
@@ -206,11 +206,11 @@ impl Meter {
 
 /// Every account's usage records, one file per account.
 #[derive(Clone, Debug)]
-pub struct Ledger {
+pub struct Log {
     dir: PathBuf,
 }
 
-impl Ledger {
+impl Log {
     #[must_use]
     pub const fn new(dir: PathBuf) -> Self {
         Self { dir }
@@ -405,9 +405,9 @@ mod tests {
     }
 
     #[test]
-    fn the_ledger_keeps_each_accounts_records_in_order() {
+    fn the_log_keeps_each_accounts_records_in_order() {
         let dir = tempfile::tempdir().unwrap();
-        let ledger = Ledger::new(dir.path().join("usage"));
+        let log = Log::new(dir.path().join("usage"));
         let mut small = Meter::new(identity(VmSize::Small));
         let mut other = Meter::new(VmIdentity {
             account: "acct-2".into(),
@@ -415,22 +415,19 @@ mod tests {
         });
         small.started(0, true);
         other.started(0, true);
-        ledger
-            .append(&small.stopped(3_000, RunEnd::Suspended).unwrap())
+        log.append(&small.stopped(3_000, RunEnd::Suspended).unwrap())
             .unwrap();
-        ledger
-            .append(&other.stopped(5_000, RunEnd::Stopped).unwrap())
+        log.append(&other.stopped(5_000, RunEnd::Stopped).unwrap())
             .unwrap();
         small.started(10_000, true);
-        ledger
-            .append(&small.stopped(12_000, RunEnd::Suspended).unwrap())
+        log.append(&small.stopped(12_000, RunEnd::Suspended).unwrap())
             .unwrap();
         // A torn last line, as a crash mid-write leaves it.
         let path = dir.path().join("usage/acct-1.jsonl");
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(b"{\"kind\":\"runn").unwrap();
 
-        let records = ledger.records("acct-1").unwrap();
+        let records = log.records("acct-1").unwrap();
         assert_eq!(
             records.iter().map(|r| r.seconds).collect::<Vec<_>>(),
             [3, 2]
@@ -448,9 +445,9 @@ mod tests {
         ] {
             assert!(first.contains(field), "{field} missing from {first}");
         }
-        assert_eq!(ledger.records("acct-2").unwrap().len(), 1);
-        assert!(ledger.records("nobody").unwrap().is_empty());
-        assert!(ledger.records("../etc/passwd").is_err());
+        assert_eq!(log.records("acct-2").unwrap().len(), 1);
+        assert!(log.records("nobody").unwrap().is_empty());
+        assert!(log.records("../etc/passwd").is_err());
         let usage = summarize(&records, 0, 11_000);
         assert_eq!(usage.first().map(|u| u.running_seconds), Some(3));
     }

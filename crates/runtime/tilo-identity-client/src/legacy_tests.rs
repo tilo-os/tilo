@@ -79,7 +79,7 @@ fn legacy_handoff_preserves_metadata_refusal_ownership_and_disconnection() {
 
 /// An app launched with both descriptors shows its person by the public
 /// record the broker carries, never by asking the identity service, whose
-/// answer needs this device's custody of the workspace profile.
+/// answer needs this device's ownership of the workspace profile.
 #[test]
 #[serial_test::serial(identity_env)]
 fn who_this_is_comes_from_the_broker_without_the_signing_service() {

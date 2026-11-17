@@ -6,7 +6,7 @@
 //! its programs bound) and no documents, opens no windows and no broker connection of its own.
 //! Every program comes in on the program connection, and everything a program reads or changes
 //! goes out on it to the API, which reads and invokes as the task: the API's connection is the
-//! task's custody, so nothing here is trusted to say who it is.
+//! task's ownership, so nothing here is trusted to say who it is.
 //!
 //! The connection carries one JSON object per line. The API sends `{"run": {source, confirm}}`
 //! or `{"catalogue": {}}` (answered `{"catalogue": …}`: every installed app's declarations,

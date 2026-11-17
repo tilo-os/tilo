@@ -792,7 +792,7 @@ impl TabRecorder {
         if !self.attached() {
             return;
         }
-        if matches!(request, PageRequest::Ledger { .. }) {
+        if matches!(request, PageRequest::Log { .. }) {
             // A read of the tab's resource takes no turn and sets nothing down.
             self.acts_as(actor, invoker, working);
         } else {

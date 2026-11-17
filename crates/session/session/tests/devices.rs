@@ -39,7 +39,7 @@ use tilo_session::platform::fabric::{
 };
 use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::surfaces::Surface;
-use tilo_session::{AppActions, AppLists, Lists, Options, Session, WakeInterfaces, WakeSeams};
+use tilo_session::{AppActions, AppLists, Lists, Options, Session, WakeInterfaces, WakeIo};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -459,7 +459,7 @@ fn session_with(
             }),
             apps: Some(host),
             fabric: Some(fabric),
-            wake_seams: WakeSeams {
+            wake_io: WakeIo {
                 packets: packets.map(|packets| packets as Arc<dyn MagicPackets>),
                 interfaces: interfaces.map(|interfaces| interfaces as Arc<dyn WakeInterfaces>),
             },

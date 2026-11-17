@@ -1,4 +1,4 @@
-//! Bind descriptor custody to the actual app without changing launch authority.
+//! Bind descriptor ownership to the actual app without changing launch authority.
 use super::{CollabLaunchHandoff, HostServices, native_media::PeerProcess};
 use crate::BrokerError;
 use crate::services::ExecutingBindingPhase as Phase;

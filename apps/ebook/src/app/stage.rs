@@ -43,12 +43,12 @@ impl BooksApp {
         if let Some(hash) = entry.content_reference() {
             // Asked for, and the host says where it stands.
             let _ = store.read(&hash);
-            let standing = if waiting {
+            let state = if waiting {
                 tilo_content::ContentState::Waiting
             } else {
                 tilo_content::ContentState::Unavailable
             };
-            lane.stands(hash, standing);
+            lane.stands(hash, state);
         }
         self.content = Some(store);
         self.open_hit(&crate::resource::book_place_resource(&entry.id));

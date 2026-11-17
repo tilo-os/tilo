@@ -1,5 +1,5 @@
 //! Target-user portable home continuation. Authenticated Home data is distinct
-//! from prepared identity/account custody and is adopted only by an explicit action.
+//! from prepared identity/account credentials and is adopted only by an explicit action.
 use super::{
     destination_security,
     home_transfer::promotion::{PromotionEvent, PromotionReview, PromotionWorker},
@@ -32,7 +32,7 @@ pub struct PortableHomeReview {
 pub struct AdoptionPreview {
     pub install_items: usize,
     pub collisions: usize,
-    pub inactive_custody: usize,
+    pub inactive_ownership: usize,
     pub runtime_sockets: u64,
     pub recovered: bool,
 }
@@ -42,7 +42,7 @@ pub struct AdoptionResult {
     pub cancelled: bool,
     pub installed: usize,
     pub collisions: usize,
-    pub inactive_custody: usize,
+    pub inactive_ownership: usize,
     pub failures: usize,
     pub verified: bool,
 }
@@ -59,7 +59,7 @@ impl AdoptionWorker {
                 cancelled: report.cancelled,
                 installed: report.installed.len(),
                 collisions: report.collisions.len(),
-                inactive_custody: report.inactive_custody.len(),
+                inactive_ownership: report.inactive_ownership.len(),
                 failures: report.failed.len(),
                 verified: report.verified,
             }),
@@ -155,7 +155,7 @@ impl PortableHomeReview {
                 .starts_with(grants.workspace.join("imported"))
         {
             return Err(changed(
-                "Portable home import grants overlap or lack private custody",
+                "Portable home import grants overlap or lack private ownership",
             ));
         }
         #[cfg(target_os = "linux")]
@@ -239,18 +239,18 @@ impl PortableHomeReview {
         )?;
         promotion.verify_completed().map_err(io::Error::other)?;
         self.archive
-            .verify_adoption(&promotion.witness().map_err(io::Error::other)?, cancel)
+            .verify_adoption(&promotion.proof().map_err(io::Error::other)?, cancel)
     }
     pub fn verify_completed_after_applications(&mut self, cancel: &AtomicBool) -> io::Result<()> {
         let promotion = self.recover_promotion(
             &self.grants.workspace.join("imported/home"),
             &self.grants.workspace.join("adoption.journal"),
         )?;
-        let witness = promotion
-            .completed_application_witness()
+        let proof = promotion
+            .completed_application_proof()
             .map_err(io::Error::other)?;
         self.archive
-            .verify_adoption_after_applications(&witness, cancel)
+            .verify_adoption_after_applications(&proof, cancel)
     }
     pub fn verify_original_application_config(&self, bytes: &[u8]) -> io::Result<()> {
         self.archive.verify_original_application_config(bytes)
@@ -259,11 +259,11 @@ impl PortableHomeReview {
         self.archive.ciphertext_digest()
     }
     /// Extract into its final private quarantine, or independently verify the
-    /// existing tree/move witnesses after a restart. There is no second home copy.
+    /// existing tree/move proofs after a restart. There is no second home copy.
     ///
     /// # Errors
     /// Refuses authentication/fidelity failures and unsupported existing output;
-    /// existing custody, collisions and partial imports are preserved.
+    /// existing ownership, collisions and partial imports are preserved.
     pub fn prepare(
         &mut self,
         password: Zeroizing<Vec<u8>>,
@@ -276,7 +276,7 @@ impl PortableHomeReview {
             Ok(_) => {
                 let promotion = self.recover_promotion(&root, &journal)?;
                 self.archive
-                    .verify_adoption(&promotion.witness().map_err(io::Error::other)?, cancel)?;
+                    .verify_adoption(&promotion.proof().map_err(io::Error::other)?, cancel)?;
                 self.recovered = true;
                 promotion
             }
@@ -318,7 +318,7 @@ impl PortableHomeReview {
         Ok(AdoptionPreview {
             install_items: preview.installed.len(),
             collisions: preview.collisions.len(),
-            inactive_custody: preview.inactive_custody.len(),
+            inactive_ownership: preview.inactive_ownership.len(),
             runtime_sockets: self.archive.info().runtime_sockets,
             recovered: self.recovered,
         })
@@ -334,7 +334,7 @@ impl PortableHomeReview {
             .ok_or_else(|| changed("Portable home adoption has not been reviewed"))?;
         if self.recovered {
             self.archive
-                .verify_adoption(&promotion.witness().map_err(io::Error::other)?, cancel)?;
+                .verify_adoption(&promotion.proof().map_err(io::Error::other)?, cancel)?;
         } else {
             self.archive
                 .verify_existing_tree(&self.grants.workspace.join("imported/home"), cancel)?;

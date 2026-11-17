@@ -18,7 +18,7 @@
 //! - **Asking first.** An action the person's grants leave to them is put
 //!   to their approving device as a question for that one invocation
 //!   ([`CertificationProtocol::confirm`]); the agent runs it only on the
-//!   witnessed answer, and a question nobody answers in time is refused.
+//!   approved answer, and a question nobody answers in time is refused.
 //!
 //! [`start`] wires both into a relay: the supervisor answers the agent
 //! vocabulary as the host's app action server, and the host's own agents
@@ -34,8 +34,8 @@ use tilo_actions::remote::{
 };
 use tilo_agent_session::workspace_actions::{HostDevice, ShellRan, Watching, WorkspaceShell};
 use tilo_agent_session::{
-    AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
-    FeedbackReviewer, HostActions, HostEndpoint, ModelChoice, SupervisorHost, Witness,
+    AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, Approver,
+    CatalogueFactory, FeedbackReviewer, HostActions, HostEndpoint, ModelChoice, SupervisorHost,
     WorkspaceActions, WorkspaceDocumentsLink,
 };
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
@@ -163,8 +163,8 @@ impl AgentHostLink for RelayAgentLink {
         });
     }
 
-    fn witness(&self, delegation: &Delegation) -> Option<Witness> {
-        Some(Arc::new(RelayWitness {
+    fn approver(&self, delegation: &Delegation) -> Option<Approver> {
+        Some(Arc::new(RelayApprover {
             certification: self.certification.clone(),
             delegation: delegation.clone(),
             runtime: self.runtime.clone(),
@@ -175,15 +175,15 @@ impl AgentHostLink for RelayAgentLink {
 /// The person's side of one agent's actions that ask first: each is a
 /// question on the person's approving devices, through the channel their
 /// grants are approved on. It runs nothing itself.
-struct RelayWitness {
+struct RelayApprover {
     certification: CertificationProtocol,
     delegation: Delegation,
     runtime: tokio::runtime::Handle,
 }
 
-impl RelayWitness {
+impl RelayApprover {
     /// The question `request` puts to the person, when `caller` is this
-    /// witness's agent.
+    /// approver's agent.
     fn question(
         &self,
         caller: &Caller,
@@ -241,7 +241,7 @@ impl RelayWitness {
     }
 }
 
-impl ActionHost for RelayWitness {
+impl ActionHost for RelayApprover {
     fn query(
         &self,
         _: &Caller,
@@ -286,7 +286,7 @@ impl ActionHost for RelayWitness {
             completer.complete(match certification.confirm(question).await {
                 // The question shows no draft, so nothing in it is changed.
                 Ok(ConfirmationAnswer::AllowOnce) => Ok(ConfirmedInvocation::unchanged(
-                    Confirmation::Witnessed(token),
+                    Confirmation::Approved(token),
                 )),
                 Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::NotPermitted),
                 Err(_) => Err(ActionHostError::confirmation_required()),

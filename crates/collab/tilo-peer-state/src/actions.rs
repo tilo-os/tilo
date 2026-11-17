@@ -31,7 +31,7 @@
 //! Nothing is queued: a device that cannot be reached answers
 //! [`ActionHostError::Unavailable`] at once, and the caller decides what to do
 //! about it. Nothing is remembered here either: the dispatcher's durable
-//! journal is the one ledger, keyed by invocation, so a retried request
+//! journal is the one log, keyed by invocation, so a retried request
 //! reports the original invocation.
 
 use crate::direct::Replica;

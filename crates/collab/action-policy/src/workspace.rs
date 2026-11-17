@@ -129,7 +129,7 @@ fn is_leaving(actor_person: &str, change: &Change) -> bool {
 pub enum Refusal {
     /// The actor's grants do not allow the action; carries the explanation.
     NotPermitted(String),
-    /// The action asks first and no approval was witnessed.
+    /// The action asks first and no approval was approved.
     NeedsApproval(String),
     /// The owner cannot be removed, demoted or made a member.
     Owner,
@@ -576,7 +576,7 @@ impl WorkspacePolicy {
     }
 
     /// Whether the actor may perform a governance action. `approved` says the
-    /// host witnessed the person's approval when the answer is Ask.
+    /// host approved the person's approval when the answer is Ask.
     ///
     /// # Errors
     /// [`Refusal::NotPermitted`] or [`Refusal::NeedsApproval`].

@@ -15,7 +15,7 @@
 //! The code that runs a view (the language's compiler and interpreter, and the half of the UI
 //! host that builds widgets from what a view describes) is no part of a program's start. A
 //! program that can run one says how the code is fetched ([`WRITTEN_VIEWS`]), and the first view
-//! shown fetches it. A program that cannot leaves the seam as it is, and a view placed there is
+//! shown fetches it. A program that cannot leaves the boundary as it is, and a view placed there is
 //! [`Placed::Unavailable`].
 
 use std::rc::Rc;
@@ -148,7 +148,7 @@ mod tests {
         }
     }
 
-    /// One test, because the seam is the process's: a program that names no way to fetch the code
+    /// One test, because the boundary is the process's: a program that names no way to fetch the code
     /// cannot show a view, one that names a way shows it arriving, and once the code is in the
     /// view is the widget the code builds.
     #[test]

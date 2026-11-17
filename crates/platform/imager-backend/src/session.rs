@@ -16,7 +16,7 @@ pub struct SessionProjection {
     pub intent: SessionIntent,
 }
 
-/// Custody is created by the backend, never adopted from a frontend pathname.
+/// Ownership is created by the backend, never adopted from a frontend pathname.
 /// This workspace confers no authority over original files or native services.
 pub struct BackendSession {
     #[cfg(unix)]
@@ -104,7 +104,7 @@ impl BackendSession {
     }
 
     /// Compatibility view for preparation workers still consuming native paths.
-    /// This does not grant custody of any path selected by a file chooser.
+    /// This does not grant ownership of any path selected by a file chooser.
     pub fn path(&self) -> &Path {
         &self.canonical
     }

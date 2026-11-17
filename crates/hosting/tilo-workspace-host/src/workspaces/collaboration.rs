@@ -2,7 +2,7 @@
 //! workspace on this relay.
 //!
 //! What a governor records between the steps of an exchange is the shared
-//! [`JoinLedger`], the same on every host that governs workspaces; this module
+//! [`JoinLog`], the same on every host that governs workspaces; this module
 //! owns who may ask what of this relay's workspaces, and the durability barrier
 //! before each answer.
 
@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use tilo_peer_state::WorkspaceGrant;
 use tilo_peer_state::join::{JoinBootstrap, Role};
 use tilo_peer_state::join_answer::{JoinWorkspaces, WorkspaceTxn};
-use tilo_peer_state::join_ledger::{Administered, Governed, Signer};
-pub use tilo_peer_state::join_ledger::{JoinError as CollaborationError, Redeeming};
+use tilo_peer_state::join_log::{Administered, Governed, Signer};
+pub use tilo_peer_state::join_log::{JoinError as CollaborationError, Redeeming};
 use tilo_relay_session::workspaces::{
     CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
     RemoveMemberRequest, SetMemberRoleRequest,
@@ -64,7 +64,7 @@ pub struct AddMemberRequest {
     pub name: Option<String>,
 }
 
-pub(super) use tilo_peer_state::join_ledger::JoinLedger as CollaborationState;
+pub(super) use tilo_peer_state::join_log::JoinLog as CollaborationState;
 
 /// A change to who is in a workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -93,12 +93,12 @@ pub(super) struct Written {
 }
 
 impl GovernedWorkspace {
-    /// The workspace as its join ledger reads it: committed now.
+    /// The workspace as its join log reads it: committed now.
     pub(super) fn governed(&self) -> Governed<'_> {
         governed(&self.record, self.peer().into())
     }
 
-    /// The workspace as its join ledger reads it, from the state the caller
+    /// The workspace as its join log reads it, from the state the caller
     /// holds: what a decision reads is what its commit is measured against.
     pub(super) fn governed_from<'a>(
         &'a self,
@@ -126,10 +126,10 @@ impl GovernedWorkspace {
     }
 }
 
-/// `record` and `peer`, a workspace's committed state, as its join ledger reads it.
+/// `record` and `peer`, a workspace's committed state, as its join log reads it.
 fn governed<'a>(
     record: &'a WorkspaceDocumentEntry,
-    peer: tilo_peer_state::join_ledger::PeerRef<'a>,
+    peer: tilo_peer_state::join_log::PeerRef<'a>,
 ) -> Governed<'a> {
     Governed {
         peer,
@@ -265,8 +265,8 @@ impl Workspaces {
     ) -> Result<IssuedInvitation, CollaborationError> {
         let role = request.role;
         let transport = vec![self.transport_hint(workspace)?];
-        let mut ledger = workspace.collaboration().clone();
-        let issued = ledger.issue_as(
+        let mut log = workspace.collaboration().clone();
+        let issued = log.issue_as(
             &workspace.governed(),
             administrator,
             request,
@@ -278,8 +278,8 @@ impl Workspaces {
             },
             now,
         )?;
-        if ledger != *workspace.collaboration() {
-            workspace.record.collaboration = ledger;
+        if log != *workspace.collaboration() {
+            workspace.record.collaboration = log;
             tracing::info!(
                 workspace = %workspace.workspace(),
                 invite_id = %hex::encode(issued.invite_id),
@@ -375,13 +375,13 @@ impl Workspaces {
             // Admitted already, but an earlier entry can have been cut off
             // between committing the admission and settling it (its page
             // closed meanwhile): the relay would then decide the device's
-            // changes against standings that leave it out. Settle what
+            // changes against device_access that leave it out. Settle what
             // governance holds before answering.
             if !self
                 .inner
                 .host
                 .access
-                .projects_standing(workspace.workspace_id(), device.device_public_key)
+                .projects_access(workspace.workspace_id(), device.device_public_key)
                 .await
             {
                 self.settle(&mut workspace).await?;
@@ -1603,7 +1603,7 @@ impl Workspaces {
 }
 
 /// A workspace of this relay while a governor decides, under its lock: whether
-/// its ledger changed unwritten, and whether a governance change was
+/// its log changed unwritten, and whether a governance change was
 /// committed that its members have not been sent yet.
 struct HeldWorkspace<'a> {
     key: &'a SigningKey,
@@ -1640,13 +1640,13 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
         self.workspace.governed_from(self.replica)
     }
 
-    fn ledger(&self) -> &CollaborationState {
+    fn log(&self) -> &CollaborationState {
         self.workspace.collaboration()
     }
 
-    fn stage_ledger(&mut self, ledger: CollaborationState) {
-        if *self.workspace.collaboration() != ledger {
-            self.workspace.record.collaboration = ledger;
+    fn stage_log(&mut self, log: CollaborationState) {
+        if *self.workspace.collaboration() != log {
+            self.workspace.record.collaboration = log;
             self.staged = true;
         }
     }
@@ -1655,18 +1655,16 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
         &mut self,
         peer: tilo_peer_state::StatePeer,
         now: u64,
-        ledger: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
+        log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
         self.workspace.commit_held(
             self.replica,
             peer,
             (self.key, system_time(now)),
             super::Change::Other,
-            |record, peer| {
-                ledger(&governed(record, peer.into())).map_err(|error| error.to_string())
-            },
+            |record, peer| log(&governed(record, peer.into())).map_err(|error| error.to_string()),
         )?;
-        // The commit wrote the whole record, the ledger staged before
+        // The commit wrote the whole record, the log staged before
         // included.
         self.staged = false;
         self.committed = true;
@@ -1677,16 +1675,14 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
         &mut self,
         peer: tilo_peer_state::StatePeer,
         now: u64,
-        ledger: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
+        log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
         self.workspace.commit_held(
             self.replica,
             peer,
             (self.key, system_time(now)),
             super::Change::Admission,
-            |record, peer| {
-                ledger(&governed(record, peer.into())).map_err(|error| error.to_string())
-            },
+            |record, peer| log(&governed(record, peer.into())).map_err(|error| error.to_string()),
         )?;
         self.staged = false;
         self.committed = true;
@@ -1749,4 +1745,4 @@ impl GovernedWorkspace {
     }
 }
 
-pub(super) use tilo_peer_state::join_ledger::request_digest;
+pub(super) use tilo_peer_state::join_log::request_digest;

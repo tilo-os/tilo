@@ -184,7 +184,7 @@ if [ "$device_dir_meta" = '0:tilo-identity:2750' ] && [ ! -L "$device_key_dir" ]
    && [ -f "$device_key" ] && [ ! -L "$device_key" ]; then
   ok "device identity seed is root-owned, group-scoped, private, and unaliased"
 else
-  warn "device identity custody is unsafe (directory=$device_dir_meta key=$device_key_meta)"
+  warn "device identity storage is unsafe (directory=$device_dir_meta key=$device_key_meta)"
 fi
 
 # The kargs above are what we ASKED for. This is what the kernel actually did:
@@ -482,7 +482,7 @@ if secureboot_artifact_present /var/lib/tilo/secureboot/db.key \
           /var/lib/tilo/secureboot/db.esl \
      || { secureboot_artifact_present /var/lib/tilo/secureboot/db.key \
           && secureboot_artifact_present /var/lib/tilo/secureboot/db.key.cred; }; then
-    warn "owner Secure Boot db key custody is unsafe or ambiguous"
+    warn "owner Secure Boot db key storage is unsafe or ambiguous"
   elif systemctl is-enabled tilo-secureboot-sign.path >/dev/null 2>&1 \
      && systemctl is-enabled tilo-secureboot-sign.timer >/dev/null 2>&1 \
      && systemctl is-enabled tilo-secureboot-sign-shutdown.service >/dev/null 2>&1; then

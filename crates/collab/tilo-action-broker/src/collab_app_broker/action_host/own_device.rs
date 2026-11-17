@@ -45,8 +45,8 @@ impl AppBrokerState {
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let abandon = |error: ActionHostError| {
-            if let Ok(mut ledger) = self.remote_invocations.lock() {
-                ledger.abandon(&request.invocation);
+            if let Ok(mut log) = self.remote_invocations.lock() {
+                log.abandon(&request.invocation);
             }
             error
         };
@@ -89,10 +89,10 @@ impl AppBrokerState {
             )
             .map_err(abandon)?;
         let id = admitted.id;
-        if let Ok(mut ledger) = self.remote_invocations.lock() {
-            ledger.complete(&request.invocation, id);
+        if let Ok(mut log) = self.remote_invocations.lock() {
+            log.complete(&request.invocation, id);
         }
-        // The journal barrier can block while custody or workspace policy changes.
+        // The journal barrier can block while ownership or workspace policy changes.
         // Resolve the original admission again immediately before forwarding.
         self.framework_effect_ready(&admitted, || {
             let (workspace, actor, now) =
@@ -320,7 +320,7 @@ mod tests {
             );
             assert!(
                 f.caller.device_public_key().is_some(),
-                "certificate custody is retained"
+                "certificate ownership is retained"
             );
             network
                 .answers
@@ -399,7 +399,7 @@ mod tests {
                         worker.join().unwrap()
                     });
                     if change == "unchanged" {
-                        result.expect("unchanged custody must still forward");
+                        result.expect("unchanged ownership must still forward");
                         assert_eq!(network.sent.lock().unwrap().len(), 1);
                         network
                             .answers
@@ -582,7 +582,7 @@ mod tests {
             assert!(network.sent.lock().unwrap().is_empty());
         }
 
-        phase own_device_missing_signer_and_revoked_custody_never_reach_the_network;
+        phase own_device_missing_signer_and_revoked_ownership_never_reach_the_network;
         {
             for revoked in [false, true] {
                 let network = Arc::new(Network::default());

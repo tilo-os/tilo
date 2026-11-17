@@ -657,7 +657,7 @@ impl Controller {
                     .ok_or_else(|| io::Error::other("Actual system disk geometry unavailable"))?;
                 let (operation, plan) = {
                     let mut held = held_review.lock().map_err(|_| {
-                        io::Error::other("Actual capacity review custody unavailable")
+                        io::Error::other("Actual capacity review ownership unavailable")
                     })?;
                     if let Some((operation, plan)) = &*held {
                         if &plan.basis != basis
@@ -910,7 +910,7 @@ struct PreparedApplications {
     archive: Mutex<imager_backend::setup::portable_transfer::ImportReview>,
 }
 pub(crate) struct NativePreparedMedia {
-    _custody: imager_backend::session::BackendSession,
+    _ownership: imager_backend::session::BackendSession,
     delivery: Mutex<PreparedSetupDelivery>,
     public_key: [u8; 32],
     account_ids: Vec<String>,
@@ -1163,10 +1163,10 @@ impl PreparedMedia {
             home.validate_with_cancel(cancel)?;
         }
         imager_backend::startup_password::validate(&password).map_err(io::Error::other)?;
-        let custody = imager_backend::session::BackendSession::create(
+        let ownership = imager_backend::session::BackendSession::create(
             imager_backend::session::SessionIntent::PrepareMedia,
         )?;
-        let root = custody.path().to_path_buf();
+        let root = ownership.path().to_path_buf();
         use std::os::unix::fs::PermissionsExt;
         let tree = root.join("setup");
         std::fs::create_dir(&tree)?;
@@ -1317,7 +1317,7 @@ impl PreparedMedia {
             )
             .map_err(|_| io::Error::other("Selected accounts could not be inspected"))?
             {
-                manifest.account_custody_protocol = Some(1);
+                manifest.account_credentials_protocol = Some(1);
             }
         }
         if let Some(sources) = sessions {
@@ -1426,7 +1426,7 @@ impl PreparedMedia {
         }
         std::fs::remove_dir_all(&tree)?;
         Ok(Arc::new(Self::from_native(NativePreparedMedia {
-            _custody: custody,
+            _ownership: ownership,
             delivery: Mutex::new(delivery),
             public_key: identity.public_key(),
             account_ids,
@@ -1497,7 +1497,7 @@ impl PreparedMedia {
         self.validate_for_write(cancel)?;
         if self.retained.is_some() {
             return Err(io::Error::other(
-                "Shared-home custody cannot become offline copy",
+                "Shared-home ownership cannot become offline copy",
             ));
         }
         if self.manifest.units.portable_flatpak()
@@ -1510,7 +1510,7 @@ impl PreparedMedia {
                 != self.browser.as_ref().map(|browser| &browser.expectation)
         {
             return Err(io::Error::other(
-                "Selected payload custody differs from sealed declaration",
+                "Selected payload ownership differs from sealed declaration",
             ));
         }
         self.delivery_started.store(true, Ordering::Release);
@@ -1528,7 +1528,7 @@ impl PreparedMedia {
             browser
                 .archive
                 .lock()
-                .map_err(|_| io::Error::other("Browser custody unavailable"))?
+                .map_err(|_| io::Error::other("Browser ownership unavailable"))?
                 .verify_held_ciphertext(cancel)?;
             media.browser_allocation(&browser.expectation, cancel)
         })?;
@@ -1551,7 +1551,7 @@ impl PreparedMedia {
             let mut archive = apps
                 .archive
                 .lock()
-                .map_err(|_| io::Error::other("Portable application custody unavailable"))?;
+                .map_err(|_| io::Error::other("Portable application ownership unavailable"))?;
             media.deliver_applications_reporting(
                 &mut archive,
                 &apps.expectation,
@@ -1563,7 +1563,7 @@ impl PreparedMedia {
             let mut archive = browser
                 .archive
                 .lock()
-                .map_err(|_| io::Error::other("Browser custody unavailable"))?;
+                .map_err(|_| io::Error::other("Browser ownership unavailable"))?;
             media.deliver_browser_reporting(
                 &mut archive,
                 &browser.expectation,
@@ -1575,7 +1575,7 @@ impl PreparedMedia {
             let mut delivery = self
                 .delivery
                 .lock()
-                .map_err(|_| io::Error::other("Prepared setup custody unavailable"))?;
+                .map_err(|_| io::Error::other("Prepared setup ownership unavailable"))?;
             delivery.deliver_protected_inbox_reporting(grant, cancel, &mut |_| Ok(()))?
         };
         if let Some(apps) = &self.applications {
@@ -1613,7 +1613,7 @@ impl PreparedMedia {
             let mut delivery = self
                 .delivery
                 .lock()
-                .map_err(|_| io::Error::other("Prepared custody unavailable"))?;
+                .map_err(|_| io::Error::other("Prepared ownership unavailable"))?;
             delivery.copy_preparation_ciphertext(temporary.as_file_mut(), cancel)?;
             delivery.info().clone()
         };
@@ -1659,7 +1659,7 @@ impl PreparedMedia {
         *self
             .recovery
             .lock()
-            .map_err(|_| io::Error::other("Recovery custody unavailable"))? = evidence
+            .map_err(|_| io::Error::other("Recovery ownership unavailable"))? = evidence
             .into_iter()
             .map(|item| (item, plan.clone()))
             .collect();
@@ -1673,7 +1673,7 @@ impl PreparedMedia {
         for (_, reviewed_plan) in self
             .recovery
             .lock()
-            .map_err(|_| io::Error::other("Recovery custody unavailable"))?
+            .map_err(|_| io::Error::other("Recovery ownership unavailable"))?
             .iter()
         {
             if reviewed_plan != actual_plan {
@@ -1688,7 +1688,7 @@ impl PreparedMedia {
         for (evidence, plan) in self
             .recovery
             .lock()
-            .map_err(|_| io::Error::other("Recovery custody unavailable"))?
+            .map_err(|_| io::Error::other("Recovery ownership unavailable"))?
             .iter()
         {
             evidence.validate_plan(plan)?;
@@ -1699,7 +1699,7 @@ impl PreparedMedia {
         for (evidence, plan) in self
             .recovery
             .lock()
-            .map_err(|_| io::Error::other("Recovery custody unavailable"))?
+            .map_err(|_| io::Error::other("Recovery ownership unavailable"))?
             .iter()
         {
             evidence.validate_plan(plan)?;
@@ -1714,14 +1714,14 @@ impl PreparedMedia {
         }
         self.delivery
             .lock()
-            .map_err(|_| io::Error::other("Prepared setup custody unavailable"))?
+            .map_err(|_| io::Error::other("Prepared setup ownership unavailable"))?
             .verify_reviewed_ciphertext(cancel)?;
         #[cfg(target_os = "linux")]
         if let Some(copy) = self.manifest.units.original_copy() {
             copy.bytes()?;
             self.retained
                 .as_ref()
-                .ok_or_else(|| io::Error::other("Original staging custody missing"))?
+                .ok_or_else(|| io::Error::other("Original staging ownership missing"))?
                 .validate_staging_copy(copy.source())?;
         }
         #[cfg(target_os = "linux")]
@@ -1729,10 +1729,10 @@ impl PreparedMedia {
             let main = self
                 .retained
                 .as_ref()
-                .ok_or_else(|| io::Error::other("Computer Files custody missing"))?;
+                .ok_or_else(|| io::Error::other("Computer Files ownership missing"))?;
             let apps = main
                 .computer_applications()?
-                .ok_or_else(|| io::Error::other("Computer Apps custody missing"))?;
+                .ok_or_else(|| io::Error::other("Computer Apps ownership missing"))?;
             let copy = self
                 .manifest
                 .installed_original_copy_declaration()?
@@ -1771,7 +1771,7 @@ impl PreparedMedia {
                 browser
                     .archive
                     .lock()
-                    .map_err(|_| io::Error::other("Browser custody unavailable"))?
+                    .map_err(|_| io::Error::other("Browser ownership unavailable"))?
                     .verify_held_ciphertext(cancel)?;
             }
             imager_backend::migration::check_cancel(cancel)?;
@@ -1783,7 +1783,7 @@ impl PreparedMedia {
                 .as_ref()
                 .ok_or_else(|| io::Error::other("Pending original home grant missing"))?
                 .lock()
-                .map_err(|_| io::Error::other("Home custody unavailable"))?;
+                .map_err(|_| io::Error::other("Home ownership unavailable"))?;
             home.source.validate_offline_scope(pending.source())?;
             offline::validate_payload_scope(self, pending.source(), cancel)?;
             return Ok(());
@@ -1791,7 +1791,7 @@ impl PreparedMedia {
         if let Some(home) = &self.home {
             let mut home = home
                 .lock()
-                .map_err(|_| io::Error::other("Home custody unavailable"))?;
+                .map_err(|_| io::Error::other("Home ownership unavailable"))?;
             if home.source.original_only() {
                 return Err(io::Error::other(
                     "Original source requires authenticated offline preparation",
@@ -1824,7 +1824,7 @@ impl PreparedMedia {
             apps.source.validate()?;
             apps.archive
                 .lock()
-                .map_err(|_| io::Error::other("Application custody unavailable"))?
+                .map_err(|_| io::Error::other("Application ownership unavailable"))?
                 .verify_held_ciphertext(cancel)?;
         }
         if let Some(browser) = &self.browser {
@@ -1834,7 +1834,7 @@ impl PreparedMedia {
             browser
                 .archive
                 .lock()
-                .map_err(|_| io::Error::other("Browser custody unavailable"))?
+                .map_err(|_| io::Error::other("Browser ownership unavailable"))?
                 .verify_held_ciphertext(cancel)?;
         }
         Ok(())
@@ -1853,7 +1853,7 @@ impl PreparedMedia {
         let cancel = AtomicBool::new(false);
         self.delivery
             .lock()
-            .map_err(|_| io::Error::other("Prepared setup custody unavailable"))?
+            .map_err(|_| io::Error::other("Prepared setup ownership unavailable"))?
             .copy_preparation_ciphertext(output, &cancel)
     }
     fn deliver_reporting(
@@ -1867,7 +1867,7 @@ impl PreparedMedia {
         }
         self.delivery
             .lock()
-            .map_err(|_| io::Error::other("Prepared setup custody is unavailable"))?
+            .map_err(|_| io::Error::other("Prepared setup ownership is unavailable"))?
             .deliver_or_verify_reporting(grant, cancel, observer)
     }
     fn home_projection(&self) -> Option<serde_json::Value> {
@@ -1939,13 +1939,13 @@ impl PreparedMedia {
                 browser
                     .archive
                     .lock()
-                    .map_err(|_| io::Error::other("Browser custody unavailable"))?
+                    .map_err(|_| io::Error::other("Browser ownership unavailable"))?
                     .verify_held_ciphertext(cancel)?;
             }
             let home_bytes = if let Some(home) = &self.home {
                 let home = home
                     .lock()
-                    .map_err(|_| io::Error::other("Portable home custody unavailable"))?;
+                    .map_err(|_| io::Error::other("Portable home ownership unavailable"))?;
                 if let Some(receipt) = &home.receipt {
                     home.source.validate_existing(
                         media,
@@ -1976,7 +1976,7 @@ impl PreparedMedia {
                 let mut archive = apps
                     .archive
                     .lock()
-                    .map_err(|_| io::Error::other("Portable application custody unavailable"))?;
+                    .map_err(|_| io::Error::other("Portable application ownership unavailable"))?;
                 phase("installer-media-phase-applications")?;
                 media.deliver_applications_reporting(
                     &mut archive,
@@ -1989,7 +1989,7 @@ impl PreparedMedia {
                 let mut archive = browser
                     .archive
                     .lock()
-                    .map_err(|_| io::Error::other("Browser custody unavailable"))?;
+                    .map_err(|_| io::Error::other("Browser ownership unavailable"))?;
                 phase("installer-media-phase-browser")?;
                 media.deliver_browser_reporting(
                     &mut archive,
@@ -2005,7 +2005,7 @@ impl PreparedMedia {
         let home = if let Some(preparation) = &self.home {
             let mut preparation = preparation
                 .lock()
-                .map_err(|_| io::Error::other("Portable home custody is unavailable"))?;
+                .map_err(|_| io::Error::other("Portable home ownership is unavailable"))?;
             let media = grant.portable_home_grant()?;
             Some(preparation.deliver(&media, cancel, &mut |progress| {
                 task.map_or(Ok(()), |task| task.archive(progress))
@@ -2017,7 +2017,7 @@ impl PreparedMedia {
         let setup = if self.other_device.is_some() {
             self.delivery
                 .lock()
-                .map_err(|_| io::Error::other("Prepared setup custody is unavailable"))?
+                .map_err(|_| io::Error::other("Prepared setup ownership is unavailable"))?
                 .deliver_other_device(grant, cancel)?
         } else {
             self.deliver_reporting(grant, cancel, &mut |p| {
@@ -2062,8 +2062,8 @@ impl PreparedMedia {
     ) -> Option<&imager_backend::setup::prepared_tpm::SealedPreparation> {
         self.tpm_handoff.as_ref()
     }
-    pub(crate) fn native_account_custody_protocol(&self) -> Option<u32> {
-        self.manifest.account_custody_protocol
+    pub(crate) fn native_account_credentials_protocol(&self) -> Option<u32> {
+        self.manifest.account_credentials_protocol
     }
 
     pub(crate) fn native_service_session_protocol(&self) -> Option<u32> {
@@ -2104,11 +2104,11 @@ impl PreparedMedia {
         }
         self.delivery
             .lock()
-            .map_err(|_| io::Error::other("Prepared setup custody is unavailable"))?
+            .map_err(|_| io::Error::other("Prepared setup ownership is unavailable"))?
             .verify_reviewed_ciphertext(&AtomicBool::new(false))?;
         let artifact = super::super::staging::prepared_setup::PreparedArtifact {
             source_path: self
-                ._custody
+                ._ownership
                 .path()
                 .join("prepared-setup.sealed")
                 .to_str()
@@ -2132,15 +2132,15 @@ impl PreparedMedia {
         browser
             .archive
             .lock()
-            .map_err(|_| io::Error::other("Browser custody unavailable"))?
+            .map_err(|_| io::Error::other("Browser ownership unavailable"))?
             .verify_held_ciphertext(&AtomicBool::new(false))?;
         let artifact = super::super::staging::browser::BrowserArtifact {
             source_path: self
-                ._custody
+                ._ownership
                 .path()
                 .join(&browser.expectation.filename)
                 .to_str()
-                .ok_or_else(|| io::Error::other("Browser custody path is not UTF-8"))?
+                .ok_or_else(|| io::Error::other("Browser ownership path is not UTF-8"))?
                 .into(),
             expectation: browser.expectation.clone(),
         };
@@ -2151,7 +2151,7 @@ impl PreparedMedia {
     }
     #[cfg(test)]
     pub(crate) fn package(&self) -> std::path::PathBuf {
-        self._custody.path().join("prepared-setup.sealed")
+        self._ownership.path().join("prepared-setup.sealed")
     }
 }
 
@@ -2578,7 +2578,7 @@ mod tests {
         }
     }
     #[test]
-    fn cancellation_keeps_worker_custody_until_exit_and_retry_preserves_identity() {
+    fn cancellation_keeps_worker_ownership_until_exit_and_retry_preserves_identity() {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
@@ -2818,10 +2818,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(prepared.home_archive_protocol(), Some(2));
-        assert!(!prepared._custody.path().join("applications-stage").exists());
         assert!(
             !prepared
-                ._custody
+                ._ownership
+                .path()
+                .join("applications-stage")
+                .exists()
+        );
+        assert!(
+            !prepared
+                ._ownership
                 .path()
                 .join("applications-journals")
                 .exists()
@@ -2934,16 +2940,16 @@ mod tests {
         let workspace = home.join(".local/state/tilo/portable-home/fixture");
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::set_permissions(&workspace, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let custody = home.join(".config/tilo");
-        std::fs::create_dir_all(&custody).unwrap();
-        std::fs::set_permissions(&custody, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let ownership = home.join(".config/tilo");
+        std::fs::create_dir_all(&ownership).unwrap();
+        std::fs::set_permissions(&ownership, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::set_permissions(
             home.join(".local/state/tilo"),
             std::fs::Permissions::from_mode(0o700),
         )
         .unwrap();
         setup
-            .import_identity(&custody, password.as_bytes())
+            .import_identity(&ownership, password.as_bytes())
             .unwrap();
         let mut imported = PortableHomeReview::review(
             HomeImportGrants {
@@ -3078,7 +3084,7 @@ mod tests {
 
     #[test]
     fn enrolled_desktop_delivers_and_imports_into_the_same_private_host_tree() {
-        let (custody, mut pairing) = super::super::pairing::certified_fixture();
+        let (ownership, mut pairing) = super::super::pairing::certified_fixture();
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
         while pairing.busy() {
             assert!(std::time::Instant::now() < deadline);
@@ -3086,18 +3092,18 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let identity = pairing.prepared().unwrap();
-        let root = custody.path().canonicalize().unwrap();
+        let root = ownership.path().canonicalize().unwrap();
         let source = identity
-            .custody_directory()
+            .ownership_directory()
             .parent()
             .unwrap()
             .join("future-device");
         let source_key = std::fs::read(source.join("device-private/keypair.bin")).unwrap();
         let source_cert = std::fs::read(source.join("device/cert.bin")).unwrap();
-        let source_record = identity.custody_directory().join("member.json");
+        let source_record = identity.ownership_directory().join("member.json");
         let source_record_bytes = std::fs::read(&source_record).unwrap();
         let source_fleet = identity
-            .custody_directory()
+            .ownership_directory()
             .join("fleets")
             .join(format!("{}.json", hex::encode(identity.public_key())));
         let source_fleet_bytes = std::fs::read(&source_fleet).unwrap();
@@ -3221,7 +3227,7 @@ mod tests {
 
     #[test]
     fn media_preparation_exports_actual_enrolled_device_without_root_backup_fallback() {
-        let (custody, mut pairing) = super::super::pairing::certified_fixture();
+        let (ownership, mut pairing) = super::super::pairing::certified_fixture();
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
         while pairing.busy() {
             assert!(std::time::Instant::now() < deadline);
@@ -3230,9 +3236,9 @@ mod tests {
         }
         let identity = pairing.prepared().unwrap();
         let device = identity.enrolled_device_public_key().unwrap();
-        let root = custody.path().canonicalize().unwrap();
+        let root = ownership.path().canonicalize().unwrap();
         let source = identity
-            .custody_directory()
+            .ownership_directory()
             .parent()
             .unwrap()
             .join("future-device/device/cert.bin");
@@ -3286,7 +3292,7 @@ mod tests {
         verify_fixture_device_import(&authenticated, &root, &certificate);
         verify_fixture_root_publication(&reviewed, &root, password.as_bytes(), &certificate);
         assert_eq!(std::fs::read(&source).unwrap(), certificate);
-        assert!(!media._custody.path().join("setup").exists());
+        assert!(!media._ownership.path().join("setup").exists());
         assert!(!media.projection().to_string().contains(password));
     }
 
@@ -3315,7 +3321,7 @@ mod tests {
         .unwrap();
         assert_eq!(media.public_key, identity.public_key());
         assert!(media.account_ids.is_empty());
-        assert!(!media._custody.path().join("setup").exists());
+        assert!(!media._ownership.path().join("setup").exists());
         let quarantine = root.path().join("review");
         let reviewed = prepared_setup::PreparedSetupReview::open(
             &media.package(),
@@ -3485,11 +3491,11 @@ pub(crate) fn selected_applications_media_fixture(root: &std::path::Path) -> Arc
 impl PreparedMedia {
     fn from_native(native: NativePreparedMedia) -> Self {
         Self {
-            native_payload: super::native_ownership::FrontendNativeCustody::new(native),
+            native_payload: super::native_ownership::FrontendNativeOwnership::new(native),
             api: super::prepared_media::PreparedApi {
                 projection: Self::native_projection,
                 expectation: Self::native_expectation,
-                account_custody_protocol: Self::native_account_custody_protocol,
+                account_credentials_protocol: Self::native_account_credentials_protocol,
                 service_session_protocol: Self::native_service_session_protocol,
                 applications_protocol: Self::native_applications_protocol,
                 home_archive_protocol: Self::native_home_archive_protocol,

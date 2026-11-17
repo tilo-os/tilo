@@ -6,7 +6,7 @@
 //! valid, enrolled, non-revoked certificate ([`device_fleet`],
 //! [`certificates`]). [`enrollment`] is the one place a token admits another
 //! device; [`certification_ceremony`] gathers the identity key's signature
-//! for it from the person's devices that hold the key. [`provisioning`] creates that chain, [`custody`]
+//! for it from the person's devices that hold the key. [`provisioning`] creates that chain, [`identity store`]
 //! selects the certificate this device presents to the hosts of each
 //! workspace, and [`join_proof`] keeps the signed proof it presents there.
 //!
@@ -17,7 +17,7 @@
     target_family = "wasm",
     allow(
         clippy::arc_with_non_send_sync,
-        reason = "a page's custody reaches JavaScript and stays on the page's one thread; `Arc` keeps a page's handles the same type as a desktop's"
+        reason = "a page's identity store reaches JavaScript and stays on the page's one thread; `Arc` keeps a page's handles the same type as a desktop's"
     )
 )]
 
@@ -25,7 +25,6 @@
 pub mod broker;
 pub mod certificates;
 pub mod certification_ceremony;
-pub mod custody;
 #[cfg(unix)]
 pub mod device_admin;
 pub mod device_fleet;
@@ -33,6 +32,7 @@ pub mod device_fleet;
 pub mod enrolled_transport;
 #[cfg(unix)]
 pub mod enrollment;
+pub mod identity_store;
 #[cfg(unix)]
 pub mod join_proof;
 #[cfg(unix)]

@@ -44,7 +44,7 @@ fn source_fixture(home: &Path) {
     )
     .unwrap();
 }
-fn witness(home: &Path) -> Vec<Vec<u8>> {
+fn proof(home: &Path) -> Vec<Vec<u8>> {
     MEMBERS
         .iter()
         .map(|name| fs::read(home.join(name)).unwrap())
@@ -99,7 +99,7 @@ pub(super) fn owner(source_home: &Path, app: InstalledRef) {
         "ordinary source and target credentials required"
     );
     source_fixture(source_home);
-    let before = witness(source_home);
+    let before = proof(source_home);
     let source =
         PortableFlatpakSource::review_selected_state(&NativeRunner, source_home, vec![app])
             .unwrap();
@@ -206,7 +206,7 @@ pub(super) fn owner(source_home: &Path, app: InstalledRef) {
     NativeOfflineRunner.verify_repository(&target).unwrap();
     verify_target(&target, &before);
     assert_eq!(
-        witness(source_home),
+        proof(source_home),
         before,
         "capture and restore changed original source bytes"
     );
@@ -222,7 +222,7 @@ pub(super) fn owner(source_home: &Path, app: InstalledRef) {
     );
     verify_target(&target, &before);
     assert_eq!(
-        witness(source_home),
+        proof(source_home),
         before,
         "idempotent retry changed original source bytes"
     );

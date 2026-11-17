@@ -178,14 +178,14 @@ fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_a
     std::fs::write(&document, b"before").unwrap();
     std::fs::write(home.join(".var/app/story.app/data"), b"hidden app data").unwrap();
     // Live inventories spill only into acknowledged, native block-backed
-    // preparation custody. NBD is not admitted as native inventory storage;
+    // preparation ownership. NBD is not admitted as native inventory storage;
     // grant a fresh actor-owned directory on the builder's native filesystem.
-    let custody = tempfile::tempdir_in("/var/tmp").unwrap();
+    let ownership = tempfile::tempdir_in("/var/tmp").unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     let _platform = main_story_tests::source_fixture(&root);
     env.set("HOME", &home);
     env.set("XDG_CONFIG_HOME", home.join(".config"));
-    env.set("XDG_STATE_HOME", custody.path().join("state"));
+    env.set("XDG_STATE_HOME", ownership.path().join("state"));
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
     let mut app = App::launched(&["--setup"]).unwrap();
     open_preparation(&mut app, &home);

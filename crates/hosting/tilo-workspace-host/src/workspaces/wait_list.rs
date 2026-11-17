@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use tilo_files::native::migration::Format;
-use tilo_relay_protocol::operator::WaitListStanding;
+use tilo_relay_protocol::operator::WaitListStatus;
 use tilo_relay_protocol::workspaces::{WaitListEntry, contact_key};
 
 /// The wait list's on-disk format: a `u32` version, then the entries.
@@ -382,15 +382,15 @@ impl WaitList {
     }
 
     /// Where the request whose removal secret hashes to `removal` stands.
-    pub(super) fn standing(&self, removal: [u8; 32], now_ns: u64) -> WaitListStanding {
+    pub(super) fn state(&self, removal: [u8; 32], now_ns: u64) -> WaitListStatus {
         match self
             .live(now_ns)
             .find(|entry| entry.removals.contains(&removal))
         {
-            None => WaitListStanding::Gone,
-            Some(entry) if entry.confirmed_at_ns.is_none() => WaitListStanding::Pending,
-            Some(entry) if entry.invited_at_ns.is_some() => WaitListStanding::Invited,
-            Some(_) => WaitListStanding::Listed,
+            None => WaitListStatus::Gone,
+            Some(entry) if entry.confirmed_at_ns.is_none() => WaitListStatus::Pending,
+            Some(entry) if entry.invited_at_ns.is_some() => WaitListStatus::Invited,
+            Some(_) => WaitListStatus::Listed,
         }
     }
 
@@ -628,10 +628,10 @@ impl super::GovernedWorkspace {
     /// Take off the wait list everyone who joined with an invitation sent
     /// for their entry. A failed write leaves them for the next time.
     pub(super) fn forget_joined_wait_list(&mut self) {
-        let ledger = &self.record.collaboration;
+        let log = &self.record.collaboration;
         match self
             .wait_list
-            .joined(|invite| ledger.redeemed(invite), tilo_clock::unix_now_ns())
+            .joined(|invite| log.redeemed(invite), tilo_clock::unix_now_ns())
         {
             Ok(0) => {}
             Ok(count) => tracing::info!(
@@ -878,7 +878,7 @@ mod tests {
             Ok(WaitListed::Added { mail: true })
         );
         assert!(list.entries(1).is_empty(), "unconfirmed is not listed");
-        assert_eq!(list.standing([1; 32], 1), WaitListStanding::Pending);
+        assert_eq!(list.state([1; 32], 1), WaitListStatus::Pending);
         // Left again within the hour: answered alike, but no second mail.
         assert_eq!(
             list.keep("ada@example.org", mailed(2, 0xc2), "en", HOUR / 2, 10),
@@ -896,10 +896,7 @@ mod tests {
         let entries = restored.entries(HOUR + 4);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].contact, "Ada@example.org");
-        assert_eq!(
-            restored.standing([2; 32], HOUR + 4),
-            WaitListStanding::Listed
-        );
+        assert_eq!(restored.state([2; 32], HOUR + 4), WaitListStatus::Listed);
         // The language it was first left in is the one its mails are in.
         let mut list = restored;
         assert_eq!(
@@ -909,7 +906,7 @@ mod tests {
                 language: "de".into(),
             }))
         );
-        assert_eq!(list.standing([2; 32], HOUR + 5), WaitListStanding::Gone);
+        assert_eq!(list.state([2; 32], HOUR + 5), WaitListStatus::Gone);
     }
 
     #[test]
@@ -955,7 +952,7 @@ mod tests {
             Ok(WaitListed::Full)
         );
         let late = UNCONFIRMED_FOR_NS + 1;
-        assert_eq!(list.standing([1; 32], late), WaitListStanding::Gone);
+        assert_eq!(list.state([1; 32], late), WaitListStatus::Gone);
         assert_eq!(list.confirm([0xc1; 32], late), Ok(false));
         assert_eq!(list.expire(late), Ok(1));
         assert_eq!(list.expire(late), Ok(0));
@@ -987,7 +984,7 @@ mod tests {
         assert!(list.has(ada, 4));
         assert_eq!(list.invited(ada, [0xa1; 32], 50), Ok(true));
         assert_eq!(list.invited([0xee; 32], [0xa2; 32], 50), Ok(false));
-        assert_eq!(list.standing([1; 32], 50), WaitListStanding::Invited);
+        assert_eq!(list.state([1; 32], 50), WaitListStatus::Invited);
         let restored = WaitList::open(&workspace).unwrap();
         assert_eq!(restored.entries(51)[0].invited_at_ns, Some(50));
         assert_eq!(restored.entries(51)[1].invited_at_ns, None);
@@ -1005,7 +1002,7 @@ mod tests {
             "not mailed twice in minutes"
         );
         let removal: [u8; 32] = sha2::Sha256::digest(secret).into();
-        assert_eq!(list.standing(removal, 53), WaitListStanding::Invited);
+        assert_eq!(list.state(removal, 53), WaitListStatus::Invited);
 
         assert_eq!(list.joined(|invite| invite == [0xff; 32], 54), Ok(0));
         assert_eq!(list.joined(|invite| invite == [0xa1; 32], 54), Ok(1));

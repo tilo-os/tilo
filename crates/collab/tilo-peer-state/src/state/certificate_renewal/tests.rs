@@ -7,7 +7,7 @@ use crate::join::{
     InviteGrant, JoinChallenge, MembershipChallengeRequest, MembershipCompleteRequest, Role,
     issue_invitation, sign_join_proof, sign_membership_proof,
 };
-use crate::join_ledger::{Governed, JoinLedger};
+use crate::join_log::{Governed, JoinLog};
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
@@ -251,7 +251,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
     } = fixture();
     let now_ns = ns(now);
     let messages = || Ok(vec![b"governance".to_vec()]);
-    let mut ledger = JoinLedger::default();
+    let mut log = JoinLog::default();
     let challenge = {
         let host_cert = peer.owner_certificates()[0].clone();
         let workspace = Governed {
@@ -261,19 +261,18 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
             generation: 1,
             governance_messages: Some(&messages),
         };
-        ledger
-            .membership_challenge(
-                &workspace,
-                renewed.device_public_key,
-                MembershipChallengeRequest {
-                    workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-                    device_cert: renewed.clone(),
-                    request_id: [60; 32],
-                },
-                [61; 32],
-                now_ns,
-            )
-            .unwrap()
+        log.membership_challenge(
+            &workspace,
+            renewed.device_public_key,
+            MembershipChallengeRequest {
+                workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
+                device_cert: renewed.clone(),
+                request_id: [60; 32],
+            },
+            [61; 32],
+            now_ns,
+        )
+        .unwrap()
     };
     let request = MembershipCompleteRequest {
         proof: sign_membership_proof(challenge, &device).unwrap(),
@@ -287,8 +286,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
             generation: 1,
             governance_messages: Some(&messages),
         };
-        ledger
-            .membership_renewal(&workspace, renewed.device_public_key, &request, now_ns)
+        log.membership_renewal(&workspace, renewed.device_public_key, &request, now_ns)
             .unwrap()
     };
     assert_eq!(renewal.as_ref(), Some(&renewed));
@@ -304,13 +302,12 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         governance_messages: Some(&messages),
     };
     assert_eq!(
-        ledger
-            .membership_renewal(&workspace, renewed.device_public_key, &request, now_ns)
+        log.membership_renewal(&workspace, renewed.device_public_key, &request, now_ns)
             .unwrap(),
         None,
         "the workspace holds it now"
     );
-    let bootstrap = ledger
+    let bootstrap = log
         .membership_complete(&workspace, renewed.device_public_key, &request, now_ns)
         .unwrap();
     assert_eq!(bootstrap.device_cert, renewed);

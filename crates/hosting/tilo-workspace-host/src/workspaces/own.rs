@@ -34,8 +34,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tilo_actions::remote::host_account::{
-    HostAccount, HostKind, Limits, NextStep, NextStepKind, PlanOffer, Reason, Refusal, Standing,
-    Usage, WorkspaceUsage,
+    HostAccount, HostKind, Limits, NextStep, NextStepKind, PlanOffer, Reason, Refusal,
+    Subscription, Usage, WorkspaceUsage,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -790,7 +790,7 @@ impl Workspaces {
             host: own.offer().host.clone(),
             kind: HostKind::Provider,
             plans: vec![plan.clone()],
-            standing: Some(Standing {
+            subscription: Some(Subscription {
                 account: hex::encode(person),
                 plan: Some(plan.id),
                 limits: Some(plan.limits),
@@ -798,7 +798,7 @@ impl Workspaces {
                     workspaces,
                     ..Usage::default()
                 },
-                ..Standing::default()
+                ..Subscription::default()
             }),
             manage_billing: None,
         })

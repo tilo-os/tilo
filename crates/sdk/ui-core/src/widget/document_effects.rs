@@ -1,7 +1,7 @@
 //! Optional outside consequences of an actually applied document action.
 //!
 //! This is separate from History's immutable cache-reconciliation hook. The executor alone
-//! constructs the change, and custody comes from the current admitted invocation, never
+//! constructs the change, and ownership comes from the current admitted invocation, never
 //! from document fields or an earlier effect.
 
 use super::{ResourceOperation, ResourceOperationStart};

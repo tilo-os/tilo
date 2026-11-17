@@ -1,4 +1,4 @@
-//! Challenged native person custody; these bytes grant no source or app access.
+//! Challenged native person ownership; these bytes grant no source or app access.
 //! The root actor supplies its independently held installed certificate and
 //! revocations. The wire cannot select an anchor or supply source credentials.
 use serde::{Deserialize, Serialize};
@@ -105,7 +105,7 @@ pub struct SignedRetainedPersonProof {
     pub claims: RetainedPersonClaims,
     pub signature: Vec<u8>,
 }
-/// Root-local custody created only by an actually verified wire reply. This
+/// Root-local ownership created only by an actually verified wire reply. This
 /// type never crosses the transport; later replies must preserve this epoch.
 #[cfg(all(target_os = "linux", feature = "client"))]
 pub struct VerifiedRetainedPersonEpoch {
@@ -203,7 +203,7 @@ impl SignedRetainedPersonProof {
         proof.encode()?;
         Ok(proof)
     }
-    /// Verify one fresh reply against ROOT-LOADED installed custody and an
+    /// Verify one fresh reply against ROOT-LOADED installed ownership and an
     /// independently QPE1-pinned Shell task. A verified reply is not a launch
     /// permit: retain the live channel and request a fresh proof at each actual
     /// source/launch boundary. The root actor still checks A and accepted policy.
@@ -268,7 +268,7 @@ impl SignedRetainedPersonProof {
     }
     /// Authenticate revocations for a daemon receiving a genuinely delegated
     /// helper-bound proof. The actual installed helper role remains the signed
-    /// binding's recipient; no serialized PID can substitute for its custody.
+    /// binding's recipient; no serialized PID can substitute for its ownership.
     #[cfg(all(target_os = "linux", feature = "client"))]
     pub fn authenticated_revocations_for_retained_helper(
         &self,
@@ -294,7 +294,7 @@ impl SignedRetainedPersonProof {
     /// Authenticate the complete fresh proof BEFORE returning root-signed
     /// revocations for monotonic root publication. This verifies issuer/root,
     /// entry signatures and exact installed certificate/device signature; wire
-    /// claims alone can never update root custody. Afterwards the actor must
+    /// claims alone can never update root ownership. Afterwards the actor must
     /// merge entries monotonically, then run final verify/epoch.revalidate using
     /// the refreshed root list. An embedded revocation of this signer prevents
     /// final admission even though its valid root statement can be retained.
@@ -342,7 +342,7 @@ impl SignedRetainedPersonProof {
             serde_json::from_slice(&self.claims.certificate).map_err(io::Error::other)?;
         // Root's kernel wall clock, never a wire timestamp or environment
         // override. The canonical verifier checks signature, interval,
-        // not-before and expiry for BOTH independent and received custody.
+        // not-before and expiry for BOTH independent and received ownership.
         let now_ns = current_time_ns()?;
         tilo_user_identity::verify_device_cert_at(installed, now_ns).map_err(io::Error::other)?;
         tilo_user_identity::verify_device_cert_at(&cert, now_ns).map_err(io::Error::other)?;

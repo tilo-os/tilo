@@ -2,7 +2,7 @@
 //! headless session that starts with the tilolang shell as its whole screen to a theme switch
 //! that changes how it looks and nothing of where it stands.
 //!
-//! Every step drives the production seams only: the session's own loop, its MCP server, the
+//! Every step drives the production services only: the session's own loop, its MCP server, the
 //! layout and session it publishes, and the tree the shell lays out for assistive technology
 //! (never pixels, but where a step is about looks, the frame the compositor drew).
 //!

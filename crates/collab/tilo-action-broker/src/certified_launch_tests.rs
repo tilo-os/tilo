@@ -239,7 +239,7 @@ async fn certified_launch_wait_refuses_retirement_certificate_expiry_and_origin_
                     let pending = host.invoke(&caller, request.clone());
                     certified_launch_wait(&started).await;
                     // Make the actual receiver ready while the host launcher remains
-                    // blocked; the next delivery attempt must recheck original custody.
+                    // blocked; the next delivery attempt must recheck original ownership.
                     rig.worker
                         .handle
                         .publish_actions(&[certified_launch_action()])

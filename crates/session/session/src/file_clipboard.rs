@@ -51,7 +51,7 @@ const MAX_CONFLICT_NAMES: usize = 8;
 /// stays theirs.
 const WRITE_ATTRIBUTION_TTL: Duration = Duration::from_secs(60);
 
-/// Files' clipboard, as the broker's seam.
+/// Files' clipboard, as the broker's service.
 pub(crate) struct NativeFileClipboard {
     state: Mutex<State>,
     /// Copies Files made, waiting for the loop that has the compositor to put them on the desktop's
@@ -177,7 +177,7 @@ impl NativeFileClipboard {
     }
 
     /// Name the agent `agent`, by its id, which the broker took from its own
-    /// custody of a live Files invocation, as the cause of this device's next
+    /// ownership of a live Files invocation, as the cause of this device's next
     /// writes to `paths`: each version the filesystem then makes of them
     /// records the agent, for the person who signs it, in the agent's presence
     /// colour. It grants nothing.

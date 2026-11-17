@@ -456,7 +456,7 @@ impl crate::widget::ResourceOperations for CounterCard {
         doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let (request, scope) = op.with_custody();
+        let (request, scope) = op.with_ownership();
         if scope.is_none()
             && let Some(started) = crate::widget::start_in_children(
                 self,

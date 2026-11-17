@@ -3,8 +3,8 @@
 use super::{
     AcceptedCheckpoint, ActionKind, AdmissionError, AdmissionReport, ArtifactKind, AutoCommit,
     BTreeMap, Document, DocumentAdmission, DocumentMutation, DroppedInput, Duration,
-    Ed25519PublicKey, Held, InboundState, InputDisposition, MissingPrerequisite, NeighbourMsg,
-    OpKind, ReceiveOutcome, Route, SignedOp, Standing, StatePeer, SystemTime, backend,
+    Ed25519PublicKey, Held, InboundState, InputDisposition, MemberAccess, MissingPrerequisite,
+    NeighbourMsg, OpKind, ReceiveOutcome, Route, SignedOp, StatePeer, SystemTime, backend,
     empty_genesis, empty_genesis_op, err, peer_handle, person_of, sealed_compaction,
     sealed_history, workspace,
 };
@@ -650,7 +650,7 @@ impl StatePeer {
         &self,
         doc: &AutoCommit,
         before: &[automerge::ChangeHash],
-        member: &Standing,
+        member: &MemberAccess,
         now: SystemTime,
     ) -> Result<(), AdmissionError> {
         use tilo_desktop_model::ownership::act_node;

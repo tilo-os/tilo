@@ -1,5 +1,5 @@
 //! Early host compatibility uses the canonical native setup surface, without
-//! installation custody.
+//! installation ownership.
 
 use super::{Destination, InstallerPreview, Page};
 use crate::setup::view::{FullOsCheck, SetupApp};

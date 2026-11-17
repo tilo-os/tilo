@@ -142,7 +142,7 @@ fn note(
         .push(version.clone());
     // The removal the resource ends at: of two, the later by the order versions keep, which
     // the index keeps too, so both pick the same one however the document reached them. A
-    // removal of an item the index already had out leaves the earlier one standing.
+    // removal of an item the index already had out leaves the earlier one access.
     let Some(stamp) = stamp.filter(|_| removed && counts && version.left.is_some()) else {
         return;
     };

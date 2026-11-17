@@ -1,6 +1,6 @@
 //! The one process per host that owns every hosted VM. `tilo-legacy hosted serve`
 //! runs it: it admits each wake against the account's plan, wakes the VM, polls the
-//! awake ones and suspends the idle, and answers usage questions from the ledger.
+//! awake ones and suspends the idle, and answers usage questions from the log.
 //! Each VM is locked on its own, and admission is one lock. A host being taken back
 //! takes no more wakes and suspends every VM at once onto its state directory,
 //! which a service on another host takes over.
@@ -22,7 +22,7 @@ use super::control::{
 use super::files::Served;
 use super::firecracker::VmFiles;
 use super::memory::{self, Budget};
-use super::meter::{Ledger, Meter, VmIdentity, summarize};
+use super::meter::{Log, Meter, VmIdentity, summarize};
 use super::plan::{AwakeVm, Plans, Refusal, admit};
 use super::size::VmSize;
 use super::valid_name;
@@ -56,7 +56,7 @@ const DELETED: &str = "the workspace's VM was deleted; ask again for a new one";
 
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
-    /// Durable: each VM's disk, snapshot and meter; the usage ledger.
+    /// Durable: each VM's disk, snapshot and meter; the usage log.
     pub state: PathBuf,
     /// Sockets: the service's own, and each VM's.
     pub run: PathBuf,
@@ -71,8 +71,8 @@ impl ServiceConfig {
     }
 
     #[must_use]
-    pub fn ledger(&self) -> Ledger {
-        Ledger::new(self.state.join("usage"))
+    pub fn log(&self) -> Log {
+        Log::new(self.state.join("usage"))
     }
 
     fn files(&self, workspace: &str, environment: &str) -> VmFiles {
@@ -136,7 +136,7 @@ impl Entry {
 
 pub struct Service {
     config: ServiceConfig,
-    ledger: Ledger,
+    log: Log,
     clock: Clock,
     vms: Mutex<BTreeMap<String, Arc<Entry>>>,
     admission: Mutex<()>,
@@ -241,9 +241,9 @@ impl Service {
     pub fn open(config: ServiceConfig, clock: Clock) -> Result<Self, VmError> {
         std::fs::create_dir_all(&config.state)?;
         std::fs::create_dir_all(&config.run)?;
-        let ledger = config.ledger();
+        let log = config.log();
         let service = Self {
-            ledger,
+            log,
             clock,
             vms: Mutex::new(BTreeMap::new()),
             admission: Mutex::new(()),
@@ -292,7 +292,7 @@ impl Service {
     }
 
     fn insert(&self, identity: VmIdentity, files: VmFiles) -> Result<Arc<Entry>, VmError> {
-        let ledger = Some(self.ledger.clone());
+        let log = Some(self.log.clone());
         let entry = Arc::new(Entry {
             workspace: identity.workspace.clone(),
             environment: identity.environment.clone(),
@@ -303,7 +303,7 @@ impl Service {
                 identity,
                 files,
                 Arc::new(self.config.settings.clone()),
-                ledger,
+                log,
                 Arc::clone(&self.clock),
             )?),
             browser: Mutex::new(None),
@@ -1040,8 +1040,8 @@ impl Service {
     }
 
     /// Delete the VM ([`Request::Delete`]): stop it as [`Self::stop`] does, closing its run and its
-    /// snapshot in the ledger, then remove its disk, snapshot and meter. The account's records stay
-    /// in the ledger. One there is not is deleted already.
+    /// snapshot in the log, then remove its disk, snapshot and meter. The account's records stay
+    /// in the log. One there is not is deleted already.
     pub fn delete(&self, workspace: &str, environment: &str) -> Result<(), EnsureError> {
         for (what, name) in [("workspace", workspace), ("environment", environment)] {
             if !valid_name(name) {
@@ -1261,7 +1261,7 @@ impl Service {
                 account,
                 from_ms,
                 to_ms,
-            } => match self.ledger.records(&account) {
+            } => match self.log.records(&account) {
                 Ok(records) => {
                     let records: Vec<_> = records
                         .into_iter()
@@ -1688,7 +1688,7 @@ mod tests {
             }),
         );
         let service = open_at(&config, 90_000);
-        let records = service.ledger.records("acct-1").unwrap();
+        let records = service.log.records("acct-1").unwrap();
         assert_eq!(records.len(), 1);
         let record = records.first().unwrap();
         assert_eq!(
@@ -1698,7 +1698,7 @@ mod tests {
         drop(service);
         let again = open_at(&config, 95_000);
         assert_eq!(
-            again.ledger.records("acct-1").unwrap().len(),
+            again.log.records("acct-1").unwrap().len(),
             1,
             "a recovered run is closed once"
         );

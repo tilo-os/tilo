@@ -473,7 +473,7 @@ pub fn read_as_kept(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<Sh
     Some(desktop)
 }
 
-/// The custody key of a package's primary record, as a page that predates
+/// The ownership key of a package's primary record, as a page that predates
 /// routes wrote it where a window's route belongs: not a route, so a layout
 /// holding it holds the primary under a spelling that names nothing.
 const LEGACY_PRIMARY_RECORD: &str = "@tilo:package-primary";

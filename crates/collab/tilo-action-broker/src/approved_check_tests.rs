@@ -300,7 +300,7 @@ impl ApprovedCheckServices for HeldProgressProbe {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn approved_check_reported_progress_preserves_original_custody_replay_and_held_delivery() {
+async fn approved_check_reported_progress_preserves_original_ownership_replay_and_held_delivery() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let workspace = signed_worker::OriginalWorkspace::new(
@@ -456,7 +456,7 @@ async fn approved_check_reported_progress_refuses_cancelled_original_before_late
             release.send(()).unwrap();
             assert!(
                 tilo_test_env::within(
-                    "cancelled custody cannot deliver a late phase",
+                    "cancelled ownership cannot deliver a late phase",
                     progress.read()
                 )
                 .await
@@ -633,7 +633,7 @@ async fn approved_check_reported_progress_preserves_terminal_receipt_after_disab
         .await;
 }
 
-// A person's check reaches its genuine signed target, whose custody is checked before any execution service.
+// A person's check reaches its genuine signed target, whose ownership is checked before any execution service.
 #[tokio::test(flavor = "current_thread")]
 async fn approved_check_requires_exact_retained_target_and_accepted_id() {
     tokio::task::LocalSet::new()
@@ -688,7 +688,7 @@ async fn approved_check_requires_exact_retained_target_and_accepted_id() {
                 .to_string();
             assert!(
                 error.contains("unsupported by this host"),
-                "genuine accepted target custody must reach the real host-service hold: {error}"
+                "genuine accepted target ownership must reach the real host-service hold: {error}"
             );
             let mut changed = descriptor.clone();
             changed.semantic_identity.as_mut().unwrap().key = "different-resource-key".into();
@@ -708,7 +708,7 @@ async fn approved_check_requires_exact_retained_target_and_accepted_id() {
             target.handle.publish_actions(&[missing]).await.unwrap();
             assert!(
                 target.handle.approved_check(&request).await.is_err(),
-                "missing live semantic identity refuses original custody"
+                "missing live semantic identity refuses original ownership"
             );
             target.handle.publish_actions(&[descriptor]).await.unwrap();
             let wrong = runtime_collab::approved_checks::Request {
@@ -756,7 +756,7 @@ async fn approved_check_requires_exact_retained_target_and_accepted_id() {
             workspace.state.remove_connection(981);
             assert!(
                 target.handle.approved_check(&request).await.is_err(),
-                "retired connection cannot recover accepted target custody"
+                "retired connection cannot recover accepted target ownership"
             );
         })
         .await;
@@ -831,7 +831,7 @@ async fn approved_check_native_target_requires_live_launcher_connection() {
         assert_eq!(delivered.invocation_uuid, *accepted.invocation.0.as_bytes());
         let request = runtime_collab::approved_checks::Request { version: 1, invocation: uuid::Uuid::from_bytes(delivered.invocation_uuid).to_string(), check_id: "regression".into() };
         let error = connection.handle.approved_check(&request).await.unwrap_err().to_string();
-        assert!(error.contains("unsupported by this host"), "actual native custody must reach the trusted service hold: {error}");
+        assert!(error.contains("unsupported by this host"), "actual native ownership must reach the trusted service hold: {error}");
         let mut replacement = descriptor;
         replacement.resource = "fresh-opaque-resource-lifetime".into();
         connection.handle.publish_actions(&[replacement]).await.unwrap();

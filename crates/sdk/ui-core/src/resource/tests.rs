@@ -563,7 +563,7 @@ tilo_test_env::scenario! {
             );
             drop(token);
             assert!(store.is_ready(&want.id));
-            // Construct a stale-generation witness privately: no public handle can do this.
+            // Construct a stale-generation observation privately: no public handle can do this.
             let other = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
             let token = store.reserve_resource(&other).unwrap();
             let stale_generation = token.generation;

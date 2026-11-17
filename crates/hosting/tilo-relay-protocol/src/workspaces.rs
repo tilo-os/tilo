@@ -56,7 +56,7 @@ pub const PRE_ADMISSION_DOMAIN: &[u8] = b"tilo/workspace-pre-admission/v1\0";
 /// Longest label a pre-admission gives the person it is for.
 pub const MAX_PRE_ADMISSION_LABEL_CHARS: usize = 128;
 
-/// The workspace owner's standing decision to admit, without deciding again,
+/// The workspace owner's lasting decision to admit, without deciding again,
 /// whoever redeems the invitation issued with it and presents the one-time
 /// token whose SHA-256 is `token_sha256`. Whoever hands out the token (a
 /// backend that verified the person's email, say) never holds the workspace's

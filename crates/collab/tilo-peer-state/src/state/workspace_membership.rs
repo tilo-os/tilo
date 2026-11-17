@@ -276,7 +276,7 @@ impl PeerWorkspace<'_> {
 }
 impl PeerWorkspaceMut<'_> {
     /// Apply the retained person's typed membership command using actual
-    /// governor signing custody. Public command arguments grant no authority.
+    /// governor signing ownership. Public command arguments grant no authority.
     pub fn apply_workspace_membership_command(
         self,
         caller: &DeviceCert,

@@ -20,7 +20,7 @@ pub fn load() -> Result<Arc<BrokerSigningIdentity>, NotAvailable> {
 
 /// Who the person is, for showing them: the public record the launcher's
 /// broker carries. Only an app with no broker asks the workspace identity
-/// service, whose answer needs this device's custody of the workspace profile.
+/// service, whose answer needs this device's ownership of the workspace profile.
 pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
     let identity = if std::env::var_os(legacy::BROKER_ENV_VAR).is_some() {
         legacy::connect_from_env()?

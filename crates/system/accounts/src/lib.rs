@@ -64,19 +64,19 @@ pub mod cloud_types {
     pub const MOUNT_CONFIG_KEY: &str = "mount";
 }
 
-/// Custody is decided against the accounts' keeper, which is the person's
-/// own record: without that record there is nothing to decide.
-#[cfg(feature = "person")]
-pub mod custody;
 pub mod email;
 pub mod handoff;
+/// Ownership is decided against the accounts' keeper, which is the person's
+/// own record: without that record there is nothing to decide.
+#[cfg(feature = "person")]
+pub mod secret_release;
 pub mod thunderbird;
 pub use handoff::{
     CommandRefresher, CredentialRefresher, HandoffCredential, HandoffCredentialSource,
     HandoffStore, RefreshError,
 };
 pub mod vault;
-pub use vault::{Saved, Secret, SecretCustody, SecretVault};
+pub use vault::{Saved, Secret, SecretVault, VaultBackend};
 pub mod secrets;
 pub use secrets::{
     AccessDecision, AccessRequest, BrokerError, CredentialBroker, CredentialGrant, CredentialOwner,

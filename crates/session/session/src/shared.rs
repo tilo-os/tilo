@@ -76,7 +76,7 @@ impl Shared {
         // nothing of the workspaces moved since: there is nothing to read,
         // lay out or write.
         if self.desktops.settled(
-            crate::layout::Standing::of(engine),
+            crate::layout::MemberAccess::of(engine),
             &self.handle.read(Clone::clone),
         ) {
             return;

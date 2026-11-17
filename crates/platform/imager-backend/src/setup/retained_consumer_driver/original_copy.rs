@@ -118,7 +118,7 @@ fn run_current(
         std::thread::park_timeout(Duration::from_millis(50));
     }
     // The transaction, signed runs, output issue and real importer leave their slots before any source
-    // or person custody is consumed.
+    // or person ownership is consumed.
     if actor.retire().is_err() {
         loop {
             std::thread::park_timeout(Duration::from_millis(50));
@@ -308,7 +308,7 @@ fn run_reviewed(
                         && applications_cipher_sha256 == applications =>
                     {
                         // Complete stays successful even if material retirement fails; keep the root task
-                        // and owned permit alive, since process exit would lose uncertain custody.
+                        // and owned permit alive, since process exit would lose uncertain ownership.
                         return finish_cleanup(
                             &completion,
                             &tx,
@@ -336,7 +336,7 @@ fn run_reviewed(
         }
     }
 }
-/// Refusal and cancellation stay errors; the caller keeps root custody and exposes cleanup separately
+/// Refusal and cancellation stay errors; the caller keeps root ownership and exposes cleanup separately
 /// from Complete.
 fn finish_cleanup(
     completion: &Arc<crate::setup::home_capture::InstalledCopyCompletion>,
@@ -438,7 +438,7 @@ fn retire_completed_copy(
     unreachable!("bounded cleanup loop always returns on its final attempt")
 }
 /// Durable Complete cannot become Failed or authorize a fresh export; the executing root task keeps
-/// the same opaque completion and its custody while ACK or retirement is uncertain.
+/// the same opaque completion and its ownership while ACK or retirement is uncertain.
 fn park_completed_copy(completion: &Arc<crate::setup::home_capture::InstalledCopyCompletion>) -> ! {
     let _held = completion.clone();
     loop {

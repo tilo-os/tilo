@@ -1,4 +1,4 @@
-//! The surface's component lifecycle and control custody: every tab's application, shown or not,
+//! The surface's component lifecycle and control ownership: every tab's application, shown or not,
 //! closes and takes its controls with the surface, whichever strip or row it stands in.
 
 use super::{DesktopSurface, TabId};
@@ -24,10 +24,10 @@ impl ui::component_lifecycle::ComponentLifecycle for DesktopSurface {
 impl ui::widget::controls::ActionControls for DesktopSurface {
     /// Bind every tab, shown or not, and keep `domain` for the tabs built later; then the overlays
     /// the surface currently shows.
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
+        attachment: ui::control_domain::DomainAttachment,
     ) {
         self.controls = Some(domain.clone());
         for row in self.rows.values_mut() {
@@ -35,13 +35,13 @@ impl ui::widget::controls::ActionControls for DesktopSurface {
                 let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
                 for tab in tabs {
                     if let Some(host) = group.host_for_tab_mut(tab) {
-                        ui::widget::controls::install_control_custody(host, domain, attachment);
+                        ui::widget::controls::attach_controls(host, domain, attachment);
                     }
                 }
             }
         }
         for child in self.children_mut() {
-            ui::widget::controls::install_control_custody(child, domain, attachment);
+            ui::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 

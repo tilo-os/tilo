@@ -427,7 +427,7 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     let mut arguments = serde_json::Map::new();
     arguments.insert("text".into(), "Buy milk".into());
     invoke.argument = InvokeArgument::Json(arguments);
-    let witness = state.request_witness(&agent, None, &invoke);
+    let approval = state.request_approval(&agent, None, &invoke);
     let (question, answer) = asked.recv().await.expect("the person is asked");
     let draft = question.draft.expect("the question carries the draft");
     assert_eq!(draft.action_label, "Update");
@@ -438,12 +438,12 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     answer
         .send(crate::app_actions::AppActionConsent::Once.into())
         .unwrap();
-    let witnessed = witness.await.expect("answered").expect("witnessed");
+    let approved = approval.await.expect("answered").expect("approved");
     assert_eq!(
-        witnessed.arguments, None,
+        approved.arguments, None,
         "an unedited answer changes nothing"
     );
-    witnessed.apply(&mut invoke);
+    approved.apply(&mut invoke);
     assert!(matches!(
         state
             .action_invoke(&agent, None, None, &invoke)
@@ -508,7 +508,7 @@ async fn an_agents_ask_edited_on_the_sheet_runs_exactly_the_edited_arguments() {
     let (state, person, mut app) =
         fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
     let (agent, mut invoke, mut asked) = ask_to_update(&state, &person);
-    let witness = state.request_witness(&agent, None, &invoke);
+    let approval = state.request_approval(&agent, None, &invoke);
     let (_question, answer) = asked.recv().await.expect("the person is asked");
     answer
         .send(crate::app_actions::AppActionAnswer {
@@ -525,14 +525,14 @@ async fn an_agents_ask_edited_on_the_sheet_runs_exactly_the_edited_arguments() {
             ],
         })
         .unwrap();
-    let witnessed = witness.await.expect("answered").expect("witnessed");
+    let approved = approval.await.expect("answered").expect("approved");
     let edited = serde_json::json!({"text": "Buy oat milk", "pin": true});
     assert_eq!(
-        witnessed.arguments.clone().map(serde_json::Value::Object),
+        approved.arguments.clone().map(serde_json::Value::Object),
         Some(edited.clone()),
         "the agent is handed the person's arguments"
     );
-    witnessed.apply(&mut invoke);
+    approved.apply(&mut invoke);
     assert!(matches!(
         state
             .action_invoke(&agent, None, None, &invoke)
@@ -557,7 +557,7 @@ async fn arguments_changed_after_the_person_allowed_them_are_refused() {
         serde_json::json!({"text": "Buy oat milk and wine", "pin": false}),
     ] {
         let (agent, mut invoke, mut asked) = ask_to_update(&state, &person);
-        let witness = state.request_witness(&agent, None, &invoke);
+        let approval = state.request_approval(&agent, None, &invoke);
         let (_question, answer) = asked.recv().await.expect("the person is asked");
         answer
             .send(crate::app_actions::AppActionAnswer {
@@ -568,8 +568,8 @@ async fn arguments_changed_after_the_person_allowed_them_are_refused() {
                 }],
             })
             .unwrap();
-        let witnessed = witness.await.expect("answered").expect("witnessed");
-        invoke.confirmation = Some(witnessed.confirmation);
+        let approved = approval.await.expect("answered").expect("approved");
+        invoke.confirmation = Some(approved.confirmation);
         invoke.argument = InvokeArgument::Json(tampered.as_object().cloned().unwrap());
         assert!(
             matches!(
@@ -590,7 +590,7 @@ async fn an_edit_the_draft_does_not_offer_confirms_nothing() {
     let (state, person, mut app) =
         fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
     let (agent, invoke, mut asked) = ask_to_update(&state, &person);
-    let witness = state.request_witness(&agent, None, &invoke);
+    let approval = state.request_approval(&agent, None, &invoke);
     let (_question, answer) = asked.recv().await.expect("the person is asked");
     answer
         .send(crate::app_actions::AppActionAnswer {
@@ -602,7 +602,7 @@ async fn an_edit_the_draft_does_not_offer_confirms_nothing() {
         })
         .unwrap();
     assert!(matches!(
-        witness.await,
+        approval.await,
         Some(Err(ActionHostError::InvalidRequest { .. }))
     ));
     assert!(app.try_recv().is_err(), "nothing runs");
@@ -1696,7 +1696,7 @@ fn a_store_disclosure_with_a_malformed_operation_is_refused_with_the_reason() {
             .cloned()
             .unwrap(),
     );
-    let refused = state.request_witness(&caller, None, &invoke).poll_ready();
+    let refused = state.request_approval(&caller, None, &invoke).poll_ready();
     let PendingPoll::Ready(Err(ActionHostError::InvalidRequest { reason })) = &refused else {
         panic!("refused for its operation: {refused:?}");
     };
@@ -1713,10 +1713,10 @@ async fn a_sheet_closed_unanswered_answers_the_agent_unavailable_not_declined() 
     let (state, person, mut app) =
         fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
     let (agent, invoke, mut asked) = ask_to_update(&state, &person);
-    let witness = state.request_witness(&agent, None, &invoke);
+    let approval = state.request_approval(&agent, None, &invoke);
     let (_question, answer) = asked.recv().await.expect("the person is asked");
     drop(answer);
-    let answered = witness.await.expect("answered");
+    let answered = approval.await.expect("answered");
     let Err(ActionHostError::Unavailable { reason }) = &answered else {
         panic!("unanswered, not declined: {answered:?}");
     };

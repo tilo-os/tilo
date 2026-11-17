@@ -8,7 +8,7 @@
 //!
 //! 1. it asks the relay's own `workspace.enter`
 //!    ([`ENTER_WORKSPACE`](tilo_relay_session::workspaces::ENTER_WORKSPACE)) over a
-//!    session of its own, as the device its custody certifies;
+//!    session of its own, as the device its ownership certifies;
 //! 2. it redeems the invitation the relay answers with
 //!    ([`super::Joined::join`]), which makes the workspace one it holds and
 //!    syncs from then on.

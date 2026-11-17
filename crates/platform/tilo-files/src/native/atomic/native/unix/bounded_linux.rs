@@ -19,7 +19,7 @@ pub(super) fn validate_private(file: &File, metadata: &Metadata) -> io::Result<(
     Ok(())
 }
 
-/// Only the shared exclusive-mkdir custody invokes this fresh-only operation.
+/// Only the shared exclusive-mkdir ownership invokes this fresh-only operation.
 pub(super) fn normalize_fresh_empty(file: &File) -> io::Result<()> {
     let metadata = file.metadata()?;
     if !metadata.is_dir() {

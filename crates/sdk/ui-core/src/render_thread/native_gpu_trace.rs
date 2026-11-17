@@ -67,7 +67,7 @@ fn readings(renderer: &mut Renderer) -> [Reading; 2] {
 }
 
 #[derive(Default)]
-struct Ledger {
+struct Log {
     last: Option<u64>,
     owners: VecDeque<(u64, Frame)>,
 }
@@ -75,7 +75,7 @@ struct Ledger {
 /// One recorder belongs to one render worker / renderer lifetime. IDs from a resumed or replaced
 /// renderer are never compared with another recorder.
 pub(crate) struct Observer {
-    ledgers: [Ledger; 2],
+    logs: [Log; 2],
     rows_left: usize,
     idle_polls_left: usize,
     pending: bool,
@@ -129,18 +129,18 @@ impl Observer {
     fn read(&mut self, readings: [Reading; 2], frame: Option<Frame>) -> Vec<Value> {
         let mut rows = Vec::new();
         self.pending = readings.iter().any(|reading| reading.pending);
-        for (ledger, reading) in self.ledgers.iter_mut().zip(readings) {
+        for (log, reading) in self.logs.iter_mut().zip(readings) {
             if let Some(frame) = frame {
                 self.idle_polls_left = IDLE_POLLS;
-                let changed = reading.latest.is_some() && reading.latest != ledger.last;
+                let changed = reading.latest.is_some() && reading.latest != log.last;
                 if changed && let Some(id) = reading.latest {
-                    if ledger.owners.len() == OWNER_LIMIT
-                        && let Some(evicted) = ledger.owners.pop_front()
+                    if log.owners.len() == OWNER_LIMIT
+                        && let Some(evicted) = log.owners.pop_front()
                     {
                         rows.push(row("owner_evicted", &reading, Some(evicted), None));
                     }
-                    ledger.owners.push_back((id, frame));
-                    ledger.last = Some(id);
+                    log.owners.push_back((id, frame));
+                    log.last = Some(id);
                 }
                 let mut attempt = row(
                     "attempt",
@@ -154,14 +154,14 @@ impl Observer {
                 rows.push(attempt);
             }
             if frame.is_none() {
-                ledger.last = reading.latest;
+                log.last = reading.latest;
             }
             if let Some((id, sample)) = reading.sample.as_ref() {
-                let owner = ledger
+                let owner = log
                     .owners
                     .iter()
                     .position(|(known, _)| known == id)
-                    .and_then(|position| ledger.owners.remove(position));
+                    .and_then(|position| log.owners.remove(position));
                 rows.push(row(
                     "completed",
                     &reading,
@@ -178,7 +178,7 @@ impl Observer {
 
 fn enabled(requested: bool, worker_id: u64) -> Option<Observer> {
     requested.then(|| Observer {
-        ledgers: std::array::from_fn(|_| Ledger::default()),
+        logs: std::array::from_fn(|_| Log::default()),
         rows_left: ROW_LIMIT,
         idle_polls_left: IDLE_POLLS,
         pending: false,
@@ -277,9 +277,9 @@ mod tests {
             assert!(rows.iter().all(|row| row["stale_sample"] == true));
             assert!(
                 observer
-                    .ledgers
+                    .logs
                     .iter()
-                    .all(|ledger| ledger.owners.len() == OWNER_LIMIT)
+                    .all(|log| log.owners.len() == OWNER_LIMIT)
             );
         }
 

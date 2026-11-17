@@ -1,7 +1,7 @@
 //! The lane on which an app names the paths it is about to write for one of
 //! its own invocations, so the host can record the agent behind them
 //! ([`runtime_collab::write_attribution`]). It sends no actor: the host takes
-//! that from its own custody of the invocation.
+//! that from its own ownership of the invocation.
 use crate::invocation_scope::WriteAttributionReceipt;
 use std::sync::Arc;
 use tokio::sync::mpsc;

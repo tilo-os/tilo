@@ -90,7 +90,7 @@ struct LaneState {
     /// Content asked for and not yet here.
     wanted: BTreeSet<String>,
     /// Where the host said a want stands, for those it said so of.
-    standing: HashMap<String, ContentState>,
+    known: HashMap<String, ContentState>,
     /// Requests the window has yet to send.
     asks: Vec<String>,
     offers: Vec<(String, Vec<u8>)>,
@@ -299,11 +299,11 @@ impl ContentLane {
     }
 
     /// Where a want of `hash` stands, while it is wanted.
-    fn standing(&self, hash: &str) -> Option<ContentState> {
+    fn known(&self, hash: &str) -> Option<ContentState> {
         let state = self.state.lock_recover();
         state.wanted.contains(hash).then(|| {
             state
-                .standing
+                .known
                 .get(hash)
                 .copied()
                 .unwrap_or(ContentState::Pending)
@@ -338,13 +338,13 @@ impl ContentLane {
 
     /// The record's host said where a want of `hash` stands. A window
     /// waiting for the content looks again: what it shows follows.
-    pub fn stands(&self, hash: String, standing: ContentState) {
+    pub fn stands(&self, hash: String, found: ContentState) {
         {
             let mut state = self.state.lock_recover();
-            if !state.wanted.contains(&hash) || standing == ContentState::Resolved {
+            if !state.wanted.contains(&hash) || found == ContentState::Resolved {
                 return;
             }
-            state.standing.insert(hash, standing);
+            state.known.insert(hash, found);
         }
         arrived_somewhere();
     }
@@ -357,7 +357,7 @@ impl ContentLane {
         {
             let mut state = self.state.lock_recover();
             state.wanted.remove(hash);
-            state.standing.remove(hash);
+            state.known.remove(hash);
         }
     }
 }
@@ -436,10 +436,7 @@ impl ContentBackend for DocumentContent {
         self.keep_arrived();
         match self.local.state(hash) {
             ContentState::Resolved => ContentState::Resolved,
-            local => self
-                .lane
-                .standing(&hash.to_ascii_lowercase())
-                .unwrap_or(local),
+            local => self.lane.known(&hash.to_ascii_lowercase()).unwrap_or(local),
         }
     }
 

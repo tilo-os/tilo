@@ -681,13 +681,13 @@ tilo_test_env::scenario! {
             let named = WebViewCommand::Page {
                 request_id: 7,
                 actor: PageActor::named("agent:ada"),
-                request: PageRequest::Ledger { since: 3 },
+                request: PageRequest::Log { since: 3 },
             };
             assert!(command_within_limits(&named));
             assert_eq!(
                 encode_command(named),
                 Some(
-                    json!({"op":"page","request_id":7,"action":"ledger","since":3,"actor":"agent:ada"})
+                    json!({"op":"page","request_id":7,"action":"log","since":3,"actor":"agent:ada"})
                 )
             );
             let review = WebViewCommand::Page {

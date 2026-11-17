@@ -221,7 +221,7 @@ mod tests {
         assert!(std::fs::read_dir(&workspace).unwrap().next().is_none());
     }
     #[test]
-    fn inode_reduction_refuses_inconsistent_alias_facts_and_lost_private_custody() {
+    fn inode_reduction_refuses_inconsistent_alias_facts_and_lost_private_ownership() {
         let fixture = fixture();
         let workspace = fixture.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();

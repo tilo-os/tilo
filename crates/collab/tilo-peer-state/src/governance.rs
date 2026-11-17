@@ -14,8 +14,8 @@ use crate::state::{GovernedIdentity, RedemptionReceipt};
 /// good: it is the admission evidence membership reads (`has_admission`, the
 /// governed member list). Only the oldest of the later receipts are dropped,
 /// and nothing they prove is lost: [`admit_invited_member`] copies every
-/// receipt it has seen into the per-invite `invitation_receipts_v1` ledger in
-/// the same transaction that drops one, and that ledger is what refuses a
+/// receipt it has seen into the per-invite `invitation_receipts_v1` log in
+/// the same transaction that drops one, and that log is what refuses a
 /// second redemption of the same invitation.
 pub const MAX_RETAINED_IDENTITY_ADMISSIONS: usize = 8;
 
@@ -85,20 +85,20 @@ pub(crate) fn admit_invited_member(
         request_id: redemption.request_id(),
         role: grant.role,
     };
-    // The receipts of this invitation: the ledger's under its key, and the
+    // The receipts of this invitation: the log's under its key, and the
     // ones device rows keep ([`crate::cached_document::CachedDocument::redemptions`]).
     let mut exact_redemption = false;
-    let ledgered =
+    let logged =
         crate::workspace::invitation_receipts_of(document, &hex::encode(receipt.invite_id))?
             .into_iter()
             .map(|bytes| {
-                crate::state::LedgerReceipt::decode(&bytes)
-                    .map(|ledgered| ledgered.receipt)
+                crate::state::StoredReceipt::decode(&bytes)
+                    .map(|logged| logged.receipt)
                     .map_err(|error| error.to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
     let on_rows = held.redemptions().map_err(ToOwned::to_owned)?;
-    for existing in ledgered
+    for existing in logged
         .iter()
         .chain(on_rows.get(&receipt.invite_id).into_iter().flatten())
     {
@@ -140,35 +140,35 @@ pub(crate) fn admit_invited_member(
         .map_err(|error| error.to_string())?
         .ok_or("governed peers missing")?
         .1;
-    let ledger = match candidate
-        .get(ROOT, crate::state::invitation_ledger::RECEIPTS_KEY)
+    let log = match candidate
+        .get(ROOT, crate::state::invitation_receipts::RECEIPTS_KEY)
         .map_err(|error| error.to_string())?
     {
         Some((_, object)) => object,
         None => candidate
             .put_object(
                 ROOT,
-                crate::state::invitation_ledger::RECEIPTS_KEY,
+                crate::state::invitation_receipts::RECEIPTS_KEY,
                 automerge::ObjType::Map,
             )
             .map_err(|error| error.to_string())?,
     };
-    // The invitation goes into the ledger with its issuer's certificate and
+    // The invitation goes into the log with its issuer's certificate and
     // transport details named by digest, kept once for every receipt of an
-    // invitation they signed alike ([`crate::state::invitation_ledger`]).
+    // invitation they signed alike ([`crate::state::invitation_receipts`]).
     let signed = redemption.join().signed_invitation();
     let shared = crate::join::invitation_shared_runs(signed);
-    let (ledgered, parts) = crate::state::LedgerReceipt::new(
+    let (logged, parts) = crate::state::StoredReceipt::new(
         receipt.clone(),
         signed,
         &shared.iter().map(Vec::as_slice).collect::<Vec<_>>(),
     );
-    crate::state::invitation_ledger::put_parts(&mut candidate, &parts)?;
+    crate::state::invitation_receipts::put_parts(&mut candidate, &parts)?;
     candidate
         .put(
-            &ledger,
+            &log,
             hex::encode(receipt.invite_id),
-            automerge::ScalarValue::Bytes(ledgered.encode().map_err(|error| error.to_string())?),
+            automerge::ScalarValue::Bytes(logged.encode().map_err(|error| error.to_string())?),
         )
         .map_err(|error| error.to_string())?;
     // An agent identity stays bound to its delegation whatever else it
@@ -630,7 +630,7 @@ mod retention_tests {
                     governed
                         .invitation_receipts
                         .contains_key(&hex::encode(invite(redemption))),
-                    "every receipt, pruned or not, stays in the per-invite ledger"
+                    "every receipt, pruned or not, stays in the per-invite log"
                 );
             }
 

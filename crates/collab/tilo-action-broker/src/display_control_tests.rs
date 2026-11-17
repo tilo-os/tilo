@@ -268,7 +268,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                 appearance: None,
             };
             // The previous normal host api really admitted this action but
-            // supplied no original custody. The generic API still cannot
+            // supplied no original ownership. The generic API still cannot
             // borrow native-owner identity just from a local-person label.
             let mut generic = request.clone();
             generic.invocation = tilo_actions::InvocationId::new();

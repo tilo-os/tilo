@@ -1,10 +1,10 @@
 //! Source-consent presentation. The backend owns matching directory grants;
 //! choices, capture intents and native worker state still belong to the frontend.
-use super::native_ownership::{FrontendNativeActor as Actor, FrontendNativeCustody};
+use super::native_ownership::{FrontendNativeActor as Actor, FrontendNativeOwnership};
 use std::sync::Arc;
 
 pub(crate) struct OriginalSource {
-    pub(super) native_payload: FrontendNativeCustody,
+    pub(super) native_payload: FrontendNativeOwnership,
     pub(super) applications_only: fn(&OriginalSource) -> bool,
 }
 impl OriginalSource {

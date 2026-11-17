@@ -1361,12 +1361,12 @@ impl Widget for Autocomplete {
 }
 
 impl crate::widget::controls::ActionControls for Autocomplete {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        self.input.install_control_custody(domain, attachment);
+        self.input.attach_controls(domain, attachment);
     }
 }
 

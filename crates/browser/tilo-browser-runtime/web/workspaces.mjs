@@ -56,8 +56,8 @@
  * opening last time (`settleFailedWorkspace`).
  */
 import {AdmissionError} from './admission.mjs';
-import {connectPeer, fitDisplayName, identityProfile, joinWorkspace, pairDevice, renewDevice, withCustody} from './peer.mjs';
-import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {connectPeer, fitDisplayName, identityProfile, joinWorkspace, pairDevice, renewDevice, withDeviceKey} from './peer.mjs';
+import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {originOf} from './entered-workspaces.mjs';
 import {fetchProfile} from './identity.mjs';
 import {PAIRING_SAME_PERSON, PAIRING_STOPPED, shownName} from './pairing.mjs';
@@ -496,12 +496,12 @@ export async function confirmWaitList({workspace, token, fetch = globalThis.fetc
 
 /**
  * Where what this browser left on `workspace`'s wait list stands (`POST
- * <admission>wait-list/standing`): `pending` (to be confirmed), `listed`,
+ * <admission>wait-list/status`): `pending` (to be confirmed), `listed`,
  * `invited` or `gone` (then forgotten here); `null` when nothing is kept
  * here or the entry cannot say now.
  */
-export async function waitListStanding({workspace, fetch = globalThis.fetch, storage = globalThis.localStorage}) {
-  const entry = new URL('wait-list/standing', admissionEntry(workspace));
+export async function waitListStatus({workspace, fetch = globalThis.fetch, storage = globalThis.localStorage}) {
+  const entry = new URL('wait-list/status', admissionEntry(workspace));
   const kept = readListings(storage)[entry.origin];
   if (typeof kept?.secret !== 'string') return null;
   let response;
@@ -511,10 +511,10 @@ export async function waitListStanding({workspace, fetch = globalThis.fetch, sto
     return null;
   }
   if (!response.ok) return null;
-  const {standing} = await response.json().catch(() => ({}));
-  if (!['pending', 'listed', 'invited', 'gone'].includes(standing)) return null;
-  if (standing === 'gone') forgetListing(storage, entry.origin);
-  return standing;
+  const {status} = await response.json().catch(() => ({}));
+  if (!['pending', 'listed', 'invited', 'gone'].includes(status)) return null;
+  if (status === 'gone') forgetListing(storage, entry.origin);
+  return status;
 }
 
 /** The memberships this browser keeps, by host origin. One that names no workspace field at all
@@ -638,8 +638,8 @@ const backOff = ({attempt, retryAfter = null, signal}) => new Promise((resolve, 
 
 /** This tab's device key for `profile`: the one it held before a reload,
  * else a free one this browser has, a new one when other tabs hold them all
- * (`device-custody.mjs`). */
-const browserCustody = profile => openDeviceCustody({profile, storage: idbStorage()});
+ * (`device-key.mjs`). */
+const browserDeviceKey = profile => openDeviceKey({profile, storage: idbStorage()});
 
 /**
  * Join `workspace` as `identity` (the person, created and kept by the
@@ -649,7 +649,7 @@ const browserCustody = profile => openDeviceCustody({profile, storage: idbStorag
  * what this browser kept for the previous host stays on this device in a
  * namespace of its own.
  *
- * Each tab is a device of its own (`openCustody`, one device key per tab
+ * Each tab is a device of its own (`openDeviceKey`, one device key per tab
  * open at once): a tab that takes a key no host has seen yet is a new
  * device of the person. The workspace admits each device once, so a new device
  * of a person whose root this page holds is admitted through the entry; one
@@ -658,7 +658,7 @@ const browserCustody = profile => openDeviceCustody({profile, storage: idbStorag
  */
 export async function joinViaHost({
   workspace, identity, displayName = defaultDisplayName(identity?.userPublicKey), memberships = globalThis.localStorage,
-  join = joinWorkspace, connect = connectPeer, pair = pairDevice, openCustody = browserCustody, renew = renewDevice,
+  join = joinWorkspace, connect = connectPeer, pair = pairDevice, openDeviceKey = browserDeviceKey, renew = renewDevice,
   wait = backOff, onProgress, ...connectOptions
 }) {
   const entry = admissionEntry(workspace);
@@ -673,9 +673,9 @@ export async function joinViaHost({
     // A device paired to a person kept elsewhere: only that person's
     // devices can let it in again, so a failure is the page's to show.
     const profile = identityProfile(known, known.origin);
-    const custody = await openCustody(profile);
-    const common = {...connectOptions, origin: known.origin, workspace: asking ?? known.workspace, userPublicKey: known.userPublicKey, profile, custody, displayName};
-    return withCustody(custody, () => (custody.created
+    const deviceKey = await openDeviceKey(profile);
+    const common = {...connectOptions, origin: known.origin, workspace: asking ?? known.workspace, userPublicKey: known.userPublicKey, profile, deviceKey, displayName};
+    return withDeviceKey(deviceKey, () => (deviceKey.created
       // A tab with a key of its own: a new device of that person, which
       // only their root can certify. It pairs as a new browser would.
       ? pair({...common, entry}).catch(error => { throw entryRefused(error); })
@@ -683,28 +683,28 @@ export async function joinViaHost({
   }
   if (!identity?.userPublicKey) throw new TypeError("joining through a host needs the person's identity");
   /** Ask the entry to admit the person, then join with what it hands out.
-   * `custody` (this tab's device key for `known`'s host) goes on where the
+   * `device key` (this tab's device key for `known`'s host) goes on where the
    * entry names the same host. `refused`: the host refused the membership
    * this browser kept. `fresh`: join as a new device of the person. */
-  const throughEntry = async (custody, refused, fresh) => {
+  const throughEntry = async (deviceKey, refused, fresh) => {
     // The entry admits into its workspace's own host (`directory.rs` in the
     // relay's protocol).
     const origin = workspace.host.origin;
-    const sameHost = custody && known && originOf(origin) === originOf(known.origin);
-    if (custody && !sameHost) await custody.close();
-    let device = sameHost ? custody : null;
+    const sameHost = deviceKey && known && originOf(origin) === originOf(known.origin);
+    if (deviceKey && !sameHost) await deviceKey.close();
+    let device = sameHost ? deviceKey : null;
     if (fresh) {
       const profile = identityProfile(identity, origin);
-      device = await renew(device ?? await openCustody(profile), profile);
+      device = await renew(device ?? await openDeviceKey(profile), profile);
     }
     let admittedAt = null;
     const joining = () => join({
-      ...connectOptions, origin, entry, identity, displayName, ...(device ? {custody: device} : {}),
+      ...connectOptions, origin, entry, identity, displayName, ...(device ? {deviceKey: device} : {}),
       onProgress: event => { if (event.phase === 'admitted') admittedAt = event.workspace; onProgress?.(event); },
     });
     let peer;
     try {
-      peer = fresh ? await withCustody(device, joining, connectOptions.signal) : await joining();
+      peer = fresh ? await withDeviceKey(device, joining, connectOptions.signal) : await joining();
     } catch (error) {
       const said = entryRefused(error);
       // The workspace's people took the person out (a ban, or a removal
@@ -732,8 +732,8 @@ export async function joinViaHost({
    * pass through `wait` (the reconnect screen, with the backoff and the
    * entry's own `Retry-After`), so the page says where it stands and tries
    * again rather than stopping at an error. */
-  const admitAnew = async (custody, refused = false) => {
-    let held = custody;
+  const admitAnew = async (deviceKey, refused = false) => {
+    let held = deviceKey;
     let since = null;
     /** How many times this tab has come again as a new device. */
     let renewals = 0;
@@ -761,16 +761,16 @@ export async function joinViaHost({
   };
   if (!forThisWorkspace || known?.userPublicKey !== identity.userPublicKey) return admitAnew();
   // Other tabs of this browser may hold every device key it has for this
-  // host (`custody-busy`): nothing the host refused, so the membership stays
+  // host (`device-key-busy`): nothing the host refused, so the membership stays
   // and the entry is not asked, which would spend an admission to fail the same way.
-  const custody = await openCustody(identityProfile(identity, known.origin));
-  return withCustody(custody, async () => {
+  const deviceKey = await openDeviceKey(identityProfile(identity, known.origin));
+  return withDeviceKey(deviceKey, async () => {
     // A key no host has seen yet is a new device of the person: the workspace
     // admits it through the entry, as it admitted the person's first.
-    if (custody.created) return admitAnew(custody);
+    if (deviceKey.created) return admitAnew(deviceKey);
     let peer;
     try {
-      peer = await connect({...connectOptions, origin: known.origin, workspace: known.workspace, identity, custody, displayName});
+      peer = await connect({...connectOptions, origin: known.origin, workspace: known.workspace, identity, deviceKey, displayName});
       // A host refuses a membership it no longer has once the session
       // starts, not when connecting: wait for its answer here. A host
       // replaying the workspace's desktop to this device has let it in.
@@ -781,20 +781,20 @@ export async function joinViaHost({
       // The host has not answered yet, or is not answering at all (it is
       // restarting): nothing the host refused, so the membership stays, and
       // joining again would spend an admission and a join to fail the same way.
-      if (error?.name === 'CustodyError' || error?.name === 'TimeoutError' || hostUnreachable(error)) throw error;
+      if (error?.name === 'DeviceKeyError' || error?.name === 'TimeoutError' || hostUnreachable(error)) throw error;
       if (error?.code === 'host-changed') {
         // Another host answers at this origin now: join it as the same
         // person. What this browser kept stays pinned to the previous host.
         console.info('host admission: the host was set up again, joining it anew');
         keepMembership(memberships, workspace, null);
-        return admitAnew(custody);
+        return admitAnew(deviceKey);
       }
       // The membership is gone (pruned after a long absence, or the host
       // started its workspace anew), or this device was never admitted: ask the
       // host to admit the same person again rather than stop at an error.
       console.warn('host admission: reconnecting failed, asking to join again', error);
       keepMembership(memberships, workspace, null);
-      return admitAnew(custody, true);
+      return admitAnew(deviceKey, true);
     }
   }, connectOptions.signal);
 }

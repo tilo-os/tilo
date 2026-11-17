@@ -624,7 +624,7 @@ impl HostContext {
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
             search_requests: Rc::default(),
-            control_domain: crate::control_custody::ControlDomain::new(),
+            control_domain: crate::control_domain::ControlDomain::new(),
             closing: Rc::new(Cell::new(false)),
             services: crate::host::current(),
             models: crate::models::Models::default(),
@@ -761,7 +761,7 @@ impl HostContext {
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {
         self.control_domain
-            .set_owner(crate::control_custody::ControlOwner::Component(
+            .set_owner(crate::control_domain::ControlOwner::Component(
                 self.callback_binding(),
             ));
         self.control_domain.clone()
@@ -1289,11 +1289,11 @@ impl AppComponent {
             .as_mut()
             .and_then(|retirement| retirement.take_app())
     }
-    /// Register presentation for this component's actual document custody. Every
+    /// Register presentation for this component's actual document ownership. Every
     /// domain scope reads that record; external scopes retain their stated reason.
     /// This metadata has no new authority and follows native/headless/tile mounts.
     /// # Errors
-    /// Refuses missing, stale or foreign document custody and invalid scope metadata.
+    /// Refuses missing, stale or foreign document ownership and invalid scope metadata.
     pub fn register_document_history(
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
@@ -1384,7 +1384,7 @@ impl AppComponent {
         Ok(())
     }
 
-    /// Preserve every recovery owner while a runner still has custody of this component.
+    /// Preserve every recovery owner while a runner still owns this component.
     pub(crate) fn setup_error(&mut self, source: LaunchError) -> LaunchError {
         let binding = self.callback_binding();
         self.close();
@@ -1530,10 +1530,10 @@ impl AppComponent {
             crate::semantic_document_read::retirement::MountConstructionRetirement::new(
                 context.retirement.as_ref(),
             );
-        crate::widget::controls::install_control_custody(
+        crate::widget::controls::attach_controls(
             root.as_mut(),
             &context.control_domain(),
-            crate::control_custody::CustodyAttachment::Initial,
+            crate::control_domain::DomainAttachment::Initial,
         );
         context.control_domain().finish_initial_installation();
         if let Some(content) = context.content() {
@@ -1610,7 +1610,7 @@ impl AppComponent {
             })
             .collect()
     }
-    /// [`Self::search_providers`] as the action directory's witness reads them: the same names,
+    /// [`Self::search_providers`] as the action directory's observation reads them: the same names,
     /// generations and domains under this component's lifetime, without minting a proxy or making the
     /// root's providers.
     pub(crate) fn search_provider_descriptors(
@@ -1645,10 +1645,10 @@ impl AppComponent {
             return Err(LaunchError::BindingMismatch);
         }
         if let Some(root) = &mut self.root {
-            crate::widget::controls::install_control_custody(
+            crate::widget::controls::attach_controls(
                 root.as_mut(),
                 &self.context.control_domain(),
-                crate::control_custody::CustodyAttachment::Dynamic,
+                crate::control_domain::DomainAttachment::Dynamic,
             );
         }
         self.context

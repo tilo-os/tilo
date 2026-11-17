@@ -4,26 +4,26 @@ use super::{
     TargetProjectionEndpoint, TargetProjectionMode, io, mount_id, refused, root,
 };
 use crate::fd::identity;
-use crate::ordinary_namespace::NamespaceWitness;
+use crate::ordinary_namespace::NamespaceProof;
 use getrandom::rand_core::TryRng as _;
 use runtime_portal::process_binding::ExecutingPeer;
 use std::{ffi::CString, os::unix::fs::DirBuilderExt, path::PathBuf};
 
-/// This is lifetime custody only.
+/// This is lifetime ownership only.
 #[derive(Default)]
-pub(super) struct ExposureCustody(std::sync::Mutex<ExposureState>);
+pub(super) struct ExposureOwnership(std::sync::Mutex<ExposureState>);
 #[derive(Default)]
 struct ExposureState {
     holds: usize,
     stopping: bool,
 }
-pub(super) struct ExposureHold(Arc<ExposureCustody>);
-impl ExposureCustody {
+pub(super) struct ExposureHold(Arc<ExposureOwnership>);
+impl ExposureOwnership {
     pub(super) fn acquire(self: &Arc<Self>) -> io::Result<ExposureHold> {
         let mut state = self
             .0
             .lock()
-            .map_err(|_| refused("Exposure custody poisoned"))?;
+            .map_err(|_| refused("Exposure ownership poisoned"))?;
         if state.stopping {
             return Err(io::ErrorKind::Interrupted.into());
         }
@@ -272,7 +272,7 @@ enum Placement {
     Remote(remote_placement::RemotePlacement),
 }
 impl HeldViewExposure {
-    /// Prepare custody for a verified launcher in this mount namespace.
+    /// Prepare ownership for a verified launcher in this mount namespace.
     pub fn prepare(
         endpoint: Arc<TargetProjectionEndpoint>,
         peer: Arc<ExecutingPeer>,
@@ -366,7 +366,7 @@ impl HeldViewExposure {
         self.facts = Some(facts);
         self.check()
     }
-    /// Validate live authority and exact placement custody.
+    /// Validate live authority and exact placement ownership.
     pub fn check(&self) -> io::Result<()> {
         self.endpoint.check()?;
         if let Some(peer) = &self.peer
@@ -388,7 +388,7 @@ impl HeldViewExposure {
         }
         Ok(())
     }
-    /// Return the held view after validating custody.
+    /// Return the held view after validating ownership.
     pub fn file(&self) -> io::Result<&File> {
         self.check()?;
         match &self.placement {
@@ -433,20 +433,20 @@ impl HeldViewExposure {
         self.possible_delivery = true;
         Ok(())
     }
-    /// Retain an independently verified consuming namespace witness.
-    pub fn adopt_consumer(&mut self, witness: &NamespaceWitness) -> io::Result<()> {
+    /// Retain an independently verified consuming namespace proof.
+    pub fn adopt_consumer(&mut self, proof: &NamespaceProof) -> io::Result<()> {
         let peer = self
             .peer
             .as_ref()
-            .ok_or_else(|| refused("Fixture cannot adopt production witness"))?;
-        witness.validate_for_launcher(peer)?;
+            .ok_or_else(|| refused("Fixture cannot adopt production proof"))?;
+        proof.validate_for_launcher(peer)?;
         if self.consumer.is_some() {
             return Err(io::ErrorKind::AlreadyExists.into());
         }
         // Retain before any fallible remote W exchange.
-        self.consumer = Some(witness.init_pidfd()?);
+        self.consumer = Some(proof.init_pidfd()?);
         if let Placement::Remote(p) = &mut self.placement {
-            p.adopt_consumer(witness, peer)?;
+            p.adopt_consumer(proof, peer)?;
         }
         Ok(())
     }
@@ -555,7 +555,7 @@ impl FixtureExposure {
     ) -> io::Result<()> {
         root()?;
         if !self.inner.possible_delivery || self.inner.consumer.is_some() || info.len() > 16384 {
-            return Err(refused("Fixture consumer custody state differs"));
+            return Err(refused("Fixture consumer ownership state differs"));
         }
         fn status(pid: u32) -> io::Result<String> {
             let mut text = String::new();
@@ -634,20 +634,20 @@ impl FixtureExposure {
 }
 
 #[cfg(test)]
-mod custody_tests {
+mod ownership_tests {
     use super::*;
     tilo_test_env::scenario! {
         fn stopping_and_holding_an_exposure_never_overlap;
 
         phase intentional_stop_and_acquisition_are_one_closed_transition;
         {
-            let custody = Arc::new(ExposureCustody::default());
-            let hold = custody.acquire().unwrap();
-            assert!(!custody.begin_stop());
+            let ownership = Arc::new(ExposureOwnership::default());
+            let hold = ownership.acquire().unwrap();
+            assert!(!ownership.begin_stop());
             drop(hold);
-            assert!(custody.begin_stop());
+            assert!(ownership.begin_stop());
             assert_eq!(
-                custody.acquire().err().unwrap().kind(),
+                ownership.acquire().err().unwrap().kind(),
                 io::ErrorKind::Interrupted
             );
         }
@@ -655,24 +655,24 @@ mod custody_tests {
         phase simultaneous_stop_cannot_overlap_a_new_exposure_hold;
         {
             for _ in 0..32 {
-                let custody = Arc::new(ExposureCustody::default());
+                let ownership = Arc::new(ExposureOwnership::default());
                 let barrier = Arc::new(std::sync::Barrier::new(2));
-                let worker_custody = Arc::clone(&custody);
+                let worker_ownership = Arc::clone(&ownership);
                 let worker_barrier = Arc::clone(&barrier);
                 let worker = std::thread::spawn(move || {
                     worker_barrier.wait();
-                    worker_custody.acquire()
+                    worker_ownership.acquire()
                 });
                 barrier.wait();
-                let stopping = custody.begin_stop();
+                let stopping = ownership.begin_stop();
                 let acquired = worker.join().unwrap();
                 assert_ne!(stopping, acquired.is_ok());
                 if let Ok(hold) = acquired {
-                    assert!(!custody.begin_stop());
+                    assert!(!ownership.begin_stop());
                     drop(hold);
-                    assert!(custody.begin_stop());
+                    assert!(ownership.begin_stop());
                 }
-                assert!(custody.acquire().is_err());
+                assert!(ownership.acquire().is_err());
             }
         }
     }
@@ -681,7 +681,7 @@ mod custody_tests {
 mod mount_placement;
 mod remote_placement;
 pub(crate) use mount_placement::MountPlacement;
-/// Preparation retains the real endpoint and target service custody.
+/// Preparation retains the real endpoint and target service ownership.
 struct ExposurePreparation {
     endpoint: Arc<TargetProjectionEndpoint>,
     hold: Option<ExposureHold>,

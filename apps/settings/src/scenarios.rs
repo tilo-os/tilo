@@ -500,7 +500,7 @@ pub(crate) fn billing_fixture(
 ) -> Option<ui::tilo_actions::remote::host_account::HostAccount> {
     use ui::tilo_actions::remote::host_account::{
         Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PaymentMethod,
-        PlanOffer, Standing, Usage, WorkspaceUsage,
+        PlanOffer, Subscription, Usage, WorkspaceUsage,
     };
     let pro = Limits {
         max_running: 2,
@@ -509,8 +509,8 @@ pub(crate) fn billing_fixture(
         included_vm_seconds: Some(100 * 3600),
         ..Limits::default()
     };
-    let standing = match scenario? {
-        "billing" => Standing {
+    let subscription = match scenario? {
+        "billing" => Subscription {
             account: "acct-ada".into(),
             plan: Some("pro".into()),
             payment_method: Some(PaymentMethod {
@@ -546,9 +546,9 @@ pub(crate) fn billing_fixture(
                 },
             ],
         },
-        BILLING_NEW => Standing {
+        BILLING_NEW => Subscription {
             account: "acct-ada".into(),
-            ..Standing::default()
+            ..Subscription::default()
         },
         _ => return None,
     };
@@ -561,7 +561,7 @@ pub(crate) fn billing_fixture(
             price: Some("$20 a month".into()),
             limits: pro,
         }],
-        standing: Some(standing),
+        subscription: Some(subscription),
         manage_billing: Some("https://tilo.sh/billing".into()),
     })
 }

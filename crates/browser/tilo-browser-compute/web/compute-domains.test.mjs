@@ -28,7 +28,7 @@ test('admission refuses oversized input before worker creation', async()=>{
   await assert.rejects(request(owner('a'),{bytes:new Uint8Array(16*1024*1024+1)}),/budget/);
   assert.equal(workers.length,0); assert.equal(pool.snapshot().jobs,0);
 });
-test('real output custody lasts through blocked consumer and releases exactly once',async()=>{
+test('real output ownership lasts through blocked consumer and releases exactly once',async()=>{
   const {pool,workers,owner,request}=setup();
   let release; const blocked=new Promise(r=>release=r); let pixels;
   const p=request(owner('a'),{},async result=>{pixels=[...result.rgba];await blocked;});
@@ -78,7 +78,7 @@ test('malformed identities and duplicate/out of order chunks fail closed',async(
     await rejected;assert.equal(pool.snapshot().managed,0);
   }
 });
-test('aborted preparation keeps budget until its yielded copy releases custody',async()=>{
+test('aborted preparation keeps budget until its yielded copy releases ownership',async()=>{
   let resume;const hold=new Promise(r=>resume=r);const {pool,owner,request}=setup({yieldTask:()=>hold});
   const abort=new AbortController(),p=request(owner('a','foreground',abort.signal));const rejected=assert.rejects(p,/closed/);
   abort.abort();await rejected;assert.equal(pool.snapshot().jobs,1);assert.ok(pool.snapshot().managed>0);
@@ -145,7 +145,7 @@ for(const change of ['close','revoke']) {
     assert.deepEqual(pool.snapshot(),{jobs:0,leases:0,encoded:0,managed:0});a.close();b.close();
   });
 }
-test('retirement reentry holds custody until the delivery handoff unwinds',async()=>{
+test('retirement reentry holds ownership until the delivery handoff unwinds',async()=>{
   const {pool,workers,owner,request}=setup();const a=owner('a');let held;
   const p=request(a,{},async()=>assert.fail('closed result delivered'));const refused=assert.rejects(p,/closed/);
   await tick();const w=workers[0],terminate=w.terminate.bind(w);

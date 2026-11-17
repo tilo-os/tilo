@@ -156,7 +156,7 @@ mod tests {
             assert_eq!(
                 WorkspaceAuthority::role_of(&ws, &peer),
                 Some(CapRole::Editor),
-                "a member in good standing has the role they were admitted with"
+                "a member has the role they were admitted with"
             );
 
             let block = ws.policy.block(PEER, Grantee::person(OWNER));

@@ -8,8 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_files::native::migration::Format;
-use tilo_peer_state::join_ledger::{
-    AdministrationRecord, InvitationEntry, JoinChallengeRecord, JoinCompletionRecord, JoinLedger,
+use tilo_peer_state::join_log::{
+    AdministrationRecord, InvitationEntry, JoinChallengeRecord, JoinCompletionRecord, JoinLog,
     MembershipChallengeRecord,
 };
 use tilo_relay_protocol::WorkspaceId;
@@ -54,13 +54,13 @@ pub(super) struct StoredResource {
     /// The publications after the ones the publications file holds.
     pub(super) outgoing: Vec<Publication>,
     pub(super) published: usize,
-    /// The ledger, its join receipts those after the receipts file's.
-    pub(super) collaboration: JoinLedger,
+    /// The log, its join receipts those after the receipts file's.
+    pub(super) collaboration: JoinLog,
     /// How many publications the publications file holds, the first of the
     /// workspace's.
     pub(super) filed_publications: u64,
     /// How many join receipts the receipts file holds, the first of the
-    /// ledger's.
+    /// log's.
     pub(super) filed_receipts: u64,
 }
 
@@ -75,15 +75,15 @@ pub(super) struct StoredDocumentRef<'a> {
     pub(super) generation: u64,
     pub(super) outgoing: &'a [Publication],
     pub(super) published: usize,
-    pub(super) collaboration: LedgerRef<'a>,
+    pub(super) collaboration: LogRef<'a>,
     pub(super) filed_publications: u64,
     pub(super) filed_receipts: u64,
 }
 
-/// The join ledger as a written record holds it, borrowed: its receipts
-/// those the receipts file does not hold. The ledger's own layout.
+/// The join log as a written record holds it, borrowed: its receipts
+/// those the receipts file does not hold. The log's own layout.
 #[derive(Serialize)]
-pub(super) struct LedgerRef<'a> {
+pub(super) struct LogRef<'a> {
     pub(super) invitations: &'a [InvitationEntry],
     pub(super) join_challenges: &'a [JoinChallengeRecord],
     pub(super) join_completions: &'a [JoinCompletionRecord],

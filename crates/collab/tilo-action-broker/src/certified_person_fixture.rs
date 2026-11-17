@@ -5,7 +5,7 @@ pub struct CertifiedPersonFixture {
     pub broker: crate::collab_broker::AppActionBroker,
     pub context: CertifiedPersonContext,
     pub caller: tilo_actions::remote::Caller,
-    pub host: tilo_identity_host::custody::HostIdentity,
+    pub host: tilo_identity_host::identity_store::HostIdentity,
     pub origin: crate::policy_clock::PolicyOrigin,
     pub current: Arc<std::sync::atomic::AtomicBool>,
     _evidence_env: tilo_test_env::ScopedEnv,
@@ -134,6 +134,6 @@ pub fn certified_person_fixture_for_seeds(
         current,
         _evidence_env: evidence_env,
         _evidence_home: evidence_home,
-        host: tilo_identity_host::custody::HostIdentity::kept(certificate, device),
+        host: tilo_identity_host::identity_store::HostIdentity::kept(certificate, device),
     }
 }

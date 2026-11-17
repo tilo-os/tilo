@@ -56,7 +56,7 @@ use serde_json::{Map, Value, json};
 use tilo_action_policy::roles::{self, governance};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState,
+    CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
     WORKSPACE_GOVERNANCE_PROVIDER, host_account, mcp_server, person_accounts, person_models,
     person_telling, person_vault, workspace_governance_resource,
@@ -2016,7 +2016,7 @@ struct Shared {
     workspaces: OnceLock<Workspaces>,
     runtime: tokio::runtime::Handle,
     /// What each admitted invocation came to.
-    ledger: Mutex<InvocationLedger<InvocationState>>,
+    log: Mutex<InvocationLog<InvocationState>>,
     /// The admitted invocations that follow the MCP server: live reads,
     /// moved on whenever the MCP server does.
     mcp_follows: Mutex<std::collections::HashSet<InvocationId>>,
@@ -2035,7 +2035,7 @@ impl HostWorkspaceActions {
             shared: Arc::new(Shared {
                 workspaces: OnceLock::new(),
                 runtime: tokio::runtime::Handle::current(),
-                ledger: Mutex::new(InvocationLedger::default()),
+                log: Mutex::new(InvocationLog::default()),
                 mcp_follows: Mutex::default(),
                 account_follows: Mutex::default(),
             }),
@@ -2091,8 +2091,8 @@ impl HostWorkspaceActions {
         }
     }
 
-    fn ledger(&self) -> std::sync::MutexGuard<'_, InvocationLedger<InvocationState>> {
-        self.shared.ledger.lock_recover()
+    fn log(&self) -> std::sync::MutexGuard<'_, InvocationLog<InvocationState>> {
+        self.shared.log.lock_recover()
     }
 
     /// Whether `target` is the account read of a host that keeps workspaces
@@ -2117,9 +2117,9 @@ impl HostWorkspaceActions {
     ) -> Result<InvocationReceipt, ActionHostError> {
         workspaces.mcp_keeper(caller, certificate)?;
         let invocation = request.invocation;
-        let mut ledger = self.ledger();
-        if ledger.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {
-            return ledger
+        let mut log = self.log();
+        if log.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {
+            return log
                 .get(caller, &invocation)
                 .map(InvocationState::receipt)
                 .ok_or(ActionHostError::UnknownInvocation);
@@ -2133,8 +2133,8 @@ impl HostWorkspaceActions {
             },
         );
         let receipt = state.receipt();
-        ledger.complete(&invocation, state);
-        drop(ledger);
+        log.complete(&invocation, state);
+        drop(log);
         self.shared.mcp_follows.lock_recover().insert(invocation);
         Ok(receipt)
     }
@@ -2147,8 +2147,8 @@ impl HostWorkspaceActions {
     /// Read the MCP server again for the follow `id`; whether it moved.
     fn mcp_moved(&self, workspaces: &Workspaces, caller: &Caller, id: &InvocationId) -> bool {
         let value = mcp_value(workspaces);
-        let mut ledger = self.ledger();
-        let Some(entry) = ledger.get_mut(caller, id) else {
+        let mut log = self.log();
+        let Some(entry) = log.get_mut(caller, id) else {
             return false;
         };
         let sequence = match &entry.update {
@@ -2167,13 +2167,13 @@ impl HostWorkspaceActions {
                 value,
             },
         );
-        drop(ledger);
+        drop(log);
         true
     }
 
     /// Whether `caller` started invocation `id` here.
     fn admitted(&self, caller: &Caller, id: &InvocationId) -> bool {
-        self.ledger().get(caller, id).is_some()
+        self.log().get(caller, id).is_some()
     }
 
     /// Follow the person's mail accounts for `caller` as invocation
@@ -2189,9 +2189,9 @@ impl HostWorkspaceActions {
     ) -> Result<InvocationReceipt, ActionHostError> {
         let person = Workspaces::asking_person(caller, certificate, workspace_id)?;
         let invocation = request.invocation;
-        let mut ledger = self.ledger();
-        if ledger.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {
-            return ledger
+        let mut log = self.log();
+        if log.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {
+            return log
                 .get(caller, &invocation)
                 .map(InvocationState::receipt)
                 .ok_or(ActionHostError::UnknownInvocation);
@@ -2205,8 +2205,8 @@ impl HostWorkspaceActions {
             },
         );
         let receipt = state.receipt();
-        ledger.complete(&invocation, state);
-        drop(ledger);
+        log.complete(&invocation, state);
+        drop(log);
         self.shared
             .account_follows
             .lock_recover()
@@ -2228,8 +2228,8 @@ impl HostWorkspaceActions {
         let Ok(value) = workspaces.accounts_listing(&person) else {
             return false;
         };
-        let mut ledger = self.ledger();
-        let Some(entry) = ledger.get_mut(caller, id) else {
+        let mut log = self.log();
+        let Some(entry) = log.get_mut(caller, id) else {
             return false;
         };
         let sequence = match &entry.update {
@@ -2248,7 +2248,7 @@ impl HostWorkspaceActions {
                 value,
             },
         );
-        drop(ledger);
+        drop(log);
         true
     }
 
@@ -2289,7 +2289,7 @@ fn still_running(
 ) -> InvocationReceipt {
     let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
     let receipt = accepted.receipt();
-    host.ledger().complete(&invocation, accepted);
+    host.log().complete(&invocation, accepted);
     let host = host.clone();
     host.shared.runtime.clone().spawn(async move {
         let state = match work.await {
@@ -2300,7 +2300,7 @@ fn still_running(
                 &format!("the host's operation stopped: {stopped}"),
             ),
         };
-        host.ledger().complete(&invocation, state);
+        host.log().complete(&invocation, state);
     });
     receipt
 }
@@ -2416,15 +2416,15 @@ impl ActionHost for InWorkspace {
             ));
         }
         let invocation = request.invocation;
-        // The ledger's guard must not outlive the reservation: a retry reads
+        // The log's guard must not outlive the reservation: a retry reads
         // it again below.
-        let reservation = self.host.ledger().reserve(caller, &request);
+        let reservation = self.host.log().reserve(caller, &request);
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(tilo_actions::remote::Reservation::Admitted) => {
                 return Pending::ready(
                     self.host
-                        .ledger()
+                        .log()
                         .get(caller, &invocation)
                         .map(InvocationState::receipt)
                         .ok_or(ActionHostError::UnknownInvocation),
@@ -2468,17 +2468,17 @@ impl ActionHost for InWorkspace {
                 Ok(Ok(value)) => {
                     let state = succeeded(invocation, value);
                     let receipt = state.receipt();
-                    host.ledger().complete(&invocation, state);
+                    host.log().complete(&invocation, state);
                     Ok(receipt)
                 }
                 // Refused before anything changed, or answered from the
                 // workspace's request records on a retry: nothing to remember.
                 Ok(Err(error)) => {
-                    host.ledger().abandon(&invocation);
+                    host.log().abandon(&invocation);
                     Err(error)
                 }
                 Err(stopped) => {
-                    host.ledger().abandon(&invocation);
+                    host.log().abandon(&invocation);
                     Err(ActionHostError::Unavailable {
                         reason: format!("the host's operation stopped: {stopped}"),
                     })
@@ -2500,7 +2500,7 @@ impl ActionHost for InWorkspace {
         {
             self.host.accounts_moved(workspaces, caller, id);
         }
-        self.host.ledger().get(caller, id).cloned()
+        self.host.log().get(caller, id).cloned()
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
@@ -2540,7 +2540,7 @@ impl ActionHost for InWorkspace {
     ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
         if self.host.follows_mcp(caller, id) {
             self.host.shared.mcp_follows.lock_recover().remove(id);
-            self.host.ledger().complete(
+            self.host.log().complete(
                 id,
                 InvocationState::new(
                     *id,
@@ -2554,7 +2554,7 @@ impl ActionHost for InWorkspace {
         }
         if self.host.follows_accounts(caller, id) {
             self.host.shared.account_follows.lock_recover().remove(id);
-            self.host.ledger().complete(
+            self.host.log().complete(
                 id,
                 InvocationState::new(
                     *id,

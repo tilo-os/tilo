@@ -1418,7 +1418,7 @@ class PageActions(unittest.TestCase):
         self.assertEqual(chosen['seq'], 3)
         refused = self.page('fill', element=country, text='x', actor='ben')
         self.assertFalse(refused['ok'])
-        record = self.ok('ledger', since=0)
+        record = self.ok('log', since=0)
         entries = record['data']['entries']
         self.assertEqual([(e['seq'], e['actor'], e['action'], e['ok']) for e in entries],
                          [(1, 'ada', 'fill', True), (2, 'ada', 'fill', True), (3, 'ben', 'select', True), (4, 'ben', 'fill', False)])
@@ -1435,9 +1435,9 @@ class PageActions(unittest.TestCase):
         found = self.ok('find', **entries[0]['target'])
         self.assertEqual(found['data']['element'], email)
         # A reader asks for what came after the place it has read to.
-        later = self.ok('ledger', since=record['data']['next'])
+        later = self.ok('log', since=record['data']['next'])
         self.assertEqual(later['data']['entries'], [])
-        self.assertEqual(self.ok('ledger', since=2)['data']['entries'][0]['seq'], 3)
+        self.assertEqual(self.ok('log', since=2)['data']['entries'][0]['seq'], 3)
         # Reading is not acting: no read took a place in the record.
         self.assertEqual(record['data']['next'], 4)
 
@@ -1446,7 +1446,7 @@ class PageActions(unittest.TestCase):
         email = self.ref(self.outline(), 'textbox "Email"')
         self.ok('fill', element=email, text='ada@example.org', actor='ada')
         running = self.begin('settle', quiet_ms=1200, timeout_ms=6000, actor='ada')
-        asked = self.begin('ledger', since=0, actor='rev')
+        asked = self.begin('log', since=0, actor='rev')
         first = self.h.until(lambda e: e['event'] == 'page_result' and e['request_id'] in (running, asked))
         self.assertEqual(first['request_id'], asked, 'the record waits on nothing the page is doing')
         self.assertEqual(len(first['data']['entries']), 1)
@@ -1508,7 +1508,7 @@ class PageActions(unittest.TestCase):
         self.assertNotIn('set', fields['Proof of address'])
         self.assertIn('1 changed after they were set', review['message'])
         # Reviewing changed nothing and took no place in the record.
-        self.assertEqual(self.ok('ledger', since=0)['data']['next'], 5)
+        self.assertEqual(self.ok('log', since=0)['data']['next'], 5)
 
     def test_typing_into_the_page_is_reviewed_as_direct_input(self):
         # A person at the page is not an action: what they type is told apart
@@ -1563,7 +1563,7 @@ class PageActions(unittest.TestCase):
         self.h.navigate(self.url + '/apply')
         self.assertEqual(self.ok('forms')['data']['forms'][0]['signature'], form['signature'])
         # Reading asked the page nothing and is no part of the tab's record.
-        self.assertEqual(self.ok('ledger', since=0)['data']['entries'], [])
+        self.assertEqual(self.ok('log', since=0)['data']['entries'], [])
 
     def test_a_form_is_answered_by_its_questions_names_and_sent(self):
         self.h.navigate(self.url + '/apply')
@@ -1602,7 +1602,7 @@ class PageActions(unittest.TestCase):
                                  'refused': ['no'], 'lang': ['en', 'de'], 'nationality': ['Other'],
                                  'other': ['Portugal'], 'arrival': ['2027-02-03']})
         # The tab's record holds each answer by the name it was asked under.
-        entries = self.ok('ledger', since=0)['data']['entries']
+        entries = self.ok('log', since=0)['data']['entries']
         self.assertEqual([(entry['actor'], entry['action'], entry['ok']) for entry in entries],
                          [('ada', 'fill_form', True), ('ada', 'fill_form', False), ('ada', 'fill_form', True)])
         self.assertIn({'name': 'Languages', 'value': 'English, German'}, entries[0]['answers'])
@@ -1677,7 +1677,7 @@ class PageActions(unittest.TestCase):
         self.assertIn('not sent, since not every answer was placed', answered['message'])
         # The secret was not placed, and is nowhere in the answer or the record.
         self.assertNotIn('hunter2', json.dumps(answered))
-        self.assertNotIn('hunter2', json.dumps(self.ok('ledger', since=0)))
+        self.assertNotIn('hunter2', json.dumps(self.ok('log', since=0)))
         self.assertEqual(urlparse(answered['url']).path, '/apply')
         # The fields it did place are reviewed as set by its actor.
         fields = {field['name']: field for field in self.ok('fields')['data']['fields']}
@@ -1845,7 +1845,7 @@ class PageActions(unittest.TestCase):
             'JSON.stringify(Object.fromEntries([...document.querySelectorAll("input")].map(i => [i.name, i.value])))'))
         self.assertEqual(held, {'card': 'card-4111111111111111', 'csc': 'csc-737-x', 'pass': 'hunter2-secret',
                                 'old': 'correct-horse', 'new': 'battery-staple', 'otp': 'otp-918273-x', 'note': 'Ring twice'})
-        entries = heard(self.ok('ledger', since=0, actor='cy'))['data']['entries']
+        entries = heard(self.ok('log', since=0, actor='cy'))['data']['entries']
         fills = [entry for entry in entries if entry['action'] == 'fill' and entry['ok']]
         self.assertEqual([entry['target']['name'] for entry in fills], list(filled))
         for entry in fills:
@@ -1925,7 +1925,7 @@ class PageActions(unittest.TestCase):
                          ('input', True, {'role': 'textbox', 'name': 'Password'}), secret)
         self.assertNotIn('text', secret)
         self.assertEqual(self.main_world('document.querySelector("[name=password]").value'), 'pw-9431')
-        record = self.ok('ledger', since=0, actor='ben')
+        record = self.ok('log', since=0, actor='ben')
         self.assertEqual([(listed['seq'], listed.get('action'), listed.get('how')) for listed in record['data']['entries']],
                          [(1, 'fill', None), (2, None, 'input'), (3, None, 'input'), (4, 'press', None), (5, 'press', None),
                           (6, None, 'input'), (7, None, 'input')])
@@ -2020,7 +2020,7 @@ class PageActions(unittest.TestCase):
         self.reads('text "/signed"', 'the form never left the page')
         self.assertEqual(self.server.signed, {'given': ['Ada'], 'email': ['ada@example.org'], 'promo': ['SPRING'],
                                               'terms': ['on'], 'news': ['yes']})
-        answers = self.ok('ledger', since=0)['data']['entries'][-1]['answers']
+        answers = self.ok('log', since=0)['data']['entries'][-1]['answers']
         self.assertIn({'name': 'Given name', 'value': 'Ada'}, answers)
         self.assertIn({'name': 'Send me news', 'value': 'yes'}, answers)
         # A required question left empty holds the form back, as it does in
@@ -2116,7 +2116,7 @@ class PageActions(unittest.TestCase):
         self.assertEqual([(field['name'], field['how'], field['form'], field['question']) for field in told['fields']],
                          [('Password', 'page', 'form1', 'Password')], told)
         said.append(told)
-        said.append(heard(self.ok('ledger', since=0, actor='cy')))
+        said.append(heard(self.ok('log', since=0, actor='cy')))
         everything = json.dumps(said)
         for text in ('hunter2', 'battery', 'staple', 'horse'):
             self.assertNotIn(text, everything)
@@ -2220,7 +2220,7 @@ class PageActions(unittest.TestCase):
             self.h.navigate(self.url + path)
             read = self.ok('forms')
             self.assertEqual(sum(len(form['fields']) for form in read['data']['forms']), questions, read['message'])
-            forms, nothing = timed(lambda: self.ok('forms')), timed(lambda: self.ok('ledger', since=0))
+            forms, nothing = timed(lambda: self.ok('forms')), timed(lambda: self.ok('log', since=0))
             each, met, elements = self.main_world(look)
             self.assertEqual(met, 0, 'a plain page has no component')
             print(f'perf chromium forms read of {what}: least {forms[0]:.2f} ms, middle {forms[1]:.2f} ms; '
@@ -2303,7 +2303,7 @@ class PageActions(unittest.TestCase):
         fields = {field['name']: field for field in self.ok('fields')['data']['fields']}
         self.assertEqual((fields['Newsletter']['value'], fields['Newsletter']['set']),
                          ('checked', {'how': 'action', 'by': 'ada', 'seq': 1}))
-        self.assertEqual([(entry.get('action'), entry.get('how')) for entry in self.ok('ledger', since=0)['data']['entries']],
+        self.assertEqual([(entry.get('action'), entry.get('how')) for entry in self.ok('log', since=0)['data']['entries']],
                          [('pointer', None)])
 
     def test_outline_lists_structure_with_refs_and_hides_secrets(self):
@@ -2524,7 +2524,7 @@ class PageActions(unittest.TestCase):
         self.assertNotIn('Privacy choices', after)
         # The tab's record says who answered, what, and in which frame, by
         # the name and the address that still say which frame it was.
-        entry = self.ok('ledger', since=0)['data']['entries'][-1]
+        entry = self.ok('log', since=0)['data']['entries'][-1]
         self.assertEqual((entry['actor'], entry['action'], entry['ok']), ('ada', 'click', True), entry)
         self.assertEqual(entry['target'], {'role': 'button', 'name': "Yes, I'm happy"})
         self.assertEqual((entry['frame'], entry['frame_name'], entry['frame_url']),
@@ -2618,7 +2618,7 @@ class PageActions(unittest.TestCase):
                          ['Email', 'Edition', 'Promo code', 'Accept terms', 'Search the letters'])
         # The tab's record sets each action in the frame down with the frame,
         # and the secret is nowhere in it.
-        entries = self.ok('ledger', since=0)['data']['entries']
+        entries = self.ok('log', since=0)['data']['entries']
         there = [entry for entry in entries if entry.get('frame') == frame]
         self.assertEqual([(entry['actor'], entry['action'], entry['ok']) for entry in there],
                          [('ada', 'fill', True), ('ada', 'select', True), ('ben', 'fill', True), ('ben', 'press', True),
@@ -2966,7 +2966,7 @@ class PageActions(unittest.TestCase):
         again = self.ok('settle', quiet_ms=300, timeout_ms=SETTLE_MS, text='Hello World!')
         self.assertEqual((again['data']['appeared'], again['data']['checks']), (True, 1), again)
         # Waiting is a read: it took no place in the tab's record.
-        self.assertEqual([entry['action'] for entry in self.ok('ledger', since=0)['data']['entries']], ['click'])
+        self.assertEqual([entry['action'] for entry in self.ok('log', since=0)['data']['entries']], ['click'])
 
     def test_a_wait_for_words_to_leave_answers_once_the_page_no_longer_says_them(self):
         self.h.navigate(self.url + '/waits')
@@ -3600,7 +3600,7 @@ class PageActions(unittest.TestCase):
         self.assertEqual(shop['bag'], [])
         # The record holds every step of it in order, and the card number is
         # in none of them, nor in any answer.
-        record = self.ok('ledger', since=0)
+        record = self.ok('log', since=0)
         entries = record['data']['entries']
         self.assertEqual([(entry['actor'], entry['action'], entry['ok']) for entry in entries], [
             ('ada', 'fill_form', True), ('ada', 'click', True), ('ada', 'click', False), ('ada', 'select', True),
@@ -3974,7 +3974,7 @@ class PageActions(unittest.TestCase):
         self.assertEqual(self.ok('search', text='hunter2')['data']['total'], 0)
         self.assertEqual(self.ok('search', text='place order')['data']['total'], 1)
         # Searching is a read: it took no place in the tab's record.
-        self.assertEqual([entry['action'] for entry in self.ok('ledger', since=0)['data']['entries']], ['fill'])
+        self.assertEqual([entry['action'] for entry in self.ok('log', since=0)['data']['entries']], ['fill'])
 
     def find(self, **fields):
         # A find is a read of the page: it answers with a ref, or with why it
@@ -4150,7 +4150,7 @@ class PageActions(unittest.TestCase):
         self.assertIn(f'textbox "Member name" [ref={member}] value="ada"', after)
         review = {field['name']: field for field in self.ok('fields')['data']['fields']}
         self.assertEqual((review['Member name']['value'], review['Member name']['set']['by']), ('ada', 'ada'))
-        entry = self.ok('ledger', since=0)['data']['entries'][-1]
+        entry = self.ok('log', since=0)['data']['entries'][-1]
         self.assertEqual((entry['action'], entry['target'], entry['text']),
                          ('fill', {'role': 'textbox', 'name': 'Member name'}, 'ada'))
         # A link handed down through two slots is clicked where it is drawn.
@@ -4231,7 +4231,7 @@ class PageActions(unittest.TestCase):
         review = {listed['name']: listed for listed in heard(self.ok('fields', actor='rev'))['data']['fields']}
         self.assertEqual((review['Passphrase']['value'], review['Pin']['value']),
                          ('<21 characters hidden>', '<11 characters hidden>'))
-        entries = heard(self.ok('ledger', since=0, actor='cy'))['data']['entries']
+        entries = heard(self.ok('log', since=0, actor='cy'))['data']['entries']
         fills = [entry for entry in entries if entry.get('action') == 'fill' and entry['ok']]
         self.assertEqual([(entry['target']['name'], entry.get('text'), entry['secret']) for entry in fills],
                          [('Passphrase', None, True), ('Pin', None, True)])
@@ -4440,7 +4440,7 @@ class PageActions(unittest.TestCase):
         # letter case is found in the frame when nothing matches it better.
         self.assertEqual(self.find(name='promo code', frames=True)['data']['frame'], frame)
         # Looking is reading: nothing but the fill took a place in the record.
-        self.assertEqual([entry['action'] for entry in self.ok('ledger', since=0)['data']['entries']], ['fill'])
+        self.assertEqual([entry['action'] for entry in self.ok('log', since=0)['data']['entries']], ['fill'])
 
     def test_gestures_work_on_the_elements_of_another_site_s_frame(self):
         self.h.navigate(self.url + '/gestures-holder')
@@ -4471,7 +4471,7 @@ class PageActions(unittest.TestCase):
         self.ok('click', element=self.ref(inside(), 'button "Submit signature"'), actor='ada')
         self.assertIn('text "Signature received"', inside(), 'the frame\'s canvas took the line')
         # Each is set down with the frame it was done in.
-        entries = self.ok('ledger', since=0)['data']['entries']
+        entries = self.ok('log', since=0)['data']['entries']
         self.assertEqual([(entry['action'], entry['ok'], entry.get('frame')) for entry in entries],
                          [('hover', True, frame), ('click', True, frame), ('drag', True, frame), ('click', True, frame),
                           ('path', True, frame), ('click', True, frame)])
@@ -4536,7 +4536,7 @@ class PageActions(unittest.TestCase):
             again = self.ok('fill_files', element=scan, paths=[second], actor='ada')
             self.assertEqual(again['data']['files'], ['second.pdf'], again)
             self.reads('text "files second.pdf:9"', 'the frame\'s page never heard of the second file', frame=frame)
-        entries = self.ok('ledger', since=0)['data']['entries']
+        entries = self.ok('log', since=0)['data']['entries']
         self.assertEqual([(entry['action'], entry['ok'], entry.get('frame')) for entry in entries],
                          [('fill_files', False, frame), ('fill_files', True, frame), ('click', True, frame), ('fill_files', True, frame)])
 

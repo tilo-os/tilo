@@ -58,7 +58,7 @@ impl KeyboardShortcutServices for Shortcuts {
     }
 }
 
-/// The seam this session hands the broker: the shortcut catalogue, read from the keymap the broker
+/// The service this session hands the broker: the shortcut catalogue, read from the keymap the broker
 /// loads.
 pub(crate) fn servable() -> Arc<dyn KeyboardShortcutServices> {
     Arc::new(Shortcuts)

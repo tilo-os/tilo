@@ -473,7 +473,7 @@ impl StatePeer {
                 workspace: &self.core.workspace,
                 source: workspace::Writer {
                     key: &from,
-                    standing: workspace::Standing::Member { person, foreign },
+                    access: workspace::SenderAccess::Member { person, foreign },
                 },
                 owner: &owner,
                 now_ns: now_ns(now),

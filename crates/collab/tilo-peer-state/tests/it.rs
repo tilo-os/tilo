@@ -24,8 +24,8 @@ mod direct_held_writes;
 mod direct_host_link;
 #[path = "direct_lost_history.rs"]
 mod direct_lost_history;
-#[path = "direct_member_custody.rs"]
-mod direct_member_custody;
+#[path = "direct_member_ownership.rs"]
+mod direct_member_ownership;
 #[path = "direct_two_devices.rs"]
 mod direct_two_devices;
 #[path = "offers.rs"]

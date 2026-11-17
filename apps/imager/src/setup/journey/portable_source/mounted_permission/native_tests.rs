@@ -34,7 +34,7 @@ impl Drop for Binding {
         assert_eq!(
             unsafe { libc::umount2(self.0.as_ptr(), 0) },
             0,
-            "close actual permission custody before normal unmount"
+            "close actual permission ownership before normal unmount"
         );
     }
 }

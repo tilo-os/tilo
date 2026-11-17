@@ -2,7 +2,7 @@
 //! shell — who is here, with its cards and everyone else's pointer — drawn by the
 //! page's own frame.
 //!
-//! [`tilo_session::platform::surfaces`] is the seam: a role draws its panel as a
+//! [`tilo_session::platform::surfaces`] is the boundary: a role draws its panel as a
 //! widget tree of its own and asks its host to show it on a layer above the
 //! windows. A native session's compositor draws each such tree on a surface of
 //! its own; the page has one canvas, so a layer is a widget tree standing over

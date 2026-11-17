@@ -76,7 +76,7 @@ pub(crate) fn assistant(agents: &WorkspaceAgents, me: &MemberId, day: &str) -> O
     )
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Standing {
+pub(crate) enum Progress {
     Working,
     /// It waits for the person.
     NeedsYou,
@@ -101,7 +101,7 @@ pub(crate) struct SubAgent {
     pub(crate) job: String,
     /// What it is: the role the main agent gave it.
     pub(crate) role: String,
-    pub(crate) standing: Standing,
+    pub(crate) progress: Progress,
 }
 
 /// Where a task stands.

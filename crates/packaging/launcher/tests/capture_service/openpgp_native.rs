@@ -294,7 +294,7 @@ fn signed_original_openpgp_capsule_accepts_approved_commit_and_refuses_wrong_key
     };
     passthrough_argv[0] = "--original-openpgp".into();
     let key = ServiceLeaseKey::default();
-    let result = returning_callback_retains_original_custody(
+    let result = returning_callback_retains_original_ownership(
         launch,
         admission,
         File::open(&source).unwrap(),

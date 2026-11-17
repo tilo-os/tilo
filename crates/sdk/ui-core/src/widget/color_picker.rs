@@ -542,7 +542,7 @@ impl ColorPicker {
         }
         self.color = new_color;
         self.publish_local_state();
-        // Record for the poll-based `take_changed()` seam (retained-mode
+        // Record for the poll-based `take_changed()` path (retained-mode
         // apps) and fire the optional callback (imperative callers).
         self.changed = Some(self.color);
         if let Some(cb) = self.on_change.as_mut() {
@@ -1642,7 +1642,7 @@ mod tests {
                 );
             }
 
-            /// The `on_change` callback and the `take_changed` poll seam observe
+            /// The `on_change` callback and the `take_changed` poll path observe
             /// the SAME choke point, so both fire for one user edit — an app can
             /// pick whichever integration style fits.
             fn on_change_callback_and_take_changed_agree() {
@@ -1667,9 +1667,9 @@ mod tests {
                 dispatch(&mut p, &cursor_moved(r_x, r_y));
                 dispatch(&mut p, &mouse_press());
 
-                let poll = p.take_changed().expect("poll seam saw the change");
+                let poll = p.take_changed().expect("poll path saw the change");
                 let cb = seen.borrow().expect("callback saw the change");
-                assert_eq!(poll, cb, "both seams observe the identical colour");
+                assert_eq!(poll, cb, "both paths observe the identical colour");
             }
 
             fn local_state_keeps_color_pickers_in_sync() {

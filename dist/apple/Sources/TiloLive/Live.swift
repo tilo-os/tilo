@@ -86,7 +86,7 @@ enum LiveWords: String {
 /// they come to it. At most `limit` stay mounted; past it the one longest away is taken down.
 @MainActor
 public final class LiveStage: ObservableObject {
-    public enum Standing: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         /// Not in front. It shows its last picture, or its name.
         case asleep
         case loading
@@ -101,7 +101,7 @@ public final class LiveStage: ObservableObject {
 
     public let engine: TiloEngine
     @Published public private(set) var front: LiveThing.ID?
-    @Published public private(set) var standings: [LiveThing.ID: Standing] = [:]
+    @Published public private(set) var states: [LiveThing.ID: State] = [:]
     @Published public private(set) var pictures: [LiveThing.ID: LivePlatformImage] = [:]
     public var limit = 3
 
@@ -113,13 +113,13 @@ public final class LiveStage: ObservableObject {
     public init(engine: TiloEngine) {
         self.engine = engine
         listening = Task { [weak self] in
-            for await standing in engine.standings() {
+            for await state in engine.states() {
                 guard let self else { return }
-                if case .open = standing { continue }
+                if case .open = state { continue }
                 // The page left: whatever it had mounted went with it.
                 self.mounted.removeAll()
                 if let front = self.front {
-                    self.standings[front] = .offline
+                    self.states[front] = .offline
                     self.front = nil
                 }
             }
@@ -128,37 +128,37 @@ public final class LiveStage: ObservableObject {
 
     deinit { listening?.cancel() }
 
-    public func standing(of thing: LiveThing) -> Standing { standings[thing.id] ?? .asleep }
+    public func state(of thing: LiveThing) -> State { states[thing.id] ?? .asleep }
 
     /// Bring a live thing to the front: the one web view shows it and takes the person's input.
     public func bring(_ thing: LiveThing) async {
         guard case .record(let app, let record) = thing.content else {
-            standings[thing.id] = .notYet
+            states[thing.id] = .notYet
             return
         }
-        guard case .open = engine.standing else {
-            standings[thing.id] = .offline
+        guard case .open = engine.state else {
+            states[thing.id] = .offline
             return
         }
         if let before = front, before != thing.id { await sleep(before) }
-        standings[thing.id] = .loading
+        states[thing.id] = .loading
         do {
             try await engine.show(live: thing.id, .record(app: app, record: record))
             mounted.removeAll { $0 == thing.id }
             mounted.append(thing.id)
             front = thing.id
-            standings[thing.id] = .live
+            states[thing.id] = .live
             engine.setSeen(true)
             while mounted.count > max(limit, 1), let oldest = mounted.first {
                 mounted.removeFirst()
                 await engine.close(live: oldest)
             }
         } catch TiloEngine.Problem.refused(_, let reason) {
-            standings[thing.id] = .failed(reason)
+            states[thing.id] = .failed(reason)
         } catch TiloEngine.Problem.notOpen {
-            standings[thing.id] = .offline
+            states[thing.id] = .offline
         } catch {
-            standings[thing.id] = .failed("")
+            states[thing.id] = .failed("")
         }
     }
 
@@ -177,7 +177,7 @@ public final class LiveStage: ObservableObject {
             pictures[id] = picture
         }
         if front == id { front = nil }
-        standings[id] = .asleep
+        states[id] = .asleep
     }
 
     // MARK: Where the web view stands
@@ -316,7 +316,7 @@ public struct TiloLiveView: View {
     public var body: some View {
         ZStack {
             Rectangle().fill(.background.secondary)
-            if stage.front == thing.id, stage.standing(of: thing) == .live {
+            if stage.front == thing.id, stage.state(of: thing) == .live {
                 HolderView(holder: Holder(made: { [stage] view in stage.stand(in: view) },
                                           gone: { [stage] view in stage.leaves(view) }))
                     .allowsHitTesting(size == .working)
@@ -339,7 +339,7 @@ public struct TiloLiveView: View {
     }
 
     @ViewBuilder private var resting: some View {
-        let standing = stage.standing(of: thing)
+        let state = stage.state(of: thing)
         ZStack {
             if let picture = stage.pictures[thing.id] {
                 #if os(macOS)
@@ -350,7 +350,7 @@ public struct TiloLiveView: View {
             }
             VStack(spacing: 8) {
                 Text(thing.title).font(.headline).lineLimit(2).multilineTextAlignment(.center)
-                switch standing {
+                switch state {
                 case .loading:
                     ProgressView().accessibilityLabel(LiveWords.loading.said)
                 case .asleep, .live:
@@ -364,7 +364,7 @@ public struct TiloLiveView: View {
                 case .notYet:
                     Text(LiveWords.notYet.said).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
-                if let openInTilo, standing != .loading, standing != .asleep {
+                if let openInTilo, state != .loading, state != .asleep {
                     Button(LiveWords.openInTilo.said, action: openInTilo)
                 }
             }

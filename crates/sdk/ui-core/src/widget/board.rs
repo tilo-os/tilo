@@ -405,16 +405,16 @@ impl Board {
 }
 
 impl crate::widget::controls::ActionControls for Board {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(drops) = &mut self.drops {
-            let _ = drops.install_custody(domain, attachment);
+            let _ = drops.attach(domain, attachment);
         }
         for child in Widget::children_mut(self) {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
+            crate::widget::controls::attach_controls(child, domain, attachment);
         }
     }
 

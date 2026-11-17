@@ -23,7 +23,7 @@ export function createInlineStorage({locks,indexedDB,crypto}={}){
     }
     const pending=(async()=>{
       const lockManager=locks??globalThis.navigator?.locks,idb=indexedDB??globalThis.indexedDB;
-      if(!lockManager)throw Error('Web Locks unavailable: exclusive Automerge actor custody is required');
+      if(!lockManager)throw Error('Web Locks unavailable: exclusive Automerge actor device key is required');
       let unlock,acquiredResolve,acquiredReject;
       const acquired=new Promise((resolve,reject)=>{acquiredResolve=resolve;acquiredReject=reject;});
       const held=new Promise(resolve=>{unlock=resolve;});

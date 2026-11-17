@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase primary_custody_is_partitioned_by_package_workspace_and_kind;
+    phase primary_ownership_is_partitioned_by_package_workspace_and_kind;
     {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));

@@ -790,10 +790,10 @@ impl GovernedAccessWriter {
         &self.shell_payloads
     }
 
-    /// Whether the relay decides `workspace_id`'s changes against standings
+    /// Whether the relay decides `workspace_id`'s changes against device_access
     /// that hold `device`'s. A workspace this relay has not opened yet is
     /// projected by the settle that opens it, so it counts as holding it.
-    pub(crate) async fn projects_standing(
+    pub(crate) async fn projects_access(
         &self,
         workspace_id: WorkspaceId,
         device: [u8; 32],
@@ -804,17 +804,17 @@ impl GovernedAccessWriter {
         workspace
             .lock()
             .await
-            .standings
+            .device_access
             .as_ref()
-            .is_none_or(|standings| standings.contains_key(&device))
+            .is_none_or(|device_access| device_access.contains_key(&device))
     }
 
-    /// Replace the standing of each member device of the workspace.
-    pub(crate) async fn replace_standings(
+    /// Replace the access of each member device of the workspace.
+    pub(crate) async fn replace_access(
         &self,
         workspace_id: WorkspaceId,
         pinned: bool,
-        standings: crate::workspace::Standings,
+        device_access: crate::workspace::DeviceAccess,
     ) -> Result<(), HostError> {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
@@ -826,7 +826,7 @@ impl GovernedAccessWriter {
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
-        workspace.lock().await.project_standings(standings);
+        workspace.lock().await.project_access(device_access);
         Ok(())
     }
 

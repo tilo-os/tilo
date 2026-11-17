@@ -206,7 +206,7 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
 
 /// An entry cut off between committing a device's admission and settling it
 /// (the page that asked closed meanwhile) leaves governance holding the
-/// device while the relay decides its changes against standings without it.
+/// device while the relay decides its changes against device_access without it.
 /// The device's next entry finds it admitted already, and settles what
 /// governance holds before answering, so its changes are decided with it.
 #[tokio::test]
@@ -250,9 +250,9 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
     let access = &workspaces.inner.host.access;
     assert!(
         !access
-            .projects_standing(created.workspace_id, page.device_public_key)
+            .projects_access(created.workspace_id, page.device_public_key)
             .await,
-        "the cut-off entry left the device out of the standings changes are decided against"
+        "the cut-off entry left the device out of the device_access changes are decided against"
     );
 
     assert!(
@@ -261,7 +261,7 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
     );
     assert!(
         access
-            .projects_standing(created.workspace_id, page.device_public_key)
+            .projects_access(created.workspace_id, page.device_public_key)
             .await,
         "the next entry settled the admission"
     );
@@ -398,9 +398,9 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     assert_eq!(policy.workspace, created.workspace);
     assert_eq!(
         policy
-            .standing
+            .access
             .policy
-            .role_of(policy.standing.person_id().unwrap_or_default()),
+            .role_of(policy.access.person_id().unwrap_or_default()),
         Some(collab_types::Role::Owner)
     );
     let source = tilo_peer_state::document_frame::DocumentRoute {

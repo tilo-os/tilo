@@ -1,6 +1,6 @@
 [package]
 name = "tilo-onboarding-host"
-description = "The host side of first use: the identity ceremony and its storage, first-boot provisioning, nearby pairing, prepared setups and the transfers they carry over, and the custody of their secrets."
+description = "The host side of first use: the identity ceremony and its storage, first-boot provisioning, nearby pairing, prepared setups and the transfers they carry over, and the ownership of their secrets."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true

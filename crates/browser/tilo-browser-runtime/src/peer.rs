@@ -1,13 +1,13 @@
 //! The page's certified peer: `tilo_session_client` behind wasm-bindgen for
 //! `web/peer.mjs`, reaching the host over HTTPS only.
 //!
-//! The device key stays in custody (`web/device-custody.mjs`): either a
+//! The device key stays in device key (`web/device-key.mjs`): either a
 //! non-extractable `WebCrypto` Ed25519 key that signs through a JavaScript
 //! callback, or — where `WebCrypto` lacks Ed25519 — a seed unsealed from
 //! `IndexedDB` straight into this module, which keeps it only in wasm
 //! memory. Nothing here generates or holds a user root: a page that holds
 //! one (`web/identity.mjs`) lends it as a signer, the same shape as
-//! custody, to [`issue_device_cert`] and [`certify_with_root`].
+//! device key, to [`issue_device_cert`] and [`certify_with_root`].
 //!
 //! The peer record (certificates and the commit outbox) and the workspaces it
 //! holds are kept in the profile's durable store when the page names a profile
@@ -100,7 +100,7 @@ fn failure_kind(surface: Option<String>, asset: Option<String>) -> FailureKind {
     }
 }
 
-/// A device signer backed by page custody.
+/// A device signer backed by page device key.
 pub(crate) enum PageSigner {
     /// `{publicKey: Uint8Array(32), sign(message): Promise<Uint8Array(64)>}`
     /// over a non-extractable `WebCrypto` key.
@@ -115,8 +115,8 @@ pub(crate) enum PageSigner {
 }
 
 impl PageSigner {
-    pub(crate) fn from_js(custody: &JsValue) -> Result<Self, JsError> {
-        let seed = Reflect::get(custody, &"seed".into()).map_err(|_| js_error("custody"))?;
+    pub(crate) fn from_js(device_key: &JsValue) -> Result<Self, JsError> {
+        let seed = Reflect::get(device_key, &"seed".into()).map_err(|_| js_error("device key"))?;
         if !seed.is_undefined() && !seed.is_null() {
             let seed: [u8; 32] = Uint8Array::new(&seed)
                 .to_vec()
@@ -125,19 +125,19 @@ impl PageSigner {
             return Ok(Self::Seed(ed25519_dalek::SigningKey::from_bytes(&seed)));
         }
         let public_key: [u8; 32] = Uint8Array::new(
-            &Reflect::get(custody, &"publicKey".into()).map_err(|_| js_error("custody"))?,
+            &Reflect::get(device_key, &"publicKey".into()).map_err(|_| js_error("device key"))?,
         )
         .to_vec()
         .try_into()
         .map_err(|_| js_error("device public key must be 32 bytes"))?;
-        let sign: Function = Reflect::get(custody, &"sign".into())
-            .map_err(|_| js_error("custody"))?
+        let sign: Function = Reflect::get(device_key, &"sign".into())
+            .map_err(|_| js_error("device key"))?
             .dyn_into()
-            .map_err(|_| js_error("custody.sign must be a function"))?;
+            .map_err(|_| js_error("device key.sign must be a function"))?;
         Ok(Self::WebCrypto {
             public_key,
             sign,
-            this: custody.clone(),
+            this: device_key.clone(),
         })
     }
 }
@@ -157,12 +157,12 @@ impl DeviceSigner for PageSigner {
                 let called = sign.call1(this, &Uint8Array::from(message.as_slice()).into());
                 Box::pin(async move {
                     let promise: Promise = called
-                        .map_err(|_| SignError("custody refused to sign".into()))?
+                        .map_err(|_| SignError("device key refused to sign".into()))?
                         .dyn_into()
-                        .map_err(|_| SignError("custody.sign must return a promise".into()))?;
+                        .map_err(|_| SignError("device key.sign must return a promise".into()))?;
                     let signature = JsFuture::from(promise)
                         .await
-                        .map_err(|_| SignError("custody signing failed".into()))?;
+                        .map_err(|_| SignError("device key signing failed".into()))?;
                     Uint8Array::new(&signature)
                         .to_vec()
                         .try_into()
@@ -188,7 +188,7 @@ struct DurablePeerStore {
     groups_key: durable_store::StorageKey,
     /// The workspaces the peer holds, beside the record.
     workspaces_key: durable_store::StorageKey,
-    /// What the keys of the runs of custody kept beside the workspaces begin with.
+    /// What the keys of the runs of device key kept beside the workspaces begin with.
     runs_prefix: String,
     /// What the keys of the record's own parts, kept beside the workspaces' index, begin with.
     parts_prefix: String,
@@ -202,7 +202,7 @@ thread_local! {
 }
 
 impl DurablePeerStore {
-    /// The key the run of custody `name` is kept under.
+    /// The key the run of device key `name` is kept under.
     fn run_key(&self, name: &str) -> durable_store::StorageKey {
         durable_store::StorageKey::document(
             PEER_PACKAGE,
@@ -543,11 +543,11 @@ pub async fn certify_device(
     user_public_key_hex: String,
     label: String,
     invite_hex: Option<String>,
-    custody: JsValue,
+    device_key: JsValue,
     on_pairing_code: Function,
     address: String,
 ) -> Result<String, JsError> {
-    let signer = PageSigner::from_js(&custody)?;
+    let signer = PageSigner::from_js(&device_key)?;
     let user: [u8; 32] = hex::decode(user_public_key_hex)
         .map_err(js_error)?
         .try_into()
@@ -824,7 +824,7 @@ struct Accepting {
     admission_token: Option<String>,
 }
 
-/// What this page's device (`custody`) enters the workspace `invitation` (its signed bytes)
+/// What this page's device (`device key`) enters the workspace `invitation` (its signed bytes)
 /// admits into with, on the host whose certificate is `hostCert` (JSON), through the one entry
 /// every device takes ([`tilo_session_client::device::invitation_entry`]): the certificate it enters
 /// under (the one it holds from that host where it still serves, else one the person's root
@@ -841,7 +841,7 @@ struct Accepting {
 pub async fn invitation_entry(
     host_cert: String,
     invitation: Vec<u8>,
-    custody: JsValue,
+    device_key: JsValue,
     root: JsValue,
     options: String,
 ) -> Result<String, JsValue> {
@@ -854,7 +854,7 @@ pub async fn invitation_entry(
         .transpose()
         .map_err(js_error)?;
     let host_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
-    let device = PageSigner::from_js(&custody)?;
+    let device = PageSigner::from_js(&device_key)?;
     let root = if root.is_undefined() || root.is_null() {
         None
     } else {
@@ -881,7 +881,7 @@ pub async fn invitation_entry(
     .to_string())
 }
 
-/// What this page's device (`custody`) enters `workspace` through its entry with, on the host whose
+/// What this page's device (`device key`) enters `workspace` through its entry with, on the host whose
 /// certificate is `hostCert` (JSON), through the one entry every device takes
 /// ([`tilo_session_client::device::entry_request`]): the certificate it enters under (the one it holds
 /// from that host where it still serves, else one the person's root `root` certifies now) and the
@@ -896,7 +896,7 @@ pub async fn invitation_entry(
 pub async fn entry_request(
     host_cert: String,
     workspace: String,
-    custody: JsValue,
+    device_key: JsValue,
     root: JsValue,
     options: String,
 ) -> Result<String, JsValue> {
@@ -909,7 +909,7 @@ pub async fn entry_request(
         .transpose()
         .map_err(js_error)?;
     let host_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
-    let device = PageSigner::from_js(&custody)?;
+    let device = PageSigner::from_js(&device_key)?;
     let root = if root.is_undefined() || root.is_null() {
         None
     } else {
@@ -944,18 +944,18 @@ pub fn device_cert_canonical(cert_json: &str) -> Result<Vec<u8>, JsError> {
     tilo_user_identity::canonical::canonical_bytes(&cert).map_err(js_error)
 }
 
-/// Certify this page's device key (`custody`) with the user root the page
+/// Certify this page's device key (`device key`) with the user root the page
 /// holds, for the host at `post`, whose certificate must be a host of that
 /// root. Resolves to `{cert, hostCert}` JSON, as [`certify_device`] does.
 #[wasm_bindgen(js_name = certifyWithRoot)]
 pub async fn certify_with_root(
     post: Function,
     root: JsValue,
-    custody: JsValue,
+    device_key: JsValue,
     label: String,
 ) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
-    let signer = PageSigner::from_js(&custody)?;
+    let signer = PageSigner::from_js(&device_key)?;
     let (cert, host_cert) =
         tilo_relay_client::certify_with_root(&PageHttp(post), &root, &signer, &label)
             .await
@@ -1723,15 +1723,15 @@ pub struct WasmPeer {
 }
 
 impl WasmPeer {
-    /// What signs a question command of this session's: `custody`, the
+    /// What signs a question command of this session's: `device key`, the
     /// person's root where the page holds it, else this session's own
     /// device key with its certificate.
     fn question_signer(
         &self,
-        custody: &JsValue,
+        device_key: &JsValue,
     ) -> Result<(PageSigner, Option<DeviceCert>), JsError> {
         use tilo_relay_client::DeviceSigner as _;
-        let signer = PageSigner::from_js(custody)?;
+        let signer = PageSigner::from_js(device_key)?;
         let key = signer.device_public_key();
         if key == self.reporter_cert.user_public_key {
             Ok((signer, None))
@@ -1853,7 +1853,7 @@ impl WasmPeer {
     ///
     /// # Errors
     ///
-    /// Throws for a malformed configuration, custody object, namespace or
+    /// Throws for a malformed configuration, device key object, namespace or
     /// channel vault, or neither a namespace nor a save callback.
     #[allow(
         clippy::arc_with_non_send_sync,
@@ -1865,16 +1865,18 @@ impl WasmPeer {
     )]
     pub fn start(
         config_json: &str,
-        custody: &JsValue,
+        device_key: &JsValue,
         namespace: Option<String>,
         record: Option<Vec<u8>>,
         save: Option<Function>,
         channel_vault: Option<Vec<u8>>,
     ) -> Result<WasmPeer, JsError> {
         let config: ConnectConfig = serde_json::from_str(config_json).map_err(js_error)?;
-        let signer = PageSigner::from_js(custody)?;
+        let signer = PageSigner::from_js(device_key)?;
         if signer.device_public_key() != config.cert.device_public_key {
-            return Err(js_error("custody does not hold the certified device key"));
+            return Err(js_error(
+                "device key does not hold the certified device key",
+            ));
         }
         let signer: Arc<dyn DeviceSigner> = Arc::new(signer);
         let (store, profile_store) = peer_store(
@@ -2083,7 +2085,7 @@ impl WasmPeer {
     /// Rejects for malformed options, when the root does not sign, or when the
     /// host refuses.
     /// Pair this person's new devices through this session's host, as the
-    /// person's root custody the page holds: over this session, with no
+    /// person's root device key the page holds: over this session, with no
     /// connection of its own.
     pub fn pairing(&self) -> PairingHost {
         PairingHost(PairingReach::Session(tilo_session_client::member_host(
@@ -2093,26 +2095,26 @@ impl WasmPeer {
 
     /// Answer what this person's agents on this session's host ask them,
     /// over this session, on the question sheet over the desktop: with
-    /// `custody`, the person's root custody where the page holds it, else
+    /// `device key`, the person's root device key where the page holds it, else
     /// this session's own device key. Once per session.
     ///
     /// # Errors
-    /// `custody` is no custody, or neither the person's root nor this
+    /// `device key` is no device key, or neither the person's root nor this
     /// session's device key.
     #[wasm_bindgen(js_name = answerAgentQuestions)]
-    pub fn answer_agent_questions(&self, custody: &JsValue) -> Result<(), JsError> {
-        crate::questions::answer_agent_questions(self.id, custody, &self.reporter_cert)
+    pub fn answer_agent_questions(&self, device_key: &JsValue) -> Result<(), JsError> {
+        crate::questions::answer_agent_questions(self.id, device_key, &self.reporter_cert)
     }
 
     /// The key this session's host signs its pushes with, which the page's
     /// browser subscribes with: empty where the host pushes nothing. Asked
-    /// as `custody` (the person's root, or this session's device key).
+    /// as `device key` (the person's root, or this session's device key).
     ///
     /// # Errors
-    /// Rejects when `custody` is neither, or the host refuses.
+    /// Rejects when `device key` is neither, or the host refuses.
     #[wasm_bindgen(js_name = pushKey)]
-    pub async fn push_key(&self, custody: JsValue) -> Result<Vec<u8>, JsError> {
-        let (signer, device) = self.question_signer(&custody)?;
+    pub async fn push_key(&self, device_key: JsValue) -> Result<Vec<u8>, JsError> {
+        let (signer, device) = self.question_signer(&device_key)?;
         let host = tilo_session_client::member_host(&self.handle);
         tilo_relay_client::questions::MemberQuestions {
             host: &host,
@@ -2127,15 +2129,15 @@ impl WasmPeer {
     /// Have this session's host push this browser a word when an agent waits
     /// for the person and no Tilo of theirs is open: the browser's push
     /// subscription (its `endpoint`, and its `p256dh` and `auth` keys as
-    /// `getKey` reads them), asked as `custody`.
+    /// `getKey` reads them), asked as `device key`.
     ///
     /// # Errors
-    /// Rejects for a malformed subscription, when `custody` is neither the
+    /// Rejects for a malformed subscription, when `device key` is neither the
     /// person's root nor this session's device key, or the host refuses.
     #[wasm_bindgen(js_name = notifyAt)]
     pub async fn notify_at(
         &self,
-        custody: JsValue,
+        device_key: JsValue,
         endpoint: String,
         p256dh: Vec<u8>,
         auth: Vec<u8>,
@@ -2146,7 +2148,7 @@ impl WasmPeer {
             auth,
         };
         subscription.check().map_err(js_error)?;
-        let (signer, device) = self.question_signer(&custody)?;
+        let (signer, device) = self.question_signer(&device_key)?;
         let host = tilo_session_client::member_host(&self.handle);
         tilo_relay_client::questions::MemberQuestions {
             host: &host,

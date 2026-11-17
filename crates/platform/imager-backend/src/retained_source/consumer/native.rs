@@ -1,5 +1,5 @@
 //! Fixed internal consuming helper process. The source actor stays in its
-//! original namespace and retains its UDisks/source witnesses independently.
+//! original namespace and retains its UDisks/source proofs independently.
 use launcher::ordinary_child::{
     ChildExposureOwner, ConsumingBootstrapCommand, ConsumingBootstrapEntry,
     OrdinaryChildSupervisor, OwnedOrdinaryChild,
@@ -46,7 +46,7 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
     let mut entry = ConsumingBootstrapEntry::authenticate(control)?;
     let cancellation = ServiceCancellation::default();
     // Declaration order matters on errors: first stop/reap the actual outer
-    // launcher, then let unresolved staging custody retain this helper alive.
+    // launcher, then let unresolved staging ownership retain this helper alive.
     let mut exposure = ChildExposureOwner::default();
     let mut consumer: Option<OrdinaryChildSupervisor> = None;
     loop {
@@ -84,7 +84,7 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
             ConsumingBootstrapCommand::Exposure(request) => {
                 // This closed request comes only from the mutually proven
                 // original root parent. The launcher controller independently
-                // binds the real init witness and outer child; R cannot detach
+                // binds the real init proof and outer child; R cannot detach
                 // until those actual kernel subjects are observed stopped.
                 request.apply(&mut exposure, &mut entry, consumer.as_mut())?;
                 namespace.check()?;

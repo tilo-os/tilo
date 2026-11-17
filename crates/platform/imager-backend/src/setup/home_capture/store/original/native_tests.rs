@@ -157,7 +157,7 @@ fn actual_same_gpt_source_record_reopens_ext4_xfs_peer_facts_and_refuses_tamperi
         repeated, intent,
         "lost-ack retry must return the same selection"
     );
-    assert_eq!(repeated.witness().unwrap(), intent.witness().unwrap());
+    assert_eq!(repeated.proof().unwrap(), intent.proof().unwrap());
     let after = std::fs::metadata(&record_path).unwrap();
     assert_eq!(
         (before.ino(), before.mtime(), before.ctime()),
@@ -249,10 +249,10 @@ fn actual_same_gpt_source_record_reopens_ext4_xfs_peer_facts_and_refuses_tamperi
         let result = SourceReadContext::review(source, &namespace);
         if case == 0 {
             let context = result.unwrap();
-            let witness = intent.witness().unwrap();
-            witness.validate_plan(&plan).unwrap();
+            let proof = intent.proof().unwrap();
+            proof.validate_plan(&plan).unwrap();
             context
-                .verify_requested(&plan, &witness, context.original())
+                .verify_requested(&plan, &proof, context.original())
                 .unwrap();
             let mut forged_facts = serde_json::to_value(context.original()).unwrap();
             forged_facts["primary_gid"] = serde_json::json!(1006);
@@ -260,22 +260,22 @@ fn actual_same_gpt_source_record_reopens_ext4_xfs_peer_facts_and_refuses_tamperi
             forged_facts.validate(plan.home_uid()).unwrap();
             assert!(
                 context
-                    .verify_requested(&plan, &witness, &forged_facts)
+                    .verify_requested(&plan, &proof, &forged_facts)
                     .is_err(),
                 "valid password-request shape must not replace actual protected source credentials"
             );
             let mut different_selection = plan.clone();
             different_selection.categories.accounts = !different_selection.categories.accounts;
             assert!(
-                witness.validate_plan(&different_selection).is_err(),
+                proof.validate_plan(&different_selection).is_err(),
                 "the same operation must not authorize different selected categories"
             );
             let reopened = crate::setup::migration_handoff::resolve(&plan, &mount).unwrap();
-            SourceReadContext::review_witness(reopened, &witness).unwrap();
-            let mut altered = witness.clone();
+            SourceReadContext::review_proof(reopened, &proof).unwrap();
+            let mut altered = proof.clone();
             altered.record_sha256[0] ^= 1;
             let reopened = crate::setup::migration_handoff::resolve(&plan, &mount).unwrap();
-            assert!(SourceReadContext::review_witness(reopened, &altered).is_err());
+            assert!(SourceReadContext::review_proof(reopened, &altered).is_err());
             assert_eq!(context.original().uid(), 1000);
             assert_eq!(context.original().primary_gid(), 1001);
             assert_eq!(context.original().supplementary_gids(), &[1002, 1003]);
@@ -304,7 +304,7 @@ fn actual_same_gpt_source_record_reopens_ext4_xfs_peer_facts_and_refuses_tamperi
 pub mod output;
 
 #[test]
-fn actual_large_original_inventory_registers_and_reopens_protected_source_custody() {
+fn actual_large_original_inventory_registers_and_reopens_protected_source_ownership() {
     assert_eq!(
         rustix::process::geteuid().as_raw(),
         0,
@@ -344,7 +344,7 @@ fn actual_large_original_inventory_registers_and_reopens_protected_source_custod
     .unwrap();
     // Actual canonical Handoff parser accepts public metadata beyond64KiB.
     // No provider credentials, fake deployments or native exporter is needed
-    // to qualify original registration and protected source custody itself.
+    // to qualify original registration and protected source ownership itself.
     let remotes:Vec<_>=(0..1024).map(|index|serde_json::json!({"installation":{"System":"system"},"name":format!("public-{index}"),"url":format!("https://example.invalid/{}", "p".repeat(128)),"options":""})).collect();
     plan.flatpak_inventory = Some(
         serde_json::json!({"schema":1,"inventory":{"refs":[],"remotes":remotes},"selected":[],"installations":[]}),
@@ -377,8 +377,8 @@ fn actual_large_original_inventory_registers_and_reopens_protected_source_custod
             Some(&original),
         )
         .unwrap();
-    let witness = intent.witness().unwrap();
-    witness.validate_plan(&compact).unwrap();
+    let proof = intent.proof().unwrap();
+    proof.validate_plan(&compact).unwrap();
     let inventory_path = root
         .join("records")
         .join(format!("{operation}.flatpak-inventory.json"));
@@ -395,7 +395,7 @@ fn actual_large_original_inventory_registers_and_reopens_protected_source_custod
             Some(&original),
         )
         .unwrap();
-    assert_eq!(repeated.witness().unwrap(), witness);
+    assert_eq!(repeated.proof().unwrap(), proof);
     assert_eq!(
         std::fs::metadata(&inventory_path).unwrap().ino(),
         before.ino()
@@ -420,7 +420,7 @@ fn actual_large_original_inventory_registers_and_reopens_protected_source_custod
     let missing_intent = missing_store
         .register_original_selection_with_inventory(&home, &missing_plan, &channel, None, None)
         .unwrap();
-    let missing_witness = missing_intent.witness().unwrap();
+    let missing_proof = missing_intent.proof().unwrap();
     drop(missing_store);
     channel.stream().write_all(&[7]).unwrap();
     assert!(child.0.wait().unwrap().success());
@@ -430,14 +430,14 @@ fn actual_large_original_inventory_registers_and_reopens_protected_source_custod
     {
         let _readonly = ReadOnly::enter(&mount);
         let source = crate::setup::migration_handoff::resolve(&compact, &mount).unwrap();
-        let context = SourceReadContext::review_witness(source, &witness).unwrap();
+        let context = SourceReadContext::review_proof(source, &proof).unwrap();
         let (held, len, digest) = context.original_flatpak_inventory().unwrap().unwrap();
         assert_eq!(len, bytes.len() as u64);
         assert_eq!(held.metadata().unwrap().ino(), before.ino());
         use sha2::Digest;
         assert_eq!(digest, <[u8; 32]>::from(sha2::Sha256::digest(&bytes)));
         context
-            .verify_requested(&compact, &witness, intent.original_caller())
+            .verify_requested(&compact, &proof, intent.original_caller())
             .unwrap();
         let grant =
             crate::setup::flatpak_transfer::offline_original::OriginalInventoryGrant::review(
@@ -458,7 +458,7 @@ fn actual_large_original_inventory_registers_and_reopens_protected_source_custod
         let missing_source =
             crate::setup::migration_handoff::resolve(&missing_plan, &mount).unwrap();
         let missing_context =
-            SourceReadContext::review_witness(missing_source, &missing_witness).unwrap();
+            SourceReadContext::review_proof(missing_source, &missing_proof).unwrap();
         let error =
             match crate::setup::flatpak_transfer::offline_original::OriginalInventoryGrant::review(
                 &missing_context,
@@ -480,7 +480,7 @@ fn actual_large_original_inventory_registers_and_reopens_protected_source_custod
     {
         let _readonly = ReadOnly::enter(&mount);
         let source = crate::setup::migration_handoff::resolve(&compact, &mount).unwrap();
-        assert!(SourceReadContext::review_witness(source, &witness).is_err());
+        assert!(SourceReadContext::review_proof(source, &proof).is_err());
     }
     std::fs::rename(&retained_inventory, &inventory_path).unwrap();
     assert_eq!(
@@ -488,14 +488,14 @@ fn actual_large_original_inventory_registers_and_reopens_protected_source_custod
         before.ino()
     );
     // Same named inode with changed bytes must not reuse the authenticated
-    // record witness when the source is mounted readonly again.
+    // record proof when the source is mounted readonly again.
     let mut changed = bytes;
     changed[20] ^= 1;
     std::fs::write(&inventory_path, &changed).unwrap();
     {
         let _readonly = ReadOnly::enter(&mount);
         let source = crate::setup::migration_handoff::resolve(&compact, &mount).unwrap();
-        assert!(SourceReadContext::review_witness(source, &witness).is_err());
+        assert!(SourceReadContext::review_proof(source, &proof).is_err());
     }
     assert_eq!(
         std::fs::read(home.join("document")).unwrap(),

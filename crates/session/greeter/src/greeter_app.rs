@@ -1024,7 +1024,7 @@ impl GreeterApp {
 
     /// Follow the kiosk's outputs: the sign-in card goes on the primary
     /// output and the backdrop on each, instead of centring the card in a
-    /// window that spans the seam (or a gap) between displays.
+    /// window that spans the boundary (or a gap) between displays.
     #[must_use]
     pub fn with_displays(mut self, displays: crate::output_scale::Displays) -> Self {
         self.displays = Some(displays);

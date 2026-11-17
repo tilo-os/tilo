@@ -136,9 +136,9 @@ fn checkpoint(
 }
 tilo_test_env::scenario! {
     #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
-    fn the_local_outbox_keeps_custody_until_the_workspace_holds_the_write;
+    fn the_local_outbox_keeps_ownership_until_the_workspace_holds_the_write;
 
-    phase local_outbox_revoked_custody_survives_restore_but_signing_and_current_lookup_refuse;
+    phase local_outbox_revoked_ownership_survives_restore_but_signing_and_current_lookup_refuse;
     {
         let (mut governor, mut member, governor_key, key, cert, now) = fixture();
         let original = local_edit(&mut member, &key, now, true, "revoked");

@@ -13,7 +13,7 @@ import WebKit
 /// - The device's key never leaves the page: it is a browser key that cannot be taken out,
 ///   which WebKit wraps with a key from the app's keychain. The engine hands the app no key.
 /// - It reads and acts as the person's own device, through the entry the page's palette,
-///   agents and assistive technology use, under the person's own standing. It is no client of
+///   agents and assistive technology use, under the person's own state. It is no client of
 ///   the host's API and carries no API key, so nothing it does is announced as an agent's call.
 /// - It opens its one site and nothing else. Another origin is never loaded, and only the
 ///   site's own page, in the main frame, is heard.
@@ -33,7 +33,7 @@ public final class TiloEngine: NSObject {
     }
 
     /// Where this device stands with the person's Tilo.
-    public enum Standing: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
         /// Nothing is opened.
         case away
         /// On its way in. The word is the page's own step: `load`, `join`, `open`, `draw`.
@@ -66,11 +66,11 @@ public final class TiloEngine: NSObject {
     /// The store the page keeps its data in. A view that shows a live Tilo thing uses the same.
     public var store: WKWebsiteDataStore { view.configuration.websiteDataStore }
 
-    public private(set) var standing: Standing = .away {
+    public private(set) var state: State = .away {
         didSet {
-            guard standing != oldValue else { return }
-            if case .open = standing {} else { found.removeAll() }
-            for listener in standingListeners.values { listener.yield(standing) }
+            guard state != oldValue else { return }
+            if case .open = state {} else { found.removeAll() }
+            for listener in stateListeners.values { listener.yield(state) }
         }
     }
 
@@ -82,7 +82,7 @@ public final class TiloEngine: NSObject {
     private(set) var refusedFrames = 0
 
     private let ear = Ear()
-    private var standingListeners: [UUID: AsyncStream<Standing>.Continuation] = [:]
+    private var stateListeners: [UUID: AsyncStream<Standing>.Continuation] = [:]
     private var changeListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
     /// Whoever waits for the page's next word of a change, once.
     private var changeWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
@@ -143,7 +143,7 @@ public final class TiloEngine: NSObject {
     // MARK: The way in
 
     /// Pair this device with a link that "Pair a new device" made where the person is signed
-    /// in. `standings()` says how it goes on: the code to compare, then in, or the refusal.
+    /// in. `states()` says how it goes on: the code to compare, then in, or the refusal.
     public func pair(with link: URL) throws(Problem) {
         guard let address = EngineAddress.pairing(link, of: settings) else { throw .notOfThisSite }
         go(to: address, in: EngineAddress.workspace(ofPage: address), pairing: true)
@@ -165,16 +165,16 @@ public final class TiloEngine: NSObject {
         wantedWorkspace = nil
         pairs = false
         view.loadHTMLString("", baseURL: nil)
-        standing = .away
+        state = .away
     }
 
     /// Where the device stands, from now on. The first value is where it stands now.
-    public func standings() -> AsyncStream<Standing> {
-        let (stream, continuation) = AsyncStream.makeStream(of: Standing.self, bufferingPolicy: .bufferingNewest(32))
+    public func states() -> AsyncStream<Standing> {
+        let (stream, continuation) = AsyncStream.makeStream(of: State.self, bufferingPolicy: .bufferingNewest(32))
         let id = UUID()
-        standingListeners[id] = continuation
-        continuation.yield(standing)
-        continuation.onTermination = { [weak self] _ in Task { @MainActor in self?.standingListeners[id] = nil } }
+        stateListeners[id] = continuation
+        continuation.yield(state)
+        continuation.onTermination = { [weak self] _ in Task { @MainActor in self?.stateListeners[id] = nil } }
         return stream
     }
 
@@ -296,7 +296,7 @@ public final class TiloEngine: NSObject {
     /// - Parameter hiding: something a person typed into a protected field, which went into
     ///   this ask. An answer that holds it is handed to nobody.
     func ask(_ script: String, _ arguments: [String: Any], hiding: String? = nil) async throws -> JSON {
-        guard case .open = standing else { throw Problem.notOpen }
+        guard case .open = state else { throw Problem.notOpen }
         let answer: Any?
         do {
             answer = try await view.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: .page)
@@ -329,7 +329,7 @@ public final class TiloEngine: NSObject {
         pairs = pairing
         wanted = address
         wantedWorkspace = workspace
-        standing = .arriving("load")
+        state = .arriving("load")
         load(address)
     }
 
@@ -381,7 +381,7 @@ public final class TiloEngine: NSObject {
     private func stand(entry: String, arrival: String, code: String, status: String, route: String, mounted: Bool) {
         switch entry {
         case "open":
-            guard mounted else { standing = .arriving("draw"); return }
+            guard mounted else { state = .arriving("draw"); return }
             // `route` is the page's path and what follows its `#`.
             let parts = route.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
             let inside = parts.count > 1 ? parts[1] : ""
@@ -392,7 +392,7 @@ public final class TiloEngine: NSObject {
             if pairs, let address = EngineAddress.page(of: EngineAddress.chat, in: wantedWorkspace ?? inside, of: settings) {
                 pairs = false
                 wanted = address
-                standing = .arriving("open")
+                state = .arriving("open")
                 load(address)
                 return
             }
@@ -404,29 +404,29 @@ public final class TiloEngine: NSObject {
                 guard moves > 0, let address = EngineAddress.page(of: EngineAddress.chat, in: elsewhere ? wantedWorkspace ?? inside : inside,
                                                                   of: settings)
                 else {
-                    standing = .failed(elsewhere ? "The site opened another workspace than the one that was asked for"
+                    state = .failed(elsewhere ? "The site opened another workspace than the one that was asked for"
                         : "The site did not open the page that shows one app")
                     return
                 }
                 moves -= 1
                 wanted = address
-                standing = .arriving("open")
+                state = .arriving("open")
                 load(address)
                 return
             }
             retries = 0
-            standing = .open(route: inside)
+            state = .open(route: inside)
         case "refused":
-            standing = .refused(status)
+            state = .refused(status)
         case "unsupported":
             // The page was let in and cannot draw here (a simulator offers a page no graphics
             // adapter). Nothing a second load brings changes that, so it is not loaded again,
             // and what is said is the page's own sentence.
-            standing = .failed(status.isEmpty ? "Tilo's page cannot draw on this device" : status)
+            state = .failed(status.isEmpty ? "Tilo's page cannot draw on this device" : status)
         case "failed":
             stopped(status)
         default:
-            standing = !code.isEmpty && arrival == "join" ? .pairing(code: code) : .arriving(arrival)
+            state = !code.isEmpty && arrival == "join" ? .pairing(code: code) : .arriving(arrival)
         }
     }
 
@@ -435,12 +435,12 @@ public final class TiloEngine: NSObject {
     /// again a moment later it gets in. So it is loaded once more before it is said.
     private func stopped(_ why: String) {
         guard retries > 0, let wanted else {
-            standing = .failed(why)
+            state = .failed(why)
             return
         }
         retries -= 1
         lastStop = why
-        standing = .arriving("load")
+        state = .arriving("load")
         retrying = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.5))
             guard let self, !Task.isCancelled else { return }
@@ -449,8 +449,8 @@ public final class TiloEngine: NSObject {
             // can wait for what the page before it held). Then what stopped the first is said,
             // and nobody waits for ever at a way in that shows nothing.
             try? await Task.sleep(for: self.stopPatience)
-            guard !Task.isCancelled, self.standing == .arriving("load") else { return }
-            self.standing = .failed(why)
+            guard !Task.isCancelled, self.state == .arriving("load") else { return }
+            self.state = .failed(why)
         }
     }
 

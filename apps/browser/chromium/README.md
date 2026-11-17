@@ -747,7 +747,7 @@ may act and passes the name of the invoker it admitted.
   frame it was once the number names nothing.
   What was written into a secret field is never recorded, whatever wrote it
   (the entry then carries `secret: true`), and nor is text the page refused.
-  Reads take no place in it. `page` with `action: "ledger"` and `since`
+  Reads take no place in it. `page` with `action: "log"` and `since`
   answers with the entries after that place, `next`, `more`, `dropped`, the
   action `running` and how many are `waiting`. It reads nothing of the page,
   so it answers at once whatever is running. `running` is an operating action
@@ -788,7 +788,7 @@ may act and passes the name of the invoker it admitted.
   input (the keys of its `press`, its fills, the clicks of its gestures) is
   that action's entry and is not set down again. No answer carries such an
   entry, so the host says it: the event `page_record`, with `tab`, `seq` and
-  the `entry` as `ledger` lists it. A named actor's next answer lists it
+  the `entry` as `log` lists it. A named actor's next answer lists it
   among `others`.
 - **What a window held is in the record.** A tab told `hold_departures` holds
   what its page is about to send until the app answers: a form submission or
@@ -1493,7 +1493,7 @@ content scripts (with `sender.tab`) work without help.
   `onInputChanged` for each change with the request its suggestions answer,
   and `onInputCancelled` when the person leaves, waking the worker. What the
   extension suggests for the latest change (`extension_omnibox_suggestions`)
-  and its default suggestion (`extension_omnibox_default`, `%s` standing
+  and its default suggestion (`extension_omnibox_default`, `%s` access
   for what is typed) go to the page's tab, and the Browser lists them, plain,
   under the address, the default first. Enter, or a suggestion chosen, fires
   `onInputEntered` with its text and `currentTab`, makes that window the

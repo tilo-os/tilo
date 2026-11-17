@@ -411,7 +411,7 @@ maximum capability envelope. Neither the user nor the app can exceed it.
 signing identity.
 
 An app can never exceed its manifest even with enthusiastic user consent, and a prompt is never
-the only thing standing between an app and a capability it never declared.
+the only thing access between an app and a capability it never declared.
 
 ### 6.2 Denial is absence, not refusal
 

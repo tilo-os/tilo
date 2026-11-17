@@ -2396,7 +2396,7 @@ struct ChildSetup {
 /// service sockets wired into the child via `pre_exec`, then wait for it.
 #[expect(
     clippy::too_many_lines,
-    reason = "one ordered spawn sequence: descriptor custody must stay visible from preparation to reaping"
+    reason = "one ordered spawn sequence: descriptor ownership must stay visible from preparation to reaping"
 )]
 fn spawn_and_wait(
     mut argv: Vec<String>,
@@ -2650,7 +2650,7 @@ fn spawn_and_wait(
         });
     }
 
-    // Last parent-side policy/custody check after preparation, immediately before spawn.
+    // Last parent-side policy/ownership check after preparation, immediately before spawn.
     if let Some(observer) = observer {
         observer.before_spawn().map_err(RunError::Spawn)?;
     }
@@ -3083,7 +3083,7 @@ pub(crate) fn run_with_context(
     // The user's capability decision.
     let mut capabilities = resolve_capabilities(manifest, opts);
 
-    // Host preflight precedes connected service custody.
+    // Host preflight precedes connected service ownership.
     let seccomp_fds = stage_seccomp(
         manifest,
         crate::seccomp::syscall_grants(
@@ -5936,7 +5936,7 @@ mod retained_files_tests {
             }
         }
 
-        phase retained_projection_refuses_redirected_or_nonprivate_custody;
+        phase retained_projection_refuses_redirected_or_nonprivate_ownership;
         {
             let root = tempfile::tempdir().unwrap();
             std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();

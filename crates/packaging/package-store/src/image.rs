@@ -9,7 +9,7 @@ use tilo_app_package::trust::{RevocationList, TrustFile, TrustedAttestor, Truste
 use tilo_app_package::{
     BlobFetcher, BlobHash, BlobSink, Kind, PackageFetcher, PackageId, PackageMeta, Verification,
 };
-use tilo_user_identity::{CertifiedFleet, DeviceStanding};
+use tilo_user_identity::{CertifiedFleet, DeviceCertification};
 
 use crate::StoreError;
 use crate::catalog::SystemStore;
@@ -236,20 +236,24 @@ impl ImageTrust {
             Verification::Trusted { .. } => Ok(String::new()),
             Verification::AttestedBy { attestor, .. } => Ok(attestor),
             Verification::UntrustedPublisher { identity, .. } => {
-                match self.fleet_standing(&identity) {
-                    Some(Ok(DeviceStanding::Certified)) => Ok(String::new()),
-                    Some(Ok(DeviceStanding::Revoked(reason))) => Err(MaterializeError::Revoked {
-                        id,
-                        publisher: publisher(),
-                        reason: format!("the device was removed from your devices ({reason:?})"),
-                    }),
+                match self.fleet_certification(&identity) {
+                    Some(Ok(DeviceCertification::Certified)) => Ok(String::new()),
+                    Some(Ok(DeviceCertification::Revoked(reason))) => {
+                        Err(MaterializeError::Revoked {
+                            id,
+                            publisher: publisher(),
+                            reason: format!(
+                                "the device was removed from your devices ({reason:?})"
+                            ),
+                        })
+                    }
                     _ if placed => Ok(String::new()),
                     Some(Err(detail)) => Err(MaterializeError::FleetUnavailable {
                         id,
                         publisher: publisher(),
                         detail,
                     }),
-                    Some(Ok(DeviceStanding::Uncertified)) | None => {
+                    Some(Ok(DeviceCertification::Uncertified)) | None => {
                         Err(MaterializeError::Untrusted {
                             id,
                             publisher: publisher(),
@@ -269,13 +273,16 @@ impl ImageTrust {
         }
     }
 
-    fn fleet_standing(&self, publisher: &[u8; 32]) -> Option<Result<DeviceStanding, String>> {
+    fn fleet_certification(
+        &self,
+        publisher: &[u8; 32],
+    ) -> Option<Result<DeviceCertification, String>> {
         let source = self.fleet.as_deref()?;
         let now_ns = tilo_clock::unix_now_ns();
         Some(
             source
                 .fleet()
-                .map(|fleet| fleet.standing(publisher, now_ns)),
+                .map(|fleet| fleet.certification(publisher, now_ns)),
         )
     }
 }

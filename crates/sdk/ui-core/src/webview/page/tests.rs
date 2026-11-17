@@ -969,14 +969,14 @@ tilo_test_env::scenario! {
 
     phase the_record_and_the_fields_are_reads_of_their_own;
     {
-        let record = PageRequest::Ledger { since: 12 };
+        let record = PageRequest::Log { since: 12 };
         assert!(record.valid() && record.only_observes());
         assert_eq!(record.element(), None);
         assert_eq!(record.frame(), None);
         assert_eq!(record.described(), "Read who did what in the tab");
         assert_eq!(
             encode_request(4, None, &record),
-            serde_json::json!({"op":"page","request_id":4,"action":"ledger","since":12})
+            serde_json::json!({"op":"page","request_id":4,"action":"log","since":12})
         );
         let fields = PageRequest::Fields { frame: None };
         assert!(fields.valid() && fields.only_observes());

@@ -363,7 +363,7 @@ mod tests {
         /// The account store over the shared store and the vault; each case has a root of its own.
         fn the_account_store_keeps_accounts_and_their_secrets;
 
-        phase legacy_account_credentials_load_and_damaged_custody_is_reported;
+        phase legacy_account_credentials_load_and_damaged_ownership_is_reported;
         {
             let root = temp_root();
             let id = AccountId::from("legacy@example.test");
@@ -538,7 +538,7 @@ mod tests {
 
                 let error = store
                     .persist_in(root.path())
-                    .expect_err("custody must succeed first");
+                    .expect_err("ownership must succeed first");
                 assert!(error.to_string().contains("vault recovery required"));
                 assert_eq!(std::fs::read(&vault_path).unwrap(), damaged);
                 assert_eq!(std::fs::read(&metadata_path).unwrap(), original_metadata);

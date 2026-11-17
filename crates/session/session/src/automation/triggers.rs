@@ -652,7 +652,7 @@ pub fn watched_folders(
 
 /// One schedule's persisted state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct LedgerEntry {
+struct LogEntry {
     /// The trigger as it was when armed; a changed schedule starts over.
     trigger: TriggerSpec,
     /// When it fires next, in milliseconds since the Unix epoch.
@@ -660,32 +660,32 @@ struct LedgerEntry {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct ScheduleLedger {
+struct ScheduleLog {
     /// Keyed by `workspace/shortcut/trigger index` .
     #[serde(default)]
-    schedules: BTreeMap<String, LedgerEntry>,
+    schedules: BTreeMap<String, LogEntry>,
 }
 
 /// Fires scheduled triggers when their time comes, at most once per fire time, across restarts.
-/// The ledger of next fire times is written on the state writer, because [`TriggerEvent::Tick`]
+/// The log of next fire times is written on the state writer, because [`TriggerEvent::Tick`]
 /// arrives on the compositor's loop and the write's fsyncs can take seconds under I/O pressure.
-/// Each ledger value handed to the writer gets the next sequence number, and the firings of the
+/// Each log value handed to the writer gets the next sequence number, and the firings of the
 /// tick that produced it wait under that number. The write marks its number settled (on disk, or
 /// failed and logged, which runs the firings as before) and wakes the loop; a later tick hands the
 /// firings over. A newer value that replaces a queued older one holds at least as much and settles
-/// a higher number, so it releases both. A crash before the write lands leaves the previous ledger
+/// a higher number, so it releases both. A crash before the write lands leaves the previous log
 /// and loses no invocation: none has started.
 pub struct ScheduleTriggers {
-    ledger: ScheduleLedger,
+    log: ScheduleLog,
     path: Option<PathBuf>,
     writer: &'static tilo_durable_writer::DurableWriter,
-    /// The newest ledger value handed to the writer.
+    /// The newest log value handed to the writer.
     submitted: u64,
-    /// Every ledger value up to this one is settled.
+    /// Every log value up to this one is settled.
     settled: Arc<AtomicU64>,
-    /// Firings waiting for the ledger value numbered with them.
+    /// Firings waiting for the log value numbered with them.
     held: Vec<(u64, Firing)>,
-    /// Wakes the session's loop once the ledger is written, so the firings it holds are handed over
+    /// Wakes the session's loop once the log is written, so the firings it holds are handed over
     /// then rather than a tick later.
     wake: crate::automation::Wake,
 }
@@ -693,7 +693,7 @@ pub struct ScheduleTriggers {
 impl std::fmt::Debug for ScheduleTriggers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScheduleTriggers")
-            .field("ledger", &self.ledger)
+            .field("log", &self.log)
             .field("path", &self.path)
             .field("submitted", &self.submitted)
             .field("held", &self.held.len())
@@ -708,14 +708,14 @@ impl ScheduleTriggers {
         Self::open_with_writer(path, tilo_durable_writer::global(), wake)
     }
 
-    /// [`Self::open`], writing the ledger on `writer` .
+    /// [`Self::open`], writing the log on `writer` .
     #[must_use]
     pub fn open_with_writer(
         path: Option<PathBuf>,
         writer: &'static tilo_durable_writer::DurableWriter,
         wake: crate::automation::Wake,
     ) -> Self {
-        let ledger = path
+        let log = path
             .as_ref()
             .and_then(|path| match std::fs::read(path) {
                 Ok(bytes) => Some(bytes),
@@ -724,7 +724,7 @@ impl ScheduleTriggers {
                     tracing::warn!(
                         %error,
                         path = %path.display(),
-                        "the ledger of fired triggers could not be read"
+                        "the log of fired triggers could not be read"
                     );
                     None
                 }
@@ -732,13 +732,13 @@ impl ScheduleTriggers {
             .and_then(|bytes| {
                 serde_json::from_slice(&bytes)
                     .inspect_err(|error| {
-                        tracing::warn!(%error, "the ledger of fired triggers does not read back");
+                        tracing::warn!(%error, "the log of fired triggers does not read back");
                     })
                     .ok()
             })
             .unwrap_or_default();
         Self {
-            ledger,
+            log,
             path,
             writer,
             submitted: 0,
@@ -748,15 +748,15 @@ impl ScheduleTriggers {
         }
     }
 
-    /// Hand the ledger to the writer and hold `due` until it is written. Kept in memory only, or
-    /// when the ledger cannot be encoded, `due` runs at once, as it did when the write happened
+    /// Hand the log to the writer and hold `due` until it is written. Kept in memory only, or
+    /// when the log cannot be encoded, `due` runs at once, as it did when the write happened
     /// here.
     fn persist(&mut self, due: Vec<Firing>) {
         let Some(path) = self.path.clone() else {
             self.held.extend(due.into_iter().map(|firing| (0, firing)));
             return;
         };
-        let bytes = match serde_json::to_vec_pretty(&self.ledger) {
+        let bytes = match serde_json::to_vec_pretty(&self.log) {
             Ok(bytes) => bytes,
             Err(error) => {
                 tracing::warn!(%error, path = %path.display(), "shortcut schedules were not saved");
@@ -802,11 +802,11 @@ impl TriggerSource for ScheduleTriggers {
                 let TriggerSpec::Schedule { schedule, catch_up } = trigger else {
                     continue;
                 };
-                let key = ledger_key(&armed.workspace, &armed.shortcut.id, index);
+                let key = log_key(&armed.workspace, &armed.shortcut.id, index);
                 live.insert(key.clone());
 
                 let current = self
-                    .ledger
+                    .log
                     .schedules
                     .get(&key)
                     .filter(|entry| entry.trigger == *trigger)
@@ -847,9 +847,9 @@ impl TriggerSource for ScheduleTriggers {
                 let Some(next) = next else {
                     continue;
                 };
-                self.ledger.schedules.insert(
+                self.log.schedules.insert(
                     key,
-                    LedgerEntry {
+                    LogEntry {
                         trigger: trigger.clone(),
                         next_fire_ms: next.timestamp_millis(),
                     },
@@ -857,10 +857,10 @@ impl TriggerSource for ScheduleTriggers {
                 changed = true;
             }
         }
-        let before = self.ledger.schedules.len();
-        self.ledger.schedules.retain(|key, _| live.contains(key));
-        changed |= self.ledger.schedules.len() != before;
-        // Persisted before anything runs: a firing is handed over only once the ledger that moved
+        let before = self.log.schedules.len();
+        self.log.schedules.retain(|key, _| live.contains(key));
+        changed |= self.log.schedules.len() != before;
+        // Persisted before anything runs: a firing is handed over only once the log that moved
         // past its fire time is written, so a crash loses at most the run, never repeats it.
         if changed {
             self.persist(due_now);
@@ -881,7 +881,7 @@ impl TriggerSource for ScheduleTriggers {
     }
 }
 
-fn ledger_key(workspace: &str, shortcut: &str, index: usize) -> String {
+fn log_key(workspace: &str, shortcut: &str, index: usize) -> String {
     format!("{workspace}/{shortcut}/{index}")
 }
 
@@ -1257,7 +1257,7 @@ impl TriggerHost {
         }
     }
 
-    /// Firings an earlier tick held until their schedule ledger was written,
+    /// Firings an earlier tick held until their schedule log was written,
     /// now that it is. Reads no clock, device list or disk, so the loop can
     /// ask on every iteration.
     pub fn take_settled_firings(&mut self) -> Vec<Firing> {
@@ -1387,7 +1387,7 @@ mod tests {
             assert_eq!(
                 fired[0].invocation,
                 scheduled_invocation(
-                    &ledger_key("workspace", "tidy", 0),
+                    &log_key("workspace", "tidy", 0),
                     at("2026-09-25T09:00:00Z")
                 ),
                 "the run is the fire time's, so the person's devices agree on it"

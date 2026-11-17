@@ -661,7 +661,7 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
         .accept(DIRECT_ALPN, a_link)
         .spawn();
     let b_endpoint = localhost_endpoint(&key_b).await;
-    // B's device retires and republishes its own custody while the link admits
+    // B's device retires and republishes its own ownership while the link admits
     // frames: neither takes the other's away.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let retiring = std::thread::spawn({

@@ -42,7 +42,7 @@ async fn usage(account: &mut Mcp<'_>) -> Vec<Value> {
                                 "_meta": {"so.tilo.mcp": {"structured": true}}}}))
         .await;
     assert_eq!(status, 200, "{read}");
-    read["result"]["structuredContent"]["fields"]["standing"]["usage"]["workspaces"]
+    read["result"]["structuredContent"]["fields"]["subscription"]["usage"]["workspaces"]
         .as_array()
         .cloned()
         .unwrap_or_default()

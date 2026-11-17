@@ -37,7 +37,7 @@ pub use store::{
 };
 pub use tilo_app_package::BlobFetcher;
 #[cfg(feature = "store")]
-pub use tilo_user_identity::{CertifiedFleet, DeviceStanding};
+pub use tilo_user_identity::{CertifiedFleet, DeviceCertification};
 
 /// Why a store operation failed.
 #[derive(Debug, thiserror::Error)]

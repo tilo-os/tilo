@@ -5,7 +5,7 @@
 //! starts this binary from that bundle with `TILO_PACKAGE_ID` (the package's signed id) and
 //! `TILO_APP_MODULE` (its payload: the compiled module, its metadata and its surface). The
 //! binary builds the app's definition from them, so each package has its own id, window, document,
-//! custody and permissions. It compiles nothing: the package was compiled by `tilolang build`.
+//! ownership and permissions. It compiles nothing: the package was compiled by `tilolang build`.
 
 #![allow(
     clippy::cast_possible_truncation,

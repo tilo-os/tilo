@@ -66,9 +66,9 @@ of its own: a crate under `crates/runtime/engines/<name>/` that is a Rust
 Editor; Spotify playback: `libtilo_spotify_engine.so` for Music; the wet-media
 simulation and subject mattes: `libtilo_paint_engine.so` for Canvas; the
 YouTube client, rustypipe with its QuickJS: `libtilo_youtube_engine.so` for
-Music and Tube; account custody with its OAuth client and cloud-storage
+Music and Tube; account credentials with its OAuth client and cloud-storage
 providers, the IMAP client, and the WebDAV/CalDAV client whose calendar sign-in
-reaches custody: `libtilo_accounts_engine.so` for Mail, Settings, Calendar,
+reaches ownership: `libtilo_accounts_engine.so` for Mail, Settings, Calendar,
 Imager and the Spotify engine; the time-zone database, chrono-tz:
 `libtilo_timezone_engine.so` for Calendar and Clocks; the contact directory:
 `libtilo_contact_directory_engine.so` for Contacts, Mail and Messages; Tilo's
@@ -142,7 +142,7 @@ relies on:
   overlap another's that its app always loads with it chains on that one
   instead (`tilo-spotify-engine` takes rand 0.9 and sha1 0.10, which librespot
   shares with rustypipe, from the YouTube engine Music loads beside it, and
-  account custody, which Spotify's sign-in uses, from the accounts engine);
+  account credentials, which Spotify's sign-in uses, from the accounts engine);
 - the engine's crates go into the surface check's `ENGINES`. The
   workspace-hack listing one does not put it into the runtime: the hack's
   library names none of its dependencies, and rustc links only the crates a
@@ -151,7 +151,7 @@ relies on:
   russh, wasmi or the other crates only the hack lists). The check follows
   real dependencies and the features apps enable on them, which is how an
   engine's crate comes back (Calendar's `live` asking tilo-dav for the
-  account custody its sign-in reaches, for one).
+  account credentials its sign-in reaches, for one).
 
 Release / apps reports each engine's bytes, relocations and dirtied pages
 beside the runtime's, holds each engine's file to its budget (`[engines.<arch>]`
@@ -261,7 +261,7 @@ that no first frame touches.
 Apps get smaller too: an app that encodes a PNG or JPEG no longer
 instantiates the `image` crate's encoders in its own binary (`ui::png`,
 `ui::jpeg`, compiled once in the runtime; about 50 KB per app that encoded),
-and Imager loads account custody and the FUSE presentation from their
+and Imager loads account credentials and the FUSE presentation from their
 engines instead of carrying them.
 
 ## Reading what makes it large

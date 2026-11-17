@@ -105,7 +105,7 @@ fn now_ns() -> u64 {
         })
 }
 
-/// A device that relays a workspace's live session, as a standing names it.
+/// A device that relays a workspace's live session, as a state names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Relayer {
     /// Its device key.
@@ -121,7 +121,7 @@ pub struct Relayer {
 /// presence, no call and no picture of a shared window, and nothing else says so: what was asked
 /// of it waits without a word. The session publishes this, so a person, a tool and a test read why.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Standing {
+pub enum LiveState {
     /// This device is in the live session, through `relay`, sealing under the keys of `epoch`. `lent`
     /// says those are the keys of its own streams alone, lent by the workspace's host
     /// ([`MediaKeysLender`]): it publishes with them and opens nothing another device sends.
@@ -151,7 +151,7 @@ pub enum Standing {
     Refused { relay: Relayer, epoch: u64 },
 }
 
-impl Standing {
+impl LiveState {
     /// Whether the live session carries what this device says and asks for now.
     #[must_use]
     pub const fn is_open(&self) -> bool {
@@ -159,7 +159,7 @@ impl Standing {
     }
 }
 
-/// `device` as a standing names it, by the certificate `devices` holds of it.
+/// `device` as a state names it, by the certificate `devices` holds of it.
 fn relayer(devices: &[Device], device: [u8; 32], own: [u8; 32]) -> Relayer {
     let name = devices
         .iter()
@@ -198,13 +198,13 @@ impl Missed {
 
     /// How the live session stands after it: refused by `relay` when it presented the keys of `epoch`,
     /// told by it that it is busy, or waiting to reach it.
-    fn standing(self, relay: Relayer, epoch: u64) -> Standing {
+    fn state(self, relay: Relayer, epoch: u64) -> LiveState {
         if self.refused {
-            Standing::Refused { relay, epoch }
+            LiveState::Refused { relay, epoch }
         } else if self.busy {
-            Standing::Busy { relay }
+            LiveState::Busy { relay }
         } else {
-            Standing::Unreached { relay }
+            LiveState::Unreached { relay }
         }
     }
 }
@@ -450,12 +450,12 @@ struct Shared {
     /// Told when a workspace's membership or keys moved.
     changed: tokio::sync::watch::Sender<u64>,
     live_sessions: Mutex<BTreeMap<WorkspaceId, Joined>>,
-    /// How far each workspace's live session came here, as it was last settled ([`Standing`]).
-    standings: Mutex<BTreeMap<WorkspaceId, Standing>>,
+    /// How far each workspace's live session came here, as it was last settled ([`LiveState`]).
+    states: Mutex<BTreeMap<WorkspaceId, LiveState>>,
     /// The endpoints this relay turned away from each workspace's live session and has not let in since,
     /// and why ([`TurnedAway`]): of the workspaces this session runs a live session for, and no others.
     turned: Mutex<BTreeMap<WorkspaceId, BTreeMap<[u8; 32], TurnedAway>>>,
-    /// Counts each move of a standing and each live session opened: what the session reads the standings
+    /// Counts each move of a state and each live session opened: what the session reads the states
     /// and the live sessions again on, and not on every pass.
     moves: std::sync::atomic::AtomicU64,
     /// What wakes each workspace's reconciler beside the workspace's own changes: a live session of it
@@ -584,7 +584,7 @@ impl Shared {
             Refusal::KeysBehind { presented, newest } => (Some(presented), Some(newest)),
             _ => (None, None),
         };
-        if !self.standings.lock_recover().contains_key(&workspace) {
+        if !self.states.lock_recover().contains_key(&workspace) {
             tracing::debug!(%workspace, peer = %hex::encode(peer), why = why.word(),
                 "a device was turned away from the live session of a workspace this session runs \
                  no live_session for");
@@ -638,7 +638,7 @@ impl Shared {
             Err(error) => {
                 tracing::warn!(%workspace, %error, "the live session's membership is unknown");
                 self.withdraw(workspace);
-                self.stand(workspace, Standing::Unread);
+                self.stand(workspace, LiveState::Unread);
                 return None;
             }
         };
@@ -648,7 +648,7 @@ impl Shared {
                 tracing::info!(%workspace, "no member relays this workspace's live session any more");
             }
             self.withdraw(workspace);
-            self.stand(workspace, Standing::NoRelay);
+            self.stand(workspace, LiveState::NoRelay);
             return None;
         };
         Some((devices, relay))
@@ -712,7 +712,7 @@ impl Shared {
             live_session.set_roster(roster);
             self.stand(
                 workspace,
-                Standing::Open {
+                LiveState::Open {
                     relay: relayer(&devices, at, self.device),
                     epoch,
                     lent,
@@ -746,7 +746,7 @@ impl Shared {
             Ok(live_session) => live_session,
             Err(error) => {
                 tilo_failure::ignored!(
-                    "the live session's standing says its relay was missed, and the relay is asked again",
+                    "the live session's state says its relay was missed, and the relay is asked again",
                     tracing::debug!(%workspace, relay = %hex::encode(serving), %error,
                         "this workspace's relay was not reached")
                 );
@@ -757,7 +757,7 @@ impl Shared {
         tracing::debug!(%workspace, relay = %hex::encode(serving),
             local = serving == self.device, epoch,
             "the live session opened");
-        let open = Standing::Open {
+        let open = LiveState::Open {
             relay: relayer(&devices, serving, self.device),
             epoch,
             lent,
@@ -779,9 +779,9 @@ impl Shared {
         self.stand(
             workspace,
             if waiting {
-                Standing::WaitingForKeys
+                LiveState::WaitingForKeys
             } else {
-                Standing::Keyless
+                LiveState::Keyless
             },
         );
     }
@@ -793,7 +793,7 @@ impl Shared {
         workspace: WorkspaceId,
         serving: [u8; 32],
         live_session: LiveSession,
-        open: Standing,
+        open: LiveState,
     ) {
         live_session.set_wake(Arc::clone(&self.wake));
         let ended = Arc::clone(self);
@@ -810,12 +810,12 @@ impl Shared {
         );
         drop(replaced);
         self.stand(workspace, open);
-        // A live session opened again where one stood is another live session, whatever its standing says.
+        // A live session opened again where one stood is another live session, whatever its state says.
         self.moved();
         self.bump();
     }
 
-    /// Tell the session that a standing moved or a live session opened: it reads both again.
+    /// Tell the session that a state moved or a live session opened: it reads both again.
     fn moved(&self) {
         self.moves
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -919,12 +919,12 @@ impl Shared {
 
     /// Note how far `workspace` 's live session came, and wake the session when that moved: what it
     /// publishes of the live session is read again. Answers whether it moved.
-    fn stand(&self, workspace: WorkspaceId, standing: Standing) -> bool {
+    fn stand(&self, workspace: WorkspaceId, state: LiveState) -> bool {
         let moved = {
-            let mut standings = self.standings.lock_recover();
-            let moved = standings.get(&workspace) != Some(&standing);
+            let mut states = self.states.lock_recover();
+            let moved = states.get(&workspace) != Some(&state);
             if moved {
-                standings.insert(workspace, standing);
+                states.insert(workspace, state);
             }
             moved
         };
@@ -939,8 +939,8 @@ impl Shared {
     /// is busy, or as refused by it, and the journal says so when that is news.
     fn missed(&self, workspace: WorkspaceId, devices: &[Device], missed: Missed, epoch: u64) {
         let relay = relayer(devices, missed.relay, self.device);
-        let standing = missed.standing(relay, epoch);
-        if self.stand(workspace, standing) {
+        let state = missed.state(relay, epoch);
+        if self.stand(workspace, state) {
             tracing::warn!(%workspace, relay = %hex::encode(missed.relay), refused = missed.refused,
                 busy = missed.busy, epoch,
                 "the live session is not open: no device that relays this workspace took this device in");
@@ -958,8 +958,8 @@ impl Shared {
     /// Whether `workspace` names a relay that did not take this device in when it was last settled.
     fn awaits_relay(&self, workspace: WorkspaceId) -> bool {
         matches!(
-            self.standings.lock_recover().get(&workspace),
-            Some(Standing::Unreached { .. } | Standing::Busy { .. } | Standing::Refused { .. })
+            self.states.lock_recover().get(&workspace),
+            Some(LiveState::Unreached { .. } | LiveState::Busy { .. } | LiveState::Refused { .. })
         )
     }
 
@@ -977,9 +977,9 @@ impl Shared {
         self.live_sessions.lock_recover().remove(&workspace);
         // Until it is settled again the live session is not open: the relay it ran through is the one it
         // waits to reach.
-        let was = self.standings.lock_recover().get(&workspace).cloned();
-        if let Some(Standing::Open { relay, .. }) = was {
-            self.stand(workspace, Standing::Unreached { relay });
+        let was = self.states.lock_recover().get(&workspace).cloned();
+        if let Some(LiveState::Open { relay, .. }) = was {
+            self.stand(workspace, LiveState::Unreached { relay });
         }
         self.nudge(workspace).notify_one();
     }
@@ -1031,7 +1031,7 @@ impl Live {
             rosters: Mutex::new(BTreeMap::new()),
             changed,
             live_sessions: Mutex::new(BTreeMap::new()),
-            standings: Mutex::new(BTreeMap::new()),
+            states: Mutex::new(BTreeMap::new()),
             turned: Mutex::new(BTreeMap::new()),
             moves: std::sync::atomic::AtomicU64::new(0),
             nudges: Mutex::new(BTreeMap::new()),
@@ -1140,12 +1140,12 @@ impl Live {
     /// How far each workspace's live session came on this device, by workspace: open, or what it waits
     /// for. A workspace this session has not looked at yet is not among them.
     #[must_use]
-    pub fn standings(&self) -> Vec<(WorkspaceId, Standing)> {
+    pub fn states(&self) -> Vec<(WorkspaceId, LiveState)> {
         self.shared
-            .standings
+            .states
             .lock_recover()
             .iter()
-            .map(|(workspace, standing)| (*workspace, standing.clone()))
+            .map(|(workspace, state)| (*workspace, state.clone()))
             .collect()
     }
 
@@ -1163,11 +1163,11 @@ impl Live {
             .collect()
     }
 
-    /// Moves whenever a standing did, a live session opened or a device was turned away or let in:
-    /// [`Self::standings`], [`Self::live_sessions`] and [`Self::turned_away`] say nothing new while it
+    /// Moves whenever a state did, a live session opened or a device was turned away or let in:
+    /// [`Self::states`], [`Self::live_sessions`] and [`Self::turned_away`] say nothing new while it
     /// stands still.
     #[must_use]
-    pub fn standings_revision(&self) -> u64 {
+    pub fn states_revision(&self) -> u64 {
         self.shared.moves.load(std::sync::atomic::Ordering::Relaxed)
     }
 
@@ -1704,20 +1704,20 @@ mod tests {
                 here: false,
             };
             assert_eq!(
-                Missed::of([3; 32], &LiveError::Busy).standing(relay.clone(), 4),
-                Standing::Busy {
+                Missed::of([3; 32], &LiveError::Busy).state(relay.clone(), 4),
+                LiveState::Busy {
                     relay: relay.clone()
                 }
             );
             assert_eq!(
-                Missed::of([3; 32], &LiveError::Unavailable).standing(relay.clone(), 4),
-                Standing::Unreached {
+                Missed::of([3; 32], &LiveError::Unavailable).state(relay.clone(), 4),
+                LiveState::Unreached {
                     relay: relay.clone()
                 }
             );
             assert_eq!(
-                Missed::of([3; 32], &LiveError::Denied).standing(relay.clone(), 4),
-                Standing::Refused { relay, epoch: 4 }
+                Missed::of([3; 32], &LiveError::Denied).state(relay.clone(), 4),
+                LiveState::Refused { relay, epoch: 4 }
             );
         }
 

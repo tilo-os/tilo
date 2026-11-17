@@ -2621,7 +2621,7 @@ impl ui::application_view::ApplicationViewState for NotesApp {
             && (self.main.title_focused() || editor.is_focused())
         {
             // The title and the body are the same place in the window's life:
-            // the note being written. A title field standing open is a
+            // the note being written. A title field held open is a
             // gesture in flight, not the place to give back, so the body is
             // what the window saves ([`MainPanel::finish_local_focus`]).
             NotesFocus::Editor

@@ -1677,7 +1677,7 @@ include!("catch_up_tests.rs");
 
 include!("turn_tests.rs");
 
-/// A device key in custody that answers a signature only on a later poll, as a page's `WebCrypto`
+/// A device key held that answers a signature only on a later poll, as a page's `WebCrypto`
 /// key does.
 struct LaterSigner(ed25519_dalek::SigningKey);
 
@@ -1703,7 +1703,7 @@ impl DeviceSigner for LaterSigner {
 /// A reader whose key signs later is admitted by a key holder and opens what it seals; alone it
 /// never founds a group, and it commits nothing when the policy moves.
 #[test]
-fn a_reader_with_custody_that_signs_later_reads_a_key_holders_group() {
+fn a_reader_with_ownership_that_signs_later_reads_a_key_holders_group() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
     let artifact = collab_types::ArtifactId::new();
@@ -1738,7 +1738,7 @@ fn a_reader_with_custody_that_signs_later_reads_a_key_holders_group() {
     ));
     run(&mut [&mut page], &mut now, 30);
     assert!(!page.service.peers[&workspace_id].peer.knows_group());
-    assert!(page.service.signing(), "its request waits on its custody");
+    assert!(page.service.signing(), "its request waits on its ownership");
     pollster::block_on(page.service.signatures());
     assert!(!page.service.signing());
 
@@ -2072,7 +2072,7 @@ fn a_competing_genesis_is_judged_once_the_device_names_the_record() {
 /// A member whose link to the device it reaches the workspace through was down
 /// when a channel's group changed heard nothing of the commit, which that
 /// device published once. What the device hands a member that links
-/// ([`WorkspaceKeys::standing_governance`]) makes it current again: nobody
+/// ([`WorkspaceKeys::current_governance`]) makes it current again: nobody
 /// has to commit a second time for it to leave the epoch it was left at.
 #[test]
 fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
@@ -2134,7 +2134,7 @@ fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
 
     // The phone's link is up again, and the device it reaches the workspace
     // through hands it what its channels hold.
-    let handed = owner.service.standing_governance(workspace_id);
+    let handed = owner.service.current_governance(workspace_id);
     assert!(
         handed.iter().all(|message| matches!(
             message,
@@ -2145,7 +2145,7 @@ fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
     assert!(
         owner
             .service
-            .standing_governance(WorkspaceId::new())
+            .current_governance(WorkspaceId::new())
             .is_empty(),
         "and none of another workspace's"
     );

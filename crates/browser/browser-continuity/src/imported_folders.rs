@@ -1,5 +1,5 @@
 //! Reviewed bookmark hierarchy. URL identity and placement identity are distinct.
-//! A complete source tree is immutable custody; removals are separate tombstones,
+//! A complete source tree is immutable ownership; removals are separate tombstones,
 //! so retrying its import cannot resurrect a removed folder or placement.
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,7 +31,7 @@ pub struct ImportedTree {
     pub nodes: Vec<ImportedNode>,
 }
 
-// A retained tree is immutable custody of what an outside source held: up to
+// A retained tree is immutable ownership of what an outside source held: up to
 // `MAX_BUNDLE_ENTRIES` nodes, never edited once kept, compared whole when an
 // import is retried, and removed from view only by tombstones kept beside it.
 // It is stored as one value, so a library of imported folders costs one

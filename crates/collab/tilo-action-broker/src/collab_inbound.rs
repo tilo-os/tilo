@@ -13,17 +13,17 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
-use tilo_action_policy::Standing;
+use tilo_action_policy::MemberAccess;
 
 /// A document op as the transport delivered it: the route its publishing
-/// host stamped, and the author's standing in the workspace.
+/// host stamped, and the author's access in the workspace.
 pub struct RemoteDocument {
     pub app_id: String,
     pub cluster_id: String,
     pub document_id: String,
     /// The author, the workspace's policy and any bound on them (a device not
     /// theirs), as the host established them for the authenticated peer.
-    pub author: Standing,
+    pub author: MemberAccess,
     /// A workspace host replayed it from its retained, host-ordered history
     /// (before answering the subscription): old by nature.
     pub replayed: bool,
@@ -46,7 +46,7 @@ const MAX_CLOCK_SKEW: Duration = Duration::from_secs(300);
 /// replayed history.
 pub fn validate_document(
     envelope: &SignedOp,
-    author: &Standing,
+    author: &MemberAccess,
     replayed: bool,
     state: &mut InboundState,
     now: SystemTime,
@@ -313,12 +313,12 @@ mod tests {
     const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
 
     /// An editor of the workspace the ops are written in.
-    fn editor() -> Standing {
+    fn editor() -> MemberAccess {
         let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "owner");
         policy
             .members
             .insert("editor".into(), tilo_action_policy::Role::Editor);
-        Standing::person(policy, "editor")
+        MemberAccess::person(policy, "editor")
     }
 
     /// The check of a workspace that requires encryption: its group's, which

@@ -79,7 +79,7 @@ def prepare(output, feature, env, build_only=False):
     run(['bash', HERE / 'capture-native-preflight.sh'], clean)
     run([recorder, 'build', '--locked', '--release', '-p', 'tilo-session', '--bin', 'tilo-session',
          '-p', 'tilo-fs', '--bin', 'fs', '-p', 'tilo-control', '--bin', 'tilo-control',
-         '-p', 'account-custody', '--bin', 'tilo-account-credential',
+         '-p', 'account-credentials', '--bin', 'tilo-account-credential',
          '-p', 'tilo-install-helpers', '--bin', 'tilo-staging-handoff', '--bin', 'tilo-install-handoff-copy',
          '--bin', 'tilo-firstboot-home-seeds',
          '-p', 'tilo-firstboot-files', '--bin', 'tilo-firstboot-files'], clean)

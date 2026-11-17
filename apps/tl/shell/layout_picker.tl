@@ -11,7 +11,7 @@
 view layouts(s: Shell) {
     section("ChromePreset") {
         row(gap: .related, align: .center) {
-            ui.Text(standing(s), role: .subheading)
+            ui.Text(access(s), role: .subheading)
             if s.tuned {
                 spacer
                 button(reset(s))
@@ -26,7 +26,7 @@ view layouts(s: Shell) {
 }
 
 /// What the person's settings stand as: the preset's name, or "Custom, based on" it.
-fn standing(s: Shell) -> Text {
+fn access(s: Shell) -> Text {
     if s.tuned {
         if s.based_on == .tilo {
             "Custom, based on Tilo"

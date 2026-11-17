@@ -1,6 +1,6 @@
 //! The person's accounts in a window: each account's settings from their
-//! resource, its secret from this device's custody (in a session, released by
-//! the session's account custody, [`crate::custody`]).
+//! resource, its secret from this device's ownership (in a session, released by
+//! the session's account credentials, [`crate::ownership`]).
 
 use super::{AccountConfig, AccountStore, EngineRequest, MailApp, MessageId};
 use crate::actions::MailEffect;
@@ -117,7 +117,7 @@ impl MailApp {
         }
         *seen = Some(revision);
         let person = record.get();
-        let mut adopted = if self.custody.is_some() {
+        let mut adopted = if self.ownership.is_some() {
             AccountStore::without_secrets(&person.store())
         } else if let Some(root) = root {
             let vault = match accounts::AccountCredentials::open_in(&root) {
@@ -138,7 +138,7 @@ impl MailApp {
         };
         let active_changed = {
             let mut st = self.shared.borrow_mut();
-            keep_released_secrets(self.custody.as_mut(), &mut adopted, &st.accounts);
+            keep_released_secrets(self.ownership.as_mut(), &mut adopted, &st.accounts);
             let previous = st.accounts.active_account().cloned();
             if let Some(shown) = st
                 .accounts
@@ -184,7 +184,7 @@ impl MailApp {
         if self.shared.borrow().accounts.is_empty() {
             self.connect_requested = false;
         } else if self.awaits_active_secret() {
-            // It connects once custody released its secret.
+            // It connects once ownership released its secret.
             self.connect_requested = false;
         } else if self.state().engine.is_some() && (active_changed || !self.connect_requested) {
             let (cfg, folder) = {
@@ -200,7 +200,7 @@ impl MailApp {
     }
 
     pub(super) fn awaits_active_secret(&self) -> bool {
-        let Some(custody) = &self.custody else {
+        let Some(ownership) = &self.ownership else {
             return false;
         };
         self.shared
@@ -208,7 +208,7 @@ impl MailApp {
             .accounts
             .active_account()
             .is_some_and(|account| {
-                needs_released_secret(&account.config) && custody.awaits(&account.id)
+                needs_released_secret(&account.config) && ownership.awaits(&account.id)
             })
     }
 
@@ -218,10 +218,10 @@ impl MailApp {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let Some(custody) = self.custody.as_mut() else {
+        let Some(ownership) = self.ownership.as_mut() else {
             return;
         };
-        let released = custody.poll(wake.as_ref());
+        let released = ownership.poll(wake.as_ref());
         if released.is_empty() {
             return;
         }
@@ -233,14 +233,14 @@ impl MailApp {
         let mut connect = false;
         for answer in released {
             match answer {
-                crate::custody::Released::Secret { account, password } => {
+                crate::account_secrets::Released::Secret { account, password } => {
                     if let Some(kept) = st.accounts.accounts.iter_mut().find(|a| a.id == account) {
                         password.as_str().clone_into(&mut kept.config.password);
                     }
                     connect |= active.as_deref() == Some(account.as_str());
                 }
-                crate::custody::Released::Refused { account, error } => {
-                    tracing::error!(%account, %error, "the session's account custody did not release this account's secret");
+                crate::account_secrets::Released::Refused { account, error } => {
+                    tracing::error!(%account, %error, "the session's account credentials did not release this account's secret");
                     if active.as_deref() == Some(account.as_str()) {
                         // The account cannot sign in until its secret is
                         // released, and the person fixes that in Settings.
@@ -275,7 +275,7 @@ fn needs_released_secret(config: &AccountConfig) -> bool {
 }
 
 fn keep_released_secrets(
-    custody: Option<&mut crate::custody::SecretRelease>,
+    ownership: Option<&mut crate::account_secrets::SecretRelease>,
     adopted: &mut AccountStore,
     shown: &AccountStore,
 ) {
@@ -293,10 +293,10 @@ fn keep_released_secrets(
             }
         }
     }
-    if let Some(custody) = custody {
+    if let Some(ownership) = ownership {
         for account in &adopted.accounts {
             if needs_released_secret(&account.config) {
-                custody.ask(&account.id);
+                ownership.ask(&account.id);
             }
         }
     }

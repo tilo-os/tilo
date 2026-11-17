@@ -22,7 +22,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Credentials are long-lived bearer secrets, so the vault is sealed on disk
 # with XChaCha20-Poly1305 under a 256-bit key held by Secret Service, DPAPI
 # or an owner-only local file; the shared crate owns both the format and
-# the key custody.
+# the key storage.
 tilo-secret-vault = { version = "0.1.0", path = "../secret-vault" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 serde.workspace = true

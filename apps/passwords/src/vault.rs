@@ -348,7 +348,7 @@ pub(crate) struct Core {
     pub(crate) app_grants: Vec<CredentialGrant>,
     pub(crate) app_proposals: Vec<accounts::CredentialProposal>,
     model_revision: Option<u64>,
-    pub(crate) custody: Option<&'static str>,
+    pub(crate) backend: Option<&'static str>,
     pub(crate) recovery_error: Option<String>,
     pub(crate) import_portal: Option<crate::transfer::Choosing>,
     pub(crate) import_parse: Option<std::sync::mpsc::Receiver<Result<Vec<ImportLogin>, String>>>,
@@ -401,7 +401,7 @@ impl Core {
             app_proposals: Vec::new(),
             model_revision: None,
             writing: false,
-            custody: None,
+            backend: None,
             recovery_error: None,
             import_portal: None,
             import_parse: None,
@@ -469,7 +469,7 @@ impl Core {
         self.findings = crate::findings(&full);
         self.items = crate::demo::items();
         self.app_grants = crate::demo::grants();
-        self.custody = Some("System keyring");
+        self.backend = Some("System keyring");
         self.recovery_error = None;
         self.filter = VaultFilter::All;
         self.screen = Screen::Vault;
@@ -526,7 +526,7 @@ impl Core {
         self.findings = crate::findings(&full);
         self.app_grants = model.app_grants();
         self.app_proposals = model.app_proposals();
-        self.custody = Some(model.custody().label());
+        self.backend = Some(model.backend().label());
         self.items = full
             .into_iter()
             .map(|mut item| {

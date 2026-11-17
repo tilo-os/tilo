@@ -73,7 +73,7 @@ and removal. Imports reject a second record with the same public key. Older
 duplicate records share one provider locator, so removing one retains the
 secret until the last reference is gone.
 
-The `SecretProvider` trait is the TPM/hardware-backed seam. A provider must
+The `SecretProvider` trait is the TPM/hardware-backed boundary. A provider must
 store, load, remove, report its backend id, and report `HardwareBacked` only
 after it actually sealed the secret. No TPM provider is implemented: the
 default resolver deliberately refuses `tpm2-sealed-v1` records, and no record
@@ -167,7 +167,7 @@ imports, shared-secret removal, active/final record protections, and prevention
 of migration/chmod outside the canonical identity store.
 
 `runtime-identity`'s own test builds always use the file store. The store a
-real session chooses is proven by `crates/system/secret-service/tests/identity_custody.rs`,
+real session chooses is proven by `crates/system/secret-service/tests/identity_ownership.rs`,
 which runs the production identity and vault code against the built
 `tilo-secret-service` on a private session bus. With no Secret Service on the
 bus, a new key goes to the 0600 file, the record names `broker-file-v1`,

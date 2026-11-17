@@ -1,4 +1,4 @@
-//! Registered workspace services share original-custody host admission.
+//! Registered workspace services share original-ownership host admission.
 use super::host_action_admission::{AdmittedHostAction, HostActionAdmission};
 use super::{AppBrokerState, BrokerActor, InvocationCaller};
 use std::sync::Arc;
@@ -151,7 +151,7 @@ impl AppBrokerState {
         action: (&str, &ActionDescriptor),
         input: (&InvokeRequest, Option<&str>),
     ) -> Result<(AdmittedHostAction, bool), ActionHostError> {
-        let witnessed = self.authorize_framework_descriptor(authority, action, input)?;
+        let approved = self.authorize_framework_descriptor(authority, action, input)?;
         let admitted = self.admit_host_action(
             caller,
             origin,
@@ -164,7 +164,7 @@ impl AppBrokerState {
         )?;
         #[cfg(test)]
         tests::at_effect_barrier();
-        Ok((admitted, witnessed))
+        Ok((admitted, approved))
     }
 
     fn authorize_framework_descriptor(
@@ -176,16 +176,16 @@ impl AppBrokerState {
         let (workspace, actor, _) = authority;
         let (request, argument) = input;
         let workspace_id = workspace.id().to_string();
-        let witnessed = self.consume_answer(
+        let approved = self.consume_answer(
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.member(), &workspace_id, request),
+            &self.approval_binding(actor.member(), &workspace_id, request),
         );
         if !Self::confirmed_as_asked(
             actor,
             action.1,
             argument,
             request.confirmation.as_ref(),
-            witnessed,
+            approved,
         ) {
             return Err(ActionHostError::confirmation_required());
         }
@@ -193,10 +193,10 @@ impl AppBrokerState {
             authority,
             action,
             request.confirmation.as_ref(),
-            witnessed,
+            approved,
             false,
         )?;
-        Ok(witnessed)
+        Ok(approved)
     }
 
     // Admission may synchronously cross disk and owner-service barriers. Never
@@ -298,7 +298,7 @@ impl AppBrokerState {
         authority: (&Workspace, &BrokerActor, u64),
         action: (&str, &ActionDescriptor),
         confirmation: Option<&Confirmation>,
-        witnessed: bool,
+        approved: bool,
         spend: bool,
     ) -> Result<(), ActionHostError> {
         let (workspace, actor, now) = authority;
@@ -316,7 +316,7 @@ impl AppBrokerState {
         match answer {
             tilo_action_policy::Answer::Deny => return Err(ActionHostError::NotPermitted),
             tilo_action_policy::Answer::Ask
-                if !(witnessed
+                if !(approved
                     || (actor.direct() && confirmation == Some(&Confirmation::Confirmed))) =>
             {
                 return Err(ActionHostError::confirmation_required());
@@ -331,7 +331,7 @@ impl AppBrokerState {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one ordered admission of a shortcut library operation: descriptor, witness, decode, catalogue and run"
+        reason = "one ordered admission of a shortcut library operation: descriptor, approval, decode, catalogue and run"
     )]
     fn admitted_shortcut_library(
         self: &Arc<Self>,
@@ -348,7 +348,7 @@ impl AppBrokerState {
             .ok_or(ActionHostError::UnknownAction)?;
         let descriptor = crate::automation::library_descriptor(&request.target.address.action)
             .ok_or(ActionHostError::UnknownAction)?;
-        let witnessed = self.authorize_framework_descriptor(
+        let approved = self.authorize_framework_descriptor(
             authority,
             (tilo_automation::SHORTCUTS_APP_ID, &descriptor),
             (request, argument),
@@ -422,7 +422,7 @@ impl AppBrokerState {
                 (&current_workspace, &actor, now),
                 (tilo_automation::SHORTCUTS_APP_ID, &descriptor),
                 request.confirmation.as_ref(),
-                witnessed,
+                approved,
                 true,
             )?;
             Ok((plan, actor))
@@ -497,7 +497,7 @@ impl AppBrokerState {
         let descriptor = service
             .descriptor(&keymap, &request.target.address)
             .ok_or(ActionHostError::UnknownAction)?;
-        let (admitted, witnessed) = self.admit_framework_descriptor(
+        let (admitted, approved) = self.admit_framework_descriptor(
             caller,
             origin,
             authority,
@@ -518,7 +518,7 @@ impl AppBrokerState {
                 (&workspace, &actor, now),
                 (service.app_id(), &fresh),
                 request.confirmation.as_ref(),
-                witnessed,
+                approved,
                 true,
             )?;
             Ok(())
@@ -529,7 +529,7 @@ impl AppBrokerState {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one ordered admission of a governance action: descriptor, owner confirmation floor, witness and run"
+        reason = "one ordered admission of a governance action: descriptor, owner confirmation floor, approval and run"
     )]
     fn admitted_workspace_governance(
         self: &Arc<Self>,
@@ -552,26 +552,30 @@ impl AppBrokerState {
         if owner_action && !authority.1.direct() {
             return Err(ActionHostError::NotPermitted);
         }
-        let witnessed = owner_action
+        let approved = owner_action
             && self.consume_answer(
                 request.confirmation.as_ref(),
-                &self.witness_binding(authority.1.member(), &authority.0.id().to_string(), request),
+                &self.approval_binding(
+                    authority.1.member(),
+                    &authority.0.id().to_string(),
+                    request,
+                ),
             );
-        if owner_action && !witnessed && request.confirmation != Some(Confirmation::Confirmed) {
+        if owner_action && !approved && request.confirmation != Some(Confirmation::Confirmed) {
             return Err(ActionHostError::confirmation_required());
         }
-        // Convert only the exact consumed owner witness; ordinary governance
+        // Convert only the exact consumed owner approval; ordinary governance
         // retains its legacy phrase/confirmation semantics at the service.
         let mut checked = request.clone();
-        if witnessed {
+        if approved {
             checked.confirmation = Some(Confirmation::Confirmed);
         }
-        // Admission records the original witness-bearing request, not a rewrite.
+        // Admission records the original approval-bearing request, not a rewrite.
         self.framework_policy(
             authority,
             (service.app_id(), &descriptor),
             checked.confirmation.as_ref(),
-            witnessed,
+            approved,
             false,
         )?;
         if owner_action
@@ -580,7 +584,7 @@ impl AppBrokerState {
                 &descriptor,
                 argument,
                 checked.confirmation.as_ref(),
-                witnessed,
+                approved,
             )
         {
             return Err(ActionHostError::confirmation_required());
@@ -623,7 +627,7 @@ impl AppBrokerState {
                 (&current_workspace, &actor, now),
                 (service.app_id(), &fresh),
                 checked.confirmation.as_ref(),
-                witnessed,
+                approved,
                 true,
             )?;
             Ok(actor)

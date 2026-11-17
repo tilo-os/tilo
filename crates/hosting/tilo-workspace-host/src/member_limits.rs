@@ -2,7 +2,7 @@
 //! sends too much gets refusals, never a disconnect, and nobody else
 //! notices. The relay's own user (its host device, and the bots a
 //! host-held root delegated) is never limited; callers skip it. A person
-//! changing what is theirs ([`Standing::Owner`]) spends a budget of its own,
+//! changing what is theirs ([`Ownership::Owner`]) spends a budget of its own,
 //! far larger than a guest's, so pacing guests never paces an owner's
 //! backend.
 //!
@@ -53,7 +53,7 @@ impl std::fmt::Display for Limited {
 
 /// Whose a change is, as the change budget sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Standing {
+pub enum Ownership {
     /// A person acting where they are a guest.
     Guest,
     /// A person changing a workspace of their own, or acting through their
@@ -167,7 +167,7 @@ impl MemberLimits {
             .or_insert_with(|| (full(changes), full(owner), full(content))))
     }
 
-    /// Spend one change of `user`'s budget for their `standing`.
+    /// Spend one change of `user`'s budget for their `ownership`.
     ///
     /// # Errors
     ///
@@ -176,17 +176,17 @@ impl MemberLimits {
     pub fn admit_change(
         &self,
         user: &[u8; 32],
-        standing: Standing,
+        ownership: Ownership,
         now: Instant,
     ) -> Result<(), Limited> {
-        let rate = match standing {
-            Standing::Guest => self.changes,
-            Standing::Owner => self.owner_changes,
+        let rate = match ownership {
+            Ownership::Guest => self.changes,
+            Ownership::Owner => self.owner_changes,
         };
         self.with_buckets(user, now, |(guest, owner, _)| {
-            match standing {
-                Standing::Guest => guest,
-                Standing::Owner => owner,
+            match ownership {
+                Ownership::Guest => guest,
+                Ownership::Owner => owner,
             }
             .take(1.0, rate, now)
         })
@@ -233,7 +233,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    const GUEST: Standing = Standing::Guest;
+    const GUEST: Ownership = Ownership::Guest;
 
     #[test]
     fn a_burst_of_forty_passes_then_changes_refill_at_two_per_second() {
@@ -278,9 +278,9 @@ mod tests {
         assert!(limits.admit_change(&user, GUEST, now).is_err());
         // The same person making their own workspaces: a thousand at once.
         for _ in 0..1000 {
-            limits.admit_change(&user, Standing::Owner, now).unwrap();
+            limits.admit_change(&user, Ownership::Owner, now).unwrap();
         }
-        assert!(limits.admit_change(&user, Standing::Owner, now).is_err());
+        assert!(limits.admit_change(&user, Ownership::Owner, now).is_err());
     }
 
     #[test]

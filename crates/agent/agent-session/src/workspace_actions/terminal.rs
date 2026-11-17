@@ -166,8 +166,8 @@ impl Started {
         // answer is read: an agent following a long build sees the newest
         // output rather than silence.
         let printing = move |printed: &CommandOutput| {
-            let mut ledger = shared.ledger.lock_recover();
-            if let Some(entry) = ledger.entries.get_mut(&invocation) {
+            let mut log = shared.log.lock_recover();
+            if let Some(entry) = log.entries.get_mut(&invocation) {
                 let sequence = match &entry.update {
                     InvocationUpdate::Item { sequence, .. } => sequence.saturating_add(1),
                     _ => 0,
@@ -178,7 +178,7 @@ impl Started {
                     value: serde_json::to_value(printed).unwrap_or_default(),
                 };
             }
-            drop(ledger);
+            drop(log);
         };
         std::thread::Builder::new()
             .name("workspace-shell".into())
@@ -272,12 +272,12 @@ impl Worker {
         // runs in, stops.
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let mut ledger = self.ledger();
-            let Some(entry) = ledger.entries.get_mut(&invocation) else {
+            let mut log = self.log();
+            let Some(entry) = log.entries.get_mut(&invocation) else {
                 return refused("the invocation is not this host's".into());
             };
             entry.stop = Some(Arc::clone(&stop));
-            drop(ledger);
+            drop(log);
         }
         let spawned = Started {
             shell,
@@ -306,7 +306,7 @@ impl Worker {
 
     /// Whether `caller` may take the Terminal action `request` names on the
     /// session record at `route`, decided as every action the host runs for
-    /// someone within bounds is: the caller's standing bounded as
+    /// someone within bounds is: the caller's access bounded as
     /// [`Caller::invoker`] reads them, the shared admission, and an ask put to
     /// the person on their own devices. The host's own person and their
     /// agents may. A key reaching this workspace alone runs what would be
@@ -377,15 +377,15 @@ impl Worker {
             Err(_) => Err(refused(ActionHostError::NotPermitted)),
             Ok(ui::permissions::policy::Admission::Runs) => Ok(()),
             Ok(ui::permissions::policy::Admission::AsksFirst) => {
-                let witness = self
-                    .ledger()
+                let approval = self
+                    .log()
                     .entries
                     .get(&invocation)
-                    .and_then(|entry| entry.witness.clone())
-                    .map(Confirmation::Witnessed);
-                let given = witness.as_ref().or(request.confirmation.as_ref());
-                let binding = super::bounded::WitnessBinding::of(workspace_id, caller, request);
-                if super::bounded::witnessed(&self.shared.witnesses, given, &binding) {
+                    .and_then(|entry| entry.approval.clone())
+                    .map(Confirmation::Approved);
+                let given = approval.as_ref().or(request.confirmation.as_ref());
+                let binding = super::bounded::ApprovalBinding::of(workspace_id, caller, request);
+                if super::bounded::approved(&self.shared.approvals, given, &binding) {
                     return Ok(());
                 }
                 // A key for this workspace alone, whose person let it run
@@ -422,16 +422,16 @@ impl Worker {
         let receipt = self
             .start_terminal_run(workspace_id, caller, request)
             .or_else(|| self.stop_terminal_invocations(workspace_id, caller, request))?;
-        let mut ledger = self.ledger();
-        ledger.running.remove(&request.invocation);
+        let mut log = self.log();
+        log.running.remove(&request.invocation);
         let refused = matches!(
             receipt.status,
             tilo_actions::remote::ReceiptStatus::Rejected { .. }
         );
         if refused {
-            ledger.forget(&request.invocation);
+            log.forget(&request.invocation);
         }
-        drop(ledger);
+        drop(log);
         if refused {
             self.voice(
                 workspace_id,
@@ -469,7 +469,7 @@ impl Worker {
             &ended.request,
             (&phase, None),
         );
-        if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
+        if let Some(entry) = self.log().entries.get_mut(&invocation) {
             entry.update = update;
             entry.stop = None;
         }
@@ -523,10 +523,10 @@ impl Worker {
             }
         }
         let stopped = {
-            let ledger = self.ledger();
+            let log = self.log();
             let session = request.target.address.resource.clone();
             let mut stopped = 0_u32;
-            for entry in ledger.entries.values() {
+            for entry in log.entries.values() {
                 if entry.request.target.address.resource != session {
                     continue;
                 }
@@ -536,7 +536,7 @@ impl Worker {
                     stopped = stopped.saturating_add(1);
                 }
             }
-            drop(ledger);
+            drop(log);
             stopped
         };
         let output = ActionOutput {
@@ -544,7 +544,7 @@ impl Worker {
             resources: Vec::new(),
         };
         let update = InvocationUpdate::Succeeded { invocation, output };
-        self.ledger().answered(invocation, &update, None);
+        self.log().answered(invocation, &update, None);
         Some(InvocationState::new(invocation, update).receipt())
     }
 

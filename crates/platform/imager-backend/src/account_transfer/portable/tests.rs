@@ -21,7 +21,7 @@ fn connect(root: &std::path::Path, name: &str, password: &str) -> AccountId {
 tilo_test_env::scenario! {
     fn selected_account_transport_refuses_tampering_and_conflicts;
 
-    phase selected_account_transport_reseals_fresh_custody_without_copying_source_key;
+    phase selected_account_transport_reseals_fresh_ownership_without_copying_source_key;
     {
         let fixture = tempfile::tempdir().unwrap();
         let source = fixture.path().join("source");
@@ -180,7 +180,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase partial_selection_retry_and_corrupt_custody_are_handled_without_overwrite;
+    phase partial_selection_retry_and_corrupt_ownership_are_handled_without_overwrite;
     {
         let fixture = tempfile::tempdir().unwrap();
         let source = fixture.path().join("source");
@@ -250,7 +250,7 @@ fn selected_serialization_limit_rejects_account_before_emitting_transport() {
     let fixture = tempfile::tempdir().unwrap();
     let source = fixture.path().join("source");
     let id = connect(&source, "Oversized account", "bounded-source-password");
-    // Existing/external source custody can contain a credential too large for
+    // Existing/external source ownership can contain a credential too large for
     // migration. Establish a genuine DAV connection first; do not send the
     // serialization-limit subject as an oversized HTTP authentication header.
     let mut vault = SecretVault::open_in(&source);
@@ -258,7 +258,7 @@ fn selected_serialization_limit_rejects_account_before_emitting_transport() {
     vault.try_save().unwrap();
     drop(vault);
     assert_eq!(
-        account_custody::password_credential(&SecretVault::open_in(&source).get(&id).unwrap())
+        account_credentials::password_credential(&SecretVault::open_in(&source).get(&id).unwrap())
             .len(),
         MAX_PLAINTEXT
     );

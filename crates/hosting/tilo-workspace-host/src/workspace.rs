@@ -68,8 +68,8 @@ pub struct Subscriber {
     pub disconnect: mpsc::Sender<()>,
 }
 
-/// The standing of each member device of a workspace, by device key.
-pub type Standings = std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>;
+/// The access of each member device of a workspace, by device key.
+pub type DeviceAccess = std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>;
 
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
@@ -84,14 +84,14 @@ pub struct WorkspaceRuntime {
     /// it hosts this workspace: what a subscribing device builds its
     /// own replica from.
     pub(crate) hosted_replica: Option<std::sync::Arc<crate::hosted::HostedReplica>>,
-    /// The standing of each member device, as the workspace's governor projects
+    /// The access of each member device, as the workspace's governor projects
     /// it: what the relay decides each change's claimed action against.
     /// `None` until a governor projects one; the relay then decides changes
     /// against their app surface alone.
-    pub(crate) standings: Option<Arc<Standings>>,
-    /// Woken each time [`Self::standings`] is replaced, for a change held
-    /// until its author's standing is projected ([`standings_deciding`]).
-    pub(crate) standings_changed: Arc<tokio::sync::Notify>,
+    pub(crate) device_access: Option<Arc<DeviceAccess>>,
+    /// Woken each time [`Self::device_access`] is replaced, for a change held
+    /// until its author's access is projected ([`access_deciding`]).
+    pub(crate) access_changed: Arc<tokio::sync::Notify>,
     /// On-disk state.
     pub store: WorkspaceStore,
     /// Initial pinned document. Transferred to `persistence` on first live
@@ -181,19 +181,19 @@ pub struct WorkspaceRuntime {
     /// Host order of the last admitted delta.
     last_seq: u64,
     /// Recently admitted commits, for de-duplicating resends.
-    commits: CommitLedger,
+    commits: CommitLog,
     /// Commits being admitted, by author and operation id, each held from
-    /// its ledger check until it is admitted and recorded
+    /// its log check until it is admitted and recorded
     /// ([`Self::claim_commit`]): two copies of one commit cannot both be
     /// admitted, while different commits are admitted side by side. One
     /// check for the whole workspace held every commit through the previous one's
     /// durability and publication, so a busy workspace committed one change at a
     /// time.
     commit_claims: CommitClaims,
-    /// Held from a commit's [`Self::remember_commit`] until its ledger write
-    /// is done, so ledger writes reach the file in the order they were
+    /// Held from a commit's [`Self::remember_commit`] until its log write
+    /// is done, so log writes reach the file in the order they were
     /// remembered.
-    pub(crate) commit_ledger_lane: Arc<AsyncMutex<()>>,
+    pub(crate) commit_log_lane: Arc<AsyncMutex<()>>,
 }
 
 /// The commits a workspace is admitting, by author and operation id, each with
@@ -223,16 +223,16 @@ impl Drop for CommitClaim {
 /// again, which the document merge absorbs.
 pub const MAX_REMEMBERED_COMMITS: usize = 16_384;
 
-/// The ledger write that makes one [`WorkspaceRuntime::remember_commit`]
+/// The log write that makes one [`WorkspaceRuntime::remember_commit`]
 /// durable.
 #[must_use]
-pub enum CommitLedgerWrite {
+pub enum CommitLogWrite {
     Append(CommitEntry),
-    /// Replace the ledger, dropping evicted records.
+    /// Replace the log, dropping evicted records.
     Rewrite(Vec<CommitEntry>),
 }
 
-impl CommitLedgerWrite {
+impl CommitLogWrite {
     /// Write it to `store`. A failure is logged, not fatal: the commit itself
     /// is already durable, and a resend it would have recognised is merged
     /// by the document again.
@@ -242,29 +242,29 @@ impl CommitLedgerWrite {
             Self::Rewrite(records) => store.rewrite_commits(records),
         };
         if let Err(error) = persisted {
-            tracing::warn!(%error, "commit ledger not persisted");
+            tracing::warn!(%error, "commit log not persisted");
         }
     }
 }
 
 #[derive(Default)]
-struct CommitLedger {
+struct CommitLog {
     by_op: HashMap<([u8; 32], [u8; 16]), CommitEntry>,
     order: VecDeque<([u8; 32], [u8; 16])>,
-    /// Records in the on-disk ledger, evicted ones included.
+    /// Records in the on-disk log, evicted ones included.
     logged: usize,
 }
 
-impl CommitLedger {
+impl CommitLog {
     fn load(records: Vec<CommitEntry>) -> Self {
-        let mut ledger = Self {
+        let mut log = Self {
             logged: records.len(),
             ..Self::default()
         };
         for record in records {
-            ledger.insert(record);
+            log.insert(record);
         }
-        ledger
+        log
     }
 
     fn insert(&mut self, record: CommitEntry) {
@@ -376,7 +376,7 @@ impl WorkspaceRuntime {
         } else {
             None
         };
-        let commits = CommitLedger::load(store.load_commits()?);
+        let commits = CommitLog::load(store.load_commits()?);
         Ok(Self {
             store,
             doc,
@@ -405,12 +405,12 @@ impl WorkspaceRuntime {
             governor_tap: None,
             workspace_authority: None,
             hosted_replica: None,
-            standings: None,
-            standings_changed: Arc::default(),
+            device_access: None,
+            access_changed: Arc::default(),
             last_seq: 0,
             commits,
             commit_claims: Arc::default(),
-            commit_ledger_lane: Arc::new(AsyncMutex::new(())),
+            commit_log_lane: Arc::new(AsyncMutex::new(())),
         })
     }
 
@@ -450,8 +450,8 @@ impl WorkspaceRuntime {
 
     /// Remember an admitted commit. The returned write makes it durable, so
     /// a resend is recognised also after a host restart; run it off the
-    /// workspace lock and in remembering order (see `commit_ledger_lane`).
-    pub fn remember_commit(&mut self, record: CommitEntry) -> CommitLedgerWrite {
+    /// workspace lock and in remembering order (see `commit_log_lane`).
+    pub fn remember_commit(&mut self, record: CommitEntry) -> CommitLogWrite {
         self.commits.insert(record);
         self.commits.logged = self.commits.logged.saturating_add(1);
         if self.commits.logged > MAX_REMEMBERED_COMMITS.saturating_mul(2) {
@@ -462,9 +462,9 @@ impl WorkspaceRuntime {
                 .filter_map(|key| self.commits.by_op.get(key).copied())
                 .collect();
             self.commits.logged = kept.len();
-            CommitLedgerWrite::Rewrite(kept)
+            CommitLogWrite::Rewrite(kept)
         } else {
-            CommitLedgerWrite::Append(record)
+            CommitLogWrite::Append(record)
         }
     }
 
@@ -621,11 +621,11 @@ impl WorkspaceRuntime {
     /// Remember an authenticated device before sharing this runtime, so deltas
     /// received while it is offline are queued across daemon restarts. Live
     /// sessions use the serialized async admission in `workspace_io`.
-    /// Decide this workspace's changes against `standings` from now on, and
-    /// wake each change held until its author's standing was projected.
-    pub(crate) fn project_standings(&mut self, standings: Standings) {
-        self.standings = Some(Arc::new(standings));
-        self.standings_changed.notify_waiters();
+    /// Decide this workspace's changes against `device_access` from now on, and
+    /// wake each change held until its author's access was projected.
+    pub(crate) fn project_access(&mut self, device_access: DeviceAccess) {
+        self.device_access = Some(Arc::new(device_access));
+        self.access_changed.notify_waiters();
     }
 
     pub fn admit_device(&mut self, device: [u8; 32]) -> Result<(), crate::store::StoreError> {
@@ -864,12 +864,12 @@ impl WorkspaceRuntime {
 /// Shorthand: a workspace runtime held under an async mutex.
 pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 
-/// Longest a change waits for its author's standing to be projected: the
+/// Longest a change waits for its author's access to be projected: the
 /// time a device's admission takes to settle in the workspace's governance
 /// when the workspace is busy, not the time any check may take.
-pub(crate) const STANDING_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+pub(crate) const ACCESS_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The standings to decide `author`'s change in `ws` against, and the
+/// The device_access to decide `author`'s change in `ws` against, and the
 /// workspace's payload adapter.
 ///
 /// A device can hold a record's keys, and write, before the host has settled
@@ -878,40 +878,43 @@ pub(crate) const STANDING_WAIT: std::time::Duration = std::time::Duration::from_
 /// row is still on its way into the workspace's governance. Decided against
 /// the projection of that moment, such a change would be refused for a grant
 /// the host is about to record. So a change the projection of the moment
-/// `refuses`, while the workspace projects standings and none is `author`'s,
-/// waits for the next projection, up to [`STANDING_WAIT`], and is decided
+/// `refuses`, while the workspace projects device_access and none is `author`'s,
+/// waits for the next projection, up to [`ACCESS_WAIT`], and is decided
 /// against that one. Every other change, the author's presence and
-/// governance among them, is decided at once. Nothing is decided without a
-/// standing: an author that has none when the wait ends is decided against
+/// governance among them, is decided at once. Nothing is decided without
+/// access: an author that has none when the wait ends is decided against
 /// the projection as it is, and refused as before.
-pub(crate) async fn standings_deciding(
+pub(crate) async fn access_deciding(
     ws: &SharedWorkspace,
     author: [u8; 32],
-    refuses: impl Fn(Option<&Standings>, &dyn crate::payloads::ShellPayloads) -> bool,
+    refuses: impl Fn(Option<&DeviceAccess>, &dyn crate::payloads::ShellPayloads) -> bool,
 ) -> (
-    Option<Arc<Standings>>,
+    Option<Arc<DeviceAccess>>,
     Arc<dyn crate::payloads::ShellPayloads>,
 ) {
     let deadline = tokio::time::Instant::now()
-        .checked_add(STANDING_WAIT)
+        .checked_add(ACCESS_WAIT)
         .unwrap_or_else(tokio::time::Instant::now);
     loop {
-        let changed = Arc::clone(&ws.lock().await.standings_changed);
+        let changed = Arc::clone(&ws.lock().await.access_changed);
         let next = changed.notified();
         tokio::pin!(next);
-        // Registered before the standings are read, so a projection that
+        // Registered before the device_access are read, so a projection that
         // lands between the read and the wait still wakes it.
         next.as_mut().enable();
-        let (standings, payloads) = {
+        let (device_access, payloads) = {
             let runtime = ws.lock().await;
-            (runtime.standings.clone(), runtime.store.payloads().clone())
+            (
+                runtime.device_access.clone(),
+                runtime.store.payloads().clone(),
+            )
         };
-        let waiting = standings
+        let waiting = device_access
             .as_ref()
-            .is_some_and(|standings| !standings.contains_key(&author))
-            && refuses(standings.as_deref(), &*payloads);
+            .is_some_and(|device_access| !device_access.contains_key(&author))
+            && refuses(device_access.as_deref(), &*payloads);
         if !waiting || tokio::time::timeout_at(deadline, next).await.is_err() {
-            return (standings, payloads);
+            return (device_access, payloads);
         }
     }
 }
@@ -941,7 +944,7 @@ mod tests {
     }
 
     #[test]
-    fn the_commit_ledger_is_durable_and_forgets_its_oldest_commits_first() {
+    fn the_commit_log_is_durable_and_forgets_its_oldest_commits_first() {
         let tmp = tempfile::tempdir().unwrap();
         let record = |n: u64| CommitEntry {
             author: [1; 32],
@@ -987,7 +990,7 @@ mod tests {
         );
         assert!(
             ws.store.load_commits().unwrap().len() <= MAX_REMEMBERED_COMMITS * 2,
-            "the on-disk ledger is compacted"
+            "the on-disk log is compacted"
         );
     }
 
@@ -1214,7 +1217,7 @@ mod tests {
         drop(claim);
         waiting.await.unwrap();
         // Released: the copy (or a later resend) claims it again, now that
-        // the ledger is the one to answer it.
+        // the log is the one to answer it.
         drop(rt.claim_commit(AUTHOR, [1; 16]).ok().unwrap());
         drop((other, elsewhere));
     }
@@ -1255,10 +1258,10 @@ impl Extensions {
     }
 }
 
-/// How a change whose author's standing is not projected yet is decided
-/// ([`standings_deciding`]).
+/// How a change whose author's access is not projected yet is decided
+/// ([`access_deciding`]).
 #[cfg(test)]
-mod standing_wait_tests {
+mod access_wait_tests {
     #![allow(
         clippy::unwrap_used,
         clippy::expect_used,
@@ -1267,8 +1270,8 @@ mod standing_wait_tests {
     )]
 
     use super::*;
-    fn standing() -> tilo_action_policy::Standing {
-        tilo_action_policy::Standing::person(
+    fn access() -> tilo_action_policy::MemberAccess {
+        tilo_action_policy::MemberAccess::person(
             tilo_action_policy::WorkspacePolicy::new("workspace", "ada"),
             "ada",
         )
@@ -1290,30 +1293,30 @@ mod standing_wait_tests {
     const PAGE: [u8; 32] = [2; 32];
 
     /// A page's change that reaches the host before the host has projected
-    /// the page's standing (its keys came from another key holder, its
+    /// the page's access (its keys came from another key holder, its
     /// admission is still settling) waits, and is decided against the
     /// projection that admits the page, not refused against the one before.
     #[tokio::test]
-    async fn a_change_before_its_authors_standing_waits_and_is_decided_against_it() {
+    async fn a_change_before_its_authors_access_waits_and_is_decided_against_it() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = shared(&tmp);
         ws.lock()
             .await
-            .project_standings(Standings::from([(LAPTOP, standing())]));
+            .project_access(DeviceAccess::from([(LAPTOP, access())]));
 
-        let deciding = standings_deciding(&ws, PAGE, |_, _| true);
+        let deciding = access_deciding(&ws, PAGE, |_, _| true);
         tokio::pin!(deciding);
         // Polled once: the change arrived, and is held, not decided.
         assert!(
             tokio::time::timeout(std::time::Duration::ZERO, &mut deciding)
                 .await
                 .is_err(),
-            "a change whose author has no standing yet is not decided"
+            "a change whose author has no access yet is not decided"
         );
         // A projection that still leaves the page out keeps it waiting.
         ws.lock()
             .await
-            .project_standings(Standings::from([(LAPTOP, standing())]));
+            .project_access(DeviceAccess::from([(LAPTOP, access())]));
         assert!(
             tokio::time::timeout(std::time::Duration::ZERO, &mut deciding)
                 .await
@@ -1322,57 +1325,57 @@ mod standing_wait_tests {
         // The page's admission settles.
         ws.lock()
             .await
-            .project_standings(Standings::from([(LAPTOP, standing()), (PAGE, standing())]));
-        let (standings, _) = deciding.await;
-        assert!(standings.unwrap().contains_key(&PAGE));
+            .project_access(DeviceAccess::from([(LAPTOP, access()), (PAGE, access())]));
+        let (device_access, _) = deciding.await;
+        assert!(device_access.unwrap().contains_key(&PAGE));
     }
 
-    /// A change whose author already has a standing, or of a workspace that
+    /// A change whose author already has an access, or of a workspace that
     /// projects none, is decided at once.
     #[tokio::test]
-    async fn a_change_whose_author_has_a_standing_is_decided_at_once() {
+    async fn a_change_whose_author_has_access_is_decided_at_once() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = shared(&tmp);
-        let unprojected = standings_deciding(&ws, PAGE, |_, _| true);
+        let unprojected = access_deciding(&ws, PAGE, |_, _| true);
         tokio::pin!(unprojected);
-        let (standings, _) = tokio::time::timeout(std::time::Duration::ZERO, &mut unprojected)
+        let (device_access, _) = tokio::time::timeout(std::time::Duration::ZERO, &mut unprojected)
             .await
             .expect("no projection: decided at once");
-        assert!(standings.is_none());
+        assert!(device_access.is_none());
 
         ws.lock()
             .await
-            .project_standings(Standings::from([(PAGE, standing())]));
-        let projected = standings_deciding(&ws, PAGE, |_, _| true);
+            .project_access(DeviceAccess::from([(PAGE, access())]));
+        let projected = access_deciding(&ws, PAGE, |_, _| true);
         tokio::pin!(projected);
-        let (standings, _) = tokio::time::timeout(std::time::Duration::ZERO, &mut projected)
+        let (device_access, _) = tokio::time::timeout(std::time::Duration::ZERO, &mut projected)
             .await
-            .expect("a standing already projected: decided at once");
-        assert!(standings.unwrap().contains_key(&PAGE));
+            .expect("an access already projected: decided at once");
+        assert!(device_access.unwrap().contains_key(&PAGE));
         // A change the projection does not refuse, the author's presence or
         // governance among them, is decided at once, standing or not.
-        let unrefused = standings_deciding(&ws, LAPTOP, |_, _| false);
+        let unrefused = access_deciding(&ws, LAPTOP, |_, _| false);
         tokio::pin!(unrefused);
         tokio::time::timeout(std::time::Duration::ZERO, &mut unrefused)
             .await
             .expect("a change nothing refuses: decided at once");
     }
 
-    /// An author whose standing never arrives is decided, after the wait,
+    /// An author whose access never arrives is decided, after the wait,
     /// against the projection that leaves it out: refused as before, never
     /// let through for having waited.
     #[tokio::test(start_paused = true)]
-    async fn an_author_never_granted_is_decided_without_a_standing_after_the_wait() {
+    async fn an_author_never_granted_is_decided_without_access_after_the_wait() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = shared(&tmp);
         ws.lock()
             .await
-            .project_standings(Standings::from([(LAPTOP, standing())]));
+            .project_access(DeviceAccess::from([(LAPTOP, access())]));
         let started = tokio::time::Instant::now();
-        let (standings, _) = standings_deciding(&ws, PAGE, |_, _| true).await;
-        assert!(started.elapsed() >= STANDING_WAIT);
-        let standings = standings.unwrap();
-        assert!(standings.contains_key(&LAPTOP));
-        assert!(!standings.contains_key(&PAGE));
+        let (device_access, _) = access_deciding(&ws, PAGE, |_, _| true).await;
+        assert!(started.elapsed() >= ACCESS_WAIT);
+        let device_access = device_access.unwrap();
+        assert!(device_access.contains_key(&LAPTOP));
+        assert!(!device_access.contains_key(&PAGE));
     }
 }

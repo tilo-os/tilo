@@ -386,7 +386,7 @@ pub fn safe_server(raw: &str) -> Option<String> {
     let url = url::Url::parse(raw).ok()?;
     // Match the connector's canonical DAV policy: HTTPS, or HTTP only on loopback; discovery keeps
     // endpoints it can actually import.
-    if account_custody::nextcloud::server_url(raw).is_err()
+    if account_credentials::nextcloud::server_url(raw).is_err()
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()

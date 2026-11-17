@@ -108,11 +108,11 @@ fn physical_observer_matches_real_note_dispatch_to_the_drawn_body_without_text_l
     // This test uses an IME event, not a fabricated physical key serial:
     // display-latency qualification must still reject its absent physical start.
     assert!(effect["wayland_serial"].is_null());
-    // Discarded buffers retain the same witness on bounded subsequent draws.
+    // Discarded buffers retain the same observation on bounded subsequent draws.
     for id in 72..103 {
         let retry = trace
             .drawn(Some(id), app.harness().native_input_snapshot())
-            .expect("bounded retry witness");
+            .expect("bounded retry observation");
         assert_eq!(retry["cpu_frame_id"], id);
         assert_eq!(retry["input_ids"], frame["input_ids"]);
         assert_eq!(retry["state"], frame["state"]);

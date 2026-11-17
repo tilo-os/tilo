@@ -36,7 +36,7 @@ fn record(workspace: &str, kind: UsageKind, end_ms: u64, seconds: u64) -> UsageE
 }
 
 #[test]
-fn a_host_that_sells_nothing_answers_no_plans_and_no_standing() {
+fn a_host_that_sells_nothing_answers_no_plans_and_no_subscription() {
     let account = account_of(
         &Plans::default(),
         "acct-1",
@@ -63,10 +63,10 @@ fn an_account_without_a_card_sees_the_offers_and_no_entitlement() {
             .collect::<Vec<_>>(),
         ["pro"]
     );
-    let standing = account.standing.as_ref().unwrap();
-    assert!(standing.payment_method.is_none());
-    assert!(!standing.entitled(Entitlement::LinuxVms));
-    assert_eq!(standing.limits, None);
+    let subscription = account.subscription.as_ref().unwrap();
+    assert!(subscription.payment_method.is_none());
+    assert!(!subscription.entitled(Entitlement::LinuxVms));
+    assert_eq!(subscription.limits, None);
     assert_eq!(
         account.manage_billing.as_deref(),
         Some("https://tilo.sh/billing?account=acct-1")
@@ -99,16 +99,16 @@ fn an_account_with_a_card_has_its_plan_limits_credit_and_invoices() {
         account.plan().map(|plan: &PlanOffer| plan.name.as_str()),
         Some("Pro")
     );
-    let standing = account.standing.unwrap();
-    assert!(standing.payment_method.is_some());
-    assert!(standing.entitled(Entitlement::LinuxVms));
-    let limits = standing.limits.unwrap();
+    let subscription = account.subscription.unwrap();
+    assert!(subscription.payment_method.is_some());
+    assert!(subscription.entitled(Entitlement::LinuxVms));
+    let limits = subscription.limits.unwrap();
     assert_eq!(
         (limits.max_running, limits.sizes, limits.included_vm_seconds),
         (2, vec!["small".to_string()], Some(360_000))
     );
-    assert_eq!(standing.credit.as_deref(), Some("$12.40"));
-    assert_eq!(standing.invoices.len(), 1);
+    assert_eq!(subscription.credit.as_deref(), Some("$12.40"));
+    assert_eq!(subscription.invoices.len(), 1);
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn a_card_added_is_read_once_the_plans_file_changes() {
     let hosted = HostedAccount {
         account: "acct-1".into(),
         plans: path.clone(),
-        ledger: None,
+        log: None,
         socket: None,
         name: "unused".into(),
     };
@@ -180,7 +180,14 @@ fn a_card_added_is_read_once_the_plans_file_changes() {
             let _ = tell.send(());
         })
         .unwrap();
-    assert!(hosted.read(0).standing.unwrap().payment_method.is_none());
+    assert!(
+        hosted
+            .read(0)
+            .subscription
+            .unwrap()
+            .payment_method
+            .is_none()
+    );
     let mut plans = selling();
     plans.accounts.insert("acct-1".into(), Plan::default());
     tilo_files::native::atomic::write_creating_parent(&path, &serde_json::to_vec(&plans).unwrap())
@@ -188,11 +195,18 @@ fn a_card_added_is_read_once_the_plans_file_changes() {
     changed
         .recv_timeout(Duration::from_secs(10))
         .expect("the change is told");
-    assert!(hosted.read(0).standing.unwrap().payment_method.is_some());
+    assert!(
+        hosted
+            .read(0)
+            .subscription
+            .unwrap()
+            .payment_method
+            .is_some()
+    );
 }
 
 #[test]
-fn the_standing_shows_the_free_page_actions_and_the_count_of_the_period() {
+fn the_subscription_shows_the_free_page_actions_and_the_count_of_the_period() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("plans.json");
     std::fs::write(
@@ -202,8 +216,8 @@ fn the_standing_shows_the_free_page_actions_and_the_count_of_the_period() {
              "browser_free_actions":100}}"#,
     )
     .unwrap();
-    let ledger = dir.path().join("browser-actions.jsonl");
-    let actions = browser_actions::Ledger::new(ledger.clone());
+    let log = dir.path().join("browser-actions.jsonl");
+    let actions = browser_actions::Log::new(log.clone());
     // 2026-11-08T12:00:00Z, the calendar month's period
     let now = 1_794_139_200_000;
     for at_ms in [1_793_491_200_000, now, now + 1] {
@@ -225,25 +239,28 @@ fn the_standing_shows_the_free_page_actions_and_the_count_of_the_period() {
     let hosted = HostedAccount {
         account: "acct-1".into(),
         plans: path.clone(),
-        ledger: Some(ledger),
+        log: Some(log),
         socket: None,
         name: "unused".into(),
     };
     // phase: no card: the allowance is all it may use, and its count
     {
         let account = hosted.read(now);
-        let standing = account.standing.unwrap();
-        assert!(standing.payment_method.is_none());
+        let subscription = account.subscription.unwrap();
+        assert!(subscription.payment_method.is_none());
         assert_eq!(
-            standing.limits,
+            subscription.limits,
             Some(Limits {
                 free_browser_actions: Some(100),
                 ..Limits::default()
             })
         );
-        assert_eq!(standing.usage.browser_actions, 3);
+        assert_eq!(subscription.usage.browser_actions, 3);
         assert_eq!(
-            (standing.usage.period_start_ms, standing.usage.period_end_ms),
+            (
+                subscription.usage.period_start_ms,
+                subscription.usage.period_end_ms
+            ),
             (1_793_491_200_000, 1_796_083_200_000)
         );
     }
@@ -263,14 +280,14 @@ fn the_standing_shows_the_free_page_actions_and_the_count_of_the_period() {
             ..PlanOffer::default()
         });
         std::fs::write(&path, serde_json::to_vec(&plans).unwrap()).unwrap();
-        let standing = hosted.read(now).standing.unwrap();
-        assert!(standing.payment_method.is_some());
+        let subscription = hosted.read(now).subscription.unwrap();
+        assert!(subscription.payment_method.is_some());
         assert_eq!(
-            standing
+            subscription
                 .limits
                 .and_then(|limits| limits.free_browser_actions),
             Some(100)
         );
-        assert_eq!(standing.usage.browser_actions, 3);
+        assert_eq!(subscription.usage.browser_actions, 3);
     }
 }

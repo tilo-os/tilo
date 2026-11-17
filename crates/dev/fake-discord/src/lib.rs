@@ -160,7 +160,7 @@ struct Gateway {
     intents: Option<u64>,
 }
 
-/// The bot's standing over the guild's emoji: Create Expressions (upload, and rename or delete what
+/// The bot's state over the guild's emoji: Create Expressions (upload, and rename or delete what
 /// it uploaded), Manage Expressions (any emoji), and the guild's emoji slots.
 #[derive(Debug)]
 struct Expressions {

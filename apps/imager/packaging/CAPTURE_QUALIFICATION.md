@@ -52,11 +52,11 @@ All referenced objects must be stable regular files with protected modes. The
 actual successful compiler stream uniquely selects the correct package,
 kind/name/test target and ELF. The source-before/source-after objects are equal
 and contain every current source input's actual hash. The producer binds the
-role, compiled root, exact command, compiler stream, both source ledgers, actual
+role, compiled root, exact command, compiler stream, both source lists, actual
 terminal status and selected artifact. Build status declares the same actual
 command, integer exit0 and unchanged sources. This prevents pairing historical
 successful ELFs with unrelated freshly measured sources/status. Never augment a
-ledger after compilation or restamp an old producer.
+list after compilation or restamp an old producer.
 
 The required source map covers the checkout's actual Rust, Cargo and Fluent
 inputs, Imager packaging, OS scripts and installed helper sources, including
@@ -89,7 +89,7 @@ The script signature-admits the candidate, verifies immutable image identity,
 and stages only public artifacts into an owned directory. The image driver exports and retires a stopped rootless filesystem container,
 then the authorized operator creates fresh mount/PID/network namespaces. It
 pivots into the exported filesystem, retires the old root, and retains a held
-initial-PID-namespace witness. This preserves the real CEF sandbox, rather than
+initial-PID-namespace proof. This preserves the real CEF sandbox, rather than
 using a chroot or disabling sandboxing. Inside that owned native root, the actor
 copies the inputs to root-owned `/owned/candidate`, enters private mount
 propagation, and uses the
@@ -107,7 +107,7 @@ a missing/incomplete journal cannot yield qualification. Default native-store
 callers retain their existing behavior; this safety mode is explicit.
 
 Both outer and inner command collectors bound output/deadlines and retain child
-PID custody with WNOWAIT until process-group retirement. Diagnostic logs stay
+PID ownership with WNOWAIT until process-group retirement. Diagnostic logs stay
 0600 in the private evidence bind, surviving case namespace retirement. The
 owned runtime uses the ordinary OS umask022 independently of the signing
 operator's private mask; state/evidence directories remain explicitly0700.
@@ -142,11 +142,11 @@ The fixture must create its authenticated prepared capsule through actual
 producer/source grants; prove shared imported files can be read and edited,
 including an edit through genuine Writer actions reflected in the old source;
 prove selected apps' data and actual launch; and prove default System credential
-custody/helper, FUSE/Files access and the headless identity lifecycle. Its final
+ownership/helper, FUSE/Files access and the headless identity lifecycle. Its final
 whole stream is one bounded closed completion object containing only integer
 `schema: 1`, `status: completed`, and these boolean observations:
 `shared_files_readwrite`, `writer_shared_file_edit`, `apps_data_and_launch`,
-`protected_cloud_custody`, `cloud_fs_and_files`, `identity_headless_lifecycle`,
+`protected_cloud_ownership`, `cloud_fs_and_files`, `identity_headless_lifecycle`,
 `owned_resources_retired`. Each must follow the real assertion it describes;
 missing, false, extra or wrongly typed observations refuse qualification.
 Intermediate diagnostics stay private. A saved result, synthetic controller,

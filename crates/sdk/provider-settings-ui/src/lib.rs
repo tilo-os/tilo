@@ -1324,7 +1324,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
     ) {
         let profile_id = profile.id.clone();
         if profile.sign_in.is_some() {
-            body.push(note(&t("agent-sign-in-custody")));
+            body.push(note(&t("agent-sign-in-credentials")));
         } else {
             let buffer = self.key_buffer(&profile_id);
             let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();

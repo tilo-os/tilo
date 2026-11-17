@@ -71,7 +71,7 @@
 //! [`SetPreference`] for its host to submit
 //! ([`OskWidget::take_preference_edits`]).
 //!
-//! ## Seams
+//! ## Boundaries
 //! * **Neural swipe:** the decoder is behind the
 //!   [`crate::swipe::SwipeModel`] trait. The shipping model is the geometric
 //!   [`crate::swipe::GeometricSwipeModel`]; a future FUTO/ExecuTorch
@@ -213,7 +213,7 @@ pub struct OskWidget {
     pressed_sugg: Option<usize>,
 
     // --- swipe / prediction ---
-    /// Decoder behind the [`SwipeModel`] seam (geometric today; FUTO later).
+    /// Decoder behind the [`SwipeModel`] boundary (geometric today; FUTO later).
     swipe_model: Box<dyn SwipeModel>,
     predictor: Predictor,
     personal_vocabulary: Option<std::sync::Arc<dyn ui::personal_dictionary::Vocabulary>>,

@@ -87,7 +87,7 @@ impl Incarnation {
     }
 }
 
-impl Custody {
+impl Ownership {
     pub fn active_namespace(&self) -> io::Result<bool> {
         if self.host.boot != boot_id()? || !self.launch_acknowledged {
             return Ok(false);
@@ -318,9 +318,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn process_custody_never_trusts_a_pid_alone;
+        fn process_ownership_never_trusts_a_pid_alone;
 
-        phase foreign_boot_custody_never_signals_a_matching_live_pid;
+        phase foreign_boot_ownership_never_signals_a_matching_live_pid;
         {
             let mut child = Owned(
                 std::process::Command::new("sleep")
@@ -332,7 +332,7 @@ mod tests {
             let mut host = Incarnation::capture(child.0.id(), uid).unwrap();
             assert!(host.open_current().unwrap().is_some());
             host.boot[0] ^= 1;
-            let custody = Custody {
+            let ownership = Ownership {
                 host,
                 launch_acknowledged: true,
                 namespace: Some(Namespace {
@@ -342,7 +342,7 @@ mod tests {
                     namespace_ino: 0,
                 }),
             };
-            custody.stop_and_observe().unwrap();
+            ownership.stop_and_observe().unwrap();
             assert!(child.0.try_wait().unwrap().is_none());
         }
 

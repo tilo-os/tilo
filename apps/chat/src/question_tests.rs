@@ -12,7 +12,7 @@ use crate::messages::chat_part;
 use crate::model::ME;
 use crate::parts::ChatPart;
 use crate::question::{
-    ACTION, ALLOW, ALWAYS, Choice, DENY, DONE, DROPPED, Question, STARTED, Standing,
+    ACTION, ALLOW, ALWAYS, Choice, DENY, DONE, DROPPED, Question, QuestionState, STARTED,
 };
 use crate::resource::ChatShell;
 use crate::testing::{MountedChat, chain, message_item, mounted_rows};
@@ -222,8 +222,8 @@ fn only_the_person_asked_answers_themselves_and_the_question_waits_for_them() {
     )
     .expect("its person answers it");
     let (_, question) = part.asked();
-    let Standing::Answered(given) = question.standing() else {
-        panic!("it is answered: {:?}", question.standing());
+    let QuestionState::Answered(given) = question.state() else {
+        panic!("it is answered: {:?}", question.state());
     };
     assert_eq!(given.answer.0, ALLOW);
     assert_eq!(given.device.0, "Phone", "it says where it was pressed");
@@ -308,8 +308,8 @@ fn its_asker_says_what_came_of_the_answer_once() {
         .expect("its asker says it is done");
     let (_, question) = part.asked();
     assert!(matches!(
-        question.standing(),
-        Standing::Settled(given, outcome) if given.answer.0 == ALLOW && outcome.outcome.0 == DONE
+        question.state(),
+        QuestionState::Settled(given, outcome) if given.answer.0 == ALLOW && outcome.outcome.0 == DONE
     ));
     part.apply(By::AgentFor(ME), 3 * SECOND_MS, settle(DONE))
         .expect("saying it again changes nothing");
@@ -350,8 +350,8 @@ fn a_question_taken_back_stops_waiting_and_keeps_what_was_asked() {
     )
     .expect("its asker takes it back");
     let (_, question) = part.asked();
-    let Standing::Withdrawn(withdrawn) = question.standing() else {
-        panic!("it is taken back: {:?}", question.standing());
+    let QuestionState::Withdrawn(withdrawn) = question.state() else {
+        panic!("it is taken back: {:?}", question.state());
     };
     assert_eq!(withdrawn.why, "The mail was answered elsewhere");
     assert_eq!(
@@ -494,9 +494,9 @@ fn the_window_draws_an_action_question_as_a_card_with_named_buttons_and_takes_th
     let answered = row(&mut app, &asked.id);
     let question = answered.question.clone().expect("it still asks");
     assert!(
-        matches!(question.standing(), Standing::Answered(given) if given.answer.0 == ALLOW),
+        matches!(question.state(), QuestionState::Answered(given) if given.answer.0 == ALLOW),
         "{:?}",
-        question.standing()
+        question.state()
     );
     assert!(answer_buttons(&mut app).is_empty());
     let label = app.chat().model_message_label(&answered);
@@ -556,7 +556,7 @@ fn a_choice_posts_the_answer_pressed_as_the_persons_own_message() {
     assert!(said.question.is_none());
     let question = row(&mut app, &asked.id).question.expect("it asked");
     assert!(
-        matches!(question.standing(), Standing::Answered(given) if given.answer.0 == "tomorrow")
+        matches!(question.state(), QuestionState::Answered(given) if given.answer.0 == "tomorrow")
     );
     assert!(answer_buttons(&mut app).is_empty());
 }
@@ -601,5 +601,5 @@ fn a_question_survives_the_window_closing_and_is_answered_after() {
     assert_eq!(answer_buttons(&mut app).len(), 3);
     press(&mut app, &asked.id, DENY);
     let question = row(&mut app, &asked.id).question.expect("it asked");
-    assert!(matches!(question.standing(), Standing::Answered(given) if given.answer.0 == DENY));
+    assert!(matches!(question.state(), QuestionState::Answered(given) if given.answer.0 == DENY));
 }

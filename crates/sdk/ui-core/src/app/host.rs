@@ -617,7 +617,7 @@ fn submit_presence_damage(
 }
 
 /// Complete a native CPU frame only after drawing and damage collection.
-/// Deferred or aborted frames retain return custody for the next completed
+/// Deferred or aborted frames retain return ownership for the next completed
 /// frame, so dirty state and accessibility publication stay tied to pixels.
 #[cfg(feature = "native")]
 fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOnce(&mut App)) {

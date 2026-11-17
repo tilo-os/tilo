@@ -906,7 +906,7 @@ mod tests {
             url: "https://code.tilo.so/tilo/test.rpm".into(),
             byte_size: 7,
             sha256: digest.clone(),
-            account_custody: None,
+            account_credentials: None,
             verified_runtime: Some(RuntimeEvidence {
                 schema: 1,
                 reference: "test fixture only".into(),
@@ -1486,7 +1486,7 @@ mod tests {
             url: "https://code.tilo.so/test-only-local-artifact".into(),
             byte_size: std::fs::metadata(&path).unwrap().len(),
             sha256: digest,
-            account_custody: None,
+            account_credentials: None,
             verified_runtime: None,
         };
         let bytes = serde_json::to_vec(&DesktopInstallRequest {

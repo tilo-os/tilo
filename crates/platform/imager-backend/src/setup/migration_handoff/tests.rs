@@ -192,7 +192,7 @@ tilo_test_env::scenario! {
         );
 
         // Whitespace-altered bytes with an updated length/hash still refuse:
-        // canonical inventory custody cannot ambiguously authenticate two encodings.
+        // canonical inventory ownership cannot ambiguously authenticate two encodings.
         let mut padded = bytes;
         padded.push(b'\n');
         let mut changed = wire;

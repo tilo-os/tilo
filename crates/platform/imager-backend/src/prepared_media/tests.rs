@@ -153,7 +153,7 @@ mod native_tests {
             handle.ciphertext_digest(),
             <[u8; 32]>::from(Sha256::digest(&bytes))
         );
-        // Replacing the pathname must neither redirect nor invalidate held custody.
+        // Replacing the pathname must neither redirect nor invalidate held ownership.
         fs::rename(&path, path.with_extension("old")).unwrap();
         fs::write(&path, b"replacement").unwrap();
         let mut output = tempfile::tempfile().unwrap();
@@ -265,7 +265,7 @@ mod native_tests {
     }
 
     #[test]
-    fn symlink_fifo_and_oversized_inputs_never_enter_custody() {
+    fn symlink_fifo_and_oversized_inputs_never_enter_ownership() {
         let (temp, path, _) = fixture("prepared_setup");
         let cancel = AtomicBool::new(false);
         let link = temp.path().join("link");

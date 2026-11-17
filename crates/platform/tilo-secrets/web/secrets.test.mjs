@@ -33,7 +33,7 @@ test('concurrent vault key initialization returns one durable winner',async()=>{
   assert.deepEqual(await getOrCreateSecret('Tilo','account-vault',null,env),a);
 });
 
-test('missing existing custody and failed key writes never acknowledge creation',async()=>{
+test('missing existing ownership and failed key writes never acknowledge creation',async()=>{
   const storage=memory(),env={storage,locks};
   await assert.rejects(getOrCreateSecret('Tilo','account-vault',null,env),/recovery is required/);
   const original=storage.put;
@@ -73,7 +73,7 @@ test('a ciphertext moved to another app or key does not decrypt',async()=>{
   await assert.rejects(loadSecrets(env),'damaged records must not disappear from the mirror');
 });
 
-test('request success followed by transaction abort is not acknowledged as custody',async()=>{
+test('request success followed by transaction abort is not acknowledged as ownership',async()=>{
   const database={transaction:()=>{
     const tx={objectStore:()=>({put:()=>{
       const request={result:undefined};
@@ -102,7 +102,7 @@ test('writers of one app hold its lock',async()=>{
   assert.deepEqual(held,['tilo-secrets:so.tilo.a','tilo-secrets:so.tilo.a']);
 });
 
-test('the mirror rejects missing custody and queued writes land in order',async()=>{
+test('the mirror rejects missing ownership and queued writes land in order',async()=>{
   const storage=memory(),env={storage,locks};
   await putSecret('so.tilo.totp','vault',new Uint8Array([7]),env);
   await putSecret('so.tilo.passwords','vault',new Uint8Array([8]),env);
@@ -112,7 +112,7 @@ test('the mirror rejects missing custody and queued writes land in order',async(
   await assert.rejects(loadSecrets(env),/recovery is required/);
   const before=[...storage.stores.items];
   await assert.rejects(putSecret('so.tilo.passwords','other',new Uint8Array([9]),env),/recovery is required/);
-  assert.deepEqual([...storage.stores.items],before,'failed custody must not replace ciphertext');
+  assert.deepEqual([...storage.stores.items],before,'failed ownership must not replace ciphertext');
   assert.equal(storage.stores.keys.has(JSON.stringify('so.tilo.passwords')),false);
   storage.stores.keys.set(JSON.stringify('so.tilo.passwords'),passwordKey);
   queueSecret('so.tilo.totp','vault',new Uint8Array([1]),env);
@@ -156,7 +156,7 @@ test('credential references are withheld until commit and survive a fresh load',
   const storage=memory(),env={storage,locks:serializedLocks()};
   const bytes=new TextEncoder().encode('device-local credential');
   assert.equal(acknowledgedSecret('ack-roundtrip',bytes,env),null);
-  assert.equal((await loadSecrets(env)).length,0,'no synchronous custody acknowledgement');
+  assert.equal((await loadSecrets(env)).length,0,'no synchronous ownership acknowledgement');
   await flushAcknowledgements();
   const id=acknowledgedSecret('ack-roundtrip',bytes,env);
   assert.match(id,/^request-auth\//);
@@ -179,7 +179,7 @@ test('credential publication stays pending while the storage commit is outstandi
   assert.equal(acknowledgedSecret('ack-delayed',bytes,env),null);
   await committing;
   assert.equal(acknowledgedSecret('ack-delayed',bytes,env),null,
-    'encryption and a started write are not durable custody');
+    'encryption and a started write are not durable ownership');
   assert.equal((await loadSecrets({storage,locks:env.locks})).length,0);
   release();
   await flushAcknowledgements();
@@ -239,7 +239,7 @@ test('legacy page inventory migrates without dropping unedited entries',async()=
   });
 });
 
-test('quota failures and stale writers never acknowledge or replace durable custody',async()=>{
+test('quota failures and stale writers never acknowledge or replace durable ownership',async()=>{
   const storage=memory(),env={storage,locks:serializedLocks()};
   const initial=JSON.stringify({alice:[null,{password:'original'}]});
   acknowledgedMerge('ack-failure','vault.entries','{}',initial,env);

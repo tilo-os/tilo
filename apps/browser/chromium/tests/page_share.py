@@ -144,7 +144,7 @@ def long_form():
 
 
 def table(rows):
-    """A large table: eight columns of what a ledger holds."""
+    """A large table: eight columns of what a log holds."""
     parts = ["<!doctype html><title>Shipments</title><style>td,th{border:1px solid #999;"
              "padding:2px 6px}</style><h1>Shipments</h1><table><tr>"]
     parts += [f"<th>Column {column + 1}</th>" for column in range(8)]

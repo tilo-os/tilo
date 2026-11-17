@@ -243,7 +243,7 @@ export class FakeApi {
     if (rest[0] === "account") {
       return this.json({
         host: "eu1.tilo.sh",
-        standing: { plan: "alpha", account: "ada", usage: { workspaces: [] } },
+        subscription: { plan: "alpha", account: "ada", usage: { workspaces: [] } },
       });
     }
     if (rest[0] === "workspaces") {

@@ -122,7 +122,7 @@ type UnitBacklog = std::collections::VecDeque<Vec<u8>>;
 /// Encoded units waiting for the decode worker before the backlog is
 const CONNECT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
 
-/// Remote, as the ledger and the waiting stack name it.
+/// Remote, as the log and the waiting stack name it.
 fn owner() -> ui::attention::Owner {
     ui::attention::Owner::new("so.tilo.remote", "Remote").with_icon(Icon::Globe)
 }

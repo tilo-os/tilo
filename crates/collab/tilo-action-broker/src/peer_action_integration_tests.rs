@@ -1,6 +1,6 @@
 // The person's other device acting on this one: the engine's action service
 // hands such a request to this broker's api as an `ActionHost`, and what it
-// gets is the same durable ledger an application's own caller gets.
+// gets is the same durable log an application's own caller gets.
 
 use super::*;
 use tilo_actions::remote::{

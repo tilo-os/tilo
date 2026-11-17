@@ -727,7 +727,7 @@ impl BrowserWidget {
         let client = self
             .service_client
             .clone()
-            .ok_or("Account custody is unavailable")?;
+            .ok_or("Account credentials is unavailable")?;
         self.service_forget = Some(crate::service_sessions::PendingForget::start(
             selection,
             person,
@@ -904,7 +904,7 @@ impl BrowserWidget {
         waker: ui::WakeHandle,
     ) -> Result<(), String> {
         if self.service_client.is_none() || self.service_list_reply.is_some() {
-            return Err("Account custody is unavailable or busy".into());
+            return Err("Account credentials is unavailable or busy".into());
         }
         self.service_list_reply = Some(reply);
         self.service_list_waker = Some(waker);
@@ -975,7 +975,7 @@ impl BrowserWidget {
                 .as_ref()
                 .map(crate::service_sessions::PendingForget::report);
             if let Some(report) = &self.service_observation
-                && report["custody_revoked"] == true
+                && report["ownership_revoked"] == true
             {
                 self.service_selections
                     .retain(|selected| Some(selected.id.as_str()) != report["session_id"].as_str());
@@ -1053,7 +1053,7 @@ impl BrowserWidget {
     /// The first URI; the binary has validated it against Browser's schemes.
     #[must_use]
     pub fn with_initial_uri(mut self, uri: String) -> Self {
-        if self.browsing_mode.holds_account_custody()
+        if self.browsing_mode.holds_account_credentials()
             && self.service_client.is_some()
             && let Some(destination) = crate::service_destinations::Destination::parse(&uri)
         {
@@ -1077,7 +1077,7 @@ impl BrowserWidget {
     /// Whether the page may hold a sign-in: always in the person's window, and
     /// in a visitor window once a credential was entered there.
     pub(crate) const fn page_holds_sign_in(&self) -> bool {
-        self.browsing_mode.holds_account_custody() || self.sign_in_entered
+        self.browsing_mode.holds_account_credentials() || self.sign_in_entered
     }
 
     /// The page holds a sign-in from now on; one-way.
@@ -1379,9 +1379,9 @@ impl BrowserWidget {
             page_dialog_answer: None,
             permission_answer: None,
             // Saved passwords and addresses are the person's account
-            // custody: a window without it neither offers nor saves them.
+            // ownership: a window without it neither offers nor saves them.
             credentials: crate::credentials::Credentials::new(
-                !browsing_mode.holds_account_custody(),
+                !browsing_mode.holds_account_credentials(),
             ),
             anchored_panel: None,
             side_panel_edge: None,
@@ -5591,12 +5591,12 @@ impl BrowserWidget {
             )
             .with_action({
                 let list = E::ListServiceSessions.bound();
-                if self.browsing_mode.holds_account_custody() {
+                if self.browsing_mode.holds_account_credentials() {
                     list
                 } else {
                     list.unavailable(
-                        "no_account_custody",
-                        crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_CUSTODY),
+                        "no_account_credentials",
+                        crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_OWNERSHIP),
                     )
                 }
             }),

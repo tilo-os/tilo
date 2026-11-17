@@ -4,9 +4,9 @@
 use super::*;
 
 tilo_test_env::scenario! {
-    fn deferred_input_stamp_follows_custody_edits_and_the_editable_child;
+    fn deferred_input_stamp_follows_ownership_edits_and_the_editable_child;
 
-    phase deferred_input_stamp_checks_active_custody_and_exhausted_admission;
+    phase deferred_input_stamp_checks_active_ownership_and_exhausted_admission;
     {
         let mut fixture = ActionFixture::new();
         let owner = fixture.bindings[0].clone();
@@ -27,7 +27,7 @@ tilo_test_env::scenario! {
             .with_settlement(&mut fixture.app.state.doc, |doc, _| {
                 assert!(
                     fixture.app.bindings.document_edit_stamp(node, doc).is_ok(),
-                    "an active read needs the explicit canonical document witness"
+                    "an active read needs the explicit canonical document observation"
                 );
                 assert!(
                     fixture

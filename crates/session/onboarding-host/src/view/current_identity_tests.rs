@@ -12,7 +12,7 @@ fn private(path: &Path) {
 
 #[test]
 fn current_owner_prepared_activation_keeps_original_record_device_and_selected_data() {
-    // SAFETY: observes credentials only; this explicit qualifier cannot skip root custody.
+    // SAFETY: observes credentials only; this explicit qualifier cannot skip root ownership.
     assert_eq!(
         rustix::process::geteuid().as_raw(),
         0,
@@ -87,7 +87,7 @@ fn current_owner_prepared_activation_keeps_original_record_device_and_selected_d
             .unwrap();
     let pending_root = home.join(".local/state/tilo/prepared-setup");
     private(&pending_root);
-    // Pending custody validates the encrypted-delivery receipt; this fixture does
+    // Pending ownership validates the encrypted-delivery receipt; this fixture does
     // not claim to exercise the trusted helper's separate password authentication.
     let ciphertext = b"synthetic private prepared ciphertext";
     tilo_files::native::atomic::write_with_mode(

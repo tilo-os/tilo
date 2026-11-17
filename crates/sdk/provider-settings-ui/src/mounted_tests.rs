@@ -224,7 +224,7 @@ fn mounted_rendered_model_limits_save_and_clear_on_the_model_row() {
 }
 
 #[test]
-fn mounted_google_sign_in_never_offers_api_key_custody() {
+fn mounted_google_sign_in_never_offers_api_key_ownership() {
     let backend = Arc::new(FakeAdminBackend::default());
     let profile = ProviderProfile::google_vertex("project-a", "global", "gemini-2.5-pro");
     let id = profile.id.clone();
@@ -252,13 +252,13 @@ fn mounted_google_sign_in_never_offers_api_key_custody() {
         let profile = &panel.provider_config().profiles[0];
         assert!(!panel.needs_key(profile));
         let all = widgets::announced_text(widgets::page(panel.sections()).as_ref()).join(" ");
-        assert!(all.contains(&crate::i18n::t("agent-sign-in-custody")));
+        assert!(all.contains(&crate::i18n::t("agent-sign-in-credentials")));
         assert!(!all.contains(&crate::i18n::t("agent-key-needed")));
         assert!(!all.contains(&crate::i18n::t("agent-key-none")));
         let native =
             widgets::announced_text(widgets::page(panel.sections_without_sign_in()).as_ref())
                 .join(" ");
-        assert!(!native.contains(&crate::i18n::t("agent-sign-in-custody")));
+        assert!(!native.contains(&crate::i18n::t("agent-sign-in-credentials")));
         assert!(native.contains(profile.models[0].display_label()));
         assert!(native.contains(&crate::i18n::t("agent-request-limits-title")));
     });

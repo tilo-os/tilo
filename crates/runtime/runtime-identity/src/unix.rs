@@ -597,12 +597,12 @@ pub fn set_active_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
 }
 
 /// Change an owned identity's public profile without replacing its signing key
-/// or provider custody. The lifecycle lock and private atomic publication are
+/// or provider ownership. The lifecycle lock and private atomic publication are
 /// shared with import, activation and removal.
 ///
 /// # Errors
 ///
-/// Refuses an invalid id/name, unavailable identity custody, unsafe metadata,
+/// Refuses an invalid id/name, unavailable identity storage, unsafe metadata,
 /// or a failed private publication. No secret is exported to the caller.
 pub fn update_identity_profile(
     dir: &std::path::Path,
@@ -645,7 +645,7 @@ pub fn update_identity_profile(
 }
 
 /// Publish name, colour and canonical pixels together under the identity lifecycle
-/// lock, preserving signing/provider custody. A failed durability acknowledgement
+/// lock, preserving signing/provider ownership. A failed durability acknowledgement
 /// must still be treated as a failed save by the caller.
 pub fn update_identity_presentation(
     dir: &std::path::Path,
@@ -689,7 +689,7 @@ pub fn update_identity_presentation(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
 }
 
-/// Change the canonical public photo while preserving identity and provider custody.
+/// Change the canonical public photo while preserving identity and provider ownership.
 /// `None` restores the initials/colour presentation. The caller must normalize
 /// a consented source image before constructing the bounded `ProfilePhoto`.
 pub fn update_identity_photo(
@@ -1549,7 +1549,7 @@ pub fn load_metadata_from_path(path: &std::path::Path) -> Result<IdentityMetadat
 }
 
 /// Decode bounded canonical public identity metadata from an already-held read.
-/// This does not unlock a signing share or change source custody.
+/// This does not unlock a signing share or change source ownership.
 pub fn load_metadata_from_bytes(bytes: &[u8]) -> Result<IdentityMetadata, NotAvailable> {
     Ok(metadata_from_record(parse_record(bytes)?))
 }
@@ -1822,9 +1822,9 @@ mod tests {
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
     tilo_test_env::scenario! {
-        fn public_profile_edits_keep_signer_and_custody;
+        fn public_profile_edits_keep_signer_and_ownership;
 
-        phase public_profile_edits_preserve_signer_and_provider_custody;
+        phase public_profile_edits_preserve_signer_and_provider_ownership;
         {
             let dir = tempfile::tempdir().unwrap();
             let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 31)).unwrap();
@@ -1901,20 +1901,20 @@ mod tests {
             assert_eq!(fs::read(&path).unwrap(), saved);
         }
 
-        phase canonical_photo_updates_preserve_custody_and_invalid_imports_write_nothing;
+        phase canonical_photo_updates_preserve_ownership_and_invalid_imports_write_nothing;
         {
             let dir = tempfile::tempdir().unwrap();
             let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 32)).unwrap();
             let signer = load_from_path(path.clone()).unwrap();
             assert!(signer.profile_photo().is_none());
-            let proof = signer.sign(b"photo-custody-proof").unwrap();
+            let proof = signer.sign(b"photo-ownership-proof").unwrap();
             let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             let photo = crate::ProfilePhoto::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
             let changed = update_identity_photo(dir.path(), "personal", Some(photo.clone())).unwrap();
             assert_eq!(changed.profile_photo.as_ref(), Some(&photo));
             let loaded = load_from_path(path.clone()).unwrap();
             assert_eq!(loaded.profile_photo(), Some(&photo));
-            assert_eq!(loaded.sign(b"photo-custody-proof").unwrap(), proof);
+            assert_eq!(loaded.sign(b"photo-ownership-proof").unwrap(), proof);
             let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             for field in [
                 "display_name",

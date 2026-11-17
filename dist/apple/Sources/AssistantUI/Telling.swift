@@ -172,7 +172,7 @@ public final class LiveActivities {
                 Task { await activity.update(ActivityContent(state: facts, staleDate: facts.until)) }
             } else {
                 var last = activity.content.state
-                last.standing = .done
+                last.state = .done
                 let ended = last
                 Task { await activity.end(ActivityContent(state: ended, staleDate: nil), dismissalPolicy: .immediate) }
             }
@@ -188,7 +188,7 @@ public final class LiveActivities {
     public func running() -> [String] {
         Activity<AssistantActivity>.activities.map { activity in
             let state = activity.content.state
-            return "\(activity.attributes.name): \(state.kind.rawValue), \(state.standing.rawValue), \(state.title)"
+            return "\(activity.attributes.name): \(state.kind.rawValue), \(state.state.rawValue), \(state.title)"
         }
         .sorted()
     }

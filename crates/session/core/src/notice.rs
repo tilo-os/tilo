@@ -3,7 +3,7 @@
 //! A role that knows something the person should know — a mention of them in a record, a
 //! filesystem running out — tells it as one [`Notice`] through [`Notices`]. What a host does with
 //! it is the host's: the native session posts it to the person's notifications, the page hands it
-//! to the notifier its host serves. What the person chose comes back through the same seam, so a
+//! to the notifier its host serves. What the person chose comes back through the same boundary, so a
 //! role never reads a platform's notification log.
 
 use std::sync::atomic::{AtomicU64, Ordering};

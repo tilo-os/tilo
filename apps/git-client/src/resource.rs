@@ -642,7 +642,7 @@ mod tests {
         let mut app = TestApp::<GitClientShell>::capture(Some("empty")).unwrap();
         let error = app
             .effect(&check)
-            .expect_err("detached test app cannot manufacture admitted project custody");
+            .expect_err("detached test app cannot manufacture admitted project ownership");
         assert!(error.to_string().contains("approved"));
     }
 

@@ -1012,7 +1012,7 @@ The Settings app's own bind of the store is not a grant, and it used to bind the
 narrowed (`appdir::SESSION_SETTINGS_BINDS`, `run::splice_session_settings`): the settings document
 moved into its own directory, `~/.config/tilo/session/` (`settings_store::SESSION_DIR`; a document
 left at the old path is moved there once), and Settings is given that directory, the account
-stores it is the custodian of (`accounts/`, with their vault), and, read-only, `state.json` and
+stores it is the owner of (`accounts/`, with their vault), and, read-only, `state.json` and
 `continuity-provenance.json`. The identity store (records, fallback root secrets, the active
 selector, device fleets), the trust and revocation lists, the app registries, the session's
 settings records and anything added to the root later stay out. Settings lists, activates,

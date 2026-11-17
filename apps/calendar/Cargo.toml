@@ -13,8 +13,8 @@ path = "src/lib.rs"
 name = "calendar"
 path = "src/main.rs"
 
-# Live CalDAV sync refreshes its credentials through account-custody's
-# custodian (vault, daemon handoff, blocking refresh), which is native-only:
+# Live CalDAV sync refreshes its credentials through account-credentials's
+# credential store (vault, daemon handoff, blocking refresh), which is native-only:
 # the page's calendar keeps its events in the browser without it.
 [package.metadata.tilo]
 web-features = []
@@ -23,7 +23,7 @@ web-features = []
 fnv.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-timezone-engine = { path = "../../crates/runtime/engines/timezone", optional = true }
-# The CalDAV client and the account custody its sign-in reaches.
+# The CalDAV client and the account credentials its sign-in reaches.
 tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
 tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }
 # Read-only address-book hints, offered as attendees; choosing one confirms no
@@ -69,7 +69,7 @@ pim-lines = { path = "../../crates/text/pim-lines" }
 
 [features]
 thin = ["dep:runtime-dylib"]
-# Reach the time-zone database, the CalDAV client (with the account custody
+# Reach the time-zone database, the CalDAV client (with the account credentials
 # its sign-in reaches) and the contact directory through their engine
 # libraries in the runtime bundle (libtilo_timezone_engine.so,
 # libtilo_accounts_engine.so and libtilo_contact_directory_engine.so, under
@@ -87,7 +87,7 @@ live = ["tilo-dav/oauth"]
 [dev-dependencies]
 # The RFC 5545 reference recurrence expansion is checked against.
 rrule = "0.14"
-account-custody = { path = "../../crates/system/account-custody" }
+account-credentials = { path = "../../crates/system/account-credentials" }
 tilo-dav = { path = "../../crates/system/tilo-dav", default-features = false, features = ["test-support"] }
 # Reads the signed manifest's offers to check them against what the app publishes.
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }

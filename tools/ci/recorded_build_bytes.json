@@ -2,7 +2,7 @@
  "baseline": 8443148464,
  "unrecorded": {"libraries": 15639133, "tests": 310172360},
  "packages": {
-  "account-custody": {"libraries": 11942793, "tests": 351406960},
+  "account-credentials": {"libraries": 11942793, "tests": 351406960},
   "accounts": {"libraries": 15261597, "tests": 58388728},
   "activity": {"libraries": 15455181, "tests": 739832616},
   "agent": {"libraries": 21971546, "tests": 445542120},

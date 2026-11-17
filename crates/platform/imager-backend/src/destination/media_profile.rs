@@ -43,7 +43,7 @@ pub struct MediaProfile {
     pub device_label: String,
     pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
     pub tpm_handoff: Option<String>,
-    pub windows_preparation: Option<account_custody::hints::media::Expectation>,
+    pub windows_preparation: Option<account_credentials::hints::media::Expectation>,
     pub hostname: Option<String>,
     pub username: Option<String>,
     pub full_name: Option<String>,
@@ -93,7 +93,7 @@ struct RawMediaProfile {
     #[serde(default)]
     tpm_handoff: Option<String>,
     #[serde(default)]
-    windows_preparation: Option<account_custody::hints::media::Expectation>,
+    windows_preparation: Option<account_credentials::hints::media::Expectation>,
     #[serde(default)]
     hostname: Option<String>,
     #[serde(default)]

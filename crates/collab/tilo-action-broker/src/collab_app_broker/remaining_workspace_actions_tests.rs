@@ -20,7 +20,7 @@ pub(super) fn at_effect_barrier() {
 }
 
 tilo_test_env::scenario! {
-    fn registered_services_and_library_recheck_after_custody;
+    fn registered_services_and_library_recheck_after_ownership;
 
     phase registered_services_recheck_original_certificate_after_signed_admission;
     {
@@ -88,7 +88,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase library_replans_after_custody_instead_of_applying_a_stale_delete;
+    phase library_replans_after_ownership_instead_of_applying_a_stale_delete;
     {
         let directory = tempfile::tempdir().unwrap();
         let (_, _, mut workspace, caller, mut request) = fixture(directory.path());
@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-fn keyboard_rechecks_live_policy_and_execution_after_custody() {
+fn keyboard_rechecks_live_policy_and_execution_after_ownership() {
     for change in ["policy", "execution", "workspace"] {
         let directory = tempfile::tempdir().unwrap();
         let (_, _, workspace, caller, mut request) = fixture(directory.path());
@@ -428,7 +428,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase registered_governance_does_not_upgrade_a_transport_label_into_custody;
+    phase registered_governance_does_not_upgrade_a_transport_label_into_ownership;
     {
         let root = tempfile::tempdir().unwrap();
         let (state, service, workspace, _, request) = fixture(root.path());

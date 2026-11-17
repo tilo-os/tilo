@@ -46,7 +46,7 @@ enum Key {
 
 thread_local! {
     static READING: RefCell<Option<Reading>> = const { RefCell::new(None) };
-    /// A pass that must run whatever its witness says: a check that a
+    /// A pass that must run whatever its observation says: a check that a
     /// skipped pass changed nothing, which reruns every pass it skipped.
     static FORCED: Cell<bool> = const { Cell::new(false) };
     static PROVING: Cell<bool> = const { Cell::new(false) };
@@ -294,14 +294,14 @@ pub fn untracked(what: &'static str) {
     });
 }
 
-/// Run `check` with every component pass running whatever its witness says: a check that a skipped pass
+/// Run `check` with every component pass running whatever its observation says: a check that a skipped pass
 /// changed nothing, or a test host's frame that is input it delivered past the framework.
 pub fn forcing<R>(check: impl FnOnce() -> R) -> R {
     let _forcing = Forcing::begin();
     check()
 }
 
-/// Every component pass runs whatever its witness says while this lives ([`forcing`]).
+/// Every component pass runs whatever its observation says while this lives ([`forcing`]).
 pub struct Forcing(bool);
 
 impl Forcing {
@@ -318,7 +318,7 @@ impl Drop for Forcing {
     }
 }
 
-/// Whether passes run regardless of their witness ([`forcing`]).
+/// Whether passes run regardless of their observation ([`forcing`]).
 #[inline(never)]
 pub(crate) fn forced() -> bool {
     FORCED.with(Cell::get)
@@ -391,25 +391,25 @@ impl Reads {
 }
 
 /// Everything a component's last pass read, as it stood once the pass ended.
-pub(crate) struct Witness {
+pub(crate) struct Observation {
     pub(crate) revision: u64,
     /// Its record's committed heads and what is pending on top of them.
     pub(crate) document: (Vec<automerge::ChangeHash>, usize),
-    pub(crate) standing: Standing,
+    pub(crate) inputs: PassInputs,
     pub(crate) reads: Reads,
 }
 
 /// What a component's pass reads of its host besides its record: what its permissions mean now and its
-/// record's save status (what its root was last told, in a witness; what the store says, now), as a
+/// record's save status (what its root was last told, in an observation; what the store says, now), as a
 /// frame's quiet check reads them, and the locale.
 #[derive(PartialEq)]
-pub(crate) struct Standing {
-    pub(crate) owner: crate::bound_dispatch::OwnerStanding,
+pub(crate) struct PassInputs {
+    pub(crate) owner: crate::bound_dispatch::OwnerInputs,
     pub(crate) locale: u64,
 }
 
-impl Witness {
-    /// Why a pass reading `now` would read something else than the pass this witness was taken after,
+impl Observation {
+    /// Why a pass reading `now` would read something else than the pass this observation was taken after,
     /// or `None` when it would read the same.
     pub(crate) fn moved(&self, now: &Now) -> Option<&'static str> {
         if self.document.1 != 0 {
@@ -421,18 +421,18 @@ impl Witness {
         if now.document.as_ref() != Some(&self.document) {
             return Some("ui.component.loud.document");
         }
-        if now.standing != self.standing {
-            return Some("ui.component.loud.standing");
+        if now.inputs != self.inputs {
+            return Some("ui.component.loud.inputs");
         }
         self.reads.stand().err()
     }
 }
 
-/// What a component's witness is compared with: the same readings, now.
+/// What a component's observation is compared with: the same readings, now.
 pub(crate) struct Now {
     pub(crate) revision: Option<u64>,
     pub(crate) document: Option<(Vec<automerge::ChangeHash>, usize)>,
-    pub(crate) standing: Standing,
+    pub(crate) inputs: PassInputs,
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 //! How an operation went when it is said to the system rather than to this window: a
-//! success is recorded in the ledger, and a failure waits in Needs you with Try again.
+//! success is recorded in the log, and a failure waits in Needs you with Try again.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use crate::resource::PrintCentreEffect;
 
 pub(super) const TRY_AGAIN_ACTION: &str = "print-centre.retry";
 pub(super) const SHOW_ACTION: &str = "print-centre.show";
-/// One test at a time: the waiting stack and the ledger are the process's, so two
+/// One test at a time: the waiting stack and the log are the process's, so two
 /// print-centre tests running at once would see each other's rows.
 #[cfg(test)]
 pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -21,7 +21,7 @@ pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
 pub use ui::apps::PRINT_CENTRE as OWNER_APP;
 pub(super) const OWNER_NAME: &str = "Print centre";
 
-/// Print centre, as the ledger and the waiting stack name it.
+/// Print centre, as the log and the waiting stack name it.
 pub(super) fn owner() -> ui::attention::Owner {
     ui::attention::Owner::new(OWNER_APP, OWNER_NAME).with_icon(ui::icons::Icon::Printer)
 }

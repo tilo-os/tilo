@@ -106,7 +106,7 @@ public final class TiloSource: AssistantSource {
         let engine = engine
         listening = [
             Task { [weak self] in
-                for await standing in engine.standings() { await self?.stood(standing) }
+                for await state in engine.states() { await self?.stood(state) }
             },
             Task { [weak self] in
                 for await _ in engine.changes() {
@@ -166,7 +166,7 @@ public final class TiloSource: AssistantSource {
     }
 
     private var sessionNow: Session {
-        switch engine.standing {
+        switch engine.state {
         case .open: person.map(Session.signedIn) ?? .pairing
         case .pairing: .pairing
         case .arriving: person.map(Session.signedIn) ?? .pairing
@@ -176,11 +176,11 @@ public final class TiloSource: AssistantSource {
 
     private func tell() {
         sessions.set(sessionNow)
-        if case .open = engine.standing { reaches.set(.reachable) } else { reaches.set(.unreachable) }
+        if case .open = engine.state { reaches.set(.reachable) } else { reaches.set(.unreachable) }
     }
 
-    private func stood(_ standing: TiloEngine.Standing) async {
-        if case .open(let route) = standing {
+    private func stood(_ state: TiloEngine.State) async {
+        if case .open(let route) = state {
             // The workspace, without the app the page shows of it.
             if let workspace = EngineAddress.workspace(of: route) { defaults.set(workspace, forKey: TiloSource.routeKey) }
             await arrived(at: route)
@@ -309,7 +309,7 @@ public final class TiloSource: AssistantSource {
     /// Read Chat's newest messages again and say what is different in each conversation that
     /// is held. Started by the engine's word that something changed, never by a clock.
     private func look() async {
-        guard case .open = engine.standing else { return }
+        guard case .open = engine.state else { return }
         guard !looking else { again = true; return }
         looking = true
         defer { looking = false }
@@ -370,10 +370,10 @@ public final class TiloSource: AssistantSource {
             let withdrawn = !(question["withdrawn"]?.isNull ?? true)
             if TiloSource.variant(question["kind"]) == "secret" {
                 let detail = TiloSource.detail(of: question)
-                let standing: SecretRequest.Standing = answered == "filled" ? .kept : answered == "declined" || withdrawn ? .declined : .waiting
+                let state: SecretRequest.State = answered == "filled" ? .kept : answered == "declined" || withdrawn ? .declined : .waiting
                 return Item(id: id, at: message.at, .secret(SecretRequest(
                     id: .init(message.id), text: message.text, name: TiloSource.placeName(detail?["belongsTo"]?[0]?.string ?? ""),
-                    standing: standing)))
+                    state: state)))
             }
             let choices = (question["answers"]?.array ?? []).enumerated().compactMap { index, answer -> Choice? in
                 guard let name = answer["id"]?.string else { return nil }
@@ -576,7 +576,7 @@ public final class TiloSource: AssistantSource {
 
     /// Read what stands beside the conversation and say what is different.
     private func survey(_ what: Survey) async {
-        guard case .open = engine.standing else { return }
+        guard case .open = engine.state else { return }
         guard !surveying else {
             surveyAgain = surveyAgain == nil || surveyAgain == what ? what : .everything
             return
@@ -605,7 +605,7 @@ public final class TiloSource: AssistantSource {
                       let id = agent["id"]?.string
                 else { continue }
                 let stands = TiloSource.variant(sub["stands"]) ?? "working"
-                let standing: SubAgent.Standing = switch stands {
+                let state: SubAgent.State = switch stands {
                 case "needs_person": .needsYou
                 case "done": .done
                 case "failed": .failed
@@ -614,11 +614,11 @@ public final class TiloSource: AssistantSource {
                 }
                 let since = sub["since"]?.number.map { Date(timeIntervalSince1970: $0 / 1000) }
                 listed.append(SubAgent(
-                    id: .init(id), title: agent["name"]?.string ?? id, role: sub["role"]?.string ?? "", standing: standing,
+                    id: .init(id), title: agent["name"]?.string ?? id, role: sub["role"]?.string ?? "", state: state,
                     runsOn: TiloSource.variant(sub["runs"]) ?? "",
                     started: Date(timeIntervalSince1970: (agent["created_at"]?.number ?? 0) / 1000),
                     startedBy: sub["started_by"]?.string == assistant ? .mainAgent : .person,
-                    finished: standing == .done ? since : nil))
+                    finished: state == .done ? since : nil))
                 if let channel = sub["conversation"]?.string, feeds[.subAgent(.init(id))]?.channel != channel {
                     feeds[.subAgent(.init(id)), default: Feed()].channel = channel
                     again = true

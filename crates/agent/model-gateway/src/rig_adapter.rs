@@ -941,7 +941,7 @@ fn execution_failure(
 use agent_provider_config::protocol::{self as neutral, ModelError};
 use rig_core::message;
 
-/// Host custody uses the same neutral codec and provider execution as Complete.
+/// Host ownership uses the same neutral codec and provider execution as Complete.
 pub(super) async fn host_complete(
     client: &reqwest::Client,
     profile: &ProviderProfile,

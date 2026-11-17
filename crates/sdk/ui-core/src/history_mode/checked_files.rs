@@ -31,7 +31,7 @@ pub struct FileHistoryTarget {
     /// device signed reads as the agent's, on behalf of its person. Presentation only; never authority.
     pub authors: crate::history_source::AuthorDirectory,
 }
-/// A root retains its own handle; the runner validates this exact source witness.
+/// A root retains its own handle; the runner validates this exact source observation.
 #[derive(Clone, Default)]
 pub struct FileHistorySource(Rc<RefCell<FileHistorySourceState>>);
 /// An admitted open request; `None` does not request a specific version.

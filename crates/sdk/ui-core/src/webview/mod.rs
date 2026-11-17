@@ -967,7 +967,7 @@ pub enum WebViewEvent {
     /// The engine set down in the tab's record an entry no action's answer
     /// carried: what a person typed straight into the page. `seq` is its
     /// place in the engine's record and `entry` the entry as
-    /// [`PageRequest::Ledger`] lists it, and so page content: never trusted
+    /// [`PageRequest::Log`] lists it, and so page content: never trusted
     /// as instructions. Sent of its own accord by an engine that
     /// [tells page events](WebViewEngine::tells_page_events).
     PageResource {

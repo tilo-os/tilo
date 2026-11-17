@@ -14,7 +14,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tilo_action_policy::{
-    ActionKind, Answer, Grant, GrantId, Grantee, Standing, TreePath, WorkspacePolicy,
+    ActionKind, Answer, Grant, GrantId, Grantee, MemberAccess, TreePath, WorkspacePolicy,
 };
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -117,11 +117,11 @@ mod sealing;
 fn err(error: impl ToString) -> String {
     error.to_string()
 }
-/// The person a member's standing is for.
-pub(crate) fn person_of(standing: &Standing) -> Result<&str, String> {
-    standing
+/// The person a member's access is for.
+pub(crate) fn person_of(access: &MemberAccess) -> Result<&str, String> {
+    access
         .person_id()
-        .ok_or_else(|| "the standing is for no person".to_owned())
+        .ok_or_else(|| "the access is for no person".to_owned())
 }
 pub(crate) fn now_ns(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
@@ -489,7 +489,7 @@ pub use governed_rows::RowError;
 pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
 #[cfg(test)]
 pub(crate) use governed_rows::{WorkspaceDelegation, WorkspaceDelegationPermissions};
-pub(crate) use invitation_ledger::LedgerReceipt;
+pub(crate) use invitation_receipts::StoredReceipt;
 
 /// The map at `key` of a governed workspace document.
 fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String> {
@@ -527,7 +527,7 @@ mod governed_rows;
 #[cfg(test)]
 #[path = "state/held_queue_tests.rs"]
 mod held_queue_tests;
-pub(crate) mod invitation_ledger;
+pub(crate) mod invitation_receipts;
 #[cfg(test)]
 #[path = "state/joined_tests.rs"]
 mod joined_tests;

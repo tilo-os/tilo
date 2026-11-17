@@ -6,7 +6,7 @@ mod completed_geometry;
 mod inventory;
 pub use completed_geometry::CompletedOriginalGeometry;
 pub(in crate::setup::home_capture) mod mounted;
-use inventory::InventoryCustody;
+use inventory::InventoryOwnership;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -18,20 +18,20 @@ pub struct SourceIntent {
     original: OriginalCallerFacts,
     omissions: Vec<crate::setup::migration_review::OriginalOmission>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    inventory: Option<InventoryCustody>,
+    inventory: Option<InventoryOwnership>,
 }
-/// Returned only over the existing mutually admitted private helper channel; a serialized witness
+/// Returned only over the existing mutually admitted private helper channel; a serialized proof
 /// grants no source access, and the receiver reopens its protected record to match this digest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SourceWitness {
+pub struct SourceProof {
     schema: u32,
     pub operation: String,
     pub namespace: NativePath,
     record_sha256: [u8; 32],
     plan_sha256: [u8; 32],
 }
-impl SourceWitness {
+impl SourceProof {
     pub fn validate_plan(&self, plan: &Plan) -> io::Result<()> {
         use sha2::Digest;
         let digest: [u8; 32] = sha2::Sha256::digest(plan.bytes()?).into();
@@ -43,7 +43,7 @@ impl SourceWitness {
             || !namespace.ends_with("tilo-imager/home-capture/records")
         {
             return Err(failure(
-                "Original registration witness differs from selected Plan",
+                "Original registration proof differs from selected Plan",
             ));
         }
         Ok(())
@@ -53,10 +53,10 @@ impl SourceIntent {
     pub(in crate::setup::home_capture) fn original_caller(&self) -> &OriginalCallerFacts {
         &self.original
     }
-    pub(in crate::setup::home_capture) fn witness(&self) -> io::Result<SourceWitness> {
+    pub(in crate::setup::home_capture) fn proof(&self) -> io::Result<SourceProof> {
         use sha2::Digest;
         self.validate()?;
-        Ok(SourceWitness {
+        Ok(SourceProof {
             schema: 1,
             operation: self.home.operation_id.clone(),
             namespace: self.namespace.clone(),
@@ -83,7 +83,7 @@ impl SourceIntent {
             return Err(failure("Original source record namespace is not fixed"));
         }
         crate::setup::migration_review::OriginalOmission::validate_shapes(&self.omissions)?;
-        InventoryCustody::validate_selection(&self.home, self.inventory.as_ref())?;
+        InventoryOwnership::validate_selection(&self.home, self.inventory.as_ref())?;
         self.original.validate(self.home.home_uid())
     }
 }
@@ -149,7 +149,7 @@ impl Store {
             &source.file,
             original.uid(),
         )?;
-        let inventory = InventoryCustody::register(&storage(&self.records)?, plan, inventory)?;
+        let inventory = InventoryOwnership::register(&storage(&self.records)?, plan, inventory)?;
         let intent = SourceIntent {
             schema: 4,
             kind: if plan.categories.home {
@@ -240,7 +240,7 @@ fn matching_original_record(
     let before = existing.metadata()?;
     if before.uid() != 0 || before.nlink() != 1 || before.len() > MAX_RECORD {
         return Err(failure(
-            "Existing original record is not bounded private root custody",
+            "Existing original record is not bounded private root ownership",
         ));
     }
     let mut bytes = Vec::new();
@@ -328,15 +328,15 @@ impl SourceReadContext {
             let context = Self::review_with_geometry(
                 source.clone(),
                 &declaration
-                    .source_witness()
+                    .source_proof()
                     .namespace
                     .decode()
                     .map_err(io::Error::other)?,
                 geometry,
             )?;
-            if context.intent.witness()? != *declaration.source_witness() {
+            if context.intent.proof()? != *declaration.source_proof() {
                 return Err(failure(
-                    "Installed original witness differs from protected source",
+                    "Installed original proof differs from protected source",
                 ));
             }
             installed.revalidate()?;
@@ -354,15 +354,15 @@ impl SourceReadContext {
             }
         }
     }
-    pub fn reopen_witness(&self, witness: &SourceWitness) -> io::Result<Self> {
+    pub fn reopen_proof(&self, proof: &SourceProof) -> io::Result<Self> {
         self.revalidate()?;
         let context = Self::review_with_geometry(
             self.source.clone(),
-            &witness.namespace.decode().map_err(io::Error::other)?,
+            &proof.namespace.decode().map_err(io::Error::other)?,
             self.geometry.clone(),
         )?;
-        if witness.schema != 1 || context.intent.witness()? != *witness {
-            return Err(failure("Reopened original witness differs"));
+        if proof.schema != 1 || context.intent.proof()? != *proof {
+            return Err(failure("Reopened original proof differs"));
         }
         self.revalidate()?;
         Ok(context)
@@ -424,17 +424,14 @@ impl SourceReadContext {
         result.revalidate()?;
         Ok(result)
     }
-    pub(in crate::setup) fn review_witness(
+    pub(in crate::setup) fn review_proof(
         source: ResolvedSource,
-        witness: &SourceWitness,
+        proof: &SourceProof,
     ) -> io::Result<Self> {
-        let context = Self::review(
-            source,
-            &witness.namespace.decode().map_err(io::Error::other)?,
-        )?;
-        if witness.schema != 1 || context.intent.witness()? != *witness {
+        let context = Self::review(source, &proof.namespace.decode().map_err(io::Error::other)?)?;
+        if proof.schema != 1 || context.intent.proof()? != *proof {
             return Err(failure(
-                "Original source witness does not match protected record",
+                "Original source proof does not match protected record",
             ));
         }
         Ok(context)
@@ -444,14 +441,13 @@ impl SourceReadContext {
     pub fn verify_requested(
         &self,
         plan: &Plan,
-        witness: &SourceWitness,
+        proof: &SourceProof,
         requested: &OriginalCallerFacts,
     ) -> io::Result<()> {
         self.revalidate()?;
-        witness.validate_plan(plan)?;
+        proof.validate_plan(plan)?;
         requested.validate(plan.home_uid())?;
-        if self.plan() != plan || self.intent.witness()? != *witness || self.original() != requested
-        {
+        if self.plan() != plan || self.intent.proof()? != *proof || self.original() != requested {
             return Err(failure(
                 "Pending original source request differs from protected record",
             ));
@@ -511,7 +507,7 @@ impl SourceReadContext {
                 proof.verify(&self.intent.home, &current, self.record.metadata()?.dev())
             }
             (None, None) => Ok(()),
-            _ => Err(failure("Protected inventory custody missing")),
+            _ => Err(failure("Protected inventory ownership missing")),
         }
     }
     /// Shape is checked against the plan, and existence under the held source by the claim.
@@ -531,7 +527,7 @@ impl SourceReadContext {
         let value = match (&self.intent.inventory, &self.inventory) {
             (Some(proof), Some(file)) => Some((file.try_clone()?, proof.len, proof.sha256)),
             (None, None) => None,
-            _ => return Err(failure("Protected inventory custody missing")),
+            _ => return Err(failure("Protected inventory ownership missing")),
         };
         self.revalidate()?;
         Ok(value)

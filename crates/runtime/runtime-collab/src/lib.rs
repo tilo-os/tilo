@@ -40,7 +40,7 @@ pub mod approved_checks;
 pub mod external_moderation;
 pub mod write_attribution;
 /// The host distinguishes local UI intent from continuation of a published action.
-/// A published id is resolved only against broker-retained original custody.
+/// A published id is resolved only against broker-retained original ownership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DisplayOrigin {
     LocalHost,
@@ -940,9 +940,9 @@ impl std::fmt::Debug for PublishedInvocationResult {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalDocumentActionReport {
-    /// Original authenticated channel provenance, compared with live custody at admission.
+    /// Original authenticated channel provenance, compared with live ownership at admission.
     #[serde(default)]
-    pub custody: Option<committed_document::ConnectionSnapshot>,
+    pub ownership: Option<committed_document::ConnectionSnapshot>,
     pub version: u8,
     pub invocation: uuid::Uuid,
     /// Random capture identity, preserved unchanged across retries.
@@ -1096,7 +1096,7 @@ impl LocalDocumentActionReport {
     }
 
     /// Closed, bounded encoding shared with the authenticated local endpoint.
-    /// Custody is recovery provenance, never caller-selected authority.
+    /// Ownership is recovery provenance, never caller-selected authority.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         if self.version != 1 || self.invocation.is_nil() || self.capture_id.is_nil() {
             return Err("invalid local document report version or invocation".into());
@@ -1145,7 +1145,7 @@ impl LocalDocumentActionReport {
 }
 
 /// Explicit pre-admission rejection marker. Unmarked RPC errors may follow a
-/// committed admission and must never release the caller's recovery custody.
+/// committed admission and must never release the caller's recovery ownership.
 pub const LOCAL_DOCUMENT_REJECTED: &str = "local-document-rejected: ";
 
 /// Why a report on a route its connection is no worker on is refused:

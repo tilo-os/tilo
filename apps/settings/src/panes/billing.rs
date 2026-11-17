@@ -57,9 +57,9 @@ fn page_of(account: &HostAccount, effect: BillingEffect) -> Result<String, Strin
     let url = match effect {
         BillingEffect::ManageBilling => account.manage_billing.clone(),
         BillingEffect::OpenInvoice { invoice } => account
-            .standing
+            .subscription
             .as_ref()
-            .and_then(|standing| standing.invoices.iter().find(|i| i.id == invoice))
+            .and_then(|subscription| subscription.invoices.iter().find(|i| i.id == invoice))
             .map(|invoice| invoice.url.clone()),
     };
     url.filter(|url| url.starts_with("https://"))
@@ -217,7 +217,7 @@ fn vm_time(seconds: u64) -> String {
 }
 
 fn facts(account: &HostAccount) -> Vec<(String, String)> {
-    let standing = account.standing.as_ref();
+    let subscription = account.subscription.as_ref();
     let plan = match account.plan() {
         Some(plan) => match &plan.price {
             Some(price) => t_args(
@@ -235,9 +235,9 @@ fn facts(account: &HostAccount) -> Vec<(String, String)> {
         (t("settings-billing-plan"), plan),
         (t("settings-billing-card"), card_line(account)),
     ];
-    if let Some(standing) = standing {
-        let seconds = standing.usage.vm_seconds();
-        let included = standing
+    if let Some(subscription) = subscription {
+        let seconds = subscription.usage.vm_seconds();
+        let included = subscription
             .limits
             .as_ref()
             .and_then(|limits| limits.included_vm_seconds);
@@ -253,7 +253,7 @@ fn facts(account: &HostAccount) -> Vec<(String, String)> {
             None => vm_time(seconds),
         };
         facts.push((t("settings-billing-usage"), usage));
-        if let Some(credit) = &standing.credit {
+        if let Some(credit) = &subscription.credit {
             facts.push((t("settings-billing-credit"), credit.clone()));
         }
     }
@@ -261,7 +261,7 @@ fn facts(account: &HostAccount) -> Vec<(String, String)> {
 }
 
 fn card(account: &HostAccount) -> Option<&PaymentMethod> {
-    account.standing.as_ref()?.payment_method.as_ref()
+    account.subscription.as_ref()?.payment_method.as_ref()
 }
 
 fn has_card(account: &HostAccount) -> bool {
@@ -318,9 +318,9 @@ fn account_section(cx: &ViewCx<Settings>, account: &HostAccount) -> SettingsSect
 
 fn invoices_section(cx: &ViewCx<Settings>, account: &HostAccount) -> SettingsSection {
     let invoices = account
-        .standing
+        .subscription
         .as_ref()
-        .map(|standing| standing.invoices.as_slice())
+        .map(|subscription| subscription.invoices.as_slice())
         .unwrap_or_default();
     let items = if invoices.is_empty() {
         vec![note(&t("settings-billing-no-invoices"))]

@@ -472,16 +472,16 @@ fn listing_row(session: &Session, key: &str) -> tilo_sheets::directory::Listing 
 fn ask_to_join(session: &mut Session, key: &str) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let standing = session
+        let sheet = session
             .workspace_directory()
             .expect("the session hosts the workspace directory")
             .directory();
-        if standing.listings.iter().any(|listing| listing.key == key) {
+        if sheet.listings.iter().any(|listing| listing.key == key) {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the sheet lists the workspace to join: {standing:?}"
+            "the sheet lists the workspace to join: {sheet:?}"
         );
         session.step(Duration::from_millis(10)).unwrap();
     }

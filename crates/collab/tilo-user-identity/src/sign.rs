@@ -1,11 +1,11 @@
-//! Who signs a statement: the one seam between a statement's bytes and the key
+//! Who signs a statement: the one boundary between a statement's bytes and the key
 //! that approves them.
 //!
 //! Everything this crate signs — a device certificate, a revocation, a
 //! certification request — signs the 32-byte digest of a frozen preimage with
 //! an Ed25519 key (see the module docs of the crate). A [`StatementSigner`] is
 //! the key side of that: native code holds the key and answers at once, and a
-//! page keeps its key in `WebCrypto` custody and answers later, which is what
+//! page keeps its key in `WebCrypto` ownership and answers later, which is what
 //! the `_async` twin of each signing function is for. Both spellings run the
 //! same checks over the same bytes.
 
@@ -15,7 +15,7 @@ pub use collab_types::signer::SignError;
 /// agent's grant's.
 ///
 /// Implemented on the keys themselves, so that nothing has to know which kind
-/// of custody a key lives in to sign with it.
+/// of ownership a key lives in to sign with it.
 pub trait StatementSigner {
     /// The public key the statement names as its signer: a certificate's
     /// `user_public_key`, a revocation's, or the stand-in's or grant's key that

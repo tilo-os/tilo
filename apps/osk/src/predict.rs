@@ -15,7 +15,7 @@
 //! bigram context, prefix match, and raw frequency.
 //!
 //! A larger neural model (candle / llama.cpp) is a documented future
-//! enhancement; this n-gram baseline ships working and is the seam everything
+//! enhancement; this n-gram baseline ships working and is the boundary everything
 //! else is wired against.
 
 use std::collections::HashMap;

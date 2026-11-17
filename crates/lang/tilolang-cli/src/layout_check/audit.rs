@@ -1346,18 +1346,18 @@ impl Walk<'_> {
     /// A card or a notice standing closer to what stands over or under it than the gap siblings keep:
     /// the two read as one block, and a list pressed against a notice says the notice is a row of it.
     fn cramped_card(&mut self, node: &InspectionNode, keys: &[String]) {
-        let standing: Vec<&InspectionNode> = node
+        let state: Vec<&InspectionNode> = node
             .children
             .iter()
             .filter(|child| has_area(rect(child.rect)) && !floats(&child.widget))
             .collect();
-        for (index, card) in standing.iter().enumerate() {
+        for (index, card) in state.iter().enumerate() {
             if !rounds_its_corners(&card.widget) {
                 continue;
             }
             let own = rect(card.rect);
-            let above = index.checked_sub(1).and_then(|before| standing.get(before));
-            let below = standing.get(index.saturating_add(1));
+            let above = index.checked_sub(1).and_then(|before| state.get(before));
+            let below = state.get(index.saturating_add(1));
             for (side, sibling) in [("above", above), ("below", below)] {
                 let Some(sibling) = sibling else {
                     continue;
@@ -1400,7 +1400,7 @@ impl Walk<'_> {
         }
     }
 
-    /// One item shown twice: a row standing open into its item draws a list of what it holds, and
+    /// One item shown twice: a row held open into its item draws a list of what it holds, and
     /// its own list shows those again as rows.
     fn shown_twice(&mut self, node: &InspectionNode, keys: &[String]) {
         let rows: Vec<&InspectionNode> =
@@ -1416,7 +1416,7 @@ impl Walk<'_> {
         };
         let listed: Vec<String> = rows.iter().filter_map(|row| titled(row)).collect();
         for row in &rows {
-            // A row standing open is expanded and holds rows: what a folded branch's row says of
+            // A row held open is expanded and holds rows: what a folded branch's row says of
             // itself says nothing of an item's document.
             let open = row
                 .semantics
@@ -1437,7 +1437,7 @@ impl Walk<'_> {
                     row,
                     keys,
                     format!(
-                        "the document of the row standing open into \"{title}\" lists \"{item}\", \
+                        "the document of the row state open into \"{title}\" lists \"{item}\", \
                          which stands in the list again: an item is shown once"
                     ),
                 );
@@ -1455,12 +1455,12 @@ impl Walk<'_> {
         if self.page.is_none() {
             return;
         }
-        let standing: Vec<&InspectionNode> = node
+        let state: Vec<&InspectionNode> = node
             .children
             .iter()
             .filter(|child| has_area(rect(child.rect)) && !floats(&child.widget))
             .collect();
-        for (index, section) in standing.iter().enumerate() {
+        for (index, section) in state.iter().enumerate() {
             let Some(header) = section
                 .children
                 .first()
@@ -1477,7 +1477,7 @@ impl Walk<'_> {
                 continue;
             };
             // A heading first in its box has nothing over it to stand apart from.
-            let Some(over) = index.checked_sub(1).and_then(|before| standing.get(before)) else {
+            let Some(over) = index.checked_sub(1).and_then(|before| state.get(before)) else {
                 continue;
             };
             let above = rect(section.rect).y0 - rect(over.rect).y1;
@@ -1511,16 +1511,16 @@ impl Walk<'_> {
         if self.page.is_none() {
             return;
         }
-        let standing: Vec<&InspectionNode> = node
+        let state: Vec<&InspectionNode> = node
             .children
             .iter()
             .filter(|child| stands(&child.widget, rect(child.rect)) && !floats(&child.widget))
             .collect();
-        for (index, child) in standing.iter().enumerate() {
+        for (index, child) in state.iter().enumerate() {
             if child.widget != WRITING {
                 continue;
             }
-            let Some(next) = index.checked_add(1).and_then(|after| standing.get(after)) else {
+            let Some(next) = index.checked_add(1).and_then(|after| state.get(after)) else {
                 continue;
             };
             // What a person reads straight after the writing: the
@@ -1894,7 +1894,7 @@ impl Walk<'_> {
         let Some(ui::widget::LayoutInfo::Shell(shell)) = &node.layout else {
             return;
         };
-        if shell.sidebar != ui::widget::SidebarStanding::Docked
+        if shell.sidebar != ui::widget::SidebarPosition::Docked
             || shell.beside >= shell.needs
             || shell.beside_width <= 0.0
         {

@@ -1,6 +1,6 @@
 //! What the service needs of the host it runs under, and what the host
 //! hands it: the host's own device in its workspaces
-//! ([`HostDevice`]), the standing and read policy it decides a view by
+//! ([`HostDevice`]), the access and read policy it decides a view by
 //! ([`ViewReadPolicy`]), the verified snapshot a view is discovered from
 //! ([`ViewDocument`]), and the two APIs back into the host
 //! ([`WorkspaceDocumentsLink`] for everything the service asks, and
@@ -38,7 +38,7 @@ pub struct ViewReadPolicy {
     pub workspace: String,
     /// The certified caller's current standing in the workspace, including the
     /// bound of a device that is not theirs.
-    pub standing: ui::permissions::Standing,
+    pub access: ui::permissions::MemberAccess,
     /// The workspace's current sandbox capabilities.
     pub sandbox: Vec<collab_types::caps::CapOverride>,
     /// Host time used to evaluate capability expiry.
@@ -48,9 +48,9 @@ pub struct ViewReadPolicy {
 impl ViewReadPolicy {
     pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
         ui::permissions::PermissionContext::new(
-            ui::permissions::Acting::person(self.standing.person_id().unwrap_or_default()),
+            ui::permissions::Acting::person(self.access.person_id().unwrap_or_default()),
             self.sandbox.clone(),
-            self.standing.clone(),
+            self.access.clone(),
         )
         .at_unix_time(self.unix_time)
     }
@@ -88,7 +88,7 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Option<ViewReadPolicy> {
         None
     }
-    /// The certified caller's standing across `workspace` now, with no
+    /// The certified caller's access across `workspace` now, with no
     /// record's read checked: what its content and its new records are
     /// decided by. Absence denies.
     fn workspace_policy(

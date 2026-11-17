@@ -1,4 +1,4 @@
-//! The content and media seams an offloaded job's two devices meet on.
+//! The content and media boundaries an offloaded job's two devices meet on.
 //!
 //! An offloadable action is a pure content transform, so an invocation of one
 //! travels as the content it reads: the device that asks names each input by

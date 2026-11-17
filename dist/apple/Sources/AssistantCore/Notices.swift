@@ -62,10 +62,10 @@ public enum NoticePlan {
             let offered = asked.choices.first(where: \.isMain) ?? asked.choices.first
             return made(.decision, Markdown.plain(asked.text),
                         answer: offered.map { Notice.Answer(question: asked.id, choice: $0.id, title: $0.title) })
-        case .secret(let asked) where asked.standing == .waiting:
+        case .secret(let asked) where asked.state == .waiting:
             // A secret is typed in the app's protected field, never under a notification.
             return made(.decision, Markdown.plain(asked.text))
-        case .connection(let offered) where offered.standing == .waiting:
+        case .connection(let offered) where offered.state == .waiting:
             return made(.decision, Markdown.plain(offered.text))
         case .reminder(let words):
             return made(.reminder, Markdown.plain(words))
@@ -107,8 +107,8 @@ extension Item {
     public var waits: Bool {
         switch content {
         case .question(let asked): asked.waits
-        case .secret(let asked): asked.standing == .waiting
-        case .connection(let offered): offered.standing == .waiting
+        case .secret(let asked): asked.state == .waiting
+        case .connection(let offered): offered.state == .waiting
         default: false
         }
     }

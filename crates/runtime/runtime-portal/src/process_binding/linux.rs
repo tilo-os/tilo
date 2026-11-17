@@ -132,7 +132,7 @@ impl ExecutingPeer {
     ///
     /// The owner arms credentials before handing out the connected descriptor.
     /// A descendant inheriting the FD cannot impersonate its pinned producer.
-    /// This proves process custody, not resource or application authority.
+    /// This proves process ownership, not resource or application authority.
     pub fn receive_packet(&self, socket: &impl AsFd, message: &mut [u8]) -> io::Result<usize> {
         if message.is_empty() || message.len() > 16384 {
             return Err(refused("native message bound is invalid"));

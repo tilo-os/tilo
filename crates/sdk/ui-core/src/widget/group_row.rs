@@ -380,7 +380,7 @@ pub struct OutputSpan {
 }
 
 /// One display's share of a strip partitioned across displays: each holds its own groups, laid out
-/// and clipped inside its lane only, so none straddles a seam and panning one never reveals
+/// and clipped inside its lane only, so none straddles a border and panning one never reveals
 /// another's.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StripLane {
@@ -2037,7 +2037,7 @@ impl GroupRow {
     }
 
     /// Set the real strip viewport to an absolute finite offset. Browser and
-    /// other external navigation controllers use this narrow seam instead of
+    /// other external navigation controllers use this narrow border instead of
     /// synthesizing wheel input or moving rendered output independently.
     pub fn pan_to(&mut self, requested: f64) -> bool {
         if !requested.is_finite() {
@@ -3717,7 +3717,7 @@ impl GroupRow {
         }
     }
 
-    /// Whether the seams between windows have nodes: always in a
+    /// Whether the borders between windows have nodes: always in a
     /// partitioned strip (one between two lanes is parked out of layout),
     /// and while no window is maximized otherwise.
     fn handles_laid(&self, plan: &RowPlan) -> bool {
@@ -4036,7 +4036,10 @@ impl Widget for GroupRow {
         true
     }
 
-    #[allow(private_interfaces, reason = "toolkit-only checked custody traversal")]
+    #[allow(
+        private_interfaces,
+        reason = "toolkit-only checked ownership traversal"
+    )]
     fn visit_components(
         &mut self,
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
@@ -4517,9 +4520,9 @@ impl Widget for GroupRow {
         // A bare wheel NEVER moves the strip — that only happens via
         // `scroll_group_into_view_animated`, not this event path.
 
-        // A clipped group's trailing `+` can overlap the invisible resize seam at the viewport
+        // A clipped group's trailing `+` can overlap the invisible resize border at the viewport
         // edge. The exact painted control owns both the cursor update and the press; otherwise the
-        // seam keeps its usual first refusal. Forwarding the move matters because button events
+        // border keeps its usual first refusal. Forwarding the move matters because button events
         // carry no coordinates.
         let hidden: Vec<bool> = (0..self.groups.len())
             .map(|i| self.layout_hides_group(i))
@@ -5402,7 +5405,7 @@ impl GroupRow {
         for (i, h) in self.handles.iter_mut().enumerate() {
             let shown = |g: Option<&WindowGroup>| g.is_some_and(WindowGroup::stands);
             let next_i = i.saturating_add(1);
-            // Only a gap between two groups of this run; the seam between
+            // Only a gap between two groups of this run; the border between
             // two displays is not a gap.
             if !in_run.get(i).copied().unwrap_or(false)
                 || !in_run.get(next_i).copied().unwrap_or(false)
@@ -7844,7 +7847,7 @@ mod tests {
             let (mut row, taffy, root) =
                 relayout_row_owned(super::lane_tests::partitioned_row(), 1800.0);
             // Leftmost group: its grab sits on display 0. Group 200 can hang
-            // across the seam, so a grab there never "crosses".
+            // across the border, so a grab there never "crosses".
             let start = group_grab_point(&row, 0);
             assert_eq!(row.output_of_group(100), Some(0));
             assert_eq!(
@@ -9246,15 +9249,15 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_window_edge_resizes_at_its_seam;
+        fn a_window_edge_resizes_at_its_border;
 
-        phase the_seam_pool_tracks_the_gaps;
+        phase the_border_pool_tracks_the_gaps;
         {
-            /// Pins the `build_layout` seam policy so a refactor can't
+            /// Pins the `build_layout` border policy so a refactor can't
             /// silently leak or under-allocate them.
             fn handle_pool_matches_inter_group_gap_count() {
                 let row = make_row_with_groups(&[&[1]]);
-                assert_eq!(row.handle_count(), 0, "single-group row needs no seam");
+                assert_eq!(row.handle_count(), 0, "single-group row needs no border");
                 let row = make_row_with_groups(&[&[1], &[2]]);
                 assert_eq!(row.handle_count(), 1, "two-group row has exactly one");
                 let row = make_row_with_groups(&[&[1], &[2], &[3]]);
@@ -9263,7 +9266,7 @@ mod tests {
 
             fn handle_pool_grows_on_split_into_new_group() {
                 let mut row = make_row_with_groups(&[&[1, 2]]);
-                assert_eq!(row.handle_count(), 0, "precondition: one group, no seam");
+                assert_eq!(row.handle_count(), 0, "precondition: one group, no border");
                 assert!(row.split_tab_into_new_group(0, 2, 1));
                 assert_eq!(row.groups.len(), 2);
                 assert!(
@@ -9272,7 +9275,7 @@ mod tests {
                 );
                 let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
                 assert_eq!(row.handle_count(), 1, "after split: groups.len() - 1");
-                let r = row.handle_at(0).expect("seam 0").get_rect();
+                let r = row.handle_at(0).expect("border 0").get_rect();
                 assert!(r.width() > 0.0 && r.height() > 0.0, "laid out: {r:?}");
             }
 
@@ -9319,8 +9322,8 @@ mod tests {
             let (mut row, taffy, root) = edge_strip(None, None);
             let r = rects(&row);
             let y = r[0].center().y;
-            let seam = Point::new(r[0].x1 - 2.0, y);
-            assert_eq!(in_tree(&row, seam), Some(CursorIcon::EwResize));
+            let border = Point::new(r[0].x1 - 2.0, y);
+            assert_eq!(in_tree(&row, border), Some(CursorIcon::EwResize));
             let outer = Point::new(r[2].x1 + crate::widget::RESIZE_HANDLE_PX - 1.0, y);
             assert_eq!(
                 in_tree(&row, outer),
@@ -9329,7 +9332,7 @@ mod tests {
             );
             let body = Point::new(r[1].center().x, y);
             assert_ne!(in_tree(&row, body), Some(CursorIcon::EwResize));
-            let _ = edge_event(&mut row, &taffy, root, false, &move_to(seam));
+            let _ = edge_event(&mut row, &taffy, root, false, &move_to(border));
             assert!(edge_event(
                 &mut row,
                 &taffy,
@@ -9345,7 +9348,7 @@ mod tests {
             );
         }
 
-        phase the_seam_belongs_to_the_focused_window_and_hovering_shows_whose_edge_it_is;
+        phase the_border_belongs_to_the_focused_window_and_hovering_shows_whose_edge_it_is;
         {
             {
                 let (mut row, taffy, root) = edge_strip(None, None);
@@ -9394,8 +9397,8 @@ mod tests {
                 assert_eq!(row.groups[0].edge_highlight(), None, "the highlight moves");
                 assert_eq!(row.groups[1].edge_highlight(), Some(WindowEdge::Leading));
             }
-            // Phase `the_window_in_use_owns_the_whole_seam`: the pointer in the
-            // terminal's half of the seam still names Files' left edge, because
+            // Phase `the_window_in_use_owns_the_whole_border`: the pointer in the
+            // terminal's half of the border still names Files' left edge, because
             // Files is the window the person is in.
             {
                 let (mut row, taffy, root) = edge_strip(Some(1), None);
@@ -9508,7 +9511,7 @@ mod tests {
             }
         }
 
-        phase shift_drag_trades_width_between_the_two_windows_at_the_seam_only;
+        phase shift_drag_trades_width_between_the_two_windows_at_the_border_only;
         {
             let (row, taffy, root) = edge_strip(Some(1), None);
             let before = rects(&row);

@@ -1,4 +1,4 @@
-//! Native installation actors, validated custody owners and portable contracts.
+//! Native installation actors, validated ownership owners and portable contracts.
 //! Frontends retain presentation state and issue requests to these actors.
 
 #![allow(

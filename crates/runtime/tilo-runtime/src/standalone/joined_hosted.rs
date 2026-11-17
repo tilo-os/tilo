@@ -79,7 +79,7 @@ impl Joined {
     }
 
     fn own_device(&self) -> [u8; 32] {
-        self.custody.device_public_key()
+        self.identity.device_public_key()
     }
 
     /// Place `workspace`, the profile's workspace called `name`, on this
@@ -97,7 +97,7 @@ impl Joined {
         let invitation = self
             .workspace_host()
             .ok_or("this profile runs no workspace host")?
-            .place_own_workspace(&workspace.to_string(), name, &self.custody.device_cert)
+            .place_own_workspace(&workspace.to_string(), name, &self.identity.device_cert)
             .await?;
         if self.enroll(&invitation).await? != workspace {
             return Err("this device's host placed another workspace".into());

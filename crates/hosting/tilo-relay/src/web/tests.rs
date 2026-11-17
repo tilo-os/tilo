@@ -1923,10 +1923,10 @@ async fn an_invitation_only_entry_keeps_an_address_confirms_it_and_takes_it_off(
 
     // Until the link is opened the address waits, and is listed to nobody.
     let (status, head, body) =
-        ask("wait-list/standing", serde_json::json!({"secret": removal})).await;
+        ask("wait-list/status", serde_json::json!({"secret": removal})).await;
     assert_eq!(status, 200, "{head}");
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["standing"],
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["status"],
         "pending"
     );
 
@@ -1937,9 +1937,9 @@ async fn an_invitation_only_entry_keeps_an_address_confirms_it_and_takes_it_off(
         serde_json::from_slice::<serde_json::Value>(&body).unwrap()["confirmed"],
         true
     );
-    let (_, _, body) = ask("wait-list/standing", serde_json::json!({"secret": removal})).await;
+    let (_, _, body) = ask("wait-list/status", serde_json::json!({"secret": removal})).await;
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["standing"],
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["status"],
         "listed"
     );
     // Opened again, the same link confirms nothing new and is no error.
@@ -1975,9 +1975,9 @@ async fn an_invitation_only_entry_keeps_an_address_confirms_it_and_takes_it_off(
     let left = mails_taken(&mailer, 2).await;
     assert_eq!(left.len(), 2, "a removal is mailed: {left:?}");
     assert_eq!(left[1].to, "Ada@Example.org");
-    let (_, _, body) = ask("wait-list/standing", serde_json::json!({"secret": removal})).await;
+    let (_, _, body) = ask("wait-list/status", serde_json::json!({"secret": removal})).await;
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["standing"],
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["status"],
         "gone"
     );
     // A secret no entry has is answered as one that took an entry off.
@@ -1990,7 +1990,7 @@ async fn an_invitation_only_entry_keeps_an_address_confirms_it_and_takes_it_off(
 
     // A key this entry never handed out is refused, not guessed at.
     let (status, _, body) = ask(
-        "wait-list/standing",
+        "wait-list/status",
         serde_json::json!({"secret": "not-a-secret"}),
     )
     .await;

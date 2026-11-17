@@ -112,9 +112,9 @@ fn api_server(
     (base, worker)
 }
 fn connector(target: &Path, issuer: &tilo_oauth::fake::FakeAuthorizationServer) -> Connector {
-    Connector::with_custodian(
+    Connector::with_credential_store(
         target.to_owned(),
-        account_custody::Custodian::for_root(Some(target.to_owned())).with_provider(
+        account_credentials::CredentialStore::for_root(Some(target.to_owned())).with_provider(
             OAuthCloud::GoogleDrive,
             issuer.provider(),
             "different-tilo-client",
@@ -156,7 +156,7 @@ fn reseal_refresh_and_remove(
         .import_sealed_accounts(&sealed, &key, b"goa-portable-transport")
         .unwrap();
     restored
-        .custodian
+        .credential_store
         .oauth_access_token(id, OAuthCloud::GoogleDrive.oauth_use(), true)
         .unwrap();
     assert_eq!(issuer.refreshes(), 2);
@@ -379,7 +379,7 @@ tilo_test_env::scenario! {
                 .unwrap();
         let original =
             original_registration(&definitions(CONFIG, true).remove(0), &credentials, &tokens).unwrap();
-        assert!(account_custody::imported_oauth_matches(&private, &original));
+        assert!(account_credentials::imported_oauth_matches(&private, &original));
         reseal_refresh_and_remove(temporary.path(), &connector, &id, &issuer);
         assert_original_requests(&issuer);
         let after = std::fs::metadata(&path).unwrap();
@@ -457,12 +457,12 @@ tilo_test_env::scenario! {
             ),
         ]);
         let target = temporary.path().join("target");
-        let custodian = account_custody::Custodian::for_root(Some(target.clone()))
+        let credential_store = account_credentials::CredentialStore::for_root(Some(target.clone()))
             .with_provider(OAuthCloud::OneDrive, issuer.provider(), "different-tilo-client")
             .with_storage_config(OAuthCloud::OneDrive, serde_json::json!({
                 "api":format!("{api}/graph/"), "drive":"Me", "root":"DriveRoot", "upload_chunk":10485760
             }));
-        let mut connector = Connector::with_custodian(target.clone(), custodian);
+        let mut connector = Connector::with_credential_store(target.clone(), credential_store);
         connector.goa_api = Some(api);
         let id = connector
             .import_goa_with(&roots, &selected, &FixtureKeychain::original())
@@ -620,13 +620,13 @@ fn expired_imported_goa_grant_renews_automatically_after_reseal_under_original_c
     issuer.set_token_lifetime(3600);
     issuer.issue_access_token("automatically-renewed-access");
     let access = restored
-        .custodian
+        .credential_store
         .oauth_access_token(&id, OAuthCloud::GoogleDrive.oauth_use(), false)
         .unwrap();
     assert_eq!(access.as_str(), "automatically-renewed-access");
     assert_eq!(issuer.refreshes(), 2);
     let cached = restored
-        .custodian
+        .credential_store
         .oauth_access_token(&id, OAuthCloud::GoogleDrive.oauth_use(), false)
         .unwrap();
     assert_eq!(cached.as_str(), access.as_str());

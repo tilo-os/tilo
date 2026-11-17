@@ -200,7 +200,7 @@ chip-value-no = No
 
 chip-flow-disclaimer = Reported evidence only. Artifacts are not authenticated or executed. Library estimates are not silicon measurements, signoff, manufacturing approval, or model quality.
 chip-flow-artifacts = Original artifact references
-chip-flow-custody = Custody
+chip-flow-source = Source
 chip-flow-unverified = Unverified
 chip-flow-receipt = Original receipt artifact
 chip-flow-producer = Declared producer SHA-256

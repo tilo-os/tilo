@@ -1,6 +1,6 @@
 //! The window's own document of the workspace. It holds nothing: the assistant is an item of
 //! the workspace's agents, its thread is a Chat conversation, its work is issues in Tasks
-//! and its standing work is Shortcuts. The window shows those resources and keeps no copy.
+//! and its progress work is Shortcuts. The window shows those resources and keeps no copy.
 
 use ui::prelude::*;
 

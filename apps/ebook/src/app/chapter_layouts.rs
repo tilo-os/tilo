@@ -185,15 +185,15 @@ impl BooksApp {
         }
         self.absorb_layout_chunks();
         let previous = self.layout.as_ref().map(|l| l.key);
-        let standing_in = self.layouts.standin == Some(key) && previous == Some(key);
-        if !standing_in {
+        let is_standin = self.layouts.standin == Some(key) && previous == Some(key);
+        if !is_standin {
             self.layouts.standin = None;
         }
-        if previous != Some(key) || standing_in {
+        if previous != Some(key) || is_standin {
             // The same chapter laid out again (a resize, a new text size or
             // font): keep the paragraph the reader was at on screen, rather
             // than a page number that now holds other text.
-            if !standing_in
+            if !is_standin
                 && previous.is_some_and(|old| old.chapter == self.chapter)
                 && self.pending_jump_block.is_none()
                 && self.pending_seek_fraction.is_none()

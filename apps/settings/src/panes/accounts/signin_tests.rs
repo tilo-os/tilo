@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use account_custody::OAuthCloud;
-use account_custody::icloud::{
+use account_credentials::OAuthCloud;
+use account_credentials::icloud::{
     ICloudAuth, ICloudAuthError, ICloudChallenge, ICloudHeaders, ICloudSessionState, ICloudSignIn,
 };
 use test_http::{Reply, Responder};
@@ -139,14 +139,17 @@ fn published_google_mail_reauth_uses_browser_and_preserves_the_mailbox() {
                 .body(format!(r#"{{"emailAddress":"{identity}"}}"#)),
         ]);
         let browser = FakeBrowser::new(true);
-        let mut clients = account_custody::ClientTable::defaults().clone();
+        let mut clients = account_credentials::ClientTable::defaults().clone();
         // Gmail reauthentication must work even when Drive is disabled in this build.
         clients.google.scopes.files.clear();
         let pane = AccountsPane::in_root(root.clone())
-            .with_custodian(
-                root.custodian()
+            .with_credential_store(
+                root.credential_store()
                     .with_client_table(clients)
-                    .with_issuer_endpoints(account_custody::OAuthIssuer::Google, oauth.provider())
+                    .with_issuer_endpoints(
+                        account_credentials::OAuthIssuer::Google,
+                        oauth.provider(),
+                    )
                     .with_gmail_profile_endpoint(format!("{}/profile", gmail.url())),
             )
             .with_browser_opener(browser.clone());
@@ -345,11 +348,11 @@ fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
 
 fn pane(
     root: &AccountRoot,
-    custodian: account_custody::Custodian,
+    credential_store: account_credentials::CredentialStore,
     browser: Arc<FakeBrowser>,
 ) -> AccountsPane {
     AccountsPane::in_root(root.clone())
-        .with_custodian(custodian)
+        .with_credential_store(credential_store)
         .with_browser_opener(browser)
 }
 
@@ -372,11 +375,11 @@ tilo_test_env::scenario! {
     {
         let (_dir, root) = scratch_root();
         let server = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let custodian =
-            root.custodian()
+        let credential_store =
+            root.credential_store()
                 .with_provider(OAuthCloud::GoogleDrive, server.provider(), "drive-client");
         let browser = FakeBrowser::new(true);
-        let mut pane = pane(&root, custodian, Arc::clone(&browser));
+        let mut pane = pane(&root, credential_store, Arc::clone(&browser));
 
         command(&mut pane, AccountViewCommand::Add(AccountKind::GoogleDrive));
         assert!(pane.sign_in_open());
@@ -398,7 +401,7 @@ tilo_test_env::scenario! {
         let opened = browser.opened.lock().unwrap().clone();
         assert_eq!(opened.len(), 1);
         assert!(opened[0].starts_with(&format!("{}/authorize?", server.url())));
-        let account = only_account(&root, account_custody::providers::GOOGLE_DRIVE_TYPE);
+        let account = only_account(&root, account_credentials::providers::GOOGLE_DRIVE_TYPE);
         assert_eq!(account.display_name, "Google Drive");
         let store_json = serde_json::to_string(&root.store()).unwrap();
         assert!(
@@ -421,10 +424,10 @@ tilo_test_env::scenario! {
         let (_dir, root) = scratch_root();
         let server = tilo_oauth::fake::FakeAuthorizationServer::start();
         server.forge_state("forged");
-        let custodian =
-            root.custodian()
+        let credential_store =
+            root.credential_store()
                 .with_provider(OAuthCloud::Dropbox, server.provider(), "dropbox-client");
-        let mut pane = pane(&root, custodian, FakeBrowser::new(true));
+        let mut pane = pane(&root, credential_store, FakeBrowser::new(true));
         command(&mut pane, AccountViewCommand::Add(AccountKind::Dropbox));
         command(&mut pane, AccountViewCommand::Submit);
         assert!(
@@ -448,10 +451,10 @@ tilo_test_env::scenario! {
         }
         let (_dir, root) = scratch_root();
         let browser = FakeBrowser::new(false);
-        let custodian = root
-            .custodian()
-            .with_client_table(account_custody::ClientTable::default());
-        let mut pane = pane(&root, custodian, Arc::clone(&browser));
+        let credential_store = root
+            .credential_store()
+            .with_client_table(account_credentials::ClientTable::default());
+        let mut pane = pane(&root, credential_store, Arc::clone(&browser));
         command(&mut pane, AccountViewCommand::Add(AccountKind::Dropbox));
         command(&mut pane, AccountViewCommand::Submit);
         let message = pane
@@ -472,7 +475,7 @@ tilo_test_env::scenario! {
         let (_dir, root) = scratch_root();
         let server = fake_nextcloud();
         let browser = FakeBrowser::new(false);
-        let mut pane = pane(&root, root.custodian(), Arc::clone(&browser));
+        let mut pane = pane(&root, root.credential_store(), Arc::clone(&browser));
         command(&mut pane, AccountViewCommand::Add(AccountKind::Nextcloud));
         assert!(
             pane.sign_in_open(),
@@ -531,12 +534,12 @@ fn google_service_sign_in(
                 .body(r#"{"emailAddress":"ada@example.org"}"#),
         )
     });
-    let custodian = root
-        .custodian()
-        .with_issuer_endpoints(account_custody::OAuthIssuer::Google, oauth.provider())
+    let credential_store = root
+        .credential_store()
+        .with_issuer_endpoints(account_credentials::OAuthIssuer::Google, oauth.provider())
         .with_gmail_profile_endpoint(format!("{}/gmail/v1/users/me/profile", gmail.url()));
     let browser = FakeBrowser::new(true);
-    let mut pane = pane(root, custodian, browser.clone());
+    let mut pane = pane(root, credential_store, browser.clone());
     command(&mut pane, AccountViewCommand::Add(AccountKind::GoogleDrive));
     pane.sign_in
         .as_mut()
@@ -713,7 +716,7 @@ tilo_test_env::scenario! {
         vault.put(&files.id, &secret);
         vault.put(&mail.id, &accounts::Secret::password("mail-grant"));
         vault.try_save().unwrap();
-        let mut pane = pane(&root, root.custodian(), FakeBrowser::new(false));
+        let mut pane = pane(&root, root.credential_store(), FakeBrowser::new(false));
         pane.remove("mail").unwrap();
         let store = root.store();
         assert_eq!(store.len(), 1);
@@ -814,10 +817,10 @@ tilo_test_env::scenario! {
     phase icloud_signs_in_with_a_verification_code_and_never_stores_the_password;
     {
         let (_dir, root) = scratch_root();
-        let custodian = root
-            .custodian()
+        let credential_store = root
+            .credential_store()
             .with_icloud(Arc::new(FakeICloud::default()));
-        let mut pane = pane(&root, custodian, FakeBrowser::new(false));
+        let mut pane = pane(&root, credential_store, FakeBrowser::new(false));
         command(&mut pane, AccountViewCommand::Add(AccountKind::ICloudDrive));
         pane.set_sign_in_fields_for_test("", "", "ada@icloud.com", "apple-password");
         command(&mut pane, AccountViewCommand::Submit);
@@ -853,7 +856,7 @@ tilo_test_env::scenario! {
             pane.sign_in_message_for_test()
         );
 
-        let account = only_account(&root, account_custody::providers::ICLOUD_DRIVE_TYPE);
+        let account = only_account(&root, account_credentials::providers::ICLOUD_DRIVE_TYPE);
         assert_eq!(account.config["identity"], "ada@icloud.com");
         let secret = root.vault().get(&account.id).unwrap();
         assert!(secret.password.is_empty());
@@ -865,10 +868,10 @@ tilo_test_env::scenario! {
     phase advanced_data_protection_is_explained;
     {
         let (_dir, root) = scratch_root();
-        let custodian = root
-            .custodian()
+        let credential_store = root
+            .credential_store()
             .with_icloud(Arc::new(FakeICloud { adp: true }));
-        let mut pane = pane(&root, custodian, FakeBrowser::new(false));
+        let mut pane = pane(&root, credential_store, FakeBrowser::new(false));
         command(&mut pane, AccountViewCommand::Add(AccountKind::ICloudDrive));
         pane.set_sign_in_fields_for_test("", "", "ada@icloud.com", "apple-password");
         command(&mut pane, AccountViewCommand::Submit);
@@ -889,12 +892,12 @@ tilo_test_env::scenario! {
     {
         let (_dir, root) = scratch_root();
         assert!(
-            root.custodian().icloud().is_available(),
+            root.credential_store().icloud().is_available(),
             "Settings signs in to iCloud through the iCloud provider"
         );
-        let custodian =
-            account_custody::Custodian::for_root(root.explicit().map(std::path::Path::to_path_buf));
-        let mut pane = pane(&root, custodian, FakeBrowser::new(false));
+        let credential_store =
+            account_credentials::CredentialStore::for_root(root.explicit().map(std::path::Path::to_path_buf));
+        let mut pane = pane(&root, credential_store, FakeBrowser::new(false));
         command(&mut pane, AccountViewCommand::Add(AccountKind::ICloudDrive));
         command(&mut pane, AccountViewCommand::Submit);
         assert!(
@@ -931,8 +934,10 @@ fn icloud_rows_are_marked_best_effort_and_offer_reauthentication() {
 
     let (_dir, root) = scratch_root();
     let id = accounts::AccountId::from("icloud-drive-1");
-    let mut account =
-        accounts::Account::new(id.clone(), account_custody::providers::ICLOUD_DRIVE_TYPE);
+    let mut account = accounts::Account::new(
+        id.clone(),
+        account_credentials::providers::ICLOUD_DRIVE_TYPE,
+    );
     account.display_name = "My iCloud".into();
     account.config = serde_json::json!({"identity": "ada@icloud.com"});
     let mut store = accounts::AccountStore::new();

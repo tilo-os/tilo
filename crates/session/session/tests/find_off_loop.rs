@@ -36,7 +36,7 @@ use tilo_session::{AppSocket, Options, SearchOptions, Session};
 use crate::common::{CANVAS, PERSON, Repl, on_screen, private_home, until};
 
 /// The title a slow source answers with, and the needle that asks for it.
-const SLOW_TITLE: &str = "Quarterlyreport ledger";
+const SLOW_TITLE: &str = "Quarterlyreport log";
 /// The needle: one the seeded apps do not answer, so the slow source's row is what the find
 /// leads with.
 const NEEDLE: &str = "quarterlyreport";

@@ -91,21 +91,21 @@ pub struct Replica {
 impl Replica {
     /// A replica of `doc` for `name`, with `packages` (source and ids lock) loaded.
     pub fn new(name: &str, doc: AutoCommit, packages: &[(&str, &str)]) -> (Self, Vec<Package>) {
-        Self::standing(name, doc, packages, None)
+        Self::access(name, doc, packages, None)
     }
 
-    /// As [`Self::new`], deciding what the runtime invokes by `standing`, the person's standing
+    /// As [`Self::new`], deciding what the runtime invokes by `access`, the person's access
     /// in the workspace; without one, the API decides the person's own part.
-    pub fn standing(
+    pub fn access(
         name: &str,
         doc: AutoCommit,
         packages: &[(&str, &str)],
-        standing: Option<tilo_action_policy::Standing>,
+        access: Option<tilo_action_policy::MemberAccess>,
     ) -> (Self, Vec<Package>) {
         let host = Host::new(
             &doc,
             Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name)),
-            move || standing.clone(),
+            move || access.clone(),
         )
         .unwrap();
         let loaded = packages

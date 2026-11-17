@@ -609,7 +609,7 @@ fn the_vault_keeps_secrets_sealed_and_wpa_passphrases_roam() {
     let roaming = RoamingWifiSlot::default();
     let vault = VaultStore::at(
         dir.path().join("network-secrets"),
-        secret_vault::Custody::LocalFile,
+        secret_vault::VaultBackend::LocalFile,
         roaming.clone(),
     );
     let eap = StoreKey {
@@ -661,7 +661,7 @@ fn the_vault_keeps_secrets_sealed_and_wpa_passphrases_roam() {
 }
 
 /// The session serves the agent from its multi-thread runtime; choosing the
-/// vault's custody there probes the secret store over blocking D-Bus, which
+/// vault's ownership there probes the secret store over blocking D-Bus, which
 /// once aborted the whole session at startup.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn serving_from_the_session_runtime_never_blocks_a_runtime_thread() {

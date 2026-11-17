@@ -64,7 +64,7 @@ pub enum Kind {
     /// window says everything in one language, so a German word in an English window (or the source
     /// standing in for a translation the window's own catalogues lack) is a fault.
     MixedLanguage,
-    /// An item standing open where it stands, outside the list that shows it: the row that opened it
+    /// An item held open where it stands, outside the list that shows it: the row that opened it
     /// is no row of a list the person sees, or more than one row of one list stands open at a time.
     OpenOutsideList,
     /// A surface with nothing in it: a filled block standing where a person reads it as a card, a
@@ -141,7 +141,7 @@ pub enum Kind {
     /// screen, so the sidebar folds behind the bar's toggle there and the content takes the window.
     ContentBesideSidebar,
     /// One item shown twice: the document of a row
-    /// standing open lists an item that stands in the list
+    /// held open lists an item that stands in the list
     /// again.
     ItemShownTwice,
     /// A group heading taking more room over its first row than one heading band, and a finger's

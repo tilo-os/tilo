@@ -35,7 +35,7 @@ case $image in
     bins=(tilo-relay tilo-relay-admin tilo-enroll fs) ;;
   host)
     # The server OS: the relay and replica, the hosted-VM service and its jail helper, the API
-    # server, and the boot tools the update ledger and the boot-entry pass read. One feature
+    # server, and the boot tools the update log and the boot-entry pass read. One feature
     # resolution, so the shared workspace crates compile once.
     packages=(-p tilo-relay -p tilo-fs --bin tilo-relay --bin tilo-relay-admin \
                 --bin tilo-enroll --bin fs

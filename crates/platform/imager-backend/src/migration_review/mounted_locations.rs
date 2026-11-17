@@ -41,7 +41,7 @@ impl MountedHomeLocations {
         home: &Path,
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
-        let policy = SourceInventory::capture_home_policy(root, InstallerCustody::review(home)?)?;
+        let policy = SourceInventory::capture_home_policy(root, InstallerOwnership::review(home)?)?;
         Self::discover_with_policy(root, home, cancel, policy)
     }
     pub fn discover_original(

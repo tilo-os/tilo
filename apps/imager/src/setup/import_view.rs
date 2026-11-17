@@ -3407,7 +3407,7 @@ mod tests {
 
     #[allow(
         clippy::unnecessary_wraps,
-        reason = "this test seam has the same fallible signature as the production identity boundary"
+        reason = "this test hook has the same fallible signature as the production identity boundary"
     )]
     fn identity_ready() -> Result<(), String> {
         Ok(())

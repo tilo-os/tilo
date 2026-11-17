@@ -906,7 +906,7 @@ pub struct MediaItem {
     /// (`/var/workspace/<path>`), or the content reference a source imported
     /// from the workspace's content store is read by. This — not the bytes —
     /// is what the CRDT replicates; the decode path hydrates the bytes on
-    /// demand. See [`crate::media`] for the seam.
+    /// demand. See [`crate::media`] for the boundary.
     pub path: String,
     /// The title's text and styling, for a [`MediaKind::Text`] item. `None`
     /// for every decoded source — a title is the one media whose picture
@@ -943,7 +943,7 @@ impl Default for MediaItem {
 }
 
 impl MediaItem {
-    /// Resolve this item's bytes through the FUSE-media seam, reporting
+    /// Resolve this item's bytes through the FUSE-media boundary, reporting
     /// where they live and whether they're hydrated. The one place a
     /// reference becomes a (possibly-local) file.
     pub fn source(&self) -> media::MediaSource {

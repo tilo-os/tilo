@@ -41,7 +41,7 @@ impl crate::services::HostStepServices for NativeFacadeHostSteps {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn signed_native_facade_runs_host_steps_with_original_certified_custody() {
+async fn signed_native_facade_runs_host_steps_with_original_certified_ownership() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use tilo_actions::remote::{device_pairing, identity_admin};
@@ -173,7 +173,7 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
             ));
             assert!(
                 !is_local_host_caller(&projected, Some(&origin(original.clone(), false))),
-                "keyless Certified is not itself evidence of native device custody"
+                "keyless Certified is not itself evidence of native device identity"
             );
             // Isolate the matcher after the protected-device verification bit:
             // it must still reject mismatched or restricted projections.

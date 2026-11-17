@@ -170,7 +170,7 @@ pub struct MapProps {
     /// own), and the view lays what it answers into that rectangle.
     #[component(event(value = Vec<i64>))]
     pub frame: Event,
-    /// The pointer's right button pressed on the map: carries the key of the pin standing under
+    /// The pointer's right button pressed on the map: carries the key of the pin pin_places under
     /// it — empty text where the press landed on the map's own empty surface — and the canvas
     /// point under the pointer, its x then its y. What the view does with it is its own: the
     /// shell's canvas opens the pointed place's menu, or the canvas's own for free space
@@ -371,7 +371,7 @@ pub struct Map {
     /// Where each pin stands on the canvas, in the order of `pins`, as the region reads it at each
     /// solve: a pin moved in place ([`Described::set_props`]) is laid out where it stands now,
     /// though the region was built while it stood elsewhere.
-    standing: Rc<RefCell<Vec<PinPlace>>>,
+    pin_places: Rc<RefCell<Vec<PinPlace>>>,
 
     /// The place that arrived on the map and is to be shown: the camera pans to it before the
     /// places are laid out, so a window a person just opened stands where they can see it.
@@ -437,12 +437,12 @@ pub struct Map {
     /// arrives on the map after it is the answer to that pointing, and grows out of it.
     asked: Option<Point>,
     /// The place that answers the person's last pointing, by its key: of the places arriving
-    /// after it that grow from where it was asked, the one standing nearest that point (the turn
+    /// after it that grow from where it was asked, the one pin_places nearest that point (the turn
     /// at the caret, the thing found at a click). The camera keeps it whole in view as it grows,
     /// framed with the places arriving after it (an agent's view beside it) as far as they fit
     /// in view together (`map_answer.rs`). The person's own pan or zoom lets it go.
     answer: Option<String>,
-    /// The places standing when the person last pointed, by key: every other place is what
+    /// The places pin_places when the person last pointed, by key: every other place is what
     /// arrived since, the answer and what it opened beside it, framed with it (`map_answer.rs`).
     asked_among: Vec<String>,
 }
@@ -532,7 +532,7 @@ impl Map {
             placed: Rc::default(),
             laid: Rc::default(),
             unsaid: Rc::default(),
-            standing: Rc::default(),
+            pin_places: Rc::default(),
             reveal: None,
             glide: None,
             shown: Rc::default(),
@@ -748,7 +748,7 @@ impl Map {
     /// [`Self::revealing`] holding `keep` (canvas pixels) as well: what a canvas does when a place
     /// arrives beside another, so what the person was looking at stays where they were looking
     /// rather than being pushed out of the viewport by the pan to what arrived (`shell.md` §3,
-    /// "a place next to where it came from"). `keep` is every place standing wholly in the
+    /// "a place next to where it came from"). `keep` is every place pin_places wholly in the
     /// viewport: the camera pans the least that holds them all with what arrived, and it never
     /// changes its zoom — opening a place never resizes the places already there, so a place
     /// stands as big as the person was reading it. When what arrived and what they were looking
@@ -804,7 +804,7 @@ impl Map {
         self.laid.borrow().values().any(|rect| rect.contains(local))
     }
 
-    /// The key of the pin standing at `local` (this map's own coordinates), if one does: the
+    /// The key of the pin pin_places at `local` (this map's own coordinates), if one does: the
     /// topmost pin covers the ones under it, so the last drawn wins, as a press would find it.
     fn pin_under(&self, local: Point) -> Option<String> {
         let laid = self.laid.borrow();
@@ -861,7 +861,7 @@ impl Map {
             return;
         }
         let area = canvas(place);
-        // What the person was looking at: every other place standing wholly in the viewport.
+        // What the person was looking at: every other place pin_places wholly in the viewport.
         let seen = Rect::from_origin_size(
             self.camera.origin,
             (
@@ -946,7 +946,7 @@ impl Map {
 
     /// Say where every pin stands now to the region that lays them out.
     fn stand_pins(&self) {
-        *self.standing.borrow_mut() = self.pins.iter().map(|(_, place, _)| *place).collect();
+        *self.pin_places.borrow_mut() = self.pins.iter().map(|(_, place, _)| *place).collect();
     }
 
     /// Build the region that places the pins on the camera: from the views it holds now (taken
@@ -968,7 +968,7 @@ impl Map {
         }
         views.truncate(self.pins.len());
         self.stand_pins();
-        let places = Rc::clone(&self.standing);
+        let places = Rc::clone(&self.pin_places);
         let keys: Vec<String> = self.pins.iter().map(|(key, _, _)| key.clone()).collect();
         // The camera is read at each solve, not when the region is built: a pan, a zoom or a
         // glide of the camera lays the places out again without building the region again.
@@ -1133,7 +1133,7 @@ impl Described for Map {
     /// Props given in place name the pins and carry none of their views, so the pins they name
     /// must be the pins the map holds, one for one: a map given other pins is another canvas,
     /// and is built again around them. Patching the pins it recognises would leave the pin of a
-    /// place the layout closed standing on screen and in the accessibility tree.
+    /// place the layout closed pin_places on screen and in the accessibility tree.
     fn set_props(&mut self, props: MapProps) -> bool {
         let MapProps {
             name: _,

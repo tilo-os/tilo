@@ -1,4 +1,4 @@
-//! Original invocation custody, minted only by dispatch and an actual private worker.
+//! Original invocation ownership, minted only by dispatch and an actual private worker.
 use super::{
     AdmittedJoinIdentity, AppBrokerState, Arc, CrdtRoute, PrivateWorkerRegistration,
     PublishedAction, VerifiedActionCaller, Weak,
@@ -25,7 +25,7 @@ pub(super) enum InvocationCaller {
     Local {
         route: CrdtRoute,
         admitted: Box<AdmittedJoinIdentity>,
-        // Captured at request custody, never rebound at admission or effect.
+        // Captured at request ownership, never rebound at admission or effect.
         time: Option<crate::policy_clock::PolicyTime>,
     },
 }
@@ -63,7 +63,7 @@ impl OriginalInvocationData {
         let original = OriginalInvocation {
             broker: Arc::downgrade(state),
             peer,
-            worker: TargetCustody::Registered(Box::new(worker.clone())),
+            worker: TargetOwnership::Registered(Box::new(worker.clone())),
             data: self.clone(),
         };
         original.check_lifecycle()?;
@@ -263,7 +263,7 @@ impl OriginalInvocationData {
         Ok(certificate)
     }
 
-    /// Recover a person's original certified custody for a native owner turn.
+    /// Recover a person's original certified ownership for a native owner turn.
     /// This is not an allow decision: the owner rechecks current workspace rights.
     pub(super) fn owner_person_certificate(
         &self,
@@ -299,7 +299,7 @@ impl OriginalInvocationData {
         )
     }
 
-    /// Retain the caller's custody for a host-minted launch child. Native
+    /// Retain the caller's ownership for a host-minted launch child. Native
     /// admission binds its UUID as well as its original certificate and time.
     pub(super) fn launch_child_caller(
         &self,
@@ -388,7 +388,7 @@ struct ApprovedCheckArguments {
     check_id: String,
 }
 
-enum TargetCustody {
+enum TargetOwnership {
     Registered(Box<PrivateWorkerRegistration>),
     Native {
         connection: Arc<super::native_media::LocalAppConnection>,
@@ -402,7 +402,7 @@ enum TargetCustody {
 pub struct OriginalInvocation {
     broker: Weak<AppBrokerState>,
     peer: u64,
-    worker: TargetCustody,
+    worker: TargetOwnership,
     data: Arc<OriginalInvocationData>,
 }
 impl OriginalInvocation {
@@ -464,9 +464,9 @@ impl OriginalInvocation {
             InvocationCaller::NativePerson { .. } => None,
         }
     }
-    /// Pure custody check: no owner callback, workspace snapshot or Store open.
+    /// Pure ownership check: no owner callback, workspace snapshot or Store open.
     /// Its returned sample belongs to the original registered clock and origin.
-    pub fn check_custody(&self) -> Result<u64, String> {
+    pub fn check_ownership(&self) -> Result<u64, String> {
         if self
             .data
             .execution
@@ -484,7 +484,7 @@ impl OriginalInvocation {
             return Err("original invocation broker retired".into());
         }
         match &self.worker {
-            TargetCustody::Registered(worker) => {
+            TargetOwnership::Registered(worker) => {
                 let workers = state
                     .host_workers
                     .lock()
@@ -497,7 +497,7 @@ impl OriginalInvocation {
                     return Err("original invocation worker connection retired or replaced".into());
                 }
             }
-            TargetCustody::Native { connection, .. } => {
+            TargetOwnership::Native { connection, .. } => {
                 if !connection.current()
                     || connection.app_id != self.data.route.app_id
                     || connection.workspace_id != self.data.route.cluster_id
@@ -506,7 +506,7 @@ impl OriginalInvocation {
                 }
             }
         }
-        // Custody is only who holds the target, and the policy on top of it
+        // Ownership is only who holds the target, and the policy on top of it
         // is the operation's, the same for every holder: an execution lease
         // keeps its captured facts through cooperative cancellation, while
         // outside effects (external moderation, approved checks, private
@@ -598,7 +598,7 @@ impl OriginalInvocation {
             &request.operation,
         )?;
         let worker = if let Some(worker) = admitted.worker_registration.clone() {
-            TargetCustody::Registered(Box::new(worker))
+            TargetOwnership::Registered(Box::new(worker))
         } else {
             let connection = channel
                 .lease
@@ -606,12 +606,12 @@ impl OriginalInvocation {
                 .and_then(|lease| lease.local_media.as_ref())
                 .filter(|connection| connection.current())
                 .cloned()
-                .ok_or("native target process custody unavailable")?;
+                .ok_or("native target process ownership unavailable")?;
             admitted
                 .certificate
                 .as_ref()
                 .ok_or("native target certificate unavailable")?;
-            TargetCustody::Native {
+            TargetOwnership::Native {
                 connection,
                 admitted: Box::new(admitted),
             }
@@ -684,7 +684,7 @@ impl OriginalInvocation {
             return Err("approved check ID differs from accepted action".into());
         }
         let worker = if let Some(worker) = admitted.worker_registration.clone() {
-            TargetCustody::Registered(Box::new(worker))
+            TargetOwnership::Registered(Box::new(worker))
         } else {
             let connection = channel
                 .lease
@@ -692,12 +692,12 @@ impl OriginalInvocation {
                 .and_then(|lease| lease.local_media.as_ref())
                 .filter(|connection| connection.current())
                 .cloned()
-                .ok_or("native target process custody unavailable")?;
+                .ok_or("native target process ownership unavailable")?;
             admitted
                 .certificate
                 .as_ref()
                 .ok_or("native target certificate unavailable")?;
-            TargetCustody::Native {
+            TargetOwnership::Native {
                 connection,
                 admitted: Box::new(admitted),
             }
@@ -760,14 +760,14 @@ impl OriginalInvocation {
         Ok(actor)
     }
     pub(super) fn check_lifecycle(&self) -> Result<(), String> {
-        self.check_custody()?;
+        self.check_ownership()?;
         let state = self
             .broker
             .upgrade()
             .ok_or("original invocation broker retired")?;
         state.checked_policy_time(Some(&self.data.time))?;
         match &self.worker {
-            TargetCustody::Registered(worker) => {
+            TargetOwnership::Registered(worker) => {
                 let admitted = state
                     .host_workers
                     .lock()
@@ -782,7 +782,7 @@ impl OriginalInvocation {
                     .revalidate_admission(&worker.route, &admitted)
                     .map_err(|error| error.to_string())?;
             }
-            TargetCustody::Native { admitted, .. } => {
+            TargetOwnership::Native { admitted, .. } => {
                 state
                     .revalidate_admission(&self.data.route, admitted)
                     .map_err(|error| error.to_string())?;
@@ -830,7 +830,7 @@ impl OriginalInvocation {
             }
             Ok(())
         })??;
-        self.check_custody()?;
+        self.check_ownership()?;
 
         Ok(())
     }
@@ -871,7 +871,7 @@ impl AppBrokerState {
                 drop(registry);
                 (peer, data)
             };
-            let original = Arc::new(OriginalInvocation { broker: broker.clone(), peer, worker: TargetCustody::Registered(Box::new(worker.clone())), data });
+            let original = Arc::new(OriginalInvocation { broker: broker.clone(), peer, worker: TargetOwnership::Registered(Box::new(worker.clone())), data });
             original.check_lifecycle()?;
             let route = runtime_collab::route::RouteSpec {
                 app_id: worker.route.app_id.clone(),

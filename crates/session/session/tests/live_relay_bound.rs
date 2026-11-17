@@ -11,7 +11,7 @@
 //!
 //! What a device that *is* told busy reads and does is checked where a relay's places can be
 //! filled by a workspace's own devices: the relay's tests hold sixteen of them in admission
-//! through its served endpoint, and the session's own tests read the standing and the words of a
+//! through its served endpoint, and the session's own tests read the access and the words of a
 //! live session whose relay was busy. Sixteen further sessions of one workspace are sixteen processes
 //! with a shell each, more than a suite's machine starts for one test.
 

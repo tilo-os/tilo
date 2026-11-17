@@ -24,7 +24,7 @@
 //! ([`crate::workspaces::ContentKeeper::expects`]), so a file as large as the cap
 //! reaches the host. A file the host kept before for another reason (its bots fetched
 //! it) is neither counted nor ever let go of here. Which files it keeps,
-//! and for whom is kept in a ledger beside the workspace's state, so
+//! and for whom is kept in a log beside the workspace's state, so
 //! a restart keeps counting.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,7 +91,7 @@ struct Kept {
 
 /// The files kept for members, by hash.
 #[derive(Debug, Default, Serialize, Deserialize)]
-struct Ledger {
+struct Log {
     kept: BTreeMap<String, Kept>,
     next: u64,
     /// The files let go of past a quota: never asked for again, or every
@@ -100,7 +100,7 @@ struct Ledger {
     let_go: BTreeSet<String>,
 }
 
-impl Ledger {
+impl Log {
     fn total(&self, member: Option<&MemberId>) -> u64 {
         self.kept
             .values()
@@ -120,7 +120,7 @@ impl Ledger {
 }
 
 struct State {
-    ledger: Ledger,
+    log: Log,
     /// The files asked for and not whole yet, named by who posted them.
     wants: ContentWants<MemberId>,
     /// Parts that held files nobody answered for yet: read again later.
@@ -147,7 +147,7 @@ pub struct WorkspaceAttachments {
     /// them are addressed to.
     host: [u8; 32],
     blobs: ContentStore,
-    ledger: PathBuf,
+    log: PathBuf,
     limits: AttachmentLimits,
     state: Mutex<State>,
 }
@@ -229,17 +229,17 @@ fn now_ms() -> u64 {
 
 impl WorkspaceAttachments {
     /// The host `host` of `workspace` keeping its members' files in `blobs`
-    /// within `limits`, counted in the ledger at `ledger`.
+    /// within `limits`, counted in the log at `log`.
     #[must_use]
     pub fn new(
         workspaces: Workspaces,
         workspace: String,
         host: [u8; 32],
         blobs: ContentStore,
-        ledger: PathBuf,
+        log: PathBuf,
         limits: AttachmentLimits,
     ) -> Arc<Self> {
-        let kept = std::fs::read(&ledger)
+        let kept = std::fs::read(&log)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
@@ -248,10 +248,10 @@ impl WorkspaceAttachments {
             workspace,
             host,
             blobs,
-            ledger,
+            log,
             limits,
             state: Mutex::new(State {
-                ledger: kept,
+                log: kept,
                 wants: ContentWants::default(),
                 unanswered: BTreeSet::new(),
                 written: BTreeSet::new(),
@@ -444,7 +444,7 @@ impl WorkspaceAttachments {
     fn lacks(&self, state: &State, file: &Referenced) -> bool {
         tilo_content::valid_hash(&file.hash)
             && file.size.is_none_or(|size| size <= self.limits.file_bytes)
-            && !state.ledger.let_go.contains(&file.hash)
+            && !state.log.let_go.contains(&file.hash)
             && !self.blobs.has(&file.hash)
     }
 
@@ -465,9 +465,9 @@ impl WorkspaceAttachments {
         if let Some(taken) = state.taken.get_mut(hash) {
             taken.bytes = size;
         }
-        let order = state.ledger.next;
-        state.ledger.next = order.saturating_add(1);
-        state.ledger.kept.insert(
+        let order = state.log.next;
+        state.log.next = order.saturating_add(1);
+        state.log.kept.insert(
             hash.to_owned(),
             Kept {
                 member: member.clone(),
@@ -475,14 +475,14 @@ impl WorkspaceAttachments {
                 order,
             },
         );
-        while state.ledger.total(Some(member)) > self.limits.member_bytes {
-            let Some(oldest) = state.ledger.oldest(Some(member)) else {
+        while state.log.total(Some(member)) > self.limits.member_bytes {
+            let Some(oldest) = state.log.oldest(Some(member)) else {
                 break;
             };
             self.let_go(state, &oldest);
         }
-        while state.ledger.total(None) > self.limits.workspace_bytes {
-            let Some(oldest) = state.ledger.oldest(None) else {
+        while state.log.total(None) > self.limits.workspace_bytes {
+            let Some(oldest) = state.log.oldest(None) else {
                 break;
             };
             self.let_go(state, &oldest);
@@ -491,22 +491,22 @@ impl WorkspaceAttachments {
     }
 
     fn let_go(&self, state: &mut State, hash: &str) {
-        state.ledger.kept.remove(hash);
-        state.ledger.let_go.insert(hash.to_owned());
+        state.log.kept.remove(hash);
+        state.log.let_go.insert(hash.to_owned());
         if let Err(error) = self.blobs.release(hash) {
             tracing::warn!(workspace = %self.workspace, %error, "could not let a member's file go");
         }
     }
 
     fn save(&self, state: &State) {
-        let saved = serde_json::to_vec(&state.ledger)
+        let saved = serde_json::to_vec(&state.log)
             .map_err(|error| error.to_string())
             .and_then(|bytes| {
-                tilo_files::native::atomic::write(&self.ledger, &bytes)
+                tilo_files::native::atomic::write(&self.log, &bytes)
                     .map_err(|error| error.to_string())
             });
         if let Err(error) = saved {
-            tracing::warn!(workspace = %self.workspace, %error, "could not save the ledger of kept files");
+            tracing::warn!(workspace = %self.workspace, %error, "could not save the log of kept files");
         }
     }
 
@@ -515,7 +515,7 @@ impl WorkspaceAttachments {
     pub fn kept_for(&self, hash: &str) -> Option<MemberId> {
         self.state
             .lock_recover()
-            .ledger
+            .log
             .kept
             .get(hash)
             .map(|kept| kept.member.clone())
@@ -641,9 +641,9 @@ mod tests {
 
         phase the_oldest_files_go_first_past_a_quota;
         {
-            let mut ledger = Ledger::default();
+            let mut log = Log::default();
             for (hash, member, order) in [("a", "ada", 0), ("b", "bo", 1), ("c", "ada", 2)] {
-                ledger.kept.insert(
+                log.kept.insert(
                     hash.into(),
                     Kept {
                         member: MemberId::person(member),
@@ -653,14 +653,14 @@ mod tests {
                 );
             }
             let (ada, bo) = (MemberId::person("ada"), MemberId::person("bo"));
-            assert_eq!(ledger.total(Some(&ada)), 20);
-            assert_eq!(ledger.total(None), 30);
-            assert_eq!(ledger.oldest(Some(&ada)).as_deref(), Some("a"));
-            assert_eq!(ledger.oldest(Some(&bo)).as_deref(), Some("b"));
-            assert_eq!(ledger.oldest(None).as_deref(), Some("a"));
-            let saved = serde_json::to_vec(&ledger).unwrap();
-            let read: Ledger = serde_json::from_slice(&saved).unwrap();
-            assert_eq!(read.kept, ledger.kept);
+            assert_eq!(log.total(Some(&ada)), 20);
+            assert_eq!(log.total(None), 30);
+            assert_eq!(log.oldest(Some(&ada)).as_deref(), Some("a"));
+            assert_eq!(log.oldest(Some(&bo)).as_deref(), Some("b"));
+            assert_eq!(log.oldest(None).as_deref(), Some("a"));
+            let saved = serde_json::to_vec(&log).unwrap();
+            let read: Log = serde_json::from_slice(&saved).unwrap();
+            assert_eq!(read.kept, log.kept);
         }
     }
 }

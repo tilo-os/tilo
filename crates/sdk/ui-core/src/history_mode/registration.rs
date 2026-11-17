@@ -27,7 +27,7 @@ pub enum HistoryPresentation {
     Domain {
         create: PreviewFactory,
     },
-    /// Stateless source factory installed only after scope/custody validation.
+    /// Stateless source factory installed only after scope/ownership validation.
     DomainWithAssets {
         create: PreviewFactory,
         assets: fn() -> std::rc::Rc<dyn super::HistoricalAssetSource>,
@@ -59,7 +59,7 @@ impl HistoryPresentation {
 #[derive(Clone)]
 #[allow(
     clippy::large_enum_variant,
-    reason = "registration keeps an opaque owner witness inline; it is not a per-frame message"
+    reason = "registration keeps an opaque owner observation inline; it is not a per-frame message"
 )]
 pub enum HistorySourceRegistration {
     CheckedFiles {
@@ -73,7 +73,7 @@ pub enum HistorySourceRegistration {
         source: super::folder::FolderHistorySource,
         /// The window's own record, when the registration is the window's: it keeps only
         /// which folder is open, which is no change to list, so the folder's scope stands
-        /// for it. `None` in a root's witness of the folder it shows.
+        /// for it. `None` in a root's observation of the folder it shows.
         window: Option<super::HistoryOwner>,
     },
     HostDocument {
@@ -91,7 +91,7 @@ pub enum HistorySourceRegistration {
     },
 }
 impl HistorySourceRegistration {
-    /// Capture the mounted component/tile's actual custody and storage identity.
+    /// Capture the mounted component/tile's actual ownership and storage identity.
     pub fn owned(
         scope: &'static str,
         app_id: &str,
@@ -249,7 +249,7 @@ impl HistoryRegistration {
         }
         Ok(registration)
     }
-    /// Whether every source is a checked file of the mounted filesystem: a root's witness of the files
+    /// Whether every source is a checked file of the mounted filesystem: a root's observation of the files
     /// it names, owning no document.
     #[must_use]
     pub fn is_checked_files_only(&self) -> bool {
@@ -325,7 +325,7 @@ impl HistoryRegistration {
         }
         for source in &self.sources {
             // A raw path identity cannot establish that the outer State owns
-            // that file. Path owners use the actual checkout custody adapter.
+            // that file. Path owners use the actual checkout ownership adapter.
             if matches!(source, HistorySourceRegistration::HostDocument { resource, .. } if resource.document_id.file_path().is_some())
             {
                 return Err(HistoryRegistrationError::UnsupportedOwner);
@@ -369,9 +369,9 @@ impl HistoryRegistration {
         }
         for source in &self.sources {
             // A file or folder this window shows is the window's own: the root it was
-            // handed must witness the same source, so a runner never lends one window's
+            // handed must observation the same source, so a runner never lends one window's
             // History another window's folder.
-            let witnessed = match source {
+            let observed = match source {
                 HistorySourceRegistration::CheckedFiles { scope, source } => {
                     let root_registration =
                         crate::history_mode::capability::history_registration(root)?
@@ -388,12 +388,12 @@ impl HistoryRegistration {
                 }
                 _ => true,
             };
-            if !witnessed {
+            if !observed {
                 return Err(HistoryRegistrationError::UnsupportedOwner);
             }
         }
         let mut actual = Vec::new();
-        // An explicitly witnessed Files-only root does not claim its enclosing
+        // An explicitly observed Files-only root does not claim its enclosing
         // tab's UI state as file content. Descendant document owners still match
         // their own declared Domain sources under the normal bijection below.
         let external_only = self.sources.iter().all(|source| {

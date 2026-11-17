@@ -167,7 +167,7 @@ impl<M: ListModel> VirtualList<M> {
         self.reconcile_model(anchor.as_ref());
     }
 
-    /// Close the row standing open when its item left the list: what the person is reading
+    /// Close the row held open when its item left the list: what the person is reading
     /// where it stands is always a row of the list they see, so an item that goes — to another
     /// place, another query, away — closes with it.
     ///

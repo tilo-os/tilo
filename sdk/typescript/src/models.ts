@@ -692,8 +692,8 @@ export interface Usage {
 }
 
 export function usageOf(raw: Record<string, unknown>): Usage {
-  const standing = recordOf(raw.standing);
-  const usage = recordOf(standing.usage);
+  const subscription = recordOf(raw.subscription);
+  const usage = recordOf(subscription.usage);
   const workspaces = arrayOf(usage.workspaces).map((row) => ({
     workspace: String(row.workspace ?? ""),
     vmSeconds: intOf(row.vm_seconds) ?? 0,
@@ -703,7 +703,7 @@ export function usageOf(raw: Record<string, unknown>): Usage {
   }));
   return {
     host: String(raw.host ?? ""),
-    plan: textOf(standing.plan),
+    plan: textOf(subscription.plan),
     workspaces,
     vmSeconds: workspaces.reduce((total, row) => total + row.vmSeconds, 0),
     running: workspaces.filter((row) => row.running).map((row) => row.workspace),

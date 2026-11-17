@@ -26,7 +26,7 @@ fn invocation(value: &str) -> bool {
         && value != "00000000-0000-0000-0000-000000000000"
 }
 
-/// Inert correlation only; the broker must recover actual target custody.
+/// Inert correlation only; the broker must recover actual target ownership.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {

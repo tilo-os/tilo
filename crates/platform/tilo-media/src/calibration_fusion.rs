@@ -494,7 +494,7 @@ mod tests {
             );
         }
 
-        phase a_gross_error_needs_two_other_witnesses;
+        phase a_gross_error_needs_two_other_proofs;
         {
             let room = Room::living_room();
             let mut hearings = room

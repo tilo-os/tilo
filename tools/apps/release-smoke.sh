@@ -203,9 +203,9 @@ spotify() (
 # accept --help). An engine another engine chains on (`via:` the engine the
 # app loads) must arrive from the app or through that engine, which the app
 # loaded itself:
-# Browser's import engine carries its service sessions, whose custody comes
+# Browser's import engine carries its service sessions, whose ownership comes
 # from the accounts engine; on x86_64 Browser names only the import engine.
-# Settings' engine library carries the app itself, whose custody comes from
+# Settings' engine library carries the app itself, whose ownership comes from
 # the accounts engine.
 engines() (
   set -euo pipefail

@@ -632,7 +632,7 @@ impl<R: Resource> ResourceEnv<R> {
     /// [`Self::outbox`], where an entry is the outside half of the action
     /// that queued it: one an admitted invocation on this device queues runs
     /// at once under that invocation — `cx.invocation()` names it, and its
-    /// custody authorises what the handler does for it (a native host that
+    /// ownership authorises what the handler does for it (a native host that
     /// acts only on behalf of an invocation) — and the invocation completes
     /// only once its entries settled, failing with a failed one. Entries
     /// queued elsewhere, replayed or still pending after a restart run as

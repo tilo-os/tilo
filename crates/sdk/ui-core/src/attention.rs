@@ -1,4 +1,4 @@
-//! Attention, and the ledger: the two places a thing the system says can go.
+//! Attention, and the log: the two places a thing the system says can go.
 //!
 //! A person has two questions about what the system is doing — **what wants me?** and **what
 //! happened?** — and this module is both answers, kept apart on one rule ([`publish`]):
@@ -7,7 +7,7 @@
 //!   asks (icon *and* name), what it is about, since when, and **one** thing the person can do.
 //!   It never expires on its; it waits, is seen, is deferred (and the count of what is
 //!   deferred stays on screen) or is acted on. A row that cannot act is not a row.
-//! * something that **just happened** is written to the ledger ([`ledger`]): append-only,
+//! * something that **just happened** is written to the log ([`log`]): append-only,
 //!   attributed, never on a timer, never stealing focus, read by Activity's History beside the
 //!   workspace's changes.
 //!
@@ -29,13 +29,13 @@
 //! not to read. What disappears is the timer, not the message. The surface is reachable from
 //! anywhere: [`CHORD`], [`open`], and the count ([`unseen`]) a window's bar can show.
 
-mod ledger;
+mod outcome_log;
 mod pane;
 mod record;
 #[cfg(test)]
 mod tests;
 
-pub use ledger::{Entry, clear as clear_ledger, newest_first, search as search_ledger};
+pub use outcome_log::{Entry, clear as clear_log, newest_first, search as search_log};
 pub use pane::{Press, Presses, Stack, apply, pane, pill};
 pub use record::{
     Acted, Action, Item, ItemId, Notice, Owner, Published, SHOW_JOB, State, Target, Urgency, act,
@@ -76,16 +76,16 @@ pub fn watch(wake: WakeHandle) -> Watch {
     record::watch(wake)
 }
 
-/// The ledger's entries, oldest first: every outcome the system recorded.
+/// The log's entries, oldest first: every outcome the system recorded.
 #[must_use]
 pub fn entries() -> Vec<Entry> {
-    ledger::entries()
+    outcome_log::entries()
 }
 
-/// How many entries the ledger has.
+/// How many entries the log has.
 #[must_use]
 pub fn recorded() -> usize {
-    ledger::len()
+    outcome_log::len()
 }
 
 /// A registered watcher of the waiting stack; dropping it stops the wakes.

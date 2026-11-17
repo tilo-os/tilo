@@ -9,7 +9,7 @@
 use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 
-use tilo_desktop_surface::{PeerRead, Standing};
+use tilo_desktop_surface::{PeerRead, StreamState};
 use tilo_live::live::Track;
 use tilo_live::page::PageObject;
 use ui::floating_surface::{FloatingSurfaceClientMessage, FloatingSurfaceHostMessage, PaintPart};
@@ -495,8 +495,8 @@ fn a_shared_page_is_drawn_in_the_tab_the_watching_shell_lists_its_window_in() {
     let arriving = two.tile().expect("the tab holds the window's tile");
     assert!(arriving.page, "the tile draws the window's page");
     assert_eq!(
-        arriving.standing,
-        Standing::Started,
+        arriving.state,
+        StreamState::Started,
         "nothing of the page was handed over yet"
     );
 
@@ -518,7 +518,7 @@ fn a_shared_page_is_drawn_in_the_tab_the_watching_shell_lists_its_window_in() {
     let before = two.opened();
     let drawn = two.within(LINK, true, |two| {
         two.tile()
-            .is_some_and(|tile| tile.standing == Standing::Pictured)
+            .is_some_and(|tile| tile.state == StreamState::Pictured)
     });
     let opened = two.opened().saturating_sub(before);
     assert!(
@@ -637,8 +637,8 @@ fn a_page_that_only_started_is_not_said_to_be_pictured_or_sent() {
         two.said()
     );
     assert_eq!(
-        two.tile().map(|tile| tile.standing),
-        Some(Standing::Pictured),
+        two.tile().map(|tile| tile.state),
+        Some(StreamState::Pictured),
         "pictured is said of a tile that holds the page"
     );
     let received = two
@@ -701,7 +701,7 @@ fn the_app_of_a_shared_page_is_asked_for_it_on_its_own_connection() {
     assert!(
         two.within(LINK, false, |two| {
             two.tile()
-                .is_some_and(|tile| tile.standing == Standing::Pictured)
+                .is_some_and(|tile| tile.state == StreamState::Pictured)
         }),
         "the app handed its page over on its connection, and the watching shell's tile still \
          shows the arriving card:{}",
@@ -727,7 +727,7 @@ fn a_shared_page_is_said_to_be_pictured_in_the_pass_its_tile_takes_it() {
     let drawn = two.within(LINK, true, |two| {
         let held = two
             .tile()
-            .is_some_and(|tile| tile.standing == Standing::Pictured);
+            .is_some_and(|tile| tile.state == StreamState::Pictured);
         let said = two
             .received()
             .is_some_and(|stream| stream["pictured"].as_bool() == Some(true));
@@ -943,8 +943,8 @@ fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_shell() {
         two.said()
     );
     assert_eq!(
-        two.tile().map(|tile| tile.standing),
-        Some(Standing::Started),
+        two.tile().map(|tile| tile.state),
+        Some(StreamState::Started),
         "and the watching shell draws nothing of them"
     );
 
@@ -963,7 +963,7 @@ fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_shell() {
     assert!(
         two.within(LINK, false, |two| {
             two.tile()
-                .is_some_and(|tile| tile.standing == Standing::Pictured)
+                .is_some_and(|tile| tile.state == StreamState::Pictured)
         }),
         "a page of {} bytes was handed over in parts, and the watching shell's tile still shows \
          the arriving card; the app was asked {} times:{}",
@@ -1584,7 +1584,7 @@ fn a_page_shared_again_after_its_share_stopped_is_drawn_again() {
     let host_key = hex::encode(device(HOST).as_bytes());
     let drawn = |two: &Two| {
         two.tile()
-            .is_some_and(|tile| tile.page && tile.standing == Standing::Pictured)
+            .is_some_and(|tile| tile.page && tile.state == StreamState::Pictured)
             && two
                 .received()
                 .is_some_and(|stream| stream["pictured"] == true)

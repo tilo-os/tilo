@@ -1020,7 +1020,7 @@ impl NavList {
     }
 
     /// Bind each destination to its published typed action. Bound rows route
-    /// selection through host custody; unbound rows choose through
+    /// selection through host ownership; unbound rows choose through
     /// [`Self::on_view`].
     #[must_use]
     pub fn selection_actions(
@@ -2330,24 +2330,24 @@ pub use feed::NavFeed;
 mod tests;
 
 impl crate::widget::controls::ActionControls for NavList {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         let mut shared = self.shared.borrow_mut();
         for action in shared.selection_actions.values_mut() {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         for action in shared.section_add_actions.values_mut() {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
-        shared.bound.install_custody(domain, attachment);
+        shared.bound.attach(domain, attachment);
         if let Some(view) = shared.view.as_mut() {
-            view.choice.install_custody(domain, attachment);
+            view.choice.attach(domain, attachment);
         }
         drop(shared);
-        crate::widget::controls::install_control_custody(&mut *self.list, domain, attachment);
+        crate::widget::controls::attach_controls(&mut *self.list, domain, attachment);
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

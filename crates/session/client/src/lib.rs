@@ -24,7 +24,6 @@ pub mod arrivals;
 pub mod client;
 mod clock;
 pub mod content;
-pub mod custody;
 /// A device's entry into its person's workspaces: the one the CLI, agents, the API server and the
 /// page all take.
 pub mod device;
@@ -35,6 +34,7 @@ mod held_live;
 pub mod identity;
 pub mod link;
 pub mod membership;
+pub mod membership_check;
 pub mod message_policy;
 pub mod narration;
 pub mod network;
@@ -52,12 +52,12 @@ pub mod workspace_keys;
 
 pub use arrivals::Arrivals;
 pub use client::{Client, Presence};
-pub use custody::{MemoryPeerStore, PeerEntry, PeerStore};
 pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
 pub use link::{
     Entry, Events, Failure, FailureKind, InboundActions, Link, LocalState, PAGE_FAILURE_CODES,
     PeerStatus, Reports, TransportPhase,
 };
+pub use membership_check::{MemoryPeerStore, PeerEntry, PeerStore};
 pub use network::{
     Answer, CallFrame, CallPicture, CallShown, Closed, Cmd, Device, Event, Outbox, PageShown,
     Receipt, RecvTimeoutError, RosterDevice, SayPresence, Topic, Transport, TryRecvError,

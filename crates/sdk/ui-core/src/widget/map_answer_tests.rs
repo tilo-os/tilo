@@ -424,7 +424,7 @@ fn a_short_pair_asked_at_the_foot_is_panned_the_least() {
 /// A turn that stands whole in view moves nothing, however close it comes to the viewport's
 /// edge: the camera is the person's until something new is out of sight (`canvas.md` §7).
 #[test]
-fn an_answer_standing_in_view_moves_nothing() {
+fn an_answer_in_view_moves_nothing() {
     let _frame = crate::motion::pin_frame();
     let old = pointed((300.0, 100.0));
     let resting = old.camera();

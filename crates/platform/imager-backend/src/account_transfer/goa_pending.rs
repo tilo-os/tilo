@@ -4,7 +4,7 @@
 //! grant is only a credential for the service scopes it was actually granted:
 //! it is not proof that Mail, Calendar, Contacts or Files will accept it on the
 //! destination. This module therefore creates canonical pending accounts that
-//! name exactly the selected services, without copying source custody. An
+//! name exactly the selected services, without copying source ownership. An
 //! account the destination already holds with its own usable credential is
 //! left untouched, so a later Thunderbird import of the same mailbox cannot
 //! replace its authentication.
@@ -242,8 +242,8 @@ fn mail(
         return Ok((false, !usable));
     }
     let issuer = match selected.provider {
-        Provider::Google => account_custody::OAuthIssuer::Google,
-        Provider::Microsoft => account_custody::OAuthIssuer::Microsoft,
+        Provider::Google => account_credentials::OAuthIssuer::Google,
+        Provider::Microsoft => account_credentials::OAuthIssuer::Microsoft,
         _ => return Err(ConnectionError::InvalidConfiguration),
     };
     let mut config = issuer

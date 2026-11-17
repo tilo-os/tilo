@@ -165,7 +165,7 @@ impl Fixture {
         self
     }
 
-    /// The author's standing: their own key and their role, under the
+    /// The author's access: their own key and their role, under the
     /// workspace's grants.
     fn subjects(&self) -> Vec<Grantee> {
         vec![

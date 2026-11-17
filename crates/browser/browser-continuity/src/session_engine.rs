@@ -1,4 +1,4 @@
-//! Native session restart and cleanup custody, independent of the rendering host.
+//! Native session restart and cleanup ownership, independent of the rendering host.
 use crate::sessions::SessionCookies;
 use std::path::Path;
 
@@ -29,8 +29,8 @@ pub trait Profile: Send + 'static {
     fn cleanup_after_engine_exit(&mut self) -> std::io::Result<()>;
 }
 
-type CleanupCustody<E, P> = (E, P);
-type CleanupSlot<E, P> = std::sync::Arc<std::sync::Mutex<Option<CleanupCustody<E, P>>>>;
+type CleanupOwnership<E, P> = (E, P);
+type CleanupSlot<E, P> = std::sync::Arc<std::sync::Mutex<Option<CleanupOwnership<E, P>>>>;
 
 /// Origin storage is qualified by a cold reopen, not by a write callback in
 /// the first process. This worker retains the same profile lease throughout.
@@ -100,7 +100,7 @@ impl<E: Engine, P: Profile> NativeRestart<E, P> {
                 .is_none_or(std::thread::JoinHandle::is_finished)
     }
 
-    pub fn poll(&mut self) -> Option<Result<CleanupCustody<E, P>, ()>> {
+    pub fn poll(&mut self) -> Option<Result<CleanupOwnership<E, P>, ()>> {
         if !self.settled() || self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
             return None;
         }
@@ -170,11 +170,11 @@ impl<E: Engine, P: Profile> Drop for NativeRestart<E, P> {
 }
 
 /// Unexpected worker failure must preserve authority as well as the engine.
-struct RestartCustody<E: Engine, P: Profile> {
+struct RestartOwnership<E: Engine, P: Profile> {
     slot: CleanupSlot<E, P>,
-    payload: Option<CleanupCustody<E, P>>,
+    payload: Option<CleanupOwnership<E, P>>,
 }
-impl<E: Engine, P: Profile> RestartCustody<E, P> {
+impl<E: Engine, P: Profile> RestartOwnership<E, P> {
     fn store(&mut self) {
         if let Some(payload) = self.payload.take() {
             *self
@@ -184,7 +184,7 @@ impl<E: Engine, P: Profile> RestartCustody<E, P> {
         }
     }
 }
-impl<E: Engine, P: Profile> Drop for RestartCustody<E, P> {
+impl<E: Engine, P: Profile> Drop for RestartOwnership<E, P> {
     fn drop(&mut self) {
         if self.payload.is_some() {
             self.store();
@@ -204,43 +204,43 @@ fn restart_for_session_verification<E: Engine, P: Profile>(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
-    let mut custody = RestartCustody { slot, payload };
-    let Some((engine, profile)) = custody.payload.as_ref() else {
+    let mut ownership = RestartOwnership { slot, payload };
+    let Some((engine, profile)) = ownership.payload.as_ref() else {
         return Err(());
     };
     engine.shutdown_service_session().map_err(|_| ())?;
     if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-        return finish_cancelled_restart(&mut custody, done);
+        return finish_cancelled_restart(&mut ownership, done);
     }
     let replacement =
         E::reopen(profile.path().map_err(|_| ())?, &session.session_id).map_err(|_| ())?;
-    if let Some((engine, _)) = custody.payload.as_mut() {
+    if let Some((engine, _)) = ownership.payload.as_mut() {
         *engine = replacement.clone();
     }
     if let Some(waker) = waker {
         replacement.attach_waker(waker);
     }
     if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-        return finish_cancelled_restart(&mut custody, done);
+        return finish_cancelled_restart(&mut ownership, done);
     }
     replacement.verify(session).map_err(|_| ())?;
     if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-        return finish_cancelled_restart(&mut custody, done);
+        return finish_cancelled_restart(&mut ownership, done);
     }
-    custody.store();
+    ownership.store();
     Ok(())
 }
 
 fn finish_cancelled_restart<E: Engine, P: Profile>(
-    custody: &mut RestartCustody<E, P>,
+    ownership: &mut RestartOwnership<E, P>,
     done: &std::sync::atomic::AtomicBool,
 ) -> Result<(), ()> {
-    let Some((engine, profile)) = custody.payload.as_mut() else {
+    let Some((engine, profile)) = ownership.payload.as_mut() else {
         return Err(());
     };
     engine.shutdown_service_session().map_err(|_| ())?;
     profile.cleanup_after_engine_exit().map_err(|_| ())?;
-    custody.payload = None;
+    ownership.payload = None;
     done.store(true, std::sync::atomic::Ordering::Release);
     Ok(())
 }
@@ -273,15 +273,15 @@ pub fn cleanup_after_native_exit<E: Engine, P: Profile>(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
-            let mut custody = RestartCustody {
+            let mut ownership = RestartOwnership {
                 slot: worker_slot,
                 payload,
             };
-            if let Some((engine, profile)) = custody.payload.as_mut()
+            if let Some((engine, profile)) = ownership.payload.as_mut()
                 && engine.shutdown_service_session().is_ok()
                 && profile.cleanup_after_engine_exit().is_ok()
             {
-                custody.payload = None;
+                ownership.payload = None;
                 worker_done.store(true, std::sync::atomic::Ordering::Release);
             }
             if let Some(waker) = waker {
@@ -321,15 +321,15 @@ impl<E: Engine, P: Profile> NativeCleanup<E, P> {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
-            let mut custody = RestartCustody {
+            let mut ownership = RestartOwnership {
                 slot: self.slot.clone(),
                 payload,
             };
-            if let Some((engine, profile)) = custody.payload.as_mut()
+            if let Some((engine, profile)) = ownership.payload.as_mut()
                 && engine.shutdown_service_session().is_ok()
                 && profile.cleanup_after_engine_exit().is_ok()
             {
-                custody.payload = None;
+                ownership.payload = None;
                 self.done.store(true, std::sync::atomic::Ordering::Release);
             }
         }
@@ -483,14 +483,14 @@ impl<T: OpeningValue> Drop for Opening<T> {
     }
 }
 
-/// The local fence/reap/delete barrier, before the host revokes canonical custody.
+/// The local fence/reap/delete barrier, before the host revokes canonical ownership.
 pub struct Forget<E: Engine, P: Profile> {
     cleanup: std::sync::Arc<std::sync::Mutex<Option<NativeCleanup<E, P>>>>,
     receive: std::sync::mpsc::Receiver<Result<(), String>>,
 }
 impl<E: Engine, P: Profile> Forget<E, P> {
     /// # Errors
-    /// Returns retained cleanup custody if the worker cannot start.
+    /// Returns retained cleanup ownership if the worker cannot start.
     pub fn start(
         cleanup: Option<NativeCleanup<E, P>>,
         closed: impl FnOnce() -> Result<(), String> + Send + 'static,
@@ -645,9 +645,9 @@ mod tests {
         );
     }
     tilo_test_env::scenario! {
-        fn teardown_keeps_custody_until_it_is_confirmed;
+        fn teardown_keeps_ownership_until_it_is_confirmed;
 
-        phase failed_shutdown_keeps_profile_and_retries_under_same_custody;
+        phase failed_shutdown_keeps_profile_and_retries_under_same_ownership;
         {
             let state = Arc::new(State::default());
             state.refuse_shutdown.store(true, Ordering::Release);

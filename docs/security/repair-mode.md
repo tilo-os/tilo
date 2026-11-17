@@ -130,7 +130,7 @@ the passphrase never reaches `argv`.
 
 The **status report** is available without authenticating. It shows the booted
 generation, the composefs digest, whether the disk is encrypted, and the boot menu
-— all of which are already visible to someone standing at the boot menu, and all
+— all of which are already visible to someone access at the boot menu, and all
 of which someone diagnosing the machine needs before they can decide what to try.
 
 ### Why a check at all, when the disk is already open

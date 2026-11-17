@@ -2163,7 +2163,7 @@ impl PrintCentre {
     }
 }
 
-/// One print-centre test at a time: the waiting stack and the ledger are the process's, so
+/// One print-centre test at a time: the waiting stack and the log are the process's, so
 /// two running at once would see each other's rows.
 #[cfg(test)]
 pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {

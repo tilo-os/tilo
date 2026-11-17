@@ -35,8 +35,8 @@ use tilo_automation::SHORTCUTS_APP_ID;
 #[path = "agent_app_list_tests.rs"]
 mod agent_app_list_tests;
 #[cfg(test)]
-#[path = "governance_witness_tests.rs"]
-mod governance_witness_tests;
+#[path = "governance_approval_tests.rs"]
+mod governance_approval_tests;
 
 mod app_admission;
 mod directory;
@@ -96,7 +96,7 @@ pub(super) struct ConnectionActionHost {
     pub(super) state: Arc<AppBrokerState>,
     pub(super) own_peer: u64,
     /// The connection's revalidated admission: an application's own effect,
-    /// directed back to it, runs under this original caller's custody.
+    /// directed back to it, runs under this original caller's ownership.
     pub(super) origin: super::published_invocation::InvocationCaller,
 }
 
@@ -130,7 +130,7 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        // What this connection admitted outlives the ledger that answered it
+        // What this connection admitted outlives the log that answered it
         // while it ran: the journal still holds it, and says so after the
         // application, the connection or this process is gone.
         self.state.action_observe(caller, id).or_else(|| {
@@ -180,17 +180,17 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
-        self.state.request_witness(caller, None, request)
+        self.state.request_approval(caller, None, request)
     }
 }
 
 /// The broker's own api, as the [`ActionHost`](tilo_actions::remote::ActionHost)
 /// a shortcut run invokes its steps through. It stands for no connection:
 /// every step is admitted for the run's caller under its retained original
-/// custody, with the run's grants and confirmations still checked per step.
+/// ownership, with the run's grants and confirmations still checked per step.
 pub(super) struct BrokerApi {
     state: Arc<AppBrokerState>,
-    /// Protected dispatch custody, scoped to this run rather than a connection.
+    /// Protected dispatch ownership, scoped to this run rather than a connection.
     origin: Option<super::InvocationCaller>,
     /// The invocation changes the run had seen when it last observed, so
     /// a change between that observation and its next wait is not missed.
@@ -223,7 +223,7 @@ impl BrokerApi {
     ) -> Option<super::InvocationCaller> {
         self.origin.clone().map(|mut origin| {
             // Only the protected native variant binds a gesture to a UUID.
-            // Rebind that evidence for this step; never manufacture custody
+            // Rebind that evidence for this step; never manufacture ownership
             // from the Caller or change a signed caller certificate.
             if let super::InvocationCaller::NativePerson { invocation: id, .. } = &mut origin {
                 *id = invocation;
@@ -279,7 +279,7 @@ impl tilo_actions::remote::ActionHost for BrokerApi {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
-        self.state.request_witness(caller, None, request)
+        self.state.request_approval(caller, None, request)
     }
 }
 
@@ -1098,7 +1098,7 @@ impl AppBrokerState {
             .as_ref()
             .filter(|_| caller.device_public_key().is_none());
         let mut keymap = None;
-        // Listing must retain the same local custody as dispatch. A device key
+        // Listing must retain the same local ownership as dispatch. A device key
         // alone does not establish that this is a local rather than remote api.
         let host_steps = if super::host_steps::is_local_host_caller(caller, origin) {
             self.services.host_steps.clone()
@@ -1724,9 +1724,9 @@ impl AppBrokerState {
         self.action_invoke_with_origin(caller, own_peer, launch, None, request)
     }
 
-    /// [`Self::action_invoke`] for a caller whose original invocation custody
+    /// [`Self::action_invoke`] for a caller whose original invocation ownership
     /// the broker holds (an admitted local connection): an application
-    /// action it starts carries that custody to the application, so a scoped
+    /// action it starts carries that ownership to the application, so a scoped
     /// effect runs under its original caller rather than without one.
     pub(super) fn action_invoke_with_origin(
         self: &Arc<Self>,
@@ -1742,7 +1742,7 @@ impl AppBrokerState {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
-        // Host-service replay is an observation under the original custody,
+        // Host-service replay is an observation under the original ownership,
         // not another dispatch through a possibly changed live catalogue.
         if let Some(origin) = origin {
             match self.host_action_replay(caller, origin, request) {
@@ -1757,7 +1757,7 @@ impl AppBrokerState {
             .starts_with(super::canonical_route::PROVIDER_PREFIX)
         {
             // Exact UUID/request replay precedes live selection checks. A retired
-            // custodian must not turn an admitted request into another dispatch.
+            // owner must not turn an admitted request into another dispatch.
             if let Some(job) = self.remote_job(caller, &request.invocation) {
                 let replay = self.reserve_invocation(caller, request);
                 return Pending::ready(replay.map(|_| self.receipt_for(request.invocation, job)));
@@ -1807,7 +1807,7 @@ impl AppBrokerState {
                 return Pending::ready(replay.map(|_| self.receipt_for(request.invocation, job)));
             }
             // Admission can sign and durably record an invocation. Keep only
-            // inert custody on the UI turn; the broker revalidates it at dispatch.
+            // inert ownership on the UI turn; the broker revalidates it at dispatch.
             let (reply, response) = pending();
             return match self.action_directory_request_queue().enqueue(
                 super::ActionDirectoryBridgeRequest::InvokeEager(Box::new(
@@ -1850,8 +1850,8 @@ impl AppBrokerState {
         let destination = match self.admit_launchable(caller, request) {
             Ok(admitted) => admitted,
             Err(error) => {
-                if let Ok(mut ledger) = self.remote_invocations.lock() {
-                    ledger.abandon(&request.invocation);
+                if let Ok(mut log) = self.remote_invocations.lock() {
+                    log.abandon(&request.invocation);
                 }
                 return Pending::ready(Err(error));
             }
@@ -1859,8 +1859,8 @@ impl AppBrokerState {
         let runtime = match super::launchable::delivery_runtime() {
             Ok(runtime) => runtime,
             Err(error) => {
-                if let Ok(mut ledger) = self.remote_invocations.lock() {
-                    ledger.abandon(&request.invocation);
+                if let Ok(mut log) = self.remote_invocations.lock() {
+                    log.abandon(&request.invocation);
                 }
                 return Pending::ready(Err(ActionHostError::Unavailable {
                     reason: format!("the launch could not start: {error}"),
@@ -1880,19 +1880,19 @@ impl AppBrokerState {
                 .relaunch_and_deliver(&completer, &caller, &destination, origin.as_ref(), &request)
                 .await;
             let result = match state.remote_invocations.lock() {
-                Ok(mut ledger) => match started {
+                Ok(mut log) => match started {
                     Ok(job) => {
-                        ledger.complete(&request.invocation, job);
-                        drop(ledger);
+                        log.complete(&request.invocation, job);
+                        drop(log);
                         Ok(state.receipt_for(request.invocation, job))
                     }
                     Err(error) => {
-                        ledger.abandon(&request.invocation);
+                        log.abandon(&request.invocation);
                         Err(error)
                     }
                 },
                 Err(_) => Err(ActionHostError::Unavailable {
-                    reason: "the invocation ledger is unavailable".into(),
+                    reason: "the invocation log is unavailable".into(),
                 }),
             };
             completer.complete(result);
@@ -2257,7 +2257,7 @@ impl AppBrokerState {
         self: &Arc<Self>,
         completer: &Completer<T>,
         caller: &Caller,
-        custody: (Option<&super::InvocationCaller>, &InvokeRequest),
+        ownership: (Option<&super::InvocationCaller>, &InvokeRequest),
         current: LaunchDestination,
         permit: tokio::sync::OwnedSemaphorePermit,
         deadline: (tokio::time::Instant, &str),
@@ -2281,8 +2281,8 @@ impl AppBrokerState {
         let state = Arc::clone(self);
         let place = self.launch_place(caller, &workspace_id, None);
         let caller = caller.clone();
-        let origin = custody.0.cloned();
-        let parent = custody.1.clone();
+        let origin = ownership.0.cloned();
+        let parent = ownership.1.clone();
         let mut launch = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             state.launch_retained_child(&caller, origin.as_ref(), &parent, &current, &place)
@@ -2305,7 +2305,7 @@ impl AppBrokerState {
         Ok(())
     }
 
-    /// Recheck the original signed custody while an asynchronous launch waits.
+    /// Recheck the original signed ownership while an asynchronous launch waits.
     /// The numeric dispatcher checks it again when capturing the actual offer.
     pub(super) fn check_launch_origin(
         &self,
@@ -2326,7 +2326,7 @@ impl AppBrokerState {
                     return Err(ActionHostError::NotPermitted);
                 }
                 // A durable barrier can outlive the synchronous admission
-                // memo too. Verify original custody without borrowing that
+                // memo too. Verify original ownership without borrowing that
                 // earlier admission, even on the same dispatch thread.
                 self.checked_policy_time(original.policy_time.as_ref())
                     .map_err(refusal)?;
@@ -2366,7 +2366,7 @@ impl AppBrokerState {
                 }
                 // Revalidation checks current certificate and workspace policy, but
                 // carries the registration forward without checking its liveness.
-                // Local custody must still name the exact private connection.
+                // Local ownership must still name the exact private connection.
                 if let Some(registration) = &admitted.worker_registration {
                     let workers = self
                         .host_workers
@@ -2423,16 +2423,16 @@ impl AppBrokerState {
         Ok(())
     }
 
-    /// Durable admission can block: recheck original custody and sample the
+    /// Durable admission can block: recheck original ownership and sample the
     /// committed workspace and clock again immediately before the host effect.
     fn reauthorize_launch_effect(
         &self,
-        custody: (&Caller, Option<&super::InvocationCaller>, &str),
+        ownership: (&Caller, Option<&super::InvocationCaller>, &str),
         admitted: &super::host_action_admission::AdmittedHostAction,
         app_id: &str,
     ) -> Result<Workspace, ActionHostError> {
         self.reauthorize_launch_effect_as(
-            custody,
+            ownership,
             admitted,
             (app_id, tilo_action_policy::ActionKind::Undoable),
         )
@@ -2442,11 +2442,11 @@ impl AppBrokerState {
     /// on the app ([`launch_kind`]).
     fn reauthorize_launch_effect_as(
         &self,
-        custody: (&Caller, Option<&super::InvocationCaller>, &str),
+        ownership: (&Caller, Option<&super::InvocationCaller>, &str),
         admitted: &super::host_action_admission::AdmittedHostAction,
         (app_id, kind): (&str, tilo_action_policy::ActionKind),
     ) -> Result<Workspace, ActionHostError> {
-        let (caller, origin, workspace) = custody;
+        let (caller, origin, workspace) = ownership;
         let result = self
             .current_framework_authority(caller, origin, workspace)
             .and_then(|(workspace, policy, now)| {
@@ -2745,8 +2745,8 @@ impl AppBrokerState {
             Ok(Started::Staged(staged)) => {
                 // A retry finds the job at once, and its answer waits for
                 // the same write (`admitted_receipt`).
-                if let Ok(mut ledger) = self.remote_invocations.lock() {
-                    ledger.complete(&invocation, staged.id());
+                if let Ok(mut log) = self.remote_invocations.lock() {
+                    log.complete(&invocation, staged.id());
                 }
                 let (receipt, answered) = pending();
                 let state = Arc::clone(self);
@@ -2803,21 +2803,21 @@ impl AppBrokerState {
         invocation: tilo_actions::InvocationId,
         started: Result<u64, ActionHostError>,
     ) -> Result<InvocationReceipt, ActionHostError> {
-        let mut ledger =
-            self.remote_invocations
-                .lock()
-                .map_err(|_| ActionHostError::Unavailable {
-                    reason: "the invocation ledger is unavailable".into(),
-                })?;
+        let mut log = self
+            .remote_invocations
+            .lock()
+            .map_err(|_| ActionHostError::Unavailable {
+                reason: "the invocation log is unavailable".into(),
+            })?;
         match started {
             Ok(job) => {
-                ledger.complete(&invocation, job);
-                drop(ledger);
+                log.complete(&invocation, job);
+                drop(log);
                 Ok(self.receipt_for(invocation, job))
             }
             Err(error) => {
-                ledger.abandon(&invocation);
-                drop(ledger);
+                log.abandon(&invocation);
+                drop(log);
                 Err(error)
             }
         }
@@ -2904,7 +2904,7 @@ impl AppBrokerState {
             argument.as_deref(),
             &actor,
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.member(), &workspace, original_request),
+            &self.approval_binding(actor.member(), &workspace, original_request),
         )?;
         self.start_invocation_confirmed_for_origin(
             peer_id,
@@ -3020,7 +3020,7 @@ impl AppBrokerState {
         app: &str,
         descriptor: &ActionDescriptor,
         (_argument, confirmation): (Option<&str>, Option<&Confirmation>),
-        witnessed: bool,
+        approved: bool,
     ) -> Result<(), ActionHostError> {
         let (answer, spent) = policy.action_verdict_in(
             workspace,
@@ -3046,7 +3046,7 @@ impl AppBrokerState {
                 return Err(ActionHostError::NotPermitted);
             }
             tilo_action_policy::Answer::Ask => match confirmation {
-                Some(Confirmation::Witnessed(_)) => witnessed,
+                Some(Confirmation::Approved(_)) => approved,
                 Some(Confirmation::Confirmed) => policy.direct(),
                 _ => false,
             },
@@ -3066,21 +3066,21 @@ impl AppBrokerState {
         descriptor: &ActionDescriptor,
         argument: Option<&str>,
         confirmation: Option<&Confirmation>,
-        witnessed: bool,
+        approved: bool,
     ) -> bool {
         let policy = descriptor.contract.confirmation_for_argument(argument);
         if policy == tilo_actions::ConfirmationPolicy::None {
             return true;
         }
         let own = actor.direct().then_some(confirmation).flatten();
-        witnessed || confirmation_satisfied(&policy, own)
+        approved || confirmation_satisfied(&policy, own)
     }
 
     /// Launch `app_id` into `workspace`, optionally opening content-addressed
     /// bytes read-only, and record the terminal outcome as an invocation.
     pub(super) fn launch_application(
         &self,
-        custody: (&Caller, Option<&super::InvocationCaller>, &str),
+        ownership: (&Caller, Option<&super::InvocationCaller>, &str),
         admitted: super::host_action_admission::AdmittedHostAction,
         app_id: &str,
         content: crate::services::LaunchContent<'_>,
@@ -3100,7 +3100,7 @@ impl AppBrokerState {
             .ok_or_else(|| refusal("application launch unsupported".into()))?;
         let id = admitted.id;
         let invocation = admitted.invocation;
-        let workspace = self.reauthorize_launch_effect(custody, &admitted, app_id)?;
+        let workspace = self.reauthorize_launch_effect(ownership, &admitted, app_id)?;
         match launcher.launch_content(app_id, &workspace, content, place) {
             // Answered with the instance it started, once that instance
             // connects with the launch's ticket and publishes.
@@ -3131,7 +3131,7 @@ impl AppBrokerState {
     )]
     pub(super) fn close_application(
         &self,
-        custody: (&Caller, Option<&super::InvocationCaller>, &str),
+        ownership: (&Caller, Option<&super::InvocationCaller>, &str),
         admitted: super::host_action_admission::AdmittedHostAction,
         app_id: &str,
     ) -> Result<u64, ActionHostError> {
@@ -3143,7 +3143,7 @@ impl AppBrokerState {
             .ok_or_else(|| refusal("closing applications is unsupported on this host".into()))?;
         let id = admitted.id;
         let invocation = admitted.invocation;
-        let workspace = self.reauthorize_launch_effect(custody, &admitted, app_id)?;
+        let workspace = self.reauthorize_launch_effect(ownership, &admitted, app_id)?;
         let update = match launcher.close(app_id, &workspace) {
             Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
@@ -3163,7 +3163,7 @@ impl AppBrokerState {
         Ok(id)
     }
 
-    /// The request as the idempotency ledger identifies it. The confirmation
+    /// The request as the idempotency log identifies it. The confirmation
     /// it carries is evidence an admission already used, not part of the
     /// invocation: a retry carrying another grant — or none, as a caller
     /// that already saw the answer sends — is the same invocation and gets
@@ -3175,7 +3175,7 @@ impl AppBrokerState {
         }
     }
 
-    /// Reserves `request`'s invocation in the idempotency ledger, keyed by
+    /// Reserves `request`'s invocation in the idempotency log, keyed by
     /// [`Self::invocation_identity`].
     pub(crate) fn reserve_invocation(
         &self,
@@ -3185,7 +3185,7 @@ impl AppBrokerState {
         self.remote_invocations
             .lock()
             .map_err(|_| ActionHostError::Unavailable {
-                reason: "the invocation ledger is unavailable".into(),
+                reason: "the invocation log is unavailable".into(),
             })?
             .reserve(caller, &Self::invocation_identity(request))
     }
@@ -3196,7 +3196,7 @@ impl AppBrokerState {
         self.remote_invocations
             .lock()
             .ok()
-            .and_then(|ledger| ledger.get(caller, id).copied())
+            .and_then(|log| log.get(caller, id).copied())
     }
 
     /// The latest state of an invocation `caller` admitted.
@@ -3627,7 +3627,7 @@ mod app_close_tests {
             assert_eq!(launcher.closed.lock().unwrap().len(), 1);
         }
 
-        phase close_requires_original_custody_before_calling_the_launcher;
+        phase close_requires_original_ownership_before_calling_the_launcher;
         {
             let launcher = Arc::new(Launcher {
                 closes: true,
@@ -3961,7 +3961,7 @@ mod device_pairing_tests {
         // A remote device, or a caller confined to no workspace, is never offered
         // pairing on this machine.
         let super::super::InvocationCaller::Local { admitted, .. } = &fixture.origin else {
-            panic!("the settings fixture retains local custody")
+            panic!("the settings fixture retains local ownership")
         };
         let certificate = admitted.certificate.as_ref().unwrap();
         let remote =

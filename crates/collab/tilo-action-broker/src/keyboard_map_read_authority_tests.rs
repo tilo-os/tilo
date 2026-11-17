@@ -29,7 +29,7 @@ impl tracing::Subscriber for KeyboardReadBridgeProbe {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witness() {
+async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_approval() {
     use std::{os::fd::IntoRawFd, os::unix::fs::PermissionsExt as _};
     use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
     use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
@@ -229,12 +229,12 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             foreign.actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("unrelated-same-role-member"));
             assert!(
                 authorize(&foreign).is_err(),
-                "caller labels cannot replace broker custody"
+                "caller labels cannot replace broker ownership"
             );
             lease.check().unwrap();
             let (replacement, replacement_authorize) = broker
                 .connect_local_worker_with_authorizer(env.route.clone(), &env.cert).unwrap();
-            assert!(replacement_authorize(&delivered).is_err(), "same app/certificate/route on another private registration cannot borrow original custody");
+            assert!(replacement_authorize(&delivered).is_err(), "same app/certificate/route on another private registration cannot borrow original ownership");
             lease.check().unwrap();
             let output = loop {
                 scene.reset();

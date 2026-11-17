@@ -181,7 +181,7 @@ tilo-agent-session = { path = "../../agent/agent-session", optional = true }
 ush = { path = "../../runtime/ush", optional = true }
 legacy-vm = { path = "../../runtime/legacy-vm", optional = true }
 # What the host's account standing is read from: its plans file and the
-# ledger of the Browser page actions this host ran for it.
+# log of the Browser page actions this host ran for it.
 tilo-host-account = { path = "../tilo-host-account", optional = true }
 # Who may close, move or rename what is on a workspace's shared desktop, and the
 # strips a persistent workspace's shared desktop starts with.

@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tilo_action_policy::Standing;
+use tilo_action_policy::MemberAccess;
 use tilo_app::framework::WorkspaceResource;
 use tilo_app::tilo_workspace_emoji::{
     EmojiImage, OWNER, WorkspaceEmoji as Record, workspace_emoji as actions,
@@ -251,7 +251,7 @@ impl Emoji {
             return open.record.clone();
         }
         drop(held);
-        let context = PermissionContext::from_standing(Standing::person(
+        let context = PermissionContext::from_access(MemberAccess::person(
             workspace.policy.clone(),
             person.clone(),
         ))

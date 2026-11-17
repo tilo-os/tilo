@@ -1,4 +1,4 @@
-//! Typed backend seam shared by native grant owners and guarded RPC relays.
+//! Typed backend boundary shared by native grant owners and guarded RPC relays.
 //! These objects never encode credentials, groups, native grants or root claims.
 use crate::workspace_server::WorkspaceFileBackend;
 use crate::{EntryName, OpenMode};

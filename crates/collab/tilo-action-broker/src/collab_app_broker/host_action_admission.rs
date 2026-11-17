@@ -39,7 +39,7 @@ fn unavailable(reason: impl Into<String>) -> ActionHostError {
 }
 
 impl AppBrokerState {
-    /// Preserve original caller custody and UUID, and durably sign admission
+    /// Preserve original caller ownership and UUID, and durably sign admission
     /// before allowing a host service's first side effect.
     pub(super) fn admit_host_action(
         &self,
@@ -215,10 +215,10 @@ impl AppBrokerState {
                 }
             }
             None => {
-                // A transport key is not retained certificate custody. Do not
+                // A transport key is not retained certificate ownership. Do not
                 // silently downgrade a certified caller to actor-only ownership.
                 // A host with a device or native certificates serves everyone
-                // through retained custody, so a caller that arrives with no
+                // through retained ownership, so a caller that arrives with no
                 // original admission is refused rather than downgraded.
                 if self.services.local_person.is_some()
                     || self.services.native_certificates.is_some()
@@ -374,7 +374,7 @@ impl AppBrokerState {
             );
             return Err(ActionHostError::NotPermitted);
         }
-        // Legacy app-local custody cannot have admitted a signed host action.
+        // Legacy app-local ownership cannot have admitted a signed host action.
         // Leave its ordinary application dispatch path unchanged.
         if matches!(origin, InvocationCaller::Local { admitted, .. } if admitted.certificate.is_none())
         {
@@ -440,13 +440,13 @@ impl AppBrokerState {
             self.policy_now_ns().map_err(unavailable)? / 1_000_000_000,
         )
         .map_err(unavailable)?;
-        let mut ledger = self
+        let mut log = self
             .remote_invocations
             .lock()
-            .map_err(|_| unavailable("invocation ledger unavailable"))?;
-        ledger.reserve(caller, &Self::invocation_identity(request))?;
-        ledger.complete(&request.invocation, record.wire_id);
-        drop(ledger);
+            .map_err(|_| unavailable("invocation log unavailable"))?;
+        log.reserve(caller, &Self::invocation_identity(request))?;
+        log.complete(&request.invocation, record.wire_id);
+        drop(log);
         self.record_completion(record.wire_id, record.key.owner, record.update.clone());
         Ok(Some(
             tilo_actions::remote::InvocationState::new(request.invocation, record.update).receipt(),

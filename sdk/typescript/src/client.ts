@@ -41,7 +41,7 @@ export interface TiloOptions {
    * `RateLimited` at once).
    */
   retryDeadlineMs?: number;
-  /** The seam under the API: an API server over `fetch` unless you pass one. */
+  /** The boundary under the API: an API server over `fetch` unless you pass one. */
   transport?: Transport;
 }
 

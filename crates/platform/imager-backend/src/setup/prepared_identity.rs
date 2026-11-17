@@ -1,4 +1,4 @@
-//! Durable installer identity authority. Unsupported hosts never mint custody.
+//! Durable installer identity authority. Unsupported hosts never mint ownership.
 use std::io;
 #[path = "prepared_identity/files.rs"]
 mod files;
@@ -38,11 +38,11 @@ pub fn storage_for_session() -> tilo_identity_host::provisioning::IdentityStorag
 fn unsupported() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
-        "Installer identity custody is unavailable on this host",
+        "Installer identity storage is unavailable on this host",
     )
 }
 
-/// Refuse before publishing restart records on hosts without identity custody.
+/// Refuse before publishing restart records on hosts without identity storage.
 pub fn require_supported() -> io::Result<()> {
     #[cfg(unix)]
     {

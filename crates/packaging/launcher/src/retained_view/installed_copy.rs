@@ -117,7 +117,7 @@ fn check_secret(file: &File) -> io::Result<()> {
         || seals & SEALS != SEALS
     {
         return Err(refused(
-            "installed Copy secret lacks sealed anonymous root custody",
+            "installed Copy secret lacks sealed anonymous root ownership",
         ));
     }
     Ok(())
@@ -359,7 +359,7 @@ impl RootConsumerChannel {
     }
 }
 
-struct IssueCustody {
+struct IssueOwnership {
     channel: RootConsumerChannel,
     recipient: CopyRecipient,
     authority: Arc<dyn ServiceAuthority>,
@@ -372,7 +372,7 @@ struct IssueCustody {
     delivered: bool,
     unusable: bool,
 }
-impl IssueCustody {
+impl IssueOwnership {
     fn check(&self) -> io::Result<()> {
         own_helper()?;
         self.authority.check()?;
@@ -401,7 +401,7 @@ impl IssueCustody {
 
 /// Root retains this before ANY archive or secret descriptor can be delivered.
 pub struct InstalledCopyIssue {
-    custody: Option<Box<IssueCustody>>,
+    ownership: Option<Box<IssueOwnership>>,
 }
 impl RootConsumerChannel {
     /// Shape-only metadata cannot create this channel: its constructor still requires mutual QPE from
@@ -425,7 +425,7 @@ impl RootConsumerChannel {
                 .map(ArchiveFacts::measure)
                 .transpose()?,
         };
-        let custody = Box::new(IssueCustody {
+        let ownership = Box::new(IssueOwnership {
             channel: self,
             recipient,
             authority,
@@ -438,9 +438,9 @@ impl RootConsumerChannel {
             delivered: false,
             unusable: false,
         });
-        custody.check()?;
+        ownership.check()?;
         Ok(InstalledCopyIssue {
-            custody: Some(custody),
+            ownership: Some(ownership),
         })
     }
 }
@@ -449,47 +449,47 @@ impl InstalledCopyIssue {
     pub fn retirement_pending() -> bool {
         UNKNOWN_DELIVERY.load(std::sync::atomic::Ordering::Acquire)
     }
-    fn custody(&self) -> io::Result<&IssueCustody> {
-        self.custody
+    fn ownership(&self) -> io::Result<&IssueOwnership> {
+        self.ownership
             .as_deref()
             .ok_or_else(|| refused("installed Copy issue retired"))
     }
-    /// Returns the actual retained launch declaration after reattesting its custody.
+    /// Returns the actual retained launch declaration after reattesting its ownership.
     pub fn declaration(&self) -> io::Result<&CopyDeclaration> {
-        let custody = self.custody()?;
-        custody.check()?;
-        Ok(&custody.receipt.declaration)
+        let ownership = self.ownership()?;
+        ownership.check()?;
+        Ok(&ownership.receipt.declaration)
     }
     /// Sends bounded expectations and read-only files through this exact socket.
     pub fn deliver(&mut self) -> io::Result<()> {
-        let custody = self
-            .custody
+        let ownership = self
+            .ownership
             .as_mut()
             .ok_or_else(|| refused("Copy issue retired"))?;
-        custody.check()?;
-        if custody.delivered || custody.possible_delivery {
+        ownership.check()?;
+        if ownership.delivered || ownership.possible_delivery {
             return Err(refused("installed Copy delivery already attempted"));
         }
         let result = (|| {
             let mut io = Handoff::new(
-                &mut custody.channel.stream,
-                &custody.cancellation,
+                &mut ownership.channel.stream,
+                &ownership.cancellation,
                 Duration::from_secs(30),
             )?;
-            send_json(&mut io, &custody.receipt)?;
+            send_json(&mut io, &ownership.receipt)?;
             for (index, file) in [
-                (80, Some(&custody.secret)),
-                (81, custody.home.as_ref()),
-                (82, custody.applications.as_ref()),
+                (80, Some(&ownership.secret)),
+                (81, ownership.home.as_ref()),
+                (82, ownership.applications.as_ref()),
             ] {
                 let Some(file) = file else { continue };
-                custody.authority.check()?;
-                if !custody.channel.peer.current() {
+                ownership.authority.check()?;
+                if !ownership.channel.peer.current() {
                     return Err(refused("Copy receiver stopped"));
                 }
                 // Conservative BEFORE syscall: interrupted sendmsg may have delivered a descriptor
                 // even without its acknowledgment.
-                custody.possible_delivery = true;
+                ownership.possible_delivery = true;
                 io.retry(libc::POLLOUT, |stream| {
                     runtime_portal::fd_transport::send_with_fd(
                         stream.as_fd(),
@@ -506,58 +506,58 @@ impl InstalledCopyIssue {
             Ok(())
         })();
         if result.is_err() {
-            custody.unusable = true;
+            ownership.unusable = true;
         } else {
-            custody.delivered = true;
+            ownership.delivered = true;
         }
         result?;
-        custody.check()
+        ownership.check()
     }
     /// Same authenticated stream only; serialized commands/events remain the installed app's closed
     /// semantic vocabulary.
     pub fn send<T: serde::Serialize>(&mut self, value: &T) -> io::Result<()> {
-        let custody = self
-            .custody
+        let ownership = self
+            .ownership
             .as_mut()
             .ok_or_else(|| refused("Copy issue retired"))?;
-        custody.check()?;
-        if !custody.delivered {
+        ownership.check()?;
+        if !ownership.delivered {
             return Err(refused("Copy archives not delivered"));
         }
         let result = Handoff::new(
-            &mut custody.channel.stream,
-            &custody.cancellation,
+            &mut ownership.channel.stream,
+            &ownership.cancellation,
             Duration::from_secs(10),
         )
         .and_then(|mut io| send_json(&mut io, value));
         if result.is_err() {
-            custody.unusable = true;
+            ownership.unusable = true;
         }
         result?;
-        custody.check()
+        ownership.check()
     }
-    /// # Errors Refuses invalid or retired custody; reports cancellation, malformed frames, decoding
+    /// # Errors Refuses invalid or retired ownership; reports cancellation, malformed frames, decoding
     /// errors and failed or timed-out transfers.
     pub fn receive<T: serde::de::DeserializeOwned>(&mut self) -> io::Result<T> {
-        let custody = self
-            .custody
+        let ownership = self
+            .ownership
             .as_mut()
             .ok_or_else(|| refused("Copy issue retired"))?;
-        custody.check()?;
-        if !custody.delivered {
+        ownership.check()?;
+        if !ownership.delivered {
             return Err(refused("Copy archives not delivered"));
         }
         let result = Handoff::new(
-            &mut custody.channel.stream,
-            &custody.cancellation,
+            &mut ownership.channel.stream,
+            &ownership.cancellation,
             Duration::from_secs(30),
         )
         .and_then(|mut io| receive_json(&mut io));
         if result.is_err() {
-            custody.unusable = true;
+            ownership.unusable = true;
         }
         let value = result?;
-        custody.check()?;
+        ownership.check()?;
         Ok(value)
     }
     /// Idle polling does not consume a frame or impose an import deadline.
@@ -568,16 +568,16 @@ impl InstalledCopyIssue {
         if budget > Duration::from_secs(1) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let custody = self
-            .custody
+        let ownership = self
+            .ownership
             .as_mut()
             .ok_or_else(|| refused("Copy issue retired"))?;
-        custody.check()?;
-        if !custody.delivered {
+        ownership.check()?;
+        if !ownership.delivered {
             return Err(refused("Copy archives not delivered"));
         }
         let mut descriptor = libc::pollfd {
-            fd: custody.channel.stream.as_raw_fd(),
+            fd: ownership.channel.stream.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
@@ -591,56 +591,57 @@ impl InstalledCopyIssue {
         if ready < 0 {
             return Err(io::Error::last_os_error());
         }
-        custody.check()?;
+        ownership.check()?;
         if ready == 0 {
             return Ok(None);
         }
         let result = Handoff::new(
-            &mut custody.channel.stream,
-            &custody.cancellation,
+            &mut ownership.channel.stream,
+            &ownership.cancellation,
             Duration::from_secs(10),
         )
         .and_then(|mut io| receive_json(&mut io));
         if result.is_err() {
-            custody.unusable = true;
+            ownership.unusable = true;
         }
         let value = result?;
-        custody.check()?;
+        ownership.check()?;
         Ok(Some(value))
     }
     /// Cleanup only: stop the exact private receiver channel even when source authorization has been
     /// revoked.
     pub fn cancel_receiver(&mut self) -> io::Result<()> {
         own_helper()?;
-        let custody = self
-            .custody
+        let ownership = self
+            .ownership
             .as_mut()
             .ok_or_else(|| refused("Copy issue retired"))?;
-        custody.unusable = true;
-        custody.channel.stream.shutdown(std::net::Shutdown::Both)
+        ownership.unusable = true;
+        ownership.channel.stream.shutdown(std::net::Shutdown::Both)
     }
     /// Only actual authenticated task death releases possibly delivered output.
     pub fn retire(&mut self) -> io::Result<bool> {
-        let custody = self.custody()?;
+        let ownership = self.ownership()?;
         own_helper()?;
-        if custody.possible_delivery && !peer_stopped(&custody.channel.peer)? {
+        if ownership.possible_delivery && !peer_stopped(&ownership.channel.peer)? {
             return Ok(false);
         }
-        self.custody.take();
+        self.ownership.take();
         Ok(true)
     }
 }
 impl Drop for InstalledCopyIssue {
     fn drop(&mut self) {
-        if let Some(custody) = self.custody.take() {
-            // Signal cancellation before parking custody.
-            let _ = custody.channel.stream.shutdown(std::net::Shutdown::Both);
-            if custody.possible_delivery && !matches!(peer_stopped(&custody.channel.peer), Ok(true))
+        if let Some(ownership) = self.ownership.take() {
+            // Signal cancellation before parking ownership.
+            let _ = ownership.channel.stream.shutdown(std::net::Shutdown::Both);
+            if ownership.possible_delivery
+                && !matches!(peer_stopped(&ownership.channel.peer), Ok(true))
             {
-                // Never silently withdraw source/output custody on an unknown delivery or receiver
+                // Never silently withdraw source/output ownership on an unknown delivery or receiver
                 // state.
                 UNKNOWN_DELIVERY.store(true, std::sync::atomic::Ordering::Release);
-                let _ = Box::leak(custody);
+                let _ = Box::leak(ownership);
             }
         }
     }
@@ -773,12 +774,12 @@ impl ReceivedInstalledCopy {
         self.check()?;
         self.applications.as_ref().map(File::try_clone).transpose()
     }
-    /// Refuses invalid receive custody or returns the sealed-secret descriptor duplication error.
+    /// Refuses invalid receive ownership or returns the sealed-secret descriptor duplication error.
     pub fn secret(&self) -> io::Result<File> {
         self.check()?;
         self.secret.try_clone()
     }
-    /// # Errors Refuses retired or invalid custody and unavailable delivery; reports cancellation,
+    /// # Errors Refuses retired or invalid ownership and unavailable delivery; reports cancellation,
     /// serialization and failed or timed-out frame transfers.
     pub fn send<T: serde::Serialize>(&mut self, value: &T) -> io::Result<()> {
         self.check()?;

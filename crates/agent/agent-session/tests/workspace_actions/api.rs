@@ -384,7 +384,7 @@ async fn a_key_works_through_the_api_on_the_relay_and_ends_when_revoked() {
     };
     let (status, read) = account.post(usage(6)).await;
     assert_eq!(status, 200, "{read}");
-    let rows = read["result"]["structuredContent"]["fields"]["standing"]["usage"]["workspaces"]
+    let rows = read["result"]["structuredContent"]["fields"]["subscription"]["usage"]["workspaces"]
         .as_array()
         .cloned()
         .unwrap_or_default();

@@ -110,7 +110,7 @@ fn write_resource(store: &Store, app: &str, workspace: &str, doc: &mut AutoCommi
     drop(lease);
 }
 
-/// What the person's opens of an app asked for, as the session's own action seam receives them.
+/// What the person's opens of an app asked for, as the session's own action service receives them.
 #[derive(Default)]
 struct Opens(
     Mutex<

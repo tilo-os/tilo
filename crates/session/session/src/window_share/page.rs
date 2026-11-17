@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use iroh::EndpointId;
 use tilo_desktop_model::TabId;
-use tilo_desktop_surface::{DesktopHandle, Standing};
+use tilo_desktop_surface::{DesktopHandle, StreamState};
 use tilo_live::live::Track;
 use tilo_live::page::PageObject;
 
@@ -81,7 +81,7 @@ impl WindowShares {
             let pictured = stream.shown
                 && shell
                     .peer_stream_read(*peer, *surface)
-                    .is_some_and(|tile| tile.standing == Standing::Pictured);
+                    .is_some_and(|tile| tile.state == StreamState::Pictured);
             changed |= pictured != stream.pictured;
             stream.pictured = pictured;
         }

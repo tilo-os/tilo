@@ -22,7 +22,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # `standalone_state_dir` come from the CLI SDK, which is also what
 # `cli::resolve_workspace_path` falls back to. One resolver, two callers.
 tilo-cli-kit = { version = "0.1.0", path = "../../runtime/cli" }
-# The storage seam `FsStore` implements and `DocWriter` persists through.
+# The storage interface `FsStore` implements and `DocWriter` persists through.
 durable-store = { version = "0.1.0", path = "../durable-store" }
 # The typed id of the app whose document a store holds.
 tilo-app-id.workspace = true

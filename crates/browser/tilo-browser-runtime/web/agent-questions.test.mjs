@@ -31,11 +31,11 @@ test('without a session to ask over, nothing is started', () => {
   assert.equal(answerAgentQuestions({peer: {userPublicKey: ADA}, identity: {userPublicKey: ADA}}), false);
 });
 
-test('a session that refuses the custody leaves the page as it was', () => {
+test('a session that refuses the device key leaves the page as it was', () => {
   const warned = console.warn;
   console.warn = () => {};
   try {
-    const refusing = {userPublicKey: ADA, answerAgentQuestions: () => { throw new Error('custody'); }};
+    const refusing = {userPublicKey: ADA, answerAgentQuestions: () => { throw new Error('device key'); }};
     assert.equal(answerAgentQuestions({peer: refusing, identity: {userPublicKey: ADA}}), false);
   } finally {
     console.warn = warned;

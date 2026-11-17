@@ -387,7 +387,7 @@ fn managed_session_scope_needs_no_fabricated_task_but_retains_route_validation()
     session.scope = ManagedLaunchScope::AgentSession;
     session.validate().unwrap();
     task.validate().unwrap();
-    assert_ne!(session, task, "scope is part of exact launch custody");
+    assert_ne!(session, task, "scope is part of exact launch ownership");
     session.agent.clear();
     assert!(session.validate().is_err());
     session = binding();

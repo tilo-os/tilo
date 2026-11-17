@@ -6,9 +6,9 @@
 //! brokers, which fan these events out without the toolkit. One payload
 //! exists only at an SDK endpoint, which mints it itself and lets no
 //! application construct one: a committed-history capture.
-//! [`EndpointCustody`] names what stands in its place, so a broker uses
-//! [`NoCustody`], where that variant cannot occur, and the toolkit fills in
-//! its own custody type.
+//! [`EndpointOwnership`] names what stands in its place, so a broker uses
+//! [`NoOwner`], where that variant cannot occur, and the toolkit fills in
+//! its own ownership type.
 
 use crate::route::{KeyAccessState, RouteSpec};
 use collab_types::DocumentMutation;
@@ -16,18 +16,18 @@ use collab_types::SignedOp;
 use collab_types::presence::{Member, PresenceKey, PresencePayload};
 
 /// The payloads only an SDK endpoint can hold, which it mints itself.
-pub trait EndpointCustody: Clone + std::fmt::Debug {
+pub trait EndpointOwnership: Clone + std::fmt::Debug {
     /// A disposable capture of a route's committed history, from the
     /// admitted SDK channel itself.
     type CommittedRead: Clone + std::fmt::Debug;
 }
 
-/// The custody of a party that holds no SDK payloads, such as a broker:
+/// The ownership of a party that holds no SDK payloads, such as a broker:
 /// the events that carry them cannot occur.
 #[derive(Clone, Copy, Debug)]
-pub enum NoCustody {}
+pub enum NoOwner {}
 
-impl EndpointCustody for NoCustody {
+impl EndpointOwnership for NoOwner {
     type CommittedRead = std::convert::Infallible;
 }
 
@@ -37,7 +37,7 @@ impl EndpointCustody for NoCustody {
     clippy::large_enum_variant,
     reason = "the layout every app matches on; boxing a payload would change each of those matches"
 )]
-pub enum CollabEvent<C: EndpointCustody = NoCustody> {
+pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     LocalFileClipboardResult {
         request_id: u64,
         result: Result<crate::file_clipboard::Reply, String>,
@@ -256,7 +256,7 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     Realtime(collab_types::realtime::RealtimeEvent),
 }
 
-impl<C: EndpointCustody> CollabEvent<C> {
+impl<C: EndpointOwnership> CollabEvent<C> {
     /// Decode the typed payload of a validated document event. Returns `None`
     /// for presence, context, action, and scrollback events.
     pub fn document_mutation(

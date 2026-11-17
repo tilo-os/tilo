@@ -165,7 +165,7 @@ driver leaves behind, so there the greeter is still required.
 A server has no sign-in screen, so it is judged by what it is for. The server
 image enables the same boot assessment, and `tilo-boot-health` there is given
 `tilo-server-health` as this machine's own liveness (`TILO_BOOT_HEALTH_UNIT`, the
-same seam an always-on board uses for its session). That probe passes when the
+same boundary an always-on board uses for its session). That probe passes when the
 relay is active — it notifies readiness only after its iroh endpoint is bound and
 accepting, so peers can dial it, and it keeps writing its metrics snapshot into
 its state root — and `tilo-relay-admin status` could open every durable workspace

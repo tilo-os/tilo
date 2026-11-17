@@ -852,7 +852,7 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
 // root itself, or a view inside it — brings what stands forward, as activating what is shown does
 // (`shell.md` §3): one mailbox is open, whether opened by its root or by a message in it.
 #[test]
-fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_second() {
+fn the_open_brings_a_place_of_the_same_root_forward_rather_than_opening_a_second() {
     // The app: a mailbox root and a thread inside it, as an app publishes its record.
     struct Mail;
     impl Published for Mail {

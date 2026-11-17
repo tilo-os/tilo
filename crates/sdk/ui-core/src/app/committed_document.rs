@@ -42,7 +42,7 @@ impl App {
                         .flatten()
                     });
                 if self.native_workspace_route.as_ref() == Some(&route)
-                    || workspace_route.is_some_and(|witness| *witness.route() == route)
+                    || workspace_route.is_some_and(|observation| *observation.route() == route)
                 {
                     // Not open yet: try again on the next pump.
                     let Some(workspace) = self.persistence.workspace_index.as_mut() else {
@@ -108,7 +108,7 @@ impl App {
                     .collaboration
                     .manager
                     .primary_route()
-                    .is_some_and(|witness| *witness.route() == route)
+                    .is_some_and(|observation| *observation.route() == route)
                     && !self.document_routes.retired_route(&route)
                     && route.document.as_deref().is_none_or(|record| {
                         self.persistence

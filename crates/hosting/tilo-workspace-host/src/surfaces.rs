@@ -255,11 +255,11 @@ pub(crate) fn arrived() {
 /// record is no part of what the workspace grants ([`collab_types::OwnResource`]):
 /// it is theirs to write whatever their role. `None` for any other role, for
 /// a change of the author's own record, for a workspace whose governor
-/// projected no standings (`standings`), and for a delta that carries no
+/// projected no device_access (`device_access`), and for a delta that carries no
 /// document change at all.
 pub(crate) fn role_refusal(
     delta: &[u8],
-    standings: Option<&crate::workspace::Standings>,
+    device_access: Option<&crate::workspace::DeviceAccess>,
     author_device: [u8; 32],
 ) -> Option<tilo_relay_protocol::refusal::Refusal> {
     // What a role says about a document change it sends: an app's record or the
@@ -274,16 +274,16 @@ pub(crate) fn role_refusal(
     ) {
         return None;
     }
-    let standing = standings?.get(&author_device)?;
-    let person = standing.person_id().unwrap_or_default();
-    if standing.policy.active_role(person) != Some(tilo_action_policy::Role::Viewer)
+    let access = device_access?.get(&author_device)?;
+    let person = access.person_id().unwrap_or_default();
+    if access.policy.active_role(person) != Some(tilo_action_policy::Role::Viewer)
         || writes_own_document(&message, person)
     {
         return None;
     }
     Some(tilo_relay_protocol::refusal::Refusal::NotGranted(
         collab_types::ReceiptRefusal::NotGranted {
-            node: tilo_action_policy::TreePath::workspace(&standing.policy.workspace).to_string(),
+            node: tilo_action_policy::TreePath::workspace(&access.policy.workspace).to_string(),
             kind: tilo_action_policy::ActionKind::Undoable,
         }
         .to_string(),
@@ -321,14 +321,14 @@ pub(crate) fn own_refusal(
 /// a change that names no action, a cleartext op that brings claims of its
 /// own, a claim to an action or field the app's surface does not publish,
 /// one writing a unit outside its action's footprint, or, where the workspace's
-/// governor projected its members' standings (`standings`), an action the
+/// governor projected its members' device_access (`device_access`), an action the
 /// author is not granted. Ops whose surface has not arrived here yet are
 /// left to the workspace's devices, which hold them. `payloads` reads the
 /// document frame.
 pub(crate) fn refusal(
     payloads: &dyn crate::payloads::ShellPayloads,
     delta: &[u8],
-    standings: Option<&crate::workspace::Standings>,
+    device_access: Option<&crate::workspace::DeviceAccess>,
 ) -> Option<tilo_relay_protocol::refusal::Refusal> {
     let (_, _, body) = crate::coedit::retention_view(delta)?;
     let (route, envelope) = payloads.open_document(body)?;
@@ -337,7 +337,7 @@ pub(crate) fn refusal(
         app: &route.app_id,
         document: &route.document_id,
     };
-    let author = standings.map(|standings| standings.get(envelope.author.as_bytes()));
+    let author = device_access.map(|device_access| device_access.get(envelope.author.as_bytes()));
     // A member's own record is decided as theirs: its person does anything in
     // it, nobody else anything.
     let person = route
@@ -353,9 +353,7 @@ pub(crate) fn refusal(
         // No projection: membership already decided who may write here.
         None => true,
         Some(None) => false,
-        Some(Some(standing)) => {
-            standing.answer(node, kind, &cx) == tilo_action_policy::Answer::Allow
-        }
+        Some(Some(access)) => access.answer(node, kind, &cx) == tilo_action_policy::Answer::Allow,
     };
     collab_types::decide_op(
         &envelope,

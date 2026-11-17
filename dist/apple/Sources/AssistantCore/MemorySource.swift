@@ -221,10 +221,10 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         try signedIn()
         let time = now()
         let stopped = agents.change { list -> Bool in
-            guard let index = list.firstIndex(where: { $0.id == subAgent }), list[index].standing == .working
-                    || list.contains(where: { $0.id == subAgent && $0.standing == .needsYou })
+            guard let index = list.firstIndex(where: { $0.id == subAgent }), list[index].state == .working
+                    || list.contains(where: { $0.id == subAgent && $0.state == .needsYou })
             else { return false }
-            list[index].standing = .stopped
+            list[index].state = .stopped
             list[index].finished = time
             return true
         }
@@ -239,7 +239,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         try signedIn()
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
-        let task = AssistantTask(id: AssistantTask.ID(nextName("task")), title: title, standing: .upNext)
+        let task = AssistantTask(id: AssistantTask.ID(nextName("task")), title: title, state: .upNext)
         taskList.change { $0.append(task) }
     }
 
@@ -309,17 +309,17 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         }
     }
 
-    private func settle(_ request: SecretRequest.ID, as standing: SecretRequest.Standing,
+    private func settle(_ request: SecretRequest.ID, as state: SecretRequest.State,
                         needsManager: Bool = false) throws {
         var problem: SourceProblem? = .refused("This request is gone.")
         for feed in allFeeds() {
             let found = feed.change(where: { $0.content.secret?.id == request }) { item in
                 guard case .secret(var asked) = item.content else { return }
-                guard asked.standing == .waiting else { problem = .refused("This was settled already."); return }
+                guard asked.state == .waiting else { problem = .refused("This was settled already."); return }
                 guard !needsManager || asked.manager != nil else {
                     problem = .refused("No password manager is connected."); return
                 }
-                asked.standing = standing
+                asked.state = state
                 item.content = .secret(asked)
                 problem = nil
             }
@@ -328,13 +328,13 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         if let problem { throw problem }
     }
 
-    private func settle(_ offer: ConnectionOffer.ID, as standing: ConnectionOffer.Standing) throws {
+    private func settle(_ offer: ConnectionOffer.ID, as state: ConnectionOffer.State) throws {
         var problem: SourceProblem? = .refused("This offer is gone.")
         for feed in allFeeds() {
             let found = feed.change(where: { $0.content.connection?.id == offer }) { item in
                 guard case .connection(var offered) = item.content else { return }
-                guard offered.standing == .waiting else { problem = .refused("This was settled already."); return }
-                offered.standing = standing
+                guard offered.state == .waiting else { problem = .refused("This was settled already."); return }
+                offered.state = state
                 item.content = .connection(offered)
                 problem = nil
             }

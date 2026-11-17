@@ -51,7 +51,7 @@ pub const MAX_FORMER_IDS: usize = 8;
 pub struct DocumentId(String);
 
 impl DocumentId {
-    /// Internal custody key for a package's existing workspace-primary document.
+    /// Internal ownership key for a package's existing workspace-primary document.
     /// It never travels as a document id on the collaboration wire.
     pub fn package_primary() -> Self {
         Self("@tilo:package-primary".into())
@@ -62,7 +62,7 @@ impl DocumentId {
 
     /// The document a collaboration route's document id names: the empty id is
     /// the [package primary](Self::package_primary), anything else must be a
-    /// document id. The package primary's custody key is not a route, so a
+    /// document id. The package primary's ownership key is not a route, so a
     /// route spelling it names nothing: one document never has two routes.
     #[must_use]
     pub fn from_route(document: &str) -> Option<Self> {
@@ -595,7 +595,7 @@ impl DocumentCheckout {
     /// Declare that this document used to be `former`. Opening it where
     /// nothing is stored under the new id adopts the former document's
     /// document — its content, history and actors — restamped with the new
-    /// identity. Custody of the former document is claimed durably by the
+    /// identity. Ownership of the former document is claimed durably by the
     /// first successor, so a different document naming the same former id
     /// (another file that later sits at the same path) never adopts it too.
     /// The former document itself stays on disk untouched.
@@ -622,7 +622,7 @@ impl DocumentCheckout {
     }
 
     /// Whether this checkout may name a locally stored record: like
-    /// [`Self::is_valid`], but the package primary's custody key is allowed.
+    /// [`Self::is_valid`], but the package primary's ownership key is allowed.
     #[must_use]
     pub fn is_valid_local_storage_request(&self) -> bool {
         (self.id.is_package_primary() || DocumentId::parse(self.id.as_str()).is_some())

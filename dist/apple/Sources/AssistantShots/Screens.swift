@@ -139,8 +139,8 @@ struct LiveBoard: View {
                       points: ["Northwind led your seed with 1.2 million.", "Maya asked for the October numbers on Monday.",
                                "Last call was 3 October. You promised the hiring plan."],
                       until: Date().addingTimeInterval(14 * 60 + 30), isImportant: true),
-            LiveFacts(kind: .work, standing: .running, title: "Usage drop: investigate", detail: "Coder"),
-            LiveFacts(kind: .work, standing: .needsYou, title: "Find the Q3 board deck", detail: "Two versions exist. Which one?"),
+            LiveFacts(kind: .work, state: .running, title: "Usage drop: investigate", detail: "Coder"),
+            LiveFacts(kind: .work, state: .needsYou, title: "Find the Q3 board deck", detail: "Two versions exist. Which one?"),
         ]
         VStack(spacing: 10) {
             ForEach(Array(cards.enumerated()), id: \.offset) { _, facts in

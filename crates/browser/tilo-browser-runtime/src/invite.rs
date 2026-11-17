@@ -225,7 +225,7 @@ const NO_WORKSPACE: &str = "this page is in no workspace";
 impl Workspace for PageWorkspace {
     fn may_invite(&self) -> bool {
         // Whether this person may invite here is the workspace's last answer, which
-        // [`crate::replication`] asks with the rest of their standing.
+        // [`crate::replication`] asks with the rest of their access.
         self.asks.hosted()
             && self.workspace().is_some()
             && self.shared.invitable.load(Ordering::Relaxed)
@@ -269,7 +269,7 @@ impl Workspace for PageWorkspace {
     }
 
     fn roles(&self) -> Vec<sheet::Role> {
-        let ceiling = self.shared.standing.role().unwrap_or(Role::Editor);
+        let ceiling = self.shared.role.role().unwrap_or(Role::Editor);
         let mut roles: Vec<sheet::Role> = Role::ASSIGNABLE
             .into_iter()
             .filter(|role| ceiling.includes(*role))

@@ -179,14 +179,14 @@ fn namespace_metadata(pid: u32) -> io::Result<std::fs::Metadata> {
     std::fs::metadata(format!("/proc/{pid}/ns/pid"))
 }
 
-fn assert_peer_custody(
-    custody: &launcher::owned_service::ServiceCustody,
+fn assert_peer_ownership(
+    ownership: &launcher::owned_service::ServiceOwnership,
     namespace: &std::fs::Metadata,
 ) {
-    assert!(custody.init_pid > 1 && custody.start_ticks > 0);
+    assert!(ownership.init_pid > 1 && ownership.start_ticks > 0);
     assert_eq!(
         (namespace.dev(), namespace.ino()),
-        (custody.namespace_dev, custody.namespace_ino)
+        (ownership.namespace_dev, ownership.namespace_ino)
     );
 }
 
@@ -195,8 +195,8 @@ fn inspect_peer(
     cancel: &ServiceCancellation,
     sender: &std::sync::mpsc::Sender<OwnedFd>,
 ) -> io::Result<()> {
-    let custody = endpoint.custody()?;
-    assert_peer_custody(&custody, &namespace_metadata(custody.init_pid)?);
+    let ownership = endpoint.ownership()?;
+    assert_peer_ownership(&ownership, &namespace_metadata(ownership.init_pid)?);
     let deadline = tilo_test_env::hang_deadline();
     let mut stream = loop {
         match endpoint.connect() {
@@ -282,7 +282,7 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
     let raw = unsafe { libc::fcntl(secret.as_raw_fd(), libc::F_DUPFD, 62) };
     assert!(raw >= 62);
     let ambient = unsafe { OwnedFd::from_raw_fd(raw) };
-    let source_custody = InaccessibleAncestor::deny(&source_parent).unwrap();
+    let source_ownership = InaccessibleAncestor::deny(&source_parent).unwrap();
     assert_ne!(
         uid, 0,
         "private-ancestor capture qualification requires an actual nonroot runner"
@@ -347,7 +347,7 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
     });
     assert!(exit.matches(&key, &data, PACKAGE));
     assert_worker_reaped(&receive);
-    drop(source_custody);
+    drop(source_ownership);
     assert_eq!(
         std::fs::read(source.join("document")).unwrap(),
         b"selected bytes"
@@ -415,12 +415,12 @@ fn signed_original_source_reader_drops_source_groups_only_after_namespace_confin
     std::fs::create_dir(&data).unwrap();
     std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
     let key = ServiceLeaseKey::default();
-    assert_original_reader_refuses_unattached_custody(
+    assert_original_reader_refuses_unattached_ownership(
         &root, &runtime, &publisher, &installed, &source,
     );
     assert_original_reader_refuses_foreign_parent(&root, &runtime, &publisher, &installed, &source);
     let launch = original_reader_launch(&installed, &data, &root.join("source-secret"));
-    let result = returning_callback_retains_original_custody(
+    let result = returning_callback_retains_original_ownership(
         launch,
         admission,
         File::open(&source).unwrap(),
@@ -480,7 +480,7 @@ fn assert_retired_original_reader(
     .unwrap()
     .with_installation(installed.clone(), &installed.publisher_key_hex)
     .unwrap();
-    let refused = returning_callback_retains_original_custody(
+    let refused = returning_callback_retains_original_ownership(
         original_reader_launch(installed, &retired_data, &root.join("source-secret")),
         retired_admission,
         File::open(source).unwrap(),
@@ -521,7 +521,7 @@ impl Drop for CaptureThread {
         }
     }
 }
-fn returning_callback_retains_original_custody(
+fn returning_callback_retains_original_ownership(
     launch: ServiceLaunch,
     admission: CaptureAdmission,
     source: File,
@@ -534,7 +534,7 @@ fn returning_callback_retains_original_custody(
     });
     let weak = Arc::downgrade(&context);
     let admission = admission
-        .retain_original_source_custody(context.clone())
+        .retain_original_source_ownership(context.clone())
         .unwrap();
     let diagnostic = launch
         .options
@@ -574,7 +574,7 @@ fn returning_callback_retains_original_custody(
             ));
         }
     };
-    let (custody, init) = observe_retained_custody(&endpoint, &weak, context);
+    let (ownership, init) = observe_retained_ownership(&endpoint, &weak, context);
     let deadline = tilo_test_env::hang_deadline();
     let stream = loop {
         match endpoint.connect() {
@@ -592,7 +592,7 @@ fn returning_callback_retains_original_custody(
             }
         }
     };
-    exercise_retained_endpoint(&endpoint, &weak, &stream, custody, retire);
+    exercise_retained_endpoint(&endpoint, &weak, &stream, ownership, retire);
     drop(endpoint);
     let result = running.worker.take().unwrap().join().unwrap();
     assert_retained_exit(&init, &weak);
@@ -600,13 +600,13 @@ fn returning_callback_retains_original_custody(
     result
 }
 
-fn observe_retained_custody(
+fn observe_retained_ownership(
     endpoint: &launcher::owned_service::ServiceEndpoint,
     weak: &std::sync::Weak<RetainedReadFixture>,
     context: Arc<RetainedReadFixture>,
-) -> (launcher::owned_service::ServiceCustody, OwnedFd) {
-    let custody = endpoint.custody().unwrap();
-    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, custody.init_pid, 0) };
+) -> (launcher::owned_service::ServiceOwnership, OwnedFd) {
+    let ownership = endpoint.ownership().unwrap();
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, ownership.init_pid, 0) };
     assert!(raw >= 0, "live authenticated init must be observable");
     let init = unsafe { OwnedFd::from_raw_fd(i32::try_from(raw).unwrap()) };
     drop(context);
@@ -614,29 +614,29 @@ fn observe_retained_custody(
         weak.upgrade().is_some(),
         "callback return must retain original context"
     );
-    (custody, init)
+    (ownership, init)
 }
 
 fn exercise_retained_endpoint(
     endpoint: &launcher::owned_service::ServiceEndpoint,
     weak: &std::sync::Weak<RetainedReadFixture>,
     stream: &std::os::unix::net::UnixStream,
-    custody: launcher::owned_service::ServiceCustody,
+    ownership: launcher::owned_service::ServiceOwnership,
     retire: bool,
 ) {
     // connect() observes the real provider socket created AFTER the signed shim changed source
     // credentials and the worker verified group reads, readonly source, closed descriptors and GNU
     // tar.
-    let late_custody = endpoint.custody().unwrap();
-    assert_eq!(late_custody, custody);
-    assert!(late_custody.start_ticks > 0);
+    let late_ownership = endpoint.ownership().unwrap();
+    assert_eq!(late_ownership, ownership);
+    assert!(late_ownership.start_ticks > 0);
     if retire {
         weak.upgrade()
             .unwrap()
             .retired
             .store(true, Ordering::Release);
         assert_eq!(
-            endpoint.custody().unwrap_err().kind(),
+            endpoint.ownership().unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
         assert_eq!(
@@ -813,7 +813,7 @@ fn assert_original_reader_refuses_foreign_parent(
     .unwrap()
     .with_installation(installed.clone(), &installed.publisher_key_hex)
     .unwrap()
-    .retain_original_source_custody(Arc::new(RetainedReadFixture {
+    .retain_original_source_ownership(Arc::new(RetainedReadFixture {
         source: File::open(source).unwrap(),
         retired: AtomicBool::new(false),
     }))
@@ -836,7 +836,7 @@ fn assert_original_reader_refuses_foreign_parent(
     assert_eq!(std::fs::metadata(&parent).unwrap().uid(), 1000);
 }
 
-fn assert_original_reader_refuses_unattached_custody(
+fn assert_original_reader_refuses_unattached_ownership(
     root: &Path,
     runtime: &Path,
     publisher: &str,
@@ -877,7 +877,7 @@ fn assert_original_reader_refuses_unattached_custody(
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(
             error.to_string(),
-            "Original-source execution requires retained read custody"
+            "Original-source execution requires retained read ownership"
         );
     }
     assert!(

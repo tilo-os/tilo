@@ -6,7 +6,7 @@
     reason = "test assertions require observable failures"
 )]
 
-use account_custody::{ClientTable, OAuthIssuer};
+use account_credentials::{ClientTable, OAuthIssuer};
 use settings::accounts::{AccountKind, AccountRoot};
 use settings::panes::accounts::{AccountViewCommand, AccountsPane, BrowserOpener};
 use std::sync::{Arc, Mutex};
@@ -44,13 +44,13 @@ tilo_test_env::scenario! {
                 .header("Content-Type", "application/json")
                 .body(r#"{"emailAddress":"ada@example.org"}"#),
         ]);
-        let custody = root
-            .custodian()
+        let ownership = root
+            .credential_store()
             .with_issuer_endpoints(OAuthIssuer::Google, oauth.provider())
             .with_gmail_profile_endpoint(format!("{}/gmail/v1/users/me/profile", gmail.url()));
         let browser = Arc::new(Browser::default());
         let mut pane = AccountsPane::in_root(root.clone())
-            .with_custodian(custody.clone())
+            .with_credential_store(ownership.clone())
             .with_browser_opener(browser.clone());
         pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
         pane.command(AccountViewCommand::SubmitGoogleMail);
@@ -95,7 +95,7 @@ tilo_test_env::scenario! {
         oauth.issue_access_token("gmail-refreshed");
         assert_eq!(
             mail::oauth::access_token(
-                &custody,
+                &ownership,
                 &account.id,
                 mail::oauth::OAuthProvider::Google,
                 true
@@ -111,12 +111,12 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().unwrap();
         let root = AccountRoot::at(dir.path().to_path_buf());
         let oauth = FakeAuthorizationServer::start();
-        let custody = root
-            .custodian()
+        let ownership = root
+            .credential_store()
             .with_issuer_endpoints(OAuthIssuer::Google, oauth.provider());
         let browser = Arc::new(Browser::default());
         let mut pane = AccountsPane::in_root(root.clone())
-            .with_custodian(custody)
+            .with_credential_store(ownership)
             .with_browser_opener(browser.clone());
         pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
         pane.command(AccountViewCommand::Submit);
@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
         table.google.scopes.mail.clear();
         let browser = Arc::new(Browser::default());
         let mut pane = AccountsPane::in_root(root.clone())
-            .with_custodian(root.custodian().with_client_table(table))
+            .with_credential_store(root.credential_store().with_client_table(table))
             .with_browser_opener(browser.clone());
         pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
         pane.command(AccountViewCommand::SubmitGoogleMail);
@@ -165,12 +165,12 @@ fn gmail_permission_or_capability_failure_saves_nothing_and_can_retry_files_only
         let root = AccountRoot::at(dir.path().to_path_buf());
         let oauth = FakeAuthorizationServer::start();
         let gmail = Responder::start(vec![Reply::status(status)]);
-        let custody = root
-            .custodian()
+        let ownership = root
+            .credential_store()
             .with_issuer_endpoints(OAuthIssuer::Google, oauth.provider())
             .with_gmail_profile_endpoint(format!("{}/profile", gmail.url()));
         let mut pane = AccountsPane::in_root(root.clone())
-            .with_custodian(custody)
+            .with_credential_store(ownership)
             .with_browser_opener(Arc::new(Browser::default()));
         pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
         pane.command(AccountViewCommand::SubmitGoogleMail);
@@ -239,11 +239,11 @@ fn google_granular_consent_requires_both_mail_and_drive() {
         });
         let mut provider = oauth.provider();
         provider.token_endpoint = format!("{}/token", proxy.url());
-        let custody = root
-            .custodian()
+        let ownership = root
+            .credential_store()
             .with_issuer_endpoints(OAuthIssuer::Google, provider);
         let mut pane = AccountsPane::in_root(root.clone())
-            .with_custodian(custody)
+            .with_credential_store(ownership)
             .with_browser_opener(Arc::new(Browser::default()));
         pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
         pane.command(AccountViewCommand::SubmitGoogleMail);

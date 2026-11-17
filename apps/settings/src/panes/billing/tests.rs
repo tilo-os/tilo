@@ -94,13 +94,13 @@ tilo_test_env::scenario! {
         let mut cloud = account("billing");
         let line = |cloud: &HostAccount| card_line(cloud);
         assert_eq!(line(&cloud), "Visa ·· 4242");
-        let standing = cloud.standing.as_mut().unwrap();
-        standing.payment_method = Some(PaymentMethod {
+        let subscription = cloud.subscription.as_mut().unwrap();
+        subscription.payment_method = Some(PaymentMethod {
             brand: None,
             last4: Some("0005".into()),
         });
         assert_eq!(line(&cloud), "Card ·· 0005");
-        cloud.standing.as_mut().unwrap().payment_method = Some(PaymentMethod::default());
+        cloud.subscription.as_mut().unwrap().payment_method = Some(PaymentMethod::default());
         assert_eq!(line(&cloud), "On file");
     }
 }

@@ -20,7 +20,7 @@ use std::time::Duration;
 use automerge::{ActorId, AutoCommit, ChangeHash};
 use durable_store::{
     Durability, DurableStore, Lease, ReadyWake, Revision, SettleWatch, StorageKey,
-    StoreError as SeamError, WriteOp,
+    StoreError as DurableError, WriteOp,
 };
 
 use tilo_app_id::AppId;
@@ -44,12 +44,12 @@ pub struct DurabilitySnapshot {
     pub error: Option<String>,
 }
 
-impl From<SeamError> for StoreError {
-    fn from(error: SeamError) -> Self {
+impl From<DurableError> for StoreError {
+    fn from(error: DurableError) -> Self {
         match error {
-            SeamError::Busy(path) => Self::WriterBusy { path: path.into() },
-            SeamError::SourceChanged(path) => Self::SourceChanged { path: path.into() },
-            SeamError::Opening(key) => Self::Opening(key),
+            DurableError::Busy(path) => Self::WriterBusy { path: path.into() },
+            DurableError::SourceChanged(path) => Self::SourceChanged { path: path.into() },
+            DurableError::Opening(key) => Self::Opening(key),
             other => Self::Io {
                 context: "durable storage".to_owned(),
                 source: io::Error::other(other),
@@ -369,7 +369,7 @@ impl DocOwner {
             // record. The store commits on its own thread, and the pending
             // write below is confirmed through `durability`.
             match self.store.flush_without_waiting(&self.key) {
-                Ok(()) | Err(SeamError::Pending(_)) => {}
+                Ok(()) | Err(DurableError::Pending(_)) => {}
                 Err(error) => return Err(error.into()),
             }
             match self.store.durability(&self.key, revision) {
@@ -413,7 +413,7 @@ impl DocOwner {
                 // Read, but its host has not committed it yet (a peer's change
                 // stored for this record a moment ago): it is the document,
                 // durable once that commit lands.
-                Err(SeamError::Pending(_)) => None,
+                Err(DurableError::Pending(_)) => None,
                 Err(error) => return Err(error.into()),
             };
             Accepted {
@@ -974,8 +974,8 @@ impl DocWriter {
         let mut on_its_way = false;
         match flushed {
             Ok(()) => {}
-            Err(SeamError::Pending(_)) if accepted_is_written => on_its_way = true,
-            Err(SeamError::Pending(_)) if started_only => {}
+            Err(DurableError::Pending(_)) if accepted_is_written => on_its_way = true,
+            Err(DurableError::Pending(_)) if started_only => {}
             Err(error) => return Err(error.to_string()),
         }
         if progress.inflight.is_empty() || started_only || on_its_way {

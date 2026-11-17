@@ -20,8 +20,8 @@ final class WordingTests: XCTestCase {
     }
 
     func testATasksLineSaysHowItStands() {
-        XCTAssertEqual(Drawing.mainChat.compactMap { $0.task.flatMap { wording.line($0.standing) } },
-                       ["scheduled, every day", "scheduled, every day", "done, by your standing instruction", "2 replies"])
+        XCTAssertEqual(Drawing.mainChat.compactMap { $0.task.flatMap { wording.line($0.state) } },
+                       ["scheduled, every day", "scheduled, every day", "done, by your lasting instruction", "2 replies"])
         XCTAssertEqual(wording.line(.replies(1)), "1 reply")
         XCTAssertNil(wording.line(.none))
     }

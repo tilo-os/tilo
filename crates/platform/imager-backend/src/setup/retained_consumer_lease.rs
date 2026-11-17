@@ -1,4 +1,4 @@
-//! Root-owned custody for an ordinary app consuming a retained Home projection: the person proof
+//! Root-owned ownership for an ordinary app consuming a retained Home projection: the person proof
 //! and both workers stay alive until the consuming PID namespace has stopped.
 use super::{
     installed_retained_actor::InstalledRetainedLaunchInput,
@@ -7,7 +7,7 @@ use super::{
 };
 use launcher::{
     ordinary_child::ManagedConsumingBootstrap,
-    ordinary_namespace::NamespaceWitness,
+    ordinary_namespace::NamespaceProof,
     owned_service::ServiceCancellation,
     retained_view::{RetainedViewMode, ReviewedViewIssue, RootConsumerChannel},
 };
@@ -22,7 +22,7 @@ use std::{
 };
 
 /// Root preparation owns the projection before any view descriptor is handed on, so an
-/// interrupted handoff never turns a missing witness into proof that an app never read.
+/// interrupted handoff never turns a missing proof into proof that an app never read.
 pub(super) struct PendingRetainedConsumer {
     input: Option<Arc<InstalledRetainedLaunchInput>>,
     projection: Option<RetainedProjectionSession>,
@@ -30,7 +30,7 @@ pub(super) struct PendingRetainedConsumer {
     exposure: Option<launcher::owned_service::target_projection::HeldViewExposure>,
     exported: bool,
     transport: Option<UnixStream>,
-    consumer: Option<NamespaceWitness>,
+    consumer: Option<NamespaceProof>,
 }
 impl PendingRetainedConsumer {
     pub(super) fn new(
@@ -120,7 +120,7 @@ impl PendingRetainedConsumer {
             if !Arc::ptr_eq(&peer, &selection.retained_launcher()) {
                 return Err(io::ErrorKind::PermissionDenied.into());
             }
-            *consumer = Some(NamespaceWitness::receive(
+            *consumer = Some(NamespaceProof::receive(
                 transport.as_mut().ok_or(io::ErrorKind::NotConnected)?,
                 &peer,
                 cancellation,
@@ -224,14 +224,14 @@ impl Drop for PendingRetainedConsumer {
     }
 }
 
-/// The witness comes from the canonical ordinary namespace owner; an app PID, a Shell child exit
+/// The proof comes from the canonical ordinary namespace owner; an app PID, a Shell child exit
 /// or a wire status cannot replace it.
 pub(super) struct RetainedConsumerLease {
     input: Option<Arc<InstalledRetainedLaunchInput>>,
     projection: Option<RetainedProjectionSession>,
     managed: Option<Arc<Mutex<ManagedConsumingBootstrap>>>,
     exposure: Option<launcher::owned_service::target_projection::HeldViewExposure>,
-    consumer: Option<NamespaceWitness>,
+    consumer: Option<NamespaceProof>,
     transport: Option<UnixStream>,
     selection: Option<ReviewedConsumerSelection>,
     consumer_stopped: bool,
@@ -239,7 +239,7 @@ pub(super) struct RetainedConsumerLease {
 }
 
 impl RetainedConsumerLease {
-    /// Missing custody never becomes an observed successful stop.
+    /// Missing ownership never becomes an observed successful stop.
     pub(super) fn consumer_observed_stopped(&self) -> io::Result<bool> {
         if self.consumer_stopped {
             return Ok(true);
@@ -286,7 +286,7 @@ impl RetainedConsumerLease {
     }
 
     /// Watches the Files role until its namespace stops, then retires its source; the launcher's
-    /// control channel ending, cancellation or a lost custody check also retires it.
+    /// control channel ending, cancellation or a lost ownership check also retires it.
     pub(super) fn supervise(
         lease: &Arc<Mutex<Self>>,
         cancel: &Arc<AtomicBool>,
@@ -373,7 +373,7 @@ impl RetainedConsumerLease {
                     match actor.retire() {
                         Ok(()) => original_retired = true,
                         Err(error) => {
-                            // A retirement refusal can retain mounted custody: stay the live owner,
+                            // A retirement refusal can retain mounted ownership: stay the live owner,
                             // never retry a DTO.
                             refusal.get_or_insert(error);
                             original_retirement_unknown = true;
@@ -418,7 +418,7 @@ impl RetainedConsumerLease {
         }
     }
 
-    /// Off the UI thread. Timeout or inspection failure retains all custody.
+    /// Off the UI thread. Timeout or inspection failure retains all ownership.
     pub(super) fn retire(&mut self, grace: Duration) -> io::Result<()> {
         if !self.consumer_stopped {
             let consumer = self.consumer.as_ref().ok_or(io::ErrorKind::NotConnected)?;
@@ -427,7 +427,7 @@ impl RetainedConsumerLease {
             }
             if !consumer.observed_stopped()? {
                 return Err(io::Error::other(
-                    "Consuming namespace stop was not observed; retained source custody held",
+                    "Consuming namespace stop was not observed; retained source ownership held",
                 ));
             }
             self.consumer_stopped = true;
@@ -477,7 +477,7 @@ impl Drop for RetainedConsumerLease {
         if let Some(input) = &self.input {
             input.revoke();
         }
-        // Keeps custody through retries, including transient unmount errors.
+        // Keeps ownership through retries, including transient unmount errors.
         while self.projection.is_some() || self.exposure.is_some() || self.managed.is_some() {
             if self.retire(Duration::from_secs(5)).is_ok() {
                 break;

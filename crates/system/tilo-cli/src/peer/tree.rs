@@ -107,7 +107,7 @@ pub(crate) fn route(workspace: WorkspaceId, chunk: TreeChunk) -> DocumentRoute {
     reason = "each is a fact `tilo status` reports on its own"
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
-pub(crate) struct Standing {
+pub(crate) struct TreeStatus {
     /// The workspace's host answered for the tree: what it holds is merged.
     pub(crate) opened: bool,
     /// Every change made here was handed to the session.
@@ -126,7 +126,7 @@ pub(crate) struct Standing {
 /// One workspace's tree, held while this value lives.
 pub(crate) struct TreeReplica {
     pub(crate) namespace: Arc<Mutex<Namespace>>,
-    standing: Arc<Mutex<Standing>>,
+    status: Arc<Mutex<TreeStatus>>,
     paused: Arc<std::sync::atomic::AtomicBool>,
     wake: Arc<tokio::sync::Notify>,
     task: tokio::task::JoinHandle<()>,
@@ -186,7 +186,7 @@ impl TreeReplica {
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
         };
         let namespace = Arc::new(Mutex::new(namespace));
-        let standing = Arc::new(Mutex::new(Standing::default()));
+        let status = Arc::new(Mutex::new(TreeStatus::default()));
         let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let wake = Arc::new(tokio::sync::Notify::new());
         let sync = Sync {
@@ -207,21 +207,21 @@ impl TreeReplica {
             pulling: Paced::new(LOOK_AGAIN),
             counting: Paced::new(COUNT_EVERY),
             counted_heads: None,
-            standing: Arc::clone(&standing),
+            status: Arc::clone(&status),
             content,
         };
         let task = tokio::spawn(sync.run());
         Ok(Self {
             namespace,
-            standing,
+            status,
             paused,
             wake,
             task,
         })
     }
 
-    pub(crate) fn standing(&self) -> Standing {
-        self.standing.lock_recover().clone()
+    pub(crate) fn status(&self) -> TreeStatus {
+        self.status.lock_recover().clone()
     }
 
     /// Stop syncing (changes made here wait to go out, and none come in), or
@@ -333,9 +333,9 @@ struct Sync {
     keeping: Paced,
     counting: Paced,
     pulling: Paced,
-    /// The heads the files and bytes in `standing` were counted at.
+    /// The heads the files and bytes in `status` were counted at.
     counted_heads: Option<Vec<automerge::ChangeHash>>,
-    standing: Arc<Mutex<Standing>>,
+    status: Arc<Mutex<TreeStatus>>,
     content: Arc<SessionContent>,
 }
 
@@ -477,7 +477,7 @@ impl Sync {
                     // A host that sent some of the tree holds one, which this device reads
                     // before it writes: a tree it founded beside that one would go out whole.
                     if chunk == 0 && holds_none(Some(answer)) {
-                        self.standing.lock_recover().opened = true;
+                        self.status.lock_recover().opened = true;
                     }
                 }
             }
@@ -545,7 +545,7 @@ impl Sync {
                             &route.document,
                         ))
                     {
-                        self.standing.lock_recover().opened = true;
+                        self.status.lock_recover().opened = true;
                     }
                 }
             }
@@ -585,7 +585,7 @@ impl Sync {
         };
         for (chunk, heads, _) in readings {
             if chunk == 0 {
-                self.standing.lock_recover().opened = true;
+                self.status.lock_recover().opened = true;
             }
             let held = self.records.entry(chunk).or_default();
             // What the record holds is not this device's to send again; what only this
@@ -612,7 +612,7 @@ impl Sync {
     /// Hand the session what the namespace changed since it last did, once the batch the
     /// first of those changes started is due: one write per record that changed.
     fn push(&mut self) {
-        if !self.standing.lock_recover().opened {
+        if !self.status.lock_recover().opened {
             // The host has not said what it holds: a tree written now could found a second
             // one beside it.
             return;
@@ -739,14 +739,14 @@ impl Sync {
         });
         let durable = !self.records.keys().any(|chunk| self.holding(*chunk))
             && self.link.outgoing_pending() == 0;
-        let mut standing = self.standing.lock_recover();
+        let mut status = self.status.lock_recover();
         if let Some((files, bytes)) = counted {
-            standing.files = files;
-            standing.bytes = bytes;
+            status.files = files;
+            status.bytes = bytes;
         }
-        standing.paused = self.paused.load(std::sync::atomic::Ordering::Relaxed);
-        standing.sent = sent;
-        standing.durable = durable;
+        status.paused = self.paused.load(std::sync::atomic::Ordering::Relaxed);
+        status.sent = sent;
+        status.durable = durable;
     }
 
     /// The files the tree names and their bytes: a walk of every node.

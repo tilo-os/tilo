@@ -1,7 +1,7 @@
-//! Where an app keeps what is not a document: one seam for app files,
+//! Where an app keeps what is not a document: one boundary for app files,
 //! preferences and secrets, the same on Linux, macOS and the web.
 //!
-//! | What | Seam | Backed by |
+//! | What | Boundary | Backed by |
 //! |---|---|---|
 //! | Documents (collaborative, synced) | resources and records | Automerge records |
 //! | App files (caches, imports, databases) | [`AppFiles`], [`HostContext::files`] | `tilo_files::Dir` in `tilo_paths::AppPaths`: the per-user directories natively, the origin-private file system in a page |

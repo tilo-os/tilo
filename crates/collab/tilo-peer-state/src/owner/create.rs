@@ -17,7 +17,7 @@ use web_time::SystemTime;
 impl NativeWorkspaceOwner {
     /// Found `workspace` — the identity the workspace was made with, before
     /// anything of it was held here — named `name`, on `device`, signed by
-    /// `signer`, its custody, outside the owner's turn. The workspace is new, its host is this
+    /// `signer`, its ownership, outside the owner's turn. The workspace is new, its host is this
     /// device, and its governance admits any other device the owner invites.
     /// `host_hint` is where this device's host keeps the workspace's records,
     /// signed by `device` itself: a workspace founded here is reached at its
@@ -112,7 +112,7 @@ impl NativeWorkspaceOwner {
                     effect_receipts: std::collections::BTreeMap::new(),
                     shortcut_change: None,
                     effect_history_root: None,
-                    join_ledger: crate::join_ledger::JoinLedger::default(),
+                    join_log: crate::join_log::JoinLog::default(),
                     join_admissions: std::collections::BTreeMap::new(),
                 },
             );

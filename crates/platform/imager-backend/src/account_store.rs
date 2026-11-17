@@ -1,4 +1,4 @@
-//! Native account custody publication after the caller reviews destination metadata.
+//! Native account credentials publication after the caller reviews destination metadata.
 use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
 use migration_sources::vault::VaultError;
 use std::path::Path;
@@ -51,7 +51,8 @@ pub fn persist_import(
                 .get(&account.id)
                 .ok_or(ConnectionError::CredentialUnavailable)?,
         );
-        if stored.0 != secret.0 && !account_custody::copied_source_matches(&stored.0, &secret.0) {
+        if stored.0 != secret.0 && !account_credentials::copied_source_matches(&stored.0, &secret.0)
+        {
             return Err(ConnectionError::AlreadyPresent);
         }
         return Ok(account.id);

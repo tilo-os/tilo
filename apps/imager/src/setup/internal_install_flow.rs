@@ -148,7 +148,7 @@ struct Intent {
     migration: Option<imager_backend::setup::migration_intent::MigrationIntent>,
     profile: serde_json::Map<String, serde_json::Value>,
     prepared_setup: Option<super::staging::prepared_setup::PreparedArtifact>,
-    prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
+    prepared_ownership: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
     deferred: bool,
     operation_id: String,
     plan: Plan,
@@ -292,7 +292,7 @@ fn stage_request(
         .bundle()
         .require_service_session_protocol(
             intent
-                .prepared_custody
+                .prepared_ownership
                 .as_ref()
                 .and_then(|media| media.service_session_protocol()),
         )
@@ -306,9 +306,9 @@ fn stage_request(
         .bundle()
         .require_account_protocol(
             intent
-                .prepared_custody
+                .prepared_ownership
                 .as_ref()
-                .and_then(|media| media.account_custody_protocol()),
+                .and_then(|media| media.account_credentials_protocol()),
         )
         .map_err(|_| {
             refusal(
@@ -320,7 +320,7 @@ fn stage_request(
         .bundle()
         .require_home_protocol(
             intent
-                .prepared_custody
+                .prepared_ownership
                 .as_ref()
                 .and_then(|media| media.home_archive_protocol()),
         )
@@ -334,7 +334,7 @@ fn stage_request(
         .bundle()
         .require_applications_protocol(
             intent
-                .prepared_custody
+                .prepared_ownership
                 .as_ref()
                 .and_then(|media| media.applications_protocol()),
         )
@@ -428,12 +428,12 @@ fn stage_request(
                     )
                 })?;
             let prepared = intent
-                .prepared_custody
+                .prepared_ownership
                 .as_ref()
                 .ok_or_else(|| {
                     refusal(
                         "migration-changed",
-                        "Computer application preparation custody is missing.",
+                        "Computer application preparation ownership is missing.",
                     )
                 })?
                 .prepare_computer_applications(
@@ -456,7 +456,7 @@ fn stage_request(
             );
             remember_tpm_handoff(&mut intent.profile, &prepared)
                 .map_err(|error| refusal("migration-changed", error))?;
-            intent.prepared_custody = Some(prepared);
+            intent.prepared_ownership = Some(prepared);
         }
         if source.home_policy == imager_backend::setup::migration_handoff::HomePolicy::Copy
             && (source.categories.home || source.categories.flatpak)
@@ -482,12 +482,12 @@ fn stage_request(
                 // until first login; the installed onboarding then performs
                 // the copy with a renewed source grant and its own receipt.
                 let prepared = intent
-                    .prepared_custody
+                    .prepared_ownership
                     .as_ref()
                     .ok_or_else(|| {
                         refusal(
                             "migration-changed",
-                            "Original-copy preparation custody is missing.",
+                            "Original-copy preparation ownership is missing.",
                         )
                     })?
                     .prepare_staging_copy(grant, &source, reservation, cancel)
@@ -506,11 +506,11 @@ fn stage_request(
                     .map_err(|error| refusal("migration-changed", error))?;
                 // prepare_staging_copy caches the final generation in the actual
                 // previous Arc retained by the download consumer through drive().
-                intent.prepared_custody = Some(prepared);
+                intent.prepared_ownership = Some(prepared);
             }
         }
     }
-    if let Some(prepared) = &intent.prepared_custody {
+    if let Some(prepared) = &intent.prepared_ownership {
         prepared
             .validate_recovery_for_stage(&plan, cancel)
             .map_err(|error| refusal("recovery-unverified", error.to_string()))?;
@@ -564,7 +564,7 @@ pub(super) fn staging_consumer(
             return Err(outcome.message.unwrap_or_default());
         };
         let mut intent = intent;
-        if let Some(prepared) = &intent.prepared_custody {
+        if let Some(prepared) = &intent.prepared_ownership {
             if let Ok((fresh, artifact, expected)) = prepared
                 .refreshed_for_transfer(cancel.signal())
                 .and_then(|fresh| {
@@ -581,7 +581,7 @@ pub(super) fn staging_consumer(
                     return Err(outcome.message.unwrap_or_default());
                 }
                 intent.prepared_setup = Some(artifact);
-                intent.prepared_custody = Some(fresh);
+                intent.prepared_ownership = Some(fresh);
             } else {
                 let outcome = refusal(
                     "prepared-source",
@@ -591,7 +591,7 @@ pub(super) fn staging_consumer(
                 return Err(outcome.message.unwrap_or_default());
             }
         }
-        let _prepared_custody = intent.prepared_custody.clone();
+        let _prepared_ownership = intent.prepared_ownership.clone();
         let manifest_dir = tempfile::Builder::new()
             .prefix("tilo-staging-")
             .tempdir()
@@ -635,7 +635,7 @@ pub(super) type Task = Box<dyn FnOnce() + Send + 'static>;
 
 pub(super) struct InternalInstall {
     migration_intent: Option<imager_backend::setup::migration_intent::MigrationIntent>,
-    prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
+    prepared_ownership: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
     deferred: bool,
     profile: serde_json::Map<String, serde_json::Value>,
     link: StagingLink,
@@ -661,7 +661,7 @@ impl InternalInstall {
     pub(super) fn new(runtime: StagingRuntime, check: bool, host: HostOs) -> Self {
         Self {
             migration_intent: None,
-            prepared_custody: None,
+            prepared_ownership: None,
             deferred: false,
             profile: serde_json::Map::new(),
             link: StagingLink {
@@ -1011,7 +1011,7 @@ impl InternalInstall {
         self.minimum_target_bytes = minimum;
         self.migration_intent = reviewed.migration;
         self.profile = profile;
-        self.prepared_custody = reviewed.prepared;
+        self.prepared_ownership = reviewed.prepared;
         self.deferred = reviewed.deferred;
         self.accept_probe(reviewed.facts, Vec::new(), has_release);
         self.plan = Some(Ok(reviewed.plan));
@@ -1034,7 +1034,7 @@ impl InternalInstall {
                 migration: None,
                 profile: record.profile.clone(),
                 prepared_setup: None,
-                prepared_custody: None,
+                prepared_ownership: None,
                 deferred: record.profile.get("prepared_setup").is_none(),
                 operation_id: record.operation_id.clone(),
                 plan: record.plan.clone(),
@@ -1050,7 +1050,7 @@ impl InternalInstall {
                 deferred: self.deferred,
                 prepared_setup: {
                     {
-                        self.prepared_custody
+                        self.prepared_ownership
                             .as_ref()
                             .map(|prepared| prepared.staging_artifact())
                             .transpose()
@@ -1059,7 +1059,7 @@ impl InternalInstall {
                             })?
                     }
                 },
-                prepared_custody: self.prepared_custody.clone(),
+                prepared_ownership: self.prepared_ownership.clone(),
                 operation_id: new_operation_id(),
                 plan: plan.clone(),
                 plan_sha256: plan.digest().map_err(|error| error.to_string())?,
@@ -1684,7 +1684,7 @@ pub(super) mod tests {
         missing.profile.prepared_setup = None;
         assert!(
             install.adopt_reviewed(missing, true).is_err(),
-            "a non-deferred review without prepared custody must be refused"
+            "a non-deferred review without prepared ownership must be refused"
         );
         let mut deferred = reviewed.clone();
         deferred.prepared = None;
@@ -1703,7 +1703,7 @@ pub(super) mod tests {
         let digest = reviewed.plan.digest().unwrap();
         install.begin_stage(&digest, true).unwrap();
         let intent = install.link.lock().intent.take().unwrap();
-        assert!(intent.prepared_custody.is_some());
+        assert!(intent.prepared_ownership.is_some());
         let manifest = selected_sizes(
             PROVISIONAL_STAGING_ESP_BYTES,
             PROVISIONAL_STAGING_ROOT_BYTES,

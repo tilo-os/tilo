@@ -4,7 +4,7 @@
 //! The service answering it (the app action server) must read the record as
 //! the host retains it and commit the action's change the way a device
 //! commits one: ordered, retained, fanned out to every subscriber and queued
-//! for offline members. [`WorkspaceDocuments`] is that seam, without a network hop:
+//! for offline members. [`WorkspaceDocuments`] is that boundary, without a network hop:
 //!
 //! - [`WorkspaceDocuments::retained`] is what a first-time subscriber is replayed —
 //!   every retained checkpoint and delta of the workspace, as the signed

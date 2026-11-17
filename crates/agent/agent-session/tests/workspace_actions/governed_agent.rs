@@ -320,7 +320,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         SPAWN_ACTION,
         json(&serde_json::json!({
             "grant": grant,
-            "task": "Add a new sheet named \"Ledger\"",
+            "task": "Add a new sheet named \"InvocationLog\"",
             "workspace": workspace.workspace,
         })),
     )
@@ -342,7 +342,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     assert_ne!(agent_key, host.cert.device_public_key);
 
     // Bob, another member, receives the agent's change and reads it.
-    let Some(route) = until_sheet_by(&mut member, agent_key, "Ledger").await else {
+    let Some(route) = until_sheet_by(&mut member, agent_key, "InvocationLog").await else {
         let agents = status(&mut page).await.agents;
         panic!(
             "the member never read the agent's sealed change.\nagents: {agents:#?}\n\

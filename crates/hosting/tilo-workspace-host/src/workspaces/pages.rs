@@ -77,7 +77,7 @@ impl Presented {
     /// The workspace the invitation names, read without trusting it: the
     /// redemption is then verified against what that workspace issued.
     fn workspace(&self, now: u64) -> Result<WorkspaceId, CollaborationError> {
-        tilo_peer_state::join_ledger::invitation_workspace(&self.invitation, now)
+        tilo_peer_state::join_log::invitation_workspace(&self.invitation, now)
     }
 
     /// What the workspace's join receipt keeps of the request, so the same
@@ -463,9 +463,9 @@ impl Workspaces {
         {
             return Ok(WorkspacesReply::Named);
         }
-        let ledger = workspace.collaboration().clone();
+        let log = workspace.collaboration().clone();
         workspace
-            .commit(candidate, &key, at, |_, _| Ok(ledger))
+            .commit(candidate, &key, at, |_, _| Ok(log))
             .map_err(CollaborationError::new)?;
         self.settle(&mut workspace).await?;
         Ok(WorkspacesReply::Named)
@@ -1046,17 +1046,15 @@ impl Workspaces {
     /// # Errors
     ///
     /// The workspace is unknown.
-    pub async fn wait_list_standing(
+    pub async fn wait_list_state(
         &self,
         workspace: &str,
         removal: [u8; 32],
-    ) -> Result<tilo_relay_protocol::operator::WaitListStanding, CollaborationError> {
+    ) -> Result<tilo_relay_protocol::operator::WaitListStatus, CollaborationError> {
         let governed = self.workspace(workspace).await?;
         let mut governed = governed.lock().await;
         governed.forget_joined_wait_list();
-        Ok(governed
-            .wait_list
-            .standing(removal, tilo_clock::unix_now_ns()))
+        Ok(governed.wait_list.state(removal, tilo_clock::unix_now_ns()))
     }
 
     /// Forget the addresses on `workspace`'s wait list that were not confirmed
@@ -1137,7 +1135,7 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let workspace = self
             .workspace(
-                &tilo_peer_state::join_ledger::invitation_workspace(invitation, now)?.to_string(),
+                &tilo_peer_state::join_log::invitation_workspace(invitation, now)?.to_string(),
             )
             .await?;
         let workspace = workspace.lock().await;

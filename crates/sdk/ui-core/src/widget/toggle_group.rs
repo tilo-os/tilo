@@ -2586,20 +2586,20 @@ impl crate::resources::PublishesResources for ToggleGroup {
 }
 
 impl crate::widget::controls::ActionControls for ToggleGroup {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         if let Some(action) = &mut self.chosen_action {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         for press in &mut self.presses {
             if let Press::Action(action) = press {
-                let _ = action.install_custody(domain, attachment);
+                let _ = action.attach(domain, attachment);
             }
         }
     }

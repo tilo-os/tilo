@@ -2,7 +2,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    reason = "test fixtures pin original checked admission and owner custody"
+    reason = "test fixtures pin original checked admission and owner ownership"
 )]
 use std::{
     cell::{Cell, RefCell},

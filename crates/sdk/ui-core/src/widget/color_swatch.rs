@@ -575,16 +575,16 @@ impl crate::widget::ResourceOperations for ColorSwatchPicker {
 }
 
 impl crate::widget::controls::ActionControls for ColorSwatchPicker {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
         if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
+            let _ = action.attach(domain, attachment);
         }
         if let Some(verb) = &mut self.change_verb {
-            verb.install_custody(domain, attachment);
+            verb.attach(domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

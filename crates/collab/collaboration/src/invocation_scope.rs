@@ -1,13 +1,13 @@
 //! The invoker a delivered invocation runs for on this thread, and the
 //! one-shot replies the collaboration lanes answer an invocation with.
 //! The toolkit's invocation scope (`ui::invocation_scope`) builds the API's
-//! custody on these.
+//! ownership on these.
 
 #[cfg(feature = "broker-transport")]
 type ExternalModerationSender =
     tokio::sync::oneshot::Sender<Result<registry_types::ModerationCase, String>>;
 
-/// Cloneable one-shot response custody for the collaboration request queue.
+/// Cloneable one-shot response ownership for the collaboration request queue.
 #[cfg(feature = "broker-transport")]
 #[derive(Clone, Debug)]
 pub struct ExternalModerationReply(

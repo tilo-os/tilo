@@ -414,7 +414,7 @@ pub struct NativeAdmissionSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NativeAdmissionConnection {
     pub manager_connected: bool,
-    pub custody_reconciled: bool,
+    pub ownership_reconciled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -945,7 +945,7 @@ mod tests {
             continuity_instance: Some(42),
             connection: NativeAdmissionConnection {
                 manager_connected: false,
-                custody_reconciled: false,
+                ownership_reconciled: false,
             },
             live_document_owners: 1,
             installed_document_owners: 0,

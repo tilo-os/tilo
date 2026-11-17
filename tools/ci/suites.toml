@@ -618,7 +618,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/changes.test.mjs",
   "crates/browser/tilo-browser-runtime/web/native-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/workspace-actions.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/device-key.test.mjs",
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/json-text.test.mjs",
   "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs",
@@ -715,7 +715,7 @@ inputs = [
   "crates/browser/tilo-browser-runtime/src/background_work.rs",
   # The theme bundle's test loads a theme written only against the theme SDK.
   "crates/sdk/themes/bauhaus/theme.json",
-  "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs",
+  "crates/browser/tilo-browser-runtime/src/mount_service_lease.rs",
   "tools/test-assets.py",
   # The catalogue test reads the gallery app's sources: every component the
   # toolkit describes is shown there, or says at its declaration why it cannot.
@@ -1511,7 +1511,7 @@ inputs = [
   # each binary is installed; the shell package it compiles from source.
   "apps/tl/shell/",
   # Every app's sources: the guard holds each app's calls on the action API
-  # to the seams this session serves.
+  # to the boundaries this session serves.
   "apps/",
   # The tests' shared fixtures load Notes from its sources beside the shell
   # (the shell's own screen tests and the acceptance path), the session

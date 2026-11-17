@@ -34,7 +34,7 @@ use crate::meta::MetaExt as _;
 use crate::publish::{Caller, Committer, PlanRequest, Planner};
 use crate::schema::lookup;
 use crate::store::{Committed, TiloStore};
-use tilo_action_policy::Standing;
+use tilo_action_policy::MemberAccess;
 
 /// An action's arguments as it runs them, and as its invocation records them; `None` when the
 /// line a person typed names no item, so the action does not run.
@@ -909,7 +909,7 @@ impl HostInner {
 }
 
 impl Host {
-    /// A host over the workspace document `document`, for `viewer`, whose standing in the workspace `standing`
+    /// A host over the workspace document `document`, for `viewer`, whose standing in the workspace `access`
     /// reads: what the runtime invokes is decided by the workspace's policy ([`TiloAuthority`]).
     ///
     /// # Errors
@@ -917,9 +917,9 @@ impl Host {
     pub fn new(
         record: &tilo_resource::Doc,
         viewer: Actor,
-        standing: impl Fn() -> Option<Standing> + 'static,
+        access: impl Fn() -> Option<MemberAccess> + 'static,
     ) -> Result<Self, HostError> {
-        Self::on_device(record, viewer, None, standing)
+        Self::on_device(record, viewer, None, access)
     }
 
     /// As [`Self::new`], on the device `device`: the device that carries out the outside effects
@@ -931,7 +931,7 @@ impl Host {
         record: &tilo_resource::Doc,
         viewer: Actor,
         device: Option<&str>,
-        standing: impl Fn() -> Option<Standing> + 'static,
+        access: impl Fn() -> Option<MemberAccess> + 'static,
     ) -> Result<Self, HostError> {
         Self::open(
             Opening {
@@ -940,7 +940,7 @@ impl Host {
                 ..Opening::default()
             },
             viewer,
-            standing,
+            access,
         )
     }
 
@@ -953,7 +953,7 @@ impl Host {
     pub fn open(
         opening: Opening<'_>,
         viewer: Actor,
-        standing: impl Fn() -> Option<Standing> + 'static,
+        access: impl Fn() -> Option<MemberAccess> + 'static,
     ) -> Result<Self, HostError> {
         let store = match (opening.record, opening.index_dir) {
             (Some(record), dir) => {
@@ -981,9 +981,9 @@ impl Host {
         let _schemas = schemas.enter();
         host_meta.register_schemas();
         store.open_index(&host_meta.app, &host_meta.schema_text());
-        // What the runtime invokes is decided by the workspace's one policy: the person's standing,
+        // What the runtime invokes is decided by the workspace's one policy: the person's access,
         // an agent's delegation and the answers the person gave it, and the code's authors.
-        let authority = TiloAuthority::new(viewer.clone(), standing);
+        let authority = TiloAuthority::new(viewer.clone(), access);
         let runtime = Runtime::new(store.clone(), authority.clone())?;
         runtime.set_clock(system_time);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);

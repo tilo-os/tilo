@@ -1,4 +1,4 @@
-//! The seam through which a host may serve apps to remote callers.
+//! The boundary through which a host may serve apps to remote callers.
 //!
 //! The relay itself runs no apps and links none: it carries
 //! [`Envelope::RemoteAction`](tilo_relay_protocol::transport::Envelope::RemoteAction) frames between

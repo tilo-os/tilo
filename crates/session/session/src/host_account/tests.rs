@@ -17,7 +17,7 @@ fn a_device_sells_nothing() {
         account,
         HostAccount::sells_nothing("ada-laptop", HostKind::Device)
     );
-    assert!(account.plans.is_empty() && account.standing.is_none());
+    assert!(account.plans.is_empty() && account.subscription.is_none());
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn a_hosts_answer_follows_its_plans_file_as_a_card_is_added() {
     let api = HostAccountApi::of(Source::Hosted(HostedAccount {
         account: "acct-1".into(),
         plans: plans.clone(),
-        ledger: None,
+        log: None,
         socket: None,
         name: "unused".into(),
     }));
@@ -41,7 +41,12 @@ fn a_hosts_answer_follows_its_plans_file_as_a_card_is_added() {
             account.manage_billing.as_deref(),
             Some("https://tilo.sh/billing?account=acct-1")
         );
-        assert!(!account.standing.unwrap().entitled(Entitlement::LinuxVms));
+        assert!(
+            !account
+                .subscription
+                .unwrap()
+                .entitled(Entitlement::LinuxVms)
+        );
     }
     // phase: the provider names the account, and followers are told
     {
@@ -63,6 +68,11 @@ fn a_hosts_answer_follows_its_plans_file_as_a_card_is_added() {
             .unwrap();
         let account = api.read();
         assert_eq!(account.plan().map(|plan| plan.name.as_str()), Some("Pro"));
-        assert!(account.standing.unwrap().entitled(Entitlement::LinuxVms));
+        assert!(
+            account
+                .subscription
+                .unwrap()
+                .entitled(Entitlement::LinuxVms)
+        );
     }
 }

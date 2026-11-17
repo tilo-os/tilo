@@ -78,7 +78,7 @@ fn save_case_config(case: &str) -> ProviderProtocol {
     .unwrap();
     if !case.ends_with("missing-key") && !matches!(case, "empty-key" | "invalid-url") {
         // The subprocess has a disposable, explicit test root, not a live
-        // Secret Service session. Opt into local test custody deliberately.
+        // Secret Service session. Opt into local test ownership deliberately.
         let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
         let (reference, authorization) = credential_binding(&profile).unwrap();
         ServiceCredentials::open_in(&root)

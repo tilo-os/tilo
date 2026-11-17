@@ -24,7 +24,7 @@ release-bundle = ["dep:p384", "dep:serde_json"]
 # installer's verified-boot preflight.
 pcr-prediction = ["dep:serde_json"]
 # Apple's SRP-6a sign-in client (`srp_apple`), for the iCloud sign-in in
-# account-custody. Consumers take it with `default-features = false`.
+# account-credentials. Consumers take it with `default-features = false`.
 srp = ["dep:crypto-bigint", "dep:pbkdf2"]
 # The server half of `srp_apple`, for test servers that impersonate Apple.
 srp-test-server = ["srp"]

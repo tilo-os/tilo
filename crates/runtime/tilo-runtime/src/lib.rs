@@ -112,7 +112,7 @@ pub trait RuntimeServices: Sized {
     fn action_host(&self) -> io::Result<Self::ActionHost>;
 
     /// Construct one transport run for this exact configured audience. Hosts
-    /// with original certified custody override this; client labels never enter.
+    /// with original certified ownership override this; client labels never enter.
     fn mcp_session_factory(
         &self,
         workspace: &str,

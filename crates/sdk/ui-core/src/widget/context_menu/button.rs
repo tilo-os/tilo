@@ -373,13 +373,13 @@ impl crate::widget::ResourceOperations for MenuButton {
 }
 
 impl crate::widget::controls::ActionControls for MenuButton {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        crate::widget::controls::install_control_custody(&mut self.button, domain, attachment);
-        crate::widget::controls::install_control_custody(&mut self.menu, domain, attachment);
+        crate::widget::controls::attach_controls(&mut self.button, domain, attachment);
+        crate::widget::controls::attach_controls(&mut self.menu, domain, attachment);
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

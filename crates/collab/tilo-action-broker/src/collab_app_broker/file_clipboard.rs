@@ -1,4 +1,4 @@
-//! Local Files offers use actual launcher custody and the existing action policy.
+//! Local Files offers use actual launcher ownership and the existing action policy.
 use super::{Arc, JoinedChannel, Rc};
 use crate::BrokerError;
 use crate::services::FileClipboardContext;
@@ -145,7 +145,7 @@ impl JoinedChannel {
 
     /// Name the agent behind the writes Files is about to make for its own
     /// live invocation `parent`, so the filesystem records it beside the
-    /// versions they make. Who acted comes from this broker's custody of that
+    /// versions they make. Who acted comes from this broker's ownership of that
     /// invocation alone, never from the request, and only an agent acting
     /// for the person whose session Files runs in is ever named: a person's
     /// own invocation, an app's, an agent acting for someone else, or no
@@ -304,7 +304,7 @@ fn clipboard_actor(
         let data = pending
             .original
             .as_ref()
-            .ok_or("original clipboard custody unavailable")?;
+            .ok_or("original clipboard ownership unavailable")?;
         data.revalidate_clipboard_origin(state)?;
         let registry = state
             .pending_invocations
@@ -346,7 +346,7 @@ mod attribution_tests {
     use super::attributed_agent;
 
     /// Only an agent acting for the session's own person is ever named; the
-    /// actor always comes from custody, so what is checked here is whom.
+    /// actor always comes from ownership, so what is checked here is whom.
     #[test]
     fn writes_are_attributed_only_to_an_agent_acting_for_the_session_person() {
         let scribe = BrokerActor::agent("scribe").for_person("ada");

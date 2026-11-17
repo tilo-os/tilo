@@ -156,7 +156,7 @@ cargo test --locked -p tilolang-runtime -p tilolang-tilo \
 
 `--config env.…` gives the variable to the tests through cargo. A test fails if the engine running is not the one named.
 
-## The seam
+## The boundary
 
 `crates/lang/tilolang-runtime/src/engine.rs` holds everything the runtime does with wasm,
 written once: the per-process module cache, the instance pools, the profile, import dispatch and

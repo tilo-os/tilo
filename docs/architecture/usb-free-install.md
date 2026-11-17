@@ -162,7 +162,7 @@ map), `prepared_setup` and `migration`. The staged live installer then collects
 and confirms account and startup choices itself; first-boot account creation
 does not require a prepared bundle. This path does not promise migrated files,
 accounts or an enrolled identity. Those require their separately verified
-handoffs. A claimed prepared profile still requires actual encrypted custody;
+handoffs. A claimed prepared profile still requires actual encrypted ownership;
 it must never be fabricated to enter the native Windows route. The current
 prepared-setup staging artifact is Linux-only.
 

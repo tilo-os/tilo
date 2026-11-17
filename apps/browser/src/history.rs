@@ -321,7 +321,7 @@ impl BrowsingHistory {
                 .iter()
                 .any(|key| !self.imported.contains_key(key))
         {
-            return Err(Refusal::new("Invalid private history import ledger"));
+            return Err(Refusal::new("Invalid private history import log"));
         }
         for (key, row) in &self.imported {
             let Some((source, url)) = key.split_once(':') else {

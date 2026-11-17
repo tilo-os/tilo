@@ -2,7 +2,7 @@
 //! pointer, showing it, and carrying out the drag.
 //!
 //! The model itself is [`crate::widget::edge_resize`]: whose edge a point is
-//! ([`seam_owner`]) and what a drag sets ([`EdgeDrag::resize`]). This file only feeds it
+//! ([`border_owner`]) and what a drag sets ([`EdgeDrag::resize`]). This file only feeds it
 //! the strip's geometry and applies its answer, so the hover highlight, the press and every
 //! frame of the drag ask the same rule.
 
@@ -14,7 +14,7 @@ use super::GroupRow;
 use crate::edge_autoscroll::{self, EdgeAutoscroll};
 use crate::time::Instant;
 use crate::widget::edge_resize::{
-    DraggedWindow, EdgeDrag, EdgeGrab, ResizeMode, Seam, WindowEdge, seam_owner,
+    Border, DraggedWindow, EdgeDrag, EdgeGrab, ResizeMode, WindowEdge, border_owner,
 };
 use crate::widget::{RESIZE_HANDLE_PX, Widget, WindowGroup};
 
@@ -46,8 +46,8 @@ impl RowEdgeDrag {
 }
 
 impl GroupRow {
-    /// The window edge a press at `p` would resize, by the seam rule
-    /// ([`seam_owner`]): on a seam, the focused window's edge, else the
+    /// The window edge a press at `p` would resize, by the border rule
+    /// ([`border_owner`]): on a border, the focused window's edge, else the
     /// half's; at either end of a lane, its outer window's outer edge.
     /// `None` off every edge, on a maximized or fullscreen window, or where
     /// the viewport clips the edge away.
@@ -102,14 +102,14 @@ impl GroupRow {
             );
             if zone.contains(p) {
                 let focused = |i: usize| self.groups.get(i).is_some_and(WindowGroup::focused);
-                let seam = Seam {
+                let border = Border {
                     left: a.0,
                     left_rect: left,
                     left_focused: focused(a.0),
                     right_rect: right,
                     right_focused: focused(b.0),
                 };
-                return Some(seam_owner(&seam, p.x));
+                return Some(border_owner(&border, p.x));
             }
         }
         for (k, window) in shown.iter().enumerate() {

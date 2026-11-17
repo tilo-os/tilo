@@ -32,7 +32,7 @@ pub enum CaptureSource<'a> {
 pub struct ObservedOutput<'a> {
     pub node: u32,
     pub serial: u32,
-    /// Same observer custody requirement as `CaptureSource`; an independent
+    /// Same observer ownership requirement as `CaptureSource`; an independent
     /// connected socket, never a duplicate of an already active Gst core.
     pub remote_fd: BorrowedFd<'a>,
 }
@@ -76,7 +76,7 @@ pub struct VoiceAudio {
 impl VoiceAudio {
     #[expect(
         clippy::needless_pass_by_value,
-        reason = "the observed output is a one-shot custody handoff; callers must not reuse it"
+        reason = "the observed output is a one-shot ownership handoff; callers must not reuse it"
     )]
     pub fn new(output: ObservedOutput<'_>) -> Result<Self, AudioError> {
         gst::init().map_err(|_| AudioError::Unavailable)?;
@@ -154,7 +154,7 @@ impl VoiceAudio {
     /// device, codec or capacity error that prevented startup.
     #[expect(
         clippy::needless_pass_by_value,
-        reason = "the capture source is a one-shot custody handoff; callers must not reuse it"
+        reason = "the capture source is a one-shot ownership handoff; callers must not reuse it"
     )]
     pub fn start_capture(
         &mut self,

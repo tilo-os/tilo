@@ -366,7 +366,7 @@ pub(super) struct Models {
     provider: std::sync::RwLock<Arc<dyn ModelProvider>>,
     private_addresses: AtomicBool,
     /// What each person's agents spent today.
-    spend: spend::Ledger,
+    spend: spend::Log,
     /// The runtime a caller that cannot wait asynchronously is answered on
     /// ([`PersonModel::answer_blocking`]).
     runtime: Option<tokio::runtime::Handle>,
@@ -384,7 +384,7 @@ impl Models {
         Self {
             provider: std::sync::RwLock::new(host_provider()),
             private_addresses: AtomicBool::new(false),
-            spend: spend::Ledger::default(),
+            spend: spend::Log::default(),
             runtime: tokio::runtime::Handle::try_current().ok(),
         }
     }

@@ -121,7 +121,7 @@ fn canonical_oauth_accounts() {
     }
     assert!(
         !accounts::vault_dir_in(config.path()).exists(),
-        "projection and open must not create credential custody"
+        "projection and open must not create credential storage"
     );
 }
 

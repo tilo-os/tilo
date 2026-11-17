@@ -10,7 +10,7 @@ use std::{
 };
 use tilo_files::native::atomic::{Privacy, StorageDirectory};
 
-/// Nonserializable root-owned record custody. No frontend-supplied descriptor,
+/// Nonserializable root-owned record ownership. No frontend-supplied descriptor,
 /// callback or deserialized record can construct this lease.
 pub struct InstalledRecordLease {
     path: PathBuf,

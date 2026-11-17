@@ -1464,7 +1464,7 @@ fn a_mouse_pans_the_strip_from_empty_canvas() {
         frame.relayout();
     }
 
-    // Windows and the seams between them cover the strip; canvas shows past the last window once
+    // Windows and the borders between them cover the strip; canvas shows past the last window once
     // the strip is panned to its end.
     let t = ui::time::now();
     for i in 0..40 {

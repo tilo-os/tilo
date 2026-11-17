@@ -1,5 +1,5 @@
 //! Governed agent membership through the ordinary durable invocation surface.
-//! Public arguments select only a closed command; caller custody and signing
+//! Public arguments select only a closed command; caller ownership and signing
 //! authority remain host-owned.
 use super::published_service::{ServiceOutcome, refused};
 use super::{
@@ -269,7 +269,7 @@ impl AppBrokerState {
             argument,
             &actor,
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.member(), workspace, original_request),
+            &self.approval_binding(actor.member(), workspace, original_request),
         )?;
         self.start_invocation_confirmed_for_origin(
             surface.peer_id,
@@ -550,7 +550,7 @@ impl AppBrokerState {
         let original = pending
             .original
             .as_ref()
-            .ok_or("membership original custody unavailable")?;
+            .ok_or("membership original ownership unavailable")?;
         let caller = original.owner_person_certificate(self, workspace, envelope)?;
         let command = membership_command(envelope)?;
         let request = OwnerCommitRequest {

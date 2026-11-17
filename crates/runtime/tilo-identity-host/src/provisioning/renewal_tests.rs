@@ -206,21 +206,21 @@ tilo_test_env::scenario! {
         let identity =
             runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
         let clock = TestClock::at(tilo_clock::unix_now_ns(), 2);
-        let custody = std::rc::Rc::new(Cell::new(false));
-        let available = std::rc::Rc::clone(&custody);
+        let identity_store = std::rc::Rc::new(Cell::new(false));
+        let available = std::rc::Rc::clone(&identity_store);
         *clock.change.borrow_mut() = Some(Box::new(move || available.set(true)));
         let attempts = Cell::new(0);
         keep_device_certificates_renewed(&personal, &paths, &clock, || {
             attempts.set(attempts.get() + 1);
-            if !custody.get() {
+            if !identity_store.get() {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
-                    "identity custody unavailable",
+                    "identity store unavailable",
                 ));
             }
             renew_at(&identity, &paths, &held, clock.now_ns())
         });
-        assert_eq!(attempts.get(), 2, "tried again once custody came");
+        assert_eq!(attempts.get(), 2, "tried again once identity store came");
         assert_eq!(
             *clock.waited.borrow(),
             [None, Some(Duration::from_nanos(12 * HOUR))],

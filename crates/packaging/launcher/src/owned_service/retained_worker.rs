@@ -1,5 +1,5 @@
 //! Private derivative of the exact signed retained worker installation.
-use super::{ServiceAuthority, ServiceCancellation, ServiceCustody, ServiceEndpoint, exited};
+use super::{ServiceAuthority, ServiceCancellation, ServiceEndpoint, ServiceOwnership, exited};
 use std::{
     ffi::CString,
     fs::{File, Metadata},
@@ -143,20 +143,20 @@ impl RetainedWorkerProgram {
         Ok(())
     }
 }
-/// Opaque custody derived only from a retained endpoint's signed installed ELF, exact init pidfd and
+/// Opaque ownership derived only from a retained endpoint's signed installed ELF, exact init pidfd and
 /// current socket peer.
-pub struct RetainedWorkerWitness {
+pub struct RetainedWorkerProof {
     init: OwnedFd,
     namespace: File,
     program: Arc<RetainedWorkerProgram>,
     authority: Arc<dyn ServiceAuthority>,
     cancellation: ServiceCancellation,
-    custody: ServiceCustody,
+    ownership: ServiceOwnership,
     uid: u32,
     gid: u32,
 }
-impl RetainedWorkerWitness {
-    /// Verify the live worker's authority, program and namespace custody.
+impl RetainedWorkerProof {
+    /// Verify the live worker's authority, program and namespace ownership.
     pub fn check(&self) -> io::Result<()> {
         self.authority.check()?;
         if self.cancellation.is_cancelled() || exited(&self.init)? {
@@ -165,16 +165,16 @@ impl RetainedWorkerWitness {
         self.program.check()?;
         let namespace = self.namespace.metadata()?;
         let process_status =
-            std::fs::read_to_string(format!("/proc/{}/stat", self.custody.init_pid))?;
+            std::fs::read_to_string(format!("/proc/{}/stat", self.ownership.init_pid))?;
         let start = process_status
             .rsplit_once(") ")
             .and_then(|(_, f)| f.split_whitespace().nth(19))
             .ok_or(io::ErrorKind::InvalidData)?
             .parse::<u64>()
             .map_err(io::Error::other)?;
-        if start != self.custody.start_ticks
-            || namespace.dev() != self.custody.namespace_dev
-            || namespace.ino() != self.custody.namespace_ino
+        if start != self.ownership.start_ticks
+            || namespace.dev() != self.ownership.namespace_dev
+            || namespace.ino() != self.ownership.namespace_ino
         {
             return Err(refused());
         }
@@ -185,7 +185,7 @@ impl RetainedWorkerWitness {
         Ok(())
     }
     /// Observe only the already-held source task/program/namespace for teardown.
-    pub fn check_retirement_custody(&self) -> io::Result<()> {
+    pub fn check_retirement_ownership(&self) -> io::Result<()> {
         if rustix::process::getuid().as_raw() != 0
             || rustix::process::geteuid().as_raw() != 0
             || exited(&self.init)?
@@ -195,16 +195,16 @@ impl RetainedWorkerWitness {
         self.program.check()?;
         let namespace = self.namespace.metadata()?;
         let process_status =
-            std::fs::read_to_string(format!("/proc/{}/stat", self.custody.init_pid))?;
+            std::fs::read_to_string(format!("/proc/{}/stat", self.ownership.init_pid))?;
         let start = process_status
             .rsplit_once(") ")
             .and_then(|(_, f)| f.split_whitespace().nth(19))
             .ok_or(io::ErrorKind::InvalidData)?
             .parse::<u64>()
             .map_err(io::Error::other)?;
-        if start != self.custody.start_ticks
-            || namespace.dev() != self.custody.namespace_dev
-            || namespace.ino() != self.custody.namespace_ino
+        if start != self.ownership.start_ticks
+            || namespace.dev() != self.ownership.namespace_dev
+            || namespace.ino() != self.ownership.namespace_ino
         {
             return Err(refused());
         }
@@ -214,10 +214,10 @@ impl RetainedWorkerWitness {
         Ok(())
     }
     pub fn pid(&self) -> u32 {
-        self.custody.init_pid
+        self.ownership.init_pid
     }
     pub fn start_time(&self) -> u64 {
-        self.custody.start_ticks
+        self.ownership.start_ticks
     }
     pub fn uid(&self) -> u32 {
         self.uid
@@ -238,7 +238,7 @@ impl RetainedWorkerWitness {
 }
 pub(super) fn same_worker_peer(
     stream: &UnixStream,
-    custody: &ServiceCustody,
+    ownership: &ServiceOwnership,
     uid: u32,
     gid: u32,
 ) -> io::Result<libc::ucred> {
@@ -260,7 +260,7 @@ pub(super) fn same_worker_peer(
     }
     if len != expected_len
         || peer.pid <= 1
-        || peer.pid.cast_unsigned() != custody.init_pid
+        || peer.pid.cast_unsigned() != ownership.init_pid
         || peer.uid != uid
         || peer.gid != gid
     {
@@ -270,58 +270,58 @@ pub(super) fn same_worker_peer(
 }
 impl ServiceEndpoint {
     /// A NEW unread stream to the retained worker only.
-    pub fn connect_pending_worker(&self) -> io::Result<(UnixStream, RetainedWorkerWitness)> {
-        let before = self.custody()?;
+    pub fn connect_pending_worker(&self) -> io::Result<(UnixStream, RetainedWorkerProof)> {
+        let before = self.ownership()?;
         let program = self.retained_program.as_ref().ok_or_else(refused)?.clone();
         program.check()?;
         let gid = self.retained_gid.ok_or_else(refused)?;
         let stream = self.connect()?;
         let peer = same_worker_peer(&stream, &before, self.expected_uid, gid)?;
-        if self.custody()? != before {
+        if self.ownership()? != before {
             return Err(refused());
         }
-        let witness = RetainedWorkerWitness {
+        let proof = RetainedWorkerProof {
             init: self.init.try_clone()?,
             namespace: self.namespace.try_clone()?,
             program,
             authority: self.authority.clone(),
             cancellation: self.cancellation.clone(),
-            custody: before,
+            ownership: before,
             uid: peer.uid,
             gid: peer.gid,
         };
-        witness.check()?;
-        Ok((stream, witness))
+        proof.check()?;
+        Ok((stream, proof))
     }
 }
 
 /// Narrow derivative of one genuine retained provider endpoint.
 pub struct RetainedWorkerConnector {
     endpoint: ServiceEndpoint,
-    custody: ServiceCustody,
+    ownership: ServiceOwnership,
 }
 impl RetainedWorkerConnector {
     /// Refuses current authority/cancellation, namespace or held init changes.
-    pub fn custody(&self) -> io::Result<ServiceCustody> {
-        let actual = self.endpoint.custody()?;
-        if actual != self.custody {
+    pub fn ownership(&self) -> io::Result<ServiceOwnership> {
+        let actual = self.endpoint.ownership()?;
+        if actual != self.ownership {
             return Err(refused());
         }
         Ok(actual)
     }
-    /// Fresh unread same-provider stream with actual signed ELF/peer witness.
-    pub fn connect_unread(&self) -> io::Result<(UnixStream, RetainedWorkerWitness)> {
-        self.custody()?;
+    /// Fresh unread same-provider stream with actual signed ELF/peer proof.
+    pub fn connect_unread(&self) -> io::Result<(UnixStream, RetainedWorkerProof)> {
+        self.ownership()?;
         let value = self.endpoint.connect_pending_worker()?;
-        self.custody()?;
+        self.ownership()?;
         Ok(value)
     }
 }
 impl ServiceEndpoint {
     /// Retain only this genuine signed worker endpoint before moving its supervisor into projection
-    /// custody.
+    /// ownership.
     pub fn retain_worker_connector(&self) -> io::Result<RetainedWorkerConnector> {
-        let before = self.custody()?;
+        let before = self.ownership()?;
         let program = self.retained_program.as_ref().ok_or_else(refused)?.clone();
         program.check()?;
         let gid = self.retained_gid.ok_or_else(refused)?;
@@ -336,12 +336,12 @@ impl ServiceEndpoint {
             authority: self.authority.clone(),
             cancellation: self.cancellation.clone(),
         };
-        if self.custody()? != before || endpoint.custody()? != before {
+        if self.ownership()? != before || endpoint.ownership()? != before {
             return Err(refused());
         }
         Ok(RetainedWorkerConnector {
             endpoint,
-            custody: before,
+            ownership: before,
         })
     }
 }

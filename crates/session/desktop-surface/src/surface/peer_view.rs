@@ -131,7 +131,7 @@ pub enum PeerOutcome {
 
 /// How a stream stands, as its tile publishes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Standing {
+pub enum StreamState {
     /// The sender announced the stream; no picture has arrived yet.
     Started,
     /// A picture is in the tile.
@@ -280,7 +280,7 @@ pub struct PeerRead {
     /// Whether this viewer may type into and click the window.
     pub writable: bool,
     /// How the stream stands.
-    pub standing: Standing,
+    pub state: StreamState,
     /// A unit went missing and the sender has been asked for a keyframe.
     pub awaiting_keyframe: bool,
     /// Whether the window's page is what this tile draws, rather than a picture of it.
@@ -364,7 +364,7 @@ pub struct PeerSurface {
     /// The share's own rule for this viewer's input, asked before every event rather than copied
     /// into a second flag.
     check: ShareRegistry,
-    standing: Standing,
+    state: StreamState,
     awaiting_keyframe: bool,
     picture: Option<Picture>,
     picture_seq: u64,
@@ -429,7 +429,7 @@ impl PeerSurface {
             height: start.height,
             writable: start.writable,
             check,
-            standing: Standing::Started,
+            state: StreamState::Started,
             awaiting_keyframe: false,
             picture: None,
             picture_seq: 0,
@@ -493,7 +493,7 @@ impl PeerSurface {
         self.ended
     }
 
-    /// Changes whenever anything the tile shows changes: a picture, the stream's standing, a
+    /// Changes whenever anything the tile shows changes: a picture, the stream's state, a
     /// keyframe asked for.
     #[must_use]
     pub fn revision(&self) -> u64 {
@@ -511,7 +511,7 @@ impl PeerSurface {
             app_id: self.app_id.to_string(),
             title: self.title.to_string(),
             writable: self.writable,
-            standing: self.standing.clone(),
+            state: self.state.clone(),
             awaiting_keyframe: self.awaiting_keyframe,
             page: self.page.is_some(),
             picture: self
@@ -541,7 +541,7 @@ impl PeerSurface {
                     "peer-window-view-only"
                 })),
                 preview: Some(bounded(
-                    &self.standing_line(),
+                    &self.state_line(),
                     ResourcePresentation::MAX_PREVIEW_BYTES,
                 )),
             })
@@ -562,12 +562,14 @@ impl PeerSurface {
 
     /// A sentence for the resource's preview: how the stream stands, in the language of the
     /// person reading it.
-    fn standing_line(&self) -> String {
-        match &self.standing {
-            Standing::Started if self.awaiting_keyframe => t("peer-window-picture-lost"),
-            Standing::Started => t("peer-window-first-picture"),
-            Standing::Pictured => t("peer-window-live"),
-            Standing::Ended { why } => t_args("peer-window-ended", &[("why", t(why.key()).into())]),
+    fn state_line(&self) -> String {
+        match &self.state {
+            StreamState::Started if self.awaiting_keyframe => t("peer-window-picture-lost"),
+            StreamState::Started => t("peer-window-first-picture"),
+            StreamState::Pictured => t("peer-window-live"),
+            StreamState::Ended { why } => {
+                t_args("peer-window-ended", &[("why", t(why.key()).into())])
+            }
         }
     }
 
@@ -622,7 +624,7 @@ impl PeerSurface {
         };
         let changed = page.borrow_mut().apply(payload);
         if changed {
-            self.standing = Standing::Pictured;
+            self.state = StreamState::Pictured;
             self.revision = self.revision.wrapping_add(1);
         }
         changed
@@ -712,7 +714,7 @@ impl PeerSurface {
             height: frame.height,
         });
         self.picture_seq = self.last_seq;
-        self.standing = Standing::Pictured;
+        self.state = StreamState::Pictured;
         self.revision = self.revision.wrapping_add(1);
         Some(if dropped {
             PeerOutcome::DroppedOldest
@@ -829,7 +831,7 @@ impl PeerSurface {
             return;
         }
         self.ended = true;
-        self.standing = Standing::Ended { why };
+        self.state = StreamState::Ended { why };
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -846,7 +848,7 @@ impl PeerSurface {
         if self.ended {
             return Box::new(
                 EmptyState::new(elsewhere::title(&self.app_id, &self.sharer))
-                    .with_message(self.standing_line()),
+                    .with_message(self.state_line()),
             );
         }
         let alt = t_args(
@@ -1210,16 +1212,16 @@ impl PeerSurfaces {
     }
 
     /// The host's session read why each window that runs on another device is not shown in its
-    /// tab. A tab `standings` leaves out is one nobody said anything of. The tabs whose notice
+    /// tab. A tab `states` leaves out is one nobody said anything of. The tabs whose notice
     /// says something else now.
     pub fn set_elsewhere(
         &mut self,
-        standings: impl IntoIterator<Item = (TabId, Elsewhere)>,
+        states: impl IntoIterator<Item = (TabId, Elsewhere)>,
     ) -> Vec<TabId> {
-        let read: HashMap<TabId, Elsewhere> = standings.into_iter().collect();
+        let read: HashMap<TabId, Elsewhere> = states.into_iter().collect();
         let mut changed: Vec<TabId> = read
             .iter()
-            .filter(|(tab, standing)| self.elsewhere.get(tab) != Some(standing))
+            .filter(|(tab, state)| self.elsewhere.get(tab) != Some(state))
             .map(|(tab, _)| *tab)
             .chain(
                 self.elsewhere
@@ -1693,11 +1695,11 @@ impl super::DesktopHandle {
 
     /// The host's session read why each window that runs on another device is not shown in its
     /// tab: not shared, shared and still on its way, or on a device that is away or left. Each
-    /// tab says so from its next pass on; a tab `standings` leaves out says only where its window
+    /// tab says so from its next pass on; a tab `states` leaves out says only where its window
     /// runs.
-    pub fn set_elsewhere(&self, standings: Vec<(TabId, Elsewhere)>) {
+    pub fn set_elsewhere(&self, states: Vec<(TabId, Elsewhere)>) {
         let peers = Rc::clone(&self.shared.borrow().peers);
-        let changed = peers.borrow_mut().set_elsewhere(standings);
+        let changed = peers.borrow_mut().set_elsewhere(states);
         for tab in changed {
             self.rebuild(tab);
         }

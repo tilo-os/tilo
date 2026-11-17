@@ -44,7 +44,7 @@
 #                      the session follows this machine's configuration.
 #   --model-provider SPEC  give the session's person a model provider, as
 #                      Settings' provider pane does (provider settings, and
-#                      the key in the model gateway's own custody), before
+#                      the key in the model gateway's own ownership), before
 #                      the session starts. SPEC is PRESET:MODEL (a Settings
 #                      preset slug: anthropic, openai, gemini, openrouter,
 #                      ollama, ...) with the key from $TILO_DEV_MODEL_KEY or

@@ -5047,7 +5047,7 @@ fn the_empty_library_keeps_saying_why_an_open_failed() {
     assert_eq!(
         app.open_failure.as_deref(),
         Some(failure),
-        "closing the toast leaves the cause standing"
+        "closing the toast leaves the cause state"
     );
     assert!(
         app.begin_import(PathBuf::from("/home/reader/Books/y.epub"), ImportKind::Open)

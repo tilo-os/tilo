@@ -40,7 +40,7 @@ impl Machines for Local {
     }
 }
 
-/// Ada's standing yes for every workspace.
+/// Ada's lasting yes for every workspace.
 struct Yes;
 
 impl Permits for Yes {
@@ -96,7 +96,7 @@ impl Kept {
         }
     }
 
-    /// Give `agent` `words` under its person's standing yes, what it says
+    /// Give `agent` `words` under its person's lasting yes, what it says
     /// going to `written`.
     fn tell(
         &self,
@@ -104,7 +104,7 @@ impl Kept {
         words: &str,
         written: &Arc<Written>,
     ) -> Result<(), NotTold> {
-        self.let_tell(agent, words, written, Permit::Standing)
+        self.let_tell(agent, words, written, Permit::Lasting)
     }
 
     fn let_tell(

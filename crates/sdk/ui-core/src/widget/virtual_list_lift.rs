@@ -1,5 +1,5 @@
 //! Where the boxes a list draws for its rows stand, and which rows take a lift: the strip a
-//! selection paints, the band over a group and the seam a drop lands on all read the view's
+//! selection paints, the band over a group and the boundary a drop lands on all read the view's
 //! tops, and a list that follows its end stands its rows down at its foot.
 
 use super::ListModel;

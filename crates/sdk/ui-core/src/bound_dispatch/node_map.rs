@@ -115,7 +115,7 @@ impl BoundNodeMap {
         }
     }
 
-    /// Collect custody from a separately retained live root while inheriting
+    /// Collect ownership from a separately retained live root while inheriting
     /// bindings only through the presentation layout. Chrome stays unbound.
     /// # Safety
     /// Both roots and every admitted pointer belong to the same exclusively

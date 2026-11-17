@@ -506,7 +506,7 @@ impl App {
 
     fn apply_pending_owner_view(&mut self) {
         // A body may become ready after another Hello or reconnect. Recheck
-        // the original route witness before applying any deferred position.
+        // the original route observation before applying any deferred position.
         if self.private_continuity_route().is_none()
             || self.accessibility.focus_trap_active
             || self.withholds_captures()

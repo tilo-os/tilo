@@ -9,8 +9,8 @@ mod account_engine_loop;
 mod google_settings;
 #[path = "host_mail_session.rs"]
 mod host_mail_session;
-#[path = "oauth_custody.rs"]
-mod oauth_custody;
+#[path = "oauth_credentials.rs"]
+mod oauth_credentials;
 #[path = "perf_interaction.rs"]
 mod perf_interaction;
 #[path = "recipient_headers.rs"]

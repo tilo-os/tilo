@@ -1,20 +1,20 @@
 //! Selected account transport over the canonical portable-account codec.
 //!
-//! The envelope format, domains and custody hand-off live in
-//! `account_custody::portable`. This module adds what the installer needs on
+//! The envelope format, domains and ownership hand-off live in
+//! `account_credentials::portable`. This module adds what the installer needs on
 //! top: a capability-rooted read and atomic publish of the artifact file, and
 //! the `Connector` view over a destination configuration root. PreparedSetup
 //! and installer writer integration remain caller work.
 use std::io::{Read, Seek, Write};
 use std::path::Path;
 
-use account_custody::portable::{self, MAX_ARTIFACT, PortableError};
+use account_credentials::portable::{self, MAX_ARTIFACT, PortableError};
 use accounts::AccountId;
 use tilo_seal::SymmetricKey;
 
 use super::{ConnectionError, Connector};
 
-pub use account_custody::portable::{PasswordSealedAccounts, SealedAccounts};
+pub use account_credentials::portable::{PasswordSealedAccounts, SealedAccounts};
 
 fn transfer_error(error: PortableError) -> ConnectionError {
     match error {
@@ -59,7 +59,7 @@ impl Connector {
 
     /// Import an artifact file only when its complete account ID set exactly
     /// matches the caller's authenticated setup manifest. Rejects missing,
-    /// extra or duplicate requested IDs before touching target custody.
+    /// extra or duplicate requested IDs before touching target ownership.
     pub fn import_selected_accounts_matching(
         &self,
         path: &Path,
@@ -115,8 +115,8 @@ impl Connector {
     }
 
     /// Explicit selected local accounts only. Read credentials from canonical
-    /// custody, then seal them under a fresh caller-owned transport key. Caller
-    /// must wrap that key in authenticated PreparedSetup custody and keep its
+    /// ownership, then seal them under a fresh caller-owned transport key. Caller
+    /// must wrap that key in authenticated PreparedSetup ownership and keep its
     /// setup binding; neither source vault files nor source keys are portable.
     pub fn seal_selected_accounts(
         &self,
@@ -129,7 +129,7 @@ impl Connector {
     }
 
     /// Authenticate the complete selected bundle before any destination write,
-    /// then reseal each credential under destination canonical vault custody.
+    /// then reseal each credential under destination canonical vault storage.
     /// Exact retries succeed; conflicting metadata or credentials fail without
     /// replacing existing accounts. Caller owns/validates the destination home.
     pub fn import_sealed_accounts(

@@ -57,7 +57,7 @@ pub enum CommitOperation {
     /// the variants after it at their encoded positions, and every binding of
     /// it is refused.
     RetiredWorkspaceTask,
-    /// Original authenticated person command; governor signing custody is
+    /// Original authenticated person command; governor signing ownership is
     /// supplied out of band by the installed owning host, never by arguments.
     WorkspaceMembershipCommand {
         invocation: uuid::Uuid,
@@ -110,7 +110,7 @@ pub enum CommitTarget {
         invocation: uuid::Uuid,
     },
     /// A device this device admitted into the workspace, answered through the
-    /// workspace's join ledger; not a caller-facing operation.
+    /// workspace's join log; not a caller-facing operation.
     JoinAdmission {
         device: [u8; 32],
     },

@@ -118,7 +118,7 @@ fn frame_with_a_card() -> (FrameHarness, Seen) {
 }
 
 /// Where the frame stood the card, as its published controls read.
-fn standing(frame: &FrameHarness) -> vello::kurbo::Rect {
+fn resting_rect(frame: &FrameHarness) -> vello::kurbo::Rect {
     let inspection = frame.inspection();
     let card = inspection
         .root
@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
         let (mut frame, seen) = frame_with_a_card();
         // Where the frame stood the card: a press inside it is the card's, and
         // the root's own handling does not see it.
-        let at = standing(&frame).center();
+        let at = resting_rect(&frame).center();
         frame.send_host_event(&crate::synthetic_input::cursor_moved(at.x, at.y));
         frame.send_host_event(&crate::synthetic_input::mouse_input(
             ElementState::Pressed,
@@ -160,7 +160,7 @@ tilo_test_env::scenario! {
     phase the_keys_stay_with_the_card_after_a_press_on_it;
     {
         let (mut frame, seen) = frame_with_a_card();
-        let at = standing(&frame).center();
+        let at = resting_rect(&frame).center();
         frame.send_host_event(&crate::synthetic_input::cursor_moved(at.x, at.y));
         frame.send_host_event(&crate::synthetic_input::mouse_input(
             ElementState::Pressed,

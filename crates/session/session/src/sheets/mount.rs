@@ -239,7 +239,7 @@ fn mount_lock_view(
         options.scale,
     ) {
         Ok(sheet) => {
-            let sheet = sheet.standing_over_lock();
+            let sheet = sheet.over_lock();
             let state = sheet.state().clone();
             state.presentation().cover_every_display();
             let sheet = sheet.layer();

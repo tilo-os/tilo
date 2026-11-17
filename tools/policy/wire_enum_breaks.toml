@@ -206,7 +206,7 @@ reason = "the rows a writer's operation names are new in this type and no build 
 [[break]]
 file = "crates/runtime/legacy-vm/src/hosted/size.rs"
 enum = "VmSize"
-reason = "drops `Browser`, its last variant, so every other variant keeps its position: only a browser environment's VM was of that size, and its meter was deleted with it when it stopped and it billed no ledger, so no stored byte names it; the hosted-VM socket that carried it is between one host's service and its member, which ship together"
+reason = "drops `Browser`, its last variant, so every other variant keeps its position: only a browser environment's VM was of that size, and its meter was deleted with it when it stopped and it billed no log, so no stored byte names it; the hosted-VM socket that carried it is between one host's service and its member, which ship together"
 
 [[break]]
 file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
@@ -406,3 +406,23 @@ reason = "renames the RecordContent variants to DocumentContent in place: device
 file = "crates/collab/actions/src/remote/workspace_activity.rs"
 enum = "DetailAction"
 reason = "renames UndoRecord to UndoEntry in place: stored formats change with the code and nothing written before is read"
+
+[[break]]
+file = "crates/collab/actions/src/remote/confirmation.rs"
+enum = "Confirmation"
+reason = "renames Witnessed to Approved in place: stored formats change with the code and nothing written before is read"
+
+[[break]]
+file = "crates/collab/actions/src/remote/content_put.rs"
+enum = "ContentPutStep"
+reason = "renames Standing to Progress in place: stored formats change with the code and nothing written before is read"
+
+[[break]]
+file = "crates/collab/tilo-unlock-protocol/src/wire.rs"
+enum = "RefusalReason"
+reason = "renames NotACustodian to NotAKeyHolder in place: both devices of an unlock speak one build's format"
+
+[[break]]
+file = "crates/platform/imager-backend/src/home_transfer/promotion.rs"
+enum = "Kind"
+reason = "renames InactiveCustody to InactiveOwnership in place: stored formats change with the code and nothing written before is read"

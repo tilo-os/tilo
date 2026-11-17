@@ -212,7 +212,7 @@ async fn certified_native_checkout_refuses_unattested_revoked_and_ambiguous_chan
                             start
                         )
                         .is_none(),
-                    "{mode} cannot select checkout custody"
+                    "{mode} cannot select checkout ownership"
                 );
                 drop(second);
                 drop(channel);

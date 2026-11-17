@@ -29,12 +29,12 @@ tilo_test_env::scenario! {
         server.require_client_secret("verbatim-source-secret");
         server.accept_refresh_token("source-refresh");
         let target = temp.path().join("target");
-        let custodian = account_custody::Custodian::for_root(Some(target.clone())).with_provider(
+        let credential_store = account_credentials::CredentialStore::for_root(Some(target.clone())).with_provider(
             OAuthCloud::GoogleDrive,
             server.provider(),
             "different-tilo-client",
         );
-        let connector = Connector::with_custodian(target.clone(), custodian);
+        let connector = Connector::with_credential_store(target.clone(), credential_store);
         let id = connector.import_rclone(&roots, selected).unwrap();
         assert_eq!(server.refreshes(), 1);
         assert_eq!(connector.import_rclone(&roots, selected).unwrap(), id);
@@ -55,7 +55,7 @@ tilo_test_env::scenario! {
         restored
             .import_sealed_accounts(&sealed, &key, b"rclone-transport")
             .unwrap();
-        let destination = account_custody::Custodian::for_root(Some(restored_root.clone()))
+        let destination = account_credentials::CredentialStore::for_root(Some(restored_root.clone()))
             .with_provider(
                 OAuthCloud::GoogleDrive,
                 server.provider(),
@@ -89,20 +89,20 @@ tilo_test_env::scenario! {
             hex::encode(Sha256::digest(b"source-refresh")),
         )
         .unwrap();
-        assert!(account_custody::imported_oauth_matches(
+        assert!(account_credentials::imported_oauth_matches(
             &secret,
             &registration
         ));
         assert!(matches!(
             destination.oauth_access_token(
                 &id,
-                account_custody::OAuthUse::new(
-                    account_custody::OAuthIssuer::Microsoft,
-                    account_custody::Capability::Files
+                account_credentials::OAuthUse::new(
+                    account_credentials::OAuthIssuer::Microsoft,
+                    account_credentials::Capability::Files
                 ),
                 false
             ),
-            Err(account_custody::CustodyError::NeedsAuthentication)
+            Err(account_credentials::CredentialError::NeedsAuthentication)
         ));
         destination.revoke(store.get(&id).unwrap(), &secret);
         assert!(server.revoked().is_empty());
@@ -156,7 +156,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase rclone_reviewed_remote_root_changes_require_new_review_and_keep_distinct_custody;
+    phase rclone_reviewed_remote_root_changes_require_new_review_and_keep_distinct_ownership;
     {
         let temporary = tempfile::tempdir().unwrap();
         let config = temporary.path().join("source/.config");
@@ -172,9 +172,9 @@ tilo_test_env::scenario! {
         let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
         issuer.accept_refresh_token("source-refresh");
         let target = temporary.path().join("target");
-        let connector = Connector::with_custodian(
+        let connector = Connector::with_credential_store(
             target.clone(),
-            account_custody::Custodian::for_root(Some(target.clone())).with_provider(
+            account_credentials::CredentialStore::for_root(Some(target.clone())).with_provider(
                 OAuthCloud::GoogleDrive,
                 issuer.provider(),
                 "different-client",

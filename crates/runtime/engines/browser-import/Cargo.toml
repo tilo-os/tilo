@@ -50,10 +50,10 @@ browser-continuity = { workspace = true, features = ["native"], optional = true 
 # it, to write the database it reads back.
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"], optional = true }
 tempfile = { workspace = true, optional = true }
-# The website-session codecs, whose account custody the accounts engine
+# The website-session codecs, whose account credentials the accounts engine
 # below provides.
 tilo-browser-sessions = { path = "../../../platform/tilo-browser-sessions", optional = true }
-# Account custody, which the session codecs use, comes from its own engine
+# Account credentials, which the session codecs use, comes from its own engine
 # library: one copy in the app's process.
 tilo-accounts-engine = { path = "../accounts", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole

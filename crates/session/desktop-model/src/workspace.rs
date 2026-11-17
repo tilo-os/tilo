@@ -727,7 +727,7 @@ impl Workspace {
     /// The people who may read the whole workspace at `now`, each with when that
     /// lapses (Unix seconds, exclusive): `None` for its members and anyone
     /// granted until revoked, the end of a time-limited grant otherwise. A
-    /// grant that ends with the session is no standing reach and is left out.
+    /// grant that ends with the session is no access reach and is left out.
     #[must_use]
     pub fn workspace_readers_at(&self, now: u64) -> Vec<(UserId, Option<u64>)> {
         let workspace_node = self.node();

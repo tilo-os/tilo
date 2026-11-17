@@ -113,7 +113,7 @@ fn root() -> io::Result<Arc<PinnedDirectory>> {
     // SAFETY: geteuid only observes the current native helper's credentials.
     if rustix::process::geteuid().as_raw() != 0 {
         return Err(changed(
-            "Completed installer generation requires root custody",
+            "Completed installer generation requires root ownership",
         ));
     }
     let pin = PinnedDirectory::open_absolute(Path::new(ROOT))?;
@@ -136,7 +136,7 @@ fn publish(pin: &Arc<PinnedDirectory>, name: &str, bytes: &[u8]) -> io::Result<(
         Ok(actual) if actual == bytes => {}
         Ok(_) => {
             return Err(changed(
-                "Installer generation conflicts with existing custody",
+                "Installer generation conflicts with existing ownership",
             ));
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -180,7 +180,7 @@ fn original(
             Ok(true)
         }
         _ => Err(changed(
-            "Original pending installer custody is incomplete or changed",
+            "Original pending installer ownership is incomplete or changed",
         )),
     }
 }
@@ -372,7 +372,7 @@ pub(super) fn adopt(review: &CompletedBootReview<'_>, cancel: &AtomicBool) -> io
         match bounded_file(parent, name, BOUND) {
             Ok(actual) if actual == bytes => Ok(()),
             Ok(_) => Err(changed(
-                "Installer generation conflicts with existing custody",
+                "Installer generation conflicts with existing ownership",
             )),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 pending_bytes = pending_bytes
@@ -481,18 +481,18 @@ pub(super) fn adopt(review: &CompletedBootReview<'_>, cancel: &AtomicBool) -> io
     }
     check_cancel(cancel)?;
     publish(&root, SELECTOR, &record_bytes)?;
-    RunCustody::open()?.ok_or_else(invalid)?.validate()?;
+    RunOwnership::open()?.ok_or_else(invalid)?.validate()?;
     review.validate(cancel)
 }
 /// Constructor reads only the fixed root-owned namespace; it grants no access
 /// from a caller-supplied receipt, locator, generation name or filesystem path.
-pub(super) struct RunCustody {
+pub(super) struct RunOwnership {
     root: Arc<PinnedDirectory>,
     generation: Arc<PinnedDirectory>,
     pub(super) record: Record,
     bytes: Vec<u8>,
 }
-impl RunCustody {
+impl RunOwnership {
     pub(super) fn open() -> io::Result<Option<Self>> {
         let root = root()?;
         let bytes = match bounded_file(&root, SELECTOR, BOUND) {
@@ -598,7 +598,7 @@ impl RunCustody {
     }
 }
 pub fn selected_generation() -> io::Result<PathBuf> {
-    match RunCustody::open()? {
+    match RunOwnership::open()? {
         Some(c) => {
             c.validate()?;
             Ok(c.path())

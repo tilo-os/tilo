@@ -8,7 +8,7 @@ pub use native::review;
 #[cfg(not(target_os = "linux"))]
 pub fn review(
     operation: &std::path::Path,
-    preparation: std::sync::Arc<dyn crate::migration_review::InventoryScratchCustody>,
+    preparation: std::sync::Arc<dyn crate::migration_review::InventoryScratchOwnership>,
     current: crate::prepared_identity::DraftLock,
 ) -> std::io::Result<std::sync::Arc<crate::migration_review::InventoryScratch>> {
     let _ = (operation, preparation, current);

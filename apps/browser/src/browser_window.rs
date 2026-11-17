@@ -72,7 +72,7 @@ pub struct BrowserWindow {
     presented: Option<(u64, u64)>,
     /// Who opens the person's signed-in website accounts here.
     person: Option<[u8; 32]>,
-    /// Wakes the window when an account's custody answers.
+    /// Wakes the window when an account's ownership answers.
     waker: Option<ui::WakeHandle>,
     rect: Rect,
     dirty: bool,
@@ -161,7 +161,7 @@ impl BrowserWindow {
     }
 
     /// Open the person's signed-in website accounts as `person`, waking the window
-    /// through `waker` as their custody answers.
+    /// through `waker` as their ownership answers.
     pub(crate) fn attach_services(&mut self, person: Option<[u8; 32]>, waker: ui::WakeHandle) {
         self.person = person;
         self.waker = Some(waker);
@@ -210,15 +210,18 @@ impl BrowserWindow {
                 | BrowserEffect::OpenServiceSession { .. }
                 | BrowserEffect::RetryForgetServiceSession { .. }
                 | BrowserEffect::ForgetServiceSession { .. }
-        ) && !self.page.browsing_mode().holds_account_custody()
+        ) && !self.page.browsing_mode().holds_account_credentials()
         {
-            // The window's custody is fixed when it opens, so what it publishes its
+            // The window's ownership is fixed when it opens, so what it publishes its
             // page actions as stays true while it is open.
-            return Err(crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_CUSTODY));
+            return Err(crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_OWNERSHIP));
         }
         match &effect {
             BrowserEffect::ListServiceSessions => {
-                let waker = self.waker.clone().ok_or("Account custody is unavailable")?;
+                let waker = self
+                    .waker
+                    .clone()
+                    .ok_or("Account credentials is unavailable")?;
                 self.page.begin_service_list(cx.reply(), waker)?;
                 return Ok(Effected::Pending);
             }

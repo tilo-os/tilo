@@ -1,6 +1,6 @@
 //! The mail connector process: the one place IMAP and SMTP are spoken for a tilolang app whose
 //! types hold a mail server's resources. The session's launcher starts it for the app, in the
-//! app's sandbox (the network and custody its manifest declares for the origin), and it lives
+//! app's sandbox (the network and ownership its manifest declares for the origin), and it lives
 //! whether or not a window of the app is open. Each instance of the app that runs attaches over
 //! a socket the session hands both ([`crate::remote::RemoteConnector`] at the other end).
 //!

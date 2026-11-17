@@ -24,7 +24,7 @@ pub struct MenuEntry {
     item: MenuItem,
     run: Option<Rc<dyn Fn()>>,
     /// What choosing it presses, when the view bound it: the action runs through the area's
-    /// custody, so a press of the row and anyone else running the action take the one path.
+    /// ownership, so a press of the row and anyone else running the action take the one path.
     press: crate::widget::Press,
     /// An emoji bar's way to the emoji picker: set when its last cell was chosen, and where
     /// the picked emoji goes.
@@ -905,16 +905,16 @@ impl super::Decorator for ContextMenuArea {
 }
 
 impl crate::widget::controls::ActionControls for ContextMenuArea {
-    fn install_control_custody(
+    fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
+        attachment: crate::control_domain::DomainAttachment,
     ) {
-        crate::widget::controls::install_control_custody(&mut *self.content, domain, attachment);
+        crate::widget::controls::attach_controls(&mut *self.content, domain, attachment);
         for press in &self.presses {
-            press.install_custody(domain, attachment);
+            press.attach(domain, attachment);
         }
-        crate::widget::controls::install_control_custody(&mut self.menu, domain, attachment);
+        crate::widget::controls::attach_controls(&mut self.menu, domain, attachment);
     }
 
     /// A row pressed before the menu closed hands its invocation over here.

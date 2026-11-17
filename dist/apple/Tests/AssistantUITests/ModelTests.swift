@@ -87,7 +87,7 @@ final class ModelTests: XCTestCase {
         try await until { model.conversation(.main).isLoaded }
         let kept = await model.keep(Secret("correct horse battery staple"), for: "linkedin")
         XCTAssertTrue(kept)
-        try await until { model.conversation(.main).items.first?.content.secret?.standing == .kept }
+        try await until { model.conversation(.main).items.first?.content.secret?.state == .kept }
         var held = ""
         dump(model.conversations, to: &held)
         dump(model.drafts, to: &held)

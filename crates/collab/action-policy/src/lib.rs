@@ -37,11 +37,11 @@ pub mod entry;
 mod grant;
 mod kind;
 mod member;
+mod member_access;
 mod path;
 mod person;
 pub mod roles;
 pub mod share;
-mod standing;
 pub mod turn;
 mod workspace;
 
@@ -77,8 +77,8 @@ pub use kind::{ActionKind, KindSet};
 pub use member::{
     Acting, Actor, AgentSessionId, AutomationId, DIRECT_CONVERSATION_PREFIX, MemberId, ResourceId,
 };
+pub use member_access::MemberAccess;
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
 pub use person::{PersonId, PersonIdError};
 pub use roles::{Preset, PresetError, Rule};
-pub use standing::Standing;
 pub use workspace::{Change, Refusal, WorkspacePolicy};

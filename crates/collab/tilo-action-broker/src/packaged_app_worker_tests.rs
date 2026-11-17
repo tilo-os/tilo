@@ -86,7 +86,7 @@ fn launched_app_connection(
 /// A report of one edit on `route`, made by `env`'s person.
 fn edit_report(env: &Environment, route: &CrdtRoute) -> runtime_collab::LocalDocumentActionReport {
     let mut request = crate::local_document_action::Request {
-        custody: Some(runtime_collab::committed_document::ConnectionSnapshot {
+        ownership: Some(runtime_collab::committed_document::ConnectionSnapshot {
             root: env.cert.user_public_key,
             device: env.cert.device_public_key,
             agent: None,

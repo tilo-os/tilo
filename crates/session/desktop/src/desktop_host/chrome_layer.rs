@@ -509,7 +509,7 @@ impl DesktopChrome {
     }
 
     /// Take down the widgets whose surface the stack took down.
-    /// The stack is the one ledger of what stands over the shell: when another surface comes up —
+    /// The stack is the one log of what stands over the shell: when another surface comes up —
     /// the person opened it, the session did, or Escape took one away — the part closes there, and
     /// the widget that draws it closes here so the two never disagree about what the person sees.
     /// Each closing is reported back to the stack, which is how it hears the widget followed
@@ -556,11 +556,11 @@ impl DesktopChrome {
     fn follow_notices(&mut self) -> bool {
         let fallback =
             crate::overlays::place_on(self.rect, Part::Centre.anchor(), Part::Centre.size())
-                .map(|standing| standing.room);
+                .map(|placement| placement.room);
         let place = self
             .overlays
             .place(Part::Centre)
-            .map(|standing| standing.room)
+            .map(|placement| placement.room)
             .or(fallback);
         let Some(notices) = self.notices.as_mut() else {
             return false;
@@ -646,7 +646,7 @@ impl DesktopChrome {
     }
 
     /// Where the overview stands while the shell spans several displays: on the one the person works
-    /// on, under its bar, never across the seam.
+    /// on, under its bar, never across the border.
     fn overview_area(&self) -> Option<Rect> {
         self.working_display().map(|display| Rect {
             y0: display.y0 + f64::from(TOPBAR_HEIGHT_PX),
@@ -1613,7 +1613,7 @@ impl DesktopChrome {
     }
 
     /// Where the strip ribbon and rail stand: under the bar on the display the person works on,
-    /// never across the seam.
+    /// never across the border.
     fn navigation_area(&self) -> Rect {
         self.working_display()
             .map_or(self.content, |display| display.intersect(self.content))
@@ -1934,7 +1934,7 @@ impl DesktopChrome {
         };
         let ask = chrome.snapshot().identify;
         let asked = ask.as_ref().map(|ask| ask.id);
-        let standing = self.identify.is_up(now);
+        let is_up = self.identify.is_up(now);
         self.identify.follow(ask, now);
         if self.identify.is_up(now) {
             let tree = chrome.tree();
@@ -1951,7 +1951,7 @@ impl DesktopChrome {
                 .collect();
         }
         let up = self.identify.is_up(now);
-        let changed = asked != self.answered || standing != up;
+        let changed = asked != self.answered || is_up != up;
         self.answered = asked;
         changed
     }
@@ -2595,7 +2595,7 @@ impl Widget for DesktopChrome {
     }
 
     /// Focus reaches the chrome while a surface it draws holds the keyboard,
-    /// so a reader standing in the emoji card stays there as the chrome
+    /// so a reader placement in the emoji card stays there as the chrome
     /// rebuilds under it rather than falling back to the window.
     fn is_focusable(&self) -> bool {
         self.overlays.target().part().is_some_and(Part::is_chrome)

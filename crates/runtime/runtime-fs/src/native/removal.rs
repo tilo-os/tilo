@@ -1,4 +1,4 @@
-//! Host-bound private same-mount removal custody. No pathname constructs it.
+//! Host-bound private same-mount removal ownership. No pathname constructs it.
 use super::{
     Arc, Dir, DirectoryGrant, EntryName, FsError, FsRight, FsSession, GrantLease, MetadataExt,
     NativeIdentity, NativeLocator, OFlags, io_error, lock,
@@ -10,7 +10,7 @@ use std::os::unix::fs::MetadataExt as StdMetadataExt;
 
 type ReplacementIdentities = ([u64; 2], [u64; 2], [u64; 2]);
 
-pub(crate) struct RemovalCustody {
+pub(crate) struct RemovalOwnership {
     pub directory: Arc<Dir>,
     pub guard: std::fs::File,
     pub root: GrantLease,
@@ -47,7 +47,7 @@ fn parent(directory: &Dir) -> Result<std::fs::File, FsError> {
         .map(std::fs::File::from)
         .map_err(|e| io_error(e.into()))
 }
-impl RemovalCustody {
+impl RemovalOwnership {
     pub(crate) fn check(&self) -> Result<(), FsError> {
         let held = self.directory.dir_metadata().map_err(io_error)?;
         let actual_guard = parent(&self.directory)?;
@@ -67,10 +67,10 @@ impl RemovalCustody {
 }
 impl FsSession {
     /// Bind a descriptor delegated by the authenticated host below a root-only
-    /// guard. A user-owned private directory cannot substitute for this custody.
+    /// guard. A user-owned private directory cannot substitute for this ownership.
     /// # Errors
     /// Refuses absent live Enumerate, wrong ancestry/UID/mode, another VFS
-    /// mount or rebinding. Binding custody itself admits no mutation.
+    /// mount or rebinding. Binding ownership itself admits no mutation.
     pub fn bind_removal_directory(
         &self,
         root: &DirectoryGrant,
@@ -85,16 +85,16 @@ impl FsSession {
         let source = Self::directory(&root.lease)?;
         if identity.device != source.dir_metadata().map_err(io_error)?.dev() {
             return Err(FsError::Unsupported(
-                "removal custody must share source filesystem",
+                "removal ownership must share source filesystem",
             ));
         }
         #[cfg(target_os = "linux")]
         if mount(directory.as_fd())? != mount(source.as_fd())? {
             return Err(FsError::Unsupported(
-                "removal custody must share source VFS mount",
+                "removal ownership must share source VFS mount",
             ));
         }
-        let custody = Arc::new(RemovalCustody {
+        let ownership = Arc::new(RemovalOwnership {
             directory,
             guard,
             root: root.lease.clone(),
@@ -102,12 +102,12 @@ impl FsSession {
             guard_identity,
             owner_key: std::sync::Mutex::new(None),
         });
-        custody.check()?;
+        ownership.check()?;
         let mut slot = lock(&self.inner.removal)?;
         if slot.is_some() {
             return Err(FsError::Busy);
         }
-        *slot = Some(custody);
+        *slot = Some(ownership);
         drop(slot);
         drop(table);
         Ok(())
@@ -123,11 +123,11 @@ impl FsSession {
         use std::io::{Read, Seek};
         let table = self.call()?;
         self.validate(&table, &root.lease, Some(FsRight::Enumerate))?;
-        let custody = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
-        if !Arc::ptr_eq(&root.lease.record, &custody.root.record) {
+        let ownership = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
+        if !Arc::ptr_eq(&root.lease.record, &ownership.root.record) {
             return Err(FsError::Denied);
         }
-        custody.check()?;
+        ownership.check()?;
         let metadata = sealed.metadata().map_err(io_error)?;
         let seals = unsafe { libc::fcntl(sealed.as_raw_fd(), libc::F_GET_SEALS) };
         let required =
@@ -147,7 +147,7 @@ impl FsSession {
         if key == [0; 32] {
             return Err(FsError::Denied);
         }
-        let mut slot = lock(&custody.owner_key)?;
+        let mut slot = lock(&ownership.owner_key)?;
         if slot.is_some() {
             return Err(FsError::Busy);
         }
@@ -170,10 +170,10 @@ impl FsSession {
     /// Metadata identifier of the actual admitted source, never an admission.
     pub fn retained_source_owner_key(&self) -> Result<[u8; 32], FsError> {
         let table = self.call()?;
-        let custody = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
-        self.validate(&table, &custody.root, Some(FsRight::Enumerate))?;
-        custody.check()?;
-        let key = lock(&custody.owner_key)?
+        let ownership = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
+        self.validate(&table, &ownership.root, Some(FsRight::Enumerate))?;
+        ownership.check()?;
+        let key = lock(&ownership.owner_key)?
             .as_ref()
             .copied()
             .ok_or(FsError::Denied)?;
@@ -202,19 +202,19 @@ impl FsSession {
         let destination = step.destination.as_ref().ok_or(FsError::Denied)?;
         let name = EntryName::new(std::ffi::OsString::from_vec(destination.name.clone()))?;
         let staged_name = EntryName::new(std::ffi::OsString::from_vec(stage.name.clone()))?;
-        let custody = self.recovery_custody(parent, stage)?;
+        let ownership = self.recovery_ownership(parent, stage)?;
         let actual_destination = self.mutation_locator(parent, &name, Some(source))?;
         if actual_destination != *destination {
             return Err(FsError::Denied);
         }
-        self.captured_restore_effect(&custody, parent, || {
+        self.captured_restore_effect(&ownership, parent, || {
             if let Some(expected) = owner_key
-                && *lock(&custody.owner_key)? != Some(expected)
+                && *lock(&ownership.owner_key)? != Some(expected)
             {
                 return Err(FsError::Denied);
             }
             let victim = NativeIdentity::of(
-                &custody
+                &ownership
                     .directory
                     .symlink_metadata(staged_name.as_os_str())
                     .map_err(io_error)?,
@@ -241,11 +241,11 @@ impl FsSession {
     ) -> Result<(NativeIdentity, NativeIdentity), FsError> {
         let table = self.call()?;
         self.validate(&table, &root.lease, Some(FsRight::Enumerate))?;
-        let custody = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
-        if !Arc::ptr_eq(&root.lease.record, &custody.root.record) {
+        let ownership = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
+        if !Arc::ptr_eq(&root.lease.record, &ownership.root.record) {
             return Err(FsError::Denied);
         }
-        custody.check()?;
+        ownership.check()?;
         let actual = journal.metadata().map_err(io_error)?;
         if !actual.is_dir()
             || actual.uid() != rustix::process::geteuid().as_raw()
@@ -255,7 +255,7 @@ impl FsSession {
         }
         let copy = Dir::from_std_file(journal.try_clone().map_err(io_error)?);
         let guard = parent(&copy)?;
-        if host_identity(&guard.metadata().map_err(io_error)?) != custody.guard_identity {
+        if host_identity(&guard.metadata().map_err(io_error)?) != ownership.guard_identity {
             return Err(FsError::Denied);
         }
         let home = root.lease.object()?.identity();
@@ -266,51 +266,51 @@ impl FsSession {
         if mount(journal.as_fd())? != mount(Self::directory(&root.lease)?.as_fd())? {
             return Err(FsError::Denied);
         }
-        Ok((home, custody.identity))
+        Ok((home, ownership.identity))
     }
     pub(crate) fn recovery_scope(&self, parent: &DirectoryGrant) -> Result<NativeLocator, FsError> {
         let table = self.call()?;
         self.validate(&table, &parent.lease, Some(FsRight::Enumerate))?;
-        let custody = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
-        self.validate(&table, &custody.root, Some(FsRight::Enumerate))?;
-        if !parent.lease.descends_from(&custody.root) {
+        let ownership = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
+        self.validate(&table, &ownership.root, Some(FsRight::Enumerate))?;
+        if !parent.lease.descends_from(&ownership.root) {
             return Err(FsError::Denied);
         }
-        custody.check()?;
+        ownership.check()?;
         let label = EntryName::new(std::ffi::OsString::from("recovery-scope"))?;
         self.locator_locked(&parent.lease, &label, None)
     }
-    pub(crate) fn recovery_custody(
+    pub(crate) fn recovery_ownership(
         &self,
         parent: &DirectoryGrant,
         stage: &NativeLocator,
-    ) -> Result<Arc<RemovalCustody>, FsError> {
+    ) -> Result<Arc<RemovalOwnership>, FsError> {
         let table = self.call()?;
-        let custody = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
-        self.validate(&table, &custody.root, Some(FsRight::Enumerate))?;
+        let ownership = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
+        self.validate(&table, &ownership.root, Some(FsRight::Enumerate))?;
         self.validate(&table, &parent.lease, Some(FsRight::Create))?;
-        if !parent.lease.descends_from(&custody.root)
-            || stage.root != custody.identity
+        if !parent.lease.descends_from(&ownership.root)
+            || stage.root != ownership.identity
             || !stage.parents.is_empty()
         {
             return Err(FsError::Denied);
         }
-        custody.check()?;
-        Ok(custody)
+        ownership.check()?;
+        Ok(ownership)
     }
     pub(crate) fn captured_restore_effect<T>(
         &self,
-        custody: &RemovalCustody,
+        ownership: &RemovalOwnership,
         parent: &DirectoryGrant,
         action: impl FnOnce() -> Result<T, FsError>,
     ) -> Result<T, FsError> {
         let table = self.call()?;
-        self.validate(&table, &custody.root, Some(FsRight::Enumerate))?;
+        self.validate(&table, &ownership.root, Some(FsRight::Enumerate))?;
         self.validate(&table, &parent.lease, Some(FsRight::Create))?;
-        if !parent.lease.descends_from(&custody.root) {
+        if !parent.lease.descends_from(&ownership.root) {
             return Err(FsError::Denied);
         }
-        custody.check()?;
+        ownership.check()?;
         action()
     }
 }

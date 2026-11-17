@@ -165,7 +165,7 @@ tilo_test_env::scenario! {
         assert!(child.wait().expect("reap child").success());
         assert!(
             !peer.current(),
-            "a exited task cannot regain custody through numeric PID reuse"
+            "a exited task cannot regain ownership through numeric PID reuse"
         );
         assert!(
             peer.start_time().is_err(),

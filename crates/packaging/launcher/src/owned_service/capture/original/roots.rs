@@ -76,7 +76,7 @@ impl Inputs {
             let identity = identity(&input.file)?;
             // Cross-volume readers require independent member records.
             if identity.0 != source_device && expected.is_none() {
-                return Err(refused("Mounted source needs independent volume custody"));
+                return Err(refused("Mounted source needs independent volume ownership"));
             }
             result.projections.push(Projection {
                 placement: input.placement.as_os_str().as_bytes().to_vec(),

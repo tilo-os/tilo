@@ -1,4 +1,4 @@
-//! Connected descriptor custody only; callers must still admit its producer.
+//! Connected descriptor ownership only; callers must still admit its producer.
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixDatagram;
@@ -99,7 +99,7 @@ impl Socket {
     }
 
     /// Receive one exact bounded packet, refusing and closing ancillary rights.
-    /// This checks framing custody only, not kernel sender identity.
+    /// This checks framing ownership only, not kernel sender identity.
     pub fn receive(&self, bytes: &mut [u8]) -> io::Result<usize> {
         if bytes.len() > super::FRAME_BYTES {
             return Err(io::Error::other("editor packet exceeds its bound"));

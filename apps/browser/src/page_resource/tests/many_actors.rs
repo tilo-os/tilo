@@ -249,7 +249,7 @@ fn an_actor_is_not_forgotten_before_its_answered_action_is_set_down() {
 
     // The engine lists the fill from now on, and the next read writes it.
     engine.set_page_data(
-        "ledger",
+        "log",
         json!({"entries": [filled], "next": 1, "more": false, "dropped": 0, "waiting": 0}),
     );
     let read = review(&mut app, None);
@@ -427,7 +427,7 @@ fn the_review_screen_says_a_forgotten_actors_device_is_not_known() {
             "set": set_by("agent:task-x", 1)}]}),
     );
     engine.set_page_data(
-        "ledger",
+        "log",
         json!({"entries": [
             field_filled(1, "agent:task-x", "Given names"),
             {"seq": 2, "time_ms": 1_700_000_000_002_u64, "actor": "", "how": "hold",

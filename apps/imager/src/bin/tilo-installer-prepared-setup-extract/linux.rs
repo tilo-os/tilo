@@ -1,4 +1,4 @@
-//! Descriptor-relative custody of opaque prepared installer payloads.
+//! Descriptor-relative ownership of opaque prepared installer payloads.
 //!
 //! Authentication and completed-generation authority stay with the native
 //! issuer. The whole implementation is one platform boundary: the binary root
@@ -21,7 +21,7 @@ mod validate;
 pub(super) type Result<T> = std::io::Result<T>;
 pub(super) fn invalid() -> std::io::Error {
     std::io::Error::other(
-        "prepared setup custody failed; verify the selected medium and installer grants",
+        "prepared setup ownership failed; verify the selected medium and installer grants",
     )
 }
 mod cli {

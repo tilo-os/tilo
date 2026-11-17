@@ -1,4 +1,4 @@
-//! Protected browser ciphertext custody for the staging journal.
+//! Protected browser ciphertext ownership for the staging journal.
 use super::browser::{BrowserArtifact, Expectation, verify};
 use super::protocol::valid_operation_id;
 use super::record_io::secure;
@@ -25,7 +25,7 @@ pub fn retain_browser(
     let path = browser_path(dir, id, expected).map_err(io::Error::other)?;
     let parent = path
         .parent()
-        .ok_or_else(|| io::Error::other("Browser custody parent missing"))?;
+        .ok_or_else(|| io::Error::other("Browser ownership parent missing"))?;
     secure::ensure_dir(parent, false).map_err(io::Error::other)?;
     match std::fs::symlink_metadata(&path) {
         Ok(_) => return read_browser(dir, id, expected).map(|_| ()),
@@ -49,7 +49,7 @@ pub fn read_browser(dir: &Path, id: &str, expected: &impl Expectation) -> io::Re
     let artifact = BrowserArtifact {
         source_path: path
             .to_str()
-            .ok_or_else(|| io::Error::other("Browser custody path is not UTF-8"))?
+            .ok_or_else(|| io::Error::other("Browser ownership path is not UTF-8"))?
             .into(),
         expectation: expected,
     };

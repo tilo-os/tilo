@@ -99,7 +99,7 @@ impl Workspaces {
     /// sealed (`super::sealed_documents`).
     ///
     /// # Errors
-    /// Refuses other certificates, stale custody, undeclared apps, a primary
+    /// Refuses other certificates, stale ownership, undeclared apps, a primary
     /// of an app without one, missing records, sealed records whose channel
     /// this relay does not take part in, failed changes or oversized
     /// publication.
@@ -125,7 +125,7 @@ impl Workspaces {
         )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
-                "application authoring requires exact governor custody",
+                "application authoring requires exact governor ownership",
             ));
         }
         let app_id = app_id_for(catalogue, app, record)?;
@@ -213,7 +213,7 @@ impl Workspaces {
     /// same everywhere, and what the bot wrote in it published as the bot's.
     ///
     /// # Errors
-    /// Refuses another governor's certificate, stale custody, undeclared
+    /// Refuses another governor's certificate, stale ownership, undeclared
     /// apps, missing records, sealed ones whose channel this relay does not
     /// take part in, a bot the workspace does not let act, a change outside its
     /// grants, or oversized publication.
@@ -240,7 +240,7 @@ impl Workspaces {
         )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
-                "bot publication requires exact governor custody",
+                "bot publication requires exact governor ownership",
             ));
         }
         let app_id = app_id_for(catalogue, app, record)?;
@@ -343,7 +343,7 @@ impl Workspaces {
     }
 
     /// Prepare a registered application's record (`""` for the primary)
-    /// with exact governor custody, from the app's own factory. The
+    /// with exact governor ownership, from the app's own factory. The
     /// catalogue comes from this host's compiled, trusted application
     /// registry. An existing record remains byte-identical. No
     /// member-supplied factory or snapshot crosses this API; return only
@@ -373,7 +373,7 @@ impl Workspaces {
         )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
-                "application creation requires exact governor custody",
+                "application creation requires exact governor ownership",
             ));
         }
         app_id_for(catalogue, app, record)?;

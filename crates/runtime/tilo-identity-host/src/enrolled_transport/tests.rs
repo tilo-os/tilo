@@ -379,7 +379,7 @@ fn current_owner_reference_refuses_changed_original_record_and_never_replaces_it
 
 #[test]
 #[cfg(feature = "native-current-device-qualification")]
-fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activation_custody() {
+fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activation_ownership() {
     use std::os::unix::process::CommandExt as _;
     const ROLE: &str = "TILO_CURRENT_REFERENCE_QUALIFICATION";
     if let Some(base) = std::env::var_os(ROLE) {
@@ -440,7 +440,7 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
             source.public_key()
         );
         assert_eq!(resolved.metadata().unwrap().display_name, "Ada");
-        // Returning a path would lose custody here. The retained admission
+        // Returning a path would lose identity store here. The retained admission
         // must reject replacement while the same source object is still alive.
         tilo_files::native::atomic::write_with_mode(
             &identity.join("member.json"),
@@ -458,7 +458,7 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
         assert!(resolved.validate().is_err());
         return;
     }
-    // This opt-in native qualifier requires genuine root-owned custody and a
+    // This opt-in native qualifier requires genuine root-owned identity store and a
     // real original-user child; it never treats missing privilege as a pass.
     // A job sandbox's root holds neither CAP_CHOWN nor CAP_SETUID, so the
     // qualifier runs in the privileged fixture check instead.
@@ -511,7 +511,7 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
     user_tree(identity);
     user_tree(&fixture.output);
     let mut command = std::process::Command::new("/proc/self/exe");
-    command.args(["--exact", "enrolled_transport::tests::current_owner_reference_actual_user_reads_root_owned_host_and_retains_activation_custody", "--nocapture"])
+    command.args(["--exact", "enrolled_transport::tests::current_owner_reference_actual_user_reads_root_owned_host_and_retains_activation_ownership", "--nocapture"])
         .env(ROLE, fixture.source.path())
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::inherit());
     // SAFETY: pre-exec clears inherited root groups using one async-safe syscall.

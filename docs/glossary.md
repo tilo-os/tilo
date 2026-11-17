@@ -24,6 +24,10 @@ used in code.
   invocation. Not a member.
 - **Member**: a person, agent or bot in a workspace, with a role.
 - **Role**: what a member may do in a workspace.
+- **Member access**: who acts in a workspace and what its policy and grants let them do there.
+  Every change is checked against it.
+- **Approval**: a person's answer, given on their own device, that lets one action run that
+  someone acting for them asked for.
 - **Presence**: one member in one open view (a window, an agent's private view). A member can have
   several.
 

@@ -1,5 +1,5 @@
 //! What the host runs for a member who is not its own person, and for that
-//! member's agent, decided by the member's standing now: a viewer changes
+//! member's agent, decided by the member's access now: a viewer changes
 //! nothing, a commenter comments and nothing else, an editor edits but is
 //! asked first where the action asks, and a member removed or a device
 //! revoked is refused whatever it still holds. The workspace's policy is
@@ -34,7 +34,7 @@ struct Membership {
 }
 
 impl Membership {
-    fn standing(&self, caller: &Caller) -> Option<ui::permissions::Standing> {
+    fn access(&self, caller: &Caller) -> Option<ui::permissions::MemberAccess> {
         let role = (*self.role.lock().unwrap())?;
         (!self.revoked.load(Ordering::SeqCst)
             && caller.user_public_key() == Some(&self.person)
@@ -46,7 +46,7 @@ impl Membership {
                 &ui::permissions::MemberId::person(hex::encode(self.person)),
                 role,
             )
-            .standing()
+            .access()
             .clone()
         })
     }
@@ -60,7 +60,7 @@ impl WorkspaceDocumentsLink for Membership {
         self.member.clone()
     }
     fn admits(&self, _workspace: WorkspaceId, caller: &Caller) -> bool {
-        self.standing(caller).is_some()
+        self.access(caller).is_some()
     }
     fn view_read_policy(
         &self,
@@ -71,7 +71,7 @@ impl WorkspaceDocumentsLink for Membership {
     ) -> Option<ViewReadPolicy> {
         Some(ViewReadPolicy {
             workspace: WORKSPACE.into(),
-            standing: self.standing(caller)?,
+            access: self.access(caller)?,
             sandbox: Vec::new(),
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
         })
@@ -352,7 +352,7 @@ async fn titles_after(browser: &mut Browser, notes: &DocumentRoute, marker: &str
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
+async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::member());
@@ -637,7 +637,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     };
     for (confirmation, what) in [
         (Confirmation::Confirmed, "their own word"),
-        (Confirmation::Witnessed("x".into()), "a forged token"),
+        (Confirmation::Approved("x".into()), "a forged token"),
     ] {
         let refused = invoked(
             &actions,

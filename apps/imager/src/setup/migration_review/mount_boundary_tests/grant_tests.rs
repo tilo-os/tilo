@@ -88,7 +88,7 @@ pub(super) fn exercise_matching_platform_grants(
     roots.validate(cancel).unwrap();
     assert!(
         roots.locations()[0].2,
-        "actual matching platform answer must retain permission custody"
+        "actual matching platform answer must retain permission ownership"
     );
 
     // The same bytes/name on a different inode/mount do not authorize this entry.

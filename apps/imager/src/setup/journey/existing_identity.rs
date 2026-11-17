@@ -1,5 +1,5 @@
 //! Consented, device-local existing-identity recovery. No active persona or
-//! source backup is modified; only authenticated canonical custody is adopted.
+//! source backup is modified; only authenticated canonical ownership is adopted.
 use super::super::strings::t;
 use imager_backend::prepared_identity::PreparedIdentity;
 use std::{

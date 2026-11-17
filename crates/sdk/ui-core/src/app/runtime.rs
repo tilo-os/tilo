@@ -231,7 +231,7 @@ pub(super) struct AvailabilityWalk {
 #[derive(PartialEq)]
 pub(super) struct RouteInputs {
     pub(super) tree: TreeGeneration,
-    pub(super) witness: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) observation: Option<crate::collaboration::AcceptedRoute>,
     pub(super) autosave_generation: u64,
     pub(super) document: (Vec<automerge::ChangeHash>, usize),
 }
@@ -374,14 +374,14 @@ pub(super) struct ActionRuntime {
     pub(super) bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
     pub(super) bound_document_sync: Option<super::bound_document_sync::BoundDocumentSync>,
     pub(super) bound_publication: crate::bound_dispatch::BoundPublication,
-    pub(super) last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) last_published_bound_route: Option<crate::collaboration::AcceptedRoute>,
     /// Publication refusals already logged, so a surface refused on every
     /// frame logs each distinct reason once rather than at frame rate.
     pub(super) refusals_logged: RefusalLog,
     #[cfg(test)]
-    pub(super) bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) bound_broker_route_for_test: Option<crate::collaboration::AcceptedRoute>,
     pub(super) action_directory_stamp: Option<(
-        std::rc::Rc<super::action_directory_snapshot::DirectoryWitness>,
+        std::rc::Rc<super::action_directory_snapshot::DirectoryObservation>,
         String,
     )>,
     pub(super) action_directory_snapshot:
@@ -649,7 +649,7 @@ pub(super) struct ContinuationRuntime {
     pub(super) pending_view: Option<crate::view::View>,
     /// Route epoch for private continuity. A new acknowledged route must
     /// republish unchanged metadata and playback through that route only.
-    pub(super) last_private_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) last_private_route: Option<crate::collaboration::AcceptedRoute>,
     pub(super) private_instance: Option<u64>,
     /// The document this window shows has left its workspace, and the
     /// window knows: it stopped editing and told its shell once.
@@ -658,7 +658,7 @@ pub(super) struct ContinuationRuntime {
     /// search index, so only changes cross again.
     pub(super) search_index: crate::search::index_publication::Publisher,
     /// The primary route [`Self::search_index`] published on.
-    pub(super) search_index_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) search_index_route: Option<crate::collaboration::AcceptedRoute>,
 }
 
 impl ContinuationRuntime {

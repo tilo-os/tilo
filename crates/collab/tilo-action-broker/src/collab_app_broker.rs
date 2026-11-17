@@ -823,7 +823,7 @@ pub(crate) struct VerifiedActionCaller {
     /// The agent this person's own device handed the session to, kept
     /// across every re-verification of the person's admission.
     delegated: Option<String>,
-    /// A keyless native projection verified against protected device custody.
+    /// A keyless native projection verified against protected device identity.
     /// Only `certified_native_action_host` sets this; signed/network evidence
     /// alone never establishes physical intent.
     native_projection_verified: bool,
@@ -1083,7 +1083,7 @@ impl ContinuingCaller {
         }
     }
 
-    /// Who `caller` was admitted as: certified, with the custody its api
+    /// Who `caller` was admitted as: certified, with the ownership its api
     /// holds, when it holds one.
     fn admitted(
         caller: Option<&tilo_actions::remote::Caller>,
@@ -1188,16 +1188,16 @@ mod local_action_host;
 mod remaining_workspace_actions;
 mod turns;
 pub use agent_connection::AgentConnection;
+mod approval;
 mod window_provider;
 mod windowless_instances;
-mod witness;
-use witness::requires_store_witness;
+use approval::requires_store_approval;
 mod workspace_open;
 pub use local_action_host::{CertifiedActionLifecycle, CertifiedPersonContext};
 
 /// The host the person's other devices reach this device's actions through:
 /// a request is admitted for the caller its own device's signature named,
-/// under no connection's custody and no step of a run's, so what it may do is
+/// under no connection's ownership and no step of a run's, so what it may do is
 /// decided by that caller alone.
 pub(crate) fn device_host(
     state: Arc<AppBrokerState>,
@@ -2417,15 +2417,15 @@ fn validate_directory_target_input(
 
 /// A person's confirmation, given on their own device, of one invocation
 /// someone acting for them makes.
-struct Witness {
-    binding: WitnessBinding,
+struct Approval {
+    binding: ApprovalBinding,
     expires: std::time::Instant,
 }
 
 /// The original invocation and publication the person actually answered.
 /// Arguments are hashed so the registry never retains disclosure contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WitnessBinding {
+pub(crate) struct ApprovalBinding {
     actor: MemberId,
     provider: String,
     workspace: String,
@@ -2438,14 +2438,14 @@ pub(crate) struct WitnessBinding {
 }
 
 #[derive(Clone, Copy)]
-enum WitnessPublicationKind {
+enum ApprovalPublicationKind {
     Surface,
     Directory,
 }
 
 struct ConfirmationGrant {
-    /// Only set after consuming a host-issued witness for these exact arguments.
-    host_witnessed: Option<WitnessBinding>,
+    /// Only set after consuming a host-issued approval for these exact arguments.
+    host_approved: Option<ApprovalBinding>,
     peer_id: u64,
     resource: String,
     action: String,
@@ -2625,7 +2625,7 @@ struct InvocationInputs<'a> {
 /// resolved it against; `None` only for an action no directory resolved), a
 /// private owner and original caller, the original policy time a retained
 /// invocation keeps, and a task-owned durable identity. Each call site names
-/// every field, so no custody input is filled implicitly.
+/// every field, so no ownership input is filled implicitly.
 struct AdmissionProvenance<'a> {
     durable: Option<DurableContext<'a>>,
     revision: Option<&'a str>,
@@ -2685,8 +2685,8 @@ pub struct AppBrokerState {
     /// offered the same list each time it asks.
     surfaces: Mutex<BTreeMap<u64, PublishedSurface>>,
     /// Per-connection incarnations, independent of unrelated discovery churn.
-    witness_publications: Mutex<HashMap<u64, (u64, u64)>>,
-    next_witness_publication: AtomicU64,
+    approval_publications: Mutex<HashMap<u64, (u64, u64)>>,
+    next_approval_publication: AtomicU64,
     /// Each connection's surface as `publishActionSurface` deltas built it:
     /// the shapes and bindings the next delta applies to.
     surface_tables: Mutex<HashMap<u64, runtime_collab::SurfaceTable>>,
@@ -2723,7 +2723,7 @@ pub struct AppBrokerState {
     external_moderation_jobs: Mutex<external_moderation::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
-    remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
+    remote_invocations: Mutex<tilo_actions::remote::InvocationLog<u64>>,
     /// Shortcut runs the API finished, until history records them.
     ended_invocations: crate::automation::BrokerInvocations,
     /// What each application declared it may do on the action api under
@@ -2774,8 +2774,8 @@ pub struct AppBrokerState {
     untrusted_jobs: Mutex<std::collections::HashSet<u64>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     /// Confirmations people gave on their own device for an invocation
-    /// someone acting for them makes; see [`Self::witness_confirmation`].
-    witnessed_confirmations: Mutex<HashMap<String, Witness>>,
+    /// someone acting for them makes; see [`Self::approval_confirmation`].
+    approved_confirmations: Mutex<HashMap<String, Approval>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     /// The turns people asked agents in, and the agent connections that answer them.
     turns: turns::Turns,
@@ -2843,7 +2843,7 @@ impl AppBrokerState {
     pub(crate) fn request_stop(&self) {
         self.accepting.store(false, Ordering::Release);
         self.local_turn.notify_one();
-        // Held committed-read waits re-check custody, which now refuses.
+        // Held committed-read waits re-check ownership, which now refuses.
         tilo_identity_host::policy_change::announce();
     }
 
@@ -2911,7 +2911,7 @@ impl AppBrokerState {
         clear!(self.route_holders);
         clear!(self.channels);
         clear!(self.surfaces);
-        clear!(self.witness_publications);
+        clear!(self.approval_publications);
         clear!(self.surface_tables);
         clear!(self.action_directory_roots);
         clear!(self.native_checkouts);
@@ -3338,7 +3338,7 @@ impl AppBrokerState {
             return Ok(record);
         }
         self.owner_health()?;
-        // The normal service supplies actual current governor custody and exact owner retry.
+        // The normal service supplies actual current governor ownership and exact owner retry.
         // A saved request grants no authority, and no unavailable service fallback is allowed.
         if let Err(error) = self.publisher.commit_owner(prepared.request(), None).await {
             tracing::warn!(%error, "prepared effect remains uncertain");
@@ -3477,8 +3477,8 @@ impl AppBrokerState {
                     .or_else(|| services.native_certificates.clone())
                     .map_or_else(std::sync::OnceLock::new, std::sync::OnceLock::from),
                 surfaces: Mutex::new(BTreeMap::new()),
-                witness_publications: Mutex::new(HashMap::new()),
-                next_witness_publication: AtomicU64::new(1),
+                approval_publications: Mutex::new(HashMap::new()),
+                next_approval_publication: AtomicU64::new(1),
                 surface_tables: Mutex::new(HashMap::new()),
                 surface_changes: tokio::sync::watch::Sender::new(0),
                 launchable: launchable::LaunchableCatalogue::new(),
@@ -3497,7 +3497,7 @@ impl AppBrokerState {
                 pending_invocations: Mutex::new(HashMap::new()),
                 approved_check_jobs: Mutex::default(),
                 external_moderation_jobs: Mutex::default(),
-                remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
+                remote_invocations: Mutex::new(tilo_actions::remote::InvocationLog::default()),
                 ended_invocations: crate::automation::BrokerInvocations::default(),
                 app_action_access: RwLock::new(
                     services
@@ -3523,7 +3523,7 @@ impl AppBrokerState {
                 live_views: live_views::LiveViews::default(),
                 untrusted_jobs: Mutex::default(),
                 confirmation_grants: Mutex::new(HashMap::new()),
-                witnessed_confirmations: Mutex::new(HashMap::new()),
+                approved_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 turns: turns::Turns::default(),
                 invocation_id: AtomicU64::new(next_invocation),
@@ -3607,7 +3607,7 @@ impl AppBrokerState {
     }
 
     /// A transport-free fixture with an explicit admission turn. Certified
-    /// invocations enqueue inert custody, just as they do on the live broker.
+    /// invocations enqueue inert ownership, just as they do on the live broker.
     #[cfg(any(test, feature = "test-support"))]
     #[allow(
         clippy::expect_used,
@@ -3701,7 +3701,7 @@ impl AppBrokerState {
                 .copied()
                 .chain(roots.iter().map(|root| root.peer_id))
             {
-                self.advance_witness_publication(peer, WitnessPublicationKind::Directory);
+                self.advance_approval_publication(peer, ApprovalPublicationKind::Directory);
             }
             registered.clear();
             registered.extend(roots.into_iter().map(|root| (root.peer_id, root)));
@@ -3717,7 +3717,7 @@ impl AppBrokerState {
                 .copied()
                 .chain(surfaces.iter().map(|surface| surface.peer_id))
             {
-                self.advance_witness_publication(peer, WitnessPublicationKind::Surface);
+                self.advance_approval_publication(peer, ApprovalPublicationKind::Surface);
             }
             published.clear();
             published.extend(
@@ -3819,19 +3819,19 @@ impl AppBrokerState {
 
     /// Allocate a fresh incarnation even for an identical republication.
     /// The allocator survives disconnect, so reusing a peer id cannot revive
-    /// a previously issued witness.
-    fn advance_witness_publication(&self, peer: u64, kind: WitnessPublicationKind) {
+    /// a previously issued approval.
+    fn advance_approval_publication(&self, peer: u64, kind: ApprovalPublicationKind) {
         let mut publications = self
-            .witness_publications
+            .approval_publications
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let incarnation = self
-            .next_witness_publication
+            .next_approval_publication
             .fetch_add(1, Ordering::Relaxed);
         let publication = publications.entry(peer).or_default();
         match kind {
-            WitnessPublicationKind::Surface => publication.0 = incarnation,
-            WitnessPublicationKind::Directory => publication.1 = incarnation,
+            ApprovalPublicationKind::Surface => publication.0 = incarnation,
+            ApprovalPublicationKind::Directory => publication.1 = incarnation,
         }
         drop(publications);
     }
@@ -3921,7 +3921,7 @@ impl AppBrokerState {
 
     /// `invoke`, handed over from a thread that must not wait for its admission: entered
     /// directly, never through the routing method that would hand it over again. Dispatch
-    /// checks the original custody. It blocks on the admission's journal write and on what
+    /// checks the original ownership. It blocks on the admission's journal write and on what
     /// the action does, so it runs on a thread that may block, never the broker's loop.
     fn invoke_bridged(self: &Arc<Self>, invoke: EagerActionInvokeRequest) {
         let EagerActionInvokeRequest {
@@ -4449,7 +4449,7 @@ impl AppBrokerState {
                 action: action.to_string(),
                 argument_digest: argument_digest(argument),
                 actor: actor.member().clone(),
-                host_witnessed: None,
+                host_approved: None,
                 expires: now
                     .checked_add(std::time::Duration::from_secs(60))
                     .ok_or(ActionDirectoryBridgeError::Unavailable)?,
@@ -4525,7 +4525,7 @@ impl AppBrokerState {
             .as_ref()
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
         // Ordinary directed invocation needs a live publisher. Only native
-        // task custody can activate an inert retained route; its catalogue
+        // task ownership can activate an inert retained route; its catalogue
         // keeps stable providers discoverable without inventing a publisher.
         let live = self
             .published_surfaces()
@@ -4845,7 +4845,7 @@ impl AppBrokerState {
                 action: action.to_string(),
                 argument_digest: argument_digest(argument),
                 actor: MemberId::person(actor),
-                host_witnessed: None,
+                host_approved: None,
                 expires: tilo_clock::now()
                     .checked_add(std::time::Duration::from_secs(60))
                     .ok_or_else(|| "confirmation expiry overflowed".to_string())?,
@@ -5131,7 +5131,7 @@ impl AppBrokerState {
             None
         };
         if original_time.is_some() && (durable.is_some() || retained_time.is_some()) {
-            return Err("duplicate original invocation custody".into());
+            return Err("duplicate original invocation ownership".into());
         }
         let local_time = if let Some(InvocationCaller::Local { time, .. }) = &origin {
             self.checked_policy_time(time.as_ref())?;
@@ -5147,7 +5147,7 @@ impl AppBrokerState {
                 Some(InvocationCaller::Local { .. }) => local_time.cloned(),
                 _ => self.registered_policy_time()?,
             },
-            (Some(_), Some(_)) => return Err("duplicate original invocation time custody".into()),
+            (Some(_), Some(_)) => return Err("duplicate original invocation time ownership".into()),
         };
         let now = self.checked_policy_time(policy_time.as_ref())?.1 / 1_000_000_000;
 
@@ -5249,7 +5249,7 @@ impl AppBrokerState {
         if requested.is_some_and(|requested| {
             requested.0.is_nil() || authoritative.is_some_and(|held| held != requested)
         }) {
-            return Err("requested invocation does not match admitted custody".into());
+            return Err("requested invocation does not match admitted ownership".into());
         }
         let invocation = match durable {
             Some(context) => context.invocation(),
@@ -5292,7 +5292,7 @@ impl AppBrokerState {
             _ => None,
         };
         // Only what this connection's own admission decides has a record to
-        // answer from here; a peer's or a run's custody carries its own, and
+        // answer from here; a peer's or a run's ownership carries its own, and
         // a report is admitted through its own receipts.
         if local_report.is_none()
             && durable.is_none()
@@ -5315,7 +5315,7 @@ impl AppBrokerState {
         // the host is the answer: the invocation needs a confirmation token
         // even when the action itself asks for none.
         let confirmed = asks
-            || requires_store_witness(&offered.0.app_id, &offered.1.action)
+            || requires_store_approval(&offered.0.app_id, &offered.1.action)
             || !matches!(
                 offered.1.contract.confirmation,
                 tilo_actions::ConfirmationPolicy::None
@@ -5331,15 +5331,15 @@ impl AppBrokerState {
                 .map_err(|_| "the confirmation registry is unavailable".to_string())?
                 .remove(token)
                 .ok_or_else(|| "the confirmation token is unknown or already used".to_string())?;
-            if (requires_store_witness(&offered.0.app_id, &offered.1.action)
-                && grant.host_witnessed.is_none())
+            if (requires_store_approval(&offered.0.app_id, &offered.1.action)
+                && grant.host_approved.is_none())
                 || grant.expires < tilo_clock::now()
                 || grant.peer_id != peer_id
                 || grant.resource != offered.1.resource
                 || grant.action != offered.1.action
                 || grant.argument_digest != argument_digest(argument)
                 || grant.actor != *actor.member()
-                || grant.host_witnessed.as_ref().is_some_and(|binding| {
+                || grant.host_approved.as_ref().is_some_and(|binding| {
                     binding.workspace != offered.0.route.cluster_id
                         || Some(binding.invocation)
                             != requested
@@ -5351,7 +5351,7 @@ impl AppBrokerState {
                                     }
                                     _ => None,
                                 })
-                        || binding.publication != self.witness_publication(&binding.provider)
+                        || binding.publication != self.approval_publication(&binding.provider)
                         || match original_request {
                             Some(request) => {
                                 binding.provider != request.target.provider
@@ -5797,24 +5797,24 @@ impl AppBrokerState {
         argument: Option<&str>,
         actor: &BrokerActor,
         evidence: Option<&tilo_actions::remote::Confirmation>,
-        binding: &WitnessBinding,
+        binding: &ApprovalBinding,
     ) -> Result<Option<String>, tilo_actions::remote::ActionHostError> {
         use tilo_actions::remote::{ActionHostError, Confirmation};
         // Only a person acting themselves confirms by their own word; anyone
         // acting for them carries the answer the person gave on their device.
-        let witnessed = match evidence {
-            Some(Confirmation::Witnessed(token)) => {
+        let approved = match evidence {
+            Some(Confirmation::Approved(token)) => {
                 binding.actor == *actor.member()
                     && binding.resource == offered.resource
                     && binding.action == offered.action
                     && binding.argument_digest == argument_digest(argument)
-                    && (self.take_witness(token, binding) || Self::host_witnessed(token, binding))
+                    && (self.take_approval(token, binding) || Self::host_approved(token, binding))
             }
             _ => false,
         };
         // Store disclosures must be answered on a trusted host sheet, even
         // when the publisher's connection is admitted as the person themself.
-        if requires_store_witness(app, &offered.action) && !witnessed {
+        if requires_store_approval(app, &offered.action) && !approved {
             return Err(ActionHostError::confirmation_required());
         }
         let own = actor.direct().then_some(evidence).flatten();
@@ -5824,21 +5824,21 @@ impl AppBrokerState {
         if matches!(policy, tilo_actions::ConfirmationPolicy::None) {
             // A confirmation given anyway answers the workspace's ask, if the
             // grants ask; admission decides whether they do.
-            if !witnessed && !matches!(own, Some(Confirmation::Confirmed)) {
+            if !approved && !matches!(own, Some(Confirmation::Confirmed)) {
                 return Ok(None);
             }
-        } else if !witnessed && !confirmation_satisfied(&policy, own) {
+        } else if !approved && !confirmation_satisfied(&policy, own) {
             return Err(ActionHostError::confirmation_required());
         }
         self.mint_confirmation_grant(peer_id, offered, argument, actor)
             .and_then(|token| {
-                if witnessed {
+                if approved {
                     self.confirmation_grants
                         .lock()
                         .map_err(|_| "the confirmation registry is unavailable".to_owned())?
                         .get_mut(&token)
                         .ok_or("the confirmation grant disappeared")?
-                        .host_witnessed = Some(binding.clone());
+                        .host_approved = Some(binding.clone());
                 }
                 Ok(token)
             })
@@ -5876,7 +5876,7 @@ impl AppBrokerState {
                 action: offered.action.clone(),
                 argument_digest: argument_digest(argument),
                 actor: actor.member().clone(),
-                host_witnessed: None,
+                host_approved: None,
                 expires,
             },
         );
@@ -5886,24 +5886,24 @@ impl AppBrokerState {
 
     /// Record that the person `actor` acts for confirmed `actor`'s invocation
     /// of `action` on `resource` with `argument` on their own device. The
-    /// returned token, carried as [`Confirmation::Witnessed`], answers that
+    /// returned token, carried as [`Confirmation::Approved`], answers that
     /// one invocation once, within a minute.
     ///
-    /// [`Confirmation::Witnessed`]: tilo_actions::remote::Confirmation::Witnessed
-    pub(crate) fn witness_confirmation(&self, binding: &WitnessBinding) -> Option<String> {
+    /// [`Confirmation::Approved`]: tilo_actions::remote::Confirmation::Approved
+    pub(crate) fn approval_confirmation(&self, binding: &ApprovalBinding) -> Option<String> {
         let now = tilo_clock::now();
         let expires = now.checked_add(std::time::Duration::from_secs(60))?;
         let token = uuid::Uuid::new_v4().to_string();
-        let mut witnessed = self.witnessed_confirmations.lock().ok()?;
-        witnessed.retain(|_, witness| witness.expires >= now);
-        witnessed.insert(
+        let mut approved = self.approved_confirmations.lock().ok()?;
+        approved.retain(|_, approval| approval.expires >= now);
+        approved.insert(
             token.clone(),
-            Witness {
+            Approval {
                 binding: binding.clone(),
                 expires,
             },
         );
-        drop(witnessed);
+        drop(approved);
         Some(token)
     }
 
@@ -5914,8 +5914,8 @@ impl AppBrokerState {
     /// invocation of this action, with these arguments, run. Only the key
     /// that issued this device's certificate answers for it; another host's
     /// word, like a changed action, is no answer at all.
-    fn host_witnessed(token: &str, binding: &WitnessBinding) -> bool {
-        let Some(witness) = tilo_user_identity::HostWitness::decode(token) else {
+    fn host_approved(token: &str, binding: &ApprovalBinding) -> bool {
+        let Some(approval) = tilo_user_identity::HostApproval::decode(token) else {
             return false;
         };
         let Ok((_, cert)) = tilo_identity_host::broker::trusted_current_device(&binding.workspace)
@@ -5923,23 +5923,23 @@ impl AppBrokerState {
             return false;
         };
         let argument = binding.argument_digest;
-        witness.stands_for(&cert, tilo_clock::unix_now_ns())
-            && witness.invocation == *binding.invocation.0.as_bytes()
-            && witness.provider == binding.provider
-            && witness.resource == binding.resource
-            && witness.action == binding.action
-            && witness.argument == argument
+        approval.stands_for(&cert, tilo_clock::unix_now_ns())
+            && approval.invocation == *binding.invocation.0.as_bytes()
+            && approval.provider == binding.provider
+            && approval.resource == binding.resource
+            && approval.action == binding.action
+            && approval.argument == argument
     }
 
-    fn take_witness(&self, token: &str, binding: &WitnessBinding) -> bool {
-        let Ok(mut witnessed) = self.witnessed_confirmations.lock() else {
+    fn take_approval(&self, token: &str, binding: &ApprovalBinding) -> bool {
+        let Ok(mut approved) = self.approved_confirmations.lock() else {
             return false;
         };
-        let matches = witnessed.get(token).is_some_and(|witness| {
-            witness.expires >= tilo_clock::now() && witness.binding == *binding
+        let matches = approved.get(token).is_some_and(|approval| {
+            approval.expires >= tilo_clock::now() && approval.binding == *binding
         });
         if matches {
-            witnessed.remove(token);
+            approved.remove(token);
         }
         matches
     }
@@ -6142,7 +6142,7 @@ impl AppBrokerState {
     /// and worked as there, and fail what was still pending on it.
     fn withdraw_route_hold(&self, peer_id: u64) {
         self.release_route_hold(peer_id);
-        self.witness_publications
+        self.approval_publications
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&peer_id);
@@ -7924,7 +7924,7 @@ fn delegate_browser_service_session_command(
     let command =
         runtime_collab::BrowserServiceSessionCommand::decode(bytes).map_err(|_| refused())?;
     // Website sessions are Browser's alone; an account secret is authorized
-    // by the custodian for the app asking.
+    // by the owner for the app asking.
     if command.browser_only() && context.app_id() != "so.tilo.browser" {
         return Err(refused());
     }
@@ -8818,7 +8818,7 @@ struct NativeContextReadGuard {
     state: Arc<AppBrokerState>,
     route: CrdtRoute,
     identity: AdmittedJoinIdentity,
-    /// Native private views retain their original document's current Read custody.
+    /// Native private views retain their original document's current Read ownership.
     document: Option<NativeDocumentReadContext>,
 }
 
@@ -9179,11 +9179,11 @@ impl Drop for SocketStage {
     }
 }
 
-/// Remove only a proven stale socket, then bind and retain inode custody.
+/// Remove only a proven stale socket, then bind and retain inode ownership.
 /// A live socket, symlink, non-socket, or replacement inode is never unlinked.
 fn bind_owned_socket(
     path: &Path,
-) -> std::io::Result<(std::os::unix::net::UnixListener, SocketCustody)> {
+) -> std::io::Result<(std::os::unix::net::UnixListener, SocketOwnership)> {
     private_socket_parent(path)?;
     let lease = acquire_socket_path_lease(path)?;
     match socket_identity(path) {
@@ -9223,7 +9223,7 @@ fn bind_owned_socket(
     drop(stage);
     Ok((
         listener,
-        SocketCustody {
+        SocketOwnership {
             path: path.to_path_buf(),
             identity,
             _lease: lease,
@@ -9231,13 +9231,13 @@ fn bind_owned_socket(
     ))
 }
 
-struct SocketCustody {
+struct SocketOwnership {
     path: PathBuf,
     identity: SocketIdentity,
     _lease: advisory_lock::FileLock,
 }
 
-impl Drop for SocketCustody {
+impl Drop for SocketOwnership {
     fn drop(&mut self) {
         let _ = tilo_failure::ignored!(
             "the next bind proves a stale socket and unlinks it",
@@ -9329,7 +9329,7 @@ pub(super) fn spawn_configured(
     }
     // Bind on the caller's thread: from the worker thread, a bind
     // failure surfaces only via a log line.
-    let (std_listener, socket_custody) = bind_owned_socket(socket_path)?;
+    let (std_listener, socket_ownership) = bind_owned_socket(socket_path)?;
     std_listener.set_nonblocking(true)?; // tokio's reactor requires this for `from_std`.
     log_bound(socket_path, wired);
 
@@ -9341,8 +9341,8 @@ pub(super) fn spawn_configured(
         .spawn(move || {
             // Declaration order is intentional: shutdown first makes every
             // surviving facade inert and releases the journal, then socket
-            // custody removes only this broker's still-owned inode.
-            let _socket_custody = socket_custody;
+            // ownership removes only this broker's still-owned inode.
+            let _socket_ownership = socket_ownership;
             let _shutdown = BrokerThreadShutdown {
                 state: Arc::clone(&state),
                 fanout: fanout_for_thread,
@@ -9786,7 +9786,7 @@ async fn authenticate_launcher_handoff(
         #[cfg(not(target_os = "linux"))]
         if handoff.executing_peer {
             return Err(LaunchRefusal {
-                error: BrokerError::failed("executing custody requires Linux".into()),
+                error: BrokerError::failed("executing ownership requires Linux".into()),
                 peer,
                 answerable: false,
             });
@@ -10037,7 +10037,7 @@ pub mod tests {
             );
         }
 
-        phase socket_custody_reclaims_only_stale_owned_inodes;
+        phase socket_ownership_reclaims_only_stale_owned_inodes;
         {
             let directory = tempfile::tempdir().expect("temporary socket directory");
             let live_path = lifecycle_socket(&directory, "live");
@@ -10052,7 +10052,7 @@ pub mod tests {
             let stale_path = lifecycle_socket(&directory, "stale");
             let stale = std::os::unix::net::UnixListener::bind(&stale_path).expect("stale socket");
             drop(stale);
-            let (replacement, custody) =
+            let (replacement, ownership) =
                 bind_owned_socket(&stale_path).expect("proven stale socket is reclaimed");
             assert!(std::os::unix::net::UnixStream::connect(&stale_path).is_ok());
             let contender_error = bind_owned_socket(&stale_path)
@@ -10060,10 +10060,10 @@ pub mod tests {
                 .expect("lifetime lease excludes a competing socket owner");
             assert_eq!(contender_error.kind(), std::io::ErrorKind::AddrInUse);
             drop(replacement);
-            drop(custody);
+            drop(ownership);
             assert!(
                 !stale_path.exists(),
-                "owned socket inode is removed on final custody release"
+                "owned socket inode is removed on final ownership release"
             );
 
             let replaced_path = lifecycle_socket(&directory, "replacement");
@@ -10141,11 +10141,11 @@ pub mod tests {
                     .expect("temporary path leaves room for a valid Unix socket");
                 let long_path = directory.path().join("x".repeat(leaf_len));
                 assert_eq!(long_path.as_os_str().as_bytes().len(), 103);
-                let (listener, custody) = bind_owned_socket(&long_path)
+                let (listener, ownership) = bind_owned_socket(&long_path)
                     .expect("valid near-limit final path must stage without expansion");
                 assert!(std::os::unix::net::UnixStream::connect(&long_path).is_ok());
                 drop(listener);
-                drop(custody);
+                drop(ownership);
             }
         }
     }
@@ -10884,7 +10884,7 @@ pub mod tests {
             drop(state);
 
             tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
-            assert!(!socket.exists(), "unwind releases owned socket custody");
+            assert!(!socket.exists(), "unwind releases owned socket ownership");
             assert!(
                 facade.invocation_host().is_err(),
                 "unwind makes surviving broker facades inert"
@@ -11429,7 +11429,7 @@ pub mod tests {
     #[cfg(all(test, target_os = "linux"))]
     include!("native_checkout_tests.rs");
     #[cfg(all(test, target_os = "linux"))]
-    include!("workspace_document_custody_tests.rs");
+    include!("workspace_document_ownership_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
@@ -11579,10 +11579,9 @@ pub mod tests {
                 ] {
                     let mut request = runtime_collab::native_media::Request::new(command);
                     request.intent = 1;
-                    let error = channel
-                        .native_media_command(&request)
-                        .await
-                        .expect_err("ordinary admitted channel cannot mint local process custody");
+                    let error = channel.native_media_command(&request).await.expect_err(
+                        "ordinary admitted channel cannot mint local process ownership",
+                    );
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
                 }
             })
@@ -11642,7 +11641,7 @@ pub mod tests {
 
     #[cfg(test)]
     #[tokio::test(flavor = "current_thread")]
-    async fn file_clipboard_raw_admitted_channel_cannot_mint_local_custody() {
+    async fn file_clipboard_raw_admitted_channel_cannot_mint_local_ownership() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let fixture = local_directory_fixture();
@@ -11680,7 +11679,7 @@ pub mod tests {
                     },
                 ] {
                     let error = channel.audio_output_command(&command).await.expect_err(
-                        "an admitted remote/raw route cannot manufacture launcher process custody",
+                        "an admitted remote/raw route cannot manufacture launcher process ownership",
                     );
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
                 }
@@ -11689,7 +11688,7 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    async fn witness_publish(
+    async fn approval_publish(
         fixture: &LocalDirectoryFixture,
         channel: &runtime_collab::ChannelHandle,
         directory: bool,
@@ -11705,7 +11704,7 @@ pub mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn witness_publication_is_target_scoped_and_rejects_republish_and_peer_reuse() {
+    async fn approval_publication_is_target_scoped_and_rejects_republish_and_peer_reuse() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for directory in [false, true] {
@@ -11723,7 +11722,7 @@ pub mod tests {
                         tree.workspaces.push(other_workspace);
                     }
                     let target = fixture.invocation_channel();
-                    witness_publish(&fixture, &target, directory).await;
+                    approval_publish(&fixture, &target, directory).await;
                     let request = tilo_actions::remote::InvokeRequest {
                         invocation: tilo_actions::InvocationId::new(),
                         target: tilo_actions::remote::RemoteActionTarget {
@@ -11739,14 +11738,14 @@ pub mod tests {
                         on_behalf_of: None,
                     };
                     let binding = || {
-                        fixture.state.witness_binding(
+                        fixture.state.approval_binding(
                             &tilo_actions::MemberId::person("person"),
                             &fixture.cluster_id,
                             &request,
                         )
                     };
                     let original = binding();
-                    let token = fixture.state.witness_confirmation(&original).unwrap();
+                    let token = fixture.state.approval_confirmation(&original).unwrap();
                     // Both another provider in this workspace and another workspace may publish,
                     // reregister and disconnect while the person's sheet is open.
                     for workspace in [fixture.cluster_id.clone(), other_workspace_id] {
@@ -11754,34 +11753,34 @@ pub mod tests {
                         let route = CrdtRoute::record("org.example.unrelated", workspace, "main");
                         let other = fixture.invocation_channel_for(other_peer, &route);
                         for other_directory in [false, true] {
-                            witness_publish(&fixture, &other, other_directory).await;
-                            witness_publish(&fixture, &other, other_directory).await;
+                            approval_publish(&fixture, &other, other_directory).await;
+                            approval_publish(&fixture, &other, other_directory).await;
                         }
                         fixture.state.remove_connection(other_peer);
                     }
                     assert!(
-                        fixture.state.take_witness(&token, &binding()),
+                        fixture.state.take_approval(&token, &binding()),
                         "unrelated churn preserves consent"
                     );
 
-                    let token = fixture.state.witness_confirmation(&original).unwrap();
-                    witness_publish(&fixture, &target, directory).await;
+                    let token = fixture.state.approval_confirmation(&original).unwrap();
+                    approval_publish(&fixture, &target, directory).await;
                     assert!(
-                        !fixture.state.take_witness(&token, &binding()),
+                        !fixture.state.take_approval(&token, &binding()),
                         "identical target republication revokes consent"
                     );
 
                     let current = binding();
-                    let token = fixture.state.witness_confirmation(&current).unwrap();
+                    let token = fixture.state.approval_confirmation(&current).unwrap();
                     fixture.state.remove_connection(fixture.peer_id);
                     assert!(
-                        !fixture.state.take_witness(&token, &binding()),
+                        !fixture.state.take_approval(&token, &binding()),
                         "disconnect revokes consent"
                     );
-                    let token = fixture.state.witness_confirmation(&current).unwrap();
-                    witness_publish(&fixture, &target, directory).await;
+                    let token = fixture.state.approval_confirmation(&current).unwrap();
+                    approval_publish(&fixture, &target, directory).await;
                     assert!(
-                        !fixture.state.take_witness(&token, &binding()),
+                        !fixture.state.take_approval(&token, &binding()),
                         "peer reuse cannot restore old consent"
                     );
                 }

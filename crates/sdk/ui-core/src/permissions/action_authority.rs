@@ -36,14 +36,14 @@ impl ActionAuthoritySampler {
         &self,
         asker: &PermissionContext,
     ) -> Result<PermissionContext, String> {
-        if asker.standing.acting.delegated() {
+        if asker.access.acting.delegated() {
             return Err("host action authority is not a delegation's".into());
         }
         let person: &MemberId = &asker.user;
         let current = (self.sample)()?;
         if current.user != *person
-            || current.standing.person_id() != person.person_id()
-            || current.standing.acting.delegated()
+            || current.access.person_id() != person.person_id()
+            || current.access.acting.delegated()
             || current.action_authority.is_some()
         {
             return Err("host action authority binding mismatch".into());
@@ -88,12 +88,10 @@ mod tests {
             &crate::permissions::MemberId::person("person-a"),
             Role::Editor,
         );
-        let bounded = agent
-            .clone()
-            .with_standing(agent.standing().clone().acting_as(
-                policy::Actor::Member(policy::MemberId::agent("agent-a")),
-                Vec::new(),
-            ));
+        let bounded = agent.clone().with_access(agent.access().clone().acting_as(
+            policy::Actor::Member(policy::MemberId::agent("agent-a")),
+            Vec::new(),
+        ));
         for permissions in [
             bounded,
             PermissionContext::member_of(
@@ -105,7 +103,7 @@ mod tests {
             let permissions = permissions
                 .with_action_authority("so.tilo.store".into(), Arc::new(move || Ok(authority())));
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-            assert!(permissions.directory_witness().is_err());
+            assert!(permissions.directory_observation().is_err());
         }
         let permissions = PermissionContext::member_of(
             "workspace-a",
@@ -117,6 +115,6 @@ mod tests {
         let permissions =
             permissions.with_policy_time_sampler(Arc::new(|| Err("clock unavailable".into())));
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-        assert!(permissions.directory_witness().is_err());
+        assert!(permissions.directory_observation().is_err());
     }
 }

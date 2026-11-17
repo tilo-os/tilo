@@ -12,7 +12,7 @@ description = "Starting an application from the desktop: the launch vocabulary, 
 # and hands over what this crate plans and spawns.
 
 [features]
-# The seam a session's tests report an ending through, for the apps it did
+# The boundary a session's tests report an ending through, for the apps it did
 # not start itself.
 test-support = []
 

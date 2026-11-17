@@ -2215,21 +2215,21 @@ if [ -f "$PREPARED_SETUP_RUN/other-device.json" ] && [ ! -L "$PREPARED_SETUP_RUN
   # The separate portable Home, applications and browser streams are already
   # ciphertext bound to this package. Retain them with the canonical helper so
   # first boot receives the reviewed scope, not only its setup declaration.
-  other_custody="$(mktemp -d /run/tilo-installer/other-device-custody.XXXXXXXX)" \
-    || die "could not create other-computer payload custody"
+  other_ownership="$(mktemp -d /run/tilo-installer/other-device-ownership.XXXXXXXX)" \
+    || die "could not create other-computer payload ownership"
   for selected in home-selection.json applications-selection.json browser-selection.json; do
-    [ ! -f "$PREPARED_SETUP_RUN/$selected" ] || cp "$PREPARED_SETUP_RUN/$selected" "$other_custody/" \
+    [ ! -f "$PREPARED_SETUP_RUN/$selected" ] || cp "$PREPARED_SETUP_RUN/$selected" "$other_ownership/" \
       || die "could not stage the reviewed other-computer selection"
   done
-  cp "$PREPARED_SETUP_RUN/other-device/receipt.json" "$other_custody/receipt.json" \
+  cp "$PREPARED_SETUP_RUN/other-device/receipt.json" "$other_ownership/receipt.json" \
     || die "could not stage the reviewed other-computer receipt"
   find "$PREPARED_SETUP_RUN" -maxdepth 1 -type f \
     \( -name 'home-*.sealed' -o -name 'applications-*.sealed' -o -name 'browser-*.sealed' \) \
-    -exec cp {} "$other_custody/" \; 2>/dev/null || true
+    -exec cp {} "$other_ownership/" \; 2>/dev/null || true
   /usr/libexec/tilo-installer-prepared-setup-extract retain-home \
-    --source-dir "$other_custody" --target-var "${OTHER_DEVICE_TARGET_VARS[0]}" \
-    || { rm -rf "$other_custody"; die "could not retain the reviewed other-computer data"; }
-  rm -rf "$other_custody"
+    --source-dir "$other_ownership" --target-var "${OTHER_DEVICE_TARGET_VARS[0]}" \
+    || { rm -rf "$other_ownership"; die "could not retain the reviewed other-computer data"; }
+  rm -rf "$other_ownership"
 fi
 
 sync

@@ -18,7 +18,7 @@
 //! the top of 100,000 reads the pages of that item, not the list's.
 //!
 //! A row the person's own change takes out of the rows stands where it is until the view is
-//! left, and so does the row standing open into its item, whoever's change takes it out: what
+//! left, and so does the row held open into its item, whoever's change takes it out: what
 //! a person reads does not vanish from under them ([`Virtual::open`]). Rows made of another
 //! query (a filter or an order chosen) are new rows: the host reads them anew, as it reads a
 //! list new to the tree, and choosing a filter costs the rows it shows, not the collection's.
@@ -47,14 +47,14 @@ pub(crate) enum Rows {
     Coll {
         coll: Rc<CollRef>,
         listing: Rc<Listing>,
-        /// The rows the person's own changes, or any change to the row standing open, took out
+        /// The rows the person's own changes, or any change to the row held open, took out
         /// of the listing, kept where they stand (`place`, item) until the view is left: see
         /// [`Live::keep_rows`].
         kept: Vec<(usize, Rc<str>)>,
     },
     List {
         values: Rc<[Value]>,
-        /// The rows the person's own changes, or any change to the row standing open, took out
+        /// The rows the person's own changes, or any change to the row held open, took out
         /// of the list, kept where they stand (`place`, item) until the view is left: see
         /// [`still_kept_list`].
         kept: Vec<(usize, Value)>,
@@ -308,7 +308,7 @@ pub(crate) struct Virtual {
     /// Rows the steps inserted or removed since the rows were read: the listing the rows stand
     /// for does not hold them, and the count the host holds is the listing's with them.
     stepped: bool,
-    /// The key of the row standing open into its item where it stands: the host says which one
+    /// The key of the row held open into its item where it stands: the host says which one
     /// it shows open, and a row's document is built for it alone. A key, not a place, so the row
     /// the person reads stays the row it is as the rows around it come, go and move.
     open: Option<String>,
@@ -389,7 +389,7 @@ impl Virtual {
 }
 
 impl Live {
-    /// The row of `list`, a list of values, standing open into its item: where it stands among
+    /// The row of `list`, a list of values, held open into its item: where it stands among
     /// the rows, and its item. A row open is one the host shows, so it is built.
     fn open_value(&self, list: &Virtual) -> Option<(usize, Value)> {
         let open = list.open.as_deref()?;
@@ -400,7 +400,7 @@ impl Live {
         Some((*index, list.rows.list_row(*index)?.clone()))
     }
 
-    /// The host shows the row at `open` of the list `list` standing open into its item: the row
+    /// The host shows the row at `open` of the list `list` held open into its item: the row
     /// that opens builds its item's document and the row that closes drops it, both rendered
     /// again where they stand — the list sends them on as the rows that changed.
     pub fn open_row(&mut self, list: &str, open: Option<&str>) {
@@ -755,7 +755,7 @@ impl Live {
 
     /// What the steps of `step` do to `list` when its rows are the values its holder made: what
     /// the guest made of them says which items they are, so a row the person's own change took
-    /// out of it, or the row standing open, stands where it is — the host's rows do not move and
+    /// out of it, or the row held open, stands where it is — the host's rows do not move and
     /// the holder runs again to keep it — and anyone else's change to other rows makes the rows
     /// new, as a query's steps do. `None` for a list whose rows are a query's.
     fn linger_in_list(&mut self, list: &str, step: &Pending) -> Option<bool> {
@@ -779,7 +779,7 @@ impl Live {
     }
 
     /// What a step that only takes rows out of `list`, a query of a collection, does when the
-    /// change is the person's, or takes out only the row standing open: every row it takes out
+    /// change is the person's, or takes out only the row held open: every row it takes out
     /// is still in the collection, so each stands where it is, the host's rows untouched, until
     /// the view is left ([`Rows::settle`] settles them). `None` when the rows are a list of
     /// values' or the step is not one that only takes rows out, or is someone else's.
@@ -902,7 +902,7 @@ impl Live {
 
     /// The rows kept after the change of the query `now`: those kept before that the query still
     /// does not hold, and each row whose item `ids` names and that the change took out of the
-    /// query, at its place — every one for the person's own change, the row standing open for
+    /// query, at its place — every one for the person's own change, the row held open for
     /// anyone's. Any other row someone else's change takes out moves as it ever did; one the
     /// query holds again (an undo) is the query's own row now ([`still_kept`]).
     fn keep_rows(
@@ -1177,7 +1177,7 @@ fn another_query(before: &Rows, now: &Rows) -> bool {
 }
 
 impl Builder<'_> {
-    /// The rows the person's own changes took out of the list, and the row standing open, stand
+    /// The rows the person's own changes took out of the list, and the row held open, stand
     /// where they are for as long as the view is there, so a list built again keeps them; one
     /// the list holds again is its own row now.
     fn carry_kept(&self, before: Option<&Virtual>, rows: &mut Rows) {

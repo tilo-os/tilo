@@ -102,13 +102,13 @@ const BEFORE = `JSON.stringify((() => {
 // held on them now (one per tab: a tab is a device of its own), and the keys
 // kept. A reload takes back the key the page before it held.
 const DEVICE_LOCKS = `navigator.locks.query().then(state => JSON.stringify(state.held
-  .map(lock => lock.name).filter(name => name.startsWith('tilo-device-custody:'))))`;
+  .map(lock => lock.name).filter(name => name.startsWith('tilo-device-key:'))))`;
 const DEVICE_KEYS = `new Promise(resolve => {
   const request = indexedDB.open('tilo-device', 1);
   request.onsuccess = () => {
     const db = request.result;
-    if (!db.objectStoreNames.contains('custody')) return resolve('[]');
-    const keys = db.transaction('custody').objectStore('custody').getAllKeys();
+    if (!db.objectStoreNames.contains('device key')) return resolve('[]');
+    const keys = db.transaction('device key').objectStore('device key').getAllKeys();
     keys.onsuccess = () => resolve(JSON.stringify(keys.result.filter(key => String(key).startsWith('device-key:'))));
     keys.onerror = () => resolve('[]');
   };
@@ -214,7 +214,7 @@ for (let n = 1; n <= times; n += 1) {
     n, result,
     gpuReleased: release ? 'yes' : 'no',
     idleFirst: idle ? 'yes' : 'no',
-    deviceLocks: locks.length ? locks.map(name => name.replace(/^tilo-device-custody:[^#]*/, '') || '#0').join(',') : 'none',
+    deviceLocks: locks.length ? locks.map(name => name.replace(/^tilo-device-key:[^#]*/, '') || '#0').join(',') : 'none',
     hide: before.hide ? before.hide - asked : null,
     handlers: before.hidden && before.hide ? before.hidden - before.hide : null,
     oldRanUntil: before.alive ? before.alive - asked : null,
@@ -263,7 +263,7 @@ const second = await browser.tab();
 await second.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
 await second.send('Page.addScriptToEvaluateOnNewDocument', {source: EARLY});
 await second.navigate(site);
-const secondArrived = await until(second, `document.documentElement.dataset.custody === 'waiting' ? 'waiting' : (${ARRIVED})`, stepLimit(6));
+const secondArrived = await until(second, `document.documentElement.dataset.device key === 'waiting' ? 'waiting' : (${ARRIVED})`, stepLimit(6));
 tabs.waited = secondArrived === 'waiting';
 tabs.secondIn = secondArrived === 'done';
 console.log(`TIMING two-tabs second-arrived=${secondArrived ?? 'never'}`);

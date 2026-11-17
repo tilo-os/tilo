@@ -36,7 +36,7 @@ export function createComputeDomains({workerFactory=()=>new Worker(new URL('./co
   async function consume(job) {
     if(!authorized(job)){finish(job,fault('closed'));return;}
     // Retirement and the next owner's authorize callback can reenter/close us.
-    // Keep custody across the entire handoff, then check at actual delivery.
+    // Keep ownership across the entire handoff, then check at actual delivery.
     job.consuming=true;
     try {
       retire(job);pump();

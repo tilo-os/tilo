@@ -61,7 +61,7 @@ use tilo_action_broker::document_content::ContentSources;
 #[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::{Need, Reachability};
 #[cfg(target_os = "linux")]
-use tilo_identity_host::custody::HostIdentity;
+use tilo_identity_host::identity_store::HostIdentity;
 #[cfg(target_os = "linux")]
 use tilo_network_actor::{WorkspaceId, native_ingress};
 
@@ -153,7 +153,7 @@ pub(crate) struct ReceivedSurface {
     pub(crate) msg: NeighbourMsg,
 }
 
-/// What this desktop's endpoint carries beside the client's own commands: the custody sessions and
+/// What this desktop's endpoint carries beside the client's own commands: the ownership sessions and
 /// records its workspaces are held through, its device fabric, and the transfers between the
 /// person's devices.
 #[derive(Debug)]
@@ -161,7 +161,7 @@ pub(crate) struct ReceivedSurface {
 pub(crate) enum HostCmd {
     /// One of the client's own commands.
     Network(Cmd),
-    /// Take part in a workspace through this device's own custody session with its host.
+    /// Take part in a workspace through this device's own ownership session with its host.
     TakePart(native_ingress::Connect),
     /// Send one piece of a record's content to the device of the workspace that asked for it.
     Content(tilo_network_actor::RecordContentDelivery),
@@ -652,7 +652,7 @@ impl Local {
     }
 
     /// Moves whenever a workspace's live session stands otherwise or opened again
-    /// ([`crate::live::Live::standings_revision`]): what [`Self::live_standings`] and
+    /// ([`crate::live::Live::states_revision`]): what [`Self::live_states`] and
     /// [`Self::live_sessions`] are read again on. It never moves for a session that runs no live session.
     #[must_use]
     #[cfg(target_os = "linux")]
@@ -662,16 +662,14 @@ impl Local {
             // A test's live sessions are joined before its session runs, and stay.
             return 1;
         }
-        self.live().map_or(0, |live| live.standings_revision())
+        self.live().map_or(0, |live| live.states_revision())
     }
 
     /// How far each workspace's live session came on this device, by workspace
-    /// ([`crate::live::Standing`]): nothing for a session that runs no live session.
+    /// ([`crate::live::LiveState`]): nothing for a session that runs no live session.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn live_standings(
-        &self,
-    ) -> std::collections::BTreeMap<String, crate::live::Standing> {
+    pub(crate) fn live_states(&self) -> std::collections::BTreeMap<String, crate::live::LiveState> {
         #[cfg(test)]
         if !self.test_live_sessions.borrow().is_empty() {
             // A test's live sessions are joined on a relay of the test's own: open, as this device's.
@@ -685,7 +683,7 @@ impl Local {
                         name: String::new(),
                         here: true,
                     };
-                    let open = crate::live::Standing::Open {
+                    let open = crate::live::LiveState::Open {
                         relay,
                         epoch: 0,
                         lent: false,
@@ -696,9 +694,9 @@ impl Local {
         }
         self.live()
             .map(|live| {
-                live.standings()
+                live.states()
                     .into_iter()
-                    .map(|(workspace, standing)| (workspace.to_string(), standing))
+                    .map(|(workspace, state)| (workspace.to_string(), state))
                     .collect()
             })
             .unwrap_or_default()
@@ -1666,7 +1664,7 @@ impl Client {
     }
 
     /// Moves whenever a workspace's live session stands otherwise or opened again: what
-    /// [`Self::live_standings`] and [`Self::live_sessions`] are read again on.
+    /// [`Self::live_states`] and [`Self::live_sessions`] are read again on.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn live_revision(&self) -> u64 {
@@ -1674,13 +1672,11 @@ impl Client {
     }
 
     /// How far each workspace's live session came on this device, by workspace: open, or what it
-    /// waits for ([`crate::live::Standing`]).
+    /// waits for ([`crate::live::LiveState`]).
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn live_standings(
-        &self,
-    ) -> std::collections::BTreeMap<String, crate::live::Standing> {
-        self.hosting.local.live_standings()
+    pub(crate) fn live_states(&self) -> std::collections::BTreeMap<String, crate::live::LiveState> {
+        self.hosting.local.live_states()
     }
 
     /// The endpoints this device's relay turned away from each workspace's live session and has not
@@ -2272,7 +2268,7 @@ fn endpoint_for(
         &identity
             .signer
             .endpoint_secret()
-            .ok_or("this device's key dials only through its custody")?,
+            .ok_or("this device's key dials only through its ownership")?,
     );
     // The relays are held back ([`tilo_endpoint_reachability`]): binding with an empty relay map
     // keeps net report, address discovery and port mapping off the network until a workspace this
@@ -2370,7 +2366,7 @@ impl PeerDocuments {
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
-mod custody_tests;
+mod membership_check_tests;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]

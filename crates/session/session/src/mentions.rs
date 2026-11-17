@@ -61,7 +61,7 @@ pub struct Look<'a> {
 /// What this device told, and what must not be told again.
 #[derive(Default)]
 pub struct Held {
-    /// Per record (`app` and route), the tags told and still standing.
+    /// Per record (`app` and route), the tags told and still live_tags.
     told: BTreeMap<(String, String), BTreeSet<String>>,
     /// Per record, where it was last looked at: what changed since is all a look reads of it.
     seen: BTreeMap<(String, String), Seen>,
@@ -93,7 +93,7 @@ impl Held {
     ) -> Told {
         let (record, kind) = place_record(look);
         let route = look.record.to_owned();
-        let mut standing: BTreeMap<String, Notice> = BTreeMap::new();
+        let mut live_tags: BTreeMap<String, Notice> = BTreeMap::new();
         for mention in ui::mentions::in_resource_for(look.doc, look.read) {
             if !me.contains(&mention.person)
                 || mention.by.as_ref().is_some_and(|by| {
@@ -116,7 +116,7 @@ impl Held {
                 anchor,
             };
             let tag = place.tag(&mention.person);
-            if standing.contains_key(&tag) {
+            if live_tags.contains_key(&tag) {
                 continue;
             }
             let who = mention
@@ -146,7 +146,7 @@ impl Held {
                     crate::i18n::t_args("mention-notice", &[("name", who.as_str().into())])
                 }
             };
-            standing.insert(
+            live_tags.insert(
                 tag.clone(),
                 Notice::opens(
                     tilo_desktop_search::names::app_name(look.app),
@@ -166,13 +166,13 @@ impl Held {
         let told = self.told.entry((look.app.to_owned(), route)).or_default();
         let withdraw: Vec<String> = told
             .iter()
-            .filter(|tag| !standing.contains_key(*tag))
+            .filter(|tag| !live_tags.contains_key(*tag))
             .cloned()
             .collect();
         for tag in &withdraw {
             told.remove(tag);
         }
-        let show = standing
+        let show = live_tags
             .into_iter()
             .filter(|(tag, _)| told.insert(tag.clone()))
             .map(|(_, notice)| notice)
@@ -467,8 +467,8 @@ impl Mentions {
                 Since::Changes { heads, bytes } => (heads, bytes),
             };
             let touched = ui::mentions::touched_by(&bytes, &self.0.me)?;
-            let standing = held.told.get(&key).is_some_and(|told| !told.is_empty());
-            if touched.names || (touched.removes && standing) || heads.is_empty() {
+            let has_told = held.told.get(&key).is_some_and(|told| !told.is_empty());
+            if touched.names || (touched.removes && has_told) || heads.is_empty() {
                 return None;
             }
             held.seen.insert(

@@ -104,7 +104,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "account-custody"
+name = "account-credentials"
 version = "0.1.0"
 dependencies = [
  "accounts",
@@ -1847,7 +1847,7 @@ dependencies = [
 name = "calendar"
 version = "0.1.0"
 dependencies = [
- "account-custody",
+ "account-credentials",
  "accounts",
  "chrono",
  "chrono-tz",
@@ -7501,7 +7501,7 @@ dependencies = [
 name = "imager"
 version = "0.1.0"
 dependencies = [
- "account-custody",
+ "account-credentials",
  "accounts",
  "base64 0.22.1",
  "blake3",
@@ -7572,7 +7572,7 @@ dependencies = [
 name = "imager-backend"
 version = "0.1.0"
 dependencies = [
- "account-custody",
+ "account-credentials",
  "accounts",
  "base64 0.22.1",
  "blake3",
@@ -9439,7 +9439,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 name = "local-model-service"
 version = "0.1.0"
 dependencies = [
- "account-custody",
+ "account-credentials",
  "accounts",
  "agent-provider-config",
  "bounded-command",
@@ -9596,7 +9596,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 name = "mail"
 version = "0.1.0"
 dependencies = [
- "account-custody",
+ "account-credentials",
  "accounts",
  "async-imap",
  "base64 0.22.1",
@@ -15371,7 +15371,7 @@ name = "settings"
 version = "0.1.0"
 dependencies = [
  "accesskit_unix",
- "account-custody",
+ "account-credentials",
  "accounts",
  "agent-provider-config",
  "bounded-command",
@@ -17231,7 +17231,7 @@ dependencies = [
 name = "tilo-accounts-engine"
 version = "0.1.0"
 dependencies = [
- "account-custody",
+ "account-credentials",
  "async-imap",
  "runtime-dylib",
  "tilo-dav",
@@ -18256,7 +18256,7 @@ dependencies = [
 name = "tilo-browser-sessions"
 version = "0.1.0"
 dependencies = [
- "account-custody",
+ "account-credentials",
  "browser-continuity",
  "workspace-hack",
 ]
@@ -18726,7 +18726,7 @@ dependencies = [
 name = "tilo-dav"
 version = "0.1.0"
 dependencies = [
- "account-custody",
+ "account-credentials",
  "accounts",
  "quick-xml 0.41.0",
  "reqwest 0.13.4",
@@ -19882,7 +19882,7 @@ dependencies = [
 name = "tilo-install-helpers"
 version = "0.1.0"
 dependencies = [
- "account-custody",
+ "account-credentials",
  "accounts",
  "base64 0.22.1",
  "bounded-command",
@@ -20252,7 +20252,7 @@ dependencies = [
 name = "tilo-model-gateway"
 version = "0.1.0"
 dependencies = [
- "account-custody",
+ "account-credentials",
  "accounts",
  "agent-provider-config",
  "base64 0.22.1",
@@ -21821,7 +21821,7 @@ name = "tilo-session"
 version = "0.1.0"
 dependencies = [
  "accesskit_unix",
- "account-custody",
+ "account-credentials",
  "accounts",
  "agent-provider-config",
  "app-catalogue",
@@ -22278,7 +22278,7 @@ dependencies = [
 name = "tilo-spotify"
 version = "0.1.0"
 dependencies = [
- "account-custody",
+ "account-credentials",
  "accounts",
  "gstreamer",
  "gstreamer-app",
@@ -27728,7 +27728,7 @@ dependencies = [
  "accesskit_atspi_common",
  "accesskit_consumer",
  "accesskit_unix",
- "account-custody",
+ "account-credentials",
  "accounts",
  "activity",
  "acto",

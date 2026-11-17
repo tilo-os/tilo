@@ -289,7 +289,7 @@ impl SetupApp {
         self.desktop_flow = DesktopFlow::new_live();
         if let Some(preparation) = &self.guided_desktop {
             self.desktop_flow
-                .require_account_protocol(preparation.prepared.account_custody_protocol());
+                .require_account_protocol(preparation.prepared.account_credentials_protocol());
             self.desktop_flow
                 .require_service_session_protocol(preparation.prepared.service_session_protocol());
             self.refresh_guided_navigation();
@@ -2037,7 +2037,7 @@ fn fixture_desktop_release() -> DesktopRelease {
         url: "https://code.tilo.so/tilo/releases/fixture.rpm".into(),
         byte_size: 7,
         sha256: sha256.clone(),
-        account_custody: None,
+        account_credentials: None,
         verified_runtime: Some(RuntimeEvidence {
             schema: 1,
             reference: "nonproduction screenshot fixture".into(),

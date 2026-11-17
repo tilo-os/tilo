@@ -4,7 +4,7 @@
 //!
 //! Such a host runs a workspace's Linux programs in VMs of its own
 //! ([`legacy_vm::hosted`]), admitted by its plans file and metered in its
-//! usage ledger, and runs the workspaces' Browser, metered in the ledger its
+//! usage log, and runs the workspaces' Browser, metered in the log its
 //! relay keeps ([`browser_actions`]). Its account answer is read from those
 //! and nothing else:
 //!
@@ -13,9 +13,9 @@
 //!   card and invoices, which the hosting provider writes there;
 //! - the hosted-VM service answers the account's usage records and which of
 //!   its VMs run;
-//! - the Browser ledger answers the page actions it ran in the period.
+//! - the Browser log answers the page actions it ran in the period.
 //!
-//! A host whose plans file sells nothing answers no plans and no standing.
+//! A host whose plans file sells nothing answers no plans and no subscription.
 //! [`HostedAccount::watch`] calls back whenever the plans file changes (a
 //! card added, a plan changed), so a view following the answer, or a
 //! command waiting for it, is told without asking again.
@@ -28,12 +28,12 @@ use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::meter::{UsageEntry, UsageKind};
 use legacy_vm::hosted::plan::{Plans, Sells};
 use tilo_actions::remote::host_account::{
-    Entitlement, HostAccount, HostKind, Limits, Standing, Usage, WorkspaceUsage,
+    Entitlement, HostAccount, HostKind, Limits, Subscription, Usage, WorkspaceUsage,
 };
 
 pub mod browser_actions;
 
-use browser_actions::Ledger;
+use browser_actions::Log;
 
 /// The hosted-VM service's socket. Set on a host that serves workspaces.
 pub const SOCKET_ENV: &str = "TILO_HOSTED_VM_SOCKET";
@@ -41,9 +41,9 @@ pub const SOCKET_ENV: &str = "TILO_HOSTED_VM_SOCKET";
 pub const ACCOUNT_ENV: &str = "TILO_HOSTED_ACCOUNT";
 /// The plans file the hosted-VM service admits by.
 pub const PLANS_ENV: &str = "TILO_HOSTED_PLANS";
-/// The ledger of Browser page actions the relay keeps
-/// ([`browser_actions::LEDGER_ENV`]).
-pub const LEDGER_ENV: &str = browser_actions::LEDGER_ENV;
+/// The log of Browser page actions the relay keeps
+/// ([`browser_actions::ACTIONS_LOG_ENV`]).
+pub const ACTIONS_LOG_ENV: &str = browser_actions::ACTIONS_LOG_ENV;
 /// The host's name, as people know it, when its plans file sells nothing
 /// (a host that sells names itself there).
 pub const NAME_ENV: &str = "TILO_HOSTED_NAME";
@@ -56,9 +56,9 @@ const PATIENCE: Duration = Duration::from_secs(5);
 pub struct HostedAccount {
     pub account: String,
     pub plans: PathBuf,
-    /// The ledger of Browser page actions the relay keeps; `None` reads
+    /// The log of Browser page actions the relay keeps; `None` reads
     /// none.
-    pub ledger: Option<PathBuf>,
+    pub log: Option<PathBuf>,
     /// The hosted-VM service, which answers usage; `None` reads none.
     pub socket: Option<PathBuf>,
     /// The host's name when it sells nothing.
@@ -73,7 +73,7 @@ impl HostedAccount {
         Some(Self {
             account: std::env::var(ACCOUNT_ENV).ok()?,
             plans: PathBuf::from(std::env::var_os(PLANS_ENV)?),
-            ledger: std::env::var_os(LEDGER_ENV).map(PathBuf::from),
+            log: std::env::var_os(ACTIONS_LOG_ENV).map(PathBuf::from),
             socket: std::env::var_os(SOCKET_ENV).map(PathBuf::from),
             name: std::env::var(NAME_ENV).unwrap_or_else(|_| "This host".to_owned()),
         })
@@ -81,7 +81,7 @@ impl HostedAccount {
 
     /// The account as the host knows it at `now_ms`. A plans file that does
     /// not read answers as a host that sells nothing; the service not
-    /// answering, as no usage; no ledger, as no page actions.
+    /// answering, as no usage; no log, as no page actions.
     #[must_use]
     pub fn read(&self, now_ms: u64) -> HostAccount {
         let plans = Plans::load(&self.plans).unwrap_or_default();
@@ -94,8 +94,8 @@ impl HostedAccount {
             },
             |socket| self.usage(socket, from_ms, to_ms),
         );
-        usage.browser_actions = self.ledger.as_ref().map_or(0, |ledger| {
-            Ledger::new(ledger.clone()).count(&self.account, from_ms, to_ms)
+        usage.browser_actions = self.log.as_ref().map_or(0, |log| {
+            Log::new(log.clone()).count(&self.account, from_ms, to_ms)
         });
         account_of(&plans, &self.account, &self.name, usage)
     }
@@ -242,8 +242,8 @@ pub fn account_of(plans: &Plans, account: &str, name: &str, usage: Usage) -> Hos
         return HostAccount::sells_nothing(name, HostKind::SelfHosted);
     };
     let page = |page: &str| Sells::page(page, account);
-    let standing = match plans.accounts.get(account) {
-        Some(plan) => Standing {
+    let subscription = match plans.accounts.get(account) {
+        Some(plan) => Subscription {
             account: account.to_owned(),
             plan: plan.plan.clone(),
             payment_method: Some(plan.card.clone().unwrap_or_default()),
@@ -266,7 +266,7 @@ pub fn account_of(plans: &Plans, account: &str, name: &str, usage: Usage) -> Hos
             credit: plan.credit.clone(),
             invoices: plan.invoices.clone(),
         },
-        None => Standing {
+        None => Subscription {
             account: account.to_owned(),
             // No card, so no plan: the free Browser page actions are all it
             // may use here.
@@ -275,14 +275,14 @@ pub fn account_of(plans: &Plans, account: &str, name: &str, usage: Usage) -> Hos
                 ..Limits::default()
             }),
             usage,
-            ..Standing::default()
+            ..Subscription::default()
         },
     };
     HostAccount {
         host: sells.host.clone(),
         kind: HostKind::Provider,
         plans: sells.plans.clone(),
-        standing: Some(standing),
+        subscription: Some(subscription),
         manage_billing: sells.manage_billing.as_deref().map(page),
     }
 }

@@ -147,7 +147,7 @@ impl<E: Expectation> BrowserArtifact<E> {
     pub fn read(&self, _caller: u32) -> io::Result<Vec<u8>> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "Browser direct staging requires supported private caller custody",
+            "Browser direct staging requires supported private caller ownership",
         ))
     }
 }

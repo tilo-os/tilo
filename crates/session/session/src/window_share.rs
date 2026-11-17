@@ -204,7 +204,7 @@ pub(crate) struct WindowShares {
     /// How far each workspace's live session came on this device, the live sessions themselves, read
     /// again when `live_seen` moved, and the windows a member's session is sent pictures of now: what
     /// the reading says beside the shares ([`reading`]).
-    live: BTreeMap<String, crate::live::Standing>,
+    live: BTreeMap<String, crate::live::LiveState>,
     /// The endpoints this device's relay turned away from each workspace's live session, and why.
     turned: BTreeMap<String, Vec<crate::live::TurnedAway>>,
     live_seen: u64,
@@ -943,9 +943,9 @@ impl WindowShares {
         now: Instant,
     ) -> bool {
         let (tab, host, workspace) = (shared.tab, &shared.host, shared.workspace.clone());
-        let standing = self.governed.get(&tab).map(|governed| governed.shown_in);
+        let state = self.governed.get(&tab).map(|governed| governed.shown_in);
         let mut changed = false;
-        if standing.is_none_or(|place| hosted_window(tree, place).is_none()) {
+        if state.is_none_or(|place| hosted_window(tree, place).is_none()) {
             let claimed: BTreeSet<TabId> = self
                 .governed
                 .values()
@@ -969,7 +969,7 @@ impl WindowShares {
                 None => None,
             };
             if let Some((shown_in, strip)) = placed {
-                if standing.is_some_and(|before| before != shown_in) {
+                if state.is_some_and(|before| before != shown_in) {
                     // The tab that pictured it shows something else now: its stream is shown
                     // again where the window stands.
                     self.unmount(session, tab);
@@ -2047,10 +2047,10 @@ impl WindowShares {
             if !hosted.shown || keyframes.contains(&key) {
                 // A still window sends its new viewer the keyframe it stands on; otherwise the next
                 // frame is one, captured now.
-                if let Some(standing) = hosted.share.start_reader()
-                    && let Err(error) = send_picture(live_session, tab, &hosted.share, standing)
+                if let Some(state) = hosted.share.start_reader()
+                    && let Err(error) = send_picture(live_session, tab, &hosted.share, state)
                 {
-                    tracing::warn!(%error, tab, "a shared window's standing keyframe did not go out");
+                    tracing::warn!(%error, tab, "a shared window's state keyframe did not go out");
                 }
                 hosted.captured_at = None;
             }

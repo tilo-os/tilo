@@ -460,10 +460,10 @@ impl Bridge {
     ) -> Result<T, String> {
         let result: io::Result<T> = (|| {
             let client = self.client.lock().map_err(|_| denied())?;
-            self.source.custody()?;
+            self.source.ownership()?;
             self.target.check()?;
             let value = call(client.as_ref().ok_or_else(denied)?);
-            self.source.custody()?;
+            self.source.ownership()?;
             self.target.check()?;
             value
         })();
@@ -1342,7 +1342,7 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
     drop(runtime);
     let client = bridge.client.lock().unwrap().take().unwrap();
     client.retire().unwrap();
-    // Release the mounted view and all root transport custody before retiring the source namespace.
+    // Release the mounted view and all root transport ownership before retiring the source namespace.
     drop(bridge);
     drop(projection);
     source.retire().unwrap();
@@ -1608,7 +1608,7 @@ fn qualify_alias_iteration(
     if final_revoke {
         assert!(
             !exposure.target_observed_stopped().unwrap(),
-            "revocation denies source bytes while actual exposure retains target custody"
+            "revocation denies source bytes while actual exposure retains target ownership"
         );
     }
     let deadline = tilo_test_env::hang_deadline();

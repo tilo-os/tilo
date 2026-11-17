@@ -489,7 +489,7 @@ fn unadmitted_service_effect_refuses_before_changing_the_existing_page() {
             .ok_or("browser surface is missing")?;
         // Public catalog metadata does not grant credentials. The actual selected
         // account resource exposes the canonical effect; absent native client
-        // custody must still refuse before it replaces the existing engine.
+        // ownership must still refuse before it replaces the existing engine.
         app.with_surface::<crate::BrowserWindow, _>(|window| {
             window.page_mut().accept_service_catalog(vec![
                 ui::collaboration::browser_service_sessions::BrowserServiceSessionDescriptor {
@@ -583,7 +583,7 @@ fn static_browser_open_and_registered_framework_opener_publish_once_and_dispatch
         use ui::tilo_resource::Resource as _;
         OPENED_VIEW_ANCHORS.with_borrow_mut(Vec::clear);
         // This qualifies the same framework opener/static export composition,
-        // without pretending this fixture has native service credential custody.
+        // without pretending this fixture has native service credential storage.
         let mut app = TestApp::<OpeningBrowser>::for_person_with_lent(
             &"68".repeat(32),
             ui::webview::test_engine::TestEngine::new(),

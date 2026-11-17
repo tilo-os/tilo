@@ -40,7 +40,7 @@ use tilo_peer_state::owner::{
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
-use crate::custody::PeerStore;
+use crate::membership_check::PeerStore;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 /// The owner's record in the page's [`PeerStore`]. A record the store
@@ -50,7 +50,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 struct PageWorkspaces {
     store: Arc<dyn PeerStore>,
     healthy: AtomicBool,
-    /// The runs of custody this page keeps beside its record, by name: those the record it last
+    /// The runs of ownership this page keeps beside its record, by name: those the record it last
     /// kept names, and those put since. A store without runs of its own reads them from here.
     runs: std::sync::Mutex<BTreeMap<String, Option<Vec<u8>>>>,
     /// The record kept as an index and per-workspace parts, so a publication
@@ -152,9 +152,9 @@ impl Store for PageWorkspaces {
         false
     }
 
-    fn put_custody(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
+    fn put_ownership(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
         let hash = *blake3::hash(bytes).as_bytes();
-        let name = tilo_peer_state::owner::custody_run_name(workspace, hash);
+        let name = tilo_peer_state::owner::ownership_run_name(workspace, hash);
         if self.store.keeps_workspaces() {
             self.store.save_workspaces_run(&name, Some(bytes))?;
         }
@@ -162,14 +162,14 @@ impl Store for PageWorkspaces {
         Ok(hash)
     }
 
-    fn read_custody(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
-        let name = tilo_peer_state::owner::custody_run_name(workspace, hash);
+    fn read_ownership(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        let name = tilo_peer_state::owner::ownership_run_name(workspace, hash);
         if let Some(Some(bytes)) = self.runs.lock_recover().get(&name) {
             return Ok(bytes.clone());
         }
         self.store
             .load_workspaces_run(&name)
-            .ok_or_else(|| format!("the run of custody {name} is not kept"))
+            .ok_or_else(|| format!("the run of ownership {name} is not kept"))
     }
 
     fn publish(
@@ -208,8 +208,8 @@ impl Store for PageWorkspaces {
             tracing::warn!(%error, "the workspaces' older copy was kept");
         }
         install();
-        // A run the record no longer names moved to custody's head.
-        let named: BTreeSet<String> = next.custody_runs().collect();
+        // A run the record no longer names moved to ownership's head.
+        let named: BTreeSet<String> = next.ownership_runs().collect();
         let gone: Vec<String> = {
             let mut runs = self.runs.lock_recover();
             let gone = runs
@@ -222,7 +222,7 @@ impl Store for PageWorkspaces {
         };
         for name in gone.into_iter().filter(|_| self.keeps) {
             if let Err(error) = self.store.save_workspaces_run(&name, None) {
-                tracing::warn!(%error, "a run of custody the record no longer names was kept");
+                tracing::warn!(%error, "a run of ownership the record no longer names was kept");
             }
         }
         Ok(())
@@ -247,7 +247,7 @@ impl Replicas {
         let kept = workspaces.kept();
         let runs = kept
             .iter()
-            .flat_map(NativeAuthorityStorage::custody_runs)
+            .flat_map(NativeAuthorityStorage::ownership_runs)
             .map(|name| (name, None))
             .collect();
         *workspaces.runs.lock_recover() = runs;

@@ -417,9 +417,9 @@ fn an_agent_removes_a_clip_it_placed_without_being_asked() {
     assert!(!body(&agent).contains(&clip), "the clip is gone");
 }
 
-fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::policy::Standing {
+fn bot_access(kinds: ui::permissions::policy::KindSet) -> ui::permissions::policy::MemberAccess {
     use ui::permissions::policy::{
-        Actor, Answer, Grant, Grantee, MemberId, Standing, TreePath, WorkspacePolicy,
+        Actor, Answer, Grant, Grantee, MemberAccess, MemberId, TreePath, WorkspacePolicy,
     };
     let bot = Grantee::bot("b1");
     let grant = Grant::new(
@@ -430,7 +430,7 @@ fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::pol
         Answer::Allow,
         Grantee::person("ada"),
     );
-    Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
+    MemberAccess::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
         .acting_as(Actor::Member(MemberId::bot("b1")), vec![grant])
 }
 
@@ -451,7 +451,7 @@ fn ada_and_her_bot(kinds: ui::permissions::policy::KindSet) -> (Replica, Replica
         ReplicaActor::Bot {
             installation: "b1".into(),
             installer: "ada".into(),
-            standing: bot_standing(kinds),
+            access: bot_access(kinds),
         },
         Seed::Existing {
             record: page.document_id().clone(),
@@ -553,10 +553,10 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
         ReplicaActor::Bot {
             installation: "b1".into(),
             installer: "ada".into(),
-            standing: {
+            access: {
                 use ui::permissions::policy::{
-                    Actor, Answer, Grant, Grantee, KindSet, Level, MemberId, Standing, TreePath,
-                    WorkspacePolicy,
+                    Actor, Answer, Grant, Grantee, KindSet, Level, MemberAccess, MemberId,
+                    TreePath, WorkspacePolicy,
                 };
                 let bot = Grantee::bot("b1");
                 let read = Grant::new(
@@ -570,7 +570,7 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
                     Answer::Allow,
                     Grantee::person("ada"),
                 );
-                Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
+                MemberAccess::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
                     .acting_as(Actor::Member(MemberId::bot("b1")), vec![read])
             },
         },
@@ -656,9 +656,9 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     let channel = chat::projection::read(&doc).channel_rows()[0].id.clone();
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
     // What a program that posts derives: posting on the chat's messages.
-    let standing = {
+    let access = {
         use ui::permissions::policy::{
-            Actor, Answer, Grant, Grantee, KindSet, Level, MemberId, Standing, TreePath,
+            Actor, Answer, Grant, Grantee, KindSet, Level, MemberAccess, MemberId, TreePath,
             WorkspacePolicy,
         };
         let bot = Grantee::bot("b1");
@@ -676,7 +676,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
             Answer::Allow,
             Grantee::person("ada"),
         );
-        Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
+        MemberAccess::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
             .acting_as(Actor::Member(MemberId::bot("b1")), vec![post])
     };
     let mut bot = crate::common::open(
@@ -685,7 +685,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
         ReplicaActor::Bot {
             installation: "b1".into(),
             installer: "ada".into(),
-            standing,
+            access,
         },
         Seed::Existing {
             record: page.document_id().clone(),
@@ -750,18 +750,18 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
-    let standing = ui::permissions::PermissionContext::member_of(
+    let access = ui::permissions::PermissionContext::member_of(
         WORKSPACE,
         &MemberId::person("ada"),
         ui::permissions::Role::Owner,
     )
-    .standing()
+    .access()
     .clone();
     let mut agent = crate::common::open(
         "so.tilo.notes",
         &MemberId::person("ada"),
         ReplicaActor::Member {
-            standing,
+            access,
             sandbox: Vec::new(),
             unix_time: 1_900_000_000,
             agent: Some("Claude Code".into()),
@@ -838,12 +838,12 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
     let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
-    let standing = ui::permissions::PermissionContext::member_of(
+    let access = ui::permissions::PermissionContext::member_of(
         WORKSPACE,
         &MemberId::person("ada"),
         ui::permissions::Role::Owner,
     )
-    .standing()
+    .access()
     .clone();
     let mut wrote = Vec::new();
     for title in ["Launch plan", "Retro notes"] {
@@ -851,7 +851,7 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
             "so.tilo.notes",
             &MemberId::person("ada"),
             ReplicaActor::Member {
-                standing: standing.clone(),
+                access: access.clone(),
                 sandbox: Vec::new(),
                 unix_time: 1_900_000_000,
                 agent: Some("Claude Code".into()),

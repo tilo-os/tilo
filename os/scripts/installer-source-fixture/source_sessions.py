@@ -25,7 +25,7 @@ def public(path, regular):
     for component in (path, *path.parents):
         info = component.lstat()
         require(info.st_uid == 0 and not info.st_mode & 0o022
-                and not stat.S_ISLNK(info.st_mode), 'official source path custody refused')
+                and not stat.S_ISLNK(info.st_mode), 'official source path ownership refused')
     info = path.lstat()
     require(stat.S_ISREG(info.st_mode) if regular else stat.S_ISDIR(info.st_mode),
             'official source path type refused')
@@ -39,7 +39,7 @@ def generate(home, runtime, deadline):
     public(app / 'main.cjs', True)
     public(app / 'package.json', True)
     # The qualifier verifies the entire fixed Electron distribution and JS
-    # source ledgers before staging this readonly public root. Do not replace
+    # source manifests before staging this readonly public root. Do not replace
     # it with a system Electron or relax Chromium's sandbox.
     generated = home / '.cache/tilo-official-session-source'
     generated.mkdir(mode=0o700, parents=True, exist_ok=False)

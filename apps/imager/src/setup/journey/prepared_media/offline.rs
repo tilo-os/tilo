@@ -84,7 +84,7 @@ impl OfflineMediaReview {
         if let Some(plans) = self
             .source_plans
             .lock()
-            .map_err(|_| io::Error::other("Source disk custody unavailable"))?
+            .map_err(|_| io::Error::other("Source disk ownership unavailable"))?
             .as_ref()
         {
             imager_backend::setup::migration_handoff::validate_offline_source_disks(
@@ -149,7 +149,7 @@ impl OfflineMediaReview {
         let sources = self
             .source_plans
             .lock()
-            .map_err(|_| io::Error::other("Source disk custody unavailable"))?;
+            .map_err(|_| io::Error::other("Source disk ownership unavailable"))?;
         let sources = sources
             .as_ref()
             .ok_or_else(|| io::Error::other("Original source geometry was not retained"))?;
@@ -170,7 +170,7 @@ impl OfflineMediaReview {
         let mut held = self
             .source_plans
             .lock()
-            .map_err(|_| io::Error::other("Source disk custody unavailable"))?;
+            .map_err(|_| io::Error::other("Source disk ownership unavailable"))?;
         if held.as_ref().is_some_and(|original| original != &plans) {
             return Err(io::Error::other(
                 "Original source disks differ from media review",
@@ -226,13 +226,15 @@ fn validate_image(source: &Source, image: &File) -> io::Result<()> {
         || metadata.len() != source.size
         || SourceIdentity::from_file(image)? != source.identity
     {
-        return Err(io::Error::other("Reviewed installer image custody changed"));
+        return Err(io::Error::other(
+            "Reviewed installer image ownership changed",
+        ));
     }
     Ok(())
 }
 impl PreparedMedia {
-    /// Explicit backend preparation only. The password stays in private custody;
-    /// source-owner facts and witness come from the admitted existing helper.
+    /// Explicit backend preparation only. The password stays in private ownership;
+    /// source-owner facts and proof come from the admitted existing helper.
     /// Once sealed they remain requests, not ambient group authority; offline
     /// admission must reopen and verify the same original protected record.
     pub(in crate::setup) fn prepare_offline(
@@ -267,7 +269,7 @@ impl PreparedMedia {
         let (reservation, registered) = {
             let home = home
                 .lock()
-                .map_err(|_| io::Error::other("Home custody unavailable"))?;
+                .map_err(|_| io::Error::other("Home ownership unavailable"))?;
             if home.receipt.is_some() {
                 return Err(io::Error::other("Completed export cannot become pending"));
             }
@@ -289,9 +291,9 @@ impl PreparedMedia {
             registered.original_caller,
             reservation,
         )?
-        .with_source_witness(registered.witness)?;
+        .with_source_proof(registered.proof)?;
         if let Some(mounted) = registered.mounted {
-            declaration = declaration.with_mounted_witness(mounted)?;
+            declaration = declaration.with_mounted_proof(mounted)?;
         }
         let prepared = reseal(selected, declaration, &password, cancel)?;
         // A real target-bound budget is now assigned to this authenticated
@@ -392,7 +394,7 @@ pub(super) fn validate_payload_scope(
         apps.source.validate_pending_offline_scope(plan)?;
         apps.archive
             .lock()
-            .map_err(|_| io::Error::other("Application custody unavailable"))?
+            .map_err(|_| io::Error::other("Application ownership unavailable"))?
             .verify_held_ciphertext(cancel)?;
     }
     if let Some(browser) = &prepared.browser {
@@ -402,7 +404,7 @@ pub(super) fn validate_payload_scope(
         browser
             .archive
             .lock()
-            .map_err(|_| io::Error::other("Browser custody unavailable"))?
+            .map_err(|_| io::Error::other("Browser ownership unavailable"))?
             .verify_held_ciphertext(cancel)?;
     }
     Ok(())
@@ -483,10 +485,10 @@ fn reseal_amendment(
         #[cfg(target_os = "linux")]
         Amendment::StagingCopy(_) | Amendment::ComputerApplications(_) => 0,
     };
-    let custody = imager_backend::session::BackendSession::create(
+    let ownership = imager_backend::session::BackendSession::create(
         imager_backend::session::SessionIntent::AmendOfflineMedia,
     )?;
-    let parent_path = custody.path().join("original.sealed");
+    let parent_path = ownership.path().join("original.sealed");
     let mut output = OpenOptions::new()
         .read(true)
         .write(true)
@@ -496,10 +498,10 @@ fn reseal_amendment(
     original
         .delivery
         .lock()
-        .map_err(|_| io::Error::other("Prepared custody unavailable"))?
+        .map_err(|_| io::Error::other("Prepared ownership unavailable"))?
         .copy_preparation_ciphertext(&mut output, cancel)?;
     drop(output);
-    let quarantine = custody.path().join("authenticated-parent");
+    let quarantine = ownership.path().join("authenticated-parent");
     let parent =
         prepared_setup::PreparedSetupReview::open(&parent_path, password, &quarantine, cancel)?;
     if parent.manifest() != &original.manifest {
@@ -536,7 +538,7 @@ fn reseal_amendment(
     let tree = quarantine.join("home");
     std::fs::remove_file(tree.join(prepared_setup::MANIFEST_FILE))?;
     manifest.write(&tree)?;
-    let package = custody.path().join("prepared-setup.sealed");
+    let package = ownership.path().join("prepared-setup.sealed");
     ExportReview::review(
         &tree,
         &package,
@@ -550,14 +552,14 @@ fn reseal_amendment(
     if let Some(browser) = &original.browser {
         copy_sidecar(
             &browser.archive,
-            &custody.path().join(&browser.expectation.filename),
+            &ownership.path().join(&browser.expectation.filename),
             cancel,
         )?;
     }
     if let Some(apps) = &original.applications {
         copy_sidecar(
             &apps.archive,
-            &custody.path().join(&apps.expectation.filename),
+            &ownership.path().join(&apps.expectation.filename),
             cancel,
         )?;
     }
@@ -579,7 +581,7 @@ fn reseal_amendment(
             .as_ref()
             .ok_or_else(|| io::Error::other("Home grant missing"))?
             .lock()
-            .map_err(|_| io::Error::other("Home custody unavailable"))?
+            .map_err(|_| io::Error::other("Home ownership unavailable"))?
             .reservation
     };
     let reserved = [
@@ -605,7 +607,7 @@ fn reseal_amendment(
     std::fs::remove_dir_all(&quarantine)?;
     std::fs::remove_file(&parent_path)?;
     Ok(Arc::new(PreparedMedia::from_native(NativePreparedMedia {
-        _custody: custody,
+        _ownership: ownership,
         delivery: Mutex::new(delivery),
         public_key: original.public_key,
         account_ids: original.account_ids.clone(),
@@ -646,7 +648,7 @@ fn reseal_amendment(
             original
                 .recovery
                 .lock()
-                .map_err(|_| io::Error::other("Recovery custody unavailable"))?
+                .map_err(|_| io::Error::other("Recovery ownership unavailable"))?
                 .clone(),
         ),
         transfer_generation: Mutex::new(None),
@@ -666,7 +668,7 @@ fn copy_sidecar(
         .open(path)?;
     archive
         .lock()
-        .map_err(|_| io::Error::other("Sidecar custody unavailable"))?
+        .map_err(|_| io::Error::other("Sidecar ownership unavailable"))?
         .copy_ciphertext(&mut output, cancel)?;
     output.sync_all()?;
     Ok(())
@@ -732,7 +734,7 @@ mod tests {
         // Browser discovery must run while this controlled source namespace
         // belongs to the effective test caller. Afterwards give only the Home
         // root its explicit nonroot original-owner fixture before Home/app
-        // source grants are reviewed. Browser profile custody remains owned by
+        // source grants are reviewed. Browser profile ownership remains owned by
         // the actual caller and is validated again by the genuine producer.
         let _caller = imager_backend::setup::home_capture::original_caller::fixture_source_owner(
             &runner.source_home,
@@ -965,7 +967,7 @@ mod tests {
         assert!(review.require_completed_export().is_err());
         assert!(
             review.pending_original_declaration().is_err(),
-            "authenticated DTO without protected root registration witness must not gain read admission"
+            "authenticated DTO without protected root registration proof must not gain read admission"
         );
         assert_eq!(fs::read(ordinary.package()).unwrap(), parent_bytes);
     }
@@ -1151,8 +1153,8 @@ mod tests {
             &pending.applications.as_ref().unwrap().expectation.filename,
         ] {
             assert_eq!(
-                fs::read(pending._custody.path().join(filename)).unwrap(),
-                fs::read(original._custody.path().join(filename)).unwrap()
+                fs::read(pending._ownership.path().join(filename)).unwrap(),
+                fs::read(original._ownership.path().join(filename)).unwrap()
             );
         }
         assert!(pending.browser_staging_artifact().unwrap().unwrap().valid());
@@ -1316,7 +1318,7 @@ impl PreparedMedia {
             .as_ref()
             .ok_or(io::ErrorKind::InvalidInput)?
             .lock()
-            .map_err(|_| io::Error::other("Home custody unavailable"))?
+            .map_err(|_| io::Error::other("Home ownership unavailable"))?
             .password
             .clone();
         let artifact = self.prepare_offline(&review, &intent, password, cancel)?;

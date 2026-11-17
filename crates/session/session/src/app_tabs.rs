@@ -1524,7 +1524,7 @@ struct Socket {
     path: PathBuf,
     /// The socket standing at `path` when it was bound: a session that takes the path later binds
     /// one of its own, which this one leaves standing.
-    standing: Option<(u64, u64)>,
+    access: Option<(u64, u64)>,
     /// The connection number the next connection taken is given.
     next: AtomicU64,
     /// The launches a connection is checked against, the channel its asks arrive on, and the wake
@@ -1546,7 +1546,7 @@ impl Socket {
             .set_nonblocking(true)
             .map_err(|error| format!("serve the shell-ui socket: {error}"))?;
         Ok(Self {
-            standing: standing(&path),
+            inode: inode_of(&path),
             listener,
             watch: None,
             path,
@@ -1591,7 +1591,7 @@ impl Drop for Socket {
     fn drop(&mut self) {
         // A session started while this one ran takes the path for its own: the socket standing
         // there is that session's, and stays.
-        if standing(&self.path) == self.standing {
+        if inode_of(&self.path) == self.inode {
             let _ = std::fs::remove_file(&self.path);
         }
     }
@@ -1599,7 +1599,7 @@ impl Drop for Socket {
 
 /// The socket standing at `path` , as the file system names it: the device and inode of the node
 /// there. A bound socket's own file descriptor names an inode of the socket layer, not this one.
-fn standing(path: &std::path::Path) -> Option<(u64, u64)> {
+fn inode_of(path: &std::path::Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt as _;
     let meta = std::fs::symlink_metadata(path).ok()?;
     Some((meta.dev(), meta.ino()))

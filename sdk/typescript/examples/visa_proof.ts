@@ -69,7 +69,7 @@ function quantile(values: number[], q: number): number {
 
 // -- the applicant's documents ----------------------------------------------
 
-/** A small picture standing in for a passport scan. */
+/** A small picture subscription in for a passport scan. */
 function passportPng(): Uint8Array {
   const width = 64;
   const height = 40;

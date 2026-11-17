@@ -52,7 +52,7 @@ impl WakeInterfaces for SysInterfaces {
 /// Where a session's wakes send their packets and what its interfaces offer,
 /// so a test keeps both off the machine it runs on.
 #[derive(Clone, Default)]
-pub struct Seams {
+pub struct WakeIo {
     pub packets: Option<Arc<dyn MagicPackets>>,
     pub interfaces: Option<Arc<dyn WakeInterfaces>>,
 }
@@ -71,15 +71,15 @@ pub(crate) struct Wake {
 }
 
 impl Wake {
-    /// The session's wakes over `seams` : the real socket and this machine's interfaces unless a
+    /// The session's wakes over `io`: the real socket and this machine's interfaces unless a
     /// test brought its own.
-    pub(crate) fn new(seams: &Seams) -> Rc<Self> {
+    pub(crate) fn new(io: &WakeIo) -> Rc<Self> {
         Rc::new(Self {
-            packets: seams
+            packets: io
                 .packets
                 .clone()
                 .unwrap_or_else(|| Arc::new(UdpMagicPackets)),
-            interfaces: seams
+            interfaces: io
                 .interfaces
                 .clone()
                 .unwrap_or_else(|| Arc::new(SysInterfaces)),

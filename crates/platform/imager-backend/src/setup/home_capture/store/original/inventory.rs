@@ -4,7 +4,7 @@ use crate::setup::migration_handoff::{INVENTORY_BOUND, OriginalInventoryBinding}
 use std::os::unix::fs::MetadataExt;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct InventoryCustody {
+pub(super) struct InventoryOwnership {
     device: u64,
     inode: u64,
     owner: u32,
@@ -13,7 +13,7 @@ pub(super) struct InventoryCustody {
     pub(super) len: u64,
     pub(super) sha256: [u8; 32],
 }
-impl InventoryCustody {
+impl InventoryOwnership {
     pub(super) fn validate_selection(plan: &Plan, proof: Option<&Self>) -> io::Result<()> {
         match (OriginalInventoryBinding::parse(plan)?, proof) {
             (None, None) => Ok(()),
@@ -120,7 +120,7 @@ impl InventoryCustody {
     }
 }
 fn read(file: &File) -> io::Result<Vec<u8>> {
-    // pread avoids shared descriptor offset races with launcher custody checks.
+    // pread avoids shared descriptor offset races with launcher ownership checks.
     use std::os::unix::fs::FileExt;
     let before = file.metadata()?;
     if before.len() == 0 || before.len() > INVENTORY_BOUND {

@@ -3,7 +3,7 @@
 //! Every monotonic and wall-clock reading in `ui` goes through [`now`] and
 //! [`wall`], and every clock type is named through this module rather than
 //! `std::time`. A host that has no process clock of its own (or one that must
-//! be virtualised, such as a deterministic replay) then has exactly one seam to
+//! be virtualised, such as a deterministic replay) then has exactly one boundary to
 //! provide, instead of a hundred scattered `Instant::now()` calls.
 //!
 //! On targets with a native clock the re-exports are `std::time`'s own types,

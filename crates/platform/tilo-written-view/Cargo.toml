@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "A written view as a widget: a view a person or an agent wrote in the app language, run in an instance of its own over what the workspace's apps publish and drawn through the UI host's half of a window, wherever an app places it."
 
 [dependencies]
-# The seam an app places a written view through (`ui::written_view`), the toolkit the view's
+# The boundary an app places a written view through (`ui::written_view`), the toolkit the view's
 # widgets are, and the session's action API its readings and its actions go through.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", default-features = false }
 # The instance the view runs in, and the packages the workspace's apps read as.

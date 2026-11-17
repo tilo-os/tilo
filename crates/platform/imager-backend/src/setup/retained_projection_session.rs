@@ -85,7 +85,7 @@ impl SourceConnection {
 
 /// This owner remains on an existing root background job. A held view is not
 /// independently transferable: it is borrowed with this complete source/target
-/// custody. A future ordinary-app adjunct must retain this owner until all
+/// ownership. A future ordinary-app adjunct must retain this owner until all
 /// consuming app NamespaceOwners have actually stopped.
 pub(super) struct RetainedProjectionSession {
     source: Option<RetainedSourceWorker>,
@@ -326,7 +326,7 @@ impl RetainedProjectionSession {
             self.target_stopped = receipt || endpoint_stopped;
             if !self.target_stopped {
                 return Err(io::Error::other(
-                    "Target namespace shutdown was not observed; source custody retained",
+                    "Target namespace shutdown was not observed; source ownership retained",
                 ));
             }
         }
@@ -351,9 +351,9 @@ impl Drop for RetainedProjectionSession {
         }
         if !self.target_stopped || self.source.is_some() {
             // Honest incomplete retirement: never let Drop erase the source
-            // witness or control workspace without actual kernel stop evidence.
+            // proof or control workspace without actual kernel stop evidence.
             // The owning root job normally retains Self on this error. If that
-            // owner unwinds, deliberately retain custody until process teardown.
+            // owner unwinds, deliberately retain ownership until process teardown.
             std::mem::forget(self.relay.take());
             std::mem::forget(self.endpoint.take());
             std::mem::forget(self.source.take());

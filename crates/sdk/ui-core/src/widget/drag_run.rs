@@ -481,7 +481,7 @@ impl DragRun {
         let mut views: Vec<Option<Element>> = views.into_iter().map(Some).collect();
         // Each item is its own box along the run: its view keeps the size it takes, and the run
         // packs items by the theme's sibling gap, never by an equal share of its length. Across
-        // the run the item stands as `align` says, so a standing run that stretches gives a row
+        // the run the item stands as `align` says, so an access run that stretches gives a row
         // in it the run's whole width.
         let vertical = self.axis == RunAxis::Vertical;
         let item = |view: Element| -> Element {

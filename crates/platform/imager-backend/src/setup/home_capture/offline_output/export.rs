@@ -32,7 +32,7 @@ impl OriginalExportOutcome {
         let run = self
             .runs
             .last()
-            .ok_or_else(|| refused("Original cleanup custody missing"))?;
+            .ok_or_else(|| refused("Original cleanup ownership missing"))?;
         let proof = run
             .supervised
             .shutdown

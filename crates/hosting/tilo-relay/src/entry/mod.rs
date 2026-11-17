@@ -1,7 +1,7 @@
 //! The wait list of an entry that takes people by invitation: the addresses
 //! people leave there without one, the mail that confirms an address and
 //! carries an invitation to it, and the four routes an entry page asks about
-//! them (`<entry>wait-list`, `…/remove`, `…/confirm`, `…/standing`).
+//! them (`<entry>wait-list`, `…/remove`, `…/confirm`, `…/state`).
 //!
 //! The addresses themselves are the workspace's own, kept beside its record
 //! by its host (`tilo_workspace_host::workspaces::wait_list`); this is the entry in
@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::operator::WaitListStanding;
+use tilo_relay_protocol::operator::WaitListStatus;
 use tilo_relay_protocol::workspaces::contact_address;
 
 use crate::workspaces::{WaitListSecrets, WaitListed, Workspaces};
@@ -154,7 +154,7 @@ pub struct WaitListAnswer {
     pub mail: bool,
 }
 
-/// The body of `POST <entry>wait-list/remove` and `…/standing`.
+/// The body of `POST <entry>wait-list/remove` and `…/state`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UnlistRequest {
@@ -341,12 +341,10 @@ impl WaitListPage {
                         return None;
                     };
                     workspaces
-                        .wait_list_standing(&workspace, removal)
+                        .wait_list_state(&workspace, removal)
                         .await
                         .ok()
-                        .map(|standing| {
-                            standing != tilo_relay_protocol::operator::WaitListStanding::Gone
-                        })
+                        .map(|state| state != tilo_relay_protocol::operator::WaitListStatus::Gone)
                 })
             }
         }));
@@ -597,25 +595,25 @@ impl WaitListPage {
         }
     }
 
-    /// `POST <entry>wait-list/standing`: where the entry the visitor's removal
+    /// `POST <entry>wait-list/state`: where the entry the visitor's removal
     /// secret belongs to stands, so an entry opened again says so.
     ///
     /// # Errors
     ///
     /// Not a secret, or the visitor asked too often.
-    pub async fn standing(
+    pub async fn state(
         &self,
         workspaces: &Workspaces,
         ip: std::net::IpAddr,
         request: UnlistRequest,
-    ) -> Result<WaitListStanding, Refusal> {
+    ) -> Result<WaitListStatus, Refusal> {
         let secret = Self::secret(&request.secret)?;
         let window = self.open_window(&self.lookups, ip)?;
         match workspaces
-            .wait_list_standing(&self.workspace, sha256(&secret))
+            .wait_list_state(&self.workspace, sha256(&secret))
             .await
         {
-            Ok(standing) => Ok(standing),
+            Ok(state) => Ok(state),
             Err(error) => {
                 tracing::warn!(%error, "the wait list could not be asked");
                 Self::close_window(&self.lookups, &window);
@@ -727,7 +725,7 @@ impl From<Result<serde_json::Value, Refusal>> for Answered {
 }
 
 /// The answer to one of the entry's four wait-list routes: `step` is what the
-/// route asks (`wait-list`, `wait-list/remove`, `…/confirm`, `…/standing`),
+/// route asks (`wait-list`, `wait-list/remove`, `…/confirm`, `…/state`),
 /// `body` what it sent.
 pub async fn route(
     entry: &WaitListPage,
@@ -737,7 +735,7 @@ pub async fn route(
     body: &[u8],
 ) -> Answered {
     use tilo_relay_protocol::directory::{
-        WAIT_LIST, WAIT_LIST_CONFIRM, WAIT_LIST_REMOVE, WAIT_LIST_STANDING,
+        WAIT_LIST, WAIT_LIST_CONFIRM, WAIT_LIST_REMOVE, WAIT_LIST_STATUS,
     };
     match step {
         WAIT_LIST_REMOVE => match serde_json::from_slice::<UnlistRequest>(body) {
@@ -756,11 +754,11 @@ pub async fn route(
                 .into(),
             Err(_) => Answered::invalid("not a confirmation"),
         },
-        WAIT_LIST_STANDING => match serde_json::from_slice::<UnlistRequest>(body) {
+        WAIT_LIST_STATUS => match serde_json::from_slice::<UnlistRequest>(body) {
             Ok(asked) => entry
-                .standing(workspaces, ip, asked)
+                .state(workspaces, ip, asked)
                 .await
-                .map(|standing| serde_json::json!({"standing": standing}))
+                .map(|state| serde_json::json!({"status": state}))
                 .into(),
             Err(_) => Answered::invalid("not a secret"),
         },
