@@ -467,6 +467,10 @@ impl Workspaces {
     /// Why `administrator`'s person may not give that place, a name that is not
     /// a display name, the workspace's own owner, or governance that cannot be
     /// updated.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked from the keeper check through the governed change"
+    )]
     pub async fn add_member(
         &self,
         workspace: &str,
