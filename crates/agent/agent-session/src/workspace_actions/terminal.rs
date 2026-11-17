@@ -10,7 +10,7 @@
 //! [`WorkspaceShell`], in that session's shell (an agent's invocation in a shell of
 //! its
 //! own, which keeps its directory between commands), and the host records the
-//! run on the session record through the record's own `record-command`, under
+//! command on the session record through the record's own `record-command`, under
 //! the invocation's context: History keeps it as the agent's invocation, with its
 //! command, directory, exit status and output.
 //!
@@ -588,7 +588,9 @@ impl Worker {
         finished.insert("tool".into(), json!(tool));
         finished.insert("undoable".into(), json!(false));
         finished.insert("items".into(), items);
-        finished.insert("invocation".into(), json!(invocation));
+        // Terminal's own name for the id of a command that ended; the API's answer names it
+        // an invocation.
+        finished.insert("run".into(), json!(invocation));
         let state = self
             .refresh(
                 ended.workspace_id,
