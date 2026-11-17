@@ -79,6 +79,22 @@ impl GroupRow {
                 (rect, content)
             })
             .collect();
+        // The window a bar hint points at, in the order the hint takes its bar: the one under
+        // the pointer, else the one in front.
+        let hinted = self
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(i, group)| {
+                shown(*i, group)
+                    && !self.is_floating(group.id)
+                    && group.bar_grab_hit(self.last_cursor)
+            })
+            .or_else(|| {
+                self.groups.iter().enumerate().find(|(i, group)| {
+                    group.focused && shown(*i, group) && !self.is_floating(group.id)
+                })
+            });
         HintPlaces {
             viewport,
             windows: self
@@ -89,16 +105,7 @@ impl GroupRow {
             beyond,
             hovered_bar,
             focused_bar: focused.and_then(title_grab),
-            bar_room: self
-                .groups
-                .iter()
-                .enumerate()
-                .find(|(i, group)| {
-                    shown(*i, group)
-                        && !self.is_floating(group.id)
-                        && (group.focused || group.bar_grab_hit(self.last_cursor))
-                })
-                .and_then(|(_, group)| bar_room(group)),
+            bar_room: hinted.and_then(|(_, group)| bar_room(group)),
             focused_edge: focused.and_then(|group| nearest_edge(group, viewport, self.last_cursor)),
             asking: focused.is_some_and(asking_for_input),
             over: self
@@ -156,21 +163,62 @@ fn free(group: &super::WindowGroup, p: Point) -> bool {
     group.bar_grab_hit(p) && !group.window_control_hit(p)
 }
 
-/// The stretch of `group`'s bar the person can take it by: the run between its tabs and its
-/// buttons (the window controls, the agent and the search control), whole bar height, that a
-/// hint's card stands in without covering any of them. It is the title grab, widened to the whole
-/// free run around it. `None` when the bar has no free run at all to take.
+/// Whether a hint's card may stand at `p` on `group`'s bar: the bar's ground that is no control
+/// of the window — not its tabs, its "+" chip, its app slots, its search or its window controls.
+/// The app's location is the title the drag teaches, never a button: `bar_grab_hit` keeps the
+/// whole toolbar row for the app's own slots, so the bar's title run counts as ground too.
+fn room_ground(group: &super::WindowGroup, p: Point) -> bool {
+    free(group, p) || group.location_rect().contains(p)
+}
+
+/// The stretch of `group`'s bar the person can take it by: a whole free run between its tabs
+/// and its buttons (the window controls, the agent and the search control), at the bar's own
+/// height, that a hint's card stands in without covering any of them. The run the title grab is
+/// in is the one — the bar's title run, where its app names what it shows — and the widest run
+/// where the grab is in none (a bar too narrow for a grab of its own). Every run starts past the
+/// tabs: the title is what a person takes a window by, and no room may cover the pills. A run
+/// too narrow to take the bar at all is only a sliver between two buttons: it is no room, and
+/// `None` the bar has nothing wider.
 fn bar_room(group: &super::WindowGroup) -> Option<Rect> {
-    let grab = title_grab(group)?;
-    let stretch = grab_stretch(group, grab.center().x);
-    // `grab_stretch` walks out from the grab's centre; taking in the grab whole keeps the room
-    // from ever being a sliver narrower than the spot it came from.
-    Some(stretch.union(grab))
+    let bar = group.bar_rect();
+    let y = bar.center().y;
+    let past_tabs = group
+        .tab_rects()
+        .iter()
+        .map(|tab| tab.x1)
+        .fold(bar.x0, f64::max);
+    let mut runs: Vec<Rect> = Vec::new();
+    let mut run: Option<(f64, f64)> = None;
+    let mut x = past_tabs;
+    while x <= bar.x1 {
+        if room_ground(group, Point::new(x, y)) {
+            run = Some(run.map_or((x, x), |(from, _)| (from, x)));
+        } else if let Some((from, to)) = run.take() {
+            runs.push(Rect::new(from, bar.y0, to, bar.y1));
+        }
+        x += GRAB_STEP;
+    }
+    if let Some((from, to)) = run {
+        runs.push(Rect::new(from, bar.y0, to, bar.y1));
+    }
+    let holds_a_pill = |run: &Rect| run.width() >= GRAB_MIN_W;
+    title_grab(group)
+        .and_then(|grab| {
+            runs.iter()
+                .find(|run| holds_a_pill(run) && run.contains(grab.center()))
+                .copied()
+        })
+        .or_else(|| {
+            runs.into_iter()
+                .filter(holds_a_pill)
+                .max_by(|a, b| a.width().total_cmp(&b.width()))
+        })
 }
 
 /// How wide a stretch of bar must be to be where a window is taken: the
 /// slivers between a bar's buttons take it too, but pointing there points at
-/// the buttons.
+/// the buttons. A hint's room takes no narrower run: a pill in one would stand
+/// over the controls either side of it.
 const GRAB_MIN_W: f64 = 32.0;
 
 const TITLE_GRAB_W: f64 = 40.0;
@@ -354,7 +402,16 @@ mod tests {
                 .fold(bar.x0, f64::max);
             assert!(
                 room.x0 >= title_past - 0.5,
-                "it starts past the tabs and their title: {room:?} past {title_past}"
+                "it starts past the tabs and their title: {room:?} past {title_past}; \
+                 bar {bar:?}, tabs {:?}, search {:?}, title grab {:?}, new tab {:?}, \
+                 controls {:?}, toolbar {:?}, rect {:?}",
+                group.tab_rects(),
+                group.window_search().anchor(),
+                row.hint_places().focused_bar,
+                group.bar_for_tests().new_tab_rect(),
+                group.bar_for_tests().window_controls(),
+                group.bar_for_tests().toolbar_rects(),
+                group.get_rect(),
             );
             let (_, _, _, actions) = group.bar_for_tests().toolbar_rects();
             let controls: Vec<Rect> = actions
