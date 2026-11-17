@@ -20,7 +20,7 @@ fields = [
   { path = "slides.*.elements.*.y", type = "float" },
   { path = "slides.*.elements.*.w", type = "float" },
   { path = "slides.*.elements.*.h", type = "float" },
-  { path = "slides.*.elements.*.body", type = "rich_text", label = true, ops = "sha256:aceedec5a9b08d74" },
+  { path = "slides.*.elements.*.body", type = "rich_text", label = true, ops = "sha256:8bbf96a46d039012" },
   { path = "slides.*.elements.*.src", type = "text" },
   { path = "slides.*.elements.*.fill", type = "text" },
   { path = "slides.*.elements.*.stroke", type = "text" },
@@ -44,11 +44,20 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "add-slides"
+kind = "undoable"
+returns = { schema = { type = "object" } }
+params = [
+  { name = "slides", type = { list = { named = "OutlinedSlide" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { body = { type = ["string", "null"] }, layout = { oneOf = [{ type = "null" }, { type = "string", enum = ["title", "title_content", "two_column", "section", "blank"] }] }, notes = { type = ["string", "null"] }, title = { type = ["string", "null"] } } } } },
+  { name = "after", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "insert-slide"
 kind = "undoable"
 params = [
   { name = "at", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "slide", type = { named = "SlideData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { background = { oneOf = [{ type = "string", const = "surface" }, { type = "string", const = "accent" }, { type = "string", const = "deep" }] }, elements = { type = "array", items = { type = "object", additionalProperties = false, properties = { align = { type = "string", enum = ["left", "center", "right", "justify"] }, blocks = { type = "array", items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } }, bold = { type = "boolean" }, fill = { type = "string" }, font_size = { type = "number" }, h = { type = "number" }, id = { type = "string" }, italic = { type = "boolean" }, kind = { type = "string", enum = ["text", "rect", "ellipse", "line", "image"] }, radius = { type = "number" }, src = { type = "string" }, stroke = { type = "string" }, stroke_width = { type = "number" }, w = { type = "number" }, x = { type = "number" }, y = { type = "number" } }, required = ["id", "kind", "x", "y", "w", "h", "fill", "stroke", "stroke_width", "font_size", "align", "radius"] } }, id = { type = "string" }, layout = { type = "string", enum = ["title", "title_content", "two_column", "section", "blank"] }, notes = { type = "string" } }, required = ["id", "layout", "background"] } },
+  { name = "slide", type = { named = "SlideData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { background = { type = "string", enum = ["surface", "accent", "deep"] }, elements = { type = "array", items = { type = "object", additionalProperties = false, properties = { align = { type = "string", enum = ["left", "center", "right", "justify"] }, blocks = { type = "array", items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } }, bold = { type = "boolean" }, fill = { type = "string" }, font_size = { type = "number" }, h = { type = "number" }, id = { type = "string" }, italic = { type = "boolean" }, kind = { type = "string", enum = ["text", "rect", "ellipse", "line", "image"] }, radius = { type = "number" }, src = { type = "string" }, stroke = { type = "string" }, stroke_width = { type = "number" }, w = { type = "number" }, x = { type = "number" }, y = { type = "number" } }, required = ["id", "kind", "x", "y", "w", "h", "fill", "stroke", "stroke_width", "font_size", "align", "radius"] } }, id = { type = "string" }, layout = { type = "string", enum = ["title", "title_content", "two_column", "section", "blank"] }, notes = { type = "string" } }, required = ["id", "layout", "background"] } },
 ]
 
 [[resources.verbs]]
@@ -133,8 +142,8 @@ kind = "undoable"
 params = [
   { name = "title", type = "text", required = true, schema = { type = "string" } },
   { name = "palette", type = { named = "PaletteKind" }, required = true, schema = { type = "string", enum = ["indigo", "emerald", "amber", "rose", "sky"] } },
-  { name = "look", type = { option = { named = "DeckLook" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "light" }, { type = "string", const = "dark" }] }] } },
-  { name = "slides", type = { list = { named = "SlideData" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { background = { oneOf = [{ type = "string", const = "surface" }, { type = "string", const = "accent" }, { type = "string", const = "deep" }] }, elements = { type = "array", items = { type = "object", additionalProperties = false, properties = { align = { type = "string", enum = ["left", "center", "right", "justify"] }, blocks = { type = "array", items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } }, bold = { type = "boolean" }, fill = { type = "string" }, font_size = { type = "number" }, h = { type = "number" }, id = { type = "string" }, italic = { type = "boolean" }, kind = { type = "string", enum = ["text", "rect", "ellipse", "line", "image"] }, radius = { type = "number" }, src = { type = "string" }, stroke = { type = "string" }, stroke_width = { type = "number" }, w = { type = "number" }, x = { type = "number" }, y = { type = "number" } }, required = ["id", "kind", "x", "y", "w", "h", "fill", "stroke", "stroke_width", "font_size", "align", "radius"] } }, id = { type = "string" }, layout = { type = "string", enum = ["title", "title_content", "two_column", "section", "blank"] }, notes = { type = "string" } }, required = ["id", "layout", "background"] } } },
+  { name = "look", type = { option = { named = "DeckLook" } }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["light", "dark"] }] } },
+  { name = "slides", type = { list = { named = "SlideData" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { background = { type = "string", enum = ["surface", "accent", "deep"] }, elements = { type = "array", items = { type = "object", additionalProperties = false, properties = { align = { type = "string", enum = ["left", "center", "right", "justify"] }, blocks = { type = "array", items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } }, bold = { type = "boolean" }, fill = { type = "string" }, font_size = { type = "number" }, h = { type = "number" }, id = { type = "string" }, italic = { type = "boolean" }, kind = { type = "string", enum = ["text", "rect", "ellipse", "line", "image"] }, radius = { type = "number" }, src = { type = "string" }, stroke = { type = "string" }, stroke_width = { type = "number" }, w = { type = "number" }, x = { type = "number" }, y = { type = "number" } }, required = ["id", "kind", "x", "y", "w", "h", "fill", "stroke", "stroke_width", "font_size", "align", "radius"] } }, id = { type = "string" }, layout = { type = "string", enum = ["title", "title_content", "two_column", "section", "blank"] }, notes = { type = "string" } }, required = ["id", "layout", "background"] } } },
 ]
 
 [[resources.verbs]]
@@ -277,6 +286,15 @@ fields = [
   { name = "bold", type = { option = "bool" } },
   { name = "italic", type = { option = "bool" } },
   { name = "radius", type = { option = "float" } },
+]
+
+[[resources.types]]
+name = "OutlinedSlide"
+fields = [
+  { name = "title", type = { option = "text" } },
+  { name = "body", type = { option = "text" } },
+  { name = "layout", type = { option = { named = "Layout" } } },
+  { name = "notes", type = { option = "text" } },
 ]
 
 [[resources.types]]

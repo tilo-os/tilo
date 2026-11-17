@@ -143,6 +143,8 @@ pub enum PdfEffect {
     /// Read text
     ///
     /// The text of the PDF's pages, at most 50 at a time: read on from `next`.
+    /// A page that holds no text, as a scanned page does, is named in
+    /// `without_text`: `look-page` answers a picture of it.
     /// Reads the PDF the record pinned; changes nothing.
     #[effect(kind = "read", returns = crate::model::PdfText, idempotent)]
     ReadText {

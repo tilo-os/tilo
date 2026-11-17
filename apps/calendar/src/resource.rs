@@ -310,8 +310,10 @@ impl Calendar {
     #[action(id = "import-items", audience = "agents")]
     pub fn import_items(
         &mut self,
-        #[param("The events, retaining their source identities")] events: Vec<EventData>,
-        #[param("The tasks")] tasks: Vec<TaskData>,
+        cx: &mut ActionCx,
+        #[param("The events: each keeps the id it came with, and one given none gets a new one")]
+        events: Vec<EventData>,
+        #[param("The tasks, their ids as the events'")] tasks: Vec<TaskData>,
     ) -> Result<(), Refusal> {
         if events.len().saturating_add(tasks.len()) > MAX_ITEMS_PER_ACTION {
             return Err(Refusal::new(
@@ -319,8 +321,11 @@ impl Calendar {
             ));
         }
         let events = events
-            .iter()
-            .map(|data| {
+            .into_iter()
+            .map(|mut data| {
+                if data.id.is_empty() {
+                    data.id = cx.uuid().to_string();
+                }
                 let event = data
                     .to_event()
                     .ok_or_else(|| Refusal::new("an imported event is invalid"))?;
@@ -329,8 +334,11 @@ impl Calendar {
             })
             .collect::<Result<Vec<_>, Refusal>>()?;
         let tasks = tasks
-            .iter()
-            .map(|data| {
+            .into_iter()
+            .map(|mut data| {
+                if data.id.is_empty() {
+                    data.id = cx.uuid().to_string();
+                }
                 let task = data
                     .to_task()
                     .ok_or_else(|| Refusal::new("an imported task is invalid"))?;

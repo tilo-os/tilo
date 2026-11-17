@@ -403,7 +403,7 @@ fn set_error(model: &mut Model<'_>, sheet: u32, row: i32, column: i32) -> Result
 }
 
 /// What input that is no formula means: a number, `TRUE` or `FALSE`, otherwise the text.
-fn literal(raw: &str) -> CellValue {
+pub(crate) fn literal(raw: &str) -> CellValue {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return CellValue::Empty;

@@ -11259,15 +11259,6 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "id",
-                      "label",
-                      "street",
-                      "city",
-                      "region",
-                      "postal",
-                      "country"
-                    ],
                     "type": "object"
                   },
                   "type": "array"
@@ -11363,8 +11354,6 @@
                       }
                     },
                     "required": [
-                      "id",
-                      "label",
                       "value"
                     ],
                     "type": "object"
@@ -11390,7 +11379,6 @@
                       }
                     },
                     "required": [
-                      "id",
                       "value"
                     ],
                     "type": "object"
@@ -11426,8 +11414,6 @@
                       }
                     },
                     "required": [
-                      "id",
-                      "label",
                       "value"
                     ],
                     "type": "object"
@@ -11444,20 +11430,6 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "id",
-                "first",
-                "last",
-                "org",
-                "title",
-                "website",
-                "notes",
-                "phones",
-                "emails",
-                "addresses",
-                "groups",
-                "favorite"
-              ],
               "type": "object"
             },
             "type": "array"
@@ -19917,12 +19889,20 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "without_text": {
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           }
         },
         "required": [
           "file",
           "page_count",
-          "pages"
+          "pages",
+          "without_text"
         ],
         "type": "object"
       },
@@ -22350,6 +22330,35 @@
         "required": [],
         "description": ""
       },
+      "sheets.workbook.read-file.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {},
+          "sheet": {},
+          "from": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": ""
+      },
+      "sheets.workbook.read-content.Arguments": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "content": true,
+            "type": "string"
+          },
+          "name": {},
+          "sheet": {},
+          "from": {}
+        },
+        "required": [
+          "content",
+          "name"
+        ],
+        "description": ""
+      },
       "shortcuts.workbench.draft-proposal.Arguments": {
         "type": "object",
         "properties": {
@@ -22712,6 +22721,68 @@
       "slides.deck.add-slide.Result": {
         "type": "object"
       },
+      "slides.deck.add-slides.Arguments": {
+        "type": "object",
+        "properties": {
+          "slides": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "layout": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "enum": [
+                        "title",
+                        "title_content",
+                        "two_column",
+                        "section",
+                        "blank"
+                      ],
+                      "type": "string"
+                    }
+                  ]
+                },
+                "notes": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "slides"
+        ],
+        "description": ""
+      },
+      "slides.deck.add-slides.Result": {
+        "type": "object"
+      },
       "slides.deck.insert-slide.Arguments": {
         "type": "object",
         "properties": {
@@ -22723,20 +22794,12 @@
             "additionalProperties": false,
             "properties": {
               "background": {
-                "oneOf": [
-                  {
-                    "const": "surface",
-                    "type": "string"
-                  },
-                  {
-                    "const": "accent",
-                    "type": "string"
-                  },
-                  {
-                    "const": "deep",
-                    "type": "string"
-                  }
-                ]
+                "enum": [
+                  "surface",
+                  "accent",
+                  "deep"
+                ],
+                "type": "string"
               },
               "elements": {
                 "items": {
@@ -23427,16 +23490,11 @@
                 "type": "null"
               },
               {
-                "oneOf": [
-                  {
-                    "const": "light",
-                    "type": "string"
-                  },
-                  {
-                    "const": "dark",
-                    "type": "string"
-                  }
-                ]
+                "enum": [
+                  "light",
+                  "dark"
+                ],
+                "type": "string"
               }
             ]
           },
@@ -23445,20 +23503,12 @@
               "additionalProperties": false,
               "properties": {
                 "background": {
-                  "oneOf": [
-                    {
-                      "const": "surface",
-                      "type": "string"
-                    },
-                    {
-                      "const": "accent",
-                      "type": "string"
-                    },
-                    {
-                      "const": "deep",
-                      "type": "string"
-                    }
-                  ]
+                  "enum": [
+                    "surface",
+                    "accent",
+                    "deep"
+                  ],
+                  "type": "string"
                 },
                 "elements": {
                   "items": {
@@ -31362,6 +31412,18 @@
       "arguments": "#/components/schemas/sheets.workbook.export-xlsx-content.Arguments"
     },
     {
+      "app": "so.tilo.sheets",
+      "resource": "sheets.workbook",
+      "action": "read-file",
+      "arguments": "#/components/schemas/sheets.workbook.read-file.Arguments"
+    },
+    {
+      "app": "so.tilo.sheets",
+      "resource": "sheets.workbook",
+      "action": "read-content",
+      "arguments": "#/components/schemas/sheets.workbook.read-content.Arguments"
+    },
+    {
       "app": "so.tilo.shortcuts",
       "resource": "shortcuts.workbench",
       "action": "draft-proposal",
@@ -31486,6 +31548,12 @@
       "resource": "slides.deck",
       "action": "add-slide",
       "arguments": "#/components/schemas/slides.deck.add-slide.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "slides.deck",
+      "action": "add-slides",
+      "arguments": "#/components/schemas/slides.deck.add-slides.Arguments"
     },
     {
       "app": "so.tilo.slides",

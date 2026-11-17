@@ -167,3 +167,55 @@ fn a_deck_imports_from_the_sealed_reference_alone() {
     target.settle();
     assert_eq!(titles(&target), ["Roadmap"]);
 }
+
+#[test]
+fn add_slides_writes_a_deck_from_an_outline_in_one_step() {
+    let mut app = app();
+    let mut outline = vec![json!({"title": "Market 2027", "layout": "title"})];
+    outline.extend((1..=7).map(|n| {
+        json!({
+            "title": format!("Finding {n}"),
+            "body": format!("What we saw {n}\nWhat it means {n}"),
+            "notes": format!("Say why finding {n} matters"),
+        })
+    }));
+    let answer = call(&mut app, "add-slides", json!({ "slides": outline }));
+    let shown = titles(&app);
+    assert_eq!(shown.len(), 8, "the untouched starter gave way: {shown:?}");
+    assert_eq!(shown.first().map(String::as_str), Some("Market 2027"));
+    assert_eq!(shown.last().map(String::as_str), Some("Finding 7"));
+    assert!(
+        answer["outline"]
+            .as_str()
+            .is_some_and(|outline| outline.contains("Finding 7")),
+        "{answer}"
+    );
+    let deck = crate::deck::mirror(&app.state());
+    let fourth = deck.slides.get(3).expect("the fourth slide");
+    assert_eq!(fourth.notes, "Say why finding 3 matters");
+    assert!(
+        fourth
+            .elements
+            .iter()
+            .any(|element| element.text.contains("What it means 3")),
+        "a slide's body is written with it"
+    );
+
+    // Slides added later go where they are sent, in the order given.
+    call(
+        &mut app,
+        "add-slides",
+        json!({"slides": [{"title": "Method"}, {"title": "Sources"}], "after": "1"}),
+    );
+    let shown = titles(&app);
+    assert_eq!(shown.len(), 10);
+    assert_eq!(
+        shown.iter().take(3).map(String::as_str).collect::<Vec<_>>(),
+        ["Market 2027", "Method", "Sources"]
+    );
+
+    assert!(app.undo(), "slides added together are one step");
+    assert_eq!(titles(&app).len(), 8);
+    let refused = app.call("add-slides", json!({"slides": []}));
+    assert!(refused.is_err(), "no slides is refused: {refused:?}");
+}

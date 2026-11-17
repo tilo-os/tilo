@@ -27,6 +27,17 @@ pub struct SearchableCell {
 /// calculated, a formula without a format of its own shown in its
 /// operands' (a sum of amounts is an amount).
 pub fn shown_cells(snap: &SheetSnapshot) -> Vec<SearchableCell> {
+    shown(snap, false)
+}
+
+/// [`shown_cells`], and the cells a formula spills into (`=UNIQUE(A2:A9)`
+/// fills the cells below it): they hold no input of their own and show what
+/// the formula computed for them.
+pub fn shown_cells_and_spills(snap: &SheetSnapshot) -> Vec<SearchableCell> {
+    shown(snap, true)
+}
+
+fn shown(snap: &SheetSnapshot, spills: bool) -> Vec<SearchableCell> {
     let values = crate::calc::recalculate_snapshot(snap);
     let mut cells = snap
         .raw
@@ -49,6 +60,29 @@ pub fn shown_cells(snap: &SheetSnapshot) -> Vec<SearchableCell> {
             }
         })
         .collect::<Vec<_>>();
+    if spills {
+        cells.extend(
+            values
+                .iter()
+                .filter(|(addr, value)| {
+                    !snap.raw.contains_key(*addr) && **value != CellValue::Empty
+                })
+                .map(|(&(col, row), value)| {
+                    let fmt = snap
+                        .fmt
+                        .get(&(col, row))
+                        .copied()
+                        .unwrap_or(CellFormat::General);
+                    SearchableCell {
+                        col,
+                        row,
+                        raw: String::new(),
+                        display: format_value(value, fmt),
+                        value: value.clone(),
+                    }
+                }),
+        );
+    }
     cells.sort_by_key(|cell| (cell.row, cell.col));
     cells
 }
@@ -184,7 +218,11 @@ fn iso_date_text(serial: f64) -> String {
 /// is its ISO date, the way the sheet shows it rather than the serial behind
 /// it; a literal in a text cell is the text typed (`007`, not 7); other
 /// numbers keep 15 significant digits.
-fn json_value(value: &CellValue, format: CellFormat, raw: Option<&str>) -> serde_json::Value {
+pub(crate) fn json_value(
+    value: &CellValue,
+    format: CellFormat,
+    raw: Option<&str>,
+) -> serde_json::Value {
     match value {
         CellValue::Empty => serde_json::Value::Null,
         CellValue::Number(serial) if matches!(format, CellFormat::Date(_)) => {
@@ -270,7 +308,7 @@ fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Va
 
 /// A format as `format-cells` and the `formats` of `new-sheet` take it:
 /// its category, with the currency when it is money (`currency:EUR`).
-fn format_name(format: CellFormat) -> String {
+pub(crate) fn format_name(format: CellFormat) -> String {
     match format {
         CellFormat::Currency(_) => format.as_str(),
         other => other

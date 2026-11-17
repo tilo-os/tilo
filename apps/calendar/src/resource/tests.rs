@@ -368,6 +368,54 @@ tilo_test_env::scenario! {
         assert!(export.contains("export"), "{export}");
     }
 
+    phase events_and_tasks_given_no_id_are_added_in_one_step_under_new_ones;
+    {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        let kept = Uuid::new_v4();
+        app.call(
+            "import-items",
+            serde_json::json!({
+                "events": [
+                    { "title": "Call A", "start": "2026-11-17T14:00", "end": "2026-11-17T15:00" },
+                    { "title": "Call B", "start": "2026-11-19T10:00", "end": "2026-11-19T11:30" },
+                    { "id": kept.to_string(), "title": "Review", "start": "2026-11-20T09:00", "end": "2026-11-20T10:00" },
+                ],
+                "tasks": [{ "title": "Send the notes" }],
+            }),
+        )
+        .expect("the items are added");
+        let state = app.state();
+        let mut ids: Vec<String> = state.events.iter().map(|event| event.id.to_string()).collect();
+        assert_eq!(ids.len(), 3, "every event is held");
+        assert!(ids.contains(&kept.to_string()), "an id that came with an event is kept");
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 3, "each event has an id of its own");
+        assert!(ids.iter().all(|id| *id != Uuid::nil().to_string()));
+        assert_eq!(
+            state
+                .tasks
+                .iter()
+                .filter(|task| task.title == "Send the notes" && task.id.to_string() != Uuid::nil().to_string())
+                .count(),
+            1
+        );
+
+        // One event the calendar cannot hold refuses the whole step.
+        let refused = app.call(
+            "import-items",
+            serde_json::json!({
+                "events": [
+                    { "title": "Call C", "start": "2026-11-21T10:00", "end": "2026-11-21T11:00" },
+                    { "title": "No time" },
+                ],
+                "tasks": [],
+            }),
+        );
+        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(app.state().events.iter().count(), 3);
+    }
+
     phase the_calendar_reads_its_events_and_one_in_full;
     {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");

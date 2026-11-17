@@ -5011,11 +5011,17 @@ impl PdfApp {
                 text: text.text().trim_end().to_owned(),
             });
         }
+        let without_text = pages
+            .iter()
+            .filter(|page| page.text.trim().is_empty())
+            .map(|page| page.page)
+            .collect();
         serde_json::to_value(crate::model::PdfText {
             file,
             page_count: count,
             pages,
             next: (last < count).then_some(last + 1),
+            without_text,
         })
         .map_err(|error| error.to_string())
     }

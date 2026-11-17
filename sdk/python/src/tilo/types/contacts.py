@@ -201,7 +201,7 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Book(Resource):
     """Contacts — `contacts.book`."""
-    __surface__ = "so.tilo.contacts@862e8f23951f9266"
+    __surface__ = "so.tilo.contacts@df7802e5d648a10e"
     contacts: list[Contact]
     @property
     def removed(self) -> list[str]:
@@ -261,7 +261,7 @@ class Book(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.contacts@862e8f23951f9266"
+    __surface__ = "so.tilo.contacts@df7802e5d648a10e"
     people: list[Person]
 
     def project_contact(self,

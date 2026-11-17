@@ -435,3 +435,169 @@ fn a_past_version_reads_and_shows_its_cells() {
         "{shown:?}"
     );
 }
+
+#[test]
+fn a_read_shows_the_cells_a_formula_spills_into() {
+    let mut app = app();
+    call(
+        &mut app,
+        "new-sheet",
+        json!({"name": "Sales", "rows": [["Region", "Revenue"], ["North", 10], ["South", 20], ["North", 5]]}),
+    );
+    call(
+        &mut app,
+        "new-sheet",
+        json!({"name": "Summary", "rows": [["=UNIQUE(Sales!A2:A4)", "=SUMIF(Sales!A$2:A$4,A1,Sales!B$2:B$4)"]]}),
+    );
+    call(
+        &mut app,
+        "write-cells",
+        json!({"sheet": "Summary", "cells": [{"cell": "B2", "input": "=SUMIF(Sales!A$2:A$4,A2,Sales!B$2:B$4)"}]}),
+    );
+    let whole = call(&mut app, "read", json!({"item": "Summary"}));
+    assert_eq!(whole["range"], "A1:B2", "{whole}");
+    assert_eq!(
+        whole["rows"],
+        json!([["North", "15"], ["South", "20"]]),
+        "the second group is a cell the first formula fills: {whole}"
+    );
+    assert_eq!(
+        whole["formulas"].as_object().map(serde_json::Map::len),
+        Some(3),
+        "a cell a formula fills holds no formula of its own: {whole}"
+    );
+    let part = call(&mut app, "read", json!({"item": "Summary!A2:A3"}));
+    assert_eq!(part["rows"], json!([["South"], [""]]), "{part}");
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one file after another, read as an agent reads them"
+)]
+fn spreadsheet_files_read_as_cells_without_joining_the_workbook() {
+    use std::fmt::Write as _;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app();
+
+    // A CSV file says nothing of its cells but their text, so that is what is read.
+    let csv = dir.path().join("leads.csv");
+    std::fs::write(
+        &csv,
+        "Company,Stage,Value\nAcme,Won,00120\n\"Birch, Ltd\",Open,300\n",
+    )
+    .unwrap();
+    let leads = call(&mut app, "read-file", json!({ "file": csv }));
+    assert_eq!(leads["format"], "csv");
+    assert_eq!(leads["sheet"], "leads");
+    assert_eq!(
+        leads["rows"],
+        json!([
+            ["Company", "Stage", "Value"],
+            ["Acme", "Won", "00120"],
+            ["Birch, Ltd", "Open", "300"]
+        ]),
+        "{leads}"
+    );
+    assert_eq!(leads["next"], Value::Null);
+
+    // A workbook another program wrote: its sheets, and what each cell holds.
+    let xlsx = dir.path().join("budget.xlsx");
+    std::fs::write(
+        &xlsx,
+        crate::interchange_tests::excel_like_xlsx_hiding_notes(),
+    )
+    .unwrap();
+    let budget = call(&mut app, "read-file", json!({ "file": xlsx }));
+    let sheets: Vec<(String, bool)> = budget["sheets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|sheet| {
+            (
+                sheet["name"].as_str().unwrap().to_owned(),
+                sheet["hidden"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        sheets,
+        [
+            ("Budget".to_owned(), false),
+            ("Notes & Data".to_owned(), true)
+        ]
+    );
+    assert_eq!(budget["sheet"], "Budget");
+    assert_eq!(budget["rows"][1][0], "Rent", "{budget}");
+    assert_eq!(budget["rows"][1][1], 1200.0, "a number reads as a number");
+    assert_eq!(budget["formats"]["B2"], "currency:USD");
+    assert_eq!(
+        budget["rows"][2][0], "2023-03-15",
+        "a date reads as its ISO text: {budget}"
+    );
+    let notes = call(
+        &mut app,
+        "read-file",
+        json!({ "file": xlsx, "sheet": "notes & data" }),
+    );
+    assert_eq!(notes["sheet"], "Notes & Data");
+    assert_eq!(notes["rows"][0][0], "note <1>", "{notes}");
+    assert_eq!(notes["rows"][2][2], 7.0);
+
+    // A long sheet answers in parts that join up.
+    let long = dir.path().join("long.csv");
+    let mut lines = String::new();
+    for n in 1..=6000 {
+        let _ = writeln!(lines, "{n},x");
+    }
+    std::fs::write(&long, lines).unwrap();
+    let first = call(&mut app, "read-file", json!({ "file": long }));
+    assert_eq!(first["rows"].as_array().unwrap().len(), 5000);
+    assert_eq!(first["next"], 5001);
+    assert_eq!(first["total"], 6000);
+    let rest = call(&mut app, "read-file", json!({ "file": long, "from": 5001 }));
+    assert_eq!(rest["rows"].as_array().unwrap().len(), 1000);
+    assert_eq!(rest["rows"][0][0], "5001");
+    assert_eq!(rest["next"], Value::Null);
+
+    // What is neither is refused by name, and so is a sheet the file lacks.
+    let text = dir.path().join("notes.txt");
+    std::fs::write(&text, "not cells").unwrap();
+    let refused = refusal(&mut app, "read-file", json!({ "file": text }));
+    assert!(refused.contains("not a spreadsheet"), "{refused}");
+    let missing = refusal(
+        &mut app,
+        "read-file",
+        json!({ "file": xlsx, "sheet": "Nope" }),
+    );
+    assert!(missing.contains("Budget"), "{missing}");
+    assert_eq!(
+        sheet_names(&app),
+        ["Sheet1"],
+        "the workbook stays as it was"
+    );
+
+    // A workbook the workspace holds as content reads the same way, formulas and all.
+    call(
+        &mut app,
+        "new-sheet",
+        json!({"name": "Prices", "rows": [["Tea", 3.5], ["Total", "=SUM(B1:B1)"]], "formats": {"B1:B2": "money"}}),
+    );
+    let output = app
+        .call_on_output("sheets.workbook", "export-xlsx-content", json!({}))
+        .unwrap()
+        .unwrap();
+    let address = output.resources.first().cloned().unwrap();
+    let kept = call(
+        &mut app,
+        "read-content",
+        json!({ "content": address, "name": "prices.xlsx" }),
+    );
+    assert_eq!(
+        kept["rows"],
+        json!([["Tea", 3.5], ["Total", 3.5]]),
+        "{kept}"
+    );
+    assert_eq!(kept["formulas"], json!({ "B2": "=SUM(B1:B1)" }));
+    assert_eq!(kept["formats"]["B2"], "currency:USD");
+}

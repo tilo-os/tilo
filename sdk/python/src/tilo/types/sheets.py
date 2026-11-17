@@ -21,6 +21,7 @@ from tilo import Resource, Run
 
 __all__ = [
     "Area",
+    "Author",
     "CellWrite",
     "Chart",
     "ChartKind",
@@ -61,6 +62,9 @@ class Area(TypedDict):
     bottom: str
     right: str
 
+Author = dict[str, Any]
+"""One of member, named: an object whose case the app tags it with."""
+
 class CellWrite(TypedDict):
     cell: str
     input: str | None
@@ -88,7 +92,7 @@ class ClipBlock(TypedDict):
 
 class Comment(TypedDict):
     anchor: CommentCells
-    author: str
+    author: Author
     date: str
     text: str
     body: list[ClipBlock]
@@ -123,7 +127,7 @@ MarkValue = dict[str, Any]
 """One of bool, int, str: an object whose case the app tags it with."""
 
 class Reply(TypedDict):
-    author: str
+    author: Author
     date: str
     text: str
     body: list[ClipBlock]
@@ -235,7 +239,7 @@ DeleteCommentArgs = TypedDict("DeleteCommentArgs", {
 
 class Workbook(Resource):
     """Workbook — `sheets.workbook`."""
-    __surface__ = "so.tilo.sheets@be9693405e43cb95"
+    __surface__ = "so.tilo.sheets@3596a81127fd2836"
     sheets: list[Sheet]
     comments: list[Comment]
     settings: DocSettings
@@ -556,5 +560,37 @@ class Workbook(Resource):
     def export_xlsx_content(self) -> None:
         """Runs the app's action."""
         return self.action("export-xlsx-content")
+
+    def read_file(self,
+        *,
+        file: Any,
+        sheet: str | None = None,
+        from_: int | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["file"] = file
+        if sheet is not None:
+            args["sheet"] = sheet
+        if from_ is not None:
+            args["from"] = from_
+        return self.action("read-file", **args)
+
+    def read_content(self,
+        *,
+        content: str,
+        name: str,
+        sheet: str | None = None,
+        from_: int | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["content"] = content
+        args["name"] = name
+        if sheet is not None:
+            args["sheet"] = sheet
+        if from_ is not None:
+            args["from"] = from_
+        return self.action("read-content", **args)
 
 

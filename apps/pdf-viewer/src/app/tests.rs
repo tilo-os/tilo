@@ -113,6 +113,98 @@ fn the_open_pdf_reads_as_its_pages_text() {
     );
 }
 
+/// A PDF whose pages say `texts`, set in Helvetica; a page of `None` draws
+/// nothing, so it has no text layer, as a scanned page has none.
+fn pdf_saying(texts: &[Option<&str>]) -> Vec<u8> {
+    use std::fmt::Write as _;
+    const FIRST_PAGE_OBJECT: usize = 4;
+    let mut kids = String::new();
+    let mut page_objects: Vec<String> = Vec::new();
+    for text in texts {
+        let page = FIRST_PAGE_OBJECT + page_objects.len();
+        let _ = write!(kids, "{page} 0 R ");
+        match text {
+            Some(text) => {
+                let stream = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET");
+                page_objects.push(format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+                     /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+                    page + 1
+                ));
+                page_objects.push(format!(
+                    "<< /Length {} >>\nstream\n{stream}\nendstream",
+                    stream.len()
+                ));
+            }
+            None => page_objects.push(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>".into(),
+            ),
+        }
+    }
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        format!("<< /Type /Pages /Kids [{kids}] /Count {} >>", texts.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_owned(),
+    ];
+    objects.extend(page_objects);
+    let mut pdf = String::from("%PDF-1.4\n");
+    let mut offsets = Vec::new();
+    for (number, object) in (1..).zip(&objects) {
+        offsets.push(pdf.len());
+        let _ = write!(pdf, "{number} 0 obj\n{object}\nendobj\n");
+    }
+    let xref = pdf.len();
+    let size = objects.len() + 1;
+    let _ = write!(pdf, "xref\n0 {size}\n0000000000 65535 f \n");
+    for offset in offsets {
+        let _ = writeln!(pdf, "{offset:010} 00000 n ");
+    }
+    let _ = write!(
+        pdf,
+        "trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    );
+    pdf.into_bytes()
+}
+
+#[test]
+fn forty_pages_read_in_one_call_and_a_page_without_text_is_named() {
+    let said: Vec<String> = (1..=40)
+        .map(|page| format!("Finding {page} of the report"))
+        .collect();
+    let mut pages: Vec<Option<&str>> = said.iter().map(|text| Some(text.as_str())).collect();
+    pages.push(None);
+    let pdf = pdf_saying(&pages);
+    let content = ContentStore::memory();
+    let hash = content.put(&pdf).expect("the store keeps the PDF");
+    let mut app = PdfApp::empty_with_content(content);
+    app.record_source = Some(crate::markup::PinnedSource {
+        source: ui::tilo_resource::Bytes::kept_as(&pdf, &hash),
+        name: "report.pdf".into(),
+    });
+    let read = app.read_text(None, None).expect("the report reads");
+    assert_eq!(read["page_count"], 41, "{read}");
+    let read_pages = read["pages"].as_array().expect("the pages read");
+    assert_eq!(read_pages.len(), 41, "one read answers every page");
+    assert_eq!(read["next"], serde_json::Value::Null);
+    let seventh = read_pages
+        .iter()
+        .find(|page| page["page"] == 7)
+        .and_then(|page| page["text"].as_str())
+        .expect("page seven");
+    assert!(seventh.contains("Finding 7"), "{seventh:?}");
+    assert_eq!(
+        read["without_text"],
+        serde_json::json!([41]),
+        "the page that draws no words is named: {read}"
+    );
+    let look = app.look_page(41, Some(200)).expect("the page still draws");
+    assert!(
+        look.value.is_some_and(|value| value["format"] == "png"),
+        "what a page without text shows is seen as a picture"
+    );
+}
+
 #[test]
 fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
     let bytes = std::fs::read(concat!(env!("OUT_DIR"), "/sample.pdf")).expect("the fixture");
@@ -130,6 +222,11 @@ fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
     let read = app.read_text(None, Some(1)).expect("the pinned PDF reads");
     assert_eq!(read["file"], "report.pdf");
     assert_eq!(read["pages"][0]["page"], 1);
+    assert_eq!(
+        read["without_text"],
+        serde_json::json!([]),
+        "a page with words is not named as one without"
+    );
     assert!(
         !read["pages"][0]["text"].as_str().unwrap().trim().is_empty(),
         "{read}"

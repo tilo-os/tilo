@@ -29,13 +29,13 @@ fields = [
   { path = "comments.*.anchor.area.left", type = "text" },
   { path = "comments.*.anchor.area.bottom", type = "text" },
   { path = "comments.*.anchor.area.right", type = "text" },
-  { path = "comments.*.author", type = "text", readonly = true },
+  { path = "comments.*.author", type = { named = "Author" }, readonly = true },
   { path = "comments.*.date", type = "text", readonly = true },
   { path = "comments.*.text", type = "text", label = true },
   { path = "comments.*.body", type = { list = { named = "ClipBlock" } } },
   { path = "comments.*.resolved", type = "bool" },
   { path = "comments.*.replies", type = { collection = { named = "Reply" } }, stored = "collection" },
-  { path = "comments.*.replies.*.author", type = "text", readonly = true },
+  { path = "comments.*.replies.*.author", type = { named = "Author" }, readonly = true },
   { path = "comments.*.replies.*.date", type = "text", readonly = true },
   { path = "comments.*.replies.*.text", type = "text", label = true },
   { path = "comments.*.replies.*.body", type = { list = { named = "ClipBlock" } }, readonly = true },
@@ -273,6 +273,25 @@ params = [
 id = "export-xlsx-content"
 kind = "read"
 
+[[resources.verbs]]
+id = "read-file"
+kind = "read"
+params = [
+  { name = "file", required = true },
+  { name = "sheet", type = { option = "text" }, required = false },
+  { name = "from", type = { option = "int" }, required = false },
+]
+
+[[resources.verbs]]
+id = "read-content"
+kind = "read"
+params = [
+  { name = "content", type = "text", required = true, schema = { type = "string", content = true } },
+  { name = "name", type = "text", required = true },
+  { name = "sheet", type = { option = "text" }, required = false },
+  { name = "from", type = { option = "int" }, required = false },
+]
+
 [[resources.types]]
 name = "Area"
 fields = [
@@ -280,6 +299,13 @@ fields = [
   { name = "left", type = "text" },
   { name = "bottom", type = "text" },
   { name = "right", type = "text" },
+]
+
+[[resources.types]]
+name = "Author"
+cases = [
+  { name = "member", fields = [{ name = "0", type = "actor" }] },
+  { name = "named", fields = [{ name = "0", type = "text" }] },
 ]
 
 [[resources.types]]
@@ -330,7 +356,7 @@ fields = [
 name = "Comment"
 fields = [
   { name = "anchor", type = { named = "CommentCells" } },
-  { name = "author", type = "text" },
+  { name = "author", type = { named = "Author" } },
   { name = "date", type = "text" },
   { name = "text", type = "text" },
   { name = "body", type = { list = { named = "ClipBlock" } } },
@@ -405,7 +431,7 @@ cases = [
 [[resources.types]]
 name = "Reply"
 fields = [
-  { name = "author", type = "text" },
+  { name = "author", type = { named = "Author" } },
   { name = "date", type = "text" },
   { name = "text", type = "text" },
   { name = "body", type = { list = { named = "ClipBlock" } } },

@@ -237,6 +237,25 @@ fn picture_id(src: &str) -> String {
     }
 }
 
+/// A slide as an outline names it: what `add-slides` takes for each one.
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct OutlinedSlide {
+    /// Its title.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Its body, a paragraph per line.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Its layout; a title over its content when left out.
+    #[serde(default)]
+    pub layout: Option<Layout>,
+    /// What its speaker says.
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
 /// A slide as a verb carries it whole.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct SlideData {
@@ -390,25 +409,35 @@ impl Deck {
             Id,
         >,
     ) -> Result<(), Refusal> {
-        let slide = crate::actions::authored_slide(title.as_deref(), body.as_deref(), layout);
-        let data = SlideData::of(&slide).reminted(cx);
-        let after = after.map(|after| self.slide_key(&after)).transpose()?;
-        let starter = self
-            .untouched_starter_slide()
-            .filter(|starter| after.is_none() || after.as_ref() == Some(starter));
-        let at = match &after {
-            Some(after) => self
-                .slides
-                .position(after)
-                .ok_or("the slide it goes after is gone")?
-                .saturating_add(1),
-            None => self.slides.len(),
+        let slide = OutlinedSlide {
+            title,
+            body,
+            layout,
+            notes: None,
         };
-        self.insert(at, &data)?;
-        if let Some(starter) = starter {
-            self.slides.remove(&starter);
+        self.add_outlined(cx, &[slide], after)
+    }
+
+    /// Add slides
+    ///
+    /// Several slides in one step, in the order given: a deck written from
+    /// an outline. Each is made as `add-slide` makes one.
+    #[action(answers)]
+    pub fn add_slides(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param(
+            "The slides, in order: each its title, its body with a paragraph per line, and optionally its layout and what its speaker says"
+        )]
+        slides: Vec<OutlinedSlide>,
+        #[param("The slide they go after (its id or number from 1); last when none")] after: Option<
+            Id,
+        >,
+    ) -> Result<(), Refusal> {
+        if slides.is_empty() {
+            return Err(Refusal::new("give the slides to add"));
         }
-        Ok(())
+        self.add_outlined(cx, &slides, after)
     }
 
     /// Insert slide
@@ -611,6 +640,46 @@ impl Deck {
 }
 
 impl Deck {
+    /// Add `slides` in order after `after` (last when none), each from the
+    /// template its layout names. An untouched starter slide gives way to
+    /// them, as it does to the first slide anyone adds.
+    fn add_outlined(
+        &mut self,
+        cx: &mut ActionCx,
+        slides: &[OutlinedSlide],
+        after: Option<Id>,
+    ) -> Result<(), Refusal> {
+        let after = after.map(|after| self.slide_key(&after)).transpose()?;
+        let starter = self
+            .untouched_starter_slide()
+            .filter(|starter| after.is_none() || after.as_ref() == Some(starter));
+        let mut at = match &after {
+            Some(after) => self
+                .slides
+                .position(after)
+                .ok_or("the slide it goes after is gone")?
+                .saturating_add(1),
+            None => self.slides.len(),
+        };
+        for outlined in slides {
+            let slide = crate::actions::authored_slide(
+                outlined.title.as_deref(),
+                outlined.body.as_deref(),
+                outlined.layout,
+            );
+            let mut data = SlideData::of(&slide).reminted(cx);
+            if let Some(notes) = &outlined.notes {
+                data.notes.clone_from(notes);
+            }
+            self.insert(at, &data)?;
+            at = at.saturating_add(1);
+        }
+        if let Some(starter) = starter {
+            self.slides.remove(&starter);
+        }
+        Ok(())
+    }
+
     /// The deck's outline, titled and with its handles, so an agent sees what it
     /// changed without reading the deck again.
     fn outline(

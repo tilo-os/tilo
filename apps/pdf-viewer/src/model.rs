@@ -692,6 +692,9 @@ pub struct PdfText {
     pub page_count: usize,
     pub pages: Vec<PdfPageText>,
     pub next: Option<usize>,
+    /// The pages read that hold no text, as a scanned page does: `look-page`
+    /// answers a picture of one.
+    pub without_text: Vec<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]

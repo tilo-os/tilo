@@ -179,6 +179,7 @@ slides-element-italic = { $new ->
 }
 slides-element-radius = Rounded the corners of { $item }
 slides-add-slide = Added a slide
+slides-add-slides = Added slides
 slides-insert-slide = Added a slide
 slides-duplicate-slide = Duplicated a slide
 slides-delete-slide = Deleted a slide
@@ -226,6 +227,7 @@ slides-slide-number = Slide { $number }
 
 slides-deck = Deck
 slides-deck-add-slide = Add slide
+slides-deck-add-slides = Add slides
 slides-deck-insert-slide = Insert slide
 slides-deck-duplicate-slide = Duplicate slide
 slides-deck-delete-slide = Delete slide
