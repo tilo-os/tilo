@@ -545,9 +545,27 @@ window of the system's on the screen), whether the conversation keeps its end in
 the field under it grows, and the app's first start on a screen.
 
 `TiloLive` is checked by its own tests, which run the engine against a page that speaks as
-Tilo's does: where the page stands, a change, reads, actions and their refusals, a second
-mount, and the frames of a page nobody sees. Against a real site `TiloLiveProbe` has paired
-from a link and got in. That it then prints Chat's messages as they arrive, sends, and shows a
-live document whose typed keys land in the record has been seen with a throwaway harness of
-the same technique, and not yet with `TiloLiveProbe` itself. Nothing of it has run in a
-simulator or on a phone.
+Tilo's does: where the page stands, a page that stopped or cannot draw, a change, reads,
+actions and their refusals, a second mount, the frames of a page nobody sees, and the person's
+own providers behind a device that answers carelessly (no key and no secret comes back, and a
+frame gets none of it). `AssistantTilo` is checked the same way, call by call of the frame's
+interface.
+
+Against a real site, with throwaway people and nothing on a screen, the real programs did
+this ten times of ten, on the page build `b341b6ba19b3be4cc4d7` (an older tree than this one).
+`TiloLiveProbe` paired from a link and came back as the same device; printed a message the same
+person typed elsewhere, told by the page and never asked for on a clock; sent through Chat's
+own send; and showed a live document that took an edit made elsewhere and typed keys that
+landed in the record. `AssistantMac --drive`, the app's own program with no window, signed in,
+filled its conversation, took a message typed elsewhere and sent one. No real program has yet
+used the person's own providers, answered a question that waits or kept a secret from the
+protected field: that tree has none of the three, and they wait for a site of this tree.
+
+In a simulator `TiloLivePhoneProbe`, an iPhone app with the engine unseen in its root view,
+paired as a new device with the code compared four times of four and kept its device's key,
+and came back as the same device with nobody asked three times of three; a device nobody
+paired was stopped while joining. No simulator offers a page a graphics adapter, so there the
+page is let in and never opens: reading, a change, sending and the live view have not run on
+an iPhone's system, and only a phone shows them. A simulator program needs a keychain group
+of its own for any of this (`build.sh` gives the apps theirs): without one a web view cannot
+keep the key that wraps a page's keys, and the page stops while joining.
