@@ -902,6 +902,7 @@ answer-try-again = Erneut versuchen
 answer-reopen = Wieder öffnen
 answer-why-unknown-app = Es gibt keine App, die das öffnet.
 answer-why-not-opened = Es wurde beendet, bevor ein Fenster erschien.
+answer-why-not-built = Beim Öffnen ist ein Problem aufgetreten. Versuche es erneut. Wenn es sich weiterhin nicht öffnet, schließe dieses Fenster und öffne { $app } erneut.
 answer-why-cannot-start = Apps können gerade nicht gestartet werden.
 # Ein Kürzel des Desktops, für das eine Browserseite keine Oberfläche hat: sie
 # sagt das, statt nichts zu tun.
