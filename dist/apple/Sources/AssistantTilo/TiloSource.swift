@@ -72,6 +72,9 @@ public final class TiloSource: AssistantSource {
     /// How long an ask of her server that failed waits before it is made again, the first time.
     /// The wait doubles each time, up to a minute.
     var firstPause: Duration = .seconds(1)
+    /// How often one ask of her server on the way to her assistant is made in all, where it
+    /// goes unanswered or is answered with nothing in it, before the main chat says so.
+    var setupAsks = 5
     private static let routeKey = "TiloLiveRoute"
     private static let personKey = "TiloLivePerson"
 
@@ -439,9 +442,10 @@ public final class TiloSource: AssistantSource {
     /// The workspace's agents as its server says them to the person on this device, each whole.
     ///
     /// Its answer is taken as the server's word only where it is one: a list of the agents in
-    /// which every agent can be read whole. An answer that holds no such list, or names an
-    /// agent it does not let this device read, throws `unavailable`: then nothing says that
-    /// the person keeps no assistant, and none is made on it.
+    /// which every agent can be read whole. An answer that names an agent it does not let this
+    /// device read throws `unavailable`: then nothing says that the person keeps no assistant,
+    /// and none is made on it. An answer that holds no list at all is nobody's word: it throws
+    /// `NothingInIt`, and whoever asked asks again.
     private func agentsOnServer() async throws -> [JSON] {
         let unread = TiloEngine.Problem.refused(code: "unavailable", reason: "The server did not say the workspace's agents whole")
         var read: [JSON] = []
@@ -469,7 +473,7 @@ public final class TiloSource: AssistantSource {
                     }
                 }
             } else {
-                throw unread
+                throw NothingInIt()
             }
             guard let next = listed["nextCursor"], !next.isNull else { return read }
             cursor = next
@@ -519,14 +523,40 @@ public final class TiloSource: AssistantSource {
     private static let answersFor = "set-agent-on-host"
 
     /// Have the workspace's server answer for an agent. Where the ask goes unanswered it is
-    /// made once more: asked twice, it changes nothing a second time.
+    /// made again: asked more than once, it changes nothing a second time.
     private func haveServerAnswer(for agent: String) async throws {
         let arguments: [String: JSON] = ["agent": .string(agent), TiloSource.answeredByServer: true]
-        do {
-            try await engine.askAgents(TiloSource.answersFor, arguments)
-        } catch TiloEngine.Problem.noAnswer {
-            _ = await engine.nextChange(within: .milliseconds(700))
-            try await engine.askAgents(TiloSource.answersFor, arguments)
+        _ = try await askedAgain { try await self.engine.askAgents(TiloSource.answersFor, arguments) }
+    }
+
+    /// An answer of her server with nothing in it of what was asked: not her server's word
+    /// that there is none, and not the word of a server that offers no such thing.
+    private struct NothingInIt: Error {}
+
+    /// Make an ask of her server on the way to her assistant. Where it goes unanswered, or is
+    /// answered with nothing in it, it is made again by itself after a pause that doubles each
+    /// time, for as long as the page is in: one late or lost answer says nothing to her. Only
+    /// where `setupAsks` asks in a row came to nothing is the last one's failure thrown, for
+    /// the main chat to say.
+    private func askedAgain<Value: Sendable>(_ ask: @MainActor () async throws -> Value) async throws -> Value {
+        var pause = firstPause
+        var left = setupAsks
+        while true {
+            do {
+                return try await ask()
+            } catch TiloEngine.Problem.noAnswer where left > 1 {
+                // Asked again below.
+            } catch is NothingInIt where left > 1 {
+                // Asked again below.
+            } catch is NothingInIt {
+                // Still nothing in it: a server that does not say the workspace's agents to a device.
+                throw TiloEngine.Problem.refused(code: "unavailable", reason: "The server did not say the workspace's agents whole")
+            }
+            left -= 1
+            try? await Task.sleep(for: pause)
+            pause = min(pause * 2, .seconds(60))
+            // A page that is on its way in again is asked anew once it is in.
+            guard case .open = engine.state else { throw TiloEngine.Problem.notOpen }
         }
     }
 
@@ -563,7 +593,7 @@ public final class TiloSource: AssistantSource {
         defer { finding = false }
         setups.set(.findingAssistant)
         do {
-            var all = try await agentsWhenOffered()
+            var all = try await askedAgain { try await self.agentsWhenOffered() }
             // The agent this device just had the server answer for.
             var finished: String?
             if TiloSource.assistant(among: all, of: me) == nil {
