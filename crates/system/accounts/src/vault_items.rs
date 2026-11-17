@@ -31,6 +31,10 @@ use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::{AccountId, Secret, SecretVault};
 
+mod codes;
+
+pub use codes::{CODE_SECS, Code};
+
 /// The vault entries that are items, apart from account credentials, the
 /// password inventory and service credentials in the same sealed file.
 const PREFIX: &str = "tilo-vault-item:";
@@ -485,6 +489,26 @@ impl Sealed {
         Ok(())
     }
 
+    /// Write down that the item was used at `places` for `by` at `now`,
+    /// keeping the newest uses.
+    fn used(&mut self, now: u64, places: &[Place], by: &str) {
+        self.last_used_unix = Some(now);
+        self.uses.push(UseRecord {
+            at_unix: now,
+            places: places.to_vec(),
+            by: by
+                .trim()
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(MAX_BY_CHARS)
+                .collect(),
+        });
+        let excess = self.uses.len().saturating_sub(MAX_USES_KEPT);
+        if excess > 0 {
+            self.uses = self.uses.split_off(excess);
+        }
+    }
+
     fn facts(&self, id: ItemId) -> ItemFacts {
         ItemFacts {
             id,
@@ -638,22 +662,7 @@ impl VaultItems {
     ) -> Result<Released, ItemError> {
         let mut sealed = self.sealed(id)?;
         sealed.allows(kind, places)?;
-        let now = unix_now();
-        sealed.last_used_unix = Some(now);
-        sealed.uses.push(UseRecord {
-            at_unix: now,
-            places: places.to_vec(),
-            by: by
-                .trim()
-                .chars()
-                .filter(|character| !character.is_control())
-                .take(MAX_BY_CHARS)
-                .collect(),
-        });
-        let excess = sealed.uses.len().saturating_sub(MAX_USES_KEPT);
-        if excess > 0 {
-            sealed.uses = sealed.uses.split_off(excess);
-        }
+        sealed.used(unix_now(), places, by);
         self.write(id, &sealed)?;
         Ok(Released {
             kind: sealed.kind,

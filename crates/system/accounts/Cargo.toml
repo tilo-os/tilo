@@ -42,6 +42,10 @@ getrandom.workspace = true
 zeroize = { workspace = true, features = ["serde"] }
 uuid.workspace = true
 url.workspace = true
+# A code generator's code is RFC 6238 over HMAC-SHA-1, made inside the vault so
+# that its seed never leaves.
+hmac.workspace = true
+sha1 = "0.11"
 # The storage daemon reads short-lived credentials through the cloud source
 # interface; the credential helper runs as a bounded child process.
 cloud-source = { version = "0.1.0", path = "../cloud-source" }
