@@ -1622,7 +1622,6 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
         ui::permissions::MemberId::person("tester"),
     );
     driver.relayout();
-    let last = handle.snapshot("g", vec![]).entries[3].route.clone();
     on_clock(Duration::ZERO, || {
         driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
     });
@@ -1647,20 +1646,18 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
         pan_offset(&handle)
     );
 
-    // Where the spin left the strip, windows are cut at both edges. A later
-    // change to the strip's geometry, here the last window a pixel wider,
-    // keeps it there rather than re-framing it onto a window's edge.
+    // Where the spin left the strip, windows are cut at both edges. A change
+    // to the strip's geometry from another device, here the last window a
+    // pixel wider, keeps it there rather than re-framing it onto a window's
+    // edge: only the person's own moves and width changes are followed.
     let held = pan_offset(&handle);
-    on_clock(Duration::ZERO, || {
-        dispatch(
-            &mut driver,
-            &handle,
-            verb(
-                "set-width",
-                serde_json::json!({"group":last.group,"permille":668}),
-            ),
-        );
-    });
+    let mut tree = handle.read(Clone::clone);
+    let group = tree.workspaces[0].strips[0]
+        .window_groups
+        .last_mut()
+        .unwrap();
+    group.width = WindowWidth::Fraction(668);
+    on_clock(Duration::ZERO, || handle.replace_tree(tree));
     settle(&mut driver);
     assert!(
         (pan_offset(&handle) - held).abs() < 0.5,
