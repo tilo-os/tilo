@@ -40,6 +40,25 @@ pub const USES: &str = "uses";
 /// takes a secret by reference names as its resource kind.
 pub const ITEM_KIND: &str = "vault.item";
 
+/// Whether `text` could name where an item belongs: a web address, or a
+/// server by scheme, host and port. A first check for whoever asks for a
+/// secret, before a person is shown the question; the host that keeps the
+/// item decides.
+#[must_use]
+pub fn looks_like_place(text: &str) -> bool {
+    let Some((scheme, rest)) = text.split_once("://") else {
+        return false;
+    };
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "https" | "http" | "imap" | "smtp" | "ssh"
+    ) && !rest.is_empty()
+        && text.len() <= 2_048
+        && !text
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+}
+
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
 pub fn target(action: &str) -> RemoteActionTarget {
@@ -253,6 +272,31 @@ mod tests {
     use super::*;
 
     const ID: &str = "0123456789abcdef0123456789abcdef";
+
+    /// What could name a place passes the first check, and plain words,
+    /// a bare host and another scheme do not.
+    #[test]
+    fn a_place_is_checked_before_a_person_is_asked() {
+        for place in [
+            "https://example.com/login",
+            "HTTP://example.com",
+            "imap://mail.example.com:993",
+            "smtp://mail.example.com:465",
+            "ssh://git.example.com",
+        ] {
+            assert!(looks_like_place(place), "{place}");
+        }
+        for other in [
+            "",
+            "example.com",
+            "my bank",
+            "ftp://example.com",
+            "https://",
+            "https://exa mple.com",
+        ] {
+            assert!(!looks_like_place(other), "{other:?}");
+        }
+    }
 
     /// A reference is an item's address and nothing else reads as one.
     #[test]

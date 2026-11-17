@@ -118,6 +118,9 @@ pub(crate) enum Hit {
     StopShare(Id),
     /// Let the others do this with the window a message of yours shares.
     SwitchShare(Id, crate::record::ShareAccess),
+    /// The protected field under a question that asks for a secret: a press
+    /// gives it the keyboard.
+    SecretField(Id),
     /// Give this answer to the question a message asks this person.
     Answer {
         msg: Id,
@@ -231,6 +234,7 @@ impl Hit {
             Self::GrowShare(id) => format!("chat.grow-share:{id}"),
             Self::ShrinkShare(id) => format!("chat.shrink-share:{id}"),
             Self::StopShare(id) => format!("chat.stop-sharing:{id}"),
+            Self::SecretField(id) => format!("chat.secret-field:{id}"),
             Self::SwitchShare(id, access) => format!("chat.switch-share:{id}:{}", access.as_str()),
             Self::Answer { msg, answer } => format!("chat.answer:{msg}:{answer}"),
             Self::ShareWindowPanel => "chat.share-window".into(),
@@ -562,6 +566,11 @@ impl ChatApp {
                         false,
                     ),
                     Hit::StopShare(_) => (copy("chat-share-stop"), Role::Button, false),
+                    Hit::SecretField(message) => (
+                        content(self.secret_field_name(message)),
+                        Role::TextInput,
+                        false,
+                    ),
                     Hit::SwitchShare(id, access) => (
                         ControlName {
                             text: crate::live_share::access_label(*access),

@@ -261,6 +261,9 @@ pub struct ChatApp {
     /// submits the record's `edit-message`.
     pub(crate) editing: Option<Id>,
     pub(crate) edit_input: crate::composer::MessageEditor,
+    /// The protected field of the question that asks this person for a
+    /// secret, and the vault's answer to what they typed on its way.
+    pub(crate) secret_entry: crate::secret_ask::SecretEntry,
 
     // Attachment picker (browses the shared workspace for a file to share).
     pub(crate) attach_open: bool,
@@ -723,6 +726,7 @@ impl ChatApp {
             history_anchor: Point::ZERO,
             editing: None,
             edit_input: crate::composer::MessageEditor::local(),
+            secret_entry: crate::secret_ask::SecretEntry::default(),
             attach_open: false,
             attach_entries: Vec::new(),
             attachment_pending: None,
@@ -1523,6 +1527,10 @@ impl Collaborative for ChatApp {
                     .remote_mut()
                     .handle_collab_event(event);
                 self.settle_resource_navigation();
+                // The vault answered what was typed: the next pass takes it.
+                if self.secret_entry.is_saving() {
+                    self.request_relayout();
+                }
             }
             ui::collaboration::CollabEvent::FollowChanged { peer_id } => {
                 self.context_follow_requested = peer_id.is_some();
@@ -1640,6 +1648,7 @@ impl Widget for ChatApp {
         self.apply_window_toolbar(edits);
         self.take_sidebar_events(edits);
         self.follow_window_shares(edits);
+        self.follow_secret_asks(edits);
     }
 
     ui::provides!(

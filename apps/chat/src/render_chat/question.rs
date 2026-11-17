@@ -60,6 +60,7 @@ impl ChatApp {
     ) -> f64 {
         self.question_shown(m).map_or(0.0, |shown| {
             lay(&shown, Point::ZERO, width, tr, theme).bottom
+                + self.secret_field_height(m, width, tr, theme)
         })
     }
 
@@ -126,7 +127,8 @@ impl ChatApp {
                 },
             );
         }
-        *y = laid.bottom;
+        // A secret is answered in the protected field under its card.
+        *y = self.draw_secret_field(&mut paint, m, (x, laid.bottom, width), hits);
     }
 }
 

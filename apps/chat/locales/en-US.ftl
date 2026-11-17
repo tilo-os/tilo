@@ -522,3 +522,25 @@ chat-workspace-submit-feedback = Submit feedback
 chat-workspace-triage = Triage feedback
 # A message moved from another chat: its author there, and the tool.
 chat-origin-author = { $name } in { $source }
+# A question that asks for a secret, under the message that asks.
+chat-secret-title-login = Password for { $place }
+chat-secret-title-key = Key for { $place }
+chat-secret-title-code-generator = Setup key for sign-in codes at { $place }
+chat-secret-title-ssh-key = SSH key for { $place }
+chat-secret-title-value = Value for { $place }
+chat-secret-unreadable = This request for a secret does not say what it is for
+chat-secret-waiting-mine = It goes to your vault. Whoever asked can use it there and cannot read it.
+chat-secret-answer-in-window = Open this conversation in Chat to answer
+chat-secret-filled = Kept in the vault
+chat-secret-declined = Not given
+chat-secret-field-login = Password
+chat-secret-field-key = Key
+chat-secret-field-code-generator = Setup key
+chat-secret-field-ssh-key = Private key
+chat-secret-field-value = Value
+chat-secret-save = Save to vault
+chat-secret-decline = Decline
+chat-secret-saving = Adding it to your vault…
+chat-secret-not-kept = The vault did not keep it. Try again.
+chat-secret-answer-saved = It is in my vault now.
+chat-secret-answer-declined = I would rather not give that.
