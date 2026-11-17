@@ -222,7 +222,7 @@ fn fill(
             chain,
             &IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
                 issue: issue.clone(),
-                parent: Some(parent.clone()),
+                parent: Some(ui::tilo_resource::items::Ref::from(parent.clone())),
             }),
         )?;
     }

@@ -95,7 +95,7 @@ impl Board {
 
     fn create(&mut self, title: &str, parent: Option<Id>) -> Id {
         self.apply(IssuePart::CREATE.with(NewIssue {
-            parent,
+            parent: parent.map(ui::tilo_resource::items::Ref::from),
             ..NewIssue::titled(nb(title))
         }))
         .unwrap();
@@ -147,7 +147,7 @@ fn issues_are_numbered_nested_and_never_under_themselves() {
         board
             .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
                 issue: parent.clone(),
-                parent: Some(child.clone()),
+                parent: Some(ui::tilo_resource::items::Ref::from(child.clone())),
             }))
             .is_err(),
         "a parent cannot move under its own sub-issue"
@@ -155,7 +155,7 @@ fn issues_are_numbered_nested_and_never_under_themselves() {
     assert!(
         board
             .apply(IssuePart::CREATE.with(NewIssue {
-                parent: Some(Id::from_raw("gone")),
+                parent: Some(ui::tilo_resource::items::Ref::from("gone")),
                 ..NewIssue::titled(nb("Orphan"))
             }))
             .is_err(),
@@ -203,7 +203,7 @@ fn a_full_part_starts_the_next_and_numbers_go_on_across_them() {
         board
             .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
                 issue: last.clone(),
-                parent: Some(first.clone()),
+                parent: Some(ui::tilo_resource::items::Ref::from(first.clone())),
             }))
             .unwrap(),
         1
@@ -225,7 +225,7 @@ fn a_full_part_starts_the_next_and_numbers_go_on_across_them() {
         board
             .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
                 issue: first,
-                parent: Some(last),
+                parent: Some(ui::tilo_resource::items::Ref::from(last)),
             }))
             .is_err(),
         "a cycle across parts is refused too"
@@ -259,7 +259,7 @@ fn placing_on_the_board_sets_status_and_order_in_one_step() {
         .apply(IssuePart::PLACE.with(issue_part::Place {
             issue: three.clone(),
             status: Status::Todo,
-            before: Some(one),
+            before: Some(ui::tilo_resource::items::Ref::from(one)),
             rank: None,
         }))
         .unwrap();
@@ -298,7 +298,7 @@ fn a_project_holds_its_tasks_and_a_deleted_one_holds_none() {
         .unwrap();
     board
         .apply(IssuePart::CREATE.with(NewIssue {
-            project: Some(launch.clone()),
+            project: Some(ui::tilo_resource::items::Ref::from(launch.clone())),
             ..NewIssue::titled(nb("Write the post"))
         }))
         .unwrap();
@@ -311,7 +311,7 @@ fn a_project_holds_its_tasks_and_a_deleted_one_holds_none() {
         board
             .apply(IssuePart::SET_PROJECT.with(issue_part::SetProject {
                 issue: post.clone(),
-                project: Some(Id::from_raw("nope")),
+                project: Some(ui::tilo_resource::items::Ref::from("nope")),
                 goal: None,
             }))
             .is_err(),
@@ -485,4 +485,72 @@ fn giving_an_issue_to_an_agent_asks_it_until_it_answers() {
     }))
     .unwrap();
     assert!(asks(&ada).is_empty());
+}
+
+#[test]
+fn an_issue_and_a_project_are_named_by_their_names() {
+    use ui::tilo_resource::items::Ref;
+    let mut board = Board::new("ada");
+    board
+        .tracker
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: nb("Launch"),
+            kind: None,
+        }))
+        .unwrap();
+    // An issue that works towards the project by the name it is read under.
+    board
+        .apply(IssuePart::CREATE.with(NewIssue {
+            project: Some(Ref::from("Launch")),
+            ..NewIssue::titled(nb("Write the post"))
+        }))
+        .unwrap();
+    let post = board.id_of("Write the post");
+    assert_eq!(
+        board
+            .issue(&post)
+            .unwrap()
+            .area
+            .as_ref()
+            .map(|area| area.label.as_str()),
+        Some("Launch")
+    );
+    // A project nothing is called says what there is, never that it went away.
+    let why = board
+        .apply(IssuePart::CREATE.with(NewIssue {
+            project: Some(Ref::from("Nowhere")),
+            ..NewIssue::titled(nb("Lost"))
+        }))
+        .expect_err("no project is named Nowhere");
+    assert!(why.contains("no project or area named Nowhere"), "{why}");
+    assert!(why.contains("Launch"), "what there is follows: {why}");
+    // An issue's parent is named the same way, by the title it is read under.
+    board
+        .apply(IssuePart::CREATE.with(NewIssue {
+            parent: Some(Ref::from("Write the post")),
+            ..NewIssue::titled(nb("Reply"))
+        }))
+        .unwrap();
+    let reply = board.id_of("Reply");
+    let parts = board.states();
+    let issues = Issues::of(&parts);
+    assert_eq!(
+        issues
+            .get(&reply)
+            .and_then(|issue| issues.parent_of(issue))
+            .map(Id::as_str),
+        Some(post.as_str())
+    );
+    // A parent nothing is called says the issues there are.
+    let why = board
+        .apply(IssuePart::CREATE.with(NewIssue {
+            parent: Some(Ref::from("Nothing")),
+            ..NewIssue::titled(nb("Orphan"))
+        }))
+        .expect_err("no issue is named Nothing");
+    assert!(why.contains("no issue named Nothing"), "{why}");
+    assert!(
+        why.contains("Write the post"),
+        "what there is follows: {why}"
+    );
 }

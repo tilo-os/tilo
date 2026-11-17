@@ -402,7 +402,7 @@ pub(crate) fn new_issue<R: ui::tilo_resource::Resource>(
     // a title.
     let create = IssuePart::CREATE.try_map(move |title: String| {
         Some(crate::model::NewIssue {
-            parent: parent.clone(),
+            parent: parent.as_ref().map(ui::tilo_resource::items::Ref::from),
             status,
             ..crate::model::NewIssue::titled(ui::tilo_resource::NonBlank::parse(&title)?)
         })

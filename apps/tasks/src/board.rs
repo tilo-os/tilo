@@ -88,7 +88,9 @@ fn lanes(
         Some(issue_part::Place {
             issue: Id::from_raw(drop.card),
             status: status_of(&drop.lane)?,
-            before: drop.before.map(Id::from_raw),
+            before: drop
+                .before
+                .map(|id| ui::tilo_resource::items::Ref::from(Id::from_raw(id))),
             rank: None,
         })
     });

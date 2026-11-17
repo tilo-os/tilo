@@ -135,7 +135,11 @@ fn long(chain: &Chain<IssuePart>, count: u64) {
         };
         let Ok(Some(part)) = chain.invoke(&IssuePart::CREATE.with(crate::model::NewIssue {
             status: Some(status),
-            parent: if first { None } else { parent.clone() },
+            parent: if first {
+                None
+            } else {
+                parent.as_ref().map(ui::tilo_resource::items::Ref::from)
+            },
             ..crate::model::NewIssue::titled(named)
         })) else {
             continue;
