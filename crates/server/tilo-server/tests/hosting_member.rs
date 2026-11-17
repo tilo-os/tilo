@@ -77,7 +77,7 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     let workspace = workspaces.create("Notes").await.unwrap();
 
     let hint = workspaces
-        .attach_host(
+        .attach_server(
             &workspace.workspace,
             nas.device_pubkey(),
             member.host.node_addr(),
@@ -175,7 +175,7 @@ async fn a_device_serves_no_workspace_another_device_governs() {
     let workspace = workspaces.create("Notes").await.unwrap();
 
     let refused = workspaces
-        .attach_host(
+        .attach_server(
             &workspace.workspace,
             desktop.device_pubkey(),
             other.host.node_addr(),
@@ -212,7 +212,7 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     let retained = || async { records.retained(workspace.workspace_id).await.ok() };
 
     workspaces
-        .attach_host(
+        .attach_server(
             &workspace.workspace,
             nas.device_pubkey(),
             member.host.node_addr(),
@@ -248,7 +248,7 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
         .unwrap();
 
     workspaces
-        .attach_host(
+        .attach_server(
             &workspace.workspace,
             nas.device_pubkey(),
             member.host.node_addr(),
@@ -314,7 +314,7 @@ async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_gover
     let workspace = made_on.create("Notes").await.unwrap();
     for at in 1..3 {
         made_on
-            .attach_host(
+            .attach_server(
                 &workspace.workspace,
                 devices[at].device_pubkey(),
                 holders[at].as_ref().unwrap().host.node_addr(),
@@ -523,7 +523,7 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
     let workspace = workspaces.create("Notes").await.unwrap();
     let refusing = host_on(&site, &server, WorkSetting::own_person()).await;
     let refused = workspaces
-        .attach_host(
+        .attach_server(
             &workspace.workspace,
             server.device_pubkey(),
             refusing.host.node_addr(),
@@ -577,7 +577,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
         tilo_server_protocol::WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());
     let holder = host_on(&site, &server, takes.clone()).await;
     let hint = workspaces
-        .attach_host(
+        .attach_server(
             &workspace.workspace,
             server.device_pubkey(),
             holder.host.node_addr(),
@@ -720,7 +720,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     assert!(at_site.admit_own_through(&home.workspace));
 
     let attach = || {
-        workspaces.attach_host(
+        workspaces.attach_server(
             &workspace.workspace,
             server.device_pubkey(),
             holder.host.node_addr(),
@@ -855,7 +855,7 @@ async fn a_hand_over_names_its_workspace_by_its_id_and_writes_nowhere_else() {
     }
 
     workspaces
-        .attach_host(&workspace.workspace, nas.device_pubkey(), at)
+        .attach_server(&workspace.workspace, nas.device_pubkey(), at)
         .await
         .unwrap();
     let files: Vec<String> = std::fs::read_dir(&kept)
@@ -913,7 +913,7 @@ async fn a_held_workspace_is_not_taken_from_another_governor() {
     let holder = host_on(&site, &kept_on, takes).await;
     let at = holder.host.node_addr();
     workspaces
-        .attach_host(&workspace.workspace, kept_on.device_pubkey(), at.clone())
+        .attach_server(&workspace.workspace, kept_on.device_pubkey(), at.clone())
         .await
         .unwrap();
     let on_holder = session_at(&phone, &site, &kept_on, &holder).await;
@@ -932,7 +932,7 @@ async fn a_held_workspace_is_not_taken_from_another_governor() {
         .await
         .unwrap();
     let answered = of_mallory
-        .attach_host(&workspace.workspace, kept_on.device_pubkey(), at)
+        .attach_server(&workspace.workspace, kept_on.device_pubkey(), at)
         .await;
     assert!(
         answered

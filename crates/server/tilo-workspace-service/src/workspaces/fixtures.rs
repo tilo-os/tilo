@@ -702,3 +702,17 @@ pub fn voice_leave(
 ) {
     workspaces.voice_leave(peer, call, participation);
 }
+
+/// Admit `key`, a key its person made, to `workspace`, as redeeming its
+/// person's invitation there admits it: listed as one of the person's
+/// devices, its grant kept beside the workspace's governance.
+///
+/// # Panics
+///
+/// The workspace is not held here, or refuses the key.
+pub async fn enter_key(workspaces: &Workspaces, workspace: &str, key: &DeviceCert) {
+    workspaces
+        .admit_entering(workspace, key, tilo_clock::unix_now_ns())
+        .await
+        .expect("the workspace admits the key");
+}

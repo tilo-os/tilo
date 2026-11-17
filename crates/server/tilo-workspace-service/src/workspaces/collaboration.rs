@@ -338,10 +338,6 @@ impl Workspaces {
 
     /// Admit `device`, a device of this server's own user, to `workspace` as its
     /// owner. Returns whether governance changed.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked until its decision is committed, published and answered"
-    )]
     pub async fn enter(
         &self,
         workspace: &str,
@@ -354,6 +350,21 @@ impl Workspaces {
             WorkspaceOp::Host(ServiceOperation::EnterWorkspace),
             now,
         )?;
+        self.admit_entering(workspace, device, now).await
+    }
+
+    /// Admit `device`, whose entry was decided, to `workspace`; a key keeps
+    /// the grant it entered under. Returns whether governance changed.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked until its decision is committed, published and answered"
+    )]
+    pub(crate) async fn admit_entering(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        now: u64,
+    ) -> Result<bool, CollaborationError> {
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
         // A key whose grant this workspace records as revoked never enters it

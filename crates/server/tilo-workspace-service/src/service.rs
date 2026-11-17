@@ -313,6 +313,7 @@ impl ServiceSessions {
             update: Arc::clone(&self.governed_access_update),
             state_root: self.state_root.clone(),
             shell_payloads: self.shell_payloads.clone(),
+            environments: self.handler.environments.clone(),
         }
     }
 
@@ -792,6 +793,9 @@ pub(crate) struct GovernedAccessWriter {
     update: Arc<AsyncMutex<()>>,
     state_root: PathBuf,
     shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
+    /// The browser environments this server placed: their devices are listed
+    /// beside the members governance names, so a governance change keeps them.
+    environments: crate::environment::EnvironmentRegistry,
 }
 
 impl GovernedAccessWriter {
@@ -875,7 +879,16 @@ impl GovernedAccessWriter {
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
+        // An environment this server placed in the workspace is listed by
+        // the server, not by governance: every projection keeps it until it
+        // stops, confined to its document by the register.
         let mut member_devices = access.member_devices;
+        member_devices.extend(
+            self.environments
+                .placed_in(workspace_id)
+                .into_iter()
+                .map(|(device, _, _)| device),
+        );
         member_devices.sort_unstable();
         member_devices.dedup();
         let mut member_user_roots = access.member_user_roots;

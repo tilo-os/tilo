@@ -205,7 +205,7 @@ impl Workspaces {
     ///
     /// The workspace is not held here, the host cannot be reached or is not that device, or it
     /// refused or answered an address that is not its own for the workspace.
-    pub async fn attach_host(
+    pub async fn attach_server(
         &self,
         workspace: &str,
         device: [u8; 32],
@@ -406,15 +406,15 @@ impl Workspaces {
     /// Have the holder whose site is at `origin` (`https://tilo.sh`) hold
     /// `workspace` as well: the holder says who it is and
     /// where it is dialed at its origin, and is then handed the workspace
-    /// ([`Self::attach_host`]), which it takes as its own rules for whom it
+    /// ([`Self::attach_server`]), which it takes as its own rules for whom it
     /// keeps workspaces say.
     ///
     /// # Errors
     ///
-    /// As [`Self::attach_host`], or the origin did not say who it is.
+    /// As [`Self::attach_server`], or the origin did not say who it is.
     pub async fn add_host(&self, workspace: &str, origin: &str) -> Result<TransportHint, String> {
         let (device, addr) = host_at(origin, self.site_reach()).await?;
-        self.attach_host(workspace, device, addr).await
+        self.attach_server(workspace, device, addr).await
     }
 
     /// Which addresses this device asks when an owner names a holder by its

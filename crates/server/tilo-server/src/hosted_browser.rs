@@ -923,14 +923,30 @@ impl HostedBrowsers {
         let question = asked.question(caller);
         let (answer, answered) = pending();
         let asking = Arc::clone(&self.asking);
+        let taking = self.submission(
+            workspace_id,
+            format!("browser-hold/{}/{held}", hex::encode(window)),
+        );
         tokio::runtime::Handle::current().spawn(async move {
-            let answered_by_person = certification.confirm_for(person, question).await;
-            let result = asked.confirmed(&answered_by_person, &key).map(Box::new);
+            let (result, taken) = match taking.await {
+                Ok(taken) => {
+                    let answered_by_person = certification.confirm_for(person, question).await;
+                    let result = taken
+                        .handing(asked.confirmed(&answered_by_person, &key))
+                        .await
+                        .map(Box::new);
+                    (result, Some(taken))
+                }
+                Err(error) => (Err(error), None),
+            };
             asking.lock_recover().remove(&(workspace_id, held));
             answer.complete(RemoteActionMessage::ConfirmResponse {
                 correlation,
                 result,
             });
+            if let Some(taken) = taken {
+                taken.release().await;
+            }
         });
         Some(crate::app_serving::Routing::Answer(answered))
     }
@@ -1046,31 +1062,45 @@ impl HostedBrowsers {
         let invocation = request.invocation;
         let mut run = request.clone();
         let handed = Arc::clone(&self.handed);
+        let taking = self.submission(workspace_id, format!("browser-hold/{}", invocation.0));
         tokio::runtime::Handle::current().spawn(async move {
-            let answered = certification.confirm_for(person, question).await;
-            let confirmed = asked.confirmed(&answered, &key);
-            let mut handed = handed.lock_recover();
-            let Some(entry) = handed.get_mut(&invocation) else {
-                // The caller stopped waiting while the person decided: the
-                // action runs not at all.
-                return;
-            };
-            match confirmed {
-                Ok(confirmed) => {
-                    confirmed.apply(&mut run);
-                    entry.stage = Stage::Allowed;
-                    drop(handed);
-                    // The invocation runs once, as the caller asked it, with
-                    // the person's answer: the window that refused it accepts
-                    // this one, and answers the caller itself.
-                    hand.hand(
-                        workspace_id,
-                        (device, person),
-                        window,
-                        RemoteActionMessage::Invoke(run),
-                    );
+            let (confirmed, taken) = match taking.await {
+                Ok(taken) => {
+                    let answered = certification.confirm_for(person, question).await;
+                    (
+                        taken.handing(asked.confirmed(&answered, &key)).await,
+                        Some(taken),
+                    )
                 }
-                Err(error) => over(entry, update_of_error(invocation, &error)),
+                Err(error) => (Err(error), None),
+            };
+            {
+                let mut handed = handed.lock_recover();
+                // A caller that stopped waiting while the person decided
+                // has nothing done for it.
+                if let Some(entry) = handed.get_mut(&invocation) {
+                    match confirmed {
+                        Ok(confirmed) => {
+                            confirmed.apply(&mut run);
+                            entry.stage = Stage::Allowed;
+                            drop(handed);
+                            // The invocation goes once more, as the caller
+                            // asked it, with the person's answer: the window
+                            // that refused it accepts this one, and answers
+                            // the caller itself.
+                            hand.hand(
+                                workspace_id,
+                                (device, person),
+                                window,
+                                RemoteActionMessage::Invoke(run),
+                            );
+                        }
+                        Err(error) => over(entry, update_of_error(invocation, &error)),
+                    }
+                }
+            }
+            if let Some(taken) = taken {
+                taken.release().await;
             }
         });
     }
@@ -1306,11 +1336,61 @@ impl HostedBrowsers {
     /// serves one: what a page action and a session's device name it by.
     #[must_use]
     pub async fn workspace_name(&self, workspace_id: WorkspaceId) -> Option<String> {
-        let workspaces = {
-            let authority = self.authority.lock_recover();
-            authority.as_ref()?.workspaces.clone()?
-        };
-        workspaces.workspace_identity(workspace_id).await
+        self.workspaces()?.workspace_identity(workspace_id).await
+    }
+
+    /// The workspaces this server serves, once it serves them.
+    fn workspaces(&self) -> Option<crate::workspaces::Workspaces> {
+        self.authority.lock_recover().as_ref()?.workspaces.clone()
+    }
+
+    /// Take the page submission `lease` names in `workspace_id`'s own state
+    /// as this server's device, for as long as the person is given to answer
+    /// and their answer to be handed over: of the workspace's holders, the
+    /// one that took it asks the person and hands over their answer, and no
+    /// other does, after a takeover or across a partition alike.
+    fn submission(
+        &self,
+        workspace_id: WorkspaceId,
+        lease: String,
+    ) -> impl Future<Output = Result<Submission, ActionCallError>> + Send + 'static {
+        let workspaces = self.workspaces();
+        let ttl = self.answer_wait.saturating_add(SUBMISSION_HANDOVER);
+        async move {
+            let unheld = || ActionCallError::Unavailable {
+                reason: "this server holds no copy of the workspace to ask in".into(),
+            };
+            let workspaces = workspaces.ok_or_else(unheld)?;
+            let workspace = workspaces
+                .workspace_identity(workspace_id)
+                .await
+                .ok_or_else(unheld)?;
+            let device = workspaces.serving_certificate().clone();
+            let claimed = workspaces
+                .author_own_workspace_state(&workspace, &device, |peer| {
+                    peer.workspace_mut().take_lease(
+                        &device,
+                        &lease,
+                        ttl,
+                        tilo_peer_state::unranked(),
+                        std::time::SystemTime::now(),
+                    )
+                })
+                .await
+                .map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })?;
+            if claimed.is_none() {
+                return Err(ActionCallError::Unavailable {
+                    reason: ANOTHER_HOLDER_ASKS.into(),
+                });
+            }
+            Ok(Submission {
+                workspaces,
+                workspace,
+                lease,
+            })
+        }
     }
 
     /// [`Self::workspace_name`], asked again a few times with a growing
@@ -1803,6 +1883,71 @@ pub fn operates(certificate: &DeviceCert, request: &InvokeRequest) -> bool {
     certificate.capabilities.agent.is_some()
         && certificate.capabilities.browser_pages
         && OPERATING_ACTIONS.contains(&request.target.address.action.as_str())
+}
+
+/// How long past the person's wait a page submission stays taken: time to
+/// hand their answer to the window.
+const SUBMISSION_HANDOVER: Duration = Duration::from_secs(60);
+
+/// Why a holder that did not take a page submission asks nothing about it.
+pub const ANOTHER_HOLDER_ASKS: &str = "another holder of the workspace is asking the person";
+
+/// A page submission this server's device took in its workspace's state
+/// ([`HostedBrowsers::submission`]).
+struct Submission {
+    workspaces: crate::workspaces::Workspaces,
+    workspace: String,
+    lease: String,
+}
+
+impl Submission {
+    /// `confirmed`, the person's answer, as it may be handed over: only
+    /// while this server still holds the submission. A holder that lost it
+    /// while the person decided — another one took it over, or won it once
+    /// a partition healed — hands over nothing, so the page acts once.
+    async fn handing(
+        &self,
+        confirmed: Result<ConfirmedInvocation, ActionCallError>,
+    ) -> Result<ConfirmedInvocation, ActionCallError> {
+        let confirmed = confirmed?;
+        let ours = self.workspaces.serving_certificate().device_public_key;
+        let held = self
+            .workspaces
+            .state(&self.workspace)
+            .await
+            .and_then(|state| {
+                state
+                    .workspace()
+                    .lease(&self.lease, std::time::SystemTime::now())
+                    .holder
+            })
+            .is_some_and(|holder| holder.device == ours);
+        if held {
+            Ok(confirmed)
+        } else {
+            Err(ActionCallError::Unavailable {
+                reason: ANOTHER_HOLDER_ASKS.into(),
+            })
+        }
+    }
+
+    /// Let the submission go once its answer was handed over.
+    async fn release(self) {
+        let device = self.workspaces.serving_certificate().clone();
+        if let Err(error) = self
+            .workspaces
+            .author_own_workspace_state(&self.workspace, &device, |peer| {
+                peer.workspace_mut().release_lease(
+                    &device,
+                    &self.lease,
+                    std::time::SystemTime::now(),
+                )
+            })
+            .await
+        {
+            tracing::warn!(lease = %self.lease, %error, "a page submission was not let go");
+        }
+    }
 }
 
 /// One page action the person is asked about, and what their answer is

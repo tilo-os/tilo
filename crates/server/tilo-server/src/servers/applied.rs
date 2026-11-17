@@ -5,7 +5,7 @@
 //! one applies the document it reads:
 //!
 //! - A device that governs a workspace attaches the servers the document says
-//!   hold it ([`Workspaces::attach_host`]) and detaches the ones it no longer
+//!   hold it ([`Workspaces::attach_server`]) and detaches the ones it no longer
 //!   names, each at the address that server enrolled. One action on the
 //!   document thus both chooses a holder and names it in the workspace, and a
 //!   server never has to be told anything by hand.
@@ -138,7 +138,7 @@ pub async fn reconcile_into(
                     );
                     continue;
                 };
-                workspaces.attach_host(&workspace, key, endpoint).await?;
+                workspaces.attach_server(&workspace, key, endpoint).await?;
                 applied.held.push(workspace.clone());
             } else if !wants && named.contains(&key) {
                 workspaces.detach_host(&workspace, key, None).await?;

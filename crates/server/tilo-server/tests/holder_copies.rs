@@ -66,7 +66,7 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
     let workspace = made_on.create("Notes").await.unwrap();
     for at in 1..3 {
         made_on
-            .attach_host(
+            .attach_server(
                 &workspace.workspace,
                 devices[at].device_pubkey(),
                 holders[at].as_ref().unwrap().host.node_addr(),
