@@ -17,7 +17,10 @@
 //! server enrolled into the person's identity enters itself on its first start
 //! ([`enroll`]).
 
-use tilo_resource::{Collection, Id, Invoke, Model, Refusal, Replica, resource};
+#[cfg(feature = "agents")]
+use tilo_resource::Invoke;
+use tilo_resource::{Collection, Id, Model, Refusal, Replica, resource};
+#[cfg(feature = "agents")]
 use tilo_user_identity::DeviceCert;
 
 use crate::workspaces::Workspaces;
@@ -312,6 +315,7 @@ pub async fn ensure_admin_workspace(workspaces: &Workspaces) -> Result<String, S
 ///
 /// # Errors
 /// The action was refused, or the record could not be written.
+#[cfg(feature = "agents")]
 pub async fn apply(workspaces: &Workspaces, action: Invoke<Servers>) -> Result<(), String> {
     let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
     let cert = workspaces.serving_certificate().clone();
@@ -353,6 +357,7 @@ pub async fn read(workspaces: &Workspaces) -> Result<Servers, String> {
 ///
 /// # Errors
 /// The admin workspace could not be made, or the entry written.
+#[cfg(feature = "agents")]
 pub async fn enroll(workspaces: &Workspaces, cert: &DeviceCert) -> Result<String, String> {
     let admin = ensure_admin_workspace(workspaces).await?;
     let action = Servers::ENROLL_SERVER.with((
