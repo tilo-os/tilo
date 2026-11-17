@@ -70,7 +70,11 @@ the machinery `tilo device swap` uses on a development machine:
    of its own again (memory tiers, the pressure watch, its end report, ending
    it at logout), lets the saved tab of its app wait for its window instead of
    starting the app again, and attaches the keeper, which shows the windows'
-   last pictures at once. Nothing watches memory pressure in the seconds
+   last pictures at once. What the app wrote goes on being kept as well: the
+   keeper holds the newest 64 KiB of each of its two streams in a bounded file
+   in that directory (`output.stdout`, `output.stderr`), and the desktop that
+   follows reads it from the first line still held and keeps following it
+   while the app is there. Nothing watches memory pressure in the seconds
    between the two desktops; the kernel's OOM kill of the app's group is the
    backstop, and the end is reported as a memory end from the group's events
    once the new desktop takes it back. An app that ended while no desktop was

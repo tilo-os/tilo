@@ -357,10 +357,10 @@ impl Spawner {
         // more than a pipe holds never waits for the session, and a session
         // that has stopped reading never holds the app.
         if let Some(stdout) = child.stdout.take() {
-            output.relay_stdout(stdout);
+            output.keep_stdout(stdout);
         }
         if let Some(stderr) = child.stderr.take() {
-            output.relay_stderr(stderr);
+            output.keep_stderr(stderr);
         }
         let id = self.next;
         self.next = self.next.wrapping_add(1);
@@ -663,9 +663,11 @@ impl Spawner {
         app.kept = Some(Arc::clone(&kept));
         let cgroup = app.cgroup_dir();
         running(&self.running).insert(id, app);
-        // What the app writes went to the run that started it, through its launcher; that run's
-        // log is gone, and nothing reattaches it, so it is no longer recorded.
-        tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, keeper, pid = ?description.app_pid, "adopted; its output is no longer recorded");
+        // What the app wrote reached the desktop that started it; from here it is read from the
+        // keeper's bounded file, from its start, and followed while the app has windows.
+        let output = Arc::new(AppOutput::new(launch.app.clone(), None));
+        output.follow(dir);
+        tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, keeper, pid = ?description.app_pid, "adopted; what it wrote is read from its keeper's directory");
         let windows = description.windows;
         let (events, wake, still_running, ends) = (
             self.events.0.clone(),
@@ -678,6 +680,10 @@ impl Spawner {
             .name(format!("kept-{app}"))
             .spawn(move || {
                 let heard = kept.listen(&control, inbox);
+                // The keeper has said how the app ended: what it wrote last is in the file it
+                // kept, and the readers stop once they have read it.
+                output.finish();
+                let said = output.tail();
                 if kept.released() {
                     return;
                 }
@@ -699,7 +705,7 @@ impl Spawner {
                     app,
                     title,
                     end,
-                    said: crate::output::OutputTail::default(),
+                    said,
                 });
                 if let Some(wake) = wake {
                     wake();

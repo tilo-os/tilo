@@ -158,10 +158,10 @@ impl ConnectorHost {
             None,
         ));
         if let Some(stdout) = child.stdout.take() {
-            output.relay_stdout(stdout);
+            output.keep_stdout(stdout);
         }
         if let Some(stderr) = child.stderr.take() {
-            output.relay_stderr(stderr);
+            output.keep_stderr(stderr);
         }
         // The connector's socket reaches it as a window's does: the launcher hands it into the
         // sandbox as the connector's own service.

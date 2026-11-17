@@ -55,6 +55,7 @@ mod dmabuf;
 mod fractional;
 mod idle_inhibit;
 mod keyboard_shortcuts_inhibit;
+pub mod output;
 mod outputs;
 mod pings;
 mod pointer_constraints;
@@ -882,14 +883,15 @@ impl Data {
             (None, true) => child::X11::Missing,
             (None, false) => child::X11::Unchanged,
         };
-        let app = match child::App::spawn(&self.options.command, &self.socket, x11) {
-            Ok(app) => app,
-            Err(error) => {
-                tracing::warn!(%error, "the app could not be started");
-                self.app_ended(End::Exited { code: 127 });
-                return;
-            }
-        };
+        let app =
+            match child::App::spawn(&self.options.command, &self.socket, x11, &self.options.dir) {
+                Ok(app) => app,
+                Err(error) => {
+                    tracing::warn!(%error, "the app could not be started");
+                    self.app_ended(End::Exited { code: 127 });
+                    return;
+                }
+            };
         match app
             .pidfd
             .try_clone()

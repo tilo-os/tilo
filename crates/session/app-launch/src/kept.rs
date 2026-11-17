@@ -21,7 +21,10 @@
 //! - **Adoption.** The run that follows a restart describes each keeper again, checks that the
 //!   app's process is the one the keeper started (pid and start time against `/proc`), and takes
 //!   the launch back into its spawner: tiers, the memory watch, the end report and ending it at
-//!   logout work as for a launch it started. Nobody watches memory pressure in the seconds between
+//!   logout work as for a launch it started, and what the app wrote goes on being kept: the
+//!   keeper holds the newest [`tilo_app_keeper::output::BYTES`] of each stream in its directory,
+//!   and the desktop reads it from the first line still held. Nobody watches memory pressure in
+//!   the seconds between
 //!   runs; the kernel's group OOM kill is the backstop, and its cause is read from the cgroup's
 //!   events when the end is reported. An app that ended while no desktop was there is reported from
 //!   the keeper's `ended` record. Any other start finds only leftovers: their apps are ended and
@@ -853,14 +856,17 @@ mod tests {
 
     impl Rig {
         fn new() -> Self {
+            Self::with_app(&["/bin/sh", "-c", "exec sleep 1000"])
+        }
+
+        /// A rig whose app is `command`: its program, then its arguments.
+        fn with_app(command: &[&str]) -> Self {
             let dir = tempfile::tempdir().expect("a directory");
             testing::keeper_program(&dir.path().join("keeper"), "kept::tests::keeper_process")
                 .expect("the keeper");
-            testing::launcher_program(
-                &dir.path().join("launcher"),
-                &["/bin/sh".into(), "-c".into(), "exec sleep 1000".into()],
-            )
-            .expect("the launcher");
+            let command: Vec<String> = command.iter().map(|arg| (*arg).to_owned()).collect();
+            testing::launcher_program(&dir.path().join("launcher"), &command)
+                .expect("the launcher");
             Self { dir }
         }
 
@@ -997,7 +1003,7 @@ mod tests {
             let (pid, at) = rig.start(&mut first);
             first.end_running(Teardown::InPlaceRestart);
             drop(first);
-            assert!(running(pid, at), "the app outlives the run that started it");
+            assert!(running(pid, at), "the app outlives the desktop that started it");
 
             let mut second = rig.spawned();
             let adopted = second.adopt_kept();
@@ -1265,5 +1271,71 @@ mod tests {
             drop(first);
             tilo_test_env::exited("the kept app its session no longer runs", pid);
         }
+    }
+
+    /// An app that prints on its standard error as it starts and when it is signalled, so what it
+    /// wrote before, during and after a restart can be told apart.
+    const PRINTS: &str = "echo before >&2; trap 'echo during >&2' USR1; \
+                          trap 'echo after >&2' USR2; while :; do sleep 0.05; done";
+
+    /// Whether the keeper's file for `stream` holds `text`: the app wrote it, and the keeper read
+    /// it.
+    fn kept_says(dir: &Path, stream: &str, text: &str) -> bool {
+        std::fs::read(tilo_app_keeper::output::path(dir, stream)).is_ok_and(|bytes| {
+            bytes
+                .windows(text.len())
+                .any(|window| window == text.as_bytes())
+        })
+    }
+
+    /// Wait until the keeper's file for `stream` holds `text`: the app wrote it and the keeper
+    /// read it, whatever a desktop has read yet.
+    fn until_kept(dir: &Path, stream: &str, text: &str) {
+        let started = Instant::now();
+        while !kept_says(dir, stream, text) {
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the keeper never kept {text:?}"
+            );
+            std::thread::park_timeout(Duration::from_millis(10));
+        }
+    }
+
+    /// What a kept app wrote before, during and after an in-place restart is what the session
+    /// that follows keeps, in the order it wrote it, up to its end.
+    #[test]
+    fn what_a_kept_app_wrote_reaches_the_session_that_follows_it() {
+        let rig = Rig::with_app(&["/bin/sh", "-c", PRINTS]);
+        let mut first = rig.spawned();
+        let (pid, at) = rig.start(&mut first);
+        let dir = dirs(&rig.root())
+            .into_iter()
+            .next()
+            .expect("the keeper's directory");
+        until_kept(&dir, "stderr", "before");
+        first.end_running(Teardown::InPlaceRestart);
+        drop(first);
+        assert!(
+            running(pid, at),
+            "the app outlives the desktop that started it"
+        );
+
+        // While no desktop is there, the app prints, and the keeper keeps it.
+        signal(pid, libc::SIGUSR1);
+        until_kept(&dir, "stderr", "during");
+
+        let mut second = rig.spawned();
+        assert_eq!(second.adopt_kept().len(), 1, "the kept app is taken back");
+        signal(pid, libc::SIGUSR2);
+        until_kept(&dir, "stderr", "after");
+
+        kill(pid);
+        let ended = events(&second, 1);
+        assert_eq!(
+            ended.first().expect("its end").said.stderr,
+            ["before", "during", "after"],
+            "the session that follows keeps what the app wrote around the restart, in order"
+        );
+        assert!(dirs(&rig.root()).is_empty(), "its directory goes with it");
     }
 }
