@@ -1,5 +1,5 @@
 //! Shared assertions for [`SearchProvider`] implementations. Every app provider owes the
-//! shell the same promise: a record that entered the catalogue last is still found, and
+//! shell the same promise: a resource that entered the catalogue last is still found, and
 //! finding it costs work proportional to the matches rather than to the corpus.
 
 use super::{SearchProvider, SearchResult};
@@ -39,9 +39,9 @@ impl Iterator for Corpus {
         self.next += 1;
         let is_target = index + 1 == self.len;
         let text = if is_target {
-            format!("ordinary record {index} {LATE_HIT_NEEDLE}")
+            format!("ordinary resource {index} {LATE_HIT_NEEDLE}")
         } else {
-            format!("ordinary record {index}")
+            format!("ordinary resource {index}")
         };
         Some(CorpusRow {
             index,
@@ -58,8 +58,8 @@ impl Iterator for Corpus {
 
 impl ExactSizeIterator for Corpus {}
 
-/// Build a provider over `n` records with `rows_fn`, then assert that a search for
-/// [`LATE_HIT_NEEDLE`] returns the last record and nothing else, inspecting at most a few
+/// Build a provider over `n` resources with `rows_fn`, then assert that a search for
+/// [`LATE_HIT_NEEDLE`] returns the last resource and nothing else, inspecting at most a few
 /// dozen candidates across all pages. The provider and the hit are handed back so the
 /// caller can check app-specific behaviour, such as resolving the hit's action address to
 /// a resource.
@@ -84,7 +84,7 @@ where
         results.extend(page.results);
         assert!(
             inspected <= MAX_INSPECTED && page_number <= MAX_INSPECTED,
-            "{}: finding one record among {n} took {page_number} pages inspecting \
+            "{}: finding one resource among {n} took {page_number} pages inspecting \
              {inspected} candidates; search work must follow the matches, not the corpus",
             provider.name()
         );
@@ -96,7 +96,7 @@ where
     assert_eq!(
         results.len(),
         1,
-        "{}: exactly the last of {n} records contains the needle, found {:?}",
+        "{}: exactly the last of {n} resources contains the needle, found {:?}",
         provider.name(),
         results.iter().map(|hit| &hit.title).collect::<Vec<_>>()
     );
@@ -130,9 +130,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_late_hit_corpus_puts_the_needle_only_in_the_last_record_a_catalogue_finds;
+        fn the_late_hit_corpus_puts_the_needle_only_in_the_last_resource_a_catalogue_finds;
 
-        phase a_catalogue_backed_provider_finds_the_last_record;
+        phase a_catalogue_backed_provider_finds_the_last_resource;
         {
             let (catalog, hit) = assert_late_hit_reachable(|corpus| catalogue(corpus, ""), 3_000);
             assert_eq!(hit.title, "Document 2999");
@@ -191,7 +191,7 @@ mod tests {
             assert_late_hit_reachable(|corpus| catalogue(corpus, &needle), 20);
         });
         assert!(
-            message.contains("exactly the last of 20 records"),
+            message.contains("exactly the last of 20 resources"),
             "case matches ordinary rows: {message}"
         );
 
