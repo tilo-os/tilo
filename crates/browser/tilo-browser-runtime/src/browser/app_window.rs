@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+use ui::application::{HostContext, HostContextInputs, LaunchTarget};
 use ui::application_view::InstanceViewStore;
 use ui::permissions::{MemberId, SharedPermissions};
 use ui::resource::{ResourceOwners, ResourceStore};
@@ -123,10 +123,16 @@ impl AppPage {
             )
             .map_err(error)?,
         );
-        let restore = views
-            .load(config.instance)
-            .map_err(error)?
-            .map_or(RestoreInput::None, RestoreInput::Local);
+        // The view this app's page saved on this record, never one another app's page left:
+        // every page showing one app alone is the same window id.
+        let restore = crate::app_page::saved_view(
+            &views,
+            config.instance,
+            definition,
+            &target,
+            named_new.as_ref(),
+        )
+        .map_err(error)?;
         let inputs = HostContextInputs {
             records: record,
             views,

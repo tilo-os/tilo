@@ -996,12 +996,15 @@ impl Tiles {
         if !own && (named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew)) {
             self.may_start_record(tab)?;
         }
-        let restore = self
-            .inputs
-            .views
-            .load(tab.id)
-            .map_err(|error| error.to_string())?
-            .map_or(RestoreInput::None, RestoreInput::Local);
+        // The view this window saved, never one a closed window left under the same id.
+        let restore = crate::app_page::saved_view(
+            &self.inputs.views,
+            tab.id,
+            definition,
+            &target,
+            named_new.as_ref(),
+        )
+        .map_err(|error| error.to_string())?;
         let component = self
             .instantiate(
                 definition,
