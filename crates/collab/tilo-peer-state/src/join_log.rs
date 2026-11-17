@@ -544,16 +544,16 @@ impl JoinLog {
         let signed_invitation = match request.inviter_name {
             _ if makes_administrator => crate::join::issue_administrator_invitation(
                 grant.clone(),
-                // The person who asked, under the name they give, or their
-                // name's stand-in: whom it is from is what an admitting
-                // member checks. The host asking for itself is the issuer
-                // already, and is nobody's name.
+                // The person who asked, under the name they give: whom it is
+                // from is what an admitting member checks, and that is the
+                // key, never a name. Where no name is known they are signed
+                // unnamed, and a surface showing the invitation names them
+                // its own way, from their profile or in plain words. A key of
+                // theirs is no name of theirs to write here. The issuer
+                // asking for itself is nobody's name.
                 (administrator.user_public_key != grant.issuer.user_public_key).then(|| Inviter {
                     user_public_key: administrator.user_public_key,
-                    name: request
-                        .inviter_name
-                        .clone()
-                        .unwrap_or_else(|| hex::encode(&administrator.user_public_key[..4])),
+                    name: request.inviter_name.clone().unwrap_or_default(),
                 }),
                 key,
             )?,

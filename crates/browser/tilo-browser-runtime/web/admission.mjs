@@ -72,7 +72,7 @@ async function viaInvitation({origin, invitation, id = null, secrets, runtime, d
   if (!runtime.admittedAsAsked(id ?? undefined, offer.workspace ?? undefined)) {
     throw new AdmissionError('mismatch', 'This invitation is for another workspace than the link names');
   }
-  if (!await deps.confirmInvitation(offer)) throw new AdmissionError('declined', 'You did not join');
+  if (!await deps.confirmInvitation(offer, origin)) throw new AdmissionError('declined', 'You did not join');
   return ready(await deps.joinWorkspace({
     origin, invitation, admissionToken: secrets.token,
     onProgress: event => onProgress(event),

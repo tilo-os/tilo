@@ -30,7 +30,7 @@ import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
-import {pickImageFile, squarePhoto} from './profile-photos.mjs';
+import {fetchPersonProfile, pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
@@ -147,6 +147,27 @@ const element = (tag, className, text) => {
   if (text !== undefined) node.textContent = text;
   return node;
 };
+
+/** The name the invitation card shows for who sent it: the one the workspace
+ * signed into the invitation, which is its name for them; else the one their
+ * profile keeps, which the machine serving the workspace at `origin` answers
+ * by their key, as the desktop names someone not here to say theirs; else
+ * plain words. A key of theirs is never a name: it says what it is, not who
+ * they are. */
+async function inviterName(inviter, origin) {
+  const named = typeof inviter?.name === 'string' ? inviter.name.trim() : '';
+  if (named) return named;
+  const user = inviter?.userPublicKey;
+  if (typeof user !== 'string') return '';
+  const profile = typeof origin === 'string' && origin
+    ? await fetchPersonProfile(origin, user).catch(error => {
+      console.warn('the inviter’s profile was not read', error?.message ?? error);
+      return null;
+    })
+    : null;
+  const kept = typeof profile?.display_name === 'string' ? profile.display_name.trim() : '';
+  return kept || 'Someone';
+}
 
 /** What an invitation offers, before the person joins: the workspace it is
  * for, who it is from and how many people are in it, and what the role lets
@@ -1140,12 +1161,17 @@ export async function startEntryPage({mode}) {
     invite: ({peer, entry}) => peer?.workspace && !embed ? {base: entry.base, origin: peer.origin,
       workspace: peer.workspace, name: displayName ?? '', user: peer.userPublicKey ?? '',
       host: hex(peer.host?.hostCert?.user_public_key ?? [])} : null,
-    confirmInvitation: offer => {
+    confirmInvitation: (offer, origin) => {
       workspaceName = offer.workspaceName || workspaceName;
       invitedTo = offer.workspaceName || null;
       const inviter = offer.inviter?.userPublicKey;
-      return invitationCard(offer,
-        typeof inviter === 'string' ? runtime?.presenceColor?.(inviter) : undefined);
+      const colour = typeof inviter === 'string' ? runtime?.presenceColor?.(inviter) : undefined;
+      // The workspace signs the name it knows for who asked. When it knows
+      // none, the card waits for the name their profile keeps.
+      const signed = typeof offer.inviter?.name === 'string' ? offer.inviter.name.trim() : '';
+      if (!offer.inviter || signed) return invitationCard(offer, colour);
+      return inviterName(offer.inviter, origin).then(name =>
+        invitationCard({...offer, inviter: {...offer.inviter, name}}, colour));
     },
     joinWorkspace: async options => {
       const identity = await browserPerson();

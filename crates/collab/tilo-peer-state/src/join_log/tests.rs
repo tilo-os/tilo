@@ -2,7 +2,7 @@ use super::*;
 use crate::admission_tests::seeded;
 use crate::join::{JoinChallengeRequest, JoinCompleteRequest, sign_join_proof};
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, RevocationList, sign_device_cert};
 
 fn ns(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
@@ -281,7 +281,8 @@ fn joined(
 #[test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the governed workspace reads the peer through each step of the decision"
+    clippy::too_many_lines,
+    reason = "the governed workspace reads the peer through each step of the decision, an admission and the invitation a key of the same person asks for"
 )]
 fn a_key_made_to_act_for_a_person_never_names_them() {
     let (peer, authority_key, _, _, now) = seeded();
@@ -366,6 +367,41 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
         "Ada",
         "a key of hers names its key, never the person it acts for"
     );
+    // An invitation her key asks for is signed as her, with no name rather
+    // than one cut from her key: whoever opens it reads a person, and the
+    // page names them its own way.
+    let asked = log
+        .issue_as(
+            &again,
+            &backend,
+            IssueInvitationRequest {
+                request_id: [80; 32],
+                role: Role::Editor,
+                recipient_user_public_key: None,
+                invitee_name: None,
+                expires_at_ns: now_ns.saturating_add(10_000_000_000),
+                inviter_name: None,
+            },
+            true,
+            Vec::new(),
+            Signer {
+                key: &authority_key,
+                nonce: [81; 16],
+            },
+            now_ns,
+        )
+        .unwrap();
+    let join = crate::join::decode_and_verify_invitation(
+        &asked.signed_invitation,
+        None,
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    assert!(join.administrator(), "an owner link makes an owner");
+    let from = join.inviter().expect("the invitation names who asked");
+    assert_eq!(from.user_public_key, root.verifying_key().to_bytes());
+    assert_eq!(from.name, "", "a key is no name of its person");
 }
 
 #[test]

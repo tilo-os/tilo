@@ -707,7 +707,8 @@ const fn listed_at_once(removal: u8) -> WaitListSecrets {
 
 /// An invitation says who it is from: one asked without a name (from an API
 /// key or the command line) carries the name the workspace shows for the
-/// person who asked, and one that names its inviter keeps that name.
+/// person who asked, or no name where the workspace has none to show; one
+/// that names its inviter keeps that name.
 #[tokio::test]
 async fn an_invitation_asked_without_a_name_names_the_inviter_as_the_workspace_shows_them() {
     let dir = tempfile::tempdir().unwrap();

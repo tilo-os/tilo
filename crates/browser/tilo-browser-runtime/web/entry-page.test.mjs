@@ -363,6 +363,46 @@ test('the invitation a link opens says who invited them, to what and as what, be
   assert.equal(cards().length, 0, 'either answer closes the card');
 });
 
+test('an invitation from someone the workspace has not named reads their profile, else plain words, never a key', async () => {
+  const cards = () => document.body.children.filter(form => form.dataset.card === 'invite');
+  // What a node reads as: its own words, or its children's in order.
+  const text = node => typeof node === 'string' ? node
+    : node.textContent ?? node.children.map(text).join('');
+  const asked = [];
+  globalThis.fetch = async url => {
+    asked.push(String(url));
+    return {ok: true, json: async () => ({profile: {user_public_key: USER, display_name: 'Asli'}, issued_at_ms: 1})};
+  };
+  const close = card => card.children.at(-1).children[1].listeners.get('click')();
+  let profiled;
+  let unnamed;
+  const {failure} = await fixture({boot: async ({deps}, page) => {
+    // The workspace signed no name for who asked: the card asks the machine
+    // serving it for the name their profile keeps, as the desktop names
+    // someone not here.
+    const first = deps.confirmInvitation({workspaceName: 'Lounge', role: 'viewer', members: 2,
+      inviter: {name: '', userPublicKey: USER}}, ORIGIN);
+    await tick();
+    profiled = text(cards()[0].children[0].children[0]);
+    close(cards()[0]);
+    await first;
+    // A machine keeping no profile for them: the card says a person, in
+    // plain words. Who asked is their key, which is never read as a name.
+    globalThis.fetch = async () => ({ok: false});
+    const second = deps.confirmInvitation({workspaceName: 'Lounge', role: 'viewer', members: 2,
+      inviter: {name: '', userPublicKey: USER}}, ORIGIN);
+    await tick();
+    unnamed = text(cards()[0].children[0].children[0]);
+    close(cards()[0]);
+    await second;
+    return page;
+  }});
+  assert.equal(failure, null);
+  assert.equal(profiled, 'AAsli invited you to', 'their profile names them, their initial in their colour');
+  assert.equal(unnamed, 'SSomeone invited you to', 'plain words name them where no profile keeps a name');
+  assert.equal(new URL(asked[0]).pathname, '/peer/v1/profile/fetch', asked.join());
+});
+
 test('a wait-list invitation is the short link its site keeps, not the invitation’s text', async () => {
   const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1_000};
   const {calls, diagnostics} = await fixture({member: {

@@ -46,7 +46,9 @@ pub struct Workspace {
 pub struct Inviter {
     /// Their user root.
     pub user_public_key: [u8; 32],
-    /// The name they gave.
+    /// The name the workspace knows them by, empty when it knows none: a
+    /// surface showing the invitation names them their own way then, from
+    /// their profile or in plain words, never by a key.
     pub name: String,
 }
 
