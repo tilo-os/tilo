@@ -270,9 +270,12 @@ where
     if let Some(subscribe) = subscribe {
         client = client.with_subscriber(subscribe);
     }
+    // The session's clock is made with the first time of the pace its driver
+    // is polled at: one clock for both, and no poll earlier than this.
+    let mut pace = crate::pace::Pace::new();
     let (session, driver) = n0_future::time::timeout(
         SETUP_BUDGET,
-        client.connect_lite(moq_net::time::Instant::now(), transport.clone()),
+        client.connect_lite(pace.now(), transport.clone()),
     )
     .await
     .map_err(|_| AdmissionError::Unavailable)?
@@ -293,7 +296,7 @@ where
             std::future::pending::<()>().await;
         };
         let running = async {
-            let _ = moq_net::time::run(driver).await;
+            let _ = pace.drive(driver).await;
         };
         n0_future::future::or(running, revoked).await;
     });
@@ -392,7 +395,7 @@ impl OriginTask {
     pub fn produce(config: moq_net::origin::Config) -> (moq_net::origin::Producer, Self) {
         let (producer, driver) = moq_net::origin::Producer::new(config);
         let task = n0_future::task::spawn(async move {
-            let _ = moq_net::time::run(driver).await;
+            let _ = crate::pace::Pace::new().drive(driver).await;
         });
         (producer, Self(Some(task)))
     }
