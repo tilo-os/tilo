@@ -1460,14 +1460,14 @@ impl Workspaces {
         Ok(summary)
     }
 
-    /// Stop governing and serving `workspace`: its workspace admits nobody from
+    /// Let go of and stop serving `workspace`: its workspace admits nobody from
     /// now on, which ends its sessions here, and the host leaves it closed
     /// when it opens again. Its files stay on disk. A device releases a
     /// workspace after moving it to another host, whose hints its members follow.
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, or the release could not be recorded
+    /// The workspace is not held here, or the release could not be recorded
     /// or its access narrowed.
     pub async fn release(&self, workspace: &str) -> Result<(), String> {
         let _releasing = self.inner.releasing.lock().await;
@@ -1478,7 +1478,7 @@ impl Workspaces {
             .await
             .get(workspace)
             .cloned()
-            .ok_or("this host does not govern that workspace")?;
+            .ok_or("this host does not hold that workspace")?;
         let mut governed = governed.lock().await;
         // Recorded first: a host stopped halfway keeps it released.
         let marker = governed.path.with_extension(RELEASED);
@@ -1520,7 +1520,6 @@ impl Workspaces {
             .access
             .replace(
                 workspace_id,
-                true,
                 GovernedAccess {
                     member_devices: Vec::new(),
                     member_user_roots: Vec::new(),
@@ -1902,11 +1901,11 @@ impl Workspaces {
             .await
             .get(workspace)
             .cloned()
-            .ok_or_else(|| CollaborationError::new("this server does not govern that workspace"))
+            .ok_or_else(|| CollaborationError::new("this server does not hold that workspace"))
     }
 
-    /// Pin the workspace, admitting only its governed members, and
-    /// follow its members' writes: create the records they start and keep the
+    /// Hold the workspace, admitting only the members its governance names,
+    /// and follow its members' writes: create the records they start and keep the
     /// governor's copy of the others current, as calls bind to chat records.
     ///
     /// Members' changes stay retained as signed tails: members write directly,
@@ -1950,9 +1949,8 @@ impl Workspaces {
             host.access.state_root().to_path_buf(),
             host.access.shell_payloads(),
             workspace_id,
-            true,
             crate::workspace_access::AdmissionMode::Governed,
-            crate::peer::MAX_AUTOBOUND_WORKSPACES,
+            crate::peer::MAX_HELD_WORKSPACES,
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -2778,7 +2776,7 @@ impl Workspaces {
         );
         let dropped = host
             .access
-            .replace(workspace.workspace_id(), true, access)
+            .replace(workspace.workspace_id(), access)
             .await
             .map_err(|error| error.to_string())?;
         crate::timing::event("workspace.settle.access", accessing, 0);
@@ -2813,7 +2811,7 @@ impl Workspaces {
         let settling = crate::timing::start();
         let device_access = workspace.peer().governance().access_of(&members, now)?;
         host.access
-            .replace_access(workspace.workspace_id(), true, device_access)
+            .replace_access(workspace.workspace_id(), device_access)
             .await
             .map_err(|error| error.to_string())?;
         crate::timing::event("workspace.settle.device_access", settling, 0);

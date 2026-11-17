@@ -34,11 +34,8 @@ async fn subscribed(
     client
         .send(Envelope::Subscribe { workspace_id: WS })
         .unwrap();
-    let ready = tilo_test_env::within("ready timeout", client.recv()).await;
-    assert!(
-        matches!(ready, Some(Envelope::Ready { .. })),
-        "got {ready:?}"
-    );
+    // A held workspace sends its own state before it is ready.
+    crate::common::next(&client, |env| matches!(env, Envelope::Ready { .. })).await;
     client
 }
 
@@ -65,7 +62,7 @@ async fn a_piece_reaches_only_the_device_it_is_addressed_to() {
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("desktop", DeviceCapabilities::member());
     let c = user.enrol("phone", DeviceCapabilities::member());
-    let members = [a.device_pubkey(), b.device_pubkey(), c.device_pubkey()];
+    let members = [&a.cert, &b.cert, &c.cert];
     let server = Box::pin(spawn_server(&user, host, &[WS], &members)).await;
     let addr = server.server.node_addr();
     let a_client = subscribed(addr.clone(), &user, &a).await;
@@ -119,7 +116,7 @@ async fn a_burst_from_one_device_leaves_anothers_piece_a_way() {
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("desktop", DeviceCapabilities::member());
     let c = user.enrol("phone", DeviceCapabilities::member());
-    let members = [a.device_pubkey(), b.device_pubkey(), c.device_pubkey()];
+    let members = [&a.cert, &b.cert, &c.cert];
     let server = Box::pin(spawn_server(&user, host, &[WS], &members)).await;
     let addr = server.server.node_addr();
     let a_client = subscribed(addr.clone(), &user, &a).await;

@@ -252,7 +252,7 @@ impl WasmPeer {
                 let list = governed(self.workspaces_request(WorkspacesRequest::List).await?)?;
                 match list.iter().find(|held| held.workspace == id) {
                     Some(held) => workspace(held),
-                    None => return Err(js_error("the host does not govern this workspace")),
+                    None => return Err(js_error("the server does not hold this workspace")),
                 }
             }
             // Whether the workspace lets this page's person invite here: the question its

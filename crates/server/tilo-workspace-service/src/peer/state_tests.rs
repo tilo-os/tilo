@@ -74,7 +74,6 @@ impl Fixture {
     ) -> SessionCtx<'a> {
         SessionCtx {
             workspaces: &self.registry,
-            autobind: None,
             outbound,
             content: Box::leak(Box::default()),
             state_outbound,
@@ -1149,7 +1148,6 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
         let mut task = tokio::spawn(async move {
             let session = SessionCtx {
                 workspaces: &registry,
-                autobind: None,
                 outbound: &source.tx,
                 content: Box::leak(Box::default()),
                 state_outbound: None,

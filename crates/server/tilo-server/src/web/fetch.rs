@@ -213,10 +213,9 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Workspace> {
         .map(|(id, workspace)| (*id, workspace.clone()))
         .collect();
     let mut admitted = Vec::new();
-    let own_user = web.context.server.identity.user_public_key;
     for (id, workspace) in workspaces {
         let workspace = workspace.lock().await;
-        if workspace.admits_person(&user, &own_user) {
+        if workspace.admits_person(&user) {
             admitted.push(Workspace(id.as_uuid().as_u128()));
         }
     }

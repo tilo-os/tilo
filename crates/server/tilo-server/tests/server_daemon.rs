@@ -62,6 +62,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         )
         .await
         .unwrap();
+        crate::common::hold_workspace(&server, COEDIT_WORKSPACE, &[&a.cert]).await;
         let addr = server.node_addr();
         let a_key = a.device_pubkey();
         let a_client = ServerClient::connect(
@@ -75,10 +76,17 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .await
         .unwrap();
         let a_session = ServerCoeditSession::join(a_client, COEDIT_WORKSPACE, a_key).unwrap();
-        assert!(matches!(
-            tilo_test_env::within("a message on a_session", a_session.recv()).await,
-            Some(tilo_server::Inbound::Ready { pending: 0, .. })
-        ));
+        let ready = tilo_test_env::within("a message on a_session", async {
+            loop {
+                match a_session.recv().await {
+                    Some(tilo_server::Inbound::Ready { pending, .. }) => break pending,
+                    Some(_) => {}
+                    None => panic!("A's session ended before it was ready"),
+                }
+            }
+        })
+        .await;
+        assert_eq!(ready, 0);
         let metrics = server.handle().metrics;
         a_session
             .publish_checkpoint([7u8; 32], b"baseline-before-phone".to_vec())
@@ -94,8 +102,9 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .expect("server committed A's checkpoint");
 
         // B was not a workspace member when A published, so no per-device
-        // pending queue could have existed. Its first subscribe must use retained
-        // state instead.
+        // pending queue could have existed. It enters now, and its first
+        // subscribe must use retained state instead.
+        crate::common::hold_workspace(&server, COEDIT_WORKSPACE, &[&b.cert]).await;
         let b_client = ServerClient::connect(
             client_endpoint().await,
             addr,
@@ -111,23 +120,36 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
                 workspace_id: COEDIT_WORKSPACE,
             })
             .unwrap();
-        let received = tilo_test_env::within("a message on b_client", b_client.recv())
-            .await
-            .unwrap();
-        let Envelope::Delta { delta, .. } = received else {
-            panic!("expected retained checkpoint, got {received:?}");
-        };
+        // The workspace's own state comes first; the checkpoint it retained
+        // for B follows it.
+        tilo_test_env::within("B's replay of the retained checkpoint", async {
+            loop {
+                match b_client.recv().await {
+                    Some(Envelope::Delta { delta, .. }) => {
+                        if matches!(
+                            CoeditPayload::decode(&delta),
+                            Some(CoeditPayload::Checkpoint { body, .. })
+                                if body == b"baseline-before-phone"
+                        ) {
+                            break;
+                        }
+                    }
+                    Some(Envelope::Ready { .. }) => {
+                        panic!("B was ready without its retained checkpoint")
+                    }
+                    Some(_) => {}
+                    None => panic!("B's session ended before its replay"),
+                }
+            }
+        })
+        .await;
         assert!(matches!(
-            CoeditPayload::decode(&delta),
-            Some(CoeditPayload::Checkpoint { body, .. }) if body == b"baseline-before-phone"
-        ));
-        assert!(matches!(
-            tilo_test_env::within("a message on b_client", b_client.recv()).await,
-            Some(Envelope::Ready {
+            crate::common::next(&b_client, |env| matches!(env, Envelope::Ready { .. })).await,
+            Envelope::Ready {
                 workspace_id: COEDIT_WORKSPACE,
-                pending_deltas: 1,
-                documents_when_opened: false,
-            })
+                pending_deltas,
+                ..
+            } if pending_deltas >= 1
         ));
     }
     // Phase `home_host_remembers_authenticated_devices_for_offline_delivery`.
@@ -152,6 +174,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         )
         .await
         .unwrap();
+        crate::common::hold_workspace(&server, WORKSPACE, &[&a.cert, &b.cert]).await;
         let addr = server.node_addr();
         let a_client = ServerClient::connect(
             client_endpoint().await,
@@ -179,7 +202,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
                     workspace_id: WORKSPACE,
                 })
                 .unwrap();
-            let _ = tilo_test_env::within("a message on client", client.recv()).await;
+            crate::common::next(client, |env| matches!(env, Envelope::Ready { .. })).await;
         }
         drop(b_client);
         let pending_dir = state
@@ -210,21 +233,24 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             })
             .unwrap();
         assert!(matches!(
-        tilo_test_env::within("a message on b_again", b_again.recv()).await,
-        Some(Envelope::Delta { ref delta, .. }) if delta == b"offline-change"
-            ));
+            crate::common::next(&b_again, |env| matches!(
+                env,
+                Envelope::Delta { delta, .. } if delta == b"offline-change"
+            ))
+            .await,
+            Envelope::Delta { .. }
+        ));
         wait_for_ready_with_pending(&b_again, &server.handle().metrics).await;
 
         // Both devices the host enrolled are members of the workspace's one
         // record, so a restart admits them without any second list.
-        assert_eq!(
-            tilo_server::store::WorkspaceStore::open(state.path(), WORKSPACE, true)
-                .unwrap()
-                .load_membership()
-                .unwrap()
-                .len(),
-            2,
-            "both same-owner devices persist as members"
+        let members = tilo_server::store::WorkspaceStore::open(state.path(), WORKSPACE, true)
+            .unwrap()
+            .load_membership()
+            .unwrap();
+        assert!(
+            members.contains(&a.device_pubkey()) && members.contains(&b.device_pubkey()),
+            "both devices persist as members"
         );
     }
     // Phase `two_peers_fan_out_through_relay`.
@@ -238,7 +264,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             &user,
             server_dev,
             &[SECOND_WORKSPACE],
-            &[a.device_pubkey(), b.device_pubkey()],
+            &[&a.cert, &b.cert],
         ))
         .await;
         let server_addr = server.server.node_addr();
@@ -281,14 +307,12 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         // Drain the Ready acks so we don't confuse them for the delta
         // later.
         for cli in [&a_client, &b_client] {
-            let env = tilo_test_env::within("Ready timeout", cli.recv())
-                .await
-                .expect("Ready channel closed");
+            let env = crate::common::next(cli, |env| matches!(env, Envelope::Ready { .. })).await;
             match env {
                 Envelope::Ready {
                     workspace_id: SECOND_WORKSPACE,
                     pending_deltas: 0,
-                    documents_when_opened: false,
+                    ..
                 } => {}
                 other => panic!("expected Ready(42, 0), got {other:?}"),
             }
@@ -304,10 +328,14 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         };
         a_client.send(delta_env.clone()).unwrap();
 
-        let received = tilo_test_env::within("delta timeout", b_client.recv())
-            .await
-            .expect("delta channel closed");
-        match received {
+        match crate::common::next(&b_client, |env| {
+            matches!(
+                env,
+                Envelope::Delta { delta, .. } if *delta == payload
+            )
+        })
+        .await
+        {
             Envelope::Delta {
                 workspace_id,
                 delta,
@@ -371,7 +399,7 @@ async fn wait_for_ready_with_pending(
             Ok(Some(Envelope::Ready {
                 workspace_id: WORKSPACE,
                 pending_deltas,
-                documents_when_opened: false,
+                ..
             })) => {
                 assert!(pending_deltas >= 1);
                 break;

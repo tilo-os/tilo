@@ -25,10 +25,13 @@ use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,
 };
 
+use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_server::{
-    Envelope, ServerClient, ServerConfig, WorkspaceId,
+    Envelope, ServerClient, ServerConfig, TrustPolicy, WorkspaceId,
     daemon::{Server, ServerIdentity},
     service::{ServiceConfig, ServiceIdentity, WorkspaceService},
+    workspace_join::WorkspaceJoinClient,
+    workspaces::{IssueInvitationRequest, IssuedInvitation, Workspaces},
 };
 use tilo_server_protocol::WorkSetting;
 
@@ -95,7 +98,7 @@ pub async fn spawn_server(
     user: &TestUser,
     server_dev: TestDevice,
     workspaces: &[WorkspaceId],
-    members: &[[u8; 32]],
+    members: &[&DeviceCert],
 ) -> TestServer {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = tmp.path().to_path_buf();
@@ -127,7 +130,7 @@ pub async fn spawn_server_on(
     user: &TestUser,
     server_dev: TestDevice,
     workspaces: &[WorkspaceId],
-    members: &[[u8; 32]],
+    members: &[&DeviceCert],
 ) -> Server {
     Box::pin(spawn_server_with(
         state_root, user, server_dev, workspaces, members, None,
@@ -141,7 +144,7 @@ pub async fn spawn_server_serving_apps(
     user: &TestUser,
     server_dev: TestDevice,
     workspaces: &[WorkspaceId],
-    members: &[[u8; 32]],
+    members: &[&DeviceCert],
     server: std::sync::Arc<dyn tilo_server::AppActionServer>,
 ) -> TestServer {
     let tmp = tempfile::tempdir().unwrap();
@@ -167,7 +170,7 @@ async fn spawn_server_with(
     user: &TestUser,
     server_dev: TestDevice,
     workspaces: &[WorkspaceId],
-    members: &[[u8; 32]],
+    members: &[&DeviceCert],
     server: Option<std::sync::Arc<dyn tilo_server::AppActionServer>>,
 ) -> Server {
     if std::env::var_os("TILO_SERVER_CORRELATED_DIAGNOSTICS").is_some() {
@@ -192,7 +195,7 @@ async fn spawn_server_with(
     cfg.services.app_serving = server.is_some();
     let server = start_server_serving(cfg, identity, server).await.unwrap();
     for id in workspaces {
-        admit_members(&server, *id, members, state_root).await;
+        hold_workspace(&server, *id, members).await;
     }
     server
 }
@@ -238,26 +241,128 @@ pub fn start_server_serving(
     })
 }
 
-/// Make `members` the workspace's member devices, as the workspace's governor does:
-/// the devices are all the server owner's.
-pub async fn admit_members(
-    server: &Server,
-    workspace: WorkspaceId,
-    members: &[[u8; 32]],
-    state_root: &std::path::Path,
-) {
-    server
-        .replace_governed_workspace_access(
+/// The server's person makes `workspace` on their server, and it holds it;
+/// `members`, devices of theirs, enter it. These tests enter a workspace the
+/// way production does — a server holds what is made on it, and a member
+/// joins — never by handing the server a member list from outside.
+pub async fn hold_workspace(server: &Server, workspace: WorkspaceId, members: &[&DeviceCert]) {
+    let workspaces = server.workspaces().expect("the server holds workspaces");
+    let workspace = workspace.to_string();
+    if workspaces.summary(&workspace).await.is_err() {
+        workspaces
+            .create_workspace("Workspace", Some(&workspace))
+            .await
+            .expect("the person's server makes the workspace");
+    }
+    for member in members {
+        workspaces
+            .enter(&workspace, member)
+            .await
+            .expect("a device of the person enters the workspace");
+    }
+}
+
+/// [`spawn_server`] on a server whose handshake admits `others`' people too,
+/// as a hosted one's operator allow-list does: its workspaces are still made
+/// by its own person, and others join them as members.
+pub async fn spawn_server_admitting(
+    user: &TestUser,
+    server_dev: &TestDevice,
+    others: &[&TestUser],
+    workspaces: &[WorkspaceId],
+    members: &[&DeviceCert],
+) -> TestServer {
+    Box::pin(spawn_server_admitting_with(
+        user, server_dev, others, workspaces, members, None,
+    ))
+    .await
+}
+
+/// [`spawn_server_admitting`] for a server that serves apps through `server`.
+pub async fn spawn_server_admitting_with(
+    user: &TestUser,
+    server_dev: &TestDevice,
+    others: &[&TestUser],
+    workspaces: &[WorkspaceId],
+    members: &[&DeviceCert],
+    server: Option<std::sync::Arc<dyn tilo_server::AppActionServer>>,
+) -> TestServer {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = tmp.path().to_path_buf();
+    let mut users = vec![hex::encode(user.user_pk)];
+    users.extend(others.iter().map(|other| hex::encode(other.user_pk)));
+    let cfg = ServerConfig {
+        state_root: state_root.clone(),
+        trust_policy: TrustPolicy::AllowList { users },
+        ..Default::default()
+    };
+    let identity = ServerIdentity {
+        user_public_key: user.user_pk,
+        device_signing_key: server_dev.sk.clone(),
+        device_cert: server_dev.cert.clone(),
+        revocations: RevocationList::new(),
+    };
+    let server = start_server_serving(cfg, identity, server).await.unwrap();
+    for id in workspaces {
+        hold_workspace(&server, *id, members).await;
+    }
+    TestServer {
+        server,
+        state_root,
+        tmp,
+    }
+}
+
+/// An invitation to `workspace` for `recipient`'s person, issued by `issuer`.
+pub async fn invitation(
+    workspaces: &Workspaces,
+    issuer: &TestDevice,
+    workspace: &str,
+    role: Role,
+    recipient: &TestDevice,
+) -> IssuedInvitation {
+    let mut request_id = [0; 32];
+    getrandom::fill(&mut request_id).unwrap();
+    workspaces
+        .issue(
             workspace,
-            true,
-            tilo_peer_state::GovernedAccess {
-                member_devices: members.to_vec(),
-                member_user_roots: vec![server.own_user_public_key()],
+            &issuer.cert,
+            IssueInvitationRequest {
+                request_id,
+                role,
+                recipient_user_public_key: Some(recipient.cert.user_public_key),
+                invitee_name: None,
+                inviter_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns()
+                    .checked_add(600_000_000_000)
+                    .unwrap(),
             },
-            state_root.to_path_buf(),
         )
         .await
-        .unwrap();
+        .unwrap()
+}
+
+/// `device` redeems `issued` through the address the invitation carries.
+pub async fn redeem(device: &TestDevice, issued: &IssuedInvitation) -> Result<(), String> {
+    let verified = decode_and_verify_invitation(
+        &issued.signed_invitation,
+        None,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )?;
+    let mut request_id = [0; 32];
+    getrandom::fill(&mut request_id).unwrap();
+    WorkspaceJoinClient::new(device_endpoint(device).await)
+        .redeem_hint(
+            &verified.grant().transport[0],
+            issued.signed_invitation.clone(),
+            device.cert.clone(),
+            &device.sk,
+            request_id,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 /// Bind a plain iroh endpoint the tests can use to dial a relay. It carries no relay and no
@@ -423,6 +528,16 @@ pub async fn connect(
         .unwrap();
     next(&client, |env| matches!(env, Envelope::Ready { .. })).await;
     client
+}
+
+/// Whether the queued deltas in `dir` include one carrying `payload`.
+pub fn queued_carries(dir: &std::path::Path, payload: &[u8]) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            std::fs::read(entry.path())
+                .is_ok_and(|bytes| bytes.windows(payload.len()).any(|w| w == payload))
+        })
+    })
 }
 
 /// How many queued deltas a server's state root holds in `dir`.

@@ -27,7 +27,7 @@ use crate::config::ServerConfig;
 const PEOPLE_KEYS_ENV: &str = "TILO_PEOPLE_KEYS";
 use crate::handshake::{EndpointTrust, LiveIdentity};
 use crate::metrics::Metrics;
-use crate::peer::{WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace};
+use crate::peer::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
 use crate::service::ServerProtocol;
 use crate::transport::{
@@ -653,7 +653,7 @@ impl Server {
             mesh_profile: mesh_profile.clone(),
             full_replica: full_replica.clone(),
             home_peer_bundle: cfg.home_peer_bundle.clone(),
-            autobind: handler.autobind.clone(),
+            decommissioned: handler.decommissioned.clone(),
             agents: handler.agents.clone(),
             environments: handler.environments.clone(),
         };
@@ -909,36 +909,6 @@ impl Server {
     #[must_use]
     pub fn bound_sockets(&self) -> Vec<std::net::SocketAddr> {
         self.endpoint.bound_sockets()
-    }
-
-    /// Atomically replace the native governor's exact member devices and the
-    /// user roots those devices need at the server handshake. This is a
-    /// trusted, server-local reconciliation API: roots open only the global
-    /// handshake, while the exact device set continues to check this workspace.
-    ///
-    /// Removals narrow live workspace access before disk I/O and additions become
-    /// reachable only after one crash-safe access record commits. The global
-    /// handshake allowlist is then rebuilt from configured pins and every
-    /// workspace's projection, so removing one workspace cannot revoke another workspace or
-    /// widen either workspace to sibling devices under the same user root.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ServerError::GovernedAccess`] when called for an `allow_any`
-    /// server or with a state root other than the server's configured root, and
-    /// [`ServerError::Store`] when workspace initialization or durable
-    /// replacement fails.
-    pub async fn replace_governed_workspace_access(
-        &self,
-        workspace_id: WorkspaceId,
-        pinned: bool,
-        access: tilo_peer_state::GovernedAccess,
-        state_root: PathBuf,
-    ) -> Result<(), ServerError> {
-        Ok(self
-            .sessions
-            .replace_governed_workspace_access(workspace_id, pinned, access, state_root)
-            .await?)
     }
 
     /// Where the app action server hands a frame to a device of one of its workspaces after
@@ -1332,7 +1302,9 @@ struct DiscoveryProtocol {
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     full_replica: ReplicaProof,
     home_peer_bundle: PathBuf,
-    autobind: Option<WorkspaceAutobind>,
+    /// The marker of a home peer retired in its state root, when this server is
+    /// one: it serves nothing from then on.
+    decommissioned: Option<PathBuf>,
     agents: crate::peer::AgentRegistry,
     environments: crate::environment::EnvironmentRegistry,
 }
@@ -1528,9 +1500,9 @@ impl ProtocolHandler for DiscoveryProtocol {
     )]
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         if self
-            .autobind
+            .decommissioned
             .as_ref()
-            .is_some_and(|autobind| autobind.state_root.join("decommissioned").exists())
+            .is_some_and(|marker| marker.exists())
         {
             return Err(AcceptError::from_err(std::io::Error::other(
                 "home peer is decommissioned",
@@ -1552,15 +1524,6 @@ impl ProtocolHandler for DiscoveryProtocol {
         let request: ContentEndpointRequest =
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
                 .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        if peer.user_public_key == self.identity.user_public_key {
-            get_or_autobind_workspace(
-                &self.workspaces,
-                self.autobind.as_ref(),
-                request.workspace_id,
-            )
-            .await
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        }
         // A discovery request is scoped to a server workspace. Do not turn the
         // host into a global filesystem endpoint directory for arbitrary
         // authenticated peers.

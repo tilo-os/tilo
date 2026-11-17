@@ -67,7 +67,8 @@ async fn a_publishes_two_offline_deltas(
             workspace_id: WORKSPACE,
         })
         .unwrap();
-    let _ = a_client.recv().await.expect("A Ready channel closed");
+    // A held workspace sends its own state before it is ready.
+    crate::common::next(&a_client, |env| matches!(env, Envelope::Ready { .. })).await;
 
     // A publishes two deltas while B is offline.
     for (seq, payload) in [(1u64, "first-delta"), (2u64, "second-delta")] {
@@ -82,18 +83,19 @@ async fn a_publishes_two_offline_deltas(
             .unwrap();
     }
     // The writes land asynchronously on the server's persistence turn: wait
-    // for them rather than for a fixed time.
+    // for them rather than for a fixed time. The held workspace queues state
+    // of its own beside them, so each delta is found by its bytes.
     let deadline = tilo_test_env::hang_deadline();
-    let mut queued = queued_deltas(pending_dir);
-    while queued < 2 {
+    while !(crate::common::queued_carries(pending_dir, b"first-delta")
+        && crate::common::queued_carries(pending_dir, b"second-delta"))
+    {
         assert!(
             std::time::Instant::now() < deadline,
-            "deltas should reach B's queue on disk: {queued} queued"
+            "deltas should reach B's queue on disk: {} queued",
+            queued_deltas(pending_dir)
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
-        queued = queued_deltas(pending_dir);
     }
-    assert_eq!(queued, 2, "both deltas should be queued to disk for B");
 }
 
 /// B connects, subscribes, and drains the two queued deltas plus the
@@ -120,36 +122,38 @@ async fn b_connects_and_drains_queue(
         })
         .unwrap();
 
-    // The next N messages B receives are the two queued deltas
-    // (order preserved) followed by Ready. Iteration order is:
-    // the server drains pending BEFORE it sends Ready, so B
-    // receives Delta, Delta, then Ready.
+    // The server drains pending BEFORE it sends Ready, so the two queued
+    // deltas arrive in order before it, interleaved with the state the
+    // workspace sends first.
     let mut got_payloads: Vec<Vec<u8>> = Vec::new();
-    let mut got_ready = false;
-    for _ in 0..3 {
-        let env = b_client.recv().await.expect("channel closed");
-        match env {
+    loop {
+        match crate::common::next(&b_client, |env| {
+            matches!(env, Envelope::Delta { .. } | Envelope::Ready { .. })
+        })
+        .await
+        {
             Envelope::Delta {
                 workspace_id,
                 delta,
                 ..
             } => {
                 assert_eq!(workspace_id, WORKSPACE);
-                got_payloads.push(delta);
+                if delta == b"first-delta" || delta == b"second-delta" {
+                    got_payloads.push(delta);
+                }
             }
             Envelope::Ready {
                 workspace_id,
                 pending_deltas,
-                documents_when_opened: false,
+                ..
             } => {
                 assert_eq!(workspace_id, WORKSPACE);
                 assert_eq!(pending_deltas, 2);
-                got_ready = true;
+                break;
             }
             other => panic!("unexpected env: {other:?}"),
         }
     }
-    assert!(got_ready, "Ready envelope should arrive");
     assert_eq!(
         got_payloads,
         vec![b"first-delta".to_vec(), b"second-delta".to_vec()],
@@ -168,7 +172,7 @@ async fn offline_peer_gets_queued_deltas_on_reconnect() {
         &user,
         server_dev,
         &[WORKSPACE],
-        &[a.device_pubkey(), b.device_pubkey()],
+        &[&a.cert, &b.cert],
     ))
     .await;
     let addr = server.server.node_addr();

@@ -98,8 +98,8 @@ pub(super) fn action_peer_admitted(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<(), Refusal> {
-    // Private authority is explicit and current: a same-owner workspace enrols an
-    // owner device on Subscribe, never here.
+    // Private authority is explicit and current: a governed workspace enrols a
+    // member's device on Subscribe, never here.
     if !session_peer_authorized(peer, session)
         || !session.admits(wr, peer, WorkspaceOperation::RemoteAction)
     {

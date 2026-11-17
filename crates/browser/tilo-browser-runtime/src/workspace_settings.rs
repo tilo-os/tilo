@@ -183,7 +183,7 @@ impl PageWorkspaceSettings {
                         .into_iter()
                         .find(|held| held.workspace == uuid)
                         .map(WorkspacesReply::Workspace)
-                        .ok_or_else(|| "the host does not govern this workspace".to_owned()),
+                        .ok_or_else(|| "the server does not hold this workspace".to_owned()),
                     other => other,
                 });
             },

@@ -41,7 +41,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
             &alice,
             alice_server_dev,
             &[WorkspaceId::from_u128(1)],
-            &[alice_ws_member.device_pubkey()],
+            &[&alice_ws_member.cert],
         ))
         .await;
         let server_addr = server.server.node_addr();
@@ -92,13 +92,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
             revocations: revs,
         };
         let server = crate::common::start_server(cfg, identity).await.unwrap();
-        crate::common::admit_members(
-            &server,
-            WorkspaceId::from_u128(9),
-            &[good_dev.device_pubkey()],
-            &state_root,
-        )
-        .await;
+        crate::common::hold_workspace(&server, WorkspaceId::from_u128(9), &[&good_dev.cert]).await;
         let addr = server.node_addr();
 
         // The revoked device tries to connect — must fail.
@@ -208,13 +202,7 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
     )
     .await
     .unwrap();
-    crate::common::admit_members(
-        &server,
-        WorkspaceId::from_u128(34),
-        &[device_key],
-        state.path(),
-    )
-    .await;
+    crate::common::hold_workspace(&server, WorkspaceId::from_u128(34), &[&device.cert]).await;
     let client = ServerClient::connect(
         client_endpoint().await,
         server.node_addr(),
@@ -231,8 +219,12 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
         })
         .unwrap();
     assert!(matches!(
-        tilo_test_env::within("the subscription", client.recv()).await,
-        Some(tilo_server::Envelope::Ready { .. })
+        crate::common::next(&client, |env| matches!(
+            env,
+            tilo_server::Envelope::Ready { .. }
+        ))
+        .await,
+        tilo_server::Envelope::Ready { .. }
     ));
 
     let mut entry = RevocationEntry {

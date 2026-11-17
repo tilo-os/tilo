@@ -73,7 +73,6 @@ async fn a_fanned_delivery_skips_the_workspaces_lock_until_authority_moves() {
     let metrics = Arc::new(crate::metrics::Metrics::default());
     let session = SessionCtx {
         workspaces: &registry,
-        autobind: None,
         outbound: &outbound,
         content: Box::leak(Box::default()),
         state_outbound: Some(&state_tx),

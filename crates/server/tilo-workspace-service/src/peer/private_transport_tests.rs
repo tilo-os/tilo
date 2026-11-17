@@ -13,7 +13,6 @@ use tilo_user_identity::{
 fn peer_context(workspaces: WorkspaceRegistry, user: [u8; 32], own: &DeviceCert) -> PeerContext {
     PeerContext {
         workspaces,
-        autobind: None,
         revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
         trust_policy: Arc::new(std::sync::RwLock::new(
             crate::policy::TrustPolicy::AllowMatchingUser,
@@ -97,7 +96,6 @@ impl Holds {
     ) -> SessionCtx<'a> {
         SessionCtx {
             workspaces,
-            autobind: None,
             outbound,
             content: Box::leak(Box::default()),
             state_outbound: None,

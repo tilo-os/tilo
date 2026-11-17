@@ -245,7 +245,7 @@ async fn presence_reaches_a_member_in_order() {
     let user = TestUser::fresh("Presence cost");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("member", DeviceCapabilities::member());
-    let members = [author.device_pubkey(), reader.device_pubkey()];
+    let members = [&author.cert, &reader.cert];
     let server = Box::pin(spawn_server(
         &user,
         user.enrol("server", DeviceCapabilities::member()),
@@ -364,7 +364,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     let user = TestUser::fresh("Keystroke writes");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("tilo-server/7 peer", DeviceCapabilities::member());
-    let members = [author.device_pubkey(), reader.device_pubkey()];
+    let members = [&author.cert, &reader.cert];
     let server = Box::pin(spawn_server(
         &user,
         user.enrol("server", DeviceCapabilities::member()),
@@ -458,7 +458,7 @@ async fn a_clients_resting_pointer_arrives_without_another_message() {
     let user = TestUser::fresh("Pointer pacing");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("tilo-server/7 peer", DeviceCapabilities::member());
-    let members = [author.device_pubkey(), reader.device_pubkey()];
+    let members = [&author.cert, &reader.cert];
     let server = Box::pin(spawn_server(
         &user,
         user.enrol("server", DeviceCapabilities::member()),

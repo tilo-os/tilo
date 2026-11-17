@@ -15,14 +15,17 @@ use tilo_actions::remote::{
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+use tilo_peer_state::join::Role;
 use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
+use tilo_server::workspaces::RemoveMemberRequest;
 use tilo_server::{ActionProviderServer, Envelope, ServerClient, WorkspaceId};
 use tilo_server_protocol::delegation::{DelegateScope, Delegation};
 use tilo_server_protocol::refusal::Refusal;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{
-    TestDevice, TestUser, client_endpoint, spawn_server, spawn_server_serving_apps,
+    TestDevice, TestUser, client_endpoint, invitation, redeem, spawn_server,
+    spawn_server_admitting, spawn_server_admitting_with, spawn_server_serving_apps,
 };
 
 const WS: WorkspaceId = WorkspaceId::from_u128(11);
@@ -50,7 +53,7 @@ async fn subscribed_in(
 }
 
 /// Connect as `device`, subscribe to `workspace_id`, and return the server's
-/// first answer, whatever it is.
+/// answer to the subscription: a held workspace sends its state first.
 async fn subscribe(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
@@ -68,7 +71,18 @@ async fn subscribe(
     .await
     .expect("connect");
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    let ready = tilo_test_env::within("ready timeout", client.recv()).await;
+    let ready = tilo_test_env::within("ready timeout", async {
+        loop {
+            match client.recv().await {
+                Some(answer @ (Envelope::Ready { .. } | Envelope::NotAuthorised { .. })) => {
+                    break Some(answer);
+                }
+                Some(_) => {}
+                None => break None,
+            }
+        }
+    })
+    .await;
     (client, ready)
 }
 
@@ -125,7 +139,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("desktop", DeviceCapabilities::member());
         let c = user.enrol("phone", DeviceCapabilities::member());
-        let members = [a.device_pubkey(), b.device_pubkey(), c.device_pubkey()];
+        let members = [&a.cert, &b.cert, &c.cert];
         let server = Box::pin(spawn_server(&user, host, &[WS], &members)).await;
         let addr = server.server.node_addr();
         let a_client = subscribed(addr.clone(), &user, &a).await;
@@ -161,13 +175,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let host_key = host.device_pubkey();
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("desktop", DeviceCapabilities::member());
-        let server = Box::pin(spawn_server(
-            &user,
-            host,
-            &[WS],
-            &[a.device_pubkey(), b.device_pubkey()],
-        ))
-        .await;
+        let server = Box::pin(spawn_server(&user, host, &[WS], &[&a.cert, &b.cert])).await;
         let addr = server.server.node_addr();
         let a_client = subscribed(addr.clone(), &user, &a).await;
 
@@ -234,7 +242,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
             &user,
             host,
             &[WS],
-            &[a.device_pubkey()],
+            &[&a.cert],
             Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions)))),
         ))
         .await;
@@ -290,29 +298,47 @@ async fn refusal(client: &ServerClient, who: &str) -> Option<Refusal> {
 #[tokio::test]
 async fn removed_member_session_ends_without_serving_an_action() {
     let user = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
     let host = user.enrol("home", DeviceCapabilities::member());
     let host_key = host.device_pubkey();
     let a = user.enrol("laptop", DeviceCapabilities::primary());
-    let b = user.enrol("desktop", DeviceCapabilities::member());
+    let b = bob.enrol("desktop", DeviceCapabilities::member());
     let actions = Arc::new(RecordingHost::default());
-    let server = Box::pin(spawn_server_serving_apps(
+    let server = Box::pin(spawn_server_admitting_with(
         &user,
-        host,
+        &host,
+        &[&bob],
         &[WS],
-        &[a.device_pubkey(), b.device_pubkey()],
+        &[&a.cert],
         Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions)))),
     ))
     .await;
+    let workspaces = server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces");
+    let issued = invitation(workspaces, &host, &WS.to_string(), Role::Editor, &b).await;
+    redeem(&b, &issued).await.unwrap();
     let addr = server.server.node_addr();
     let _a_client = subscribed(addr.clone(), &user, &a).await;
     let b_client = subscribed(addr, &user, &b).await;
+
+    workspaces
+        .remove_member(
+            &WS.to_string(),
+            &host.cert,
+            RemoveMemberRequest {
+                request_id: [0x5B; 32],
+                user_public_key: bob.user_pk,
+            },
+        )
+        .await
+        .unwrap();
 
     // Removing B wakes the access audit, which ends B's session. Wait for
     // that end rather than racing a send against it; the refusal of a frame
     // that arrives before the audit is covered at the handler by
     // `peer::private_transport_tests::removed_member_remote_action_is_refused`.
-    crate::common::admit_members(&server.server, WS, &[a.device_pubkey()], &server.state_root)
-        .await;
     while tilo_test_env::within("removed member's session to end", b_client.recv())
         .await
         .is_some()
@@ -337,22 +363,40 @@ async fn removed_member_session_ends_without_serving_an_action() {
 #[tokio::test]
 async fn remote_action_to_removed_target_is_refused() {
     let user = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
     let host = user.enrol("home", DeviceCapabilities::member());
     let a = user.enrol("laptop", DeviceCapabilities::primary());
-    let c = user.enrol("phone", DeviceCapabilities::member());
-    let server = Box::pin(spawn_server(
+    let c = bob.enrol("phone", DeviceCapabilities::member());
+    let server = Box::pin(spawn_server_admitting(
         &user,
-        host,
+        &host,
+        &[&bob],
         &[WS],
-        &[a.device_pubkey(), c.device_pubkey()],
+        &[&a.cert],
     ))
     .await;
+    let workspaces = server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces");
+    let issued = invitation(workspaces, &host, &WS.to_string(), Role::Editor, &c).await;
+    redeem(&c, &issued).await.unwrap();
     let addr = server.server.node_addr();
     let a_client = subscribed(addr.clone(), &user, &a).await;
     let c_client = subscribed(addr, &user, &c).await;
 
-    crate::common::admit_members(&server.server, WS, &[a.device_pubkey()], &server.state_root)
-        .await;
+    workspaces
+        .remove_member(
+            &WS.to_string(),
+            &host.cert,
+            RemoveMemberRequest {
+                request_id: [0x5C; 32],
+                user_public_key: bob.user_pk,
+            },
+        )
+        .await
+        .unwrap();
+
     a_client
         .send(directed(
             c.device_pubkey(),
@@ -394,7 +438,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
         &user,
         host,
         &[ws],
-        &[agent.device_pubkey()],
+        &[&agent.cert],
         Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions)))),
     ))
     .await;

@@ -59,9 +59,8 @@ async fn publish_and_leave(
     a_client
         .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
-    let ready = tilo_test_env::within("A Ready timeout", a_client.recv())
-        .await
-        .expect("A Ready closed");
+    // A held workspace sends its own state before it is ready.
+    let ready = crate::common::next(&a_client, |env| matches!(env, Envelope::Ready { .. })).await;
     assert!(matches!(
         ready,
         Envelope::Ready {
@@ -107,6 +106,7 @@ async fn publish_and_leave(
 async fn catch_up_after_restart(
     addr2: iroh_base::EndpointAddr,
     user: &TestUser,
+    a: &crate::common::TestDevice,
     b: &crate::common::TestDevice,
     ws: WorkspaceId,
 ) -> AutoCommit {
@@ -127,10 +127,7 @@ async fn catch_up_after_restart(
     let mut doc_b = AutoCommit::new();
     let mut got_delta = false;
     let mut got_ready = false;
-    for _ in 0..6 {
-        if got_delta && got_ready {
-            break;
-        }
+    while !(got_delta && got_ready) {
         let env = tilo_test_env::within("B catch-up timeout", b_client.recv())
             .await
             .expect("B channel closed");
@@ -138,21 +135,27 @@ async fn catch_up_after_restart(
             Envelope::Delta {
                 workspace_id,
                 delta,
+                author_device_public_key,
                 ..
             } => {
                 assert_eq!(workspace_id, ws);
-                doc_b.load_incoming(&delta).expect("B applies queued delta");
-                got_delta = true;
+                // The state the workspace sends first carries no queued
+                // change of A's.
+                if author_device_public_key == a.device_pubkey() {
+                    doc_b.load_incoming(&delta).expect("B applies queued delta");
+                    got_delta = true;
+                }
             }
             Envelope::Ready {
                 workspace_id,
                 pending_deltas,
-                documents_when_opened: false,
+                ..
             } => {
                 assert_eq!(workspace_id, ws);
-                assert_eq!(pending_deltas, 1, "host reports the one queued delta");
+                assert!(pending_deltas >= 1, "the server reports the queued delta");
                 got_ready = true;
             }
+            Envelope::WorkspaceBootstrap { .. } => {}
             other => panic!("unexpected envelope {other:?}"),
         }
     }
@@ -168,7 +171,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     let user = TestUser::fresh("Alice");
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("phone", DeviceCapabilities::member());
-    let members = [a.device_pubkey(), b.device_pubkey()];
+    let members = [&a.cert, &b.cert];
 
     // The host's persistent state directory — kept alive across the
     // restart so the pending queue + iroh identity survive.
@@ -223,7 +226,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     .await;
     let addr2 = host2.node_addr();
 
-    let mut doc_b = catch_up_after_restart(addr2, &user, &b, WS).await;
+    let doc_b = catch_up_after_restart(addr2, &user, &a, &b, WS).await;
 
     assert_eq!(doc_b.str_at(&ROOT, "note").as_deref(), Some("durable"));
     assert_eq!(

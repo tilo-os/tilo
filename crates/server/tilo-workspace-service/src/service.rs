@@ -27,7 +27,7 @@ use crate::app_serving::AppActionServer;
 use crate::client::{ClientError, ServerClient};
 use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::metrics::Metrics;
-use crate::peer::{PeerContext, WorkspaceAutobind, WorkspaceRegistry, run_peer_until};
+use crate::peer::{PeerContext, WorkspaceRegistry, run_peer_until};
 use crate::policy::TrustPolicy;
 use crate::transport::{ALPN, MAX_FRAME_BYTES};
 use tilo_server_protocol::{WorkSetting, WorkspaceId};
@@ -197,17 +197,16 @@ impl ServiceSessions {
             }) as Arc<dyn AppActionServer>),
             None => cfg.apps.clone(),
         };
-        let autobind =
-            matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser).then(|| WorkspaceAutobind {
-                state_root: cfg.state_root.clone(),
-                shell_payloads: cfg.shell_payloads.clone(),
-            });
+        // A person's own device serves its person alone: a server image
+        // retired in its state root serves nothing from then on.
+        let decommissioned = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser)
+            .then(|| cfg.state_root.join("decommissioned"));
         let handler = ServerProtocol {
             workspaces: workspaces.clone(),
             trust_policy: handshake_trust.live_policy.clone(),
             identity: live.clone(),
             metrics: metrics.clone(),
-            autobind,
+            decommissioned,
             app_serving: wrap(&workspaces, own_server.clone()),
             carried_calls: Arc::default(),
             admin: Arc::default(),
@@ -326,37 +325,6 @@ impl ServiceSessions {
             self.identity.signing_key.clone(),
             self.metrics.clone(),
         )
-    }
-
-    /// Atomically replace a governed workspace's exact member devices and
-    /// the user roots those devices need at the handshake.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError::GovernedAccess`] when the service admits anyone or
-    /// `state_root` is not its own, and [`ServiceError::Store`] when workspace
-    /// initialization or durable replacement fails.
-    pub async fn replace_governed_workspace_access(
-        &self,
-        workspace_id: WorkspaceId,
-        pinned: bool,
-        access: tilo_peer_state::GovernedAccess,
-        state_root: PathBuf,
-    ) -> Result<(), ServiceError> {
-        if self.handshake_trust.allow_any {
-            return Err(ServiceError::GovernedAccess(
-                "allow_any cannot serve governed workspace admission".into(),
-            ));
-        }
-        if state_root != self.state_root {
-            return Err(ServiceError::GovernedAccess(
-                "state root does not match the running server".into(),
-            ));
-        }
-        self.access_writer()
-            .replace(workspace_id, pinned, access)
-            .await
-            .map(drop)
     }
 
     /// Whether the service counts `device` as subscribed to `workspace_id`.
@@ -836,7 +804,6 @@ impl GovernedAccessWriter {
     pub(crate) async fn replace_access(
         &self,
         workspace_id: WorkspaceId,
-        pinned: bool,
         device_access: crate::workspace::DeviceAccess,
     ) -> Result<(), ServiceError> {
         let workspace = crate::workspace_io::get_or_initialize(
@@ -844,9 +811,8 @@ impl GovernedAccessWriter {
             self.state_root.clone(),
             &self.shell_payloads,
             workspace_id,
-            pinned,
             crate::workspace_access::AdmissionMode::Explicit,
-            crate::peer::MAX_AUTOBOUND_WORKSPACES,
+            crate::peer::MAX_HELD_WORKSPACES,
         )
         .await?;
         workspace.lock().await.project_access(device_access);
@@ -860,7 +826,6 @@ impl GovernedAccessWriter {
     pub(crate) async fn replace(
         &self,
         workspace_id: WorkspaceId,
-        pinned: bool,
         access: tilo_peer_state::GovernedAccess,
     ) -> Result<Vec<[u8; 32]>, ServiceError> {
         if self.handshake_trust.allow_any {
@@ -874,9 +839,8 @@ impl GovernedAccessWriter {
             self.state_root.clone(),
             &self.shell_payloads,
             workspace_id,
-            pinned,
             crate::workspace_access::AdmissionMode::Explicit,
-            crate::peer::MAX_AUTOBOUND_WORKSPACES,
+            crate::peer::MAX_HELD_WORKSPACES,
         )
         .await?;
         // An environment this server placed in the workspace is listed by
@@ -1094,7 +1058,9 @@ pub struct ServerProtocol {
     pub trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub identity: LiveIdentity,
     pub metrics: Arc<Metrics>,
-    pub autobind: Option<WorkspaceAutobind>,
+    /// The marker of a home peer retired in its state root, when this host is
+    /// one: it serves nothing from then on.
+    pub decommissioned: Option<PathBuf>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
     /// Set once when the service starts serving browsers: the workspaces whose
     /// calls it carries.
@@ -1148,7 +1114,6 @@ impl ServerProtocol {
     pub fn peer_context(&self) -> PeerContext {
         PeerContext {
             workspaces: self.workspaces.clone(),
-            autobind: self.autobind.clone(),
             revocations: self.identity.revocations.clone(),
             trust_policy: self.trust_policy.clone(),
             own_user_public_key: self.identity.user_public_key,
@@ -1186,9 +1151,9 @@ impl ServerProtocol {
     /// their own, so the iroh router can accept the next connection.
     async fn accept_streams(&self, connection: Connection) -> Result<(), AcceptError> {
         if self
-            .autobind
+            .decommissioned
             .as_ref()
-            .is_some_and(|autobind| autobind.state_root.join("decommissioned").exists())
+            .is_some_and(|marker| marker.exists())
         {
             return Err(AcceptError::from_err(std::io::Error::other(
                 "home peer is decommissioned",

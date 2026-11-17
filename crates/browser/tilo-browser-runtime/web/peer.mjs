@@ -802,8 +802,8 @@ async function connect({
     peer.subscribe(publish);
     if (!reached) siteHostCheck ??= setTimeout(checkSiteHost, SITE_HOST_CHECK_MS);
     if (workspace) {
-      // A workspace of the person's own its host does not govern yet is placed
-      // there under the workspace's name.
+      // A workspace of the person's own its server does not hold yet is
+      // placed there under the workspace's name.
       peer.joinWorkspace(workspace, workspaceName);
       if (liveEnabled) {
         live = createLiveLayer(peer, runtime, workspace, {ready, member: {

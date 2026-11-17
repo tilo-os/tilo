@@ -67,7 +67,7 @@ impl Workspaces {
             .await
             .get(workspace)
             .cloned()
-            .ok_or("this host does not govern that workspace")?;
+            .ok_or("this host does not hold that workspace")?;
         // Before the workspace is held: its machine's host enters it to be
         // asked, which takes the workspace's lock.
         self.delete_machine(workspace).await?;
@@ -117,7 +117,6 @@ impl Workspaces {
             .access
             .replace(
                 workspace_id,
-                true,
                 GovernedAccess {
                     member_devices: Vec::new(),
                     member_user_roots: Vec::new(),
@@ -362,7 +361,6 @@ impl Workspaces {
                 .access
                 .replace(
                     workspace_id,
-                    true,
                     GovernedAccess {
                         member_devices: Vec::new(),
                         member_user_roots: Vec::new(),

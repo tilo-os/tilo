@@ -346,7 +346,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let user = TestUser::fresh("Hosting cost");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let coding = user.enrol("subscriber", DeviceCapabilities::member());
-    let members = [author.device_pubkey(), coding.device_pubkey()];
+    let members = [&author.cert, &coding.cert];
     let server = Box::pin(spawn_server(
         &user,
         user.enrol("server", DeviceCapabilities::member()),

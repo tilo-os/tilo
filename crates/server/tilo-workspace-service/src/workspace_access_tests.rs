@@ -15,11 +15,7 @@ const WORKSPACE: &str = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
 const OTHER_WORKSPACE: &str = "0b9e8f6c-2a1d-4e3b-8c7f-5d4a3b2c1e0f";
 const NOW: u64 = 1_000_000_000_000;
 
-const MODES: [AdmissionMode; 3] = [
-    AdmissionMode::Explicit,
-    AdmissionMode::SameOwner,
-    AdmissionMode::Governed,
-];
+const MODES: [AdmissionMode; 2] = [AdmissionMode::Explicit, AdmissionMode::Governed];
 const OPS: [WorkspaceOperation; 11] = [
     WorkspaceOperation::Subscribe,
     WorkspaceOperation::State,
@@ -188,12 +184,12 @@ fn workspace(root: &std::path::Path) -> WorkspaceRuntime {
 type Setup = Box<dyn Fn(&mut WorkspaceRuntime, &Server)>;
 
 /// One actor: how the workspace and the server know it, and the expected
-/// letters per mode (`Explicit`, `SameOwner`, `Governed`) over [`OPS`].
+/// letters per mode (`Explicit`, `Governed`) over [`OPS`].
 struct Case {
     name: &'static str,
     peer: AuthenticatedPeer,
     setup: Setup,
-    expected: [&'static str; 3],
+    expected: [&'static str; 2],
 }
 
 #[test]
@@ -215,13 +211,13 @@ fn decide_matrix() {
             name: "owner's member device",
             peer: peer(owner, [10; 32], false, None),
             setup: listed([10; 32]),
-            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "owner's unlisted device",
             peer: peer(owner, [11; 32], false, None),
             setup: none(),
-            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         // An agent's grant: its person's agent where its scope reaches, it
         // redeemed its person's invitation and its person is a member, on an
@@ -230,25 +226,25 @@ fn decide_matrix() {
             name: "a grant for all its person's workspaces, a member device of a member",
             peer: grant(owner, [13; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
             setup: member_grant([13; 32], owner),
-            expected: ["AAAAANNANAA", "AAAAANNANAA", "AAAAANNANAA"],
+            expected: ["AAAAANNANAA", "AAAAANNANAA"],
         },
         Case {
             name: "a grant listed in a governed workspace its person is no member of",
             peer: grant(owner, [14; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
             setup: listed([14; 32]),
-            expected: ["AAAAANNANAA", "AAAAANNANAA", "NNNNNNNNNNN"],
+            expected: ["AAAAANNANAA", "NNNNNNNNNNN"],
         },
         Case {
             name: "a grant for exactly this workspace",
             peer: grant(owner, [15; 32], one(WORKSPACE), Some(NOW + 1)),
             setup: member_grant([15; 32], owner),
-            expected: ["AAAAANNANAA", "AAAAANNANAA", "AAAAANNANAA"],
+            expected: ["AAAAANNANAA", "AAAAANNANAA"],
         },
         Case {
             name: "a grant for another workspace, even listed here",
             peer: grant(owner, [16; 32], one(OTHER_WORKSPACE), Some(NOW + 1)),
             setup: member_grant([16; 32], owner),
-            expected: ["NNNNNNNNNNN", "NNNNNNNNNNN", "NNNNNNNNNNN"],
+            expected: ["NNNNNNNNNNN", "NNNNNNNNNNN"],
         },
         Case {
             name: "a grant that never redeemed an invitation here, on its person's own host",
@@ -256,13 +252,13 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 runtime.governed_user_roots.insert(owner);
             }),
-            expected: ["NNNNNNNNNNN", "NNNNNNNNNNN", "NNNNNNNNNNN"],
+            expected: ["NNNNNNNNNNN", "NNNNNNNNNNN"],
         },
         Case {
             name: "a grant past its certificate's expiry",
             peer: grant(owner, [18; 32], AgentScope::AllWorkspaces, Some(NOW)),
             setup: member_grant([18; 32], owner),
-            expected: ["xxxxxxxxxxx", "xxxxxxxxxxx", "xxxxxxxxxxx"],
+            expected: ["xxxxxxxxxxx", "xxxxxxxxxxx"],
         },
         Case {
             name: "a grant its person revoked",
@@ -271,7 +267,7 @@ fn decide_matrix() {
                 member_grant([19; 32], owner)(runtime, server);
                 server.revoke([19; 32]);
             }),
-            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr", "rrrrrrrrrrr"],
+            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr"],
         },
         Case {
             name: "a grant minted for this workspace by a grant its person revoked",
@@ -285,7 +281,7 @@ fn decide_matrix() {
                 member_grant([63; 32], owner)(runtime, server);
                 server.revoke([62; 32]);
             }),
-            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr", "rrrrrrrrrrr"],
+            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr"],
         },
         Case {
             name: "owner's device a pending replacement removed",
@@ -294,7 +290,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([12; 32]);
                 runtime.membership_ceiling = Some(HashSet::new());
             }),
-            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN", "NNNNNNNNdNN"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         Case {
             // Failure scenario 1: trusted server-wide because another workspace's
@@ -304,13 +300,13 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 runtime.governed_user_roots.insert(bob);
             }),
-            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN", "NNNNNNNNdNN"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "cross-user exact member device",
             peer: peer(bob, [22; 32], false, None),
             setup: listed([22; 32]),
-            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "same-user host this workspace is attached to",
@@ -318,19 +314,19 @@ fn decide_matrix() {
             setup: Box::new(|runtime, _| {
                 runtime.attached_hosts.insert([30; 32]);
             }),
-            expected: ["AAANNNNNdAA", "AAAAAEANdAA", "AAANNNNNdAA"],
+            expected: ["AAANNNNNdAA", "AAANNNNNdAA"],
         },
         Case {
             name: "same-user host this workspace is not attached to",
             peer: peer(owner, [31; 32], true, None),
             setup: none(),
-            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "cross-user host certificate, listed as a member",
             peer: peer(bob, [32; 32], true, None),
             setup: listed([32; 32]),
-            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "agent delegated this workspace",
@@ -339,7 +335,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([40; 32]);
                 server.delegate([40; 32], Some((NOW + 1, WORKSPACE)));
             }),
-            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "agent whose delegation expired",
@@ -348,7 +344,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([41; 32]);
                 server.delegate([41; 32], Some((NOW, WORKSPACE)));
             }),
-            expected: ["eeeeeeeeeee", "eeeeeeeeeee", "eeeeeeeeeee"],
+            expected: ["eeeeeeeeeee", "eeeeeeeeeee"],
         },
         Case {
             name: "withdrawn agent",
@@ -357,7 +353,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([42; 32]);
                 server.delegate([42; 32], None);
             }),
-            expected: ["wwwwwwwwwww", "wwwwwwwwwww", "wwwwwwwwwww"],
+            expected: ["wwwwwwwwwww", "wwwwwwwwwww"],
         },
         Case {
             name: "agent delegated another workspace",
@@ -366,7 +362,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([43; 32]);
                 server.delegate([43; 32], Some((NOW + 1, OTHER_WORKSPACE)));
             }),
-            expected: ["ooooooooooo", "ooooooooooo", "ooooooooooo"],
+            expected: ["ooooooooooo", "ooooooooooo"],
         },
         Case {
             name: "the device governing this workspace on this server",
@@ -376,7 +372,7 @@ fn decide_matrix() {
                     crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
                 );
             }),
-            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "another listed device of the owner, while this server governs",
@@ -387,7 +383,7 @@ fn decide_matrix() {
                     crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
                 );
             }),
-            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "agent delegated this workspace, in a workspace this server governs",
@@ -398,7 +394,7 @@ fn decide_matrix() {
                 );
                 server.delegate([44; 32], Some((NOW + 1, WORKSPACE)));
             }),
-            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNANN"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNANN"],
         },
         Case {
             name: "another user's agent, in a workspace this server governs",
@@ -409,13 +405,13 @@ fn decide_matrix() {
                 );
                 server.delegate([45; 32], Some((NOW + 1, WORKSPACE)));
             }),
-            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN", "NNNNNNNNdNN"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "member device whose certificate expired",
             peer: peer(owner, [50; 32], false, Some(NOW)),
             setup: listed([50; 32]),
-            expected: ["xxxxxxxxxxx", "xxxxxxxxxxx", "xxxxxxxxxxx"],
+            expected: ["xxxxxxxxxxx", "xxxxxxxxxxx"],
         },
         Case {
             name: "revoked member device",
@@ -424,13 +420,13 @@ fn decide_matrix() {
                 runtime.membership.devices.push([51; 32]);
                 server.revoke([51; 32]);
             }),
-            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr", "rrrrrrrrrrr"],
+            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr"],
         },
         Case {
             name: "member device of a user the policy no longer trusts",
             peer: peer(carol, [52; 32], false, None),
             setup: listed([52; 32]),
-            expected: ["ttttttttttt", "ttttttttttt", "ttttttttttt"],
+            expected: ["ttttttttttt", "ttttttttttt"],
         },
     ];
     let tmp = tempfile::tempdir().unwrap();
@@ -620,7 +616,6 @@ fn governance_is_never_relaxed_by_a_later_binding() {
             AdmissionMode::Governed
         );
         assert_eq!(AdmissionMode::Explicit.rebind(requested), requested);
-        assert_eq!(AdmissionMode::SameOwner.rebind(requested), requested);
     }
 }
 

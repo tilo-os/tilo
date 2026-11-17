@@ -139,7 +139,6 @@ where
     tokio::pin!(closed);
     let PeerContext {
         workspaces,
-        autobind,
         revocations,
         trust_policy,
         own_user_public_key,
@@ -185,7 +184,6 @@ where
     let execution = tilo_actions::remote::ExecutionLease::mint();
     let session = SessionCtx {
         workspaces: &workspaces,
-        autobind: autobind.as_ref(),
         outbound: &tx,
         content: &content,
         state_outbound: Some(&state_tx),

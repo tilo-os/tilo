@@ -34,9 +34,8 @@ use tilo_actions::remote::{
     workspace_governance_resource,
 };
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_peer_state::join::{Role, decode_and_verify_invitation};
+use tilo_peer_state::join::Role;
 use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
-use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::{
     CREATE_WORKSPACE, ENTER_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
     IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, RemoveMemberRequest,
@@ -46,7 +45,7 @@ use tilo_server::{Envelope, Server, ServerClient, ServerConfig};
 use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser, device_endpoint};
+use crate::common::{TestDevice, TestUser, device_endpoint, invitation, redeem};
 use tilo_server::WorkspaceId;
 
 /// How long a refused write is given to surface anywhere before its absence
@@ -117,58 +116,6 @@ async fn admit(
 ) {
     let issued = invitation(server.workspaces().unwrap(), host, workspace, role, member).await;
     redeem(member, &issued).await.unwrap();
-}
-
-/// An invitation to `workspace` for `recipient`'s person, issued by `host`.
-async fn invitation(
-    workspaces: &Workspaces,
-    host: &TestDevice,
-    workspace: &str,
-    role: Role,
-    recipient: &TestDevice,
-) -> IssuedInvitation {
-    let mut request_id = [0; 32];
-    getrandom::fill(&mut request_id).unwrap();
-    workspaces
-        .issue(
-            workspace,
-            &host.cert,
-            IssueInvitationRequest {
-                request_id,
-                role,
-                recipient_user_public_key: Some(recipient.cert.user_public_key),
-                invitee_name: None,
-                inviter_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns()
-                    .checked_add(600_000_000_000)
-                    .unwrap(),
-            },
-        )
-        .await
-        .unwrap()
-}
-
-/// `device` redeems `issued` through the address the invitation carries.
-async fn redeem(device: &TestDevice, issued: &IssuedInvitation) -> Result<(), String> {
-    let verified = decode_and_verify_invitation(
-        &issued.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )?;
-    let mut request_id = [0; 32];
-    getrandom::fill(&mut request_id).unwrap();
-    WorkspaceJoinClient::new(device_endpoint(device).await)
-        .redeem_hint(
-            &verified.grant().transport[0],
-            issued.signed_invitation.clone(),
-            device.cert.clone(),
-            &device.sk,
-            request_id,
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
 }
 
 /// What a workspace's governance holds, as far as any entry could change it.

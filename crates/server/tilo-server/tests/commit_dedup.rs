@@ -56,7 +56,7 @@ async fn resent_commits_keep_their_host_order_and_are_not_fanned_out_again() {
     let user = TestUser::fresh("Ada");
     let a = user.enrol("browser", DeviceCapabilities::member());
     let b = user.enrol("laptop", DeviceCapabilities::primary());
-    let members = [a.device_pubkey(), b.device_pubkey()];
+    let members = [&a.cert, &b.cert];
     let state = tempfile::tempdir().unwrap();
     let host = spawn_server_on(
         state.path(),

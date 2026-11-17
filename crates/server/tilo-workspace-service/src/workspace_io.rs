@@ -411,7 +411,6 @@ async fn open_runtime(
     state_root: std::path::PathBuf,
     payloads: Arc<dyn crate::payloads::ShellPayloads>,
     workspace_id: WorkspaceId,
-    pinned: bool,
     admission: AdmissionMode,
 ) -> OpenResult {
     static OPEN: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -423,10 +422,11 @@ async fn open_runtime(
         .map_err(|error| error.to_string())?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        // Every workspace this host opens, it holds: its own writable copy.
         let mut runtime = WorkspaceRuntime::open_with_payloads(
             &state_root,
             workspace_id,
-            pinned,
+            true,
             Membership::default(),
             payloads,
         )?;
@@ -470,7 +470,6 @@ pub(crate) async fn get_or_initialize(
     state_root: std::path::PathBuf,
     payloads: &Arc<dyn crate::payloads::ShellPayloads>,
     workspace_id: WorkspaceId,
-    pinned: bool,
     admission: AdmissionMode,
     capacity: usize,
 ) -> Result<SharedWorkspace, StoreError> {
@@ -499,8 +498,7 @@ pub(crate) async fn get_or_initialize(
             let registry = workspaces.clone();
             let payloads = payloads.clone();
             tokio::spawn(async move {
-                let opened =
-                    open_runtime(state_root, payloads, workspace_id, pinned, admission).await;
+                let opened = open_runtime(state_root, payloads, workspace_id, admission).await;
                 let mut map = registry.lock().await;
                 let opened =
                     opened.map(|workspace| map.entry(workspace_id).or_insert(workspace).clone());
@@ -522,11 +520,11 @@ pub(crate) async fn get_or_initialize(
     }
 }
 
-/// Admit `peer` to `workspace` for `operation`, enrolling a same-owner
-/// device first. Membership comes from the same reload as every routing
-/// read, so a pending or failed replacement's ceiling bounds it too; the
-/// enrolment is the serialized async admission, never filesystem work under
-/// the routing lock.
+/// Admit `peer` to `workspace` for `operation`, enrolling a member's device
+/// first. Membership comes from the same reload as every routing read, so a
+/// pending or failed replacement's ceiling bounds it too; the enrolment is
+/// the serialized async admission, never filesystem work under the routing
+/// lock.
 ///
 /// # Errors
 ///
@@ -900,9 +898,7 @@ mod tests {
             environments: Box::leak(Box::default()),
         };
         let removed = crate::workspace_access::tests::unsigned_peer(owner, [1; 32]);
-        for mode in [AdmissionMode::Explicit, AdmissionMode::SameOwner] {
-            // Not even a same-owner workspace enrols past the ceiling.
-            workspace.lock().await.admission = mode;
+        {
             let admission = admit_for(
                 &workspace,
                 &trust,
@@ -924,7 +920,7 @@ mod tests {
     async fn compute_attach_does_not_enrol_cross_user_device() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = runtime(tmp.path());
-        workspace.lock().await.admission = AdmissionMode::SameOwner;
+        workspace.lock().await.admission = AdmissionMode::Explicit;
         let owner = [9; 32];
         // The handshake admits anyone: only the workspace may keep a stranger out.
         let revocations = std::sync::RwLock::new(tilo_user_identity::RevocationList::new());
@@ -958,23 +954,6 @@ mod tests {
                 .is_empty(),
             "a cross-user device was enrolled through compute"
         );
-        let own = crate::workspace_access::tests::unsigned_peer(owner, [2; 32]);
-        assert_eq!(
-            admit_for(
-                &workspace,
-                &trust,
-                &own,
-                crate::workspace_access::WorkspaceOperation::Compute
-            )
-            .await
-            .unwrap(),
-            Ok(())
-        );
-        assert_eq!(
-            workspace.lock().await.store.load_membership().unwrap(),
-            vec![[2; 32]],
-            "the owner's device is enrolled durably"
-        );
     }
 
     #[tokio::test]
@@ -994,7 +973,6 @@ mod tests {
                 first_root,
                 &crate::payloads::neighbour(),
                 WorkspaceId::from_u128(7),
-                false,
                 AdmissionMode::Explicit,
                 1,
             )
@@ -1007,7 +985,6 @@ mod tests {
                 root.clone(),
                 &crate::payloads::neighbour(),
                 WorkspaceId::from_u128(8),
-                false,
                 AdmissionMode::Explicit,
                 1
             )
@@ -1021,7 +998,6 @@ mod tests {
             root,
             &crate::payloads::neighbour(),
             WorkspaceId::from_u128(7),
-            false,
             AdmissionMode::Explicit,
             1,
         )
@@ -1058,7 +1034,6 @@ mod tests {
                 first_root,
                 &crate::payloads::neighbour(),
                 WorkspaceId::from_u128(7),
-                false,
                 AdmissionMode::Explicit,
                 1,
             )
@@ -1071,7 +1046,6 @@ mod tests {
             root.clone(),
             &payloads,
             WorkspaceId::from_u128(7),
-            false,
             AdmissionMode::Explicit,
             1,
         ));
@@ -1096,7 +1070,6 @@ mod tests {
                 root,
                 &crate::payloads::neighbour(),
                 WorkspaceId::from_u128(7),
-                false,
                 AdmissionMode::Explicit,
                 1
             )

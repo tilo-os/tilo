@@ -59,11 +59,8 @@ async fn publish_offline_edit(
     a_client
         .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
-    // Drain A's Ready(0).
-    match tilo_test_env::within("A Ready timeout", a_client.recv())
-        .await
-        .expect("A closed")
-    {
+    // Drain A's Ready(0), past the state the held workspace sends first.
+    match crate::common::next(&a_client, |env| matches!(env, Envelope::Ready { .. })).await {
         Envelope::Ready { pending_deltas, .. } => assert_eq!(pending_deltas, 0),
         other => panic!("expected Ready, got {other:?}"),
     }
@@ -143,7 +140,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     let user = TestUser::fresh("Alice");
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("phone", DeviceCapabilities::member());
-    let members = [a.device_pubkey(), b.device_pubkey()];
+    let members = [&a.cert, &b.cert];
 
     let state = tempfile::tempdir().unwrap();
     let host_dev = user.enrol("home-server", DeviceCapabilities::member());
@@ -197,10 +194,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     .await
     .expect("B reconnect (2)");
     b2.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
-    match tilo_test_env::within("B Ready timeout", b2.recv())
-        .await
-        .expect("B closed")
-    {
+    match crate::common::next(&b2, |env| matches!(env, Envelope::Ready { .. })).await {
         // The queue is empty — no catch-up delta is delivered.
         Envelope::Ready { pending_deltas, .. } => {
             assert_eq!(

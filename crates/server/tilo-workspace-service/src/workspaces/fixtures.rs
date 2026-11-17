@@ -491,7 +491,7 @@ pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
         .inner
         .host
         .access
-        .replace_access(workspace_id, true, device_access)
+        .replace_access(workspace_id, device_access)
         .await
         .expect("the server projects the workspace's device_access");
 }

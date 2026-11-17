@@ -272,7 +272,6 @@ impl Holds {
     fn ctx<'a>(&'a self, own_user: &'a [u8; 32], own_cert: &'a DeviceCert) -> SessionCtx<'a> {
         SessionCtx {
             workspaces: &self.registry,
-            autobind: None,
             outbound: &self.outbound,
             content: Box::leak(Box::default()),
             state_outbound: None,

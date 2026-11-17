@@ -669,7 +669,6 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
     let registry: crate::peer::WorkspaceRegistry = Arc::new(AsyncMutex::new(HashMap::new()));
     let context = crate::peer::PeerContext {
         workspaces: registry,
-        autobind: None,
         revocations: Arc::new(std::sync::RwLock::new(
             tilo_user_identity::RevocationList::new(),
         )),
