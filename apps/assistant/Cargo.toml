@@ -1,0 +1,49 @@
+[package]
+name = "assistant"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "A person's assistant in one window: its main chat, its sub-agents, its tasks and scheduled work, and what it runs on"
+
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["assistant-samples"]
+
+[lib]
+name = "assistant"
+path = "src/lib.rs"
+
+[[bin]]
+name = "assistant"
+path = "src/main.rs"
+
+[features]
+# The assistant the screenshot scenarios show: development runs, captures and
+# tests only, never a release.
+samples = []
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+serde_json.workspace = true
+# Whether this build is a page, which runs no agent: an assistant made there works on the
+# workspace's host.
+tilo-platform-caps = { path = "../../crates/platform/tilo-platform-caps" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+
+[dev-dependencies]
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `assistant` claims `--features assistant/thin` in the
+# collection build, and the app then links the whole runtime statically.
+assistant-samples = { package = "assistant", path = ".", features = ["samples"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# The workspace a test's window is in, and Chat as the session's API reaches it.
+tilo-test-env = { version = "0.1.0", path = "../../crates/dev/test-env" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

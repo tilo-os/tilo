@@ -101,6 +101,7 @@ members = [
     "apps/console-model",
     "apps/agent",
     "apps/api-tester",
+    "apps/assistant",
     "apps/backups",
     "apps/browser",
     "apps/calculator",

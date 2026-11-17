@@ -1,0 +1,9 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+format = 2
+
+[[resources]]
+kind = "assistant.window"
+label = "Assistant window"
+version = 1
+

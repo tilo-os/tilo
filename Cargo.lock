@@ -876,6 +876,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "assistant"
+version = "0.1.0"
+dependencies = [
+ "assistant",
+ "runtime-dylib",
+ "serde_json",
+ "tilo-app",
+ "tilo-platform-caps",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17381,6 +17394,7 @@ dependencies = [
  "activity",
  "agent",
  "api-tester",
+ "assistant",
  "base64 0.22.1",
  "blake3",
  "bytes",
@@ -23053,6 +23067,7 @@ version = "0.1.0"
 dependencies = [
  "activity",
  "api-tester",
+ "assistant",
  "calculator",
  "calendar",
  "camera",
@@ -27732,6 +27747,7 @@ dependencies = [
  "asn1-rs",
  "asn1-rs-derive",
  "asn1-rs-impl",
+ "assistant",
  "async-broadcast",
  "async-channel 1.9.0",
  "async-channel 2.5.0",

@@ -9,6 +9,7 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
     vec![
         activity::definition(),
         api_tester::definition(),
+        assistant::definition(),
         calculator::definition(),
         calendar::definition(),
         camera::definition(),
