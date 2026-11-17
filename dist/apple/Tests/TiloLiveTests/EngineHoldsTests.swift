@@ -114,5 +114,67 @@ final class EngineHoldsTests: XCTestCase {
         let read = try await engine.read("notes.book")
         XCTAssertEqual(read["words"]?.string, "read")
     }
+
+    /// A device that was in is its person's device still when its page stops: the page before
+    /// it may still have held its storage, or its connection ended. It is loaded again.
+    func testAPageThatWasInAndThenStopsIsLoadedAgainAndGetsInAgain() async throws {
+        try await getIn()
+        // The page starts over by itself, as Tilo's does once after it let a device in, and stops.
+        try await inPage("leave()")
+        try await until("the page is on its way in again") { self.engine.state == .arriving("load") }
+        try await inPage("fail('This device is already open in another tab')")
+        try await until("the page is loaded again", within: .seconds(8)) { self.loaded >= 2 }
+        try await inPage("enter()")
+        try await until("the engine is in again") { self.engine.state == .open(route: Self.inside) }
+    }
+
+    /// The system ends the process of a page nobody looks at when it needs the memory.
+    func testAPageWhoseProcessEndedAfterItWasInIsLoadedAgain() async throws {
+        try await getIn()
+        engine.webViewWebContentProcessDidTerminate(engine.view)
+        try await until("the page is loaded again", within: .seconds(8)) { self.loaded >= 2 }
+        try await inPage("leave()")
+        try await inPage("enter()")
+        try await until("the engine is in again") { self.engine.state == .open(route: Self.inside) }
+    }
+
+    /// A device that is its person's already is never given up: its page is loaded again and
+    /// again, later each time, and what stopped it is said meanwhile.
+    func testADeviceThatIsItsPersonsIsLoadedAgainWithAPauseThatGrowsUntilItsPageGetsIn() async throws {
+        engine.stopPause = .milliseconds(150)
+        engine.stopPatience = .milliseconds(100)
+        var loads: [ContinuousClock.Instant] = []
+        engine.loads = { _ in loads.append(.now) }
+        try engine.open(route: "/w/ws-1")
+        try await inPage("fail('Tilo is not answering')")
+        // Every load says nothing. Each is followed by the next.
+        try await until("the page is loaded a fifth time") { loads.count >= 5 }
+        XCTAssertEqual(engine.lastStop, "Tilo is not answering")
+        XCTAssertTrue(stood.contains(.failed("Tilo is not answering")), "what stopped it was never said")
+        let waits = zip(loads.dropFirst(), loads).map { $0 - $1 }
+        XCTAssertGreaterThan(waits[2], waits[1])
+        XCTAssertGreaterThan(waits[3], waits[2])
+        // Her server answers again: the next load gets in, and nothing is loaded after it.
+        try await inPage("enter()")
+        try await until("the engine is in") { self.engine.state == .open(route: Self.inside) }
+        let then = loads.count
+        try await Task.sleep(for: .seconds(3))
+        XCTAssertEqual(loads.count, then, "a page that is in was loaded again")
+        XCTAssertEqual(engine.state, .open(route: Self.inside))
+    }
+
+    /// A pairing link is spent once it was used: a pairing that stops twice is said in the
+    /// page's own sentence and not tried a third time.
+    func testAPairingWhosePageStopsTwiceIsSaidAndNotLoadedAThirdTime() async throws {
+        engine.stopPause = .milliseconds(100)
+        engine.stopPatience = .milliseconds(100)
+        try engine.pair(with: URL(string: "\(Self.site)/#/w/ws-1?pair=\(String(repeating: "ab", count: 48))")!)
+        try await inPage("fail('This link was used already')")
+        try await until("the stop is said") { self.engine.state == .failed("This link was used already") }
+        XCTAssertEqual(loaded, 2)
+        try await Task.sleep(for: .milliseconds(900))
+        XCTAssertEqual(loaded, 2, "a spent link was tried a third time")
+        XCTAssertEqual(engine.state, .failed("This link was used already"))
+    }
 }
 #endif

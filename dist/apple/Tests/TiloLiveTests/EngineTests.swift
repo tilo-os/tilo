@@ -187,7 +187,8 @@ final class EngineTests: XCTestCase {
         try await until("the page is loaded again") { asked == 2 }
         XCTAssertEqual(engine.lastStop, "Couldn\u{2019}t open Tilo. It stopped while joining.")
         XCTAssertEqual(engine.state, .arriving("load"))
-        // That load says nothing. The page's own sentence is said, and nothing is loaded a third time.
+        // That load says nothing. The page's own sentence is said, and until then nothing is loaded a
+        // third time. (A device that is its person's is loaded again later: EngineHoldsTests.)
         try await until("the stop is said") { self.engine.state == .failed("Couldn\u{2019}t open Tilo. It stopped while joining.") }
         XCTAssertEqual(asked, 2)
     }

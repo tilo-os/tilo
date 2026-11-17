@@ -112,8 +112,12 @@ public final class TiloEngine: NSObject {
     private var sizeListeners: [UUID: AsyncStream<(String, CGSize)>.Continuation] = [:]
     /// Whoever waits for the page's next word of a change, once.
     private var changeWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
-    /// How often a page that stopped on its way in is loaded again before it is said.
-    private var retries = 0
+    /// How many loads in a row stopped since the page was last in. The first is loaded again
+    /// without a word; every later one is said, and loaded again after a pause that grows.
+    private var stops = 0
+    /// How long a page that stopped waits before it is loaded again, the first time. The wait
+    /// doubles with every load that stops as well, up to a minute.
+    var stopPause: Duration = .seconds(1.5)
     /// Why the page last stopped on its way in and was loaded again: the page's own sentence,
     /// or the system's. Nil while it never did.
     public private(set) var lastStop: String?
@@ -407,7 +411,7 @@ public final class TiloEngine: NSObject {
     private func go(to address: URL, in workspace: String?, pairing: Bool = false) {
         retrying?.cancel()
         retrying = nil
-        retries = 1
+        stops = 0
         moves = 3
         pairs = pairing
         wanted = address
@@ -507,7 +511,7 @@ public final class TiloEngine: NSObject {
                 load(address)
                 return
             }
-            retries = 0
+            stops = 0
             state = .open(route: inside)
         case "refused":
             state = .refused(status)
@@ -528,27 +532,44 @@ public final class TiloEngine: NSObject {
         }
     }
 
-    /// The page stopped on its way in. In a system web view the page before this one may still
-    /// hold the lock on its storage as the next asks for it, and the next then stops; loaded
-    /// again a moment later it gets in. So it is loaded once more before it is said.
+    /// The page stopped: on its way in, or after it was in. In a system web view the page
+    /// before this one may still hold the lock on its storage as the next asks for it, and the
+    /// next then stops; loaded again a moment later it gets in. So the first stop is not said:
+    /// the page is loaded once more.
+    ///
+    /// A load that stops as well is said, in the page's own sentence. A pairing ends there: its
+    /// link is spent. A device that is its person's already is not given up: its key is in its
+    /// store, and its person's server may only be away. Its page is loaded again after a pause
+    /// that grows with every load that stops, up to a minute, for as long as it takes.
     private func stopped(_ why: String) {
-        guard retries > 0, let wanted else {
+        guard let wanted else {
             state = .failed(why)
             return
         }
-        retries -= 1
-        lastStop = why
-        state = .arriving("load")
+        let before = stops
+        stops += 1
+        if before == 0 {
+            lastStop = why
+            state = .arriving("load")
+        } else {
+            state = .failed(why)
+            if pairs { return }
+        }
+        let pause = min(stopPause * (1 << min(before, 6)), .seconds(60))
+        retrying?.cancel()
         retrying = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(for: pause)
             guard let self, !Task.isCancelled else { return }
+            // A page that got in meanwhile is left as it is.
+            if case .open = self.state { return }
+            self.state = .arriving("load")
             if let loads = self.loads { loads(wanted) } else { self.view.load(URLRequest(url: wanted)) }
             // The page that is loaded again may never get as far as saying where it stands (it
             // can wait for what the page before it held). Then what stopped the first is said,
             // and nobody waits for ever at a way in that shows nothing.
             try? await Task.sleep(for: self.stopPatience)
             guard !Task.isCancelled, self.state == .arriving("load") else { return }
-            self.state = .failed(why)
+            self.stopped(why)
         }
     }
 
