@@ -2322,7 +2322,9 @@ impl SecretPrompt {
         if !self.resource.is_empty() {
             node = node.with_description(self.resource.clone());
         }
-        node
+        // The page's buttons and an assistive technology's reach a part by the
+        // route its key names.
+        node.with_keyed_action_routes("secret-prompt")
     }
 
     /// Carry out an assistive technology's or an agent's `action` on the

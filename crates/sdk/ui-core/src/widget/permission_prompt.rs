@@ -705,7 +705,10 @@ impl Widget for PermissionPrompt {
                         .focusable(true)
                         .focused(self.has_keyboard_focus),
                 )
-                .with_children(children),
+                .with_children(children)
+                // The page's buttons and an assistive technology's reach a
+                // choice by the route its key names.
+                .with_keyed_action_routes("permission-prompt"),
         )
     }
 

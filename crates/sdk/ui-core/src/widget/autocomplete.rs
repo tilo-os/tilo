@@ -1008,9 +1008,10 @@ impl Widget for Autocomplete {
             .map(|suggestion| {
                 let key =
                     crate::a11y::hash_key(&("autocomplete-suggestion", suggestion.value.as_str()));
-                let option = ControlOption::new(suggestion.label.clone()).with_target(
-                    crate::composition::keyed_target("autocomplete-suggestion", &[key]),
-                );
+                // The rows are published under the widget's own route namespace.
+                let namespace = self.test_id().unwrap_or("autocomplete");
+                let option = ControlOption::new(suggestion.label.clone())
+                    .with_target(crate::composition::keyed_target(namespace, &[key]));
                 let detail = suggestion
                     .detail
                     .clone()
