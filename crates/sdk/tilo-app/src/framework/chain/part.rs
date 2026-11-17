@@ -124,6 +124,13 @@ pub(super) struct PartType {
     pub(super) history: fn(&PartEdit) -> Box<dyn tilo_actions::Action>,
     /// What a part's state publishes, under the chain's address.
     pub(super) publish: fn(&str, &dyn Any) -> tilo_actions::ResourceSpec,
+    /// The same without its children ([`tilo_resource::publish_head`]).
+    pub(super) publish_head: fn(&str, &dyn Any) -> tilo_actions::ResourceSpec,
+    /// A part's children in the parts a publisher keeps between versions
+    /// ([`tilo_resource::Resource::children_parts`]).
+    pub(super) children: fn(&dyn Any) -> tilo_resource::items::ChildrenParts,
+    /// The parts' resource as a publisher of its items sees it.
+    pub(super) resource: fn() -> super::super::root::ResourceType,
     /// [`Chained::places`] published, from the app's resource and the parts.
     pub(super) places: fn(&dyn Any, &dyn Any) -> Vec<tilo_actions::ResourceSpec>,
     pub(super) search: fn(&dyn Any) -> Vec<tilo_resource::SearchEntry>,
@@ -178,6 +185,9 @@ impl<P: Chained> Of<P> {
         clone: clone::<P>,
         history: history::<P>,
         publish: publish::<P>,
+        publish_head: publish_head::<P>,
+        children: children::<P>,
+        resource: super::super::root::ResourceType::of::<P>,
         places: places::<P>,
         search: search::<P>,
         search_over: search_over::<P>,
@@ -191,6 +201,10 @@ pub(super) trait HeldPart {
     fn sync(&self, doc: &tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError>;
     fn take_change(&self);
     fn state(&self) -> Rc<dyn Any>;
+    /// What the part's state holds: its revision and its loads
+    /// ([`Live::revision`], [`Live::loads`]), which move with every change
+    /// to what it says.
+    fn held_at(&self) -> (u64, u64);
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -205,6 +219,10 @@ impl<R: Resource> HeldPart for Live<R> {
 
     fn state(&self) -> Rc<dyn Any> {
         self.get()
+    }
+
+    fn held_at(&self) -> (u64, u64) {
+        (Live::revision(self), Live::loads(self))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -487,6 +505,25 @@ fn publish<P: Chained>(id: &str, state: &dyn Any) -> tilo_actions::ResourceSpec 
     match state.downcast_ref::<P::State>() {
         Some(state) => tilo_resource::publish::<P>(id, P::LABEL, state),
         None => tilo_actions::ResourceSpec::new(id, P::KIND, P::LABEL),
+    }
+}
+
+fn publish_head<P: Chained>(id: &str, state: &dyn Any) -> tilo_actions::ResourceSpec {
+    match state.downcast_ref::<P::State>() {
+        Some(state) => tilo_resource::publish_head::<P>(id, P::LABEL, state),
+        None => tilo_actions::ResourceSpec::new(id, P::KIND, P::LABEL),
+    }
+}
+
+fn children<P: Chained>(state: &dyn Any) -> tilo_resource::items::ChildrenParts {
+    match state.downcast_ref::<P::State>() {
+        Some(state) => P::children_parts(state),
+        None => tilo_resource::items::ChildrenParts {
+            others: Vec::new(),
+            kept: Rc::default(),
+            items: Vec::new(),
+            item_actions: Vec::new(),
+        },
     }
 }
 

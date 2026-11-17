@@ -56,8 +56,9 @@ use read::{offer_document_reads, offer_item_reads, read};
 pub(crate) use search::{
     BodyText, IndexedEntries, LiveSearch, ResourceSearch, field_weight, index_entry,
 };
+pub(crate) use shared_tree::ItemChildren;
 use shared_tree::{
-    DocumentChildren, ItemChildren, NestedViews, PublishedChildren, ResourceChildren, RowChildren,
+    DocumentChildren, NestedViews, PublishedChildren, ResourceChildren, RowChildren,
     SharedTreeCache, mark_document_jobs,
 };
 use typed::TypedRoot;

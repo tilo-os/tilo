@@ -91,6 +91,12 @@ test-chain-log-part = Lines
 test-chain-log-part-write = Write a line
 test-chain-log-part-mark = Mark lines
 
+## crates/sdk/tilo-app/tests/chain_write_cost.rs
+test-cost-board = Board
+test-cost-board-rename = Rename the board
+test-cost-board-part = Cards
+test-cost-board-part-put = Put cards up
+
 ## crates/sdk/tilo-app/tests/owed.rs
 test-owed-shelf = Shelf
 test-owed-shelf-rename = Rename the shelf
