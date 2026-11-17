@@ -1054,8 +1054,8 @@ the model but instead of it:
 - **The old spelling.** The `workspace` key a desktop entry or an action row
   stores its workspace id under, `(app, workspace, document)` addresses and
   `tilo-workspaces` on disk.
-- **Governance by one device.** The governor, the pinned governance writer,
-  the separate governance document with its receipts, ownership and succession,
+- **Governance by one device.** The governor, the separate governance document
+  with its receipts, ownership and succession,
   and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
   workspace state changed by actions.
 - **Per-person spaces.** The person's devices meet on the session between two

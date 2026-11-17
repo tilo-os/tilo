@@ -158,7 +158,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let server_dev = user.enrol("home-server", DeviceCapabilities::member());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("phone", DeviceCapabilities::member());
-        let a_key = a.device_pubkey();
+        let (a_key, b_key) = (a.device_pubkey(), b.device_pubkey());
         let state = tempfile::tempdir().unwrap();
         let server = crate::common::start_server(
             ServerConfig {
@@ -249,7 +249,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             .load_membership()
             .unwrap();
         assert!(
-            members.contains(&a.device_pubkey()) && members.contains(&b.device_pubkey()),
+            members.contains(&a_key) && members.contains(&b_key),
             "both devices persist as members"
         );
     }

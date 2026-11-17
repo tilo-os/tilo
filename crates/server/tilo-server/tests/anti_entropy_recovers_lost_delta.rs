@@ -79,16 +79,18 @@ async fn publish_offline_edit(
         })
         .unwrap();
 
-    let mut queued = 0;
-    // Polls for up to 30 s; only a hang uses the whole budget.
+    // Polls for up to 30 s; only a hang uses the whole budget. The held
+    // workspace queues state of its own beside A's edit, so the edit is found
+    // by its bytes.
+    let mut queued = false;
     for _ in 0..1200 {
-        queued = pending_count(pending_dir);
-        if queued >= 1 {
+        queued = crate::common::queued_carries(pending_dir, &d1);
+        if queued {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(queued, 1, "A's edit is queued for the offline B");
+    assert!(queued, "A's edit is queued for the offline B");
     (a_client, doc_a)
 }
 

@@ -310,7 +310,10 @@ async fn removed_member_session_ends_without_serving_an_action() {
         &[&bob],
         &[WS],
         &[&a.cert],
-        Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions)))),
+        Some(
+            Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions))))
+                as Arc<dyn tilo_server::AppActionServer>,
+        ),
     ))
     .await;
     let workspaces = server

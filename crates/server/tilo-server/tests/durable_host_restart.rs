@@ -226,7 +226,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     .await;
     let addr2 = host2.node_addr();
 
-    let doc_b = catch_up_after_restart(addr2, &user, &a, &b, WS).await;
+    let mut doc_b = catch_up_after_restart(addr2, &user, &a, &b, WS).await;
 
     assert_eq!(doc_b.str_at(&ROOT, "note").as_deref(), Some("durable"));
     assert_eq!(
