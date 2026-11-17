@@ -21,6 +21,7 @@ HOOK_SOURCES = [
     "tools/ci/suites.toml",
     "tools/ci/check-changed-rustfmt.sh",
     "tools/ci/comparison_range.py",
+    "tools/land.py",
 ]
 WORKSPACE = """[workspace]
 members = ["native", "web", "fake-binding"]
@@ -121,7 +122,7 @@ class PrePushLintTests(unittest.TestCase):
         self.write("Cargo.lock", LOCK)
         self.write("clippy.toml", CLIPPY_TOML)
         # Running the hook compiles its Python; the repository ignores that as well.
-        self.write(".gitignore", "__pycache__/\n")
+        self.write(".gitignore", "__pycache__/\n.claude/\n")
         self.write("native/Cargo.toml", CRATE.format(name="fixture-native"))
         self.write("native/src/lib.rs", LIB.format(answer=42))
         self.write("web/Cargo.toml", CRATE.format(name="fixture-web")
@@ -166,23 +167,24 @@ class PrePushLintTests(unittest.TestCase):
         path.chmod(0o755)
 
     def metadata(self) -> str:
-        """The Cargo metadata of the fixture: what the hook selects packages with."""
+        """The Cargo metadata of the fixture (of the checkout the hook runs in): what it selects with."""
+        root = getattr(self, "checkout", self.root)
         packages = [
-            {"name": "fixture-native", "manifest_path": str(self.root / "native/Cargo.toml"),
+            {"name": "fixture-native", "manifest_path": str(root / "native/Cargo.toml"),
              "dependencies": []},
-            {"name": "fixture-web", "manifest_path": str(self.root / "web/Cargo.toml"),
+            {"name": "fixture-web", "manifest_path": str(root / "web/Cargo.toml"),
              "dependencies": [{"name": "wasm-bindgen", "kind": None, "path": "fake-binding"}]},
-            {"name": "wasm-bindgen", "manifest_path": str(self.root / "fake-binding/Cargo.toml"),
+            {"name": "wasm-bindgen", "manifest_path": str(root / "fake-binding/Cargo.toml"),
              "dependencies": []},
         ]
         for name in self.dependents:
             packages.append(
-                {"name": name, "manifest_path": str(self.root / name / "Cargo.toml"),
+                {"name": name, "manifest_path": str(root / name / "Cargo.toml"),
                  "dependencies": [{"name": "fixture-native", "kind": None,
-                                   "path": str(self.root / "native")}]})
+                                   "path": str(root / "native")}]})
         if self.page_entry:
             packages.append(
-                {"name": "tilo-web-desktop", "manifest_path": str(self.root / "page/Cargo.toml"),
+                {"name": "tilo-web-desktop", "manifest_path": str(root / "page/Cargo.toml"),
                  "dependencies": [{"name": "fixture-web", "kind": None, "path": "web"},
                                   {"name": "fixture-native", "kind": None, "path": "native"}]})
         return json.dumps({"packages": packages})
@@ -202,15 +204,26 @@ class PrePushLintTests(unittest.TestCase):
             env["CARGO"] = str(self.bin / "drop-in")
         return env
 
-    def push(self, head=None, remote_oid=None, **environment):
-        """Run the hook as Git would, with the ref lines it writes for a push."""
+    def push(self, head=None, remote_oid=None, ref="refs/heads/topic", cwd=None, **environment):
+        """Run the hook as Git would, with the ref lines it writes for a push.
+
+        A branch of one's own by default: main takes pushes only from the land queue.
+        """
         self.log.unlink(missing_ok=True)
         remote_oid = self.base if remote_oid is None else remote_oid
+        cwd = cwd or self.root
         return subprocess.run(
-            [str(self.root / ".githooks/pre-push"), "origin", "file:///dev/null"], cwd=self.root,
+            [str(cwd / ".githooks/pre-push"), "origin", "file:///dev/null"], cwd=cwd,
             capture_output=True, text=True, env=self.environment(**environment), timeout=HANG_BOUND,
-            input=f"refs/heads/main {head or self.head()} refs/heads/main {remote_oid}\n",
+            input=f"{ref} {head or self.head()} {ref} {remote_oid}\n",
         )
+
+    def lander(self):
+        """The land queue's worktree of the fixture, at its head (tools/land.py)."""
+        tree = self.root / ".claude" / "worktrees" / "land-main"
+        self.git("worktree", "add", "-q", "--detach", str(tree), "HEAD")
+        self.checkout = tree
+        return tree
 
     def calls(self, prefix="start"):
         """The commands the stub was asked to compile."""
@@ -261,14 +274,31 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("is not the commit checked out here", result.stderr)
         self.assertEqual(self.calls(), [])
 
+    def test_a_direct_push_to_main_is_refused_for_the_land_queue(self):
+        # Main moves faster than a lint takes; a push straight to it races the queue's lint and
+        # makes it lint again. A push without Rust is refused too: it moves main all the same.
+        self.write("docs/notes.md", "words\n")
+        self.commit("docs: describe the fixture")
+        result = self.push(ref="refs/heads/main")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("python3 tools/land.py", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_the_land_queue_pushes_to_main(self):
+        self.write("native/src/lib.rs", LIB.format(answer=62))
+        self.commit("feat: answer 62")
+        result = self.push(ref="refs/heads/main", cwd=self.lander())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.calls(), "the lander's push is linted as any push is")
+
     def test_a_push_main_has_moved_past_is_refused_before_anything_is_compiled(self):
         # The remote reports main's head when the push begins; a push that does not contain it
         # is refused after the lint whatever the lint says, so the lint would only load the builder.
         self.write("native/src/lib.rs", LIB.format(answer=61))
         self.commit("feat: answer 61")
-        result = self.push(remote_oid="1" * 40)
+        result = self.push(remote_oid="1" * 40, ref="refs/heads/main", cwd=self.lander())
         self.assertEqual(result.returncode, 1)
-        self.assertIn("tools/land.py", result.stderr)
+        self.assertIn("does not contain", result.stderr)
         self.assertEqual(self.calls(), [])
 
     def test_a_lock_change_lints_the_members_it_reaches(self):
@@ -480,13 +510,27 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertEqual(self.calls(), [NATIVE_CLIPPY])
 
+    def test_each_runs_whole_output_and_time_can_be_kept(self):
+        self.write("native/src/lib.rs", LIB.format(answer=12))
+        self.commit("feat: answer 12")
+        kept = self.temporary / "kept"
+        result = subprocess.run(
+            ["python3", str(self.root / "tools/ci/pre_push_lint.py"), "--range",
+             f"{self.base}..{self.head()}", "--keep-logs", str(kept)], cwd=self.root,
+            capture_output=True, text=True, env=self.environment(), timeout=HANG_BOUND,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        native = (kept / "1-clippy-native.log").read_text()
+        self.assertRegex(native, r"^\$ cargo clippy --locked -p fixture-native .*\n# exit 0 after \d+s\n")
+        self.assertIn("unreachable value in a page build", native)
+
     def test_a_plan_names_the_packages_without_linting(self):
         self.write("web/src/lib.rs", LIB.format(answer=11))
         self.commit("feat: answer 11 in the page")
         result = subprocess.run(
             ["python3", str(self.root / "tools/ci/pre_push_lint.py"), "origin", "--plan"], cwd=self.root,
             capture_output=True, text=True, env=self.environment(), timeout=HANG_BOUND,
-            input=f"refs/heads/main {self.head()} refs/heads/main {self.base}\n",
+            input=f"refs/heads/topic {self.head()} refs/heads/topic {self.base}\n",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["native: fixture-web", "wasm32: fixture-web"])

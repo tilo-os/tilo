@@ -28,9 +28,10 @@ again waits for the same answer. When the change lands and HEAD is still the
 commit queued, the branch is moved onto the landed head, as a rebase onto main
 would.
 
-A plain `git push` keeps working: the lander's push is refused like anyone's
-when main moved under it, and it puts its changes on the new head and lints
-again.
+The pre-push hook refuses a push to main from anywhere but the lander's
+worktree, so nothing races its lint. Main still moves under it when the forge
+merges a pull request: the lander's push is refused then like anyone's, and it
+puts its changes on the new head and lints again.
 
 The queue and the lander's log live in the clone's Git directory
 (`land/<branch>/`), the lander's own worktree beside the main checkout's other
@@ -68,6 +69,8 @@ SHOWN_LINES = 120
 # machine that compiles was away, or failed after compiling (a container it could not save).
 # The round is tried again, a few times, rather than answered.
 UNEXPLAINED_RETRIES = 3
+# Rounds whose whole lint output is kept, to tell where a round's minutes went.
+KEPT_LINT_LOGS = 40
 UNEXPLAINED_RETRY_SECONDS = 30
 # How a failed lint names what broke: the packages that did not build, and the files a
 # diagnostic points at or the format check found unformatted.
@@ -140,13 +143,24 @@ class Place:
             events.write(json.dumps({"at": now(), **fields}) + "\n")
 
     def main_checkout(self) -> Path:
-        """The clone's main checkout: the one worktree no one removes when their work is done."""
-        listing = out(self.repo, "worktree", "list", "--porcelain").splitlines()
-        return Path(listing[0].split(" ", 1)[1])
+        return main_checkout(self.repo)
 
     def worktree(self) -> Path:
-        """The lander's own worktree, beside the main checkout's other worktrees."""
-        return self.main_checkout() / ".claude" / "worktrees" / f"land-{self.branch.replace('/', '-')}"
+        return lander_worktree(self.repo, self.branch)
+
+
+def main_checkout(repo: Path) -> Path:
+    """The clone's main checkout: the one worktree no one removes when their work is done."""
+    listing = out(repo, "worktree", "list", "--porcelain").splitlines()
+    return Path(listing[0].split(" ", 1)[1])
+
+
+def lander_worktree(repo: Path, branch: str) -> Path:
+    """The lander's own worktree, beside the main checkout's other worktrees.
+
+    The pre-push hook lets only a push from here onto main (tools/ci/pre_push_lint.py).
+    """
+    return main_checkout(repo) / ".claude" / "worktrees" / f"land-{branch.replace('/', '-')}"
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -461,7 +475,8 @@ class Lander:
         too, rather than leave them loading the builder for minutes, for nobody.
         """
         process = subprocess.Popen(
-            [sys.executable, "-I", "tools/ci/pre_push_lint.py", "--range", f"{upstream}..HEAD"],
+            [sys.executable, "-I", "tools/ci/pre_push_lint.py", "--range", f"{upstream}..HEAD",
+             "--keep-logs", str(self.logs())],
             cwd=self.tree, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             start_new_session=True,
         )
@@ -479,6 +494,15 @@ class Lander:
         finally:
             signal.signal(signal.SIGTERM, previous)
         return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+
+    def logs(self) -> Path:
+        """Where this round's lint keeps the whole output of each of its runs; the last few rounds stay."""
+        directory = self.place.dir / "lint-logs"
+        directory.mkdir(exist_ok=True)
+        rounds = sorted(directory.iterdir())
+        for old in rounds[:-KEPT_LINT_LOGS]:
+            shutil.rmtree(old, ignore_errors=True)
+        return directory / time.strftime("%Y%m%d-%H%M%S")
 
     def inherited(self, size: int, upstream: str, output: str) -> bool:
         """Whether every diagnostic of the failed lint is one the branch's head has without the batch.

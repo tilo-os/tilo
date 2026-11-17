@@ -175,9 +175,10 @@ tested; a screenshot helps for visual changes. If something would not build or
 you could not test it, say so. CI runs on the pull request, and a maintainer
 reviews and merges it.
 
-Maintainers who push to `main` directly land with `python3 tools/land.py`
-instead of pushing: `main` moves faster than the lint takes, so a push lints,
-finds `main` moved, rebases and lints again. The command queues the branch's
+Maintainers land on `main` with `python3 tools/land.py`; the pre-push hook
+refuses a direct push to `main` from anywhere but the queue's own worktree,
+because `main` moves faster than the lint takes: a push lints,
+finds `main` moved, rebases and lints again, and makes the queue lint again. The command queues the branch's
 commits; one lander per clone puts everything queued on `main`'s newest head,
 lints it once as the pre-push hook would and pushes it, and answers each change:
 landed, a conflict with its files, or the lint's diagnostics (`--help`).

@@ -59,6 +59,7 @@ if str(TOOLS) not in sys.path:
 from ci import package_features, suites, wasm_clippy_conf
 from ci.package_sets import PAGE_ENTRY, browser_crates, page_closure, wasm_crates
 from ci.lint_inputs import Workspace
+from land import lander_worktree
 from ci.workspace_graph import (
     cargo_metadata, closure, file_at, lockfile_change, package_maps, reverse_dependencies,
 )
@@ -171,6 +172,8 @@ class Push(NamedTuple):
     # Pushes to main that main's own head, as the remote reported it when the push began, is not
     # part of: the remote refuses them whatever the lint says.
     behind: list[str] = []
+    # Pushes to main from anywhere but the land queue's own worktree.
+    direct: list[str] = []
 
 
 def git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -238,6 +241,14 @@ def contains(root: Path, head: str, commit: str) -> bool:
     return known(root, commit) and git(root, "merge-base", "--is-ancestor", commit, head).returncode == 0
 
 
+def landers_worktree(root: Path) -> bool:
+    """Whether this is the land queue's worktree, the one place main is pushed from (tools/land.py)."""
+    try:
+        return root.resolve() == lander_worktree(root, "main").resolve()
+    except (RuntimeError, IndexError, OSError):
+        return False
+
+
 def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
     """Every file the pushed refs change, and each ref's comparison."""
     files: set[str] = set()
@@ -245,6 +256,8 @@ def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
     tips: list[str] = []
     unnamed: list[str] = []
     behind: list[str] = []
+    direct: list[str] = []
+    lander = landers_worktree(root)
     for line in lines:
         parts = line.split()
         if len(parts) != 4:
@@ -252,6 +265,9 @@ def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
         ref, head, remote_ref, remote_oid = parts
         if set(head) == ZERO_OID:
             continue  # a deleted ref changes nothing that is built
+        if remote_ref == MAIN_REF and not lander:
+            direct.append(ref)
+            continue
         if remote_ref == MAIN_REF and set(remote_oid) != ZERO_OID and not contains(root, head, remote_oid):
             behind.append(remote_oid)
             continue
@@ -266,7 +282,7 @@ def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
             comparisons.append((start, head))
         tips.append(head)
         files |= changed
-    return Push(files, comparisons, tips, unnamed, behind)
+    return Push(files, comparisons, tips, unnamed, behind, direct)
 
 
 def rust_changes(files: set[str]) -> set[str]:
@@ -600,8 +616,13 @@ def rustfmt_available() -> bool:
     return shutil.which("rustfmt") is not None
 
 
-def run_together(root: Path, runs: list[Lint]) -> tuple[list[tuple[Lint, int, str]], float]:
-    """Start every run at once and collect them, so the wall time is the slowest one."""
+def run_together(root: Path, runs: list[Lint],
+                 keep: Path | None = None) -> tuple[list[tuple[Lint, int, str]], float]:
+    """Start every run at once and collect them, so the wall time is the slowest one.
+
+    With `keep`, each run's whole output is written there, headed by its command and how long
+    it took: what tells a lint that compiled everything from one that compiled what changed.
+    """
     started = time.monotonic()
     running = []
     for run in runs:
@@ -611,12 +632,24 @@ def run_together(root: Path, runs: list[Lint]) -> tuple[list[tuple[Lint, int, st
         process = subprocess.Popen(run.command, cwd=root, stdout=log, stderr=subprocess.STDOUT, text=True,
                                    env={**os.environ, **(run.env or {})})
         running.append((run, process, log))
+    finished: dict[int, float] = {}
+    while len(finished) < len(running):
+        for index, (_run, process, _log) in enumerate(running):
+            if index not in finished and process.poll() is not None:
+                finished[index] = time.monotonic() - started
+        time.sleep(0.2)
     results = []
-    for run, process, log in running:
-        status = process.wait()
+    for index, (run, process, log) in enumerate(running):
         log.seek(0)
-        results.append((run, status, log.read()))
+        output = log.read()
+        results.append((run, process.returncode, output))
         log.close()
+        if keep is not None:
+            keep.mkdir(parents=True, exist_ok=True)
+            name = re.sub(r"[^a-z0-9]+", "-", run.label.lower()).strip("-")
+            (keep / f"{index}-{name}.log").write_text(
+                f"$ {' '.join(run.command)}\n# exit {process.returncode} after {finished[index]:.0f}s\n"
+                + output)
     return results, time.monotonic() - started
 
 
@@ -704,6 +737,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--plan", action="store_true", help="print what the push would lint, and lint nothing")
     parser.add_argument("--range", metavar="BASE..HEAD",
                         help="lint what that range changes, for a run outside a push (CI, t)")
+    parser.add_argument("--keep-logs", metavar="DIR", type=Path,
+                        help="keep each run's whole output, and how long it took, in DIR")
     parser.add_argument("--stdin", type=argparse.FileType("r"), default=sys.stdin,
                         help="the ref lines Git writes for a pre-push hook")
     options = parser.parse_args(argv)
@@ -715,6 +750,12 @@ def main(argv: list[str]) -> int:
         push = Push(diff(root, base, head), [(base, head)], [head], [])
     else:
         push = pushed(root, options.remote, options.stdin)
+    if push.direct:
+        say("pre-push: main takes changes only through the land queue, so that nothing races its "
+            "lint: land with `python3 tools/land.py`. It puts your commits on main's newest head "
+            "with whatever else is queued, lints them there once and pushes them, and answers "
+            "landed, a conflict with its files, or the diagnostics your change adds")
+        return 1
     if push.behind:
         say(f"pre-push: main is at {push.behind[0][:12]} now, which this push does not contain, so "
             "the remote refuses it whatever a lint says; nothing was linted. Land with "
@@ -776,7 +817,7 @@ def main(argv: list[str]) -> int:
             say(f"pre-push: {run.label} passed before on the same inputs")
         else:
             pending.append((run, key))
-    results, elapsed = run_together(root, [run for run, _key in pending])
+    results, elapsed = run_together(root, [run for run, _key in pending], options.keep_logs)
     for (_run, key), (run, status, _output) in zip(pending, results):
         if status == 0:
             passes.record(key, " ".join(run.command))
