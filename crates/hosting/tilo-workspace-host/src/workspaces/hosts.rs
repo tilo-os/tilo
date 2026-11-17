@@ -529,7 +529,15 @@ fn host_invocation(action: &str, arguments: Map<String, Value>) -> InvokeRequest
 fn receipt_output(status: ReceiptStatus) -> Result<Value, String> {
     match status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(json!({}))),
-        other => Err(format!("the host did not do it: {other:?}")),
+        // The other server's own words, as its refusal or failure says them.
+        ReceiptStatus::Rejected {
+            error: tilo_actions::remote::ActionCallError::Refused { reason },
+        } => Err(reason),
+        ReceiptStatus::Rejected { error } => Err(error.to_string()),
+        ReceiptStatus::Failed { error } => Err(error.message),
+        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
+            Err("the other server did not finish it".into())
+        }
     }
 }
 

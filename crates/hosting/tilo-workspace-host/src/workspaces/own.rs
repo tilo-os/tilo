@@ -585,7 +585,10 @@ impl Workspaces {
     /// The host does not keep it for them.
     pub(crate) async fn keeps_for_owner(&self, person: &[u8; 32], now: u64) -> Result<(), String> {
         if !self.let_in(person, now).await {
-            return Err(self.not_let_in().await.error);
+            return Err(self
+                .not_let_in_then("It holds your workspaces once you are in.")
+                .await
+                .error);
         }
         if let Some(own) = self.own() {
             let limit = own.storage_bytes(person);
@@ -615,6 +618,12 @@ impl Workspaces {
     /// invitation, carried as the action's refusal reason
     /// ([`tilo_server_protocol::directory::EntryRefused::to_reason`]).
     pub(super) async fn not_let_in(&self) -> tilo_server_protocol::directory::EntryRefused {
+        self.not_let_in_then("Your workspaces are made once you are in.")
+            .await
+    }
+
+    /// [`Self::not_let_in`], ending with `then`: what being let in brings.
+    async fn not_let_in_then(&self, then: &str) -> tilo_server_protocol::directory::EntryRefused {
         use tilo_server_protocol::directory::{EntryRefusalCode, EntryRefused};
         let host = self
             .own()
@@ -643,7 +652,8 @@ impl Workspaces {
         if entry.is_some() {
             error.push_str("; leave your address on its wait list");
         }
-        error.push_str(". Your workspaces are made once you are in.");
+        error.push_str(". ");
+        error.push_str(then);
         EntryRefused {
             code,
             error,

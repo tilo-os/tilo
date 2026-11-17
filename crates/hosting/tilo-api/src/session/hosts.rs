@@ -28,7 +28,8 @@ const ADD: &str = "host.add";
 const REMOVE: &str = "host.remove";
 /// What a refusal names as the next step.
 const OWNERS_ONLY: &str = "an owner of the workspace chooses its hosts, from a device of theirs \
-                           or a key they created reaching all their workspaces";
+                           or a key they created reaching all their workspaces; the other server \
+                           keeps it only for an owner it let in: sign in there first";
 
 /// Whether `tool` with `arguments` is about the workspace's hosts.
 pub(crate) fn addresses(tool: &str, arguments: &Value) -> bool {
