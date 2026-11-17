@@ -429,7 +429,7 @@ impl Served {
 
 /// Ada narrows her agent to `bound`, as her page does: her device writes the rules into the
 /// workspace's list of its agents. Answers once the server holds them; nothing for no rules.
-async fn narrow_agent(
+pub(super) async fn narrow_agent(
     page: &Browser,
     workspaces: &Workspaces,
     workspace: &str,

@@ -1,5 +1,6 @@
 //! An issue given to an agent on a workspace's server is worked on over many agent sessions: its
-//! place is made before the first, a later one is told what its note reads, a wait costs nothing
+//! place is made before the first (its note, and its folder in the workspace's files, which an
+//! agent refused Files does not get), a later one is told what its note reads, a wait costs nothing
 //! and ends at its moment or when the issue is told to go on, its budget stops it, and a session
 //! that was lost is not started for ever. Nothing of it reads as done. No device of the person is
 //! on for any of it, and a server that starts again reads the same from the workspace's documents.
@@ -26,13 +27,15 @@ const DAY_MS: i64 = 86_400_000;
 struct Given {
     root: SigningKey,
     browser: crate::support::Device,
+    /// The person's page, open on the workspace: what their device writes goes through it.
+    page: Browser,
     workspaces: Workspaces,
     actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     workspace: String,
     /// The part of the tracker's issues that keeps the issue.
     document: String,
     issue: Id,
-    /// The server, the person's page and the server's state, kept for as long as the test lasts.
+    /// The server and its state, kept for as long as the test lasts.
     _held: Vec<Box<dyn std::any::Any>>,
 }
 
@@ -67,12 +70,13 @@ async fn given() -> Given {
     Given {
         root,
         browser,
+        page,
         workspaces,
         actions,
         workspace,
         document,
         issue,
-        _held: vec![Box::new(served), Box::new(page), Box::new(state)],
+        _held: vec![Box::new(served), Box::new(state)],
     }
 }
 
@@ -160,6 +164,68 @@ impl Given {
     async fn nothing_owed(&self, agents: &ServerAgents, now_ms: i64, why: &str) {
         let turns = agents.turns_at(&self.workspace, now_ms).await.unwrap();
         assert!(turns.is_empty(), "{why}: {turns:?}");
+    }
+
+    /// Its person narrows the agent, as their page does: its rules refuse it what Files keeps
+    /// in the workspace, to read and to change.
+    async fn refuses_the_agent_files(&self) {
+        use tilo_action_policy::{ActionKind, Answer, KindSet, Rule, TreePath};
+        let files = Rule::new(
+            TreePath::workspace(&self.workspace).app(fs_protocol::tree::FILES_APP),
+            KindSet::NONE
+                .with(ActionKind::Read)
+                .with(ActionKind::Undoable),
+            Answer::Deny,
+        );
+        super::search::narrow_agent(
+            &self.page,
+            &self.workspaces,
+            &self.workspace,
+            &hex::encode(self.root.verifying_key().to_bytes()),
+            vec![ui::tilo_workspace_agent::Bound::of(&files)],
+        )
+        .await;
+    }
+
+    /// What the folder `Tasks` of the workspace's files holds, by name, once it holds
+    /// `at_least` entries or as it is after ten seconds: nothing while the workspace keeps no
+    /// tree, or no such folder in it.
+    async fn in_tasks_folder(&self, at_least: usize) -> Vec<String> {
+        use fs_protocol::tree::{FILES_APP, ROOT_ID};
+        let started = Instant::now();
+        loop {
+            let founded = self
+                .workspaces
+                .resource_document(
+                    &self.workspace,
+                    FILES_APP,
+                    &tilo_fs::tree_document::document_id(),
+                )
+                .await
+                .unwrap()
+                .is_some();
+            let mut names = Vec::new();
+            if founded {
+                let tree =
+                    super::super::put_files::tree_kept(&self.workspaces, &self.workspace).await;
+                let tasks = tree
+                    .children(ROOT_ID)
+                    .into_iter()
+                    .find(|(_, node)| node.name.as_bytes() == b"Tasks")
+                    .map(|(id, _)| id.to_owned());
+                if let Some(tasks) = tasks {
+                    names = tree
+                        .children(&tasks)
+                        .into_iter()
+                        .map(|(_, node)| String::from_utf8_lossy(node.name.as_bytes()).into_owned())
+                        .collect();
+                }
+            }
+            if names.len() >= at_least || started.elapsed() > Duration::from_secs(10) {
+                return names;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// The task waits for a reply until `until_ms`, as its person sets it.
@@ -254,6 +320,12 @@ async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on_fr
         first.contains("Still open"),
         "it is told what the note reads: {first}"
     );
+    assert_eq!(
+        given.in_tasks_folder(1).await,
+        ["1 Plan the launch"],
+        "the folder the task names is made in the workspace's files before its first session"
+    );
+    assert!(first.contains("put files there"), "{first}");
 
     // What the work found is written into the note, and the task waits two days for a reply.
     let pages = DocumentRoute {
@@ -314,9 +386,57 @@ async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on_fr
         (2, None),
         "the session ended the wait"
     );
+    assert_eq!(
+        given.in_tasks_folder(1).await,
+        ["1 Plan the launch"],
+        "the later session found its folder there: nothing made a second one"
+    );
+    assert!(again.contains("put files there"), "{again}");
     given
         .nothing_owed(&restarted, until + DAY_MS, "answered once")
         .await;
+}
+
+/// An agent whose rules refuse it Files is given a task. The folder the task names is not made
+/// for it: the server asks for it as the agent on its turn, with that turn's bound. The agent
+/// starts its work all the same, with its note, and is told plainly that it has no folder.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_refused_files_starts_its_task_and_is_told_its_folder_was_not_made() {
+    let given = given().await;
+    given.refuses_the_agent_files().await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
+    given.answered(&agents, now_ms()).await;
+
+    let work = given.held().await.work.expect("the issue keeps its work");
+    assert_eq!(
+        (work.sessions, work.session_since_ms),
+        (1, None),
+        "its session began and ended"
+    );
+    assert_eq!(
+        work.folder, "Tasks/1 Plan the launch",
+        "the folder keeps its name on the issue"
+    );
+    let first = format!("{:?}", asked.lock().unwrap()[0].messages);
+    assert!(
+        work.note.contains("notes.pages") && first.contains(&work.note),
+        "its note is made as for any agent: {:?}; the turn was told: {first}",
+        work.note
+    );
+    assert!(
+        first.contains("It has no folder: `Tasks/1 Plan the launch` could not be made")
+            && first.contains("may not invoke"),
+        "it is told plainly that the folder was not made, and why: {first}"
+    );
+    assert!(
+        !first.contains("put files there"),
+        "it is not told to put files where there is no folder: {first}"
+    );
+    assert!(
+        given.in_tasks_folder(0).await.is_empty(),
+        "nothing made the folder its rules refuse it"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
