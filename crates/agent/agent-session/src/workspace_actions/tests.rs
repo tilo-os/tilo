@@ -35,6 +35,61 @@ fn a_retryable_failure_leaves_the_id_free_to_run_again() {
     );
 }
 
+/// A read is no invocation of the workspace: a listing leaves it out, while
+/// a write that changed nothing is still one the log remembers.
+#[test]
+fn a_read_is_no_invocation_of_the_workspace() {
+    use tilo_actions::InvocationId;
+    use tilo_actions::api::ActionAddress;
+    use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+    let caller = tilo_actions::remote::Caller::local_person("ada");
+    let workspace = super::WorkspaceId::from_u128(7);
+    let request = |action: &str| InvokeRequest {
+        on_behalf_of: None,
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: format!(
+                "{}:so.tilo.notes:notes.page",
+                tilo_actions::remote::RESOURCE_PROVIDER
+            ),
+            address: ActionAddress::new("notes.page", action),
+        },
+        argument: InvokeArgument::default(),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let read = request("read");
+    let write = request("append-paragraph");
+    let elsewhere = request("append-paragraph");
+    let mut log = super::InvocationLog::default();
+    for asked in [&read, &write, &elsewhere] {
+        assert!(log.insert(&caller, asked.clone()));
+    }
+    for (asked, at, reads) in [
+        (&read, workspace, true),
+        (&write, workspace, false),
+        (&elsewhere, super::WorkspaceId::from_u128(8), false),
+    ] {
+        if let Some(entry) = log.entries.get_mut(&asked.invocation) {
+            entry.workspace = Some(at);
+            entry.reads = reads;
+        }
+    }
+    let listed = super::invocations::listed_calls(&mut log, workspace);
+    assert_eq!(
+        listed.len(),
+        1,
+        "the read and another workspace's call are not its invocations"
+    );
+    assert!(
+        listed[0].0.is_none(),
+        "a call that changed nothing keeps the step it computed"
+    );
+}
+
 /// A full log makes room by forgetting what settled, never an invocation
 /// still to run or running: forgotten, it would never run, or leave its
 /// caller no answer, and a retry under its id would run it twice.

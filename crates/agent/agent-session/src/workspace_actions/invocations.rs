@@ -310,7 +310,7 @@ fn shares(app_id: &str, record: &str, entries: &[Value]) -> Vec<(String, Share)>
 }
 
 /// One call the log remembers, as a run lists it.
-struct Call {
+pub(super) struct Call {
     id: String,
     started_ms: i64,
     ended_ms: Option<i64>,
@@ -637,6 +637,24 @@ fn page(items: Vec<Invocation>, query: &InvocationsQuery, pending: bool) -> Invo
     }
 }
 
+/// The calls the log remembers of `workspace_id`'s invocations, oldest first:
+/// every one made there that is no read. A share-link lookup reads where a
+/// resource is shown and changes nothing, so it is none either.
+pub(super) fn listed_calls(
+    log: &mut super::invocation_log::InvocationLog,
+    workspace_id: WorkspaceId,
+) -> Vec<(Option<String>, Call)> {
+    log.stamp_ended();
+    log.order
+        .iter()
+        .filter_map(|id| {
+            let entry = log.entries.get(id)?;
+            (entry.workspace == Some(workspace_id) && !entry.reads && !is_link_lookup(entry))
+                .then(|| call_of(id.0.to_string(), entry))
+        })
+        .collect()
+}
+
 /// Join each call to the step its own changes name, where a document of the
 /// app it addressed holds a change it handed to the session (the document
 /// itself, or a part beside it that a new note is written to): what the
@@ -727,6 +745,14 @@ impl WorkspaceActions {
 }
 
 impl Worker {
+    /// Note that `request`'s call only reads: a read is no invocation of the
+    /// workspace, so a listing leaves it out ([`Self::invocations`]).
+    pub(super) fn note_reads(&self, request: &InvokeRequest) {
+        if let Some(entry) = self.log().entries.get_mut(&request.invocation) {
+            entry.reads = true;
+        }
+    }
+
     /// Note in the log the changes `invocation` handed to the session, as
     /// it ran, before they are saved and let go of ([`join_written`]).
     pub(super) fn note_written(&self, invocation: InvocationId) {
@@ -784,18 +810,7 @@ impl Worker {
             &ui::history_source::sentence::ThreadWords,
         );
         let mut recorded = index.steps();
-        let mut calls = {
-            let mut log = self.log();
-            log.stamp_ended();
-            log.order
-                .iter()
-                .filter_map(|id| {
-                    let entry = log.entries.get(id)?;
-                    (entry.workspace == Some(workspace_id) && !is_link_lookup(entry))
-                        .then(|| call_of(id.0.to_string(), entry))
-                })
-                .collect::<Vec<_>>()
-        };
+        let mut calls = listed_calls(&mut self.log(), workspace_id);
         join_written(&recorded, &mut calls);
         // Of it all, what the caller may read now, each record asked once.
         let owner = self.serves_as_owner(caller);

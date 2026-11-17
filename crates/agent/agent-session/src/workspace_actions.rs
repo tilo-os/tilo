@@ -2455,6 +2455,7 @@ impl Worker {
                 .try_registered_read(workspace_id, caller, request)
                 .map_err(|error| *error)?
         {
+            self.note_reads(request);
             return Ok((withheld.shown(output), None));
         }
         if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
@@ -2474,6 +2475,7 @@ impl Worker {
                 .map(|descriptor| descriptor.resource_kind)
                 .ok_or_else(unknown_action)?;
             let at = (&route, &state, kind);
+            self.note_reads(request);
             return self
                 .share_link(workspace_id, caller, at, target, arguments)
                 .map(|output| (output, None));
@@ -2499,6 +2501,9 @@ impl Worker {
             .app
             .descriptor(&target.address)
             .ok_or_else(unknown_action)?;
+        if descriptor.contract.kind == ActionKind::Read {
+            self.note_reads(request);
+        }
         let arguments = descriptor.bind_prompt_text(arguments);
         let binding = bounded::ApprovalBinding::of(workspace_id, caller, request);
         let confirmed = confirms(

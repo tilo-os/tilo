@@ -896,6 +896,9 @@ impl Worker {
                 },
             ));
         };
+        if descriptor.contract.kind == super::ActionKind::Read {
+            self.note_reads(request);
+        }
         let arguments = descriptor.bind_prompt_text(arguments);
         let declared = descriptor.contract.need().field;
         let approval = self

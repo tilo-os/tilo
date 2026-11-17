@@ -36,6 +36,9 @@ pub(super) struct Entry {
     /// The workspace it was asked in, once admitted there: what a listing of
     /// that workspace's invocations reads it by ([`super::invocations`]).
     pub(super) workspace: Option<tilo_server_protocol::WorkspaceId>,
+    /// It only reads: a read is no invocation of the workspace, whatever it
+    /// answers, so a listing leaves it out.
+    pub(super) reads: bool,
     /// When it was asked for, in milliseconds since the Unix epoch.
     pub(super) started_ms: i64,
     /// When the host first saw it ended ([`InvocationLog::stamp_ended`]).
@@ -91,6 +94,7 @@ impl InvocationLog {
                 approval: None,
                 about: None,
                 workspace: None,
+                reads: false,
                 started_ms: now_ms(),
                 ended_ms: None,
                 written: Vec::new(),
