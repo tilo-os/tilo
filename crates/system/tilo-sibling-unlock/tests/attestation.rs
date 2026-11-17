@@ -15,6 +15,8 @@
 
 use std::process::Command;
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 use ed25519_dalek::SigningKey;
 use tilo_sibling_unlock::material::{Attestation, Material};
 use tilo_sibling_unlock::seal;

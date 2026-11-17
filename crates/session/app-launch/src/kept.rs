@@ -1080,7 +1080,7 @@ mod tests {
             let rig = Rig::new();
             let dir = rig.root().join("older");
             std::fs::create_dir_all(&dir).expect("a keeper directory");
-            let listener = std::os::unix::net::UnixListener::bind(dir.join("control")).expect("bound");
+            let listener = tilo_files::native::socket::bind(&dir.join("control")).expect("bound");
             let answering = std::thread::spawn(move || {
                 let (stream, _) = listener.accept().expect("the session connects");
                 // Heard before it is answered, as a keeper does: a reply to a hello not yet sent

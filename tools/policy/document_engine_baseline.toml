@@ -7,4 +7,3 @@
 # document through a bounded source and member presence reads a caret
 # block's text. Move them onto the tilo-doc document API and lower these to zero.
 "apps/word-processor/src/semantic_read.rs" = 7
-"apps/word-processor/src/widget/presences.rs" = 1

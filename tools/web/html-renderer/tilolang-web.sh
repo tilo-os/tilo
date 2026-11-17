@@ -20,7 +20,11 @@ while [[ $# -gt 0 ]]; do
 done
 cd "$repo"
 if [[ $build == 1 ]]; then
+<<<<<<< HEAD
   "${CARGO:-cargo}" exec tools/web/html-renderer/build-tilolang-web.sh "${args[@]}"
+=======
+  "${CARGO:-cargo}" --fetch htmlrenderer/tilolang exec tools/web/html-renderer/build-tilolang-web.sh "${args[@]}"
+>>>>>>> f4d59e5 (fix(policy): read the tree as it has become)
 fi
 target=${CARGO_TARGET_DIR:-$(cargo metadata --format-version 1 --no-deps --offline | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')}
 dir=$target/htmlrenderer/tilolang

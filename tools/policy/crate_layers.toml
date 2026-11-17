@@ -92,6 +92,10 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the server embeds the workspace host and keeps workspaces for offline peers, the store node's network side"
 
   [[rule.allow]]
+  package = "tilo-api"
+  why = "a front door derives a grant's id from the key it certifies and picks which of the person's devices runs a request, both pure functions of the placement module; it opens no replica and holds no engine state"
+
+  [[rule.allow]]
   package = "tilo-agent-session"
   why = "a member opens the document frame of the record it plans against, the framing every reader of a record's frames speaks"
 
