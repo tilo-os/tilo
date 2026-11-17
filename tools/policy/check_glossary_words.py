@@ -150,9 +150,13 @@ class Allowed:
         for words, paths, identifiers in self.rules:
             if word not in words and "*" not in words:
                 continue
-            if identifier in identifiers:
-                return True
-            if any(fnmatch.fnmatchcase(path, pattern) for pattern in paths):
+            # A rule naming both identifiers and paths allows those identifiers in those
+            # paths only; a rule naming one of them allows it everywhere it reaches.
+            in_paths = any(fnmatch.fnmatchcase(path, pattern) for pattern in paths)
+            if identifiers and paths:
+                if identifier in identifiers and in_paths:
+                    return True
+            elif identifier in identifiers or in_paths:
                 return True
         return False
 

@@ -56,6 +56,15 @@ class MatcherTests(unittest.TestCase):
         self.assertEqual(words.toml_key('  "room door",'), "")
 
 
+    def test_a_rule_naming_identifiers_and_paths_allows_them_only_together(self):
+        allowed = words.Allowed(
+            '[[allow]]\nreason = "r"\nwords = ["host"]\nidentifiers = ["host"]\npaths = ["a/*"]\n'
+        )
+        self.assertTrue(allowed("host", "a/x.rs", "host"))
+        self.assertFalse(allowed("host", "b/x.rs", "host"))
+        self.assertFalse(allowed("host", "a/x.rs", "host_key"))
+
+
 class TreeTests(unittest.TestCase):
     def repository(self, baseline: str) -> Path:
         temporary = tempfile.TemporaryDirectory()

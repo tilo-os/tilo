@@ -32,6 +32,10 @@ paths = ["apps/git-client/src/model.rs", "apps/git-client/src/resource.rs"]
 reason = "A Wayland or logind seat: a set of input devices and the session on them."
 words = ["seat"]
 identifiers = ["wl_seat", "WlSeat", "seat0", "XDG_SEAT", "libseat", "LibSeat", "zwp_input_method_v2", "ext_data_control_v1"]
+
+[[allow]]
+reason = "A Wayland or logind seat: a set of input devices and the session on them."
+words = ["seat"]
 paths = ["crates/session/compositor/*", "crates/session/greeter/*", "crates/platform/tilo-clipboard/*"]
 
 [[allow]]
@@ -43,6 +47,10 @@ paths = ["apps/poker/*"]
 reason = "iroh's NAT and packet relay, and the live session's relaying device: iroh's own infrastructure, and the one Tilo role that keeps the word relay."
 words = ["relay"]
 identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseError"]
+
+[[allow]]
+reason = "iroh's NAT and packet relay, and the live session's relaying device: iroh's own infrastructure, and the one Tilo role that keeps the word relay."
+words = ["relay"]
 paths = [
     "crates/browser/tilo-browser-runtime/web/peer.mjs",
     "crates/browser/tilo-web-desktop/scripts/agent-shell.mjs",

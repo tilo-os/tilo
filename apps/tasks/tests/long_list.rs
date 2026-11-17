@@ -107,7 +107,7 @@ fn a_long_trackers_list_builds_a_screenful_of_rows_and_names_each_rows_place() {
     }
     assert_eq!(held(&app).len(), ISSUES + 3);
 
-    // The board builds the cards its lanes show, and takes an issue as the list does.
+    // The board builds the cards its columns show, and takes an issue as the list does.
     let started = std::time::Instant::now();
     press_view(&mut app, "Board");
     app.settle();
