@@ -629,6 +629,36 @@ impl<R: Resource> ResourceEnv<R> {
             .outbox(self.alive.clone(), outbox, owns, run, false)
     }
 
+    /// Carry out the outside work the parts of `chain` owe, on this device
+    /// when it owns it: what a mail server or a calendar has not been told
+    /// of the items a chain keeps, derived from each part as it is.
+    ///
+    /// `owed` reads one part's work, each job under the item it names; it is
+    /// read again only for a part that changed, so a change costs what its
+    /// part holds, never the whole chain. `owns` says which jobs are this
+    /// device's (it holds the account), and `work` carries one out as
+    /// [`Self::outbox`] carries out an entry. Nothing is written for a job:
+    /// the app confirms what the outside now holds with an action on the
+    /// part holding the item, after which the part owes it no more. A job is
+    /// carried out once while it is owed; one that failed for now (`Err`) is
+    /// tried again once the chain moved on or the returned [`Projection`] is
+    /// told the outside changed.
+    pub fn owed<P, J>(
+        &self,
+        chain: &super::Chain<P>,
+        owed: impl Fn(&P::State) -> Vec<(tilo_resource::Id, J)> + 'static,
+        owns: impl Fn(&J) -> bool + 'static,
+        work: impl FnMut(&tilo_resource::Id, J, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) -> Projection
+    where
+        R: 'static,
+        P: super::Chained,
+        J: serde::Serialize + Clone + 'static,
+    {
+        self.effects
+            .owed(self.alive.clone(), chain.clone(), owed, owns, work)
+    }
+
     /// [`Self::outbox`], where an entry is the outside half of the action
     /// that queued it: one an admitted invocation on this device queues runs
     /// at once under that invocation — `cx.invocation()` names it, and its

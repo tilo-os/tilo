@@ -79,9 +79,11 @@ use super::resources::ResourceApi;
 
 mod listing;
 mod reading;
+mod shares;
 
 use listing::{Listing, Page};
 use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, read_spec};
+use shares::{Written, is_step};
 
 /// The operation type a chain's published actions are carried out under:
 /// the host applies the action to the part of the chain it names.
@@ -161,6 +163,23 @@ pub trait Chained: Resource {
     /// (or the next part, once the head is full).
     fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self::State>)]) -> Result<u64, String>;
 
+    /// The share of `action` each part carries out, when it names items
+    /// kept in several parts (archive these messages): one action per part
+    /// holding some of them, written into each as one step that Undo takes
+    /// back whole. `None` (the default) for an action one part carries out,
+    /// the one [`Self::part_for`] names.
+    ///
+    /// # Errors
+    /// Refuses an action naming no item a part held here keeps.
+    #[allow(clippy::type_complexity, reason = "a part's number beside its share")]
+    fn split(
+        action: &Self::Action,
+        parts: &[(u64, Rc<Self::State>)],
+    ) -> Result<Option<Vec<(u64, Self::Action)>>, String> {
+        let _ = (action, parts);
+        Ok(None)
+    }
+
     /// Fill in, where the action is invoked, what it records from the app's
     /// own record (who a mention names), and refuse what that record does
     /// not allow (a post to a channel it has not got). A part's action
@@ -213,7 +232,7 @@ pub trait Chained: Resource {
     /// beside the app's record of the workspace: the parts of an app that
     /// keeps a record per member (Mail) are that person's, so a window that
     /// does not show their record holds no chain at all.
-    const BESIDE_RECORD: bool = false;
+    const BESIDE_RESOURCE: bool = false;
 
     /// Whether a window holds every part of the chain rather than its head
     /// and what a reader scrolled back to: for a chain whose views list all
@@ -384,11 +403,11 @@ pub(crate) struct ChainState<P: Chained> {
     /// ([`Chain::state`]), and the revision it was last written at.
     state: ui_core::LocalState<Parts<P>>,
     state_at: Cell<Option<u64>>,
-    /// The parts this window's person wrote into here, newest last: what
-    /// the window's Undo takes back first ([`Chain::undo_last`]), and the
-    /// parts it took back from, for Redo.
-    written: RefCell<Vec<u64>>,
-    undone: RefCell<Vec<u64>>,
+    /// The steps this window's person took here, each the parts it wrote
+    /// into, newest last: what the window's Undo takes back first
+    /// ([`Chain::undo_last`]), and the steps it took back, for Redo.
+    written: RefCell<Vec<Written>>,
+    undone: RefCell<Vec<Written>>,
     /// What [`ChainCore::waiting_resource`] writes into this chain, as a part
     /// holding only that reads ([`ChainState::unwritten`]), at the record's heads.
     unwritten: RefCell<Unwritten<P>>,
@@ -545,9 +564,9 @@ struct Unsent<P: Chained> {
 
 /// What became of an action applied to the part it changes.
 enum Write {
-    /// Written into the part numbered first, creating the item resources
+    /// Written into the parts named first, creating the item resources
     /// listed second.
-    Done(u64, Vec<String>),
+    Done(Written, Vec<String>),
     /// The part is on its way from the workspace; nothing was written.
     Arriving,
 }
@@ -1548,12 +1567,8 @@ impl ChainCore {
 }
 
 impl<P: Chained> ChainState<P> {
-    /// Hold the chain in `workspace`, with its head when this device has one.
-    pub(crate) fn open(workspace: WorkspaceResources, base: Base<P>) -> Option<Self> {
-        Self::open_at(workspace, base, P::chain())
-    }
-
-    /// [`Self::open`] of the chain `chain` rather than the app's own: the
+    /// Hold the chain `chain` in `workspace`, with its head when this device
+    /// has one: the app's own ([`Chained::chain`]), or one beside a record: the
     /// messages of one direct conversation, which lives beside the record
     /// the two people share ([`Chained::chain_beside`]).
     pub(crate) fn open_at(
@@ -1658,7 +1673,7 @@ impl<P: Chained> ChainState<P> {
         for entry in self.unsent() {
             let written = match self.try_apply(&entry.action, &entry.invoker) {
                 Ok(Write::Arriving) => break,
-                Ok(Write::Done(index, _)) => Ok(index),
+                Ok(Write::Done(written, _)) => Ok(written.last()),
                 Err(error) => Err(error),
             };
             self.core.forget_unsent(&entry.id);
@@ -1700,13 +1715,9 @@ impl<P: Chained> ChainState<P> {
         if self.unsent().is_empty() {
             match self.try_apply(action, invoker)? {
                 Write::Arriving => {}
-                Write::Done(index, created) => {
-                    // Only what the window's person did themselves: an
-                    // agent's step is its own to take back.
-                    if super::resources::acts_for(invoker, &self.core.workspace.me) {
-                        self.written.borrow_mut().push(index);
-                        self.undone.borrow_mut().clear();
-                    }
+                Write::Done(written, created) => {
+                    let index = written.last();
+                    self.wrote(invoker, written, is_step::<P>(action));
                     return Ok(Some((index, created)));
                 }
             }
@@ -1827,6 +1838,10 @@ impl<P: Chained> ChainState<P> {
         P::prepare(&mut action, &base, &parts, invoker).map_err(ActionError::Refused)?;
         let place = P::place(&action, &base);
         drop(base);
+        if let Some(shares) = P::split(&action, &parts).map_err(ActionError::Refused)? {
+            drop(parts);
+            return self.write_shares(shares, invoker, place.as_deref());
+        }
         let index = P::part_for(&action, &parts).map_err(ActionError::Refused)?;
         drop(parts);
         self.may(&action)?;
@@ -1861,7 +1876,7 @@ impl<P: Chained> ChainState<P> {
         });
         let created = self.write_answering(index, &action, encoded, invoker, place, answering)?;
         self.spread(&action, index, invoker);
-        Ok(Write::Done(index, created))
+        Ok(Write::Done(Written::one(index), created))
     }
 
     /// Write what `action`, just written into part `index`, means for the
@@ -1891,7 +1906,10 @@ impl<P: Chained> ChainState<P> {
         invoker: &ActionInvoker,
     ) -> Result<Write, ActionError> {
         if group.actions.is_empty() {
-            return Ok(Write::Done(self.head().unwrap_or(0), Vec::new()));
+            return Ok(Write::Done(
+                Written::one(self.head().unwrap_or(0)),
+                Vec::new(),
+            ));
         }
         if self.head_arriving() {
             return Ok(Write::Arriving);
@@ -1925,7 +1943,7 @@ impl<P: Chained> ChainState<P> {
             }
         }
         let head = self.core.parts.borrow().keys().next_back().copied();
-        let mut written = None;
+        let mut written = Vec::with_capacity(per_part.len());
         let mut created = Vec::new();
         for (index, members) in per_part.clone() {
             if let Some(previous) = head.filter(|head| head.checked_add(1) == Some(index)) {
@@ -1944,7 +1962,7 @@ impl<P: Chained> ChainState<P> {
                 &group,
             )?;
             created = self.write(index, &group, encoded, invoker, place)?;
-            written = Some(index);
+            written.push(index);
         }
         for (index, members) in &per_part {
             for at in members {
@@ -1953,7 +1971,10 @@ impl<P: Chained> ChainState<P> {
                 }
             }
         }
-        Ok(Write::Done(written.unwrap_or(0), created))
+        if written.is_empty() {
+            written.push(0);
+        }
+        Ok(Write::Done(Written(written), created))
     }
 
     /// Whether `invoker` may change this chain by `action`, refused as the
@@ -2528,11 +2549,16 @@ impl<P: Chained> Chain<P> {
                 super::resources::not_by_app::<P>(member).map_err(ActionError::Refused)?;
             }
             let me = self.dispatch.me().unwrap_or(&self.state.core.workspace.me);
+            let invoker = super::resources::acting(me);
             return self
                 .state
-                .try_apply_group(&group, &super::resources::acting(me))
+                .try_apply_group(&group, &invoker)
                 .map(|written| match written {
-                    Write::Done(index, _) => Some(index),
+                    Write::Done(written, _) => {
+                        let index = written.last();
+                        self.state.wrote(&invoker, written, true);
+                        Some(index)
+                    }
                     Write::Arriving => None,
                 });
         }
@@ -2614,41 +2640,6 @@ impl<P: Chained> Chain<P> {
             }));
         }
         undone
-    }
-
-    /// Take back the person's newest step in the part they last wrote into
-    /// through this window, as the window's Undo does when that write is
-    /// newer than any of the app's own record. Whether there was one.
-    pub fn undo_last(&self) -> bool {
-        let Some(index) = self.state.written.borrow_mut().pop() else {
-            return false;
-        };
-        let undone = self.undo_in(index).is_ok();
-        if undone {
-            self.state.undone.borrow_mut().push(index);
-        }
-        undone
-    }
-
-    /// Bring back the step [`Self::undo_last`] took back last. Whether there
-    /// was one.
-    pub fn redo_last(&self) -> bool {
-        let Some(index) = self.state.undone.borrow_mut().pop() else {
-            return false;
-        };
-        let me = self.dispatch.me().unwrap_or(&self.state.core.workspace.me);
-        let edit = PartEdit {
-            part: index,
-            edit: super::history::HistoryEdit::Redo { steps: None },
-        };
-        let redone = self
-            .state
-            .apply_history(&edit, &ActionInvoker::member(me.clone()))
-            .is_ok();
-        if redone {
-            self.state.written.borrow_mut().push(index);
-        }
-        redone
     }
 
     /// Whether this window's person wrote into a part here that Undo would
@@ -2808,7 +2799,7 @@ impl<P: Chained> Chain<P> {
         };
         let chain = match record {
             Some(record) => P::chain_beside(record),
-            None if P::BESIDE_RECORD => return None,
+            None if P::BESIDE_RESOURCE => return None,
             None => P::chain(),
         };
         let state = Rc::new(ChainState::<P>::open_at(workspace, Rc::new(base), chain)?);
@@ -2962,14 +2953,18 @@ impl Chains {
         // workspace, or the one per member where the app keeps those.
         let chain = match record {
             Some(record) => P::chain_beside(record),
-            None if P::BESIDE_RECORD => return None,
+            None if P::BESIDE_RESOURCE => return None,
             None => P::chain(),
         };
         if let Some(held) = self.opened::<P>(&chain) {
             return Some(held);
         }
         let workspace = workspace?.clone();
-        let state = Rc::new(ChainState::<P>::open(workspace, Rc::new(base))?);
+        let state = Rc::new(ChainState::<P>::open_at(
+            workspace,
+            Rc::new(base),
+            chain.clone(),
+        )?);
         self.hold(&chain, &state);
         Some(state)
     }

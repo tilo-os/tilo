@@ -89,6 +89,15 @@ test-chain-log = Log
 test-chain-log-rename = Rename the log
 test-chain-log-part = Lines
 test-chain-log-part-write = Write a line
+test-chain-log-part-mark = Mark lines
+
+## crates/sdk/tilo-app/tests/owed.rs
+test-owed-shelf = Shelf
+test-owed-shelf-rename = Rename the shelf
+test-owed-shelf-part = Items
+test-owed-shelf-part-put = Put an item on the shelf
+test-owed-shelf-part-say = Change what an item says
+test-owed-shelf-part-told = The outside holds this
 
 ## crates/sdk/tilo-app/tests/chain_spread.rs
 test-spread-deck = Deck

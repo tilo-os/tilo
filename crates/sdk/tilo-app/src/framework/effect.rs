@@ -435,6 +435,29 @@ fn track_job(
     progress
 }
 
+/// How an outbox entry, or work a chain owes, starts: `work` given the value
+/// in an effect context of its invocation, under its ownership.
+fn start_entry<R: Resource + 'static, T: 'static>(
+    starting: EffectEnv<R>,
+    mut work: impl FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer + 'static,
+) -> StartEntry {
+    Box::new(move |id, value, invocation, ownership| {
+        let Ok(value) = value.downcast::<T>() else {
+            return Err("an outbox entry is of another type".into());
+        };
+        let mut cx = EffectCx::invoked(
+            starting.clone(),
+            ownership_parts(invocation, owned_scope(ownership))?,
+        );
+        let mut value = Some(*value);
+        let answer = run_under(invocation, ownership, &mut || match value.take() {
+            Some(value) => work(id, value, &mut cx),
+            None => Err("an outbox entry ran twice".into()),
+        });
+        Ok((answer, cx.inv.started.take()))
+    })
+}
+
 /// Run `run`, a handler or a completion, for `invocation` and under
 /// `ownership` when it has one: it fails once the ownership is gone.
 fn run_under(
@@ -2221,6 +2244,19 @@ where
         })
 }
 
+/// The work each part of a chain owes, by part, with the part's state it
+/// was read from: read again only when that part changed.
+type OwedParts<P, J> = Rc<RefCell<HashMap<u64, (Rc<<P as Resource>::State>, Vec<(Id, Id, J)>)>>>;
+
+/// What a job of owed work is told by: the item it names and what it asks,
+/// so a new ask of the same item is a new job.
+fn job_key<J: serde::Serialize>(item: &Id, job: &J) -> Id {
+    use std::hash::Hasher as _;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write(serde_json::to_string(job).unwrap_or_default().as_bytes());
+    Id::from_raw(format!("{}#{:016x}", item.as_str(), hasher.finish()))
+}
+
 /// What an outbox entry abandoned by whoever it was for settles with.
 fn abandoned<O: serde::Serialize + Default>() -> Option<serde_json::Value> {
     serde_json::to_value(Settled::<O>::failed("cancelled")).ok()
@@ -2542,7 +2578,7 @@ impl<R: Resource> Effects<R> {
         alive: Weak<()>,
         outbox: Path<R, Outbox<T, O>>,
         owns: impl Fn(&R::State, &T) -> bool + 'static,
-        run: impl FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer + 'static,
+        work: impl FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer + 'static,
         awaited: bool,
     ) -> Projection
     where
@@ -2564,23 +2600,7 @@ impl<R: Resource> Effects<R> {
                     .collect()
             }))
         });
-        let mut run = run;
-        let starting = env.clone();
-        let start: StartEntry = Box::new(move |id, value, invocation, ownership| {
-            let Ok(value) = value.downcast::<T>() else {
-                return Err("an outbox entry is of another type".into());
-            };
-            let mut cx = EffectCx::invoked(
-                starting.clone(),
-                ownership_parts(invocation, owned_scope(ownership))?,
-            );
-            let mut value = Some(*value);
-            let answer = run_under(invocation, ownership, &mut || match value.take() {
-                Some(value) => run(id, value, &mut cx),
-                None => Err("an outbox entry ran twice".into()),
-            });
-            Ok((answer, cx.inv.started.take()))
-        });
+        let start = start_entry(env.clone(), work);
         let dispatch = env.dispatch.clone();
         let settle: SettleEntry = Box::new(move |id, answer| {
             let settled = answer.and_then(|output| settlement::<O>(&output))?;
@@ -2620,6 +2640,109 @@ impl<R: Resource> Effects<R> {
                 .causal
                 .register_drainer(alive.clone(), Box::new(Rc::clone(&drain)));
         }
+        inner.drains.push(Drains {
+            alive,
+            drain: Box::new(drain),
+        });
+        inner.drained = None;
+        Projection {
+            outside_changed: Some(Rc::clone(&inner.outside_changed)),
+        }
+    }
+
+    /// Carry out the outside work the parts of `chain` owe, on the device
+    /// that owns it ([`ResourceEnv::owed`](super::ResourceEnv::owed)).
+    ///
+    /// The work is derived from each part as it is ([`owed`]): read again
+    /// only for a part that changed, so a chain of thousands of items costs
+    /// what its changed part holds. A job is told by the item it names and
+    /// what it asks, so asking something else of the same item is new work;
+    /// it is carried out once while owed, and is owed no more once the app's
+    /// own confirmation (an action on the part) says the outside holds it. A
+    /// job that failed for now is tried again once the chain moved on or the
+    /// outside changed.
+    pub(crate) fn owed<P, J>(
+        &self,
+        alive: Weak<()>,
+        chain: super::Chain<P>,
+        owed: impl Fn(&P::State) -> Vec<(Id, J)> + 'static,
+        owns: impl Fn(&J) -> bool + 'static,
+        work: impl FnMut(&Id, J, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) -> Projection
+    where
+        R: 'static,
+        P: super::Chained,
+        J: serde::Serialize + Clone + 'static,
+    {
+        let Some(env) = self.working_env().cloned() else {
+            return Projection::default();
+        };
+        let derived: OwedParts<P, J> = Rc::new(RefCell::new(HashMap::new()));
+        let pending_of: OwnedEntries = Box::new(move |_state: &dyn Any| {
+            let parts = chain.parts();
+            let mut derived = derived.borrow_mut();
+            derived.retain(|index, _| parts.iter().any(|(held, _)| held == index));
+            let mut pending = Vec::new();
+            for (index, part) in &parts {
+                let fresh = derived
+                    .get(index)
+                    .is_some_and(|(seen, _)| Rc::ptr_eq(seen, part));
+                if !fresh {
+                    let jobs = owed(part)
+                        .into_iter()
+                        .map(|(item, job)| (job_key(&item, &job), item, job))
+                        .collect();
+                    derived.insert(*index, (Rc::clone(part), jobs));
+                }
+                if let Some((_, jobs)) = derived.get(index) {
+                    pending.extend(jobs.iter().filter(|(_, _, job)| owns(job)).map(
+                        |(key, item, job)| {
+                            (
+                                key.clone(),
+                                Box::new((item.clone(), job.clone())) as Box<dyn Any>,
+                            )
+                        },
+                    ));
+                }
+            }
+            Some(pending)
+        });
+        let mut work = work;
+        let start = start_entry(env.clone(), move |_, (item, job): (Id, J), cx| {
+            work(&item, job, cx)
+        });
+        // Nothing to write: the app's confirmation is what settles the work.
+        // A failure for good is not tried again here while it stays owed.
+        let settle: SettleEntry = Box::new(|_, answer| match answer?.value {
+            Some(value) => match serde_json::from_value::<Settled<()>>(value) {
+                Ok(Settled::Failed { reason, .. }) => {
+                    tracing::warn!(%reason, "owed work failed");
+                    Ok(None)
+                }
+                _ => Ok(None),
+            },
+            None => Ok(None),
+        });
+        let completing = env;
+        let complete: Box<Complete<'static>> =
+            Box::new(move |then, value, ownership, invocation| {
+                complete::<R, ()>(&completing, &mut (), then, value, ownership, invocation)
+            });
+        let drain = Rc::new(RefCell::new(OutboxDrain {
+            kind: P::KIND,
+            owned: pending_of,
+            start,
+            settle,
+            complete,
+            abandoned: abandoned::<()>,
+            jobs: Running::default(),
+            retry: HashMap::new(),
+            settled: std::collections::HashSet::new(),
+            caused: HashMap::new(),
+            revision: 0,
+            settling: Rc::clone(&self.inner.borrow().settling),
+        }));
+        let mut inner = self.inner.borrow_mut();
         inner.drains.push(Drains {
             alive,
             drain: Box::new(drain),

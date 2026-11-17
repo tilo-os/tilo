@@ -1185,7 +1185,13 @@ impl ResourceRoot {
         let head = self.refresh_bindings(self.retained_head());
         self.typed.follow_change(doc, &self.followed);
         self.feeds.refresh(doc);
-        self.typed.drain(self.typed.revision());
+        // Work a chain's parts owe is drained as they change too.
+        self.typed.drain(
+            self.typed
+                .revision()
+                .wrapping_mul(31)
+                .wrapping_add(self.storage.chains_revision()),
+        );
         head
     }
 }

@@ -831,6 +831,18 @@ app writes none of them:
 - **A group as one step.** Several actions invoked as one (a saved form's
   field edits) land as one change in each part they touch, so they stay one
   undo step and one version.
+- **A verb over items of several parts.** A verb naming many items (archive
+  these messages) says what share of it each part holding some of them
+  carries out (`Chained::split`); the shares are written into those parts
+  only, as one step the window's Undo takes back whole.
+- **What the outside is owed.** Items an outside server keeps too (a
+  mailbox's messages, a calendar's events) carry what that server last
+  confirmed beside what the person did. The work still owed is derived from
+  each part (`ResourceEnv::owed`), read again only for a part that changed,
+  and carried out on the device that holds the account; the app confirms what
+  the server now holds with an action on the item's part. No queue is kept,
+  so a change writes its one part and a confirmation writes only the part
+  holding its item.
 
 What one app document holds at the size of a small company's workspace (101 wiki
 pages, about 2,500 issues, a 19,513-file repository), and what a change costs

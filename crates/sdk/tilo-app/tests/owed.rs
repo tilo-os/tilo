@@ -1,0 +1,220 @@
+//! Outside work a chain's parts owe, derived from each part as it is: the
+//! device carries out what a part's items ask that the outside does not
+//! hold yet, confirms it through the part, and reads again only the part
+//! that changed.
+#![allow(clippy::unwrap_used, reason = "test assertions")]
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use tilo_app::framework::{Chained, Effected};
+use tilo_app::prelude::*;
+use tilo_app::resource::DocumentId;
+use tilo_app::tilo_resource::Collection;
+
+/// Items a part holds before the next one starts.
+const PART_ITEMS: usize = 4;
+
+thread_local! {
+    /// What the outside was told, in order.
+    static TOLD: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// How many times a part's owed work was read.
+    static READS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Shelf {
+    pub title: String,
+}
+
+#[resource(kind = "test.owed-shelf", catalogue = "tests/locales")]
+impl Shelf {
+    /// Rename the shelf.
+    #[action]
+    pub fn rename(&mut self, title: String) {
+        self.title = title;
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Item {
+    /// What the item says.
+    pub text: String,
+    /// What the outside holds of it.
+    #[model(readonly)]
+    pub told: String,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct ShelfPart {
+    #[model(readonly)]
+    pub items: Collection<Item>,
+}
+
+#[resource(kind = "test.owed-shelf-part", catalogue = "tests/locales")]
+impl ShelfPart {
+    /// Put an item on the shelf.
+    #[action]
+    pub fn put(&mut self, id: String, text: String) {
+        self.items.push(
+            Id::from_raw(id),
+            Item {
+                text,
+                told: String::new(),
+            },
+        );
+    }
+
+    /// Change what an item says.
+    #[action]
+    pub fn say(&mut self, id: String, text: String) {
+        if let Some(item) = self.items.get_mut(&Id::from_raw(id)) {
+            item.text = text;
+        }
+    }
+
+    /// The outside holds `text` of the item.
+    #[action(external)]
+    pub fn told(&mut self, id: String, text: String) {
+        if let Some(item) = self.items.get_mut(&Id::from_raw(id)) {
+            item.told = text;
+        }
+    }
+}
+
+fn holding(parts: &[(u64, Rc<ShelfPart>)], id: &str) -> Option<u64> {
+    parts
+        .iter()
+        .find(|(_, part)| part.items.get(&Id::from_raw(id)).is_some())
+        .map(|(index, _)| *index)
+}
+
+impl Chained for ShelfPart {
+    type Base = Shelf;
+
+    fn chain() -> DocumentId {
+        DocumentId::derived("shelf", &DocumentId::workspace_default())
+    }
+
+    fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
+        let named = match &action.operation {
+            ShelfPartAction::Say(shelf_part::Say { id, .. })
+            | ShelfPartAction::Told(shelf_part::Told { id, .. }) => Some(id),
+            _ => None,
+        };
+        if let Some(index) = named.and_then(|id| holding(parts, id)) {
+            return Ok(index);
+        }
+        Ok(parts.last().map_or(0, |(head, part)| {
+            if part.items.len() >= PART_ITEMS {
+                head.saturating_add(1)
+            } else {
+                *head
+            }
+        }))
+    }
+
+    const HELD_WHOLE: bool = true;
+}
+
+/// What an item's part owes the outside: its text, where the outside holds
+/// another.
+fn owed(part: &ShelfPart) -> Vec<(Id, String)> {
+    READS.with(|reads| reads.set(reads.get().saturating_add(1)));
+    part.items
+        .iter()
+        .filter(|(_, item)| item.text != item.told)
+        .map(|(id, item)| (id.clone(), item.text.clone()))
+        .collect()
+}
+
+struct ShelfApp;
+
+impl ResourceApp for ShelfApp {
+    type Resource = Shelf;
+    const ID: &'static str = "so.tilo.test-owed-shelf";
+    const TITLE: &'static str = "Shelf";
+
+    fn resources(resources: &mut tilo_app::framework::Resources<'_>) {
+        resources.chain::<ShelfPart>();
+    }
+
+    fn view(cx: &mut ViewCx<Shelf>) -> Element {
+        if let Some(chain) = cx.chain::<ShelfPart>() {
+            let confirming = chain.dispatcher();
+            cx.owed(
+                &chain,
+                owed,
+                |_| true,
+                move |id, text: String, _| {
+                    TOLD.with(|told| told.borrow_mut().push(format!("{id}={text}")));
+                    // Written after the frame, when the store takes writes.
+                    confirming.submit(ShelfPart::TOLD.with(shelf_part::Told {
+                        id: id.as_str().to_owned(),
+                        text,
+                    }));
+                    Ok(Effected::done())
+                },
+            );
+        }
+        Box::new(Column::new())
+    }
+}
+
+fn told() -> Vec<String> {
+    TOLD.with(|told| told.borrow().clone())
+}
+
+fn put(app: &mut TestApp<ShelfApp>, id: &str, text: &str) {
+    app.chain_invoke(&ShelfPart::PUT.with(shelf_part::Put {
+        id: id.to_owned(),
+        text: text.to_owned(),
+    }))
+    .unwrap();
+    app.settle();
+}
+
+tilo_test_env::scenario! {
+    fn work_a_chain_owes_is_done_once_and_reads_only_the_part_that_changed;
+
+    phase each_item_is_told_once_and_confirmed_in_its_part;
+    {
+        let mut app = TestApp::<ShelfApp>::new().unwrap();
+        for n in 0..=PART_ITEMS {
+            put(&mut app, &format!("i{n}"), "new");
+        }
+        app.settle();
+        let mut seen = told();
+        seen.sort();
+        assert_eq!(seen, ["i0=new", "i1=new", "i2=new", "i3=new", "i4=new"]);
+        let parts = app.chain_parts::<ShelfPart>();
+        assert_eq!(parts.len(), 2);
+        assert!(
+            parts
+                .iter()
+                .flat_map(|(_, part)| part.items.iter())
+                .all(|(_, item)| item.told == item.text),
+            "every item confirmed in its part"
+        );
+
+        // A change to the newest part reads only that part again.
+        app.settle();
+        let before = READS.with(Cell::get);
+        app.chain_invoke(&ShelfPart::SAY.with(shelf_part::Say {
+            id: "i4".into(),
+            text: "changed".into(),
+        }))
+        .unwrap();
+        app.settle();
+        let reads = READS.with(Cell::get).saturating_sub(before);
+        assert!(reads >= 1, "the changed part was read");
+        assert!(
+            told().contains(&"i4=changed".to_owned()),
+            "the new ask is carried out: {:?}",
+            told()
+        );
+        assert_eq!(told().len(), 6, "nothing else ran again");
+        // Part 0 never changed after its confirmations: never read again.
+        assert!(reads <= 2, "only the changed part is read again, read {reads}");
+    }
+}

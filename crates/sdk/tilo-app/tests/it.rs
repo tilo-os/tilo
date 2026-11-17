@@ -75,6 +75,8 @@ pub mod model_contract;
 pub mod other_resources;
 #[path = "outbox.rs"]
 pub mod outbox;
+#[path = "owed.rs"]
+pub mod owed;
 #[path = "support/own_kinds.rs"]
 pub mod own_kinds;
 #[path = "people.rs"]
