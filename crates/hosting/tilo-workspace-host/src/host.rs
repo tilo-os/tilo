@@ -55,6 +55,11 @@ pub struct HostConfig {
     pub apps: Option<Arc<dyn AppActionServer>>,
     /// Classifies co-edit bodies for every workspace the host opens.
     pub shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
+    /// Where the keys of people's sealed stores are kept, when that is apart
+    /// from `state_root`: a folder a copy or a backup of the state does not
+    /// take along, so that such a copy opens nobody's sign-ins, keys or
+    /// vault items. `None` keeps each key beside its sealed file.
+    pub people_keys: Option<PathBuf>,
 }
 
 impl HostConfig {
@@ -70,6 +75,7 @@ impl HostConfig {
             max_workspace_grants: None,
             apps: None,
             shell_payloads: crate::payloads::neighbour(),
+            people_keys: None,
         }
     }
 }
@@ -235,6 +241,14 @@ impl HostSessions {
         let (Some(governance), Some(actions)) = (governance, own_server) else {
             return Ok((sessions, None));
         };
+        if let Some(keys) = &cfg.people_keys {
+            // Said before any person's store is opened: each key is made,
+            // or found, where it is kept from then on.
+            accounts::keep_vault_keys_apart(
+                &cfg.state_root.join("workspaces").join("people"),
+                keys,
+            );
+        }
         let workspaces = crate::workspaces::Workspaces::open(
             sessions.workspace_services(&cfg, &identity, endpoint, revocations, channels),
             cfg.state_root.join("workspaces"),

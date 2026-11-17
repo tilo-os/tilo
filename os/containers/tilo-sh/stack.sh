@@ -231,6 +231,10 @@ site_health=http://127.0.0.1:$site_port/healthz
 site_host_header="Host: $site_host:$site_port"
 
 state=${TILO_SH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tilo-sh-local}
+# Where the keys of people's sealed stores are kept: beside the state folder,
+# never in it, so a copy or a backup of the state alone opens nobody's
+# sign-ins, keys or vault items. Whoever backs both up keeps them apart.
+people_keys=${TILO_SH_PEOPLE_KEYS:-$state-keys}
 # The containers of the stack on these ports: a second stack on other ports
 # (cargo web --check runs one) never stops or removes the first one's.
 prefix=tilo-sh-local
@@ -1472,7 +1476,8 @@ start_native_relay() {
   local lounge=${lounge:-$native/lounge}
   { private_env relay "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
-      "TILO_WORKSPACES_STATE=$state/relay" "TILO_SECRETS_DIR=$state/relay/secrets"
+      "TILO_WORKSPACES_STATE=$state/relay" "TILO_SECRETS_DIR=$state/relay/secrets" \
+      "TILO_PEOPLE_KEYS=$people_keys"
     # Where the image keeps the app surfaces the relay publishes at start,
     # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"

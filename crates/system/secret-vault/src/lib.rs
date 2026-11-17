@@ -26,7 +26,7 @@
 //! disk.
 
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tilo_seal::Label;
 use tilo_seal::envelope::{self, Context};
@@ -40,6 +40,65 @@ pub const KEY_LEN: usize = 32;
 
 pub const VAULT_FILE: &str = "vault.enc";
 pub const KEY_FILE: &str = "vault.key";
+
+/// The folders whose vaults keep their local key files apart from them, each
+/// with the folder its keys are kept under ([`keep_keys_apart`]).
+static KEYS_APART: std::sync::RwLock<Vec<(PathBuf, PathBuf)>> = std::sync::RwLock::new(Vec::new());
+
+/// Keep the local key file of every vault under `stores` under `keys`, at
+/// the same place below it, instead of beside the sealed file.
+///
+/// A machine that opens its people's vaults with nobody there (a server)
+/// has no keyring to hold their keys, so each key is a file. Beside the
+/// sealed file, whoever copies the folder holds both: a backup of it is the
+/// secrets themselves. Named apart, a copy of `stores` alone opens nothing.
+/// A key that lies beside its vault from before moves to its place under
+/// `keys` the first time the vault is opened, once it was read back from
+/// there.
+///
+/// Whoever reads both folders still opens every vault: this keeps the keys
+/// out of copies of the one folder, not from the machine that uses them.
+pub fn keep_keys_apart(stores: &Path, keys: &Path) {
+    let mut apart = KEYS_APART
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    apart.retain(|(kept, _)| kept != stores);
+    apart.push((stores.to_owned(), keys.to_owned()));
+}
+
+/// What lies beside a vault whose keys are kept apart.
+enum Beside {
+    /// No key.
+    Nothing,
+    /// A key from before: the vault's own, or none when it cannot be read.
+    Key(Option<VaultKey>),
+}
+
+/// The folder the local key file of the vault in `dir` is kept in: `dir`
+/// itself, or its place under the folder named for the keys of the vaults
+/// `dir` lies under ([`keep_keys_apart`]).
+fn key_dir(dir: &Path) -> PathBuf {
+    let apart = KEYS_APART
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    apart
+        .iter()
+        .find_map(|(stores, keys)| {
+            let below = dir.strip_prefix(stores).ok()?;
+            Some(keys.join(below))
+        })
+        .unwrap_or_else(|| dir.to_owned())
+}
+
+/// Make `dir` and what lies above it, readable by their owner alone where
+/// the system has such a thing.
+fn make_private_dirs(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
 
 /// A vault key: wiped from memory on drop, compared in constant time and
 /// never printed by `Debug`.
@@ -141,7 +200,13 @@ impl VaultFormat {
         match backend {
             VaultBackend::System => self.lookup_system_key(&self.system_store()).ok().flatten(),
             VaultBackend::LocalFile => {
-                key_from_bytes(read_key_bytes(&dir.join(KEY_FILE)).ok()?.as_slice())
+                // A vault sealed before its keys were kept apart still has
+                // its key beside it: it is read there, and reading moves
+                // nothing.
+                let kept = read_key_bytes(&key_dir(dir).join(KEY_FILE))
+                    .or_else(|_| read_key_bytes(&dir.join(KEY_FILE)))
+                    .ok()?;
+                key_from_bytes(kept.as_slice())
             }
             #[cfg(windows)]
             VaultBackend::WindowsDpapi => {
@@ -351,8 +416,50 @@ impl VaultFormat {
             .map_err(|error| format!("secret store refused the vault key: {error}"))
     }
 
+    /// The key a vault sealed before its keys were kept apart left beside
+    /// it, moved to `apart`: nothing when no key lies beside it. The key
+    /// beside the vault goes only once it was read back from `apart`; one
+    /// that could not be moved still opens its vault from where it lies.
+    fn key_left_beside(&self, dir: &Path, apart: &Path) -> Beside {
+        let beside = dir.join(KEY_FILE);
+        let bytes = match read_key_bytes(&beside) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Beside::Nothing,
+            Err(error) => {
+                tracing::warn!(vault = self.name, %error, "the key beside the vault cannot be read; refusing replacement");
+                return Beside::Key(None);
+            }
+        };
+        let Some(key) = key_from_bytes(&bytes) else {
+            tracing::warn!(
+                vault = self.name,
+                "the key beside the vault is malformed; not replacing it"
+            );
+            return Beside::Key(None);
+        };
+        let placed = apart
+            .parent()
+            .is_none_or(|keys| make_private_dirs(keys).is_ok())
+            && tilo_files::native::private::create_atomic(apart, key.expose_secret()).is_ok();
+        let kept = read_key_bytes(apart)
+            .ok()
+            .and_then(|kept| key_from_bytes(&kept));
+        if placed && kept.as_ref() == Some(&key) {
+            if let Err(error) = std::fs::remove_file(&beside) {
+                tracing::warn!(vault = self.name, %error, "moved the vault key apart but could not remove the one beside the vault");
+            }
+        } else {
+            tracing::warn!(
+                vault = self.name,
+                "the vault key could not be moved apart; it still lies beside the vault"
+            );
+        }
+        Beside::Key(Some(key))
+    }
+
     fn local_file_key(&self, dir: &Path) -> Option<VaultKey> {
-        let path = dir.join(KEY_FILE);
+        let keys = key_dir(dir);
+        let path = keys.join(KEY_FILE);
         match read_key_bytes(&path) {
             Ok(bytes) if bytes.len() == KEY_LEN => key_from_bytes(&bytes),
             // A file exists but isn't a well-formed key: refuse to clobber it,
@@ -365,6 +472,11 @@ impl VaultFormat {
                 None
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if keys != dir
+                    && let Beside::Key(left) = self.key_left_beside(dir, &path)
+                {
+                    return left;
+                }
                 if vault_exists(dir) {
                     tracing::warn!(
                         vault = self.name,
@@ -373,7 +485,12 @@ impl VaultFormat {
                     return None;
                 }
                 let key = VaultKey::generate().ok()?;
-                if let Err(error) = std::fs::create_dir_all(dir) {
+                let made = if keys == dir {
+                    std::fs::create_dir_all(dir)
+                } else {
+                    make_private_dirs(&keys)
+                };
+                if let Err(error) = made {
                     tracing::warn!(vault = self.name, %error, "could not create vault dir for key");
                     return None;
                 }

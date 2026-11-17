@@ -20,6 +20,11 @@ use tokio::task::JoinHandle;
 use tilo_user_identity::{RevocationList, verify_revocation_entry};
 
 use crate::config::RelayConfig;
+
+/// Names the folder the keys of people's sealed stores are kept under, apart
+/// from the state folder: what an operator sets so that a copy or a backup
+/// of the state alone opens nobody's sign-ins, keys or vault items.
+const PEOPLE_KEYS_ENV: &str = "TILO_PEOPLE_KEYS";
 use crate::handshake::{EndpointTrust, LiveIdentity};
 use crate::host::RelayProtocol;
 use crate::metrics::Metrics;
@@ -594,6 +599,9 @@ impl Relay {
                 max_workspace_grants: cfg.max_workspace_grants,
                 apps: app_serving.clone(),
                 shell_payloads,
+                // The folder its operator names for the keys of people's
+                // sealed stores, apart from the state it copies and backs up.
+                people_keys: std::env::var_os(PEOPLE_KEYS_ENV).map(PathBuf::from),
             },
             identity.clone(),
             endpoint.clone(),

@@ -19,6 +19,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::HostWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
+use crate::workspaces::fixtures::test_server_keeping_keys_apart;
 use crate::workspaces::tests::{governor, test_host};
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -770,4 +771,93 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
         json!([])
     );
     relay.shutdown().await;
+}
+
+/// Every file under `dir` called `name`.
+fn files_called(dir: &std::path::Path, name: &str) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut waiting = vec![dir.to_path_buf()];
+    while let Some(next) = waiting.pop() {
+        for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                waiting.push(path);
+            } else if path.file_name().is_some_and(|file| file == name) {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// Copy the folder `from` to `to`, with everything under it.
+fn copy_folder(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let (path, copy) = (entry.path(), to.join(entry.file_name()));
+        if path.is_dir() {
+            copy_folder(&path, &copy);
+        } else {
+            std::fs::copy(&path, &copy).unwrap();
+        }
+    }
+}
+
+/// A server told where to keep the keys of people's sealed stores keeps
+/// none of them in its state folder. So a copy of that folder, a backup or
+/// a staging copy, opens nothing of a person's vault and makes no key for
+/// it; with the keys beside it the same copy opens, which is all it lacked.
+#[tokio::test]
+async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_persons_vault() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, keys) = (dir.path().join("state"), dir.path().join("keys"));
+    let (key, owner) = governor();
+    let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let hers = (&ada, &caller(&ada));
+
+    let login = a_login("https://example.test");
+    let kept = ask(&actions, workspace_id, hers, person_vault::ADD, login)
+        .await
+        .expect("Ada keeps a login");
+    let listed = ask(&actions, workspace_id, hers, person_vault::LIST, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(listed["items"], json!([kept]), "she reads it back");
+
+    // What is sealed lies in the state folder; its key does not.
+    assert_eq!(files_called(&state, "vault.enc").len(), 1);
+    assert_eq!(
+        files_called(&state, "vault.key"),
+        Vec::<std::path::PathBuf>::new(),
+        "the key of her vault lies in the state folder"
+    );
+    assert_eq!(files_called(&keys, "vault.key").len(), 1);
+    assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
+
+    // A copy of the state folder alone.
+    let copy = dir.path().join("copy");
+    copy_folder(&state, &copy);
+    let people = |state: &std::path::Path| state.join("workspaces").join("people");
+    let hers_in = |state: &std::path::Path| people(state).join(hex::encode(ada.user_public_key));
+    let opened = accounts::vault_items::VaultItems::open_in(&hers_in(&copy));
+    assert!(
+        opened.is_err(),
+        "a copy of the state folder opened her vault"
+    );
+    assert_eq!(
+        files_called(&copy, "vault.key"),
+        Vec::<std::path::PathBuf>::new(),
+        "and trying made no key for it"
+    );
+
+    // The same copy with the keys: the key was all it lacked.
+    let copied_keys = dir.path().join("copied-keys");
+    copy_folder(&keys, &copied_keys);
+    accounts::keep_vault_keys_apart(&people(&copy), &copied_keys);
+    let opened = accounts::vault_items::VaultItems::open_in(&hers_in(&copy))
+        .expect("the copy opens with its keys");
+    assert_eq!(opened.facts().len(), 1);
 }
