@@ -238,8 +238,12 @@ fn ask(
             show_picked_tab(state, fed, &tab);
         }
         sheet::WorkspaceSettingsEffect::DismissNotice => dismiss_notice(state, fed),
-        // Closing is the sheet's own.
-        sheet::WorkspaceSettingsEffect::Close => {}
+        // Closing is the sheet's own. The servers keeping a workspace are
+        // chosen over the workspace's own server API, from a page; a
+        // desktop's sheet offers none.
+        sheet::WorkspaceSettingsEffect::Close
+        | sheet::WorkspaceSettingsEffect::AddServer { .. }
+        | sheet::WorkspaceSettingsEffect::RemoveServer { .. } => {}
         sheet::WorkspaceSettingsEffect::AddAgent { .. }
         | sheet::WorkspaceSettingsEffect::RemoveAgent { .. }
         | sheet::WorkspaceSettingsEffect::SetAgentModel { .. }
@@ -253,10 +257,6 @@ fn ask(
             intent(intents, ChromeIntent::RenameWorkspace { name });
         }
         sheet::WorkspaceSettingsEffect::Move { step } => move_workspace(handle, step),
-        // The servers keeping a workspace are chosen over the workspace's own
-        // server API, from a page; a desktop's sheet offers none.
-        sheet::WorkspaceSettingsEffect::AddServer { .. }
-        | sheet::WorkspaceSettingsEffect::RemoveServer { .. } => {}
         sheet::WorkspaceSettingsEffect::SetRole { member, role } => {
             let Some(role) = Role::parse(&role) else {
                 tracing::debug!(%role, "no such role: nothing changed");
