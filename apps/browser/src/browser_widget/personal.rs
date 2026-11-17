@@ -270,18 +270,16 @@ pub(crate) fn request_resource(
         ViewRequest::FlatOpen { url } => {
             let (named, row) = named_row(state, &flat_id(&url))?;
             match named {
-                Named::Flat(_) => {
-                    Some(row.effect(&crate::effects::BrowserEffect::Open { url: url.clone() }))
-                }
+                Named::Flat(_) => Some(row.effect(&crate::effects::BrowserEffect::Open { url })),
                 Named::Placement(..) => None,
             }
         }
         ViewRequest::FlatRemove { url } => {
             let (named, row) = named_row(state, &flat_id(&url))?;
             match named {
-                Named::Flat(_) => Some(row.effect(
-                    &crate::effects::BrowserEffect::RemovePersonalBookmark { url: url.clone() },
-                )),
+                Named::Flat(_) => {
+                    Some(row.effect(&crate::effects::BrowserEffect::RemovePersonalBookmark { url }))
+                }
                 Named::Placement(..) => None,
             }
         }
