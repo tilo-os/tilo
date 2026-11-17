@@ -30,6 +30,8 @@ const SITE: &str = "https://sign-in.example.test";
 const ELSEWHERE: &str = "https://elsewhere.example.test";
 /// A made-up password, nobody's: nothing but the page may hold it.
 const SECRET: &str = "made-up-password-of-nobody-9f3";
+/// A second made-up password, nobody's, kept in an item no fill names.
+const OTHER_SECRET: &str = "made-up-second-password-of-nobody-4c1";
 /// The provider the stand-in window publishes under.
 const WINDOW: &str = "4711";
 /// The password field of the sign-in page, as the page's outline names it.
@@ -63,6 +65,49 @@ struct Shown {
     travelled: Arc<Mutex<Vec<String>>>,
     /// What reached the window, each by how it begins: what a test that fails says.
     seen: Arc<Mutex<Vec<String>>>,
+    /// The fills the window was handed: each by its id, with the device that handed it.
+    fills: Arc<Mutex<Vec<(InvocationId, [u8; 32])>>>,
+    /// What the server answered an ask beyond the one a window makes for a fill.
+    beyond: Arc<Mutex<Vec<String>>>,
+    /// How a test has the stand-in stray from what a window does.
+    strays: Arc<Mutex<Strays>>,
+    /// What lets a stand-in that holds its fill go on to ask.
+    let_on: Arc<tokio::sync::Notify>,
+}
+
+/// How a test has the stand-in stray from what a window does.
+#[derive(Clone, Default)]
+struct Strays {
+    /// The item it asks for in place of the one its fill names.
+    another_item: Option<String>,
+    /// Whether it asks a second time for a fill it was answered.
+    twice: bool,
+    /// Whether it holds a fill it was handed until it is let on.
+    holds: bool,
+}
+
+/// A window's ask for the text of `item` at `origin`, for the fill `fill`: the ask's own id, and
+/// the ask.
+fn asks(fill: InvocationId, item: &str, origin: &str) -> (InvocationId, RemoteActionMessage) {
+    let ask = InvocationId::new();
+    let mut wanted = serde_json::Map::new();
+    wanted.insert("invocation".into(), serde_json::to_value(fill).unwrap());
+    wanted.insert("item".into(), item.into());
+    wanted.insert("origin".into(), origin.into());
+    (
+        ask,
+        RemoteActionMessage::Invoke(InvokeRequest {
+            invocation: ask,
+            target: environment_device::target(environment_device::USE_ITEM),
+            argument: InvokeArgument::Json(wanted),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        }),
+    )
 }
 
 impl Shown {
@@ -162,8 +207,11 @@ async fn window_shows(hosted: &Hosted, material: &Material, origin: &'static str
     let (key, workspace) = (material.key().unwrap(), material.workspace.clone());
     let held = shown.clone();
     tokio::spawn(async move {
-        // The fills that wait for the server's answer: the ask each made, the fill, its field.
-        let mut asked: Vec<(InvocationId, InvocationId, String)> = Vec::new();
+        // The fills that wait for the server's answer: the ask each made, the fill, its field
+        // and the item asked for.
+        let mut asked: Vec<(InvocationId, InvocationId, String, String)> = Vec::new();
+        // The fills asked for a second time: that ask, the fill, its field and the first answer.
+        let mut again: Vec<(InvocationId, InvocationId, String, ReceiptStatus)> = Vec::new();
         while let Some(envelope) = client.recv().await {
             held.seen
                 .lock()
@@ -184,47 +232,68 @@ async fn window_shows(hosted: &Hosted, material: &Material, origin: &'static str
                 RemoteActionMessage::Invoke(fill)
                     if fill.target.address.action == FILL_PAGE_ITEM =>
                 {
-                    let named = |name: &str| match &fill.argument {
-                        InvokeArgument::Json(arguments) => arguments
-                            .get(name)
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned(),
-                        _ => String::new(),
+                    let (element, named) = {
+                        let named = |name: &str| match &fill.argument {
+                            InvokeArgument::Json(arguments) => arguments
+                                .get(name)
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            _ => String::new(),
+                        };
+                        (named("element"), named("item"))
                     };
-                    held.handed.lock().unwrap().push(named("element"));
-                    let ask = InvocationId::new();
-                    asked.push((ask, fill.invocation, named("element")));
-                    let mut wanted = serde_json::Map::new();
-                    wanted.insert(
-                        "invocation".into(),
-                        serde_json::to_value(fill.invocation).unwrap(),
-                    );
-                    wanted.insert("item".into(), named("item").into());
-                    wanted.insert("origin".into(), origin.into());
-                    RemoteActionMessage::Invoke(InvokeRequest {
-                        invocation: ask,
-                        target: environment_device::target(environment_device::USE_ITEM),
-                        argument: InvokeArgument::Json(wanted),
-                        context: None,
-                        confirmation: None,
-                        revision: None,
-                        on_behalf_of: None,
-                        wait_ms: None,
-                        appearance: None,
-                    })
+                    held.handed.lock().unwrap().push(element.clone());
+                    held.fills
+                        .lock()
+                        .unwrap()
+                        .push((fill.invocation, from_device_public_key));
+                    let strays = held.strays.lock().unwrap().clone();
+                    if strays.holds {
+                        held.let_on.notified().await;
+                    }
+                    let item = strays.another_item.unwrap_or(named);
+                    let (ask, asking) = asks(fill.invocation, &item, origin);
+                    asked.push((ask, fill.invocation, element, item));
+                    asking
                 }
                 RemoteActionMessage::Receipt(receipt) => {
-                    let Some(at) = asked
+                    let second = again
                         .iter()
-                        .position(|(ask, ..)| *ask == receipt.invocation)
-                    else {
-                        continue;
+                        .position(|(ask, ..)| *ask == receipt.invocation);
+                    let first = asked
+                        .iter()
+                        .position(|(ask, ..)| *ask == receipt.invocation);
+                    let (fill, field, answered) = match (second, first) {
+                        // The answer to a second ask is kept, and the fill then ends as its
+                        // first answer had it.
+                        (Some(at), _) => {
+                            let (_, fill, field, answered) = again.remove(at);
+                            held.beyond.lock().unwrap().push(format!("{receipt:?}"));
+                            (fill, field, answered)
+                        }
+                        (None, Some(at)) => {
+                            let (_, fill, field, item) = asked.remove(at);
+                            held.travelled.lock().unwrap().push(format!("{receipt:?}"));
+                            let twice = held.strays.lock().unwrap().twice;
+                            if twice {
+                                let (ask, asking) = asks(fill, &item, origin);
+                                again.push((ask, fill, field, receipt.status));
+                                let _ = client.send(Envelope::RemoteAction {
+                                    workspace_id,
+                                    version: tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                                    to_device_public_key: from_device_public_key,
+                                    from_device_public_key: window,
+                                    from_user_public_key: person,
+                                    frame: RemoteActionFrame::new(asking).encode().unwrap(),
+                                });
+                                continue;
+                            }
+                            (fill, field, receipt.status)
+                        }
+                        (None, None) => continue,
                     };
-                    let (_, fill, field) = asked.remove(at);
-                    held.travelled.lock().unwrap().push(format!("{receipt:?}"));
-                    let status =
-                        held.take((&key, &workspace, origin), (fill, &field), receipt.status);
+                    let status = held.take((&key, &workspace, origin), (fill, &field), answered);
                     RemoteActionMessage::Receipt(InvocationReceipt {
                         invocation: fill,
                         status,
@@ -243,6 +312,88 @@ async fn window_shows(hosted: &Hosted, material: &Material, origin: &'static str
         }
     });
     shown
+}
+
+/// Another device of the same person joins the workspace and, while the window holds the first
+/// fill it is handed, asks the server for the text of `item` for that fill, in the window's
+/// place. What it is answered is kept, and the window is then let on.
+async fn another_device_asks(
+    hosted: &Hosted,
+    shown: &Shown,
+    item: &str,
+) -> Arc<Mutex<Vec<String>>> {
+    let answered = Arc::new(Mutex::new(Vec::new()));
+    let workspace_id = WorkspaceId::parse(&hosted.workspace).unwrap();
+    let person = hosted.root.verifying_key().to_bytes();
+    let other = enrol(&hosted.root, "another", DeviceCapabilities::member());
+    let client = tilo_server::ServerClient::connect(
+        iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .bind()
+            .await
+            .unwrap(),
+        hosted.address.clone(),
+        person,
+        other.cert.clone(),
+        other.key.clone(),
+        tilo_user_identity::RevocationList::new(),
+    )
+    .await
+    .expect("the person's other device dials the server");
+    tilo_server::workspaces::enter_invitation(&client, &hosted.workspace, 600)
+        .await
+        .expect("the server enters the person's other device into their workspace");
+    client.send(Envelope::Subscribe { workspace_id }).unwrap();
+    loop {
+        match tilo_test_env::within("the other device joins", client.recv()).await {
+            Some(Envelope::Ready { .. }) => break,
+            Some(_) => {}
+            None => panic!("the person's other device was let go before it joined"),
+        }
+    }
+    let (shown, item, kept) = (shown.clone(), item.to_owned(), Arc::clone(&answered));
+    let device = other.cert.device_public_key;
+    tokio::spawn(async move {
+        // The fill the window holds, and the device that handed it.
+        let (fill, server) = loop {
+            let handed = shown.fills.lock().unwrap().first().copied();
+            if let Some(handed) = handed {
+                break handed;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        let (ask, asking) = asks(fill, &item, SITE);
+        let _ = client.send(Envelope::RemoteAction {
+            workspace_id,
+            version: tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+            to_device_public_key: server,
+            from_device_public_key: device,
+            from_user_public_key: person,
+            frame: RemoteActionFrame::new(asking).encode().unwrap(),
+        });
+        let answer = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(envelope) = client.recv().await {
+                let Envelope::RemoteAction { frame, .. } = envelope else {
+                    continue;
+                };
+                let Ok(RemoteActionFrame {
+                    message: RemoteActionMessage::Receipt(receipt),
+                    ..
+                }) = RemoteActionFrame::decode(&frame)
+                else {
+                    continue;
+                };
+                if receipt.invocation == ask {
+                    return format!("{:?}", receipt.status);
+                }
+            }
+            "the other device's session ended".to_owned()
+        })
+        .await
+        .unwrap_or_else(|_| "the server did not answer the other device".to_owned());
+        kept.lock().unwrap().push(answer);
+        shown.let_on.notify_one();
+    });
+    answered
 }
 
 /// The server, its person and their assistant, with the workspace's Browser window showing the
@@ -640,6 +791,135 @@ async fn always_to_an_edited_question_fills_nothing_and_lets_nothing_stand() {
     assert!(
         !signing.travelled().contains("released"),
         "nothing was released to the window: {}",
+        signing.travelled()
+    );
+    signing.hosted.page.peer.close();
+}
+
+/// One fill is decided once. A window that asks a second time for a fill it was answered is
+/// refused, so one allow of the person is one text and no more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_ask_for_one_fill_is_refused_and_one_allow_is_one_text() {
+    let signing = Box::pin(at_the_sign_in_page(SITE)).await;
+    let hosted = &signing.hosted;
+    let told = signing
+        .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
+        .await;
+    let asked = hosted.questions(chat::question::ACTION).await;
+    assert_eq!(asked.len(), 1, "one question about the fill: {told}");
+    hosted
+        .answers(&asked[0].0, chat::question::ALLOW, serde_json::Value::Null)
+        .await;
+    assert_eq!(reworded::ended(hosted).await, chat::question::DONE);
+
+    signing.shown.strays.lock().unwrap().twice = true;
+    let told = signing.asks_to_fill("I allowed it.", "call-2").await;
+    assert_eq!(
+        signing.filled(),
+        [(FIELD.to_owned(), "password".to_owned(), SECRET.to_owned())],
+        "the window's first ask is answered with the text: {told}"
+    );
+    let beyond = signing.shown.beyond.lock().unwrap().clone();
+    assert_eq!(beyond.len(), 1, "the window asked a second time: {told}");
+    assert!(
+        beyond[0].contains("Rejected") && !beyond[0].contains("released"),
+        "the second ask for the same fill is refused: {beyond:?}"
+    );
+    assert_eq!(
+        signing.travelled().matches("released").count(),
+        1,
+        "one allow is one text: {}",
+        signing.travelled()
+    );
+    hosted.page.peer.close();
+}
+
+/// Only the window the server handed a fill is answered for it. Another device of the same
+/// person that asks for that fill's item while it waits is refused, and the window's own ask is
+/// answered as ever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_device_that_asks_for_a_waiting_fills_item_is_refused() {
+    let signing = Box::pin(at_the_sign_in_page(SITE)).await;
+    let hosted = &signing.hosted;
+    signing.shown.strays.lock().unwrap().holds = true;
+    let answered = Box::pin(another_device_asks(
+        hosted,
+        &signing.shown,
+        &signing.reference,
+    ))
+    .await;
+    let told = signing
+        .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
+        .await;
+    let answered = answered.lock().unwrap().clone();
+    assert_eq!(answered.len(), 1, "the other device asked once: {told}");
+    assert!(
+        answered[0].contains("Rejected") && !answered[0].contains("released"),
+        "the other device is refused: {answered:?}"
+    );
+    assert!(
+        told.contains(ASKED),
+        "the window's own ask is answered as ever: {told}"
+    );
+    assert_eq!(
+        hosted.questions(chat::question::ACTION).await.len(),
+        1,
+        "the person is asked once, for the window's ask"
+    );
+    assert!(
+        signing.filled().is_empty() && !signing.travelled().contains("released"),
+        "nothing was released: {}",
+        signing.travelled()
+    );
+    hosted.page.peer.close();
+}
+
+/// A window is answered for the item its fill names and no other: one that asks for another
+/// item of the same person and the same site is refused, and nobody is asked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_window_that_asks_for_another_item_than_its_fill_names_is_refused() {
+    let mut signing = Box::pin(at_the_sign_in_page(SITE)).await;
+    let other = signing
+        .hosted
+        .on_device(
+            (
+                person_vault::PROVIDER,
+                person_vault::RESOURCE,
+                person_vault::ADD,
+            ),
+            serde_json::json!({
+                "kind": "login", "belongsTo": [SITE], "username": "ada-2",
+                "secret": OTHER_SECRET,
+            }),
+        )
+        .await;
+    let other = other["reference"].as_str().expect("a reference").to_owned();
+    signing.shown.strays.lock().unwrap().another_item = Some(other);
+    let told = signing
+        .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
+        .await;
+    assert_eq!(
+        signing.shown.handed.lock().unwrap().as_slice(),
+        [FIELD],
+        "the window was handed the fill: {told}"
+    );
+    assert!(
+        !told.contains(ASKED) && !told.contains(SECRET) && !told.contains(OTHER_SECRET),
+        "the agent is told nothing was filled: {told}"
+    );
+    assert!(
+        signing
+            .hosted
+            .questions(chat::question::ACTION)
+            .await
+            .is_empty(),
+        "nobody is asked about an item no fill names"
+    );
+    assert!(
+        signing.filled().is_empty()
+            && signing.travelled().contains("Rejected")
+            && !signing.travelled().contains("released"),
+        "the ask is refused and nothing is released: {}",
         signing.travelled()
     );
     signing.hosted.page.peer.close();
