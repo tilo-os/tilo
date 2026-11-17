@@ -31,7 +31,7 @@ import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
 import {fetchPersonProfile, pickImageFile, squarePhoto} from './profile-photos.mjs';
-import {deviceLabel, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
+import {deviceLabel, ofThisSite, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
@@ -434,12 +434,13 @@ function pairingAsk(request, decide) {
 
 /**
  * Asked on a device before it asks a host to make it a person's: whose
- * device it becomes (`whose`, the sentence of `pairingWhose`), what follows
- * from that, what it means for a browser that is somebody already
- * (`already`), and the two ways on. Stop has the focus, so a stray Enter
- * pairs nothing. Resolves to whether the person went on.
+ * device it becomes (`whose`, the sentence of `pairingWhose`), which server
+ * adds it (`where`, the sentence of `pairingWhere`), what follows from
+ * that, what it means for a browser that is somebody already (`already`),
+ * and the two ways on. Stop has the focus, so a stray Enter pairs nothing.
+ * Resolves to whether the person went on.
  */
-function pairingAgree(whose, {already = false} = {}) {
+function pairingAgree(whose, where, {already = false} = {}) {
   return new Promise(resolve => {
     const card = pairCard('pair-whose', PAIRING_WHOSE.heading, 'alertdialog');
     const actions = document.createElement('div');
@@ -455,7 +456,7 @@ function pairingAgree(whose, {already = false} = {}) {
     go.addEventListener('click', () => answer(true));
     stop.addEventListener('click', () => answer(false));
     actions.append(go, stop);
-    card.append(paragraph(whose, 'tilo-pair-whose'), paragraph(PAIRING_WHOSE.consequence),
+    card.append(paragraph(whose, 'tilo-pair-whose'), paragraph(where, 'tilo-pair-whose'), paragraph(PAIRING_WHOSE.consequence),
       ...(already ? [paragraph(PAIRING_WHOSE.already)] : []), actions);
     document.body.append(card);
     stop.focus();
@@ -464,9 +465,10 @@ function pairingAgree(whose, {already = false} = {}) {
 
 /** Said on a new device while the person's other device decides on it:
  * which device that is, the code it shows beside its ask, whose device this
- * one becomes (`whose`, as it said before it asked), and what to do when
- * nothing asks (`PAIRING_WAIT`). Its Stop is the way out (`onStop`). */
-function pairingWait(code, whose, onStop) {
+ * one becomes and which server adds it (`whose` and `where`, as it said
+ * before it asked), and what to do when nothing asks (`PAIRING_WAIT`). Its
+ * Stop is the way out (`onStop`). */
+function pairingWait(code, whose, where, onStop) {
   document.documentElement.dataset.pairingCode = code;
   const card = pairCard('pair-wait', PAIRING_WAIT.heading, 'status');
   const stop = document.createElement('button');
@@ -474,7 +476,7 @@ function pairingWait(code, whose, onStop) {
   stop.textContent = PAIRING_WHOSE.stop;
   stop.addEventListener('click', () => onStop());
   card.append(paragraph(PAIRING_WAIT.where), paragraph(code, 'tilo-pair-digits'), paragraph(whose, 'tilo-pair-whose'),
-    paragraph(PAIRING_WAIT.then, 'tilo-pair-note'), paragraph(PAIRING_WAIT.otherwise, 'tilo-pair-note'), stop);
+    paragraph(where, 'tilo-pair-whose'), paragraph(PAIRING_WAIT.then, 'tilo-pair-note'), paragraph(PAIRING_WAIT.otherwise, 'tilo-pair-note'), stop);
   document.body.append(card);
   return () => card.remove();
 }
@@ -1238,9 +1240,11 @@ export async function startEntryPage({mode}) {
     pairDevice: async ({origin, workspace, userPublicKey, invite, listed}) => {
       displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
       let waiting = () => {};
-      // Whose device this becomes, as its person was told before anything
-      // was asked, and whether they stopped while it waited.
+      // Whose device this becomes and which server adds it, as its person
+      // was told before anything was asked, and whether they stopped while
+      // it waited.
       let whose = '';
+      let where = '';
       let stopped = false;
       try {
         // The person this browser already is, where it keeps one: the one
@@ -1249,14 +1253,19 @@ export async function startEntryPage({mode}) {
         const holds = currentIdentity()?.userPublicKey ?? (await keptIdentity().catch(() => null))?.rootPublicKey ?? null;
         return await pairViaHost({origin, workspace, userPublicKey, invite, listed, runtime, displayName, holds,
           label: deviceLabel(),
+          // The link wrote the server it names. Only one this site names as
+          // its own (its `entry.json`, read before anything is asked) is
+          // asked who the link's person is; any other names nobody.
+          ofSite: ofThisSite(origin, {page: location.href, entry: admitting?.entry}),
           agree: who => {
-            whose = pairingWhose(who.name);
-            return pairingAgree(whose, {already: Boolean(who.holds)});
+            whose = pairingWhose(who.name, who);
+            where = pairingWhere(who.origin, who);
+            return pairingAgree(whose, where, {already: Boolean(who.holds)});
           },
           stopped: () => stopped,
           onPairingCode: code => {
             waiting();
-            waiting = pairingWait(code, whose, () => { stopped = true; leavePairing(); });
+            waiting = pairingWait(code, whose, where, () => { stopped = true; leavePairing(); });
           }});
       } catch (error) {
         // The host's answer, or this browser's own, said as what to do next; anything else as any failure.

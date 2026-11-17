@@ -1036,15 +1036,15 @@ test('a device says whose it becomes before any host is asked to let it in, and 
   const asked = [];
   const said = [];
   const link = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, invite: '0f'.repeat(16), listed: commons,
-    memberships: options.memberships, onPairingCode: () => {},
+    memberships: options.memberships, onPairingCode: () => {}, ofSite: true,
     fetch: profileHost(asked, key => ({version: 1, user_public_key: key, display_name: 'Ada Lovelace'})),
     pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }};
   const stopped = await pairViaHost({...link, agree: async who => { said.push({...who, paired: calls.paired.length}); return false; }})
     .then(() => null, error => error);
   assert.deepEqual(asked, [{url: 'https://workspaces.example/peer/v1/profile/fetch', body: person}],
     'the host that keeps the person is asked who they are, by the key the link names');
-  assert.deepEqual(said, [{userPublicKey: person, name: 'Ada Lovelace', holds: null, paired: 0}],
-    'the person is told before the host is asked to let the device in');
+  assert.deepEqual(said, [{userPublicKey: person, name: 'Ada Lovelace', holds: null, origin: 'https://workspaces.example', ofSite: true, paired: 0}],
+    'the person is told before the host is asked to let the device in, and which server that is');
   assert.equal(stopped?.name, 'HostAdmissionError');
   assert.equal(stopped?.code, 'stopped');
   assert.equal(stopped?.message, PAIRING_STOPPED);
@@ -1061,7 +1061,7 @@ test('the name a device shows is its host’s word for the person the link names
   const person = '33'.repeat(32);
   const names = [];
   const link = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, listed: commons, memberships: options.memberships,
-    onPairingCode: () => {}, agree: async who => { names.push(who.name); return false; },
+    onPairingCode: () => {}, ofSite: true, agree: async who => { names.push(who.name); return false; },
     pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }};
   const hosts = [
     // The host keeps no profile of them.
@@ -1074,8 +1074,21 @@ test('the name a device shows is its host’s word for the person the link names
     // It answers with a name that would turn the sentence round.
     async () => reply({body: {profile: {version: 1, user_public_key: person, display_name: 'Ada‮\nLovelace'}}}),
   ];
-  for (const fetch of hosts) await assert.rejects(pairViaHost({...link, fetch}), {code: 'stopped'});
+  // A link names the server it is followed to, and whoever keeps that server
+  // answers any name for the key, its reader's own too. One the site does
+  // not name as its own is asked nothing before the person goes on, and its
+  // word names nobody: so it is for a caller that did not say whose it is.
+  const asked = [];
+  const said = [];
+  const anyName = async (url, init) => {
+    asked.push(String(url));
+    return reply({body: {profile: {version: 1, user_public_key: init?.body, display_name: 'Bo Smith'}}});
+  };
+  const others = [false, undefined, 'yes', 1].map(ofSite => ({ofSite, fetch: anyName, agree: async who => { said.push(who); return false; }}));
+  for (const asking of [...hosts.map(fetch => ({fetch})), ...others]) await assert.rejects(pairViaHost({...link, ...asking}), {code: 'stopped'});
   assert.deepEqual(names, ['', '', '', '', 'Ada Lovelace']);
+  assert.deepEqual(asked, [], 'no server but the site’s own is asked who the person is');
+  assert.deepEqual(said, Array(4).fill({userPublicKey: person, name: '', holds: null, origin: 'https://workspaces.example', ofSite: false}));
   assert.deepEqual(calls.paired, []);
 });
 

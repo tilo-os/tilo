@@ -10,9 +10,11 @@
  * devices may answer it.
  *
  * The new device reads the link (`parsePairSecret`) and, before it asks any
- * holder to let it in, says whose device it would become (`pairingWhose`): a
- * link is written by whoever made it, and the device that follows one acts
- * as that person from then on. Only when its person goes on does it name
+ * holder to let it in, says whose device it would become (`pairingWhose`) and
+ * which server adds it (`pairingWhere`): a link is written by whoever made
+ * it, the server it names too, and the device that follows one acts as that
+ * person from then on. Only this site's own server is asked who that person
+ * is (`ofThisSite`). Only when its person goes on does it name
  * itself (`deviceLabel`: "Safari on iPhone"), show the code the holder derives
  * and wait; a refusal is said in plain words (`pairingFailure`).
  */
@@ -69,19 +71,68 @@ export function shownName(name) {
 }
 
 /**
- * Whose device this one becomes, in one sentence: said before it asks to be
- * let in and again on its waiting card. `name` is what the host that keeps
- * that person answers for the key the link names (their own profile there,
- * `fetchProfile`), never a word of the link's own; a host that names nobody
- * leaves the sentence to say so. A name is no proof of who made the link,
- * since everyone chooses their own: the sentence asks the one question its
- * reader can answer, whether that is them.
+ * Whether the server at `origin` is one this site names as its own: the one
+ * the page came from (`page`, its address), the site's base, or the server
+ * that keeps the site's home workspace (`entry`, the site's `entry.json`).
+ * A link is written by whoever made it and names any server
+ * (`#/@<server>/w/…`), its maker's own too. So nothing a link says, and
+ * nothing this browser kept from an earlier visit, makes a server the
+ * site's own.
  */
-export function pairingWhose(name) {
+export function ofThisSite(origin, {page = globalThis.location?.href, entry = null} = {}) {
+  const at = address => {
+    try {
+      return new URL(address).origin;
+    } catch {
+      return null;
+    }
+  };
+  const asked = at(origin);
+  // An address without an origin of its own (`about:blank`) reads as "null".
+  if (asked === null || asked === 'null') return false;
+  return [page, entry?.base, entry?.home?.host?.origin].some(own => at(own) === asked);
+}
+
+/**
+ * Whose device this one becomes, in one sentence: said before it asks to be
+ * let in and again on its waiting card. `name` is what the server that keeps
+ * that person answers for the key the link names (their own profile there,
+ * `fetchProfile`), never a word of the link's own; a server that names
+ * nobody leaves the sentence to say so. Only this site's own server is
+ * taken at its word (`ofSite`, `ofThisSite`): a server the link alone names
+ * answers whatever name its keeper likes, the reader's own too, so for any
+ * other server the sentence names nobody, whatever `name` holds. A name is
+ * no proof of who made the link, since everyone chooses their own: the
+ * sentence asks the one question its reader can answer, whether that is
+ * them.
+ */
+export function pairingWhose(name, {ofSite = false} = {}) {
+  if (ofSite !== true) return 'You are adding this device to the devices of whoever made this link. If you did not make it yourself, stop.';
   const shown = shownName(name);
   return shown
     ? `You are adding this device to ${shown}’s devices. If that is not you, stop.`
     : 'You are adding this device to the devices of someone this host has no name for. If you did not make this link yourself, stop.';
+}
+
+/**
+ * Which server adds the device, said under the sentence that says whose it
+ * becomes: its name as its address writes it (a name spelled with letters
+ * of another script reads as `xn--…`), and whether it is this site's own
+ * (`ofSite`, `ofThisSite`). The page stays under the site's address
+ * whichever server a link names, so this line alone tells its reader where
+ * the device goes: for a server that is not the site's own it says so, and
+ * that what they type afterwards goes there and not to this site.
+ */
+export function pairingWhere(origin, {ofSite = false} = {}) {
+  let server = '';
+  try {
+    server = new URL(origin).host;
+  } catch {
+    // Said as what it is below: a server only the link names.
+  }
+  return ofSite === true && server
+    ? `The server that adds it is this site’s own, ${server}.`
+    : `This device would join another server${server ? `, ${server},` : ','} which is not this site’s own. What you type here afterwards goes to that server, not to this site. Go on only if you know that server is yours.`;
 }
 
 /**

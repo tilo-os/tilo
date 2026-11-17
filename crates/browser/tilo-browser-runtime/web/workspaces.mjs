@@ -823,7 +823,12 @@ export async function joinViaHost({
  * that to the person here and resolves to whether they go on. `name` is the
  * host's word for the key the link names (the profile it keeps of them,
  * `findProfile`; empty when it keeps none or does not answer), never
- * anything the link says. Without their yes the host is asked nothing
+ * anything the link says. The link wrote which server that is, so only one
+ * this site names as its own is asked and taken at its word (`ofSite`: said
+ * by the page, `ofThisSite` in pairing.mjs; `agree` hears it with `origin`).
+ * Any other is asked nothing before the person goes on, and names nobody:
+ * its keeper may be the link's maker, who would answer the reader's own
+ * name. Without their yes the host is asked nothing
  * (`stopped`), and there is no pairing without `agree`. `stopped()` says
  * whether they stopped while the device waited: one approved meanwhile is
  * let go and nothing is kept of it.
@@ -831,7 +836,7 @@ export async function joinViaHost({
 export async function pairViaHost({
   origin, workspace, userPublicKey, listed = null, label = 'Browser', displayName = defaultDisplayName(userPublicKey),
   memberships = globalThis.localStorage, fetch = globalThis.fetch, pair = pairDevice, holds = null,
-  agree, findProfile = fetchProfile, stopped = () => false, ...connectOptions
+  agree, findProfile = fetchProfile, ofSite = false, stopped = () => false, ...connectOptions
 }) {
   if (!/^[0-9a-f]{64}$/.test(userPublicKey ?? '')) throw new HostAdmissionError('invalid', 'This pairing link names no person');
   if (connectOptions.invite != null && !/^[0-9a-f]{32}$/.test(connectOptions.invite)) {
@@ -839,9 +844,11 @@ export async function pairViaHost({
   }
   if (holds && holds === userPublicKey) throw new HostAdmissionError('same-person', PAIRING_SAME_PERSON);
   if (typeof agree !== 'function') throw new TypeError('a device is paired only once it said whose it becomes: pairViaHost needs agree');
-  const kept = await Promise.resolve().then(() => findProfile(userPublicKey, [origin], fetch ? {fetch} : {})).catch(() => null);
+  const own = ofSite === true;
+  const kept = own
+    ? await Promise.resolve().then(() => findProfile(userPublicKey, [origin], fetch ? {fetch} : {})).catch(() => null) : null;
   const stop = () => new HostAdmissionError('stopped', PAIRING_STOPPED);
-  if (!(await agree({userPublicKey, name: shownName(kept?.display_name), holds}))) throw stop();
+  if (!(await agree({userPublicKey, name: shownName(kept?.display_name), holds, origin, ofSite: own}))) throw stop();
   const entry = listed?.admission ?? undefined;
   const peer = await pair({...connectOptions, origin, workspace, userPublicKey, label, displayName, fetch, entry,
     profile: identityProfile({userPublicKey}, origin)}).catch(error => { throw stopped() ? stop() : entryRefused(error); });
