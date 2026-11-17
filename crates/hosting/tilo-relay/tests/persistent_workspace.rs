@@ -914,55 +914,6 @@ fn the_relay_entry_admits_two_people_as_distinct_members_at_its_default_role() {
     workspace.stop();
 }
 
-/// The workspace takes over the removals it kept before the entry had them: a
-/// person moderation removed before the upgrade stays out, and the old file
-/// goes.
-#[test]
-fn the_workspace_keeps_out_a_person_it_removed_before_the_entry() {
-    let scratch = tempfile::tempdir().unwrap();
-    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
-    std::fs::create_dir_all(&state).unwrap();
-    let root_file = scratch.path().join("root");
-    std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let (device, cert) = own_device(0x61, "Ana");
-    let legacy = state.join("relay").join("removals.json");
-    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-    std::fs::write(
-        &legacy,
-        serde_json::json!({
-            hex::encode(cert.user_public_key): tilo_clock::unix_now_ms(),
-        })
-        .to_string(),
-    )
-    .unwrap();
-    let workspace = start_with(
-        &state,
-        &root_file,
-        &secrets,
-        &[
-            "--listing-description",
-            "Coffee and tea",
-            "--web-plain",
-            "127.0.0.1:0",
-        ],
-    )
-    .unwrap();
-    let started = announced(&workspace);
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let refused = runtime
-        .block_on(enter_through_entry(
-            started.plain,
-            &started.workspace,
-            (&device, &cert),
-            "Ana",
-        ))
-        .unwrap_err();
-    assert_eq!(refused.code, "removed", "{refused:?}");
-    assert!(refused.message.contains("within the day"), "{refused:?}");
-    assert!(!legacy.exists(), "the workspace took the old removals over");
-    workspace.stop();
-}
-
 /// A person who joined through the real workspace process's entry subscribes, reads
 /// the workspace's chat with its starting channel, and has every write refused as
 /// the viewer the listing made them; the owner's root still admits none of its

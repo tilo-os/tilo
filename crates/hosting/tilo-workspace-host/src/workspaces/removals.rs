@@ -6,10 +6,6 @@
 //! is also turned away by the address they joined from, and the two agree on
 //! how long. Kept beside the workspace's record, in `<workspace>.removals`, so
 //! a restart lets nobody back early.
-//!
-//! A workspace takes over the removals an older persistent workspace kept in
-//! its `removals.json` once ([`Workspaces::adopt_legacy_removals`]) and deletes
-//! the old file.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -21,8 +17,7 @@ use tilo_files::native::migration::Format;
 pub(super) const REMOVED_FOR_NS: u64 = 24 * 3600 * 1_000_000_000;
 
 /// The removals' on-disk format: a `u32` version, then when each removed person
-/// was removed. The older file is written in this same version 1 by
-/// [`Removals::adopt`].
+/// was removed.
 pub(super) const FORMAT: Format = Format {
     name: "workspace removals",
     version: 1,
@@ -94,19 +89,6 @@ impl Removals {
         self.save()
     }
 
-    /// Take over the removals a workspace kept before: each `person` at the
-    /// time moderation removed them. Written in this version, once, and the
-    /// workspace's old file goes.
-    pub(super) fn adopt(&mut self, removed: BTreeMap<[u8; 32], u64>) -> Result<(), String> {
-        for (person, at) in removed {
-            self.removed
-                .entry(person)
-                .and_modify(|kept| *kept = (*kept).max(at))
-                .or_insert(at);
-        }
-        self.save()
-    }
-
     /// Let `person` in again at once: the workspace pruned them as idle, or
     /// lifted their ban.
     pub(super) fn clear(&mut self, person: [u8; 32]) -> Result<(), String> {
@@ -114,59 +96,6 @@ impl Removals {
             self.save()?;
         }
         Ok(())
-    }
-}
-
-impl super::Workspaces {
-    /// Take over the removals a persistent workspace kept in `file`
-    /// (`removals.json`: hex person to Unix milliseconds) and delete it: each
-    /// person the day has not passed for stays out until it does. Returns how
-    /// many are kept. A file that is not there is nothing to take over.
-    ///
-    /// # Errors
-    ///
-    /// The file cannot be read or parsed, or the removals cannot be written.
-    pub async fn adopt_legacy_removals(
-        &self,
-        workspace: &str,
-        file: &Path,
-    ) -> Result<usize, super::CollaborationError> {
-        let bytes = match std::fs::read(file) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-            Err(error) => {
-                return Err(super::CollaborationError::new(format!(
-                    "{}: {error}",
-                    file.display()
-                )));
-            }
-        };
-        let stored: BTreeMap<String, u64> = serde_json::from_slice(&bytes).map_err(|error| {
-            super::CollaborationError::new(format!("{}: {error}", file.display()))
-        })?;
-        let now = tilo_clock::unix_now_ns();
-        let kept: BTreeMap<[u8; 32], u64> = stored
-            .iter()
-            .filter_map(|(key, at_ms)| {
-                let mut person = [0; 32];
-                hex::decode_to_slice(key, &mut person).ok()?;
-                let at = at_ms.saturating_mul(1_000_000);
-                (now.saturating_sub(at) < REMOVED_FOR_NS).then_some((person, at))
-            })
-            .collect();
-        if !kept.is_empty() {
-            let state = self.workspace(workspace).await?;
-            state
-                .lock()
-                .await
-                .removals
-                .adopt(kept.clone())
-                .map_err(super::CollaborationError::new)?;
-        }
-        std::fs::remove_file(file).map_err(|error| {
-            super::CollaborationError::new(format!("{}: {error}", file.display()))
-        })?;
-        Ok(kept.len())
     }
 }
 

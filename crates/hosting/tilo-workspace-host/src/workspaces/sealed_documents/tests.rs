@@ -1313,8 +1313,8 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
     );
 
     // A second start with the same flag founds nothing again: the
-    // operator's flag is kept in the host's state (`refounded.json`, beside
-    // the workspace), so a record already refounded is not founded twice.
+    // operator's flag is noted in the workspace's own record of what its
+    // hosts settled, so a record already refounded is not founded twice.
     // What the host would do if asked again is found again from the record
     // as it reads, which is not this test's subject.
     drop(lounge.workspaces);
