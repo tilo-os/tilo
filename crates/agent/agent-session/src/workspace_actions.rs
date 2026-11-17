@@ -1371,6 +1371,10 @@ fn take_all(
     Ok(taken)
 }
 
+/// The longest a pass over a workspace's notes waits for the requests queued
+/// behind it on the worker's thread.
+const PROJECTION_WAIT: Duration = Duration::from_secs(2);
+
 impl Shared {
     /// Queue a pass over `workspace_id`'s notes and their files, unless one waits to run
     /// already, which takes in whatever this one would have: whether it was queued.
@@ -1421,7 +1425,36 @@ impl Worker {
     }
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
+        // Passes over a workspace's notes and their files, waiting for the
+        // requests queued behind them: a pass is what a person's folder shows,
+        // never what a caller waits on, so it goes once no request waits.
+        let mut projections: VecDeque<(Instant, Job)> = VecDeque::new();
         loop {
+            if projections
+                .front()
+                .is_some_and(|(queued, _)| queued.elapsed() >= PROJECTION_WAIT)
+            {
+                // Requests that keep coming never keep a folder behind for long.
+                if let Some((queued, job)) = projections.pop_front() {
+                    self.admit(queued, job);
+                }
+                continue;
+            }
+            if !projections.is_empty() {
+                match jobs.try_recv() {
+                    Ok((queued, job)) if matches!(job, Job::NotesFolder(_)) => {
+                        projections.push_back((queued, job));
+                    }
+                    Ok((queued, job)) => self.admit(queued, job),
+                    Err(mpsc::TryRecvError::Empty) => {
+                        if let Some((queued, job)) = projections.pop_front() {
+                            self.admit(queued, job);
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => break,
+                }
+                continue;
+            }
             let due = [
                 self.joining_until(),
                 session_voice::next_due(&self.workspaces),
@@ -1438,6 +1471,9 @@ impl Worker {
             };
             self.expire_watchers();
             match next {
+                Ok((queued, job)) if matches!(job, Job::NotesFolder(_)) => {
+                    projections.push_back((queued, job));
+                }
                 Ok((queued, job)) => {
                     self.admit(queued, job);
                     // Requests that keep coming never hold back a run's word:
