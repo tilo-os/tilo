@@ -62,10 +62,9 @@ async fn session_survives_the_caller_handing_over_its_only_endpoint() {
     match next(&client, |env| matches!(env, Envelope::Ready { .. })).await {
         Envelope::Ready {
             workspace_id: WORKSPACE,
-            pending_deltas: 0,
             ..
         } => {}
-        other => panic!("expected Ready(7, 0), got {other:?}"),
+        other => panic!("expected Ready(7), got {other:?}"),
     }
 
     // A second exchange, after the subscribe: proves the wire is still

@@ -78,19 +78,6 @@ async fn round_trip(client: &ServerClient, what: &str) {
     }
 }
 
-/// Receive envelopes until a `Delta` arrives (skipping any interleaved
-/// `Ready`/`Pong`), returning its delta bytes. A delta that never arrives
-/// hangs, and nextest's slow-timeout reports it.
-async fn recv_delta(client: &ServerClient, what: &str) -> Vec<u8> {
-    loop {
-        match recv_reply(client, what).await {
-            Envelope::Delta { delta, .. } => return delta,
-            Envelope::Ready { .. } | Envelope::Pong | Envelope::WorkspaceBootstrap { .. } => {}
-            other => panic!("{what}: unexpected envelope {other:?}"),
-        }
-    }
-}
-
 /// The next delta `client` receives that `author` wrote: the state the
 /// workspace itself sends first is another author's.
 async fn recv_delta_by(client: &ServerClient, what: &str, author: [u8; 32]) -> Vec<u8> {
@@ -155,11 +142,7 @@ async fn connect_and_subscribe(
         assert!(
             matches!(
                 env,
-                Envelope::Ready {
-                    workspace_id: w,
-                    pending_deltas: 0,
-                    ..
-                } if w == ws
+                Envelope::Ready { workspace_id: w, .. } if w == ws
             ),
             "{who} expected Ready(WS,0), got {env:?}"
         );

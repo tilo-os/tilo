@@ -60,14 +60,7 @@ async fn publish_and_leave(
         .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
     // A held workspace sends its own state before it is ready.
-    let ready = crate::common::next(&a_client, |env| matches!(env, Envelope::Ready { .. })).await;
-    assert!(matches!(
-        ready,
-        Envelope::Ready {
-            pending_deltas: 0,
-            ..
-        }
-    ));
+    crate::common::next(&a_client, |env| matches!(env, Envelope::Ready { .. })).await;
 
     let mut doc_a = AutoCommit::new();
     doc_a.put(ROOT, "note", "durable").unwrap();
@@ -82,16 +75,18 @@ async fn publish_and_leave(
         })
         .unwrap();
 
-    let mut queued = 0;
-    // Polls for up to 30 s; only a hang uses the whole budget.
+    // Polls for up to 30 s; only a hang uses the whole budget. The held
+    // workspace queues state of its own beside A's edit, so the edit is found
+    // by its bytes.
+    let mut queued = false;
     for _ in 0..1200 {
-        queued = pending_count(pending_dir);
-        if queued >= 1 {
+        queued = crate::common::queued_carries(pending_dir, b"durable");
+        if queued {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(queued, 1, "A's edit must be persisted for the offline B");
+    assert!(queued, "A's edit must be persisted for the offline B");
 
     // A disconnects. Now neither device is online.
     drop(a_client);
@@ -209,9 +204,8 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     drop(host1);
 
     // The queued delta is still on disk after the host process died.
-    assert_eq!(
-        pending_count(&pending_dir),
-        1,
+    assert!(
+        crate::common::queued_carries(&pending_dir, b"durable"),
         "queued delta must survive the host process dying"
     );
 

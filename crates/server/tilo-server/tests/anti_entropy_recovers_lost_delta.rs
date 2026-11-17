@@ -59,9 +59,9 @@ async fn publish_offline_edit(
     a_client
         .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
-    // Drain A's Ready(0), past the state the held workspace sends first.
+    // Drain A's Ready, past the state the held workspace sends first.
     match crate::common::next(&a_client, |env| matches!(env, Envelope::Ready { .. })).await {
-        Envelope::Ready { pending_deltas, .. } => assert_eq!(pending_deltas, 0),
+        Envelope::Ready { .. } => {}
         other => panic!("expected Ready, got {other:?}"),
     }
 

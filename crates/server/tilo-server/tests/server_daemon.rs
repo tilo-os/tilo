@@ -79,14 +79,13 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let ready = tilo_test_env::within("a message on a_session", async {
             loop {
                 match a_session.recv().await {
-                    Some(tilo_server::Inbound::Ready { pending, .. }) => break pending,
+                    Some(tilo_server::Inbound::Ready { .. }) => break,
                     Some(_) => {}
                     None => panic!("A's session ended before it was ready"),
                 }
             }
         })
         .await;
-        assert_eq!(ready, 0);
         let metrics = server.handle().metrics;
         a_session
             .publish_checkpoint([7u8; 32], b"baseline-before-phone".to_vec())
@@ -311,7 +310,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             match env {
                 Envelope::Ready {
                     workspace_id: SECOND_WORKSPACE,
-                    pending_deltas: 0,
                     ..
                 } => {}
                 other => panic!("expected Ready(42, 0), got {other:?}"),

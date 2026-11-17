@@ -248,12 +248,15 @@ pub fn start_server_serving(
 pub async fn hold_workspace(server: &Server, workspace: WorkspaceId, members: &[&DeviceCert]) {
     let workspaces = server.workspaces().expect("the server holds workspaces");
     let workspace = workspace.to_string();
-    if workspaces.summary(&workspace).await.is_err() {
-        workspaces
-            .create_workspace("Workspace", Some(&workspace))
-            .await
-            .expect("the person's server makes the workspace");
+    if workspaces.summary(&workspace).await.is_ok() {
+        // Held already, as a server restart finds it: its governance names the
+        // members it admitted, and they enter it no more.
+        return;
     }
+    workspaces
+        .create_workspace("Workspace", Some(&workspace))
+        .await
+        .expect("the person's server makes the workspace");
     for member in members {
         workspaces
             .enter(&workspace, member)
