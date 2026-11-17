@@ -15,8 +15,8 @@ use crate::part::{IssuePart, Issues, PART_ISSUES, issue_part};
 /// A tracker and its parts as one device holds them: every action goes to
 /// the part the chain sends it to, read against the tracker and the parts
 /// held, as a window carries it out.
-struct Board {
-    tracker: Replica<Tracker>,
+pub(crate) struct Board {
+    pub(crate) tracker: Replica<Tracker>,
     parts: Vec<(u64, Replica<IssuePart>)>,
     /// Each part's state as last written, as a window follows them.
     states: Vec<(u64, Rc<IssuePart>)>,
@@ -25,7 +25,7 @@ struct Board {
 }
 
 impl Board {
-    fn new(author: &str) -> Self {
+    pub(crate) fn new(author: &str) -> Self {
         let mut tracker = Replica::<Tracker>::new().as_author(author);
         tracker.set_now_ms(1_000);
         Self {
@@ -37,7 +37,7 @@ impl Board {
         }
     }
 
-    fn states(&self) -> Vec<(u64, Rc<IssuePart>)> {
+    pub(crate) fn states(&self) -> Vec<(u64, Rc<IssuePart>)> {
         self.states.clone()
     }
 
@@ -81,7 +81,7 @@ impl Board {
             .1
     }
 
-    fn apply(&mut self, invoke: impl Into<Invoke<IssuePart>>) -> Result<u64, String> {
+    pub(crate) fn apply(&mut self, invoke: impl Into<Invoke<IssuePart>>) -> Result<u64, String> {
         let mut action = invoke.into().build(self.now_ms)?;
         let parts = self.states();
         crate::part::prepare(&mut action, &self.tracker.state().unwrap(), &parts)?;
@@ -93,7 +93,7 @@ impl Board {
         Ok(index)
     }
 
-    fn create(&mut self, title: &str, parent: Option<Id>) -> Id {
+    pub(crate) fn create(&mut self, title: &str, parent: Option<Id>) -> Id {
         self.apply(IssuePart::CREATE.with(NewIssue {
             parent: parent.map(ui::tilo_resource::items::Ref::from),
             ..NewIssue::titled(nb(title))
