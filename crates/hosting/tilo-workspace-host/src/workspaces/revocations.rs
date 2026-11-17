@@ -120,6 +120,10 @@ impl Workspaces {
                     .mcp_server
                     .forget(&entry.revoked_device_public_key);
             }
+            // Where the device was reached while its Tilo was closed goes
+            // with its key.
+            #[cfg(not(target_arch = "wasm32"))]
+            self.forget_push_address_of(&entry.user_public_key, &entry.revoked_device_public_key);
         }
         let fresh = fresh.into_iter().cloned().collect::<Vec<_>>();
         crate::store::append_revocations(state_root, &fresh).map_err(|error| error.to_string())?;

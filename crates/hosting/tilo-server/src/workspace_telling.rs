@@ -51,6 +51,17 @@ pub trait Outside: Send + Sync {
     /// Tell `person` the thing `told`. Answers how many of their devices
     /// took it.
     fn tell(&self, person: [u8; 32], told: Told) -> Pin<Box<dyn Future<Output = u32> + Send>>;
+    /// The things `ids`, which were told `person` here, wait for them no
+    /// more: what showed one on a device of theirs may take it back.
+    /// Nothing is taken back unless whatever tells says how.
+    fn taken_back(
+        &self,
+        _person: [u8; 32],
+        ids: Vec<String>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        drop(ids);
+        Box::pin(async {})
+    }
 }
 
 /// What a telling outside Tilo says of `told`: its title and its body. The
@@ -117,7 +128,7 @@ fn millis(time: Duration) -> u64 {
 /// Tells people outside Tilo what waits for them in the logs a host keeps.
 pub struct Teller {
     workspaces: Workspaces,
-    outside: Arc<dyn Outside>,
+    outside: Vec<Arc<dyn Outside>>,
     pace: Pace,
     /// The people something still waits for.
     waited: Mutex<BTreeSet<[u8; 32]>>,
@@ -129,10 +140,18 @@ impl Teller {
     pub fn new(workspaces: Workspaces, outside: Arc<dyn Outside>) -> Self {
         Self {
             workspaces,
-            outside,
+            outside: vec![outside],
             pace: Pace::default(),
             waited: Mutex::default(),
         }
+    }
+
+    /// This teller, telling through `outside` as well: a thing that is
+    /// due is told every way the teller has.
+    #[must_use]
+    pub fn also(mut self, outside: Arc<dyn Outside>) -> Self {
+        self.outside.push(outside);
+        self
     }
 
     /// This teller, telling at `pace`.
@@ -181,8 +200,13 @@ impl Teller {
         let mut next: Option<u64> = None;
         for person in people {
             let mut waits = false;
+            // What was told outside Tilo and waits no more.
+            let mut over: Vec<Told> = Vec::new();
             for told in self.workspaces.told_after(&person, 0).told {
                 if !told.waits() {
+                    if !told.pushed.is_empty() {
+                        over.push(told);
+                    }
                     continue;
                 }
                 match self.due(&person, &told, now_ms) {
@@ -207,6 +231,7 @@ impl Teller {
                     }
                 }
             }
+            self.take_back(person, &over).await;
             if !waits {
                 self.waited.lock_recover().remove(&person);
             }
@@ -263,22 +288,40 @@ impl Teller {
         next
     }
 
-    /// Tell `person` the thing `told` outside Tilo, and write down that it
-    /// was.
+    /// Tell `person` the thing `told` outside Tilo, every way this teller
+    /// has, and write down on the thing that it was, once for each.
     async fn tell(&self, person: [u8; 32], told: Told) {
         let (id, kind) = (told.id.clone(), told.kind);
-        let took = self.outside.tell(person, told).await;
-        if let Err(error) = self
-            .workspaces
-            .told_outside(&person, &id, self.outside.name(), took)
-        {
-            tracing::warn!(%error, "what a person was told outside Tilo is not written down");
+        for outside in &self.outside {
+            let took = outside.tell(person, told.clone()).await;
+            if let Err(error) = self
+                .workspaces
+                .told_outside(&person, &id, outside.name(), took)
+            {
+                tracing::warn!(%error, "what a person was told outside Tilo is not written down");
+            }
+            tracing::info!(
+                took,
+                ?kind,
+                by = outside.name(),
+                "a person with no Tilo open was told what waits for them"
+            );
         }
-        tracing::info!(
-            took,
-            ?kind,
-            "a person with no Tilo open was told what waits for them"
-        );
+    }
+
+    /// The things `over` were told `person` outside Tilo and wait for them
+    /// no more: whatever told each may take it back.
+    async fn take_back(&self, person: [u8; 32], over: &[Told]) {
+        for outside in &self.outside {
+            let ids: Vec<String> = over
+                .iter()
+                .filter(|told| told.pushed.iter().any(|pushed| pushed.by == outside.name()))
+                .map(|told| told.id.clone())
+                .collect();
+            if !ids.is_empty() {
+                outside.taken_back(person, ids).await;
+            }
+        }
     }
 }
 

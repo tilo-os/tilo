@@ -102,6 +102,9 @@ pub mod person_model;
 mod person_telling;
 #[cfg(not(target_arch = "wasm32"))]
 pub use person_telling::{Spenders, ToTell};
+// Where a person's devices are reached while their Tilo is closed.
+#[cfg(not(target_arch = "wasm32"))]
+pub use person_telling::addresses as push_addresses;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod person_asking;
 // What the person keeps to sign in with, in that same vault of theirs.

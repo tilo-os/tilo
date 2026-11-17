@@ -31,7 +31,7 @@ mod sign_in;
 pub(crate) mod stand_in;
 #[cfg(test)]
 mod tests;
-mod wire;
+pub(crate) mod wire;
 
 use address::Address;
 use kept::{Kept, KeptUse, NotAdded, SignsIn, Why};

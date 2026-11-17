@@ -119,6 +119,9 @@ mod hosted_mail_turn;
 #[path = "workspace_actions/hosted_secret_use.rs"]
 mod hosted_secret_use;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_web_call.rs"]
+mod hosted_web_call;
+#[cfg(test)]
 #[path = "workspace_actions/invocations_read.rs"]
 mod invocations_read;
 #[cfg(test)]

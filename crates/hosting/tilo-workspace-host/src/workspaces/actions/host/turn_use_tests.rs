@@ -288,6 +288,8 @@ async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
         "{remembers}"
     );
     assert_eq!(remembers["uses"][0]["by"], "Scout");
+    assert_eq!(remembers["uses"][0]["using"], MAIL_USE);
+    assert_eq!(remembers["uses"][0]["allowed"], "once");
     assert_eq!(remembers.get("always"), None, "once leaves no leave");
 
     // The next account asks again.
@@ -398,6 +400,12 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
         2,
         "{remembers}"
     );
+    // Both were allowed by the leave: the one her "Always" answered, and
+    // the one made alone under it.
+    for used in remembers["uses"].as_array().unwrap() {
+        assert_eq!(used["using"], MAIL_USE, "{remembers}");
+        assert_eq!(used["allowed"], "always", "{remembers}");
+    }
 
     // Another agent of hers is still asked: the leave names one agent.
     let other = on_turn(&ada, &workspace, "other");
@@ -856,6 +864,8 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     .await
     .unwrap();
     assert_eq!(kept["uses"].as_array().unwrap().len(), 2, "{kept}");
+    assert_eq!(kept["uses"][0]["allowed"], "always", "{kept}");
+    assert_eq!(kept["uses"][1]["allowed"], "always", "{kept}");
     assert_eq!(kept["always"][0]["using"], "tilo.models/set-key-from-item");
     server.shutdown().await;
 }

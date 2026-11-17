@@ -41,6 +41,7 @@ use tilo_user_identity::DeviceCert;
 use super::Workspaces;
 use super::person_settings::{AskingAboutMail, answer, argument};
 
+pub mod addresses;
 mod judge;
 mod told;
 
@@ -67,6 +68,9 @@ pub(super) struct Telling {
     looks: Mutex<HashMap<[u8; 32], told::Look>>,
     /// Whether something tells this host's people outside Tilo already.
     told_outside: std::sync::atomic::AtomicBool,
+    /// Whose each address a push is sent to is, by its token: read from
+    /// the stores the first time it is asked for.
+    reached: Mutex<Option<HashMap<String, [u8; 32]>>>,
 }
 
 impl Default for Telling {
@@ -79,6 +83,7 @@ impl Default for Telling {
             changed: Mutex::default(),
             looks: Mutex::default(),
             told_outside: std::sync::atomic::AtomicBool::new(false),
+            reached: Mutex::default(),
         }
     }
 }
@@ -460,6 +465,14 @@ impl Workspaces {
             person_telling::TOLD => {
                 self.told_invoke(&asking, (workspace_id, caller, certificate), request)
                     .await
+            }
+            // Where a device is reached is handed over by that device, for
+            // its person alone.
+            addresses::RESOURCE => {
+                let (Asking::Person(person), Some(certificate)) = (&asking, certificate) else {
+                    return Err(ActionCallError::UnknownAction);
+                };
+                self.addresses_invoke(person, &certificate.device_public_key, request)
             }
             _ => Err(ActionCallError::UnknownAction),
         }

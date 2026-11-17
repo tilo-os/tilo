@@ -369,6 +369,16 @@ paths = [
 ]
 
 [[allow]]
+reason = "HTTP's Host header, by its own name and inside X-Forwarded-Host, as a string names it where a request's headers are kept from whoever wrote the request."
+words = ["host"]
+identifiers = ["host", "Host"]
+paths = [
+    "crates/hosting/tilo-workspace-host/src/workspaces/hosted_use/web_call.rs",
+    "crates/hosting/tilo-workspace-host/src/workspaces/actions/host/web_call_tests.rs",
+    "crates/system/accounts/src/vault_items/key_in.rs",
+]
+
+[[allow]]
 reason = "The module an action's edited-field constant is declared in."
 words = ["run"]
 identifiers = ["run"]

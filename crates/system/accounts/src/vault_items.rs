@@ -7,7 +7,8 @@
 //! belongs, when it was added and when it was last used), and
 //! [`VaultItems::use_at`] hands the secret to the code that signs in, only at
 //! a place the item names, and writes that use down first: when, where and
-//! for whom, never what was handed ([`VaultItems::uses`]). An [`ItemId`]
+//! for whom, and what for where whoever takes it says so
+//! ([`VaultItems::use_for`]), never what was handed ([`VaultItems::uses`]). An [`ItemId`]
 //! names an item and is not its secret, so it may be held by code that must
 //! never read one.
 //!
@@ -47,6 +48,10 @@ const MAX_USERNAME_BYTES: usize = 320;
 const MAX_PLACE_BYTES: usize = 2_048;
 /// The shortest seed a code generator is given: 80 bits in base32.
 const MIN_SEED_CHARS: usize = 16;
+
+mod key_in;
+
+pub use key_in::{KeyIn, MIN_SENT_KEY_BYTES};
 
 /// What kind of thing an item is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -348,11 +353,57 @@ pub struct UseRecord {
     /// Who it was handed out for: the agent that named it, by the name its
     /// person knows it under, or empty for the person themselves.
     pub by: String,
+    /// What it was used for: the use's own word, as a leave names it
+    /// ([`Leave::using`]). Empty where whoever took it said none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub using: String,
+    /// What was done with it there, in one line: a web call's method and
+    /// path. Never the item's secret, never what was sent, and nothing that
+    /// follows a `?` or a `#` in an address.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub what: String,
+    /// How its person allowed it, where whoever took it said so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<Allowance>,
+}
+
+/// How a use came to be allowed by the item's person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Allowance {
+    /// They were asked and allowed this one use.
+    Once,
+    /// A leave of theirs covered it ([`VaultItems::let_always`]).
+    Always,
+}
+
+impl Allowance {
+    /// The word a person reads it by.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Once => "once",
+            Self::Always => "always",
+        }
+    }
+}
+
+/// What an item is used for, written down with the use. Whoever takes the
+/// item says it, and none of it is anything the item holds.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UsedFor<'a> {
+    /// The use's own word ([`Leave::using`]).
+    pub using: &'a str,
+    /// What is done with it, in one line.
+    pub what: &'a str,
+    /// How its person allowed it.
+    pub allowed: Option<Allowance>,
 }
 
 /// The uses an item remembers: the newest of them.
 pub const MAX_USES_KEPT: usize = 32;
 const MAX_BY_CHARS: usize = 120;
+const MAX_WHAT_CHARS: usize = 200;
 
 /// The leaves an item keeps: the newest of them.
 pub const MAX_LEAVES: usize = 16;
@@ -392,6 +443,10 @@ struct Sealed {
     places: BTreeSet<Place>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     username: String,
+    /// How a key rides in a request to its service, where it is no bearer
+    /// token ([`KeyIn`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    sent_in: String,
     secret: String,
     added_unix: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -466,6 +521,7 @@ impl Sealed {
             kind: item.kind,
             places,
             username,
+            sent_in: String::new(),
             secret,
             added_unix: unix_now(),
             last_used_unix: None,
@@ -492,6 +548,20 @@ impl Sealed {
     /// Write down that the item was used at `places` for `by` at `now`,
     /// keeping the newest uses.
     fn used(&mut self, now: u64, places: &[Place], by: &str) {
+        self.used_for(now, places, by, UsedFor::default());
+    }
+
+    /// [`Self::used`], with what it was used for. The line that says what
+    /// was done is kept up to a `?` or a `#`, so no query of an address is
+    /// written, and it is not kept at all where it holds the item's own
+    /// secret.
+    fn used_for(&mut self, now: u64, places: &[Place], by: &str, purpose: UsedFor<'_>) {
+        let what = purpose.what.split(['?', '#']).next().unwrap_or_default();
+        let what = if self.secret.is_empty() || !what.contains(self.secret.as_str()) {
+            kept_word(what, MAX_WHAT_CHARS)
+        } else {
+            String::new()
+        };
         self.last_used_unix = Some(now);
         self.uses.push(UseRecord {
             at_unix: now,
@@ -502,6 +572,9 @@ impl Sealed {
                 .filter(|character| !character.is_control())
                 .take(MAX_BY_CHARS)
                 .collect(),
+            using: kept_word(purpose.using, MAX_USING_CHARS),
+            what,
+            allowed: purpose.allowed,
         });
         let excess = self.uses.len().saturating_sub(MAX_USES_KEPT);
         if excess > 0 {
@@ -616,6 +689,21 @@ impl VaultItems {
         Ok(sealed.facts(id))
     }
 
+    /// [`Self::add`] for a key that says where it rides in a request to its
+    /// service ([`KeyIn`]). Only a key says so.
+    pub fn add_key(&mut self, item: NewItem, sent_in: &KeyIn) -> Result<ItemFacts, ItemError> {
+        if item.kind != ItemKind::Key {
+            return Err(ItemError::Invalid(
+                "Only a key says how it is sent with a request",
+            ));
+        }
+        let mut sealed = Sealed::checked(item)?;
+        sealed.sent_in = sent_in.kept();
+        let id = ItemId::new();
+        self.write(&id, &sealed)?;
+        Ok(sealed.facts(id))
+    }
+
     /// Forget the item `id` names, answering whether one was kept.
     pub fn remove(&mut self, id: &ItemId) -> Result<bool, ItemError> {
         let key = Self::key(id);
@@ -637,7 +725,13 @@ impl VaultItems {
     /// whose seed never leaves. The use is written down before the secret is
     /// handed out: a use that cannot be recorded does not happen.
     pub fn use_at(&mut self, id: &ItemId, place: &Place, by: &str) -> Result<Released, ItemError> {
-        self.release(id, None, std::slice::from_ref(place), by)
+        self.release(
+            id,
+            None,
+            std::slice::from_ref(place),
+            by,
+            UsedFor::default(),
+        )
     }
 
     /// [`Self::use_at`] for a use that needs an item of `kind` and signs in
@@ -650,7 +744,21 @@ impl VaultItems {
         places: &[Place],
         by: &str,
     ) -> Result<Released, ItemError> {
-        self.release(id, Some(kind), places, by)
+        self.release(id, Some(kind), places, by, UsedFor::default())
+    }
+
+    /// [`Self::use_as`], with what the item is used for written down beside
+    /// when, where and for whom ([`UsedFor`]): the use's word, what is done
+    /// in one line, and how its person allowed it.
+    pub fn use_for(
+        &mut self,
+        id: &ItemId,
+        kind: ItemKind,
+        places: &[Place],
+        by: &str,
+        purpose: UsedFor<'_>,
+    ) -> Result<Released, ItemError> {
+        self.release(id, Some(kind), places, by, purpose)
     }
 
     fn release(
@@ -659,10 +767,11 @@ impl VaultItems {
         kind: Option<ItemKind>,
         places: &[Place],
         by: &str,
+        purpose: UsedFor<'_>,
     ) -> Result<Released, ItemError> {
         let mut sealed = self.sealed(id)?;
         sealed.allows(kind, places)?;
-        sealed.used(unix_now(), places, by);
+        sealed.used_for(unix_now(), places, by, purpose);
         self.write(id, &sealed)?;
         Ok(Released {
             kind: sealed.kind,
@@ -675,6 +784,24 @@ impl VaultItems {
     pub fn uses(&self, id: &ItemId) -> Result<Vec<UseRecord>, ItemError> {
         let mut sealed = self.sealed(id)?;
         Ok(std::mem::take(&mut sealed.uses))
+    }
+
+    /// Where the key `id` names rides in a request to its service: a bearer
+    /// token unless it said otherwise when it was kept. Nothing is handed
+    /// out and nothing is written down. Refused for an item that is no key,
+    /// and for a key too short to be sent with a request an agent wrote
+    /// ([`MIN_SENT_KEY_BYTES`]).
+    pub fn key_in(&self, id: &ItemId) -> Result<KeyIn, ItemError> {
+        let sealed = self.sealed(id)?;
+        if sealed.kind != ItemKind::Key {
+            return Err(ItemError::WrongKind);
+        }
+        if sealed.secret.len() < MIN_SENT_KEY_BYTES {
+            return Err(ItemError::Invalid(
+                "That key is too short to be sent with a request and kept out of its answer",
+            ));
+        }
+        KeyIn::parse(&sealed.sent_in).map_err(|_| ItemError::Damaged)
     }
 
     /// Whether the item `id` names could be used as `kind` at every one of
@@ -1231,6 +1358,92 @@ mod tests {
     /// Whether an item fits a use is said without using it: what a use
     /// would be refused for is refused here the same, nothing is handed out
     /// and nothing is written down.
+    /// What an item was used for is written down beside when, where and for
+    /// whom: the use's word, one line of what was done, and how its person
+    /// allowed it. The line is kept up to a `?` or a `#`, so no query of an
+    /// address is written, and a line that holds the secret is not kept.
+    #[test]
+    fn what_an_item_was_used_for_is_written_down_without_its_secret_or_a_query() {
+        let root = root();
+        let mut items = VaultItems::open_in(&root).unwrap();
+        let service = [place("https://api.example.test")];
+        let kept = items.add(login(&["https://api.example.test"])).unwrap();
+        let call = UsedFor {
+            using: " tilo.vault/web-call\n",
+            what: "GET /v1/balance?account=7&token=in-the-query#fragment-kept-nowhere",
+            allowed: Some(Allowance::Once),
+        };
+        let released = items
+            .use_for(&kept.id, ItemKind::Login, &service, "Scout", call)
+            .unwrap();
+        assert_eq!(released.secret.as_str(), PASSWORD);
+        let holding = format!("POST /v1/{PASSWORD}/charges");
+        let leaking = UsedFor {
+            using: "tilo.vault/web-call",
+            what: &holding,
+            allowed: Some(Allowance::Always),
+        };
+        items
+            .use_for(&kept.id, ItemKind::Login, &service, "Scout", leaking)
+            .unwrap();
+        items
+            .use_as(&kept.id, ItemKind::Login, &service, "Scout")
+            .unwrap();
+
+        // Read again from the sealed file.
+        let uses = VaultItems::open_in(&root).unwrap().uses(&kept.id).unwrap();
+        assert_eq!(uses.len(), 3);
+        assert_eq!(uses[0].using, "tilo.vault/web-call");
+        assert_eq!(uses[0].what, "GET /v1/balance");
+        assert_eq!(uses[0].allowed, Some(Allowance::Once));
+        assert_eq!(uses[0].by, "Scout");
+        assert_eq!(uses[0].places, service);
+        assert_eq!(uses[1].using, "tilo.vault/web-call");
+        assert_eq!(uses[1].what, "", "a line that holds the secret is not kept");
+        assert_eq!(uses[1].allowed, Some(Allowance::Always));
+        assert_eq!((uses[2].using.as_str(), uses[2].what.as_str()), ("", ""));
+        assert_eq!(uses[2].allowed, None);
+        let said = format!("{uses:?}");
+        for unwritten in [
+            PASSWORD,
+            "account=7",
+            "in-the-query",
+            "fragment-kept-nowhere",
+        ] {
+            assert!(!said.contains(unwritten), "{unwritten}: {said}");
+        }
+
+        // A use that says nothing more is sealed as it was before any did.
+        let plain = serde_json::to_value(&uses[2]).unwrap();
+        let mut named: Vec<&str> = plain
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        named.sort_unstable();
+        assert_eq!(named, ["at_unix", "by", "places"]);
+        let sealed = serde_json::to_value(&uses[0]).unwrap();
+        assert_eq!(sealed["allowed"], "once");
+        assert_eq!(Allowance::Once.word(), "once");
+        assert_eq!(Allowance::Always.word(), "always");
+
+        // What is longer than a line is cut to one.
+        let long = "x".repeat(1_000);
+        let wordy = UsedFor {
+            using: &long,
+            what: &long,
+            allowed: None,
+        };
+        items
+            .use_for(&kept.id, ItemKind::Login, &service, "", wordy)
+            .unwrap();
+        let uses = items.uses(&kept.id).unwrap();
+        assert_eq!(uses[3].using.len(), MAX_USING_CHARS);
+        assert_eq!(uses[3].what.len(), MAX_WHAT_CHARS);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn whether_an_item_fits_a_use_is_said_without_using_it() {
         let root = root();

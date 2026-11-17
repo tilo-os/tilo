@@ -30,7 +30,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use accounts::vault_items::{self, ItemFacts, NewItem, Place, VaultItems};
+use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultItems};
 use serde_json::Value;
 use tilo_account_probe::AccountTester;
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
@@ -132,13 +132,20 @@ impl Workspaces {
         let (person, by) = Self::asking_for_person(caller, certificate, workspace_id)?;
         let root = self.person_settings_root(&person);
         let target = &request.target;
+        // What the item is used for is written down with the use. How it
+        // was allowed is not the vault's to say here: nothing of it asked.
+        let word = person_vault::use_word(target);
+        let purpose = UsedFor {
+            using: &word,
+            ..UsedFor::default()
+        };
         match (target.provider.as_str(), target.address.action.as_str()) {
             (person_accounts::PROVIDER, person_accounts::ADD_MAIL_WITH_ITEM) => {
                 let adding: AddMailWithItem = argument(
                     request,
                     "a mail account to add names its address, its servers and the vault item that is its password",
                 )?;
-                let kept = mail_with_item(self.account_tester(), &root, adding, &by).await;
+                let kept = mail_with_item(self.account_tester(), &root, adding, &by, purpose).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -149,7 +156,7 @@ impl Workspaces {
                     request,
                     "a key to keep names its provider and the vault item that is the key",
                 )?;
-                said(key_from_item(&root, &setting, &by))
+                said(key_from_item(&root, &setting, &by, purpose))
             }
             _ => Err(ActionCallError::UnknownAction),
         }
@@ -212,6 +219,7 @@ fn add(root: &Path, adding: AddItem) -> Result<ItemView, vault_items::ItemError>
         kind,
         belongs_to,
         username,
+        sent_in,
         secret,
     } = adding;
     let places = belongs_to
@@ -225,7 +233,14 @@ fn add(root: &Path, adding: AddItem) -> Result<ItemView, vault_items::ItemError>
         ItemKind::SshKey => vault_items::ItemKind::SshKey,
         ItemKind::Value => vault_items::ItemKind::Value,
     };
-    let kept = VaultItems::open_in(root)?.add(NewItem::new(kind, places, username, secret))?;
+    let item = NewItem::new(kind, places, username, secret);
+    let mut items = VaultItems::open_in(root)?;
+    let kept = if sent_in.trim().is_empty() {
+        items.add(item)?
+    } else {
+        // Only a key says where it rides in a request to its service.
+        items.add_key(item, &vault_items::KeyIn::parse(&sent_in)?)?
+    };
     view(kept)
 }
 
@@ -254,7 +269,8 @@ fn take_back(root: &Path, taking: &TakeBack) -> Result<ItemUses, vault_items::It
 }
 
 /// When and where the item `item` names was handed to something that signs
-/// in, and for whom; and who may use it without its person being asked.
+/// in, for whom and what for; and who may use it without its person being
+/// asked.
 fn uses(root: &Path, item: &ItemRef) -> Result<ItemUses, vault_items::ItemError> {
     let id = vault_items::ItemId::parse(item.id()).ok_or(vault_items::ItemError::NotFound)?;
     let items = VaultItems::open_in(root)?;
@@ -277,6 +293,11 @@ fn uses(root: &Path, item: &ItemRef) -> Result<ItemUses, vault_items::ItemError>
                 at: used.at_unix,
                 places: used.places.into_iter().map(String::from).collect(),
                 by: used.by,
+                using: used.using,
+                what: used.what,
+                allowed: used
+                    .allowed
+                    .map_or_else(String::new, |allowed| allowed.word().to_owned()),
             })
             .collect(),
     })
@@ -292,8 +313,21 @@ pub(super) fn released(
     places: &[Place],
     by: &str,
 ) -> Result<vault_items::Released, String> {
+    released_for(root, item, kind, places, by, UsedFor::default())
+}
+
+/// [`released`], with what the item is used for written down with the use:
+/// the use's word, and how its person allowed it where the vault asked.
+fn released_for(
+    root: &Path,
+    item: &ItemRef,
+    kind: vault_items::ItemKind,
+    places: &[Place],
+    by: &str,
+    purpose: UsedFor<'_>,
+) -> Result<vault_items::Released, String> {
     let id = vault_items::ItemId::parse(item.id()).ok_or(vault_items::ItemError::NotFound);
-    id.and_then(|id| VaultItems::open_in(root)?.use_as(&id, kind, places, by))
+    id.and_then(|id| VaultItems::open_in(root)?.use_for(&id, kind, places, by, purpose))
         .map_err(|error| error.to_string())
 }
 
@@ -305,6 +339,7 @@ pub(super) async fn mail_with_item(
     root: &Path,
     adding: AddMailWithItem,
     by: &str,
+    purpose: UsedFor<'_>,
 ) -> Result<MailAccount, String> {
     let server = |scheme: &str, host: &str, port: u16| {
         Place::server(scheme, host, port).map_err(|error| error.to_string())
@@ -313,12 +348,13 @@ pub(super) async fn mail_with_item(
         server("imap", &adding.incoming_host, adding.incoming_port)?,
         server("smtp", &adding.outgoing_host, adding.outgoing_port)?,
     ];
-    let mut sign_in = released(
+    let mut sign_in = released_for(
         root,
         &adding.password,
         vault_items::ItemKind::Login,
         &places,
         by,
+        purpose,
     )?;
     // The account signs in under the name the request gives, else the
     // item's own, else its address.
@@ -351,6 +387,7 @@ pub(super) fn key_from_item(
     root: &Path,
     setting: &SetKeyFromItem,
     by: &str,
+    purpose: UsedFor<'_>,
 ) -> Result<ProviderView, String> {
     let config = super::person_settings::provider_config(root);
     let profile = config
@@ -359,12 +396,13 @@ pub(super) fn key_from_item(
         .find(|profile| profile.id == setting.provider)
         .ok_or_else(|| "That provider is not kept here".to_owned())?;
     let endpoint = Place::parse(&profile.endpoint).map_err(|error| error.to_string())?;
-    let key = released(
+    let key = released_for(
         root,
         &setting.key,
         vault_items::ItemKind::Key,
         std::slice::from_ref(&endpoint),
         by,
+        purpose,
     )?;
     super::person_settings::set_key(
         root,
@@ -452,6 +490,7 @@ mod tests {
                 root,
                 adding("imap.attacker.example"),
                 "Helper",
+                UsedFor::default(),
             ))
             .unwrap_err();
         assert_eq!(refused, "That item belongs somewhere else");
@@ -472,6 +511,7 @@ mod tests {
                 root,
                 adding("IMAP.example.test"),
                 "Helper",
+                UsedFor::default(),
             ))
             .unwrap();
         assert!(account.has_secret);

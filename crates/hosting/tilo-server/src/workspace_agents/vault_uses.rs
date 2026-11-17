@@ -60,6 +60,29 @@ const ASKED: &str = "Your person is asked in the conversation whether you may us
 /// the agent must read.
 const ASKED_FIRST: &str = "asked_person_first";
 
+/// What an agent is told when its person is asked first about a web call:
+/// nothing was sent, and the same call goes through once they allowed it.
+const CALL_ASKED: &str = "Your person is asked in the conversation whether you may make this call \
+     with the vault item. Nothing was sent yet. Tell them it waits for their answer. Once they \
+     allowed it, make the same call again with the same arguments: it is sent once.";
+
+/// What the agent that asked for `target` is told when its person is asked
+/// first.
+fn asked_words(target: &RemoteActionTarget) -> &'static str {
+    if *target == person_vault::call_target() {
+        CALL_ASKED
+    } else {
+        ASKED
+    }
+}
+
+/// What the question says of an answer that let one use through and carried
+/// nothing out by itself: `agent` does it when it asks for the same again.
+fn allowed_once(done: &Value, agent: &str) -> Option<String> {
+    (done.get("allowed").and_then(Value::as_str) == Some("once"))
+        .then(|| format!("Allowed once. It is done when {agent} next asks for the same."))
+}
+
 /// What the question says when the agent gave no reason of its own.
 const NO_REASON: &str = "May I use this item from your vault here?";
 
@@ -105,7 +128,8 @@ impl TurnUses {
             keeper: &turn.agent.keeper,
             bound: narrowed.as_deref(),
         };
-        let offered = agents.workspaces.uses_offered(&hosted).await;
+        let mut offered = agents.workspaces.uses_offered(&hosted).await;
+        offered.extend(agents.workspaces.calls_offered(&hosted).await);
         Arc::new(Self {
             agents: agents.clone(),
             workspace: reply.workspace.clone(),
@@ -147,9 +171,9 @@ impl TurnUses {
                     },
                 });
             }
-            TurnUse::Waits => ASKED.to_owned(),
+            TurnUse::Waits => asked_words(&request.target).to_owned(),
             TurnUse::Asks(open) => match self.put(caller, &open).await {
-                Ok(()) => ASKED.to_owned(),
+                Ok(()) => asked_words(&request.target).to_owned(),
                 Err(why) => {
                     workspaces.use_not_asked(&open);
                     format!(
@@ -178,14 +202,13 @@ impl TurnUses {
         arguments.insert("channel".into(), json!(conversation));
         arguments.insert("text".into(), json!(text));
         arguments.insert("kind".into(), json!(chat::question::ACTION));
-        arguments.insert(
-            "answers".into(),
-            json!([
-                {"id": chat::question::ALLOW},
-                {"id": chat::question::ALWAYS},
-                {"id": chat::question::DENY},
-            ]),
-        );
+        // "Always" is offered only for a use it may stand for.
+        let mut answers = vec![json!({"id": chat::question::ALLOW})];
+        if open.takes_always() {
+            answers.push(json!({"id": chat::question::ALWAYS}));
+        }
+        answers.push(json!({"id": chat::question::DENY}));
+        arguments.insert("answers".into(), Value::Array(answers));
         arguments.insert("detail".into(), open.detail.clone());
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
@@ -266,7 +289,7 @@ impl TurnProvider for TurnUses {
     /// A use by reference is this server's entry's to answer, also for a turn
     /// it offers none, which the entry then refuses.
     fn takes(&self, target: &RemoteActionTarget) -> bool {
-        person_vault::use_of(target).is_some()
+        person_vault::described_use(target).is_some()
     }
 
     /// A turn's caller changes when its person writes again while it works,
@@ -589,6 +612,12 @@ impl HostAgents {
             .workspaces
             .carry_out_use(&hosted, &claimed, &shown, answer)
             .await;
+        // An allow that carried nothing out by itself says so on the question.
+        let once = carried
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .and_then(|done| allowed_once(done, &agent.name));
         let (outcome, told) = match carried {
             _ if changed => (
                 chat::question::FAILED,
@@ -598,6 +627,7 @@ impl HostAgents {
             Ok(None) => (chat::question::DROPPED, None),
             Err(error) => (chat::question::FAILED, Some(error.to_string())),
         };
+        let told = told.or(once);
         if let Err(error) = settle(said, workspace, at, outcome, told).await {
             tracing::warn!(%workspace, %error, "a use's question did not take how it ended");
         }

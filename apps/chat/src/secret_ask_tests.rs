@@ -265,3 +265,27 @@ fn the_field_is_drawn_in_every_theme_and_fits_a_narrow_window() {
         );
     }
 }
+
+/// A question for a key may say where the key rides in a request to its
+/// service, and only a key says so.
+#[test]
+fn a_question_for_a_key_says_where_the_key_rides() {
+    let key = json!({
+        "kind": "key",
+        "belongsTo": ["https://api.example.com"],
+        "sentIn": "header:X-Api-Key",
+    });
+    let asked = Asked::read(Some(&key)).expect("a key says how it is sent");
+    assert_eq!(asked.kind, person_vault::ItemKind::Key);
+    assert_eq!(asked.sent_in, "header:X-Api-Key");
+    assert_eq!(serde_json::to_value(&asked).unwrap(), key);
+    let plain = json!({"kind": "key", "belongsTo": ["https://api.example.com"]});
+    assert!(Asked::read(Some(&plain)).unwrap().sent_in.is_empty());
+    for unusable in [
+        json!({"kind": "login", "belongsTo": ["https://example.com"], "sentIn": "basic"}),
+        json!({"kind": "key", "belongsTo": ["https://api.example.com"], "sentIn": "header:X Api Key"}),
+        json!({"kind": "key", "belongsTo": ["https://api.example.com"], "sentIn": "x".repeat(200)}),
+    ] {
+        assert!(Asked::read(Some(&unusable)).is_err(), "{unusable}");
+    }
+}

@@ -120,6 +120,21 @@ pub struct WebArgs {
     /// (`TILO_SERVER_FETCH_PROXY_*`, see the workspace service's README).
     #[arg(long = "fetch-proxy")]
     pub fetch_proxy: bool,
+    /// The key Apple gave for its push service (the `.p8` file, which its
+    /// owner alone may read, mode 600): with it, what waits for a person
+    /// reaches the Tilo apps of theirs that are closed. Without it no
+    /// closed app is told. It needs the three flags after it.
+    #[arg(long = "apple-push-key", value_name = "PATH")]
+    pub apple_push_key: Option<PathBuf>,
+    /// That key's id, as Apple's developer account lists it.
+    #[arg(long = "apple-push-key-id", value_name = "ID")]
+    pub apple_push_key_id: Option<String>,
+    /// The id of the team the key and the apps belong to.
+    #[arg(long = "apple-push-team", value_name = "ID")]
+    pub apple_push_team: Option<String>,
+    /// An app pushes are sent for, by its bundle identifier; repeatable.
+    #[arg(long = "apple-push-topic", value_name = "APP")]
+    pub apple_push_topics: Vec<String>,
     /// The device key (hex) of the session beside this node, the shell that
     /// runs the person's apps: pages learn it on `/node` to open apps there.
     /// While the node waits for its certificate, its root certifies the
@@ -425,6 +440,32 @@ pub async fn start_server_lending(
     })
 }
 
+/// Hand `server` the key for Apple's push service that `args` name, where
+/// they name one: what its people's closed apps are told through.
+#[cfg(feature = "agents")]
+fn name_apple_push(server: &Server, args: &WebArgs) {
+    let Some(key_file) = args.apple_push_key.clone() else {
+        return;
+    };
+    server.set_apple_push(tilo_server::apple_push::ApplePushSetup {
+        key_file,
+        key_id: args.apple_push_key_id.clone().unwrap_or_default(),
+        team_id: args.apple_push_team.clone().unwrap_or_default(),
+        topics: args.apple_push_topics.clone(),
+    });
+}
+
+/// Without its agents this server tells nobody what waits for them, so a
+/// key for Apple's push service is named in vain, and it says so.
+#[cfg(not(feature = "agents"))]
+fn name_apple_push(_server: &Server, args: &WebArgs) {
+    if args.apple_push_key.is_some() {
+        tracing::warn!(
+            "this server tells no closed app: the key for Apple's push service is not used"
+        );
+    }
+}
+
 pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfig {
     let tls = match &args.tls {
         TlsArg::Dev => {
@@ -661,6 +702,7 @@ pub async fn serve(
         tilo_files::native::atomic::write_with_mode(path, line.as_bytes(), 0o644)
             .with_context(|| format!("write {}", path.display()))?;
     }
+    name_apple_push(server, args);
     let web = server
         .serve_web(web_config(args, listen, state_root))
         .await
@@ -998,6 +1040,7 @@ pub async fn dev(
     let listen = web_args
         .web
         .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 9443)));
+    name_apple_push(server, &web_args);
     let web = server
         .serve_web(web_config(&web_args, listen, &state))
         .await
@@ -1343,6 +1386,7 @@ pub async fn workspace(
     )
     .await?;
     let server = &hosted.server;
+    name_apple_push(server, &args.web);
     let web = server
         .serve_web(web_config(&args.web, listen, &state))
         .await

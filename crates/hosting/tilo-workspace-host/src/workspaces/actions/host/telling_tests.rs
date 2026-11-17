@@ -71,6 +71,15 @@ impl Setup {
         }
     }
 
+    /// The page `device` holds in `workspace`, which a caller asks over.
+    pub(super) fn page(
+        &self,
+        workspace: WorkspaceId,
+        device: &DeviceCert,
+    ) -> impl ActionProvider + Clone + Send + 'static {
+        self.host.in_workspace_as(workspace, device)
+    }
+
     /// What `caller` is answered over the page `device` holds in
     /// `workspace`.
     async fn ask(
@@ -80,7 +89,7 @@ impl Setup {
         action: &str,
         argument: Value,
     ) -> Result<Value, ActionCallError> {
-        let page = self.host.in_workspace_as(workspace, device);
+        let page = self.page(workspace, device);
         let receipt = settled(page.invoke(caller, asking(action, argument))).await?;
         match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
