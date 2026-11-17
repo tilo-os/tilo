@@ -301,18 +301,26 @@ class SetupHandedProgramTests(unittest.TestCase):
                     packages |= set(PACKAGE.findall(rule["filter"]))
         return packages
 
+    @staticmethod
+    def packages_tested(family: dict, members: set[str]) -> set[str] | None:
+        """The packages `family` tests, as this test reads a family.
+
+        As the nested-sandbox check reads one, and beside that the packages a family names
+        although its arguments hold an `-E`: it tests them, whatever part of their tests the
+        `-E` leaves to another family (the per-arch family leaves tilolang-tilo's budget
+        checks to test-bench), so it owes them the same programs. An `-E` over a family that
+        names no packages says itself which they are, and that is still not read: `None`.
+        """
+        tested = families.tested(family, members)
+        if tested is None and family.get("tool") == "nextest" and "packages" in family:
+            tested = set(family["packages"])
+        return tested
+
     def families_testing(self, package: str) -> list[dict]:
         members = families.workspace_packages()
         found = []
         for family in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("cargo", []):
-            tested = families.tested(family, members)
-            if tested is None and family.get("tool") == "nextest" and "packages" in family:
-                # A family that names its packages tests them, whatever part of their tests
-                # its `-E` leaves to another family (the per-arch family leaves
-                # tilolang-tilo's budget checks to test-bench). `families.tested` reads no
-                # family with an `-E`, so the packages such a family names are read here:
-                # it owes them the same programs.
-                tested = set(family["packages"])
+            tested = self.packages_tested(family, members)
             if tested and package in tested:
                 found.append(family)
         return found
@@ -340,6 +348,22 @@ class SetupHandedProgramTests(unittest.TestCase):
                             )
                             checked += 1
         self.assertGreater(checked, 0, "a program a setup builds is checked")
+
+    def test_a_family_that_names_its_packages_is_read_whatever_its_filter_leaves_out(self):
+        # The per-arch family's shape: its packages by name, and an `-E` that leaves some of
+        # one package's tests to another family.
+        members = {"first", "second", "third"}
+        family = {"name": "test-{arch}", "tool": "nextest", "packages": ["first", "second"],
+                  "args": ["--locked", "--tests", "-E", "not (package(second) & binary(budgets))"]}
+        self.assertIsNone(families.tested(family, members),
+                          "the nested-sandbox check reads no family with an -E")
+        self.assertEqual(self.packages_tested(family, members), {"first", "second"})
+
+    def test_a_family_whose_filter_alone_says_its_packages_answers_nothing(self):
+        members = {"first", "second", "third"}
+        family = {"name": "test-some", "tool": "nextest",
+                  "args": ["--locked", "--tests", "-E", "package(first)"]}
+        self.assertIsNone(self.packages_tested(family, members))
 
     def test_a_family_declares_one_build_of_each_target(self):
         # tools/build-sibling-binaries.sh reads a bin's hand as NEXTEST_BIN_EXE_<bin>, which names
