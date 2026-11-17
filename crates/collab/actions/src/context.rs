@@ -1427,6 +1427,17 @@ pub struct Cause {
 /// and undoes whole.
 pub const AGENT_SESSION_GROUP: &str = "agent-session";
 
+/// The group kind of one command line a shell ran: every file action it and
+/// the commands it dispatched carried out, undone as one.
+pub const COMMAND_GROUP: &str = "command";
+
+/// Whether a group of this kind names a session that undo can name: an agent's
+/// connection, or one command line of a shell.
+#[must_use]
+pub fn names_a_session(kind: &str) -> bool {
+    kind == AGENT_SESSION_GROUP || kind == COMMAND_GROUP
+}
+
 /// The unit of work an action belongs to: an issue, a task, an agent run.
 /// Not a group of actions applied as one; that is `tilo_resource::ActionGroup`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

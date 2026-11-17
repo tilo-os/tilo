@@ -76,6 +76,8 @@ struct Share {
     over: Option<String>,
     /// Its changes, by their short hashes as History lists them.
     made: Vec<String>,
+    /// The invocation ids its changes name.
+    invocations: Vec<String>,
 }
 
 /// What one record's history says of each run that changed it, by step, as
@@ -271,6 +273,11 @@ fn shares(app_id: &str, record: &str, entries: &[Value]) -> Vec<(String, Share)>
         share.changes = share.changes.saturating_add(1);
         if let Some(change) = text(entry, "change") {
             share.made.push(change.to_owned());
+        }
+        if let Some(invocation) = text(entry, "invocation")
+            && !share.invocations.iter().any(|known| known == invocation)
+        {
+            share.invocations.push(invocation.to_owned());
         }
         share.first_ms = share.first_ms.min(time);
         share.last_ms = share.last_ms.max(time);
@@ -543,6 +550,42 @@ fn of_member(invocations: Vec<Invocation>, by: Option<&str>) -> Vec<Invocation> 
     }
 }
 
+/// The steps whose changes the documents keep under the invocation id `named`.
+fn made_by(recorded: &BTreeMap<String, Vec<Share>>, named: &str) -> HashSet<String> {
+    recorded
+        .iter()
+        .filter(|(_, shares)| {
+            shares
+                .iter()
+                .any(|share| share.invocations.iter().any(|id| id == named))
+        })
+        .map(|(step, _)| step.clone())
+        .collect()
+}
+
+/// The invocation `named` names, when the query names one: the invocation it is the step
+/// of, that has a call of that id, or whose step is one of `made`, the steps
+/// the documents keep its changes under (also once no call of it is
+/// remembered); every invocation when it names none.
+fn of_invocation(
+    invocations: Vec<Invocation>,
+    named: Option<(&str, HashSet<String>)>,
+) -> Vec<Invocation> {
+    let Some((named, made)) = named else {
+        return invocations;
+    };
+    invocations
+        .into_iter()
+        .filter(|invocation| {
+            invocation
+                .step
+                .as_ref()
+                .is_some_and(|step| step == named || made.contains(step))
+                || invocation.calls.iter().any(|id| id == named)
+        })
+        .collect()
+}
+
 /// Where a run sorts, newest first, and what a cursor names it by.
 fn key(run: &Invocation) -> (i64, String) {
     let name = run
@@ -787,8 +830,10 @@ impl Worker {
             None => across,
         });
         let pending = unread.iter().any(&mut may_read);
-        let runs = of_member(listing(recorded, calls), query.by.as_deref());
-        Ok(page(runs, query, pending))
+        let named = (query.invocation.as_deref()).map(|named| (named, made_by(&recorded, named)));
+        let invocations = of_invocation(listing(recorded, calls), named);
+        let invocations = of_member(invocations, query.by.as_deref());
+        Ok(page(invocations, query, pending))
     }
 }
 

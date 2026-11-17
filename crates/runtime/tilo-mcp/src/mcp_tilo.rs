@@ -1587,12 +1587,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .agent_id()
             .or_else(|| acting.member_id().map(collab_types::MemberId::id))
             .map(str::to_owned);
-        let query = InvocationsQuery {
+        self.listed_invocations(&InvocationsQuery {
             limit: workspace_invocations::PAGE,
             by,
             ..InvocationsQuery::default()
-        };
-        let argument = match serde_json::to_value(&query) {
+        })
+        .await
+    }
+
+    /// The page of the workspace's invocations `query` asks for, as its server lists them for this
+    /// session's caller.
+    pub(super) async fn listed_invocations(
+        &self,
+        query: &InvocationsQuery,
+    ) -> Result<Invocations, String> {
+        let argument = match serde_json::to_value(query) {
             Ok(Value::Object(fields)) => InvokeArgument::Json(fields),
             _ => InvokeArgument::None,
         };

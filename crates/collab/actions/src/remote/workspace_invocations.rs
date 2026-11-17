@@ -72,6 +72,10 @@ pub struct InvocationsQuery {
     /// names one; every run otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+    /// Only the invocation this names, by one of its calls' invocation ids or by its
+    /// step: what taking it back finds it by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invocation: Option<String>,
 }
 
 impl InvocationsQuery {

@@ -49,7 +49,6 @@ mod tilo;
 mod undo_invocation;
 #[path = "mcp_agent_view.rs"]
 mod view;
-pub(super) use undo_invocation::Undoable;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
 use answer::{action_row, action_rows, answer_of, outcome, text_result};
@@ -2268,7 +2267,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     reply.structured = Some(typed);
                 }
                 if !reply.failed && descriptor.contract.kind != tilo_actions::ActionKind::Read {
-                    self.note_change(&value, &path, (&provider, &app), history);
+                    self.note_change(&app, history);
                 }
                 Ok(reply)
             }

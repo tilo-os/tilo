@@ -39,16 +39,7 @@ pub const BOOKKEEPING_PREFIX: &str = "tilo:";
 pub const MAX_CHECKPOINT_NAME: usize = 80;
 /// The group kind of an agent session's invocations.
 pub const AGENT_SESSION: &str = tilo_actions::context::AGENT_SESSION_GROUP;
-/// The group kind of one command line a shell ran: every file action it and
-/// the commands it dispatched carried out, undone as one.
-pub const COMMAND_GROUP: &str = "command";
-
-/// Whether a group of this kind names a session that undo can name: an agent's
-/// connection, or one command line of a shell.
-#[must_use]
-pub fn names_a_session(kind: &str) -> bool {
-    kind == AGENT_SESSION || kind == COMMAND_GROUP
-}
+pub use tilo_actions::context::{COMMAND_GROUP, names_a_session};
 
 /// Whose steps an undo or redo takes back.
 #[derive(Clone, Debug, PartialEq, Eq)]

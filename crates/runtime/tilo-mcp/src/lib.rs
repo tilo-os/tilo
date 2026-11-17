@@ -142,9 +142,6 @@ pub struct McpServer<H> {
     /// Who waits for the next run event of this session: one of its invocations
     /// starting, being held for its person, or ending ([`McpServer::invocations_moved`]).
     pub(crate) invocation_waiters: std::sync::Mutex<Vec<tilo_actions::remote::Completer<()>>>,
-    /// What this session's invocations changed, oldest first: where taking
-    /// one's invocation back finds its changes ([`McpServer::undo_invocation`]).
-    pub(crate) undoable: std::sync::Mutex<std::collections::VecDeque<agent::Undoable>>,
 }
 
 pub use agent::{PersonStep, literals_in};
@@ -681,7 +678,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             changing: std::sync::Mutex::default(),
             invocations: std::sync::Mutex::default(),
             invocation_waiters: std::sync::Mutex::default(),
-            undoable: std::sync::Mutex::default(),
         }
     }
 

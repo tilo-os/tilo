@@ -435,7 +435,7 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
                 ActionParam::optional(
                     "step",
                     ParamType::Text,
-                    "A change id from history: undo only the step it is part of",
+                    "A change id from history: undo only the step it is part of, of your steps, or of those invocation or by names",
                 )
                 .nullable(),
             ],
@@ -445,12 +445,8 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
                 if to.is_some() && args.integer("steps").is_some() {
                     return Err("give steps or to, not both".into());
                 }
-                if step.is_some()
-                    && (to.is_some()
-                        || args.integer("steps").is_some()
-                        || args.text("invocation").is_some())
-                {
-                    return Err("give step alone".into());
+                if step.is_some() && (to.is_some() || args.integer("steps").is_some()) {
+                    return Err("give step alone, or with whose it is (invocation or by)".into());
                 }
                 let by = args
                     .get("by")

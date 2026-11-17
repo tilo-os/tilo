@@ -109,6 +109,75 @@ const LETTERS: [(&str, &str); 3] = [
     ("Visa backend", "Backend's postscript"),
 ];
 
+/// An invocation is taken back by a key other than the one that ran it, on
+/// a connection of its own, by the id the invocation's answer named; after the server
+/// restarted, when no call of an invocation is remembered, by the step the listing
+/// names it by, as history keeps it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_invocation_is_taken_back_after_a_reconnect_and_a_restart() {
+    Box::pin(taken_back_after_a_restart()).await;
+}
+
+#[allow(
+    clippy::large_futures,
+    reason = "one story, polled once from the heap by its test"
+)]
+async fn taken_back_after_a_restart() {
+    let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
+    let (ada, token) = backend(&on_server).await;
+    let person = Key {
+        api: &on_server.api,
+        token,
+    };
+    let ws = workspace(&person, "Applicant: Jane Doe").await;
+    let later = workspace(&person, "Applicant: John Doe").await;
+    let agent = Key {
+        api: &on_server.api,
+        token: person.mint(&ws, "Jane Doe's agent").await,
+    };
+    let other = Key {
+        api: &on_server.api,
+        token: person.mint(&later, "John Doe's agent").await,
+    };
+    let letter = write_letter(&agent, &ws, "Dear Visa Officer,", "Cover letter").await;
+    write_letter(&other, &later, "Yours faithfully", "Closing").await;
+
+    let (status, undone) = person
+        .post(
+            &format!("/v1/workspaces/{ws}/invocations/{letter}/undo"),
+            &json!({}),
+        )
+        .await;
+    assert_eq!(status, 200, "{undone}");
+    let listed = invocations(&person, &ws, "").await;
+    let taken = titled(&listed, "Cover letter");
+    assert_eq!(taken["status"], "undone", "{listed}");
+    assert_eq!(taken["undone"], taken["changes"], "{taken}");
+
+    drop((agent, other, person));
+    let on_server = on_server.restart(false).await;
+    let page = enrol(&ada, "Ada's browser again", DeviceCapabilities::member());
+    let person = Key {
+        api: &on_server.api,
+        token: Box::pin(approved_key(&on_server, &ada, &page, "Visa backend")).await,
+    };
+    let listed = invocations(&person, &later, "").await;
+    let closing = titled(&listed, "Closing");
+    assert_eq!(closing["remembered"], false, "{closing}");
+    let step = closing["step"].as_str().unwrap();
+    let (status, undone) = person
+        .post(
+            &format!("/v1/workspaces/{later}/invocations/{step}/undo"),
+            &json!({}),
+        )
+        .await;
+    assert_eq!(status, 200, "{undone}");
+    let listed = invocations(&person, &later, "").await;
+    let closing = titled(&listed, "Closing");
+    assert_eq!(closing["status"], "undone", "{listed}");
+    assert_eq!(closing["undone"], closing["changes"], "{closing}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn keys_reading_a_workspace_list_its_runs_newest_first_also_after_a_restart() {
     Box::pin(every_run_listed()).await;
