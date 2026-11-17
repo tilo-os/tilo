@@ -131,6 +131,13 @@ public protocol AssistantSource: Sendable {
     /// Take back something it has learned.
     func forget(_ learned: Supervision.Learned.ID) async throws
 
+    // MARK: Being told
+
+    /// The person saw this piece on this device: they opened it from its notification, or it
+    /// arrived in the conversation they were looking at. A source whose Tilo told the person of
+    /// it says so there, so that they are told of it nowhere else.
+    func seen(_ item: Item.ID, in chat: Chat) async
+
     // MARK: Being told while the app does not run
 
     /// An address Apple's service gave this device. The person's host sends to it when the app
@@ -144,6 +151,7 @@ extension AssistantSource {
     /// A source that keeps no replies apart from the conversation has none to show.
     public func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item] { [] }
     public func stopAnswering(in chat: Chat) async throws {}
+    public func seen(_ item: Item.ID, in chat: Chat) async {}
 
     // A source with no first run of its own asks nothing before it pairs, has nothing in the
     // way of an answer and links no provider.

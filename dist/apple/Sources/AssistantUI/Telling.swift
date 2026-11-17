@@ -36,7 +36,12 @@ public final class Teller: NSObject {
     }
 
     public func tell(_ item: Item, in chat: Chat) {
-        guard let notice = NoticePlan.notice(for: item, in: chat), !(notice.interrupts && looksAt(chat)) else { return }
+        guard let notice = NoticePlan.notice(for: item, in: chat) else { return }
+        // What the person sees arrive is not told again, and their Tilo hears that they saw it.
+        if notice.interrupts && looksAt(chat) {
+            model.saw(item.id, in: chat)
+            return
+        }
         let content = UNMutableNotificationContent()
         content.title = notice.title
         if let subtitle = notice.subtitle { content.subtitle = subtitle }
@@ -87,6 +92,7 @@ public final class Teller: NSObject {
             model.answer(Question.ID(question), with: Choice.ID(choice))
         } else if action == NoticePlan.openAction || action == UNNotificationDefaultActionIdentifier {
             model.show(Item.ID(item), in: chat)
+            model.saw(Item.ID(item), in: chat)
         }
     }
 

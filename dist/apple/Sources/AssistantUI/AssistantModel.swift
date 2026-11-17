@@ -142,14 +142,32 @@ public final class AssistantModel {
     private func take(_ change: ConversationChange, in chat: Chat) {
         var conversation = conversations[chat] ?? Conversation()
         let known = conversation.isLoaded
+        let before = conversation.items
         conversation.apply(change)
         conversations[chat] = conversation
         guard known else { return }
         switch change {
         case .added(let new): for item in new { told?(item, chat) }
-        case .changed(let item): settled?(item, chat)
+        case .changed(let item):
+            // A piece that only now is a reminder, a brief or important was no news when its
+            // words arrived: the person's Tilo said what it is a moment later. It is told now.
+            // A piece that had something to tell before is settled: an answered question is
+            // not told again for the mark it carries.
+            let was = before.first { $0.id == item.id }.flatMap { NoticePlan.notice(for: $0, in: chat)?.kind }
+            if was == nil, let now = NoticePlan.notice(for: item, in: chat)?.kind, now != .quiet {
+                told?(item, chat)
+            } else {
+                settled?(item, chat)
+            }
         default: break
         }
+    }
+
+    /// The person saw a piece on this device: they opened it from its notification, or it
+    /// arrived in the conversation they were looking at.
+    public func saw(_ item: Item.ID, in chat: Chat) {
+        let source = source
+        Task { await source.seen(item, in: chat) }
     }
 
     public func conversation(_ chat: Chat) -> Conversation {

@@ -435,6 +435,20 @@ within the hour, a brief before something begins, and work the person waits on. 
 assistant's lasting work earns none, because an activity that is always there says nothing.
 The app tells both while it runs.
 
+**What the person's server told them.** Whether something is a reminder, a brief or important
+is decided by the person's server, which writes each such thing into their log of what they
+were told (`tilo.telling`, `told`). `TiloSource` follows that log while the app is open: it
+reads it whole once, then asks for what is newer, and the server holds each ask until the log
+moves, so the app keeps no clock for it. An entry names the message its cause wrote (an event
+of the person's that came, a moment they asked to be told at); the assistant's answer to that
+message is the piece. The cause's own message, which is what the server told the assistant,
+is no piece: the answer stands under a line with the cause's name, and is a reminder or a
+brief, or carries the mark, as the entry says. A piece that becomes one of these after its
+words arrived is told then, once. What the person saw, opened from its notification or
+arriving in the conversation they look at, is acknowledged to their server, which then tells
+them of it nowhere else. Not built: the line that says why something did not notify, what
+happened since the person left, and a notification's buttons from the entry's own actions.
+
 **Told while the app is closed** takes what nothing here makes: an App ID for
 `so.tilo.assistant` with Push Notifications and a profile for it, `aps-environment` in
 `AssistantBundle/Phone.entitlements`, and a host that sends to the addresses the app hands it

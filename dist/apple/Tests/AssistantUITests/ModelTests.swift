@@ -78,6 +78,33 @@ final class ModelTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(model.conversation(.main).items.first { $0.id == "maya" }).waits)
     }
 
+    func testAPieceItsServerLaterCallsAReminderIsToldThenAndNotAgain() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        var told: [Item.ID] = []
+        var settled: [Item.ID] = []
+        model.told = { item, _ in told.append(item.id) }
+        model.settled = { item, _ in settled.append(item.id) }
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        // The assistant's answer arrives as plain words: it is handed on, and nothing is to tell of it.
+        var stretch = Item(id: "stretch", at: Date(), .message(Message(.assistant, "Time to stretch.")))
+        source.post(stretch)
+        try await until { told == ["stretch"] }
+        XCTAssertNil(NoticePlan.notice(for: stretch, in: .main))
+        // A moment later the person's Tilo says it is their reminder: now it is told.
+        stretch.content = .reminder("Time to stretch.")
+        source.change(stretch)
+        try await until { told == ["stretch", "stretch"] }
+        XCTAssertEqual(NoticePlan.notice(for: stretch, in: .main)?.kind, .reminder)
+        XCTAssertEqual(settled, [])
+        // What changes on it afterwards without making another kind of thing of it is not told again.
+        stretch.isImportant = true
+        source.change(stretch)
+        try await until { settled == ["stretch"] }
+        XCTAssertEqual(told, ["stretch", "stretch"])
+    }
+
     func testASecretIsHandedOnAndHeldNowhere() async throws {
         var content = Drawing.content()
         content.main = Drawing.secretPiece

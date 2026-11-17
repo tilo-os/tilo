@@ -31,6 +31,7 @@ import WebKit
 ///                                                    with "model" the provider's default model is set as well
 ///   {"do": "event", "name": "…", "when": "…", "instruction": "…"}   something that comes at a time
 ///   {"do": "stop"}                                    stop the answer that is being written
+///   {"do": "saw", "item": "…"}                        as opening a piece from its notification does
 ///   {"do": "models"}   {"do": "state"}   {"do": "quit"}
 /// It prints no link, no code and no secret, and ends when its standard input ends. With
 /// --forget it removes the store, and with it the device's key, and what it kept beside it.
@@ -110,6 +111,14 @@ final class AssistantDrive {
     }
 
     private func start() {
+        // What the frame's Teller is handed, and the notice it would hand the system. This
+        // program has no place among the system's notifications, so it says the notice instead.
+        model.told = { item, chat in
+            guard let notice = NoticePlan.notice(for: item, in: chat) else { return }
+            AssistantDrive.say(["told": ["item": .string(item.id.value), "kind": .string(notice.kind.rawValue),
+                                         "title": .string(notice.title), "mark": notice.subtitle.map(JSON.string) ?? .null,
+                                         "body": .string(notice.body), "interrupts": .bool(notice.interrupts)]])
+        }
         model.start()
         let engine = source.engine
         Task { [weak self] in
@@ -202,6 +211,8 @@ final class AssistantDrive {
 
     private static func line(of item: Item) -> JSON {
         var line: [String: JSON] = ["id": .string(item.id.value), "at": .number(item.at.timeIntervalSince1970)]
+        if let over = item.task { line["under"] = .string(over.title) }
+        if item.isImportant { line["important"] = true }
         switch item.content {
         case .message(let message):
             line["kind"] = "message"
@@ -332,6 +343,10 @@ final class AssistantDrive {
         case "models":
             model.loadModels()
             AssistantDrive.say(["asked": "models"])
+        case "saw":
+            guard let item = step["item"]?.string else { AssistantDrive.say(["error": "saw takes item"]); return }
+            model.saw(.init(item), in: .main)
+            AssistantDrive.say(["asked": "saw"])
         case "state":
             report(everything: true)
         case "quit":
