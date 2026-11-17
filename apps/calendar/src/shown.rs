@@ -115,7 +115,10 @@ pub fn wall_interval(event: &Event, date: NaiveDate) -> (NaiveDateTime, NaiveDat
     (start, end)
 }
 
-fn override_on(event: &Event, date: NaiveDate) -> Option<&crate::model::OccurrenceOverride> {
+pub(crate) fn override_on(
+    event: &Event,
+    date: NaiveDate,
+) -> Option<&crate::model::OccurrenceOverride> {
     event.occurrence_overrides.iter().find(|edit| {
         edit.original_date == date || edit.start.is_some_and(|start| start.date() == date)
     })

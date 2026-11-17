@@ -4552,10 +4552,7 @@
                     }
                   },
                   "required": [
-                    "id",
-                    "name",
-                    "email",
-                    "status"
+                    "email"
                   ],
                   "type": "object"
                 },
@@ -4563,6 +4560,12 @@
               },
               "calendar_id": {
                 "type": "string"
+              },
+              "categories": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               "color": {
                 "minimum": 0,
@@ -4824,6 +4827,40 @@
         ],
         "description": ""
       },
+      "calendar.calendar.set-categories.Arguments": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "string"
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "event",
+          "categories"
+        ],
+        "description": ""
+      },
+      "calendar.calendar.add-invitation.Arguments": {
+        "type": "object",
+        "properties": {
+          "ics": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ics"
+        ],
+        "description": ""
+      },
+      "calendar.calendar.add-invitation.Result": {
+        "type": "object"
+      },
       "calendar.calendar.delete-task.Arguments": {
         "type": "object",
         "properties": {
@@ -4876,10 +4913,7 @@
                       }
                     },
                     "required": [
-                      "id",
-                      "name",
-                      "email",
-                      "status"
+                      "email"
                     ],
                     "type": "object"
                   },
@@ -4887,6 +4921,12 @@
                 },
                 "calendar_id": {
                   "type": "string"
+                },
+                "categories": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
                 },
                 "color": {
                   "minimum": 0,
@@ -5056,10 +5096,7 @@
                     }
                   },
                   "required": [
-                    "id",
-                    "name",
-                    "email",
-                    "status"
+                    "email"
                   ],
                   "type": "object"
                 },
@@ -5067,6 +5104,12 @@
               },
               "calendar_id": {
                 "type": "string"
+              },
+              "categories": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               "color": {
                 "minimum": 0,
@@ -29004,6 +29047,18 @@
       "resource": "calendar.calendar",
       "action": "invite",
       "arguments": "#/components/schemas/calendar.calendar.invite.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "calendar.calendar",
+      "action": "set-categories",
+      "arguments": "#/components/schemas/calendar.calendar.set-categories.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "calendar.calendar",
+      "action": "add-invitation",
+      "arguments": "#/components/schemas/calendar.calendar.add-invitation.Arguments"
     },
     {
       "app": "so.tilo.calendar",

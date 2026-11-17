@@ -94,6 +94,7 @@ class Event(TypedDict):
     reminder_min: int | None
     project: str | None
     calendar_id: str | None
+    categories: list[str]
 
 class EventData(TypedDict):
     id: str
@@ -116,6 +117,7 @@ class EventData(TypedDict):
     reminder: int
     project: str
     calendar_id: str
+    categories: list[str]
 
 InviteStatus = Literal["NeedsAction", "Accepted", "Tentative", "Declined"]
 
@@ -327,7 +329,7 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Calendar(Resource):
     """Calendar — `calendar.calendar`."""
-    __surface__ = "so.tilo.calendar@5da3833e465e4850"
+    __surface__ = "so.tilo.calendar@6b00b2849166e65e"
     projects: list[Entry[Project]]
     events: list[Entry[Event]]
     tasks: list[Entry[Task]]
@@ -401,6 +403,18 @@ class Calendar(Resource):
         """Runs the app's action."""
         return self.action("invite", event=event, email=email, name=name)
 
+    def set_categories(self,
+        *,
+        event: str,
+        categories: list[str],
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("set-categories", event=event, categories=categories)
+
+    def add_invitation(self, *, ics: str) -> Any:
+        """Runs the app's action."""
+        return self.action("add-invitation", ics=ics)
+
     def delete_task(self, *, task: str) -> None:
         """Runs the app's action."""
         return self.action("delete-task", task=task)
@@ -470,12 +484,12 @@ class Calendar(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_event", "new_event_many", "new_task", "new_project", "delete_event", "reschedule", "set_start", "move_to_calendar", "invite", "delete_task", "delete_project", "import_items", "adopt_remote_event", "adopt_remote_task", "drop_remote_item", "server_applied", "server_removed", "pulled", "export_ics_content"})
+    __actions__ = frozenset({"new_event", "new_event_many", "new_task", "new_project", "delete_event", "reschedule", "set_start", "move_to_calendar", "invite", "set_categories", "add_invitation", "delete_task", "delete_project", "import_items", "adopt_remote_event", "adopt_remote_task", "drop_remote_item", "server_applied", "server_removed", "pulled", "export_ics_content"})
 
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.calendar@5da3833e465e4850"
+    __surface__ = "so.tilo.calendar@6b00b2849166e65e"
     accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
@@ -531,7 +545,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.calendar@5da3833e465e4850"
+    __surface__ = "so.tilo.calendar@6b00b2849166e65e"
     people: list[Entry[Person]]
 
     def project_contact(self,
