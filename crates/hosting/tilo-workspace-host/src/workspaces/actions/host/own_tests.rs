@@ -1054,26 +1054,13 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
     let created = own_as_key(&host, &ada_key, json!({"name": "Lounge"})).await;
     join(workspaces, &created, &ada_key).await;
     let workspace = &created.workspace;
-    let add = |person: &SigningKey, role: &str| {
-        json!({
-            "person": hex::encode(person.verifying_key().to_bytes()),
-            "role": role,
-            "name": "Someone",
-        })
-    };
 
     // Grace has never been here: Ada's key makes her an owner by her key.
     let grace = SigningKey::from_bytes(&rand::random());
     let grace_person = grace.verifying_key().to_bytes();
-    let listed = govern(
-        &host,
-        workspace,
-        &ada_key,
-        super::super::ADD_MEMBER,
-        add(&grace, "owner"),
-    )
-    .await
-    .unwrap();
+    let listed = add_member(&host, workspace, &ada_key, &grace, "owner")
+        .await
+        .unwrap();
     let row = listed
         .as_array()
         .unwrap()
@@ -1093,23 +1080,11 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
 
     // Her own key enters, before any device of hers joined, and makes Hal an
     // administrator.
-    let grace_key = certified(
-        &grace,
-        &SigningKey::from_bytes(&rand::random()),
-        DeviceCapabilities::server_key_grant(),
-    );
-    let entering = own_as_key(&host, &grace_key, json!({"workspace": workspace.workspace})).await;
-    join(workspaces, &entering, &grace_key).await;
+    let grace_key = entered(&host, workspaces, workspace, &grace).await;
     let hal = SigningKey::from_bytes(&rand::random());
-    govern(
-        &host,
-        workspace,
-        &grace_key,
-        super::super::ADD_MEMBER,
-        add(&hal, "administrator"),
-    )
-    .await
-    .unwrap();
+    add_member(&host, workspace, &grace_key, &hal, "administrator")
+        .await
+        .unwrap();
     let hal_person = hal.verifying_key().to_bytes();
     assert_eq!(
         standing(workspaces, &workspace.workspace, hal_person).await,
@@ -1118,36 +1093,17 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
     assert!(!workspaces.is_owner(&workspace.workspace, hal_person).await);
 
     // Hal administers: he adds an editor, but makes no owner.
-    let hal_key = certified(
-        &hal,
-        &SigningKey::from_bytes(&rand::random()),
-        DeviceCapabilities::server_key_grant(),
-    );
-    let entering = own_as_key(&host, &hal_key, json!({"workspace": workspace.workspace})).await;
-    join(workspaces, &entering, &hal_key).await;
+    let hal_key = entered(&host, workspaces, workspace, &hal).await;
     let ivy = SigningKey::from_bytes(&rand::random());
-    govern(
-        &host,
-        workspace,
-        &hal_key,
-        super::super::ADD_MEMBER,
-        add(&ivy, "editor"),
-    )
-    .await
-    .unwrap();
+    add_member(&host, workspace, &hal_key, &ivy, "editor")
+        .await
+        .unwrap();
     let ivy_person = ivy.verifying_key().to_bytes();
     assert_eq!(
         standing(workspaces, &workspace.workspace, ivy_person).await,
         Some((Role::Editor, false))
     );
-    let refused = govern(
-        &host,
-        workspace,
-        &hal_key,
-        super::super::ADD_MEMBER,
-        add(&ivy, "owner"),
-    )
-    .await;
+    let refused = add_member(&host, workspace, &hal_key, &ivy, "owner").await;
     assert!(
         matches!(refused, Err(ActionHostError::Refused { .. })),
         "{refused:?}"
@@ -1155,24 +1111,50 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
     assert!(!workspaces.is_owner(&workspace.workspace, ivy_person).await);
 
     // Ivy, an editor, adds nobody: the action is not hers.
-    let ivy_key = certified(
-        &ivy,
+    let ivy_key = entered(&host, workspaces, workspace, &ivy).await;
+    let stranger = SigningKey::from_bytes(&rand::random());
+    let by_editor = add_member(&host, workspace, &ivy_key, &stranger, "viewer").await;
+    assert!(by_editor.is_err(), "{by_editor:?}");
+    relay.shutdown().await;
+}
+
+/// `person`'s server key, certified and entered into `workspace` as the person's own.
+async fn entered(
+    host: &HostWorkspaceActions,
+    workspaces: &Workspaces,
+    workspace: &tilo_relay_session::workspaces::WorkspaceListing,
+    person: &SigningKey,
+) -> DeviceCert {
+    let key = certified(
+        person,
         &SigningKey::from_bytes(&rand::random()),
         DeviceCapabilities::server_key_grant(),
     );
-    let entering = own_as_key(&host, &ivy_key, json!({"workspace": workspace.workspace})).await;
-    join(workspaces, &entering, &ivy_key).await;
-    let stranger = SigningKey::from_bytes(&rand::random());
-    let by_editor = govern(
-        &host,
+    let entering = own_as_key(host, &key, json!({"workspace": workspace.workspace})).await;
+    join(workspaces, &entering, &key).await;
+    key
+}
+
+/// `cert` asks the host to add `person` to `workspace` as `role`, named "Someone".
+async fn add_member(
+    host: &HostWorkspaceActions,
+    workspace: &tilo_relay_session::workspaces::WorkspaceListing,
+    cert: &DeviceCert,
+    person: &SigningKey,
+    role: &str,
+) -> Result<Value, ActionHostError> {
+    govern(
+        host,
         workspace,
-        &ivy_key,
+        cert,
         super::super::ADD_MEMBER,
-        add(&stranger, "viewer"),
+        json!({
+            "person": hex::encode(person.verifying_key().to_bytes()),
+            "role": role,
+            "name": "Someone",
+        }),
     )
-    .await;
-    assert!(by_editor.is_err(), "{by_editor:?}");
-    relay.shutdown().await;
+    .await
 }
 
 /// `device`'s person asks this host to list its workspaces, as the entry's
