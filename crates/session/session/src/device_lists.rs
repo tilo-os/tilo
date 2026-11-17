@@ -690,12 +690,14 @@ impl DeviceLists {
                     "this session takes part in no transport, so no link can name it".to_owned(),
                 )
             })?;
-        // The link is signed by this device's signer, which may answer only later: the asker hears
-        // it once signed, and the loop goes on meanwhile.
+        // The link is made once this device is reached through its relay, and signed by this
+        // device's signer, which may answer only later: the asker hears it once signed, and the
+        // loop goes on meanwhile.
         let engine = std::sync::Arc::clone(engine);
         let room = room.to_string();
         let expires_in = expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS);
         Ok(Started::Later(crate::landing::off_loop(async move {
+            let endpoint = endpoint.await;
             let issued = engine
                 .issue_invitation(
                     &room,

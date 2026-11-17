@@ -204,26 +204,19 @@ impl Reachability {
         with_held(&self.held, |held| held.need(source, why));
     }
 
-    /// This device's address once it names a home relay, waiting up to
-    /// `within` for one: an invite that carries it lets the invitee reach
-    /// this device from behind any NAT at once, instead of after address
-    /// lookup finds the relay. `None` when this handle holds nothing back
-    /// (the endpoint's own address is as good as it gets); a home relay that
-    /// arrives too late answers with the address the endpoint has, as a
-    /// device with no way out does ([`own_address::relay_addr`]). Blocks the
-    /// calling thread, which must not be one of the network runtime's.
+    /// This device's address once it is reached through a relay, for `why`: the relays wake and
+    /// the answer waits until the endpoint is connected to one and its address names it (iroh's
+    /// online state), so an invite that carries it lets the invitee reach this device from behind
+    /// any network. `None` when this handle holds nothing back: the endpoint's own address is as
+    /// good as it gets. The answer runs on any task; nothing blocks while it waits.
     #[must_use]
-    pub fn relay_addr_within(&self, within: Duration) -> Option<EndpointAddr> {
-        let (endpoint, runtime) = with_held(&self.held, |held| {
-            (held.endpoint.clone(), held.runtime.clone())
-        })?;
-        let (found, answer) = std::sync::mpsc::sync_channel(1);
-        runtime.spawn(async move {
-            let _ = found.send(own_address::relay_addr(&endpoint, within).await);
-        });
-        answer
-            .recv_timeout(within.saturating_add(Duration::from_millis(250)))
-            .ok()
+    pub fn reached_addr(
+        &self,
+        why: &'static str,
+    ) -> Option<impl std::future::Future<Output = EndpointAddr> + Send + use<>> {
+        let endpoint = with_held(&self.held, |held| held.endpoint.clone())?;
+        self.wake(why);
+        Some(async move { own_address::relayed(&endpoint).await })
     }
 }
 
@@ -439,9 +432,7 @@ mod tests {
         assert!(!reachability.is_dormant());
         assert!(!Reachability::default().is_dormant());
         assert!(
-            Reachability::default()
-                .relay_addr_within(Duration::from_secs(1))
-                .is_none(),
+            Reachability::default().reached_addr("a test").is_none(),
             "a handle holding nothing back has no relay to wait for"
         );
         assert!(
@@ -587,31 +578,21 @@ mod tests {
             Some(Duration::from_millis(300)),
         );
         assert_eq!(endpoint.addr().relay_urls().count(), 0);
-        let waiting = reachability.clone();
-        let named = tokio::task::spawn_blocking(move || {
-            waiting
-                .relay_addr_within(Duration::ZERO)
-                .is_some_and(|addr| addr.relay_urls().count() == 0)
-        })
-        .await
-        .unwrap();
-        assert!(
-            named,
-            "a dormant endpoint names the address it has, no relay in it"
-        );
 
         // The open invitation holds the relays up while the endpoint picks
         // its home relay: a bare wake would rest them after the 300 ms
         // delay, which a loaded runner's net report can outlast, and an
-        // endpoint whose relays rested never picks one.
+        // endpoint whose relays rested never picks one. The address is
+        // answered once the endpoint is reached through one, however long
+        // that takes.
         reachability.need(Need::Session, Some("an invitation is open"));
-        let waiting = reachability.clone();
-        let addr = tokio::task::spawn_blocking(move || {
-            waiting.relay_addr_within(tilo_test_env::hang_bound())
-        })
-        .await
-        .unwrap()
-        .expect("a woken endpoint picks a home relay");
+        let addr = tilo_test_env::within(
+            "a woken endpoint to name its home relay",
+            reachability
+                .reached_addr("an invitation is open")
+                .expect("the handle holds relays back"),
+        )
+        .await;
         assert_eq!(
             addr.relay_urls().collect::<Vec<_>>(),
             own.urls::<Vec<_>>().iter().collect::<Vec<_>>()
