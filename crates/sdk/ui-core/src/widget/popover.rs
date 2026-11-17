@@ -736,6 +736,29 @@ impl PopoverPrompt {
 }
 
 impl Widget for PopoverPrompt {
+    /// A prompt in a popover as a page's own field: what it holds, set as it sets
+    /// it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        let value = self.input.value().to_owned();
+        let look = crate::composition::TextLook::new(
+            value.clone(),
+            &self.theme.text(crate::tokens::TextRole::Body),
+            Some(self.theme.tokens.colors.text_primary),
+        );
+        cx.field(value, false, None, look);
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _key_path: &[u64],
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        let (state, path) = crate::doc::document(state, path);
+        Widget::perform_action(&mut self.input, action, &[], state, path)
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1084,6 +1107,12 @@ impl<C: Widget + 'static> crate::widget::controls::ActionControls for Popover<C>
 }
 
 impl<C: Widget + 'static> Widget for Popover<C> {
+    /// The popover's own content, composed where it stands over the page.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
@@ -1553,6 +1582,12 @@ impl<C: Widget + 'static> PopoverButton<C> {
 }
 
 impl<C: Widget + 'static> Widget for PopoverButton<C> {
+    /// The button and the popover it opens, composed as they stand.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         self.button.set_platform_conventions(conventions);
         self.popover.set_platform_conventions(conventions);

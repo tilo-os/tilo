@@ -22,6 +22,7 @@ pub struct HtmlCode {
         &crate::theme::Theme,
         vello::peniko::Color,
     ) -> Option<Face>,
+    pub(crate) glyph: fn(crate::icons::Icon, f64, vello::peniko::Color, bool) -> Option<Glyph>,
 }
 
 /// The code this build links; only the HTML presenter names it.
@@ -31,7 +32,21 @@ pub fn builtin_html() -> HtmlCode {
         button: crate::widget::Button::composed_face,
         bar_control: |face, theme, ground| face.composed(theme, ground),
         bar_chip: |face, theme, ground| face.composed(theme, ground),
+        glyph: |icon, size, color, filled| icon.glyph(size, color, filled),
     }
+}
+
+/// An icon as a page shows it: its outlines as SVG path data in `size` pixels on a side, in
+/// `color`; `None` for a brand mark (a host paints those) or while the code that composes faces is
+/// still to come.
+#[must_use]
+pub fn glyph(
+    icon: crate::icons::Icon,
+    size: f64,
+    color: vello::peniko::Color,
+    filled: bool,
+) -> Option<Glyph> {
+    (HTML_CODE.get()?.glyph)(icon, size, color, filled)
 }
 
 /// A bar control's face as a page shows it, standing on `ground`; `None` while the code that composes
@@ -158,6 +173,9 @@ pub enum Control {
         list: &'static str,
         /// The ARIA role of each choice: `tab`, `radio`, `menuitem` or `button`.
         item: &'static str,
+        /// What the set itself says, above its choices (a dialog's question).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<TextLook>,
         options: Vec<ControlOption>,
     },
     /// A link: an anchor to `href`, or to the action it runs, showing its words.
@@ -256,6 +274,12 @@ impl ControlOption {
     #[must_use]
     pub fn with_icon(mut self, icon: Glyph) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    #[must_use]
+    pub fn with_icon_opt(mut self, icon: Option<Glyph>) -> Self {
+        self.icon = icon;
         self
     }
 
@@ -1132,6 +1156,7 @@ mod tests {
         let control = Control::Choices {
             list: "menu",
             item: "menuitem",
+            label: None,
             options: vec![option],
         };
         let json = serde_json::to_value(&control).unwrap();

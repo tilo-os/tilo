@@ -183,6 +183,42 @@ const CAPTURE_PROMPT: &str = "Type a shortcut";
 
 impl Widget for ShortcutRecorder {
     crate::described!();
+    /// A recorded chord as a page's own button: its keycaps' words, and the
+    /// default it is measured against.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Face, TextLook};
+        cx.element("button");
+        let theme = cx.theme();
+        let colors = &theme.tokens.colors;
+        let style = theme.text(crate::tokens::TextRole::Body);
+        let chord = if self.value.is_empty() {
+            "—".to_owned()
+        } else {
+            self.value.clone()
+        };
+        cx.face(Face {
+            icon: crate::composition::glyph(
+                crate::icons::Icon::Keyboard,
+                16.0,
+                colors.text_dim,
+                false,
+            ),
+            label: Some(
+                TextLook::new(chord, &style, Some(colors.text_primary)).with_max_lines(Some(1)),
+            ),
+            detail: (self.value != self.default).then(|| {
+                TextLook::new(self.default.clone(), &style, Some(colors.text_dim))
+                    .with_max_lines(Some(1))
+            }),
+            trailing: None,
+            fill: None,
+            edge: None,
+            radius: f64::from(theme.tokens.radii.control),
+            pad: 8.0,
+            gap: 6.0,
+            spread: true,
+        });
+    }
 
     crate::provides!(dyn crate::widget::controls::ActionControls);
 

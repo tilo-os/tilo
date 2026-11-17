@@ -567,6 +567,60 @@ impl RowRenameField for NavRow {
 
 impl Widget for NavRow {
     crate::provides!(dyn RowActionRects, dyn RowSelectionSink, dyn RowRenameField);
+    /// A nav row as a page's own list item: its icon, its words and its quiet
+    /// fact at the trailing edge (a count, how long ago).
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Face, TextLook};
+        let theme = cx.theme().clone();
+        let ink = theme.tokens.colors.text_primary;
+        let quiet = theme.tokens.colors.text_dim;
+        let style = theme.text(crate::tokens::TextRole::Body);
+        match &self.row.kind {
+            NavRowKind::Item { label, spec, .. } => {
+                cx.element("li");
+                cx.selected(self.selection.selected);
+                let detail = spec
+                    .secondary
+                    .clone()
+                    .or_else(|| spec.meta.clone())
+                    .or_else(|| spec.badge.clone());
+                cx.face(Face {
+                    icon: spec
+                        .icon
+                        .and_then(|icon| crate::composition::glyph(icon, 16.0, ink, false)),
+                    label: Some(
+                        TextLook::new(label.clone(), &style, Some(ink)).with_max_lines(Some(1)),
+                    ),
+                    detail: detail.map(|detail| {
+                        TextLook::new(detail, &style, Some(quiet)).with_max_lines(Some(1))
+                    }),
+                    trailing: None,
+                    fill: None,
+                    edge: None,
+                    radius: f64::from(theme.tokens.radii.control),
+                    pad: 8.0,
+                    gap: 8.0,
+                    spread: true,
+                });
+            }
+            NavRowKind::Section { title, .. } => {
+                cx.element("div");
+                cx.text(TextLook::new(
+                    title.clone(),
+                    &theme.text(crate::tokens::TextRole::Caption),
+                    Some(quiet),
+                ));
+            }
+            NavRowKind::Caption { caption, .. } => {
+                cx.element("p");
+                cx.text(TextLook::new(caption.clone(), &style, Some(quiet)));
+            }
+            NavRowKind::Pending { .. } => {
+                cx.element("li");
+                cx.text(TextLook::new("…".to_owned(), &style, Some(quiet)));
+            }
+        }
+    }
 
     /// The input the list lays its rows out for, kept where the list reads
     /// its hit targets: a finger's target is larger than a mouse's, and the

@@ -3803,6 +3803,27 @@ fn chip_hover_tint(ground: vello::peniko::Color, alpha: u8) -> vello::peniko::Co
 }
 
 impl Widget for TabBar {
+    /// A tab bar as a page's own tab list: each tab a choice, the active one
+    /// selected, naming the target that activates it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Control, ControlOption};
+        let options = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                ControlOption::new(tab.title.clone())
+                    .selected(tab.id == self.active_id)
+                    .with_target(format!("tab:{}", tab.id))
+            })
+            .collect();
+        cx.control(Control::Choices {
+            list: "tablist",
+            item: "tab",
+            label: None,
+            options,
+        });
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -128,8 +128,8 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     if (!element || element.disabled || element.getAttribute('aria-disabled') === 'true') return;
     // A link is followed by its widget (an app's own address bar), never by
     // the page leaving.
-    if (element.localName === 'a') event.preventDefault();
-    event.stopPropagation();
+    if (element.localName === 'a') event.preventDefault?.();
+    event.stopPropagation?.();
     const action = element.dataset.tiloAct;
     if (action === 'step') act(element, 'value', step(element));
     else act(element, action, element.dataset.tiloValue);
@@ -283,7 +283,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       children.push(sizer);
       scrollers.set(node.path, {element, offset: node.scroll[0]});
     }
-    if (!own || own.kind === 'blocks' || own.kind === 'painted' || own.kind === 'face') place(element, children);
+    if (!own || own.kind === 'blocks' || own.kind === 'painted' || own.kind === 'face' || own.kind === 'control') place(element, children);
     return element;
   }
 
@@ -614,8 +614,10 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       if (control.kind === 'choices') {
         const box = elementFor(key, 'div', next);
         write(box, '@role', control.list);
-        write(box, 'css', 'display:flex;align-items:center;gap:2px;flex-wrap:wrap;min-width:0;');
-        place(box, control.options.map((option, row) => optionRow(`${key}:choice:${row}`, option, target, next, control.item)));
+        write(box, 'css', `display:flex;align-items:center;gap:2px;flex-wrap:wrap;min-width:0;${control.list === 'group' || control.list === 'tablist' ? '' : 'flex-direction:column;align-items:stretch;'}`);
+        const rows = control.options.map((option, row) => optionRow(`${key}:choice:${row}`, option, target, next, control.item));
+        if (control.label) rows.unshift(wordsFor(`${key}:label`, control.label, next));
+        place(box, rows);
         out.push(box);
         return;
       }

@@ -1344,6 +1344,44 @@ impl crate::resources::PublishesResources for Toolbar {
 
 impl Widget for Toolbar {
     crate::described!();
+    /// A toolbar as a page's own toolbar of real buttons: each command its
+    /// words or glyph, a toggle where it is one.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Control, ControlOption};
+        let theme = cx.theme();
+        let ink = theme.tokens.colors.text_primary;
+        let options = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let ToolbarItem::Button(command) = item else {
+                    return None;
+                };
+                let mut option = ControlOption::new(command.name().to_owned())
+                    .with_target(format!("toolbar.item.{index}"));
+                option = match command.active {
+                    Some(active) => option.selected(active),
+                    None => option,
+                };
+                option = option.disabled(!command.is_enabled());
+                if let Some(icon) = command.icon {
+                    option =
+                        option.with_icon_opt(crate::composition::glyph(icon, 16.0, ink, false));
+                }
+                if let Some(swatch) = command.swatch {
+                    option = option.with_colour(swatch);
+                }
+                Some(option)
+            })
+            .collect();
+        cx.control(Control::Choices {
+            list: "toolbar",
+            item: "button",
+            label: None,
+            options,
+        });
+    }
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,

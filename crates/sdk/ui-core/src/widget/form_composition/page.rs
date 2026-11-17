@@ -556,6 +556,12 @@ macro_rules! framed_page {
             fn name(&self) -> &'static str {
                 $name
             }
+            /// A page as a page's own: its body and its pinned footer, composed
+            /// as the frame lays them out.
+            fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+                cx.element("div");
+                cx.children();
+            }
             fn build_layout(
                 &mut self,
                 tree: &mut TaffyTree<()>,

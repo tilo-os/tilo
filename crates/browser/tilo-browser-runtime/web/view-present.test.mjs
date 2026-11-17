@@ -38,6 +38,21 @@ class Node {
   replaceChildren(...children) { for (const child of this.children) child.parentNode = null; this.children = []; this.append(...children); }
   contains(node) { return node === this || this.children.some(child => child.contains(node)); }
   getContext() { return {putImageData: (...args) => { this.drawn = args; }}; }
+  get parentElement() { return this.parentNode instanceof Node ? this.parentNode : null; }
+  querySelector(selector) { return all(this).find(node => node !== this && matches(node, selector)) ?? null; }
+  closest(selector) { for (let node = this; node; node = node.parentNode) if (matches(node, selector)) return node; return null; }
+}
+
+// The selectors the presenter's press handlers look up.
+function matches(node, selector) {
+  if (!(node instanceof Node)) return false;
+  return selector.split(',').some(part => {
+    const name = part.trim();
+    if (name === '[data-path]') return node.dataset.path !== undefined;
+    if (name === '[data-tilo-act]') return node.dataset.tiloAct !== undefined;
+    if (name === '[data-tilo-field]') return node.dataset.tiloField !== undefined;
+    return false;
+  });
 }
 globalThis.document = {createElement: tag => new Node(tag), createElementNS: (_, tag) => new Node(tag), createTextNode: data => new Text(data), activeElement: null};
 globalThis.ImageData = class { constructor(pixels, width, height) { Object.assign(this, {pixels, width, height}); } };
@@ -198,4 +213,75 @@ test('a separator says how far it stands, and which way it divides', () => {
   assert.equal(divider.getAttribute('aria-valuetext'), '55%');
   assert.equal(divider.getAttribute('aria-orientation'), 'vertical');
   assert.equal(divider.getAttribute('aria-label'), 'Resize preview');
+});
+
+test('a box is a label around its own input, and pressing it toggles the widget', () => {
+  const layer = new Node('div');
+  const sent = [];
+  const presenter = createViewPresenter(layer, {semantic: (...args) => sent.push(args)});
+  const look = {text: 'Show hidden files', size: 14, line_height: 1.4, weight: 400, italic: false, color: null, align: 'start', max_lines: null, mono: false};
+  show(presenter, widget('Checkbox[0]', [0, 0, 220, 28], {tag: 'label', semantics: {role: 'Checkbox', name: 'Show hidden files', state: {}},
+    own: {kind: 'control', controls: [{kind: 'check', style: 'checkbox', checked: false, mixed: false, label: look}]}}));
+  const label = byPath(layer, 'Checkbox[0]');
+  assert.equal(label.localName, 'label');
+  const input = byPath(layer, 'Checkbox[0]#control:0:input');
+  assert.equal(input.localName, 'input');
+  assert.equal(input.getAttribute('type'), 'checkbox');
+  assert.equal(input.checked, false);
+  assert.equal(byPath(layer, 'Checkbox[0]#control:0:label').textContent, 'Show hidden files');
+  layer.dispatch('click', {target: input});
+  assert.deepEqual(sent.at(-1), ['Checkbox[0]', undefined, 'toggle', '', 0, 0]);
+});
+
+test('a range is an input holding the value the widget gives it, and dragging it sets the value', () => {
+  const layer = new Node('div');
+  const sent = [];
+  const presenter = createViewPresenter(layer, {semantic: (...args) => sent.push(args)});
+  show(presenter, widget('Slider[0]', [0, 0, 200, 20], {semantics: {role: 'Slider', name: 'Volume', state: {}},
+    own: {kind: 'control', controls: [{kind: 'range', value: 0.25, min: 0, max: 2, step: 0.1, text: '25 percent'}]}}));
+  const input = byPath(layer, 'Slider[0]#control:0:input');
+  assert.equal(input.getAttribute('type'), 'range');
+  assert.equal(input.value, '0.25');
+  assert.equal(input.getAttribute('aria-valuetext'), '25 percent');
+  input.value = '1.5';
+  layer.dispatch('input', {target: input});
+  assert.deepEqual(sent.at(-1), ['Slider[0]', undefined, 'value', '1.5', 0, 0]);
+});
+
+test("a chooser shows its value and opens its options, each choosing a value", () => {
+  const layer = new Node('div');
+  const sent = [];
+  const presenter = createViewPresenter(layer, {semantic: (...args) => sent.push(args)});
+  const look = {text: 'Large', size: 14, line_height: 1.4, weight: 400, italic: false, color: null, align: 'start', max_lines: 1, mono: false};
+  show(presenter, widget('Dropdown[0]', [0, 0, 160, 32], {semantics: {role: 'ComboBox', name: 'Size', state: {expanded: true}},
+    own: {kind: 'control', controls: [{kind: 'select', current: look, placeholder: 'Choose', open: true, options: [
+      {label: 'Small', value: 'sm', selected: false},
+      {label: 'Large', value: 'lg', selected: true},
+    ]}]}}));
+  const button = byPath(layer, 'Dropdown[0]#control:0:current');
+  assert.equal(button.localName, 'button');
+  assert.equal(button.getAttribute('aria-haspopup'), 'listbox');
+  assert.equal(button.getAttribute('aria-expanded'), 'true');
+  assert.equal(byPath(layer, 'Dropdown[0]#control:0:value').textContent, 'Large');
+  const option = byPath(layer, 'Dropdown[0]#control:0:option:1');
+  assert.equal(option.getAttribute('role'), 'option');
+  assert.equal(option.getAttribute('aria-selected'), 'true');
+  layer.dispatch('click', {target: option});
+  assert.deepEqual(sent.at(-1), ['Dropdown[0]', undefined, 'value', 'lg', 0, 0]);
+});
+
+test('a link is an anchor whose press opens the address through the widget', () => {
+  const layer = new Node('div');
+  const sent = [];
+  const presenter = createViewPresenter(layer, {semantic: (...args) => sent.push(args)});
+  const look = {text: 'Tilo', size: 14, line_height: 1.4, weight: 400, italic: false, color: null, align: 'start', max_lines: null, mono: false};
+  show(presenter, widget('Link[0]', [0, 0, 60, 20], {tag: 'a', semantics: {role: 'Link', name: 'Tilo', state: {}},
+    own: {kind: 'control', controls: [{kind: 'link', href: 'https://tilo.coffee', label: look}]}}));
+  const anchor = byPath(layer, 'Link[0]');
+  assert.equal(anchor.localName, 'a');
+  assert.equal(anchor.getAttribute('href'), 'https://tilo.coffee');
+  let prevented = false;
+  layer.dispatch('click', {target: anchor, preventDefault: () => { prevented = true; }});
+  assert.ok(prevented, 'the page never leaves');
+  assert.deepEqual(sent.at(-1), ['Link[0]', undefined, 'activate', '', 0, 0]);
 });
