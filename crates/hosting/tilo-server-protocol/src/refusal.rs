@@ -2,8 +2,7 @@
 //!
 //! Every refusal a host sends ([`crate::transport::Envelope::CommitRefused`],
 //! [`crate::transport::Envelope::NotAuthorised`],
-//! [`crate::transport::Envelope::RemoteActionUndeliverable`],
-//! [`crate::transport::Envelope::DocumentContentRefused`]) carries one
+//! [`crate::transport::Envelope::RemoteActionUndeliverable`]) carries one
 //! [`Refusal`]. A device decides what to do by its variant: wait for the
 //! workspace to be ready, wait the time it says, ask the person, or give up.
 //! A person reads [`Refusal::plain`]; a log reads its [`Display`](std::fmt::Display).
@@ -12,8 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::time::Duration;
 
-/// Why a host turned a change, a subscription, an action or a piece of
-/// content away.
+/// Why a host turned a change, a subscription or an action away.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Refusal {
     /// The host had not taken the workspace up for this session yet: the
@@ -24,9 +22,6 @@ pub enum Refusal {
     /// The member change budget is spent: the next change is taken after
     /// `wait_ms`.
     TooFast { wait_ms: u64 },
-    /// The member content budget is spent: content is taken again after
-    /// `wait_ms`.
-    TooMuchContent { wait_ms: u64 },
     /// The person's own workspaces keep as much as the host keeps for them:
     /// the change was not kept.
     Full,
@@ -85,23 +80,12 @@ impl Refusal {
         }
     }
 
-    /// The refusal of a content budget that holds content again after
-    /// `wait`.
-    #[must_use]
-    pub fn too_much_content(wait: Duration) -> Self {
-        Self::TooMuchContent {
-            wait_ms: millis(wait),
-        }
-    }
-
     /// How long to wait before the same thing goes through, when the
     /// refusal says.
     #[must_use]
     pub const fn wait(&self) -> Option<Duration> {
         match self {
-            Self::TooFast { wait_ms } | Self::TooMuchContent { wait_ms } => {
-                Some(Duration::from_millis(*wait_ms))
-            }
+            Self::TooFast { wait_ms } => Some(Duration::from_millis(*wait_ms)),
             _ => None,
         }
     }
@@ -121,7 +105,6 @@ impl Refusal {
         match self {
             Self::NotReady => "not_ready",
             Self::TooFast { .. } => "rate_limited",
-            Self::TooMuchContent { .. } => "content_limited",
             Self::Full => "storage_full",
             Self::NotGranted(_) => "not_granted",
             Self::NotAllowed(_) => "not_allowed",
@@ -141,9 +124,6 @@ impl Refusal {
     pub fn plain(&self) -> Cow<'static, str> {
         match self {
             Self::TooFast { .. } => PLAIN_TOO_FAST.into(),
-            Self::TooMuchContent { wait_ms } => {
-                plain_too_much(Duration::from_millis(*wait_ms)).into()
-            }
             Self::Full => PLAIN_FULL.into(),
             Self::NotGranted(_) => PLAIN_NOT_GRANTED.into(),
             Self::NotAllowed(_) => PLAIN_NOT_ALLOWED.into(),
@@ -166,9 +146,6 @@ impl std::fmt::Display for Refusal {
             Self::TooFast { wait_ms } => {
                 write!(f, "too many changes; slow down; retry in {wait_ms} ms")
             }
-            Self::TooMuchContent { wait_ms } => {
-                write!(f, "too much content this hour; retry in {wait_ms} ms")
-            }
             Self::Full => f.write_str("the account's storage is full"),
             Self::NotGranted(detail) => write!(f, "not granted: {detail}"),
             Self::NotAllowed(detail) => write!(f, "not allowed: {detail}"),
@@ -181,18 +158,6 @@ impl std::fmt::Display for Refusal {
             Self::Conflict => f.write_str("operation id already committed with different content"),
             Self::Other(detail) => f.write_str(detail),
         }
-    }
-}
-
-/// The hourly content budget refused it, and holds it again after `wait`:
-/// said in whole minutes, rounded up, so the person never tries too early.
-#[must_use]
-pub fn plain_too_much(wait: Duration) -> String {
-    let minutes = wait.as_secs().div_ceil(60).max(1);
-    if minutes == 1 {
-        "You've shared too much this hour. Try again in a minute.".to_owned()
-    } else {
-        format!("You've shared too much this hour. Try again in {minutes} minutes.")
     }
 }
 
@@ -213,15 +178,6 @@ mod tests {
             assert_eq!(fast.wait(), Some(Duration::from_millis(480)));
             assert_eq!(fast.code(), "rate_limited");
             assert_eq!(fast.plain(), PLAIN_TOO_FAST);
-            let content = Refusal::too_much_content(Duration::from_secs(19 * 60 + 1));
-            assert_eq!(
-                content.plain(),
-                "You've shared too much this hour. Try again in 20 minutes."
-            );
-            assert_eq!(
-                Refusal::too_much_content(Duration::from_millis(1)).plain(),
-                "You've shared too much this hour. Try again in a minute."
-            );
         }
 
         phase only_a_host_that_was_not_ready_passes_later;

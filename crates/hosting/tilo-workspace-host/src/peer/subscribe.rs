@@ -218,6 +218,7 @@ pub(super) async fn subscribe(
         state_tx,
         catchup: catchup.clone(),
         lag: session.lag.clone(),
+        content: Arc::clone(session.content),
         channel_reader: session
             .channel_reader
             .load(std::sync::atomic::Ordering::Relaxed),
@@ -393,6 +394,9 @@ struct SubscriberRegistration {
     state_tx: mpsc::Sender<StateDelivery>,
     catchup: Arc<ReplayCatchup>,
     lag: Arc<Lag>,
+    /// The connection's queue for content its outbound channel could not
+    /// take yet ([`crate::content_queue`]).
+    content: Arc<crate::content_queue::ContentQueue>,
     channel_reader: bool,
 }
 
@@ -414,6 +418,7 @@ async fn register_subscriber(
         state_tx,
         catchup: session_catchup,
         lag: session_lag,
+        content,
         channel_reader,
     } = registration;
     let mut wr = crate::workspace_io::fresh_membership(&completion_workspace).await?;
@@ -472,6 +477,7 @@ async fn register_subscriber(
         device_public_key: source.peer.device_public_key,
         tx: source.tx,
         disconnect: source.disconnect,
+        content_waiting: content,
     });
     if let Some(mailbox) = presence {
         wr.route_presence(source.peer.device_public_key, mailbox);

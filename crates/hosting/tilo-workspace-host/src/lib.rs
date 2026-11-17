@@ -23,6 +23,8 @@ pub mod compaction;
 // for them, which a page cannot.
 #[cfg(not(target_arch = "wasm32"))]
 mod connections;
+pub mod content_queue;
+pub mod content_work;
 #[doc(hidden)]
 pub mod environment;
 #[doc(hidden)]

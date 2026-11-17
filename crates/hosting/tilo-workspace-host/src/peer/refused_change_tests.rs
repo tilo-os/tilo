@@ -106,6 +106,7 @@ impl Lounge {
                 device_public_key: self.member.device_public_key,
                 tx: outbound.clone(),
                 disconnect: disconnect.clone(),
+                content_waiting: Arc::default(),
             });
         }
         let mut holds = Holds::over(&runtime, self.workspace_id, outbound, disconnect);
@@ -124,6 +125,7 @@ impl Lounge {
             device_public_key: self.member.device_public_key,
             tx: holds.outbound.clone(),
             disconnect: holds.disconnect.clone(),
+            content_waiting: Arc::default(),
         });
     }
 
@@ -272,6 +274,7 @@ impl Holds {
             workspaces: &self.registry,
             autobind: None,
             outbound: &self.outbound,
+            content: Box::leak(Box::default()),
             state_outbound: None,
             connection_live: None,
             own_user_public_key: own_user,

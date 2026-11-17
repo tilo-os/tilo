@@ -1,7 +1,6 @@
 //! A visitor's file reaches the workspace's host whole, as large as the host
-//! keeps: the pieces answering the host's own request count against its
-//! attachment quotas, not the visitor's hourly content budget, which is far
-//! smaller than the largest file the host keeps.
+//! keeps: a member's content is bounded by what the host stores for a
+//! workspace, not by a budget on how much they may send.
 //!
 //! A large file crosses in windows — an answer carries what the host lacks of
 //! it, up to [`neighbour_wire::content::PIECES_PER_ANSWER`] pieces — and the
@@ -212,11 +211,6 @@ async fn send_until_kept(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_visitors_file_as_large_as_the_host_keeps_reaches_it() {
     let limits = AttachmentLimits::default();
-    assert!(
-        tilo_server::member_limits::MemberLimitsConfig::default().content_bytes_per_hour
-            < limits.file_bytes,
-        "the visitor's content budget alone would not carry the file"
-    );
     let workspace = Workspace::start(limits).await;
     // Bob posted a file exactly as large as the host keeps; the host asks for
     // it, and his page answers as a browser page does.

@@ -46,6 +46,9 @@ pub(super) struct WriterQueues<'s> {
     rx: &'s mut mpsc::Receiver<Envelope>,
     state_rx: &'s mut mpsc::Receiver<StateDelivery>,
     reply_rx: &'s mut mpsc::Receiver<ReplayWrite>,
+    /// Content held back when this connection's queue was full, put back in
+    /// as it drains ([`crate::content_queue`]).
+    content: &'s std::sync::Arc<crate::content_queue::ContentQueue>,
 }
 
 impl<'s> WriterQueues<'s> {
@@ -53,11 +56,13 @@ impl<'s> WriterQueues<'s> {
         rx: &'s mut mpsc::Receiver<Envelope>,
         state_rx: &'s mut mpsc::Receiver<StateDelivery>,
         reply_rx: &'s mut mpsc::Receiver<ReplayWrite>,
+        content: &'s std::sync::Arc<crate::content_queue::ContentQueue>,
     ) -> Self {
         Self {
             rx,
             state_rx,
             reply_rx,
+            content,
         }
     }
 }
@@ -69,6 +74,7 @@ pub(super) struct SessionWriter<'s, W> {
     rx: &'s mut mpsc::Receiver<Envelope>,
     state_rx: &'s mut mpsc::Receiver<StateDelivery>,
     reply_rx: &'s mut mpsc::Receiver<ReplayWrite>,
+    content: &'s std::sync::Arc<crate::content_queue::ContentQueue>,
     write: &'s mut W,
     presence: &'s crate::presence_mailbox::PresenceMailbox,
     active: Option<ReplayWrite>,
@@ -95,6 +101,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             rx,
             state_rx,
             reply_rx,
+            content,
         }: WriterQueues<'s>,
         write: &'s mut W,
         presence: &'s crate::presence_mailbox::PresenceMailbox,
@@ -103,6 +110,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             rx,
             state_rx,
             reply_rx,
+            content,
             write,
             presence,
             active: None,
@@ -178,6 +186,10 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
 
     /// Write the next frame whose queue is ready, in fairness order.
     async fn write_ready(&mut self, cx: SessionLoop<'_, '_>) -> Result<WriterTurn, PeerError> {
+        // A slot the last turn freed goes to content that waited for it, so
+        // the queue behind a busy sender keeps moving without further pieces
+        // arriving ([`crate::content_queue`]).
+        self.content.serve_waiting(cx.session.outbound);
         if self.active.is_none() {
             self.active = self.reply_rx.try_recv().ok();
         }

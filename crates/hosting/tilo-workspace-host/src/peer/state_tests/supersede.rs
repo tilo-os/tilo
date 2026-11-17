@@ -16,6 +16,7 @@ async fn a_replaced_session_ends_as_superseded_unless_its_device_lost_the_worksp
             device_public_key: device,
             tx: replacement,
             disconnect: fixture.recipient_disconnect.clone(),
+            content_waiting: Arc::default(),
         });
         if revoked {
             fixture.revoke(device);
@@ -79,6 +80,7 @@ async fn replay_completion_only_classifies_a_valid_replacement_as_superseded() {
                 device_public_key: device,
                 tx: replacement.clone(),
                 disconnect: fixture.source.disconnect.clone(),
+                content_waiting: Arc::default(),
             });
             Some((replacement, receiver))
         } else {
@@ -146,6 +148,7 @@ async fn replay_completion_takes_a_slot_its_earlier_connection_released() {
         device_public_key: device,
         tx: earlier.clone(),
         disconnect: fixture.recipient_disconnect.clone(),
+        content_waiting: Arc::default(),
     });
     let (release, reached) =
         crate::store::test_barrier::install(fixture.store.root(), "replay-prepare");

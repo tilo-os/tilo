@@ -318,6 +318,7 @@ pub(super) async fn handle_presence(
                 authority.as_ref(),
                 workspace_id,
                 (*session.own_device_public_key, peer.device_public_key),
+                peer.user_public_key,
                 body,
             );
         }
@@ -411,6 +412,7 @@ pub(super) async fn handle_content_want(
         authority.as_ref(),
         workspace_id,
         (*session.own_device_public_key, peer.device_public_key),
+        peer.user_public_key,
         frame,
     );
     Ok(None)
@@ -426,6 +428,7 @@ fn answer_content(
     authority: Option<&crate::workspaces::WorkspaceAuthority>,
     workspace_id: WorkspaceId,
     (host, member): ([u8; 32], [u8; 32]),
+    member_user: [u8; 32],
     body: Vec<u8>,
 ) {
     let served = authority.and_then(|authority| {
@@ -435,6 +438,12 @@ fn answer_content(
     });
     let ws = Arc::clone(ws);
     tokio::spawn(async move {
+        // The host reads content one member's requests at a time: a member
+        // asking faster than the disk answers cannot take the reads other
+        // members' content needs ([`crate::content_work`]).
+        let Some(_reading) = ws.lock().await.content_work.take_place(&member_user) else {
+            return;
+        };
         let frames = match tokio::task::spawn_blocking(move || match served {
             Some((workspaces, workspace)) => workspaces.content_answer(&workspace, &body),
             None => crate::workspaces::lacks_answer(&host, &body)
@@ -454,7 +463,8 @@ fn answer_content(
         }
         let runtime = ws.lock().await;
         for frame in frames {
-            runtime.route_lossy(
+            runtime.route_content(
+                &host,
                 &member,
                 Envelope::DocumentContent {
                     workspace_id,
@@ -471,6 +481,10 @@ fn answer_content(
 /// to, stamped with the authenticated sender. Never stored, never fanned
 /// out, never answered: a piece that cannot be delivered is dropped, and
 /// the device that wanted it asks again.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "a member's place at the device's reads is held until the read finishes"
+)]
 pub(super) async fn route_document_content(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -495,46 +509,28 @@ pub(super) async fn route_document_content(
         return;
     };
     let runtime = ws.lock().await;
-    // A piece answering the host's own request is the host's to keep.
-    let host = if to == *session.own_device_public_key {
-        runtime
-            .workspace_authority
-            .as_ref()
-            .and_then(|authority| Some((authority.workspaces()?, authority.workspace().to_owned())))
-    } else {
-        None
-    };
-    // What the host asked for counts against what it keeps of a member's
-    // files (its attachment quotas), so a file as large as it keeps
-    // reaches it; every other piece spends the member's content budget.
-    let asked = host
-        .as_ref()
-        .is_some_and(|(workspaces, workspace)| workspaces.host_expects(workspace, &frame));
-    if !asked
-        && let Some(limits) = session.member_limits
-        && peer.user_public_key != *session.own_user_public_key
-        && let Err(limited) = limits.admit_content(
-            &peer.user_public_key,
-            u64::try_from(frame.len()).unwrap_or(u64::MAX),
-            tilo_clock::now(),
-        )
-    {
-        tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "dropped record content over the member limit");
-        // The sender's person is told, and when the budget holds it again:
-        // the piece is not passed on, so whatever they shared stops here.
-        if limits.tell_refused(&peer.user_public_key, tilo_clock::now()) {
-            let _ = session.outbound.try_send(Envelope::DocumentContentRefused {
-                workspace_id,
-                refusal: limited.refusal(),
-            });
-        }
-        return;
-    }
     if to == *session.own_device_public_key {
+        // A piece answering the host's own request is the host's to keep;
+        // reading it may touch the disk, so it goes to the blocking pool.
+        // One member may hold only so many of those reads at once, so a
+        // flood cannot take the pool from another member's pieces
+        // ([`crate::content_work`]).
+        let host = runtime.workspace_authority.as_ref().and_then(|authority| {
+            Some((authority.workspaces()?, authority.workspace().to_owned()))
+        });
+        let reading = runtime.content_work.take_place(&peer.user_public_key);
         drop(runtime);
+        let Some(reading) = reading else {
+            tracing::debug!(
+                device = %hex::encode(peer.device_public_key),
+                "dropped record content: this member's host reads are all running"
+            );
+            return;
+        };
         if let Some((workspaces, workspace)) = host {
             let from = peer.device_public_key;
             tokio::task::spawn_blocking(move || {
+                let _reading = reading;
                 workspaces.content_for_host(&workspace, from, &frame);
             });
         }
@@ -546,5 +542,5 @@ pub(super) async fn route_document_content(
         from_device_public_key: peer.device_public_key,
         frame,
     };
-    runtime.route_lossy(&to, stamped);
+    runtime.route_content(&peer.device_public_key, &to, stamped);
 }

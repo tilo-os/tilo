@@ -103,8 +103,9 @@ pub struct ServerConfig {
     /// This is a navigation destination, not an admission or content-access grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_entry: Option<String>,
-    /// Per-person change and content budgets, for a host whose workspaces admit
-    /// the public. `None` limits nobody.
+    /// Per-person change budgets, for a host whose workspaces admit the
+    /// public. `None` limits nobody. Content is not budgeted: a member's
+    /// upload is bounded by what the host keeps for the workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_limits: Option<MemberLimitsConfig>,
     /// Pre-admissions a governed workspace keeps, spent ones included. A
@@ -191,8 +192,6 @@ pub struct MemberLimitsConfig {
     /// Changes an owner may send at once.
     #[serde(default = "default_owner_burst")]
     pub owner_burst: u32,
-    /// Record content bytes a person may send per hour.
-    pub content_bytes_per_hour: u64,
 }
 
 const fn default_owner_changes_per_window() -> u32 {
@@ -211,7 +210,6 @@ impl Default for MemberLimitsConfig {
             burst: 40,
             owner_changes_per_window: default_owner_changes_per_window(),
             owner_burst: default_owner_burst(),
-            content_bytes_per_hour: 8 * 1024 * 1024,
         }
     }
 }

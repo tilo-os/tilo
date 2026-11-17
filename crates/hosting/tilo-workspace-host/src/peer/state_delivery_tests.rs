@@ -37,6 +37,7 @@ async fn a_fanned_delivery_skips_the_workspaces_lock_until_authority_moves() {
         device_public_key: recipient.device_public_key,
         tx: outbound.clone(),
         disconnect: disconnect.clone(),
+        content_waiting: Arc::default(),
     });
     runtime.state_sessions.insert(
         recipient.device_public_key,
@@ -74,6 +75,7 @@ async fn a_fanned_delivery_skips_the_workspaces_lock_until_authority_moves() {
         workspaces: &registry,
         autobind: None,
         outbound: &outbound,
+        content: Box::leak(Box::default()),
         state_outbound: Some(&state_tx),
         connection_live: None,
         own_user_public_key: &user.public_key,

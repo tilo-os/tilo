@@ -66,6 +66,10 @@ pub struct Subscriber {
     /// reconnect replays its durable queue instead of growing RAM without
     /// bound or leaving the connection silently stale.
     pub disconnect: mpsc::Sender<()>,
+    /// Pieces of record content this connection's queue could not take yet,
+    /// one queue per sender, served in turn so one sender's burst cannot
+    /// crowd another's out ([`crate::content_queue`]).
+    pub content_waiting: Arc<crate::content_queue::ContentQueue>,
 }
 
 /// The access of each member device of a workspace, by device key.
@@ -144,6 +148,10 @@ pub struct WorkspaceRuntime {
     /// What services beside the session stack keep for this workspace (a
     /// server's compute routing), one value per type.
     pub extensions: Extensions,
+    /// The host's content reads one member may hold at once, so one
+    /// member's pieces cannot take the blocking pool from another's
+    /// ([`crate::content_work`]).
+    pub(crate) content_work: Arc<crate::content_work::ContentWork>,
     /// Per live device subscriber: the retained-checkpoint channels a live
     /// checkpoint has already been fanned to since the device last asked for a
     /// baseline. A device asks on subscribe and whenever it sends a presence
@@ -394,6 +402,7 @@ impl WorkspaceRuntime {
             attached_hosts: HashSet::new(),
             attach_sessions: HashMap::new(),
             extensions: Extensions::default(),
+            content_work: Arc::default(),
             state_sessions: HashMap::new(),
             outbound_leases: HashMap::new(),
             checkpoint_served: HashMap::new(),
@@ -851,13 +860,17 @@ impl WorkspaceRuntime {
         false
     }
 
-    /// Deliver a directed live envelope to the subscriber `target` only, or
-    /// drop it when that subscriber's queue is full: like presence, a busy
-    /// reader loses the envelope, never its connection.
-    pub fn route_lossy(&self, target: &[u8; 32], envelope: Envelope) -> bool {
-        self.subscribers
-            .get(target)
-            .is_some_and(|sub| sub.tx.try_send(envelope).is_ok())
+    /// Deliver a piece of record content `from` sent to the subscriber
+    /// `target` only, through its fairness queue ([`crate::content_queue`]):
+    /// a piece the connection's queue cannot take waits with its sender's
+    /// own pieces, never ahead of another sender's. Returns whether `target`
+    /// is subscribed.
+    pub fn route_content(&self, from: &[u8; 32], target: &[u8; 32], envelope: Envelope) -> bool {
+        let Some(sub) = self.subscribers.get(target) else {
+            return false;
+        };
+        sub.content_waiting.deliver_piece(*from, envelope, &sub.tx);
+        true
     }
 }
 
@@ -1170,6 +1183,7 @@ mod tests {
             device_public_key: RECIPIENT,
             tx,
             disconnect,
+            content_waiting: Arc::default(),
         });
         let mailbox = Arc::new(PresenceMailbox::default());
         rt.route_presence(RECIPIENT, Arc::clone(&mailbox));
@@ -1188,6 +1202,60 @@ mod tests {
         rt.presence_mailboxes.remove(&RECIPIENT);
         assert_eq!(rt.fanout_presence(&AUTHOR, &presence), 1);
         assert_eq!(rx.try_recv().unwrap(), presence);
+    }
+
+    /// A burst of content from one sender waits for the connection's queue
+    /// without taking the room another sender's piece needs.
+    #[test]
+    fn a_content_burst_from_one_sender_leaves_room_for_another() {
+        const A: [u8; 32] = [1; 32];
+        const B: [u8; 32] = [2; 32];
+        const TO: [u8; 32] = [3; 32];
+        const WS: WorkspaceId = WorkspaceId::from_u128(9);
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), WS, false, Membership::default()).unwrap();
+        let (tx, mut rx) = mpsc::channel(2);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        rt.add_subscriber(Subscriber {
+            device_public_key: TO,
+            tx: tx.clone(),
+            disconnect,
+            content_waiting: Arc::default(),
+        });
+        let piece = |from: [u8; 32], byte: u8| Envelope::DocumentContent {
+            workspace_id: WS,
+            to_device_public_key: TO,
+            from_device_public_key: from,
+            frame: vec![byte],
+        };
+        for number in 0..20 {
+            assert!(rt.route_content(&A, &TO, piece(A, number)));
+        }
+        assert!(rt.route_content(&B, &TO, piece(B, 0xBB)));
+        assert!(
+            !rt.route_content(&B, &[9; 32], piece(B, 0xBB)),
+            "a piece for a device that is not subscribed goes nowhere"
+        );
+
+        let queue = Arc::clone(&rt.subscribers[&TO].content_waiting);
+        let mut seen = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let Envelope::DocumentContent {
+                from_device_public_key,
+                ..
+            } = envelope
+            {
+                seen.push(from_device_public_key);
+            }
+            // The connection's writer takes one, the queue's content returns.
+            queue.serve_waiting(&tx);
+        }
+        assert_eq!(seen.len(), 21, "the burst under the bound arrives whole");
+        let b_at = seen.iter().position(|from| *from == B).unwrap();
+        assert!(
+            b_at <= 4,
+            "B's piece came within a turn, after {b_at} of A's, not behind the whole burst"
+        );
     }
 
     /// A commit's claim is its own: a copy of it waits for the claim and
@@ -1377,5 +1445,127 @@ mod access_wait_tests {
         let device_access = device_access.unwrap();
         assert!(device_access.contains_key(&LAPTOP));
         assert!(!device_access.contains_key(&PAGE));
+    }
+
+    /// A burst from one sender is carried whole, and another sender's piece
+    /// gets in within a turn of the queue rather than behind the burst.
+    #[test]
+    fn a_queue_carries_a_burst_whole_and_lets_another_sender_in() {
+        let piece = |from: [u8; 32], frame: Vec<u8>| Envelope::DocumentContent {
+            workspace_id: WorkspaceId::from_u128(7),
+            to_device_public_key: [3; 32],
+            from_device_public_key: from,
+            frame,
+        };
+        let queue = crate::content_queue::ContentQueue::default();
+        let (tx, mut rx) = mpsc::channel(2);
+        let first = [1_u8; 32];
+        let second = [2_u8; 32];
+        for number in 0..40_u8 {
+            queue.deliver_piece(first, piece(first, vec![number]), &tx);
+        }
+        queue.deliver_piece(second, piece(second, vec![0xBB]), &tx);
+        let mut received = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let Envelope::DocumentContent {
+                from_device_public_key,
+                ..
+            } = envelope
+            {
+                received.push(from_device_public_key);
+            }
+            queue.serve_waiting(&tx);
+        }
+        assert_eq!(received.len(), 41, "a burst under the bound arrives whole");
+        let second_at = received.iter().position(|from| *from == second).unwrap();
+        assert!(
+            second_at <= 4,
+            "the second sender's piece came within a turn, after {second_at} of the first's"
+        );
+    }
+
+    /// A repository-sized upload of pieces is carried whole: none is
+    /// refused for being too much content.
+    #[test]
+    fn a_repositorys_worth_of_pieces_is_carried_whole() {
+        let piece_bytes = 192 * 1024;
+        let pieces = 350;
+        assert!(
+            pieces * piece_bytes > 64 * 1024 * 1024,
+            "a repository-sized upload"
+        );
+        let queue = crate::content_queue::ContentQueue::default();
+        let (tx, mut rx) = mpsc::channel(32);
+        let sender = [1_u8; 32];
+        let mut received = 0;
+        for _ in 0..pieces {
+            queue.deliver_piece(
+                sender,
+                Envelope::DocumentContent {
+                    workspace_id: WorkspaceId::from_u128(7),
+                    to_device_public_key: [3; 32],
+                    from_device_public_key: sender,
+                    frame: vec![0; piece_bytes],
+                },
+                &tx,
+            );
+            // The connection's writer takes what its queue holds as it goes.
+            while rx.try_recv().is_ok() {
+                received += 1;
+                queue.serve_waiting(&tx);
+            }
+        }
+        while rx.try_recv().is_ok() {
+            received += 1;
+            queue.serve_waiting(&tx);
+        }
+        assert_eq!(received, pieces, "no piece of the upload was refused");
+        assert_eq!(queue.waiting_pieces(), 0);
+    }
+
+    /// One sender's waiting pieces are bounded, so a flood spills its own
+    /// pieces rather than growing without bound.
+    #[test]
+    fn a_senders_waiting_pieces_are_bounded() {
+        let queue = crate::content_queue::ContentQueue::default();
+        let (tx, _rx) = mpsc::channel(1);
+        let sender = [1_u8; 32];
+        for number in 0..=u8::MAX {
+            queue.deliver_piece(
+                sender,
+                Envelope::DocumentContent {
+                    workspace_id: WorkspaceId::from_u128(7),
+                    to_device_public_key: [3; 32],
+                    from_device_public_key: sender,
+                    frame: vec![number],
+                },
+                &tx,
+            );
+        }
+        assert!(queue.waiting_pieces() <= crate::content_queue::PER_SENDER);
+    }
+
+    /// A member takes its places at content work and gives them back; another
+    /// member is not held behind it.
+    #[test]
+    fn a_member_takes_no_more_than_its_places() {
+        let work = Arc::new(crate::content_work::ContentWork::default());
+        let member = [1_u8; 32];
+        let places: Vec<_> = (0..crate::content_work::PER_MEMBER)
+            .map(|_| work.take_place(&member).unwrap())
+            .collect();
+        assert!(
+            work.take_place(&member).is_none(),
+            "its places are all at work"
+        );
+        assert!(
+            work.take_place(&[2_u8; 32]).is_some(),
+            "another member is not held behind it"
+        );
+        drop(places);
+        assert!(
+            work.take_place(&member).is_some(),
+            "a finished read gives its place back"
+        );
     }
 }

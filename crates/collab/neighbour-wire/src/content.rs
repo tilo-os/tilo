@@ -268,8 +268,8 @@ impl<T> ContentWants<T> {
     }
 
     /// Whether `frame` is a piece of content device `device` asked for and
-    /// is still collecting: what a workspace's host lets through outside a
-    /// member's general content budget, since it asked for it.
+    /// is still collecting: what a workspace's host takes as the answer to
+    /// its own request.
     #[must_use]
     pub fn expects(&self, device: &[u8; 32], frame: &[u8]) -> bool {
         let Ok(crate::NeighbourMsg::DocumentContentPiece {

@@ -108,3 +108,64 @@ async fn a_piece_reaches_only_the_device_it_is_addressed_to() {
         "nothing is answered for a piece the server could not route"
     );
 }
+
+/// One device's long burst does not crowd another device's piece out of the
+/// recipient's connection: the relay carries each sender's pieces in turn,
+/// and nothing is refused for being too much.
+#[tokio::test]
+async fn a_burst_from_one_device_leaves_anothers_piece_a_way() {
+    let user = TestUser::fresh("Alice");
+    let host = user.enrol("home", DeviceCapabilities::member());
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let b = user.enrol("desktop", DeviceCapabilities::member());
+    let c = user.enrol("phone", DeviceCapabilities::member());
+    let members = [a.device_pubkey(), b.device_pubkey(), c.device_pubkey()];
+    let server = Box::pin(spawn_server(&user, host, &[WS], &members)).await;
+    let addr = server.server.node_addr();
+    let a_client = subscribed(addr.clone(), &user, &a).await;
+    let b_client = subscribed(addr.clone(), &user, &b).await;
+    let c_client = subscribed(addr, &user, &c).await;
+
+    // One device answers a transfer with a burst far past the recipient's
+    // outbound queue; another sends one piece behind it.
+    let burst = 256;
+    for number in 0..burst {
+        let mut frame = vec![0_u8; 1024];
+        frame[0..2].copy_from_slice(&u16::try_from(number).unwrap().to_be_bytes());
+        a_client.send(piece(c.device_pubkey(), frame)).unwrap();
+    }
+    b_client
+        .send(piece(c.device_pubkey(), vec![0xBB; 1024]))
+        .unwrap();
+
+    let mut from_a = 0_usize;
+    let mut b_at = None;
+    while b_at.is_none() && from_a < 64 {
+        let envelope = tokio::time::timeout(tilo_test_env::hang_bound(), c_client.recv())
+            .await
+            .expect("C timed out")
+            .expect("C connection closed");
+        if let Envelope::DocumentContent {
+            from_device_public_key,
+            ..
+        } = envelope
+        {
+            if from_device_public_key == b.device_pubkey() {
+                b_at = Some(from_a);
+            } else {
+                from_a = from_a.saturating_add(1);
+            }
+        }
+    }
+    let b_at = b_at.expect("B's piece reached the recipient among A's burst");
+    // What the connection's queue already held when B's piece came, and one
+    // turn of the queue: not the burst behind it.
+    assert!(
+        b_at <= 40,
+        "B's piece came after {b_at} of A's pieces, behind the whole burst"
+    );
+    assert!(
+        quiet(&a_client).await,
+        "nothing is refused for being too much content"
+    );
+}

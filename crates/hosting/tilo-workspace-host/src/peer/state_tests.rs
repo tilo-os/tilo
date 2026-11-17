@@ -81,6 +81,7 @@ impl Fixture {
             workspaces: &self.registry,
             autobind: None,
             outbound,
+            content: Box::leak(Box::default()),
             state_outbound,
             connection_live: None,
             own_user_public_key: &self.source.own_user,
@@ -183,6 +184,7 @@ impl Fixture {
                 device_public_key: peer.device_public_key,
                 tx: tx.clone(),
                 disconnect: disconnect.clone(),
+                content_waiting: Arc::default(),
             });
         }
         runtime.state_sessions.insert(
@@ -614,6 +616,7 @@ async fn cleanup_queued_before_recipient_replacement_retains_exact_pending() {
         device_public_key: fixture.recipient.device_public_key,
         tx: replacement,
         disconnect: fixture.source.disconnect.clone(),
+        content_waiting: Arc::default(),
     });
     drop(release);
     fixture.drained().await;
@@ -886,6 +889,7 @@ async fn state_completion_rechecks_source_and_recipient_membership_and_generatio
                 device_public_key: key,
                 tx: replacement,
                 disconnect: fixture.source.disconnect.clone(),
+                content_waiting: Arc::default(),
             });
         }
         if mutation >= 4 {
@@ -1219,6 +1223,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 workspaces: &registry,
                 autobind: None,
                 outbound: &source.tx,
+                content: Box::leak(Box::default()),
                 state_outbound: None,
                 connection_live: Some(&connection_live),
                 own_user_public_key: &source.own_user,
@@ -1259,6 +1264,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                     device_public_key: device,
                     tx: replacement,
                     disconnect: fixture.source.disconnect.clone(),
+                    content_waiting: Arc::default(),
                 });
             }
             "revoked" => {
@@ -1340,6 +1346,7 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         device_public_key: fixture.source.peer.device_public_key,
         tx: replacement,
         disconnect: fixture.source.disconnect.clone(),
+        content_waiting: Arc::default(),
     });
     drop(release);
     fixture.drained().await;
@@ -1906,6 +1913,7 @@ async fn replay_cleanup_rechecks_authority_after_waiting_for_worker() {
                     device_public_key: device,
                     tx: replacement,
                     disconnect: fixture.source.disconnect.clone(),
+                    content_waiting: Arc::default(),
                 });
             }
         }

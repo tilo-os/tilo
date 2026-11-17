@@ -58,8 +58,8 @@ pub struct Options {
     /// Serve the web routes as plain HTTP on loopback too, as a client that
     /// trusts no development certificate reaches them.
     pub plain: bool,
-    /// The per-person change and content budgets of a host whose workspaces
-    /// admit the public; `None` limits nobody.
+    /// The per-person change budgets of a host whose workspaces admit the
+    /// public; `None` limits nobody.
     pub member_limits: Option<tilo_server::member_limits::MemberLimitsConfig>,
 }
 

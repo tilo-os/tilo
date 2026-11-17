@@ -426,3 +426,13 @@ reason = "renames NotACustodian to NotAKeyHolder in place: both devices of an un
 file = "crates/platform/imager-backend/src/home_transfer/promotion.rs"
 enum = "Kind"
 reason = "renames InactiveCustody to InactiveOwnership in place: stored formats change with the code and nothing written before is read"
+
+[[break]]
+file = "crates/hosting/tilo-server-protocol/src/transport.rs"
+enum = "Envelope"
+reason = "the content-refused envelope goes with the content budget it reported, and content is no longer budgeted; it is a live frame on a device's session, never stored, and the peer protocol version is bumped from 52 to 53 with its removal, so a device at another version admits nothing from this one"
+
+[[break]]
+file = "crates/hosting/tilo-server-protocol/src/refusal.rs"
+enum = "Refusal"
+reason = "the refusal a spent content budget sent goes with that budget; a refusal is a live answer on a device's session and nothing keeps it, and the peer protocol version is bumped from 52 to 53 with the removal, so a device at another version reads none of these bytes"

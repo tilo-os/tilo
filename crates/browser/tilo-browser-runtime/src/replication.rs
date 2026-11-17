@@ -1100,10 +1100,6 @@ impl Joined {
                 } if route.cluster_id == self.uuid => {
                     refusals.push((route, changes, refusal));
                 }
-                Event::ContentRefused {
-                    ws: workspace_id,
-                    refusal,
-                } if workspace_id == self.workspace => self.content_refused(&refusal),
                 Event::DocumentOpened {
                     ws: workspace_id,
                     route: Some(route),
@@ -1273,20 +1269,6 @@ impl Joined {
             link.arrive(arrived.hash.clone(), arrived.bytes.clone());
         }
         true
-    }
-
-    /// The host did not pass on content this page shared: say so over every desktop the page
-    /// shows, with when to try again, as the host said it.
-    fn content_refused(&self, refusal: &tilo_server_protocol::refusal::Refusal) {
-        warn(&format!(
-            "the workspace did not pass on shared content: {refusal}"
-        ));
-        let plain = refusal.plain();
-        for mounted in self.mounts.values() {
-            if let Some((handle, _)) = &mounted.attachment.desktop {
-                handle.acknowledge(plain.to_string());
-            }
-        }
     }
 
     /// Withdraw what the host refused of `route` from the open record that
@@ -1989,7 +1971,6 @@ pub(crate) fn takes(event: &Event) -> bool {
             | Event::Landed { .. }
             | Event::DocumentContent { .. }
             | Event::Refused { .. }
-            | Event::ContentRefused { .. }
             | Event::DocumentOpened { .. }
     )
 }

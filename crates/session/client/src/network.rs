@@ -206,13 +206,6 @@ pub enum Event {
         changes: Vec<[u8; 32]>,
         refusal: tilo_server_protocol::refusal::Refusal,
     },
-    /// The host did not pass on content this device sent in `ws`: its person's content budget
-    /// is spent, and the refusal says when it holds content again
-    /// ([`tilo_server_protocol::refusal::Refusal::plain`] reads it for a person).
-    ContentRefused {
-        ws: Topic,
-        refusal: tilo_server_protocol::refusal::Refusal,
-    },
     /// A live frame the device `from` published on `ws`, opened with its record's channel keys.
     Live {
         ws: Topic,

@@ -268,9 +268,7 @@ struct Refusals {
 fn host_wait(refusal: &tilo_server_protocol::refusal::Refusal) -> Option<Duration> {
     use tilo_server_protocol::refusal::Refusal;
     match refusal {
-        Refusal::TooFast { wait_ms } | Refusal::TooMuchContent { wait_ms } => {
-            Some(Duration::from_millis(*wait_ms))
-        }
+        Refusal::TooFast { wait_ms } => Some(Duration::from_millis(*wait_ms)),
         _ => None,
     }
 }

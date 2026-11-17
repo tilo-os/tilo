@@ -1174,6 +1174,7 @@ fn subscribe(runtime: &mut crate::workspace::WorkspaceRuntime, seed: u8) -> Queu
         device_public_key: device(seed),
         tx,
         disconnect,
+        content_waiting: Arc::default(),
     });
     (rx, disconnected)
 }

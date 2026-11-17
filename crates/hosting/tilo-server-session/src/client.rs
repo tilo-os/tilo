@@ -214,7 +214,6 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::DocumentOpened { workspace_id, .. }
         | Envelope::DocumentContentWant { workspace_id, .. }
         | Envelope::HostSaid { workspace_id, .. }
-        | Envelope::DocumentContentRefused { workspace_id, .. }
         | Envelope::WorkspaceBootstrap { workspace_id, .. } => *workspace_id == scope.workspace_id,
         // The session's own word on itself, which concerns no other workspace.
         Envelope::Ping | Envelope::Pong | Envelope::KeyFollower => true,

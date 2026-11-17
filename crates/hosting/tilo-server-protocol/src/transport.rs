@@ -686,16 +686,6 @@ pub enum Envelope {
     /// and it stays for the session.
     KeyFollower,
 
-    /// The host did not pass on a piece of record content this device sent
-    /// ([`Envelope::DocumentContent`]): its person's content budget is spent.
-    /// `refusal` says when the budget holds the piece again
-    /// ([`crate::refusal::Refusal::TooMuchContent`]); the device's person is
-    /// told ([`crate::refusal::Refusal::plain`]). Said at most once a minute.
-    DocumentContentRefused {
-        workspace_id: WorkspaceId,
-        refusal: crate::refusal::Refusal,
-    },
-
     /// The person's workspace list, as their host keeps it now: sent to every
     /// session of one of their devices whenever the set of workspaces they
     /// have changes (one made, one they joined, one renamed, one they left or
@@ -806,7 +796,6 @@ impl Envelope {
             Self::Entered(_) => "Entered",
             Self::HostSaid { .. } => "HostSaid",
             Self::KeyFollower => "KeyFollower",
-            Self::DocumentContentRefused { .. } => "DocumentContentRefused",
             Self::PersonalList { .. } => "PersonalList",
         }
     }
@@ -855,8 +844,7 @@ impl Envelope {
             | Self::DocumentOpened { workspace_id, .. }
             | Self::WorkspaceBootstrap { workspace_id, .. }
             | Self::DocumentContentWant { workspace_id, .. }
-            | Self::HostSaid { workspace_id, .. }
-            | Self::DocumentContentRefused { workspace_id, .. } => Some(*workspace_id),
+            | Self::HostSaid { workspace_id, .. } => Some(*workspace_id),
             Self::Ping
             | Self::Pong
             | Self::PeerServerHello { .. }
@@ -940,7 +928,7 @@ mod tests {
                         workspace_id: WorkspaceId::from_u128(7),
                         refusal: crate::refusal::Refusal::NotAMember("no".into()),
                     },
-                    [vec![5], id(7), vec![6, 2, 110, 111]].concat(),
+                    [vec![5], id(7), vec![5, 2, 110, 111]].concat(),
                 ),
                 (Envelope::Ping, vec![6]),
                 (Envelope::Pong, vec![7]),

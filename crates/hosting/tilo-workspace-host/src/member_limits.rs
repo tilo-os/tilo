@@ -1,13 +1,17 @@
 //! Token buckets per person (user root) for a public host: a guest who
-//! sends too much gets refusals, never a disconnect, and nobody else
-//! notices. The server's own user (its host device, and the bots a
+//! sends too many changes gets refusals, never a disconnect, and nobody
+//! else notices. The server's own user (its host device, and the bots a
 //! host-held root delegated) is never limited; callers skip it. A person
 //! changing what is theirs ([`Ownership::Owner`]) spends a budget of its own,
 //! far larger than a guest's, so pacing guests never paces an owner's
 //! backend.
 //!
-//! The server has no blob upload path: content travels as record content
-//! routed point to point, so the content budget meters those bytes.
+//! Only changes are paced here. Record content is not budgeted by volume: a
+//! person moving a large file or a code repository through a workspace must
+//! not be stopped by a clock, and what the server keeps of it is bounded by
+//! the workspace's storage quotas. What content needs instead is fairness
+//! between senders ([`crate::content_queue`]) and a bound on the work one
+//! member's pieces may start ([`crate::content_work`]).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -25,9 +29,6 @@ pub enum Limited {
     /// Too many changes: the budget admits the next one `retry_after` from
     /// now.
     Changes { retry_after: Duration },
-    /// Too many record content bytes this hour: the budget holds the piece
-    /// `retry_after` from now.
-    Content { retry_after: Duration },
 }
 
 impl Limited {
@@ -37,9 +38,6 @@ impl Limited {
         match self {
             Self::Changes { retry_after } => {
                 tilo_server_protocol::refusal::Refusal::too_fast(retry_after)
-            }
-            Self::Content { retry_after } => {
-                tilo_server_protocol::refusal::Refusal::too_much_content(retry_after)
             }
         }
     }
@@ -99,32 +97,20 @@ impl Bucket {
     }
 }
 
-/// A person's buckets: guest changes, owner changes, content.
-type Buckets = (Bucket, Bucket, Bucket);
+/// A person's buckets: guest changes and owner changes.
+type Buckets = (Bucket, Bucket);
 
-/// How often a person whose content the budget refuses is told so: each
-/// refused piece would say it again, and once tells them when to try.
-const TELL_EVERY: Duration = Duration::from_secs(60);
-
-/// The change and content budgets of every person a public host saw.
+/// The change budgets of every person a public host saw.
 pub struct MemberLimits {
     changes: Rate,
     owner_changes: Rate,
-    content: Rate,
     people: Mutex<HashMap<[u8; 32], Buckets>>,
-    /// When each person was last told their content was refused.
-    told: Mutex<HashMap<[u8; 32], Instant>>,
 }
 
 impl MemberLimits {
     /// Budgets as `config` sets them, every person starting full.
     #[must_use]
     pub fn new(config: MemberLimitsConfig) -> Self {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "byte budgets are far below 2^52"
-        )]
-        let content = config.content_bytes_per_hour as f64;
         let window = f64::from(config.window_secs.max(1));
         Self {
             changes: Rate {
@@ -135,12 +121,7 @@ impl MemberLimits {
                 capacity: f64::from(config.owner_burst),
                 per_second: f64::from(config.owner_changes_per_window) / window,
             },
-            content: Rate {
-                capacity: content,
-                per_second: content / 3600.0,
-            },
             people: Mutex::default(),
-            told: Mutex::default(),
         }
     }
 
@@ -150,13 +131,11 @@ impl MemberLimits {
         now: Instant,
         f: impl FnOnce(&mut Buckets) -> R,
     ) -> R {
-        let (changes, owner, content) = (self.changes, self.owner_changes, self.content);
+        let (changes, owner) = (self.changes, self.owner_changes);
         let mut people = self.people.lock_recover();
         if people.len() >= KEPT && !people.contains_key(user) {
             // A full bucket remembers nothing a new one would not.
-            people.retain(|_, (a, b, c)| {
-                !(a.full(changes, now) && b.full(owner, now) && c.full(content, now))
-            });
+            people.retain(|_, (a, b)| !(a.full(changes, now) && b.full(owner, now)));
         }
         let full = |rate: Rate| Bucket {
             tokens: rate.capacity,
@@ -164,7 +143,7 @@ impl MemberLimits {
         };
         f(people
             .entry(*user)
-            .or_insert_with(|| (full(changes), full(owner), full(content))))
+            .or_insert_with(|| (full(changes), full(owner))))
     }
 
     /// Spend one change of `user`'s budget for their `ownership`.
@@ -183,7 +162,7 @@ impl MemberLimits {
             Ownership::Guest => self.changes,
             Ownership::Owner => self.owner_changes,
         };
-        self.with_buckets(user, now, |(guest, owner, _)| {
+        self.with_buckets(user, now, |(guest, owner)| {
             match ownership {
                 Ownership::Guest => guest,
                 Ownership::Owner => owner,
@@ -191,39 +170,6 @@ impl MemberLimits {
             .take(1.0, rate, now)
         })
         .map_err(|retry_after| Limited::Changes { retry_after })
-    }
-
-    /// Spend `bytes` of `user`'s content budget.
-    ///
-    /// # Errors
-    ///
-    /// [`Limited::Content`] when the budget does not cover them.
-    pub fn admit_content(&self, user: &[u8; 32], bytes: u64, now: Instant) -> Result<(), Limited> {
-        let rate = self.content;
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "byte budgets are far below 2^52"
-        )]
-        let amount = bytes as f64;
-        self.with_buckets(user, now, |(_, _, content)| content.take(amount, rate, now))
-            .map_err(|retry_after| Limited::Content { retry_after })
-    }
-
-    /// Whether `user` is to be told now that their content was refused: not
-    /// when they were told within the last minute.
-    pub fn tell_refused(&self, user: &[u8; 32], now: Instant) -> bool {
-        let mut told = self.told.lock_recover();
-        if told
-            .get(user)
-            .is_some_and(|at| now.saturating_duration_since(*at) < TELL_EVERY)
-        {
-            return false;
-        }
-        if told.len() >= KEPT {
-            told.retain(|_, at| now.saturating_duration_since(*at) < TELL_EVERY);
-        }
-        told.insert(*user, now);
-        true
     }
 }
 
@@ -281,24 +227,5 @@ mod tests {
             limits.admit_change(&user, Ownership::Owner, now).unwrap();
         }
         assert!(limits.admit_change(&user, Ownership::Owner, now).is_err());
-    }
-
-    #[test]
-    fn eight_mebibytes_of_content_per_hour() {
-        let limits = MemberLimits::new(MemberLimitsConfig::default());
-        let (user, start) = ([1; 32], tilo_clock::now());
-        limits.admit_content(&user, 8 * 1024 * 1024, start).unwrap();
-        // 8 MiB an hour: one more MiB after 450 s, which the refusal says.
-        assert!(matches!(
-            limits.admit_content(&user, 1024 * 1024, start),
-            Err(Limited::Content { retry_after })
-                if (retry_after.as_secs_f64() - 450.0).abs() < 1.0
-        ));
-        assert!(limits.tell_refused(&user, start));
-        assert!(!limits.tell_refused(&user, start + Duration::from_secs(59)));
-        assert!(limits.tell_refused(&user, start + Duration::from_secs(60)));
-        limits
-            .admit_content(&user, 1024 * 1024, start + Duration::from_secs(450))
-            .unwrap();
     }
 }

@@ -805,13 +805,6 @@ fn addressed(envelope: Envelope, host: [u8; 32], host_user: [u8; 32]) -> Option<
             from: from_device_public_key,
             frame,
         }),
-        Envelope::DocumentContentRefused {
-            workspace_id,
-            refusal,
-        } => Some(Event::ContentRefused {
-            ws: workspace_id,
-            refusal,
-        }),
         Envelope::RemoteActionUndeliverable {
             workspace_id,
             to_device_public_key,

@@ -100,6 +100,7 @@ impl Holds {
             workspaces,
             autobind: None,
             outbound,
+            content: Box::leak(Box::default()),
             state_outbound: None,
             connection_live: None,
             own_user_public_key: who.0,
@@ -791,6 +792,7 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
             device_public_key: peer.device_public_key,
             tx: tx.clone(),
             disconnect: session_disconnect.clone(),
+            content_waiting: Arc::default(),
         });
     }
     let wr = Arc::new(AsyncMutex::new(wr));
@@ -827,6 +829,7 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
                     device_public_key: device,
                     tx: replacement,
                     disconnect: replacement_disconnect,
+                    content_waiting: Arc::default(),
                 });
                 true
             } else {
@@ -875,6 +878,7 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
             device_public_key: peer.device_public_key,
             tx: tx.clone(),
             disconnect: session_disconnect.clone(),
+            content_waiting: Arc::default(),
         });
         wr.state_sessions
             .insert(peer.device_public_key, StateSession::for_test(peer.clone()));
@@ -1000,6 +1004,7 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         device_public_key: browser.device_public_key,
         tx: btx.clone(),
         disconnect: bdis.clone(),
+        content_waiting: Arc::default(),
     });
     // The subscribe-time need is served: one live checkpoint reached it.
     wr.mark_checkpoint_served(&browser.device_public_key, [1; 32]);
@@ -1033,6 +1038,7 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         device_public_key: native.device_public_key,
         tx: native_tx,
         disconnect: native_disconnect,
+        content_waiting: Arc::default(),
     });
     // The browser claims another admitted device's author identity.
     let forged = crate::AttributedPresence {

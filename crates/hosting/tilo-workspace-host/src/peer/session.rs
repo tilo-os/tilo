@@ -166,6 +166,7 @@ where
 
     // Outbound channel: workspaces write here what they fan out to this peer.
     let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CAPACITY);
+    let content = Arc::new(crate::content_queue::ContentQueue::default());
     let (state_tx, mut state_rx) = mpsc::channel::<StateDelivery>(PEER_OUTBOUND_CAPACITY);
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
     let stop = Arc::new(tokio::sync::Notify::new());
@@ -186,6 +187,7 @@ where
         workspaces: &workspaces,
         autobind: autobind.as_ref(),
         outbound: &tx,
+        content: &content,
         state_outbound: Some(&state_tx),
         connection_live: Some(&connection_live.0),
         own_user_public_key: &own_user_public_key,
@@ -245,7 +247,7 @@ where
             ReaderQueues::new(&tx, &state_tx, &reply_tx),
         )
         .run(cx);
-        let queues = WriterQueues::new(&mut rx, &mut state_rx, &mut reply_rx);
+        let queues = WriterQueues::new(&mut rx, &mut state_rx, &mut reply_rx, &content);
         let (end_writer, ending) = tokio::sync::watch::channel(false);
         let writing = SessionWriter::new(queues, &mut write, &presence).run(cx, ending);
         until_ended(

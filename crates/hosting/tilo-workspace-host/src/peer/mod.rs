@@ -241,6 +241,9 @@ struct SessionCtx<'a> {
     workspaces: &'a WorkspaceRegistry,
     autobind: Option<&'a WorkspaceAutobind>,
     outbound: &'a mpsc::Sender<Envelope>,
+    /// This connection's queue for content its outbound channel could not
+    /// take yet, one queue per sender ([`crate::content_queue`]).
+    content: &'a Arc<crate::content_queue::ContentQueue>,
     state_outbound: Option<&'a mpsc::Sender<StateDelivery>>,
     connection_live: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
     own_user_public_key: &'a [u8; 32],

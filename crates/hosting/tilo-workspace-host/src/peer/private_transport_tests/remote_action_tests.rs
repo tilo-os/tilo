@@ -36,6 +36,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         device_public_key: a.device_public_key,
         tx: atx.clone(),
         disconnect: disconnect.clone(),
+        content_waiting: Arc::default(),
     });
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(
         id,
@@ -52,6 +53,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         workspaces: &registry,
         autobind: None,
         outbound: &atx,
+        content: Box::leak(Box::default()),
         state_outbound: None,
         connection_live: None,
         own_user_public_key: &user.public_key,
@@ -171,6 +173,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
         device_public_key: a.device_public_key,
         tx: atx.clone(),
         disconnect: disconnect.clone(),
+        content_waiting: Arc::default(),
     });
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(
         id,
@@ -192,6 +195,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
         workspaces: &registry,
         autobind: None,
         outbound: &atx,
+        content: Box::leak(Box::default()),
         state_outbound: None,
         connection_live: None,
         own_user_public_key: &user.public_key,
@@ -383,6 +387,7 @@ async fn requests_the_server_does_not_answer_are_refused() {
         device_public_key: a.device_public_key,
         tx: atx.clone(),
         disconnect: disconnect.clone(),
+        content_waiting: Arc::default(),
     });
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(
         id,
@@ -401,6 +406,7 @@ async fn requests_the_server_does_not_answer_are_refused() {
         workspaces: &registry,
         autobind: None,
         outbound: &atx,
+        content: Box::leak(Box::default()),
         state_outbound: None,
         connection_live: None,
         own_user_public_key: &user.public_key,

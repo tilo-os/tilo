@@ -337,24 +337,6 @@ impl Workspaces {
         }
     }
 
-    /// Whether `frame`, a piece of content a member sent this host in
-    /// `workspace`, answers a request this host made: a keeper's
-    /// ([`ContentKeeper::expects`]) or its own for a surface.
-    pub(crate) fn host_expects(&self, workspace: &str, frame: &[u8]) -> bool {
-        let device = self.inner.host.cert.device_public_key;
-        self.inner
-            .content
-            .keepers()
-            .iter()
-            .any(|keeper| keeper.expects(workspace, frame))
-            || self
-                .inner
-                .content
-                .surfaces
-                .lock_recover()
-                .expects(&device, frame)
-    }
-
     /// Ask `workspace`'s members for the app surface `hash` of `app` this host
     /// lacks, unless it asked lately ([`ContentWants::ask`]): the changes held
     /// for it are decided once a member answers with it
