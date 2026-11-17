@@ -59,11 +59,12 @@ public struct ChatMessage: Sendable, Equatable, Identifiable {
     public let author: ChatMember
     public let at: Date
     public let text: String
-    /// Every field as Chat reads it: attachments, a shared window, an agent's work, a question.
+    /// Every field as Chat reads it: attachments, a shared window, an agent's work, a question,
+    /// the view it carries.
     public let fields: JSON
 
     /// What a read of a conversation asks of each message: all that a client draws.
-    static let drawn = ["channel", "author", "ts", "text", "question", "share", "attachments", "work", "parent", "stopped", "cause"]
+    static let drawn = ["channel", "author", "ts", "text", "question", "share", "attachments", "work", "parent", "stopped", "cause", "view"]
 
     public init?(id: String, fields: JSON) {
         guard let conversation = fields["channel"]?.string, let author = ChatMember(fields["author"]),
@@ -150,8 +151,24 @@ extension TiloEngine {
     public func chatConversation(_ id: String, newest count: Int = 60) async throws -> [ChatMessage]? {
         guard let resource = try await chatMessagesResource() else { return [] }
         guard found["chat.messages.narrows"] == "yes" else { return nil }
-        let page = try await read(resource, ["where": ["channel": .string(id)], "fields": .array(ChatMessage.drawn.map(JSON.string)),
-                                             "pageSize": .number(Double(min(max(count, 1), 200)))])
+        // A read refuses a field its items do not have. A page whose Chat keeps no view on a
+        // message yet is asked once with it, and from then on without.
+        let viewless = ChatMessage.drawn.filter { $0 != "view" }
+        func asked(_ fields: [String]) async throws -> JSON {
+            try await self.read(resource, ["where": ["channel": .string(id)], "fields": .array(fields.map(JSON.string)),
+                                      "pageSize": .number(Double(min(max(count, 1), 200)))])
+        }
+        let page: JSON
+        if found["chat.messages.view"] == "no" {
+            page = try await asked(viewless)
+        } else {
+            do {
+                page = try await asked(ChatMessage.drawn)
+            } catch TiloEngine.Problem.refused {
+                page = try await asked(viewless)
+                found["chat.messages.view"] = "no"
+            }
+        }
         let read = (page["messages"]?.array ?? []).compactMap { row in
             row["item"]?.string.flatMap { ChatMessage(id: $0, fields: row) }
         }

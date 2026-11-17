@@ -372,11 +372,19 @@ final class TiloSourceTests: XCTestCase {
         guard case .message(let mine) = first[0].content, case .message(let theirs) = first[1].content else { return XCTFail("no messages") }
         XCTAssertEqual(mine.author, .person)
         XCTAssertEqual(theirs.author, .assistant)
-        // A message posted elsewhere arrives at the page's word, as an addition.
-        try await run("post({id: 'm4', channel: 'c_chat', author: 'agent-1', text: 'One more thing'})")
+        // A message posted elsewhere arrives at the page's word, as an addition. This one carries a view.
+        try await run("post({id: 'm4', channel: 'c_chat', author: 'agent-1', text: 'One more thing', view: {source: 'view areas() { for a in tasks.tracker.areas { text(a.name) } }', reads: ['tasks'], version: 1, at: 5, earlier: []}})")
         try await until("the new piece is told") { self.held.count == 3 }
         guard case .added(let added) = changes.last else { return XCTFail("a new piece was not told as added") }
         XCTAssertEqual(added.map(words), ["One more thing"])
+        // The view stands in its message as a live thing named by the message and its conversation,
+        // sized by what Tilo's page says of it. The view's text is nowhere in what the app keeps of it.
+        guard case .message(let carrying) = added.first?.content else { return XCTFail("the new piece is no message") }
+        XCTAssertEqual(carrying.live.map(\.reference), ["view:m4:c_chat"])
+        XCTAssertEqual(carrying.live.map(\.title), ["Tasks"])
+        XCTAssertEqual(carrying.live.map(\.sizesItself), [true])
+        XCTAssertEqual(carrying.live.first?.reference.contains("tracker"), false)
+        XCTAssertTrue(mine.live.isEmpty)
         // The app keeps where it was paired into, to come back as itself.
         XCTAssertEqual(defaults.string(forKey: "TiloLiveRoute"), "/w/ws-1")
     }

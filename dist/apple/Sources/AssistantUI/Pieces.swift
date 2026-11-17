@@ -493,7 +493,7 @@ struct LiveThingPlace: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 360)
+        .frame(height: thing.sizesItself && draw != nil ? nil : 360)
         .clipShape(RoundedRectangle(cornerRadius: Measure.cardRadius))
         .overlay { RoundedRectangle(cornerRadius: Measure.cardRadius).strokeBorder(Token.line, lineWidth: 1) }
         .accessibilityLabel(thing.title)

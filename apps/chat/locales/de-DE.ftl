@@ -419,6 +419,7 @@ chat-effects-open-category = Kategorie öffnen
 chat-effects-toggle-category = Kategorie ein- oder ausklappen
 chat-effects-reveal-message = Beitrag anzeigen
 chat-effects-reveal-message-range = Beiträge anzeigen
+chat-effects-show-view = Ansicht anzeigen
 chat-effects-open-agent = Unterhaltung mit Agent öffnen
 chat-effects-open-direct-conversation = Direkte Unterhaltung öffnen
 chat-effects-send-direct-message = Direktnachricht senden
@@ -480,6 +481,17 @@ chat-cause-event = Ereignis: { $label }
 chat-cause-news = Neuigkeit: { $label }
 chat-view-attached = Eine Ansicht ist angehängt
 chat-view-attached-of = Eine Ansicht von { $apps } ist angehängt
+chat-view-alone = Ansicht
+chat-view-waiting = Dieser Beitrag ist noch nicht auf diesem Gerät
+chat-view-gone = Dieser Beitrag hat keine Ansicht
+chat-view-arriving = Ansicht wird geladen
+chat-view-unavailable = Eine Ansicht kann hier nicht gezeigt werden
+chat-view-refused = Du darfst { $apps } hier nicht lesen, die Ansicht zeigt nichts davon
+chat-view-unread = { $apps } konnte hier nicht gelesen werden
+chat-view-asks = { $who } hat diese Ansicht geschrieben. Sie möchte das in { $app } tun
+chat-view-asks-given = { $name }: { $value }
+chat-view-allow = Einmal erlauben
+chat-view-dismiss = Verwerfen
 # The question a message asks one person: what an action that asks first would
 # do, its answers, and how it stands once it no longer waits.
 chat-question-on = Bei „{ $resource }“

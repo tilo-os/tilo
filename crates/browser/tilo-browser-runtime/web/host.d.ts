@@ -36,6 +36,11 @@ export interface RuntimeStatus {
   desktopErrors?: string[];
   /** A desktop mount's active workspace, as its top bar names it. */
   workspaceName?: string | null;
+  /**
+   * The size what a mount of one app asks for, in CSS pixels, where its app
+   * says one (a message's view shown alone); whoever holds the mount gives it that much.
+   */
+  content?: {width: number; height: number} | null;
   document?: unknown;
   heads?: string[];
   [diagnostic: string]: unknown;

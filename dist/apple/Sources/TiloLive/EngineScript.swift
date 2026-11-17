@@ -242,6 +242,36 @@ public enum EngineScript {
         for (const [name, live] of lives) live.element.style.display = name === id ? 'block' : 'none';
       };
       const live = id => (id ? lives.get(id)?.mount : mount);
+      // The size a live thing's content asks for, as its mount's status says it (`content`):
+      // handed on when it is first known and when it changes. The app gives its place that
+      // height.
+      const sizes = new Map();
+      const sized = (id, status) => {
+        const asks = status?.content;
+        if (!asks || !Number.isFinite(asks.width) || !Number.isFinite(asks.height)) return;
+        const now = `${Math.ceil(asks.width)}x${Math.ceil(asks.height)}`;
+        if (sizes.get(id) === now) return;
+        sizes.set(id, now);
+        post({kind: 'live', id, width: Math.ceil(asks.width), height: Math.ceil(asks.height)});
+      };
+      // Chat shows the view one message carries, alone: the view `view` of the message's own
+      // item, opened by the action the item offers for it. The message is named and never its
+      // view's text, so whose code the view is and what it reads stays Chat's to say.
+      const alone = async (shown, view) => {
+        const message = String(view?.message ?? '');
+        if (!/^[A-Za-z0-9._:-]{1,128}$/.test(message)) throw new Error('unknown_action: no such message');
+        const item = `/messages/${message}`;
+        for (let tries = 0; ; tries++) {
+          let listed = [];
+          try { listed = shown.actions() ?? []; } catch { /* the mount is still coming in */ }
+          const open = listed.find(action => action.view?.id === 'view' && action.view.open_action === action.address?.action
+            && String(action.address?.resource ?? '').endsWith(item));
+          if (open) { await shown.invokeAction(open.address.resource, open.address.action, {}, {confirm: false}); return; }
+          // A message further back is offered once it is addressed.
+          if (tries >= 12) { await shown.invokeAction(`chat.workspace${item}`, 'show-view', {}, {confirm: false}); return; }
+          await new Promise(done => setTimeout(done, 250));
+        }
+      };
 
       // The device's own entry. A page that knows a native app may hold it hands this over once
       // it is in (web/native-host.mjs): its asks of the workspace's host as the person on this
@@ -361,7 +391,8 @@ public enum EngineScript {
             return answer;
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
-        // Mount `what` (`{app, record}`, or `{app, newDocument: true}`) as the live thing `id`
+        // Mount `what` (`{app, record}`, `{app, newDocument: true}`, or Chat with the `view` of
+        // one message, `{app, view: {message, conversation}}`) as the live thing `id`
         // and bring it to the front. One that is mounted already only comes to the front.
         async show(id, what) {
           if (!mount) return JSON.stringify({error: {code: 'not-open', reason: 'The page is not in'}});
@@ -369,8 +400,20 @@ public enum EngineScript {
             if (!lives.has(id)) {
               const element = place(id);
               element.style.display = 'block';
-              try { lives.set(id, {element, mount: await beside(element, {...what, instance: instance++})}); }
-              catch (error) { element.remove(); throw error; }
+              // A message's view stands in Chat's own document of the workspace: Chat is mounted
+              // as the page itself opens it, with no document named.
+              const {view, ...rest} = what;
+              let made;
+              try {
+                made = await beside(element, {...rest, instance: instance++, onStatus: status => sized(id, status)});
+                if (view) await alone(made, view);
+                lives.set(id, {element, mount: made});
+              } catch (error) {
+                element.remove();
+                sizes.delete(id);
+                await made?.cleanup?.().catch(() => {});
+                throw error;
+              }
             }
             front(id);
             const shown = lives.get(id).mount;
@@ -384,6 +427,7 @@ public enum EngineScript {
           const gone = lives.get(id);
           if (!gone) return false;
           lives.delete(id);
+          sizes.delete(id);
           gone.element.remove();
           await gone.mount.cleanup?.().catch(() => {});
           return true;

@@ -119,6 +119,8 @@ enum Screens {
                     .background(Token.content)
             }))
         }
+        // A message's view in its place, at the height the view asked for.
+        screens.append(await ViewPiece.screen(scheme))
         let typing = await model(piece([])) { $0.drafts[.main] = Draft(text: Drawing.typed) }
         screens.append(Screen(name: "piece-field", size: CGSize(width: 429, height: 170), view: rooted(typing, scheme) {
             VStack { Spacer(minLength: 0); Composer(chat: .main) }.background(Token.content)
