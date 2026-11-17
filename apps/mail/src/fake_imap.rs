@@ -4,9 +4,10 @@
 //! LOGIN, CAPABILITY, LIST with special-use marks (RFC 6154), SELECT with
 //! UIDVALIDITY and UIDNEXT, FETCH by position and by UID (`n:*` included),
 //! UID SEARCH (TEXT, HEADER, FLAGGED, ALL), UID STORE, UID MOVE, UID
-//! EXPUNGE, APPEND (a literal, with flags), NOOP and IDLE, over TLS with a throwaway certificate. A test
-//! changes the mailbox as another client would (new mail, a flag) and the
-//! server tells an idling connection, as a real one does.
+//! EXPUNGE, APPEND (a literal, with flags), CREATE, NOOP and IDLE, over TLS with a throwaway
+//! certificate: from the first byte, or on a port that starts in the clear and upgrades with
+//! STARTTLS before it lets anyone sign in. A test changes the mailbox as another client would
+//! (new mail, a flag) and the server tells an idling connection, as a real one does.
 
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,11 @@ use tokio::net::TcpListener;
 pub enum Layout {
     Gmail,
     Outlook,
+    /// A plain server, as Dovecot serves a new account with its stock
+    /// configuration: only the inbox exists, a folder carries its special-use
+    /// mark once a client creates it under the name the server knows, the
+    /// hierarchy separator is a dot, and nothing files a sent message.
+    Plain,
 }
 
 impl Layout {
@@ -39,6 +45,39 @@ impl Layout {
                 ("Junk Email", &[]),
                 ("Deleted Items", &[]),
             ],
+            Self::Plain => {
+                let inbox: (&'static str, &'static [&'static str]) = ("INBOX", &[]);
+                vec![inbox]
+            }
+        }
+    }
+
+    /// The special-use marks a folder created as `name` carries.
+    fn uses_of(self, name: &str) -> &'static [&'static str] {
+        match (self, name) {
+            (Self::Plain, "Drafts") => &["\\Drafts"],
+            (Self::Plain, "Sent" | "Sent Messages") => &["\\Sent"],
+            (Self::Plain, "Junk") => &["\\Junk"],
+            (Self::Plain, "Trash") => &["\\Trash"],
+            _ => &[],
+        }
+    }
+
+    const fn separator(self) -> char {
+        match self {
+            Self::Gmail | Self::Outlook => '/',
+            Self::Plain => '.',
+        }
+    }
+
+    /// What the server says it can do once a connection is secure. Gmail
+    /// names itself, which is how a client knows that it files a sent
+    /// message on its own.
+    const fn capabilities(self) -> &'static str {
+        match self {
+            Self::Gmail => "IMAP4rev1 IDLE MOVE UIDPLUS SPECIAL-USE X-GM-EXT-1",
+            Self::Outlook => "IMAP4rev1 IDLE MOVE UIDPLUS SPECIAL-USE",
+            Self::Plain => "IMAP4rev1 ID ENABLE IDLE MOVE UIDPLUS SPECIAL-USE",
         }
     }
 }
@@ -75,13 +114,28 @@ impl State {
 #[derive(Clone)]
 pub struct FakeImap {
     pub port: u16,
+    layout: Layout,
     state: Arc<Mutex<State>>,
     changed: Arc<tokio::sync::watch::Sender<usize>>,
     idling: Arc<std::sync::atomic::AtomicUsize>,
+    logins: Arc<std::sync::atomic::AtomicUsize>,
+    cleartext_logins: Arc<std::sync::atomic::AtomicUsize>,
+    refuses_appends: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl FakeImap {
     pub async fn start(layout: Layout, tls: Arc<rustls::ServerConfig>) -> Self {
+        Self::listen(layout, tls, false).await
+    }
+
+    /// A server on a port that starts in the clear, as IMAP's port 143
+    /// does: it offers STARTTLS, lets nobody sign in before the upgrade, and
+    /// after it is the same server.
+    pub async fn start_starttls(layout: Layout, tls: Arc<rustls::ServerConfig>) -> Self {
+        Self::listen(layout, tls, true).await
+    }
+
+    async fn listen(layout: Layout, tls: Arc<rustls::ServerConfig>, upgrades: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let state = Arc::new(Mutex::new(State {
@@ -100,9 +154,13 @@ impl FakeImap {
         }));
         let server = Self {
             port,
+            layout,
             state,
             changed: Arc::new(tokio::sync::watch::Sender::new(0)),
             idling: Arc::default(),
+            logins: Arc::default(),
+            cleartext_logins: Arc::default(),
+            refuses_appends: Arc::default(),
         };
         let serving = server.clone();
         tokio::spawn(async move {
@@ -110,14 +168,75 @@ impl FakeImap {
                 let tls = Arc::clone(&tls);
                 let connection = serving.clone();
                 tokio::spawn(async move {
+                    let tcp = if upgrades {
+                        let Some(tcp) = connection.clear_until_starttls(tcp).await else {
+                            return;
+                        };
+                        tcp
+                    } else {
+                        tcp
+                    };
                     let Ok(stream) = tokio_rustls::TlsAcceptor::from(tls).accept(tcp).await else {
                         return;
                     };
-                    connection.serve(stream).await;
+                    // A connection that upgraded was greeted in the clear.
+                    connection.serve(stream, !upgrades).await;
                 });
             }
         });
         server
+    }
+
+    /// The cleartext start of a connection, until its client asks for the
+    /// upgrade: what a server on port 143 answers before it is secure.
+    async fn clear_until_starttls(
+        &self,
+        tcp: tokio::net::TcpStream,
+    ) -> Option<tokio::net::TcpStream> {
+        let mut plain = BufReader::new(tcp);
+        plain
+            .write_all(b"* OK [CAPABILITY IMAP4rev1 STARTTLS LOGINDISABLED] ready\r\n")
+            .await
+            .ok()?;
+        plain.flush().await.ok()?;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if plain.read_line(&mut line).await.ok()? == 0 {
+                return None;
+            }
+            let text = line.trim_end();
+            let (tag, command) = text.split_once(' ').unwrap_or((text, ""));
+            let upper = command.to_ascii_uppercase();
+            let reply = if upper.starts_with("STARTTLS") {
+                plain
+                    .write_all(format!("{tag} OK begin TLS negotiation now\r\n").as_bytes())
+                    .await
+                    .ok()?;
+                plain.flush().await.ok()?;
+                // The client waits for this answer before its ClientHello,
+                // so nothing of the handshake is buffered here.
+                return Some(plain.into_inner());
+            } else if upper.starts_with("CAPABILITY") {
+                format!("* CAPABILITY IMAP4rev1 STARTTLS LOGINDISABLED\r\n{tag} OK\r\n")
+            } else if upper.starts_with("LOGIN") || upper.starts_with("AUTHENTICATE") {
+                self.cleartext_logins
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                format!("{tag} NO [PRIVACYREQUIRED] sign-in needs a secure connection\r\n")
+            } else if upper.starts_with("LOGOUT") {
+                let _ = plain
+                    .write_all(format!("* BYE\r\n{tag} OK LOGOUT\r\n").as_bytes())
+                    .await;
+                let _ = plain.flush().await;
+                return None;
+            } else if upper.starts_with("NOOP") {
+                format!("{tag} OK done\r\n")
+            } else {
+                format!("{tag} BAD not before STARTTLS\r\n")
+            };
+            plain.write_all(reply.as_bytes()).await.ok()?;
+            plain.flush().await.ok()?;
+        }
     }
 
     fn announce(&self) {
@@ -161,6 +280,36 @@ impl FakeImap {
         self.idling.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// How many times anyone signed in, over every connection.
+    pub fn logins(&self) -> usize {
+        self.logins.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// How many sign-ins were tried before their connection was secure. A
+    /// client that keeps a secret safe never tries one.
+    pub fn cleartext_logins(&self) -> usize {
+        self.cleartext_logins
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// From now on the server takes no message a client appends, as one
+    /// whose account is over its quota.
+    pub fn refuse_appends(&self) {
+        self.refuses_appends
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The names of the folders the server holds, in the order they came to be.
+    pub fn folders(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .boxes
+            .iter()
+            .map(|mailbox| mailbox.name.clone())
+            .collect()
+    }
+
     pub fn messages(&self, folder: &str) -> Vec<Stored> {
         self.state
             .lock()
@@ -170,7 +319,7 @@ impl FakeImap {
             .unwrap_or_default()
     }
 
-    async fn serve<S>(&self, stream: S)
+    async fn serve<S>(&self, stream: S, greet: bool)
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
@@ -178,11 +327,8 @@ impl FakeImap {
         let mut reader = BufReader::new(read);
         let mut selected: Option<String> = None;
         let mut news = self.changed.subscribe();
-        if write
-            .write_all(b"* OK [CAPABILITY IMAP4rev1 IDLE MOVE UIDPLUS SPECIAL-USE] ready\r\n")
-            .await
-            .is_err()
-        {
+        let greeting = format!("* OK [CAPABILITY {}] ready\r\n", self.layout.capabilities());
+        if greet && write.write_all(greeting.as_bytes()).await.is_err() {
             return;
         }
         let mut line = String::new();
@@ -196,10 +342,21 @@ impl FakeImap {
             let (tag, command) = text.split_once(' ').unwrap_or((&text, ""));
             let upper = command.to_ascii_uppercase();
             let reply = if upper.starts_with("APPEND ") {
-                match receive_literal(&mut reader, &mut write, command).await {
-                    Ok(raw) => self.appended(tag, command, raw),
-                    Err(Some(refused)) => format!("{tag} {refused}\r\n"),
-                    Err(None) => return,
+                if self
+                    .refuses_appends
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    format!("{tag} NO quota exceeded\r\n")
+                } else if self.holds(&append_target(command).0) {
+                    match receive_literal(&mut reader, &mut write, command).await {
+                        Ok(raw) => self.appended(tag, command, raw),
+                        Err(Some(refused)) => format!("{tag} {refused}\r\n"),
+                        Err(None) => return,
+                    }
+                } else {
+                    // A server refuses a folder it does not hold before it
+                    // takes the message, and says a client may create it.
+                    format!("{tag} NO [TRYCREATE] no such mailbox\r\n")
                 }
             } else if upper.starts_with("LOGOUT") {
                 let _ = write
@@ -256,19 +413,13 @@ impl FakeImap {
         }
     }
 
+    /// Whether the server holds a folder called `name`.
+    fn holds(&self, name: &str) -> bool {
+        self.state.lock().unwrap().find(name).is_some()
+    }
+
     fn appended(&self, tag: &str, command: &str, raw: Vec<u8>) -> String {
-        let head = command.rsplit_once('{').map_or(command, |(head, _)| head);
-        let rest = head.trim_start()["APPEND ".len()..].trim();
-        let (name, flags) = if let Some(quoted) = rest.strip_prefix('"') {
-            let end = quoted.find('"').unwrap_or(quoted.len());
-            (
-                quoted[..end].to_owned(),
-                quoted[end..].trim_start_matches('"'),
-            )
-        } else {
-            let (name, flags) = rest.split_once(' ').unwrap_or((rest, ""));
-            (name.to_owned(), flags)
-        };
+        let (name, flags) = append_target(command);
         let flags: Vec<String> = flags
             .trim()
             .trim_start_matches('(')
@@ -302,11 +453,19 @@ impl FakeImap {
         selected: &mut Option<String>,
     ) -> String {
         let mut state = self.state.lock().unwrap();
-        if upper.starts_with("LOGIN") || upper.starts_with("NOOP") {
+        if upper.starts_with("LOGIN") {
+            self.logins
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return format!("{tag} OK done\r\n");
+        }
+        if upper.starts_with("NOOP") {
             return format!("{tag} OK done\r\n");
         }
         if upper.starts_with("CAPABILITY") {
-            return format!("* CAPABILITY IMAP4rev1 IDLE MOVE UIDPLUS SPECIAL-USE\r\n{tag} OK\r\n");
+            return format!(
+                "* CAPABILITY {}\r\n{tag} OK\r\n",
+                self.layout.capabilities()
+            );
         }
         if upper.starts_with("LIST") {
             let mut out = String::new();
@@ -315,12 +474,29 @@ impl FakeImap {
                 attributes.extend(mailbox.uses.iter().copied());
                 let _ = write!(
                     out,
-                    "* LIST ({}) \"/\" \"{}\"\r\n",
+                    "* LIST ({}) \"{}\" \"{}\"\r\n",
                     attributes.join(" "),
+                    self.layout.separator(),
                     mailbox.name
                 );
             }
             return format!("{out}{tag} OK LIST\r\n");
+        }
+        if upper.starts_with("CREATE ") {
+            let name = unquote(command.split_once(' ').map_or("", |(_, rest)| rest));
+            if state.find(&name).is_some() {
+                return format!("{tag} NO mailbox already exists\r\n");
+            }
+            let validity = 100 + u32::try_from(state.boxes.len()).unwrap();
+            let uses = self.layout.uses_of(&name).to_vec();
+            state.boxes.push(Box_ {
+                name,
+                uses,
+                validity,
+                next_uid: 1,
+                messages: Vec::new(),
+            });
+            return format!("{tag} OK CREATE\r\n");
         }
         if upper.starts_with("SELECT") || upper.starts_with("EXAMINE") {
             let name = unquote(command.split_once(' ').map_or("", |(_, rest)| rest));
@@ -437,6 +613,23 @@ impl FakeImap {
             return format!("{tag} OK EXPUNGE\r\n");
         }
         format!("{tag} BAD unknown command\r\n")
+    }
+}
+
+/// The folder an `APPEND` names and the flags it gives, from its command
+/// line.
+fn append_target(command: &str) -> (String, &str) {
+    let head = command.rsplit_once('{').map_or(command, |(head, _)| head);
+    let rest = head.trim_start()["APPEND ".len()..].trim();
+    if let Some(quoted) = rest.strip_prefix('"') {
+        let end = quoted.find('"').unwrap_or(quoted.len());
+        (
+            quoted[..end].to_owned(),
+            quoted[end..].trim_start_matches('"'),
+        )
+    } else {
+        let (name, flags) = rest.split_once(' ').unwrap_or((rest, ""));
+        (name.to_owned(), flags)
     }
 }
 

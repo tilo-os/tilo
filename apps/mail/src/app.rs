@@ -2632,6 +2632,10 @@ impl MailApp {
             {
                 self.apply_sent_message(doc, st, request_id);
             }
+            // The message left all the same: only its copy is missing.
+            EngineEvent::Unfiled { reason, .. } => {
+                st.status = Some(crate::notice::unfiled_notice(reason));
+            }
             EngineEvent::Found {
                 request_id,
                 account_id,

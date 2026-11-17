@@ -14,9 +14,8 @@ use std::time::Duration;
 
 use tilo_actions::remote::person_accounts::{
     FetchMail, FetchedMail, FetchedMessage, MailAddress, MailAttachment, MailFlag, MarkMail,
-    SendMail,
+    SendMail, SentMail,
 };
-use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 /// The messages one read answers at most, newest first.
@@ -27,7 +26,7 @@ const CATCH_UP_LIMIT: u32 = 200;
 /// How long one session step may take.
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(20);
 
-type ImapSession = async_imap::Session<tokio_rustls::client::TlsStream<TcpStream>>;
+type ImapSession = async_imap::Session<tilo_account_probe::imap::SecureStream>;
 
 /// What a host does with the accounts it keeps.
 pub trait MailSession: Send + Sync {
@@ -44,10 +43,13 @@ pub trait MailSession: Send + Sync {
     ) -> Result<FetchedMail, String>;
 
     /// Hand `sending` to its server, with the `files` it carries and the
-    /// calendar `invitation` it brings.
+    /// calendar `invitation` it brings, and keep a copy in the account's
+    /// Sent folder unless its server files what it sends.
     ///
     /// # Errors
     /// The server could not be reached, refused the sign-in or the message.
+    /// A copy that could not be filed is no error: the message left, and
+    /// the answer says why its folder holds none.
     fn send(
         &self,
         account: &accounts::Account,
@@ -55,7 +57,7 @@ pub trait MailSession: Send + Sync {
         sending: &SendMail,
         files: &[Attachment],
         invitation: Option<&str>,
-    ) -> Result<(), String>;
+    ) -> Result<SentMail, String>;
 
     /// Tell `marking`'s server what changed about one message.
     ///
@@ -124,15 +126,22 @@ impl MailSession for LiveMailSession {
         sending: &SendMail,
         files: &[Attachment],
         invitation: Option<&str>,
-    ) -> Result<(), String> {
-        Self::block(send_message(
-            account,
-            secret,
-            sending,
-            files,
-            invitation,
-            &self.smtp_trust,
-        ))
+    ) -> Result<SentMail, String> {
+        Self::block(async {
+            let mime = write_mime(sending, files, invitation)?;
+            send_message(account, secret, sending, &mime, &self.smtp_trust).await?;
+            // The message left. Its copy is told apart from that: a server
+            // that will not take one does not unsend the message.
+            let unfiled = match self.login(account, secret).await {
+                Ok(mut session) => {
+                    let outcome = file_sent(&mut session, account, &mime).await;
+                    let _ = timeout(NETWORK_TIMEOUT, session.logout()).await;
+                    outcome.err()
+                }
+                Err(reason) => Some(reason),
+            };
+            Ok(SentMail { unfiled })
+        })
     }
 
     fn mark(
@@ -181,17 +190,12 @@ impl LiveMailSession {
                     .map_err(|_| "could not initialize secure protocol versions".to_string())?,
             ),
         };
-        let server_name = rustls::pki_types::ServerName::try_from(host.clone())
-            .map_err(|_| "invalid IMAP server name".to_string())?;
-        let tcp = connect(&host, port).await?;
-        let tls = timeout(
-            NETWORK_TIMEOUT,
-            tokio_rustls::TlsConnector::from(config).connect(server_name, tcp),
-        )
-        .await
-        .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
-        .map_err(|error| format!("could not establish the secure IMAP connection: {error}"))?;
-        let client = async_imap::Client::new(tls);
+        // The connection is secured as the sign-in probe secured it when the
+        // account was added: TLS from the first byte, or upgraded with
+        // STARTTLS before the sign-in is sent.
+        let security = accounts::email::imap_security_of(&account.config);
+        let client =
+            tilo_account_probe::imap::open(&host, port, security, config, NETWORK_TIMEOUT).await?;
         timeout(NETWORK_TIMEOUT, client.login(user, password))
             .await
             .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
@@ -229,32 +233,6 @@ fn login_name(value: &str) -> Result<&str, String> {
     Ok(value)
 }
 
-async fn connect(host: &str, port: u16) -> Result<TcpStream, String> {
-    let addresses: Vec<_> = timeout(NETWORK_TIMEOUT, tokio::net::lookup_host((host, port)))
-        .await
-        .map_err(|_| "server name resolution timed out".to_string())?
-        .map_err(|_| "server name could not be resolved".to_string())?
-        .collect();
-    let Some(deadline) = web_time::Instant::now().checked_add(NETWORK_TIMEOUT) else {
-        return Err("no time left to reach the server".into());
-    };
-    let mut last_error = None;
-    for address in addresses {
-        let Some(remaining) = deadline.checked_duration_since(web_time::Instant::now()) else {
-            break;
-        };
-        match timeout(remaining, TcpStream::connect(address)).await {
-            Ok(Ok(stream)) => return Ok(stream),
-            Ok(Err(error)) => last_error = Some(error.to_string()),
-            Err(_) => last_error = Some("connection timed out".into()),
-        }
-    }
-    Err(format!(
-        "could not reach {host}:{port}: {}",
-        last_error.unwrap_or_else(|| "connection timed out".into())
-    ))
-}
-
 /// Where one of the app's folders lives on this account's server: its
 /// special-use mark first, then the names the common servers give it.
 fn folder_name(listing: &[(String, Vec<String>)], folder: &str) -> Option<String> {
@@ -272,8 +250,15 @@ fn folder_name(listing: &[(String, Vec<String>)], folder: &str) -> Option<String
     };
     match folder {
         "inbox" | "starred" => Some("INBOX".to_owned()),
-        "sent" => use_of("Sent")
-            .or_else(|| named(&["Sent", "Sent Items", "Sent Mail", "[Gmail]/Sent Mail"])),
+        "sent" => use_of("Sent").or_else(|| {
+            named(&[
+                "Sent",
+                "Sent Items",
+                "Sent Messages",
+                "Sent Mail",
+                "[Gmail]/Sent Mail",
+            ])
+        }),
         "drafts" => use_of("Drafts").or_else(|| named(&["Drafts", "Drafts", "[Gmail]/Drafts"])),
         "archive" => {
             use_of("Archive").or_else(|| named(&["Archive", "All Mail", "[Gmail]/All Mail"]))
@@ -660,13 +645,69 @@ async fn mark_message(
     Ok(())
 }
 
-/// Write `sending` as mail and hand it to the account's server.
+/// The name a Sent folder is made under on a server that holds none.
+const SENT: &str = "Sent";
+
+/// Keep a copy of a message that left in the account's Sent folder, read,
+/// as its writer has read it. A server that files what it sends is left to
+/// it, and a folder that already holds the message is not given it twice.
+async fn file_sent(
+    session: &mut ImapSession,
+    account: &accounts::Account,
+    mime: &[u8],
+) -> Result<(), String> {
+    let gmail = session
+        .capabilities()
+        .await
+        .map_err(|e| e.to_string())?
+        .has_str(accounts::email::GMAIL_CAPABILITY);
+    let host = |name: &str| field(account, name).unwrap_or_default();
+    if accounts::email::servers_file_sent(&host("imap_host"), &host("smtp_host"), gmail) {
+        return Ok(());
+    }
+    let listing = list_folders(session).await?;
+    let folder = if let Some(folder) = folder_name(&listing, "sent") {
+        if let Some(held) = message_id_search(mime) {
+            session.select(&folder).await.map_err(|e| e.to_string())?;
+            let found = session.uid_search(held).await.map_err(|e| e.to_string())?;
+            if !found.is_empty() {
+                return Ok(());
+            }
+        }
+        folder
+    } else {
+        // A plain server holds no Sent folder until a mail program makes one.
+        session
+            .create(SENT)
+            .await
+            .map_err(|e| format!("the server keeps no Sent folder and would not make one: {e}"))?;
+        SENT.to_owned()
+    };
+    session
+        .append(&folder, Some("(\\Seen)"), None, mime)
+        .await
+        .map_err(|e| format!("{folder} would not take the copy: {e}"))
+}
+
+/// The search that finds a message by the `Message-ID` its `mime` carries,
+/// when it carries one a server can be asked for.
+fn message_id_search(mime: &[u8]) -> Option<String> {
+    let parsed = mail_parser::MessageParser::default().parse(mime)?;
+    let id = parsed.message_id()?;
+    let askable = !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_graphic() && c != '"' && c != '\\');
+    askable.then(|| format!("HEADER MESSAGE-ID \"{id}\""))
+}
+
+/// Hand the message `mime` holds, written from `sending`, to the account's
+/// server.
 async fn send_message(
     account: &accounts::Account,
     secret: &accounts::Secret,
     sending: &SendMail,
-    files: &[Attachment],
-    invitation: Option<&str>,
+    mime: &[u8],
     trust: &[rustls::pki_types::CertificateDer<'static>],
 ) -> Result<(), String> {
     use lettre::AsyncTransport as _;
@@ -684,7 +725,6 @@ async fn send_message(
     if secret.password.is_empty() {
         return Err("account has no saved password".into());
     }
-    let mime = write_mime(sending, files, invitation)?;
     let envelope = envelope(sending)?;
     let mut builder = TlsParameters::builder(host.clone());
     for certificate in trust {
@@ -707,7 +747,7 @@ async fn send_message(
         .authentication(vec![Mechanism::Login, Mechanism::Plain])
         .timeout(Some(NETWORK_TIMEOUT))
         .build();
-    timeout(NETWORK_TIMEOUT, transport.send_raw(&envelope, &mime))
+    timeout(NETWORK_TIMEOUT, transport.send_raw(&envelope, mime))
         .await
         .map_err(|_| "SMTP server did not answer before the timeout".to_string())?
         .map(|_| ())

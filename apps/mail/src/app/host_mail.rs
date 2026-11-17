@@ -16,7 +16,8 @@ use ui::tilo_actions::remote::{
     InvokeArgument, person_accounts,
     person_accounts::{
         BeginSend, FetchMail, FetchedMail, MAX_SEND_PIECE_BYTES, MailAccount, MailAccounts,
-        MarkMail, PieceKept, SendFile as WireFile, SendId, SendMail, SendPiece, StartedSend,
+        MarkMail, PieceKept, SendFile as WireFile, SendId, SendMail, SendPiece, SentMail,
+        StartedSend,
     },
 };
 use ui::{Arrival, InvocationCall, RemoteActions};
@@ -450,11 +451,21 @@ impl HostMail {
                     format!("the host's answer was not a piece: {error}"),
                 ),
             },
-            (Staging::Sending { .. }, Ok(_)) => {
+            (Staging::Sending { .. }, Ok(value)) => {
                 let _ = self.events.send(EngineEvent::Sent {
                     request_id,
                     wire_bytes: 0,
                 });
+                // A host that says nothing of the copy filed it, or its
+                // server files what it sends.
+                let unfiled = serde_json::from_value::<SentMail>(value)
+                    .ok()
+                    .and_then(|sent| sent.unfiled);
+                if let Some(reason) = unfiled {
+                    let _ = self
+                        .events
+                        .send(EngineEvent::Unfiled { request_id, reason });
+                }
             }
             (_, Err(reason)) => self.fail_send(request_id, reason),
         }
