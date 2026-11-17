@@ -26,6 +26,11 @@ words = ["*"]
 paths = ["crates/collab/threshold-identity/src/bip39.rs"]
 
 [[allow]]
+reason = "The name a commit's column has inside a repository document kept before the column had its name: read, never written."
+words = ["lane"]
+paths = ["apps/git-client/src/model.rs", "apps/git-client/src/resource.rs"]
+
+[[allow]]
 reason = "A Wayland or logind seat: a set of input devices and the session on them."
 words = ["seat"]
 identifiers = ["wl_seat", "WlSeat", "seat0", "XDG_SEAT", "libseat", "LibSeat", "zwp_input_method_v2", "ext_data_control_v1"]

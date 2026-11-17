@@ -170,6 +170,8 @@ pub struct Commit {
     pub time: i64,
     pub parents: Vec<String>,
     pub refs: Vec<RefLabel>,
+    /// A repository document kept before this had today's name still reads.
+    #[serde(alias = "lane")]
     pub column: usize,
     pub files: Vec<FileChange>,
 }

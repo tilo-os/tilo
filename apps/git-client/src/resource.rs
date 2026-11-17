@@ -199,6 +199,40 @@ mod tests {
     use ui::framework::testing::TestApp;
     use ui::tilo_resource::Replica;
 
+    /// What a repository document held before a commit's column had today's name still
+    /// decodes, with the column it held, and is written under today's name.
+    #[test]
+    fn a_view_kept_before_a_commits_column_had_its_name_still_decodes() {
+        let commit = |id: &str, column: usize| crate::model::Commit {
+            id: id.into(),
+            summary: "Tidy the harbour plan".into(),
+            body: String::new(),
+            author_name: "Jane Doe".into(),
+            author_email: "jane@example.com".into(),
+            when: "2 days ago".into(),
+            time: 1_700_000_000,
+            parents: Vec::new(),
+            refs: Vec::new(),
+            column,
+            files: Vec::new(),
+        };
+        let shared = SharedRepo {
+            commits: vec![commit("a1", 0), commit("b2", 2)],
+            ..SharedRepo::default()
+        };
+        let mut kept = serde_json::to_value(&shared).unwrap();
+        for commit in kept["commits"].as_array_mut().unwrap() {
+            let fields = commit.as_object_mut().unwrap();
+            let column = fields.remove("column").unwrap();
+            fields.insert("lane".into(), column);
+        }
+        let read: SharedRepo = serde_json::from_value(kept).unwrap();
+        assert_eq!(read, shared);
+        let written = serde_json::to_value(&read).unwrap();
+        assert!(written["commits"][1].get("lane").is_none());
+        assert_eq!(written["commits"][1]["column"], 2);
+    }
+
     /// A repository with one commit and one untracked file, in a directory
     /// named `name`.
     fn scratch_repository(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
