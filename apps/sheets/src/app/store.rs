@@ -120,6 +120,9 @@ impl Store {
                 self.import_xlsx_content(&content, title, cx)
             }
             E::ExportXlsxContent => self.export_xlsx_content(&cx.live().get()),
+            E::ExportCsvContent { sheet } => {
+                self.export_csv_content(&cx.live().get(), sheet.as_deref())
+            }
             E::ReadFile { file, sheet, from } => {
                 SheetsApp::read_file(&file, sheet.as_deref(), from).map(Effected::value)
             }
@@ -416,6 +419,31 @@ impl Store {
             .content_store()
             .put(&bytes)
             .map_err(|error| format!("the workbook could not be kept: {error}"))?;
+        Effected::content(&hash)
+    }
+
+    /// Keep one sheet as CSV in the content store: the one `sheet` names by id or name, or the
+    /// first the workbook shows.
+    fn export_csv_content(&mut self, workbook: &Workbook, sheet: Option<&str>) -> EffectAnswer {
+        let id = match sheet {
+            Some(sheet) => workbook
+                .sheet_key(&Id::from_raw(sheet))
+                .map_err(|refusal| refusal.reason().to_owned())?,
+            None => workbook
+                .sheets
+                .iter()
+                .find(|(_, sheet)| !sheet.hidden)
+                .map(|(id, _)| id.clone())
+                .ok_or_else(|| "the workbook shows no sheet".to_owned())?,
+        };
+        let snapshot = workbook
+            .snapshot_of(&id)
+            .ok_or_else(|| "no such sheet".to_owned())?;
+        let bytes = SheetsApp::encode_tables(Interchange::Csv, &[snapshot])?;
+        let hash = self
+            .content_store()
+            .put(&bytes)
+            .map_err(|error| format!("the sheet could not be kept: {error}"))?;
         Effected::content(&hash)
     }
 }

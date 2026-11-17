@@ -81,6 +81,15 @@ pub enum SheetsEffect {
     /// Keeps every sheet as an `.xlsx` workbook in the content store, with no file to write.
     #[effect(content, kind = "read", idempotent)]
     ExportXlsxContent,
+    /// Export a sheet as CSV content
+    ///
+    /// Keeps one sheet as a CSV file in the content store, with no file to write and whatever
+    /// the window shows: the text `export-csv` saves. It reads back with `read-content`.
+    #[effect(content, kind = "read", idempotent)]
+    ExportCsvContent {
+        #[param("The sheet's id or name; the first sheet shown when none")]
+        sheet: Option<String>,
+    },
     /// Read a spreadsheet file
     ///
     /// What an `.xlsx`, `.ods` or `.csv` file holds, read where it is: the workbook stays as it

@@ -436,6 +436,59 @@ fn a_past_version_reads_and_shows_its_cells() {
     );
 }
 
+/// The sheet `arguments` name, kept as CSV content and read back through `read-content`.
+fn csv_of(app: &mut TestApp<SheetsShell>, arguments: Value) -> Value {
+    let output = app
+        .call_on_output("sheets.workbook", "export-csv-content", arguments)
+        .unwrap()
+        .unwrap();
+    let address = output.resources.first().cloned().unwrap();
+    call(
+        app,
+        "read-content",
+        json!({ "content": address, "name": "sheet.csv" }),
+    )
+}
+
+/// A named sheet leaves as CSV content, with no file to write and whatever the window shows, and
+/// reads back through `read-content`.
+#[test]
+fn a_named_sheet_is_kept_as_csv_content_that_reads_back() {
+    let mut app = app();
+    call(
+        &mut app,
+        "new-sheet",
+        json!({"name": "Prices", "rows": [["Tea", 3.5], ["Cake", 4]]}),
+    );
+    call(
+        &mut app,
+        "new-sheet",
+        json!({"name": "Notes", "rows": [["a, b", "say \"hi\""], ["plain", "x"]]}),
+    );
+    let notes = csv_of(&mut app, json!({"sheet": "notes"}));
+    assert_eq!(
+        notes["rows"],
+        json!([["a, b", "say \"hi\""], ["plain", "x"]]),
+        "{notes}"
+    );
+    let first = csv_of(&mut app, json!({}));
+    assert_eq!(
+        first["rows"],
+        json!([["Tea", "3.5"], ["Cake", "4"]]),
+        "the first sheet shown when none is named: {first}"
+    );
+    assert!(
+        app.call_on_output(
+            "sheets.workbook",
+            "export-csv-content",
+            json!({"sheet": "Nowhere"})
+        )
+        .is_err(),
+        "a sheet the workbook lacks is refused"
+    );
+    assert_eq!(sheet_names(&app), ["Prices", "Notes"], "nothing changed");
+}
+
 /// Twenty thousand cells, half of them formulas, read as values: the parts join up, each number
 /// a number, and the words a cell shows come only when asked for.
 #[test]

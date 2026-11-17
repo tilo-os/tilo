@@ -274,6 +274,13 @@ id = "export-xlsx-content"
 kind = "read"
 
 [[resources.verbs]]
+id = "export-csv-content"
+kind = "read"
+params = [
+  { name = "sheet", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
 id = "read-file"
 kind = "read"
 params = [

@@ -23172,6 +23172,14 @@
         "required": [],
         "description": ""
       },
+      "sheets.workbook.export-csv-content.Arguments": {
+        "type": "object",
+        "properties": {
+          "sheet": {}
+        },
+        "required": [],
+        "description": ""
+      },
       "sheets.workbook.read-file.Arguments": {
         "type": "object",
         "properties": {
@@ -32362,6 +32370,12 @@
       "resource": "sheets.workbook",
       "action": "export-xlsx-content",
       "arguments": "#/components/schemas/sheets.workbook.export-xlsx-content.Arguments"
+    },
+    {
+      "app": "so.tilo.sheets",
+      "resource": "sheets.workbook",
+      "action": "export-csv-content",
+      "arguments": "#/components/schemas/sheets.workbook.export-csv-content.Arguments"
     },
     {
       "app": "so.tilo.sheets",

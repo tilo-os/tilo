@@ -249,7 +249,7 @@ DeleteCommentArgs = TypedDict("DeleteCommentArgs", {
 
 class Workbook(Resource):
     """Workbook — `sheets.workbook`."""
-    __surface__ = "so.tilo.sheets@b0eee8348162106f"
+    __surface__ = "so.tilo.sheets@dfe78ea182f2be65"
     sheets: list[Entry[Sheet]]
     comments: list[Entry[Comment]]
     settings: DocSettings
@@ -571,6 +571,16 @@ class Workbook(Resource):
         """Runs the app's action."""
         return self.action("export-xlsx-content")
 
+    def export_csv_content(self,
+        *,
+        sheet: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        if sheet is not None:
+            args["sheet"] = sheet
+        return self.action("export-csv-content", **args)
+
     def read_file(self,
         *,
         file: Any,
@@ -623,6 +633,6 @@ class Workbook(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_sheet", "set_title", "set_title_many", "set_records", "upsert_item", "duplicate_sheet", "duplicate_sheet_many", "delete_sheet", "delete_sheet_many", "set_cells", "write_cells", "format_cells", "sort_rows", "insert_rows", "insert_rows_many", "delete_rows", "insert_columns", "insert_columns_many", "delete_columns", "delete_columns_many", "import_sheets", "import_sheets_many", "add_chart", "add_chart_many", "edit_chart", "edit_chart_many", "delete_chart", "delete_chart_many", "rename_sheet", "rename_sheet_many", "comment", "comment_many", "reply", "reply_many", "edit_comment", "edit_comment_many", "delete_comment", "delete_comment_many", "export_xlsx_content", "read_file", "read_content", "read_cells"})
+    __actions__ = frozenset({"new_sheet", "set_title", "set_title_many", "set_records", "upsert_item", "duplicate_sheet", "duplicate_sheet_many", "delete_sheet", "delete_sheet_many", "set_cells", "write_cells", "format_cells", "sort_rows", "insert_rows", "insert_rows_many", "delete_rows", "insert_columns", "insert_columns_many", "delete_columns", "delete_columns_many", "import_sheets", "import_sheets_many", "add_chart", "add_chart_many", "edit_chart", "edit_chart_many", "delete_chart", "delete_chart_many", "rename_sheet", "rename_sheet_many", "comment", "comment_many", "reply", "reply_many", "edit_comment", "edit_comment_many", "delete_comment", "delete_comment_many", "export_xlsx_content", "export_csv_content", "read_file", "read_content", "read_cells"})
 
 

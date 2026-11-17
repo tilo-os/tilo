@@ -130,6 +130,7 @@ sheets-effect-export-xlsx = Export Excel workbook
 sheets-effect-export-ods = Export OpenDocument spreadsheet
 sheets-effect-import-xlsx-content = Import workbook content
 sheets-effect-export-xlsx-content = Export workbook content
+sheets-effect-export-csv-content = Export sheet as CSV content
 sheets-effect-read-file = Read a spreadsheet file
 sheets-effect-read-content = Read spreadsheet content
 sheets-effect-commands = Open command palette
