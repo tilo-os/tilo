@@ -621,7 +621,7 @@ impl IssuePart {
     ///
     /// # Errors
     /// Refuses a goal that is not a resource, or an estimate over 1000.
-    #[action(item = issues, step = "edit", audience = "people", writes = issues)]
+    #[action(item = issues, step = "edit", writes = issues)]
     pub fn plan(
         &mut self,
         issue: &Id,
