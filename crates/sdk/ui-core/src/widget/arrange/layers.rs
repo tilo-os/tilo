@@ -4,7 +4,7 @@ use taffy::style_helpers::{fr, length, line, minmax, percent};
 use taffy::{Size, Style};
 
 use super::Side;
-use super::arranged::{Arranged, Layout, Resolved, Slot, lead_container, wrapper_style};
+use super::arranged::{Arranged, Layout, Part, Resolved, lead_container, wrapper_style};
 use super::units::{Axis, Direction};
 
 pub struct LayersLayout {
@@ -44,13 +44,13 @@ impl Layout for LayersLayout {
         }
     }
 
-    fn slot(&self, _index: usize, slot: &Slot, resolved: &Resolved) -> Style {
+    fn part(&self, _index: usize, part: &Part, resolved: &Resolved) -> Style {
         let mut style = wrapper_style();
-        slot.fit.apply(&mut style, Axis::Inline, resolved.rem);
+        part.fit.apply(&mut style, Axis::Inline, resolved.rem);
         // A layer that fills takes the whole cell. A grid child's flex-grow says
         // nothing, so the fill is a width the cell resolves, and the layer keeps
         // its own height (a bar at the top is as tall as the bar).
-        if slot.fit.width.fill.is_some() {
+        if part.fit.width.fill.is_some() {
             style.size.width = percent(1.0_f32);
             style.flex_grow = 0.0;
             style.flex_basis = taffy::Dimension::auto();
@@ -58,7 +58,7 @@ impl Layout for LayersLayout {
         // A layer placed at an edge keeps its own height (a bar at the top is as tall
         // as the bar); only the layer that takes the whole cell, the one with no
         // position, fills it top to bottom.
-        if slot.at.is_none() && slot.fit.height.fill.is_some() {
+        if part.at.is_none() && part.fit.height.fill.is_some() {
             style.size.height = percent(1.0_f32);
         }
         let cell = taffy::Line {
@@ -67,7 +67,7 @@ impl Layout for LayersLayout {
         };
         style.grid_column = cell.clone();
         style.grid_row = cell;
-        let (inline, block) = slot.at.map_or(
+        let (inline, block) = part.at.map_or(
             (taffy::AlignSelf::Stretch, taffy::AlignSelf::Stretch),
             |at| at.aligns(self.direction),
         );
@@ -102,9 +102,9 @@ impl Arranged<LayersLayout> {
 
     #[must_use]
     pub fn push_at(mut self, child: crate::widget::Element, at: super::units::At) -> Self {
-        let mut slot = Slot::new(child);
-        slot.at = Some(at);
-        self.slots.push(slot);
+        let mut part = Part::new(child);
+        part.at = Some(at);
+        self.parts.push(part);
         self
     }
 
@@ -112,7 +112,7 @@ impl Arranged<LayersLayout> {
     /// the cell, half outside (at a top position, on the top edge).
     #[must_use]
     pub fn push_straddling(self, child: crate::widget::Element, at: super::units::At) -> Self {
-        let index = self.slots.len();
+        let index = self.parts.len();
         let mut layers = self.push_at(child, at);
         layers.layout.straddling.push(index);
         layers

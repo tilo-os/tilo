@@ -156,7 +156,9 @@ scenario "a rearranged bar" {
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
     seed(shell)
     let s = shell
-    if let clock = s.bar_parts.find(p -> p.slot == Slot.clock) { s.bar_parts.move(clock, to: 0) }
+    if let clock = s.bar_parts.find(p -> p.kind == BarPartKind.clock) {
+        s.bar_parts.move(clock, to: 0)
+    }
     s.tuned = true
     s.based_on = .tilo
 }

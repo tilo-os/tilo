@@ -78,7 +78,7 @@ pub struct DataTableRowProps {
     #[component(required, positional)]
     pub item: ResourceId,
     /// The cells, in the order of the table's columns.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub cells: Vec<DataTableCellProps>,
 }
 
@@ -98,9 +98,9 @@ impl PartialEq for DataTableRowProps {
     }
 }
 
-crate::component::part_slot!(DataTableColumnProps);
-crate::component::part_slot!(DataTableRowProps);
-crate::component::part_slot!(DataTableCellProps);
+crate::component::part_type!(DataTableColumnProps);
+crate::component::part_type!(DataTableRowProps);
+crate::component::part_type!(DataTableCellProps);
 
 /// A table of resources as columns and rows: the attributes of a device, the songs in a library, the
 /// rules of a firewall.
@@ -117,10 +117,10 @@ pub struct DataTableProps {
     /// Whether pressing a row picks it.
     pub selectable: bool,
     /// The columns, in order.
-    #[component(slot)]
+    #[component(part)]
     pub columns: Vec<DataTableColumnProps>,
     /// The rows, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub rows: Vec<DataTableRowProps>,
     /// The selected rows, by the resource each stands for.
     #[component(state)]

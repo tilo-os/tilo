@@ -118,13 +118,13 @@ d-sfhd6wko = Leistenteil
        *[other] Leistenteile
     }
 
-d-fjzbw5un = Slot
+d-fjzbw5un = Art
     .doc = Was das Teil ist; die Leiste zeichnet es daraus, sodass ein verschobenes Teil dasselbe Teil ist.
 
 d-pbly7ymy = Gezeigt
     .doc = Ob es auf der Leiste zeigt; ein ausgeschaltetes Teil behält seinen Platz im Datensatz.
 
-d-sfhd6wko-filter-slot = Slot
+d-sfhd6wko-filter-kind = Art
 
 d-sfhd6wko-filter-shown = Gezeigt
 
@@ -236,7 +236,7 @@ d-uv33v3c2 = Normal
 
 d-5czgy2f6 = Groß
 
-d-vtiohdqj = Slot
+d-vtiohdqj = Leistentyp
     .doc = Ein Teil, das eine Person auf die obere Leiste legen kann, in ihrer Reihenfolge.
 
 d-2k6zzh2i = Das Menü des Systems: Tilo und die eigenen Befehle des Geräts
@@ -1242,4 +1242,3 @@ d-dah75qd2 = Kein Rahmen in Ruhe; die Kanten zeigen, was die Person braucht
 
 d-zsqlezfj = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen
     .doc = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen.
-

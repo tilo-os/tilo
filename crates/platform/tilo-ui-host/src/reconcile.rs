@@ -15,7 +15,7 @@ use crate::{UiNode, Value};
 use ui::LocalState;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::arrange::{
-    Align, At, Collapse, Distribute, Fit, Grid, Layers, Length, Navigation, Page, Row, Side, Slot,
+    Align, At, Collapse, Distribute, Fit, Grid, Layers, Length, Navigation, Page, Part, Row, Side,
     Split, Stack,
 };
 use ui::widget::{
@@ -382,24 +382,24 @@ fn is_container(kind: &str) -> bool {
             | "layers"
             | "primary"
             | "secondary"
-            // A component whose own layout is a row or a column of its slots.
+            // A component whose own layout is a row or a column of its parts.
             | "ui.DragRun"
     )
 }
 
 /// Container widgets, whatever their layout, as the keyed reconciler reaches their children: each
-/// change through the container's slot operations, which describe it to the window.
-trait SlotHost {
+/// change through the container's part operations, which describe it to the window.
+trait PartHost {
     fn child_mut(&mut self, index: usize) -> Option<&mut Element>;
     fn replace(&mut self, index: usize, element: Element);
-    fn insert(&mut self, index: usize, slot: Slot);
+    fn insert(&mut self, index: usize, part: Part);
     fn remove(&mut self, index: usize);
-    fn move_slot(&mut self, from: usize, to: usize);
+    fn move_part(&mut self, from: usize, to: usize);
     fn set_placement(&mut self, index: usize, placement: Placement);
     fn set_lead(&mut self, lead: i16);
 }
 
-impl<L: ui::widget::arrange::Layout + 'static> SlotHost for ui::widget::arrange::Arranged<L> {
+impl<L: ui::widget::arrange::Layout + 'static> PartHost for ui::widget::arrange::Arranged<L> {
     fn child_mut(&mut self, index: usize) -> Option<&mut Element> {
         ui::widget::arrange::Arranged::child_mut(self, index)
     }
@@ -408,16 +408,16 @@ impl<L: ui::widget::arrange::Layout + 'static> SlotHost for ui::widget::arrange:
         ui::widget::arrange::Arranged::replace(self, index, element);
     }
 
-    fn insert(&mut self, index: usize, slot: Slot) {
-        ui::widget::arrange::Arranged::insert(self, index, slot);
+    fn insert(&mut self, index: usize, part: Part) {
+        ui::widget::arrange::Arranged::insert(self, index, part);
     }
 
     fn remove(&mut self, index: usize) {
         ui::widget::arrange::Arranged::remove(self, index);
     }
 
-    fn move_slot(&mut self, from: usize, to: usize) {
-        ui::widget::arrange::Arranged::move_slot(self, from, to);
+    fn move_part(&mut self, from: usize, to: usize) {
+        ui::widget::arrange::Arranged::move_part(self, from, to);
     }
 
     fn set_placement(&mut self, index: usize, placement: Placement) {
@@ -437,7 +437,7 @@ struct Placement {
     at: Option<At>,
 }
 
-fn with_host<R>(element: &mut Element, run: impl FnOnce(&mut dyn SlotHost) -> R) -> Option<R> {
+fn with_host<R>(element: &mut Element, run: impl FnOnce(&mut dyn PartHost) -> R) -> Option<R> {
     use ui::widget::arrange::Arranged;
     use ui::widget::arrange::{FlexLayout, GridLayout, LayersLayout, PageLayout, SplitLayout};
     let any = element.as_any_mut()?;
@@ -702,7 +702,7 @@ impl Reconciler {
     }
 
     /// Bring `widget`, built for the component node `old_node`, to `new_node`: its props in place
-    /// where the widget takes them, and the views in its slots reconciled where they stand. `Some`
+    /// where the widget takes them, and the views in its parts reconciled where they stand. `Some`
     /// is the widget built anew when it could not.
     fn update_component(
         &mut self,
@@ -739,34 +739,34 @@ impl Reconciler {
                 }
             }
         }
-        // Each slot of the widget takes its views by key, in place: those gone removed, those kept
+        // Each part of the widget takes its views by key, in place: those gone removed, those kept
         // moved and reconciled where they stand, those new built.
-        for slot in description
-            .slots
+        for part in description
+            .parts
             .iter()
-            .filter(|slot| slot.accepts == ui::component::Accepts::View)
+            .filter(|part| part.accepts == ui::component::Accepts::View)
         {
-            let old = crate::adapter::slot_nodes(old_node, description, &slot.name);
-            let new = crate::adapter::slot_nodes(new_node, description, &slot.name);
+            let old = crate::adapter::part_nodes(old_node, description, &part.name);
+            let new = crate::adapter::part_nodes(new_node, description, &part.name);
             if old == new {
                 continue;
             }
-            let Some(views) = ui::component::slot_views(&description.name, widget, &slot.name)
+            let Some(views) = ui::component::part_views(&description.name, widget, &part.name)
             else {
                 return Some(self.build(new_node));
             };
             self.reconcile_views(views, &old, &new);
         }
-        // A slot of components whose own views changed (a run's items, each holding a view of its
+        // A part of components whose own views changed (a run's items, each holding a view of its
         // own): the part's views change where they stand, so the widget keeps what they hold
         // instead of being built again around them.
-        for slot in description
-            .slots
+        for part in description
+            .parts
             .iter()
-            .filter(|slot| slot.accepts.reads_components())
+            .filter(|part| part.accepts.reads_components())
         {
-            let old = crate::adapter::slot_parts(old_node, description, &slot.name);
-            let new = crate::adapter::slot_parts(new_node, description, &slot.name);
+            let old = crate::adapter::part_components(old_node, description, &part.name);
+            let new = crate::adapter::part_components(new_node, description, &part.name);
             for child in &new {
                 let Some(part) = crate::adapter::description_of(child) else {
                     continue;
@@ -778,19 +778,19 @@ impl Reconciler {
                     continue;
                 };
                 for of in part
-                    .slots
+                    .parts
                     .iter()
                     .filter(|of| of.accepts == ui::component::Accepts::View)
                 {
-                    let old = crate::adapter::slot_nodes(before, part, &of.name);
-                    let new = crate::adapter::slot_nodes(child, part, &of.name);
+                    let old = crate::adapter::part_nodes(before, part, &of.name);
+                    let new = crate::adapter::part_nodes(child, part, &of.name);
                     if old == new {
                         continue;
                     }
-                    let Some(views) = ui::component::part_views(
+                    let Some(views) = ui::component::item_views(
                         &description.name,
                         widget,
-                        &slot.name,
+                        &part.name,
                         &child.key,
                         &of.name,
                     ) else {
@@ -803,11 +803,11 @@ impl Reconciler {
         None
     }
 
-    /// Bring the views of one slot, built for `old`, to `new` by key: those gone removed, those
+    /// Bring the views of one part, built for `old`, to `new` by key: those gone removed, those
     /// kept moved to their place and reconciled in it, those new built and inserted.
     fn reconcile_views(
         &mut self,
-        views: &mut dyn ui::component::SlotViews,
+        views: &mut dyn ui::component::PartViews,
         old: &[&UiNode],
         new: &[&UiNode],
     ) {
@@ -823,7 +823,7 @@ impl Reconciler {
         }
         for (index, &child) in new.iter().enumerate() {
             let Some(at) = held.iter().position(|old| old.key == child.key) else {
-                let view = self.slot_view(child);
+                let view = self.part_view(child);
                 views.insert(index, view);
                 held.insert(index, child);
                 continue;
@@ -840,7 +840,7 @@ impl Reconciler {
                 continue;
             };
             // The view carries the fit its node asks for, so a view that comes to say `fill` asks
-            // for the room the component gives it from the next build on (the slot keeps the fit it
+            // for the room the component gives it from the next build on (the part keeps the fit it
             // was placed with, as a rule a view's own arguments do not change under its key). A
             // [`Fitted`] asking for nothing sizes as a bare view does.
             if let Some(fitted) = view
@@ -881,11 +881,11 @@ impl Reconciler {
         }
     }
 
-    /// `node`, built, as the view a described component's slot holds: a component as its widget, a
+    /// `node`, built, as the view a described component's part holds: a component as its widget, a
     /// view of another kind in a pane the reconciler reaches again, each in a
     /// [`ui::widget::Fitted`] carrying the fit its node wrote, so a view that says `fill` fills the
-    /// slot the component puts it in ([`ui::widget::arrange::Slot::new`] takes the fit).
-    pub(crate) fn slot_view(&mut self, node: &UiNode) -> Element {
+    /// part the component puts it in ([`ui::widget::arrange::Part::new`] takes the fit).
+    pub(crate) fn part_view(&mut self, node: &UiNode) -> Element {
         let built = self.build(node);
         let pane: Element = if crate::adapter::description_of(node).is_some() {
             built
@@ -899,10 +899,10 @@ impl Reconciler {
         Box::new(ui::widget::Fitted::new(pane, fit))
     }
 
-    fn slots(&mut self, node: &UiNode) -> Vec<Slot> {
+    fn parts(&mut self, node: &UiNode) -> Vec<Part> {
         placed(node)
             .into_iter()
-            .map(|child| self.slot(node, &child))
+            .map(|child| self.part(node, &child))
             .collect()
     }
 
@@ -956,14 +956,14 @@ impl Reconciler {
         placement
     }
 
-    fn slot(&mut self, parent: &UiNode, placed: &Placed<'_>) -> Slot {
+    fn part(&mut self, parent: &UiNode, placed: &Placed<'_>) -> Part {
         let child = placed.node;
         let Placement { fit, span, at } = self.place(parent, placed);
-        let mut slot = Slot::new(self.build(child));
-        slot.fit = fit;
-        slot.span = span;
-        slot.at = at;
-        slot
+        let mut part = Part::new(self.build(child));
+        part.fit = fit;
+        part.span = span;
+        part.at = at;
+        part
     }
 
     fn stack(&mut self, node: &UiNode, default: Rhythm) -> Element {
@@ -973,8 +973,8 @@ impl Reconciler {
             .padding(rhythm(node, "padding", Rhythm::None))
             .align(align(node, Align::Stretch))
             .with_id(node.key.clone());
-        for slot in self.slots(node) {
-            stack = stack.push_slot(slot);
+        for part in self.parts(node) {
+            stack = stack.push_part(part);
         }
         Box::new(stack)
     }
@@ -995,8 +995,8 @@ impl Reconciler {
         if flag(node, "wrap") {
             row = row.wrap();
         }
-        for slot in self.slots(node) {
-            row = row.push_slot(slot);
+        for part in self.parts(node) {
+            row = row.push_part(part);
         }
         Box::new(row)
     }
@@ -1012,8 +1012,8 @@ impl Reconciler {
         if holds_cards(node) {
             grid = grid.hugging();
         }
-        for slot in self.slots(node) {
-            grid = grid.push_slot(slot);
+        for part in self.parts(node) {
+            grid = grid.push_part(part);
         }
         Box::new(grid)
     }
@@ -1044,9 +1044,9 @@ impl Reconciler {
             self.navigation = Some(split.navigation());
         }
         for child in &node.children {
-            let mut slot = Slot::new(self.build(child));
-            slot.fit = Fit::hug();
-            split = split.push_slot(slot);
+            let mut part = Part::new(self.build(child));
+            part.fit = Fit::hug();
+            split = split.push_part(part);
         }
         Box::new(split)
     }
@@ -1063,16 +1063,16 @@ impl Reconciler {
             page = page.filling();
         }
         let mut page = page.with_id(node.key.clone());
-        for slot in self.slots(node) {
-            page = page.push_slot(slot);
+        for part in self.parts(node) {
+            page = page.push_part(part);
         }
         Box::new(page)
     }
 
     fn layers(&mut self, node: &UiNode) -> Element {
         let mut layers = Layers::layers().with_id(node.key.clone());
-        for slot in self.slots(node) {
-            layers = layers.push_slot(slot);
+        for part in self.parts(node) {
+            layers = layers.push_part(part);
         }
         Box::new(layers)
     }
@@ -1082,8 +1082,8 @@ impl Reconciler {
             .fill_width()
             .gap(Rhythm::Sibling)
             .with_id(format!("{}~content", node.key));
-        for slot in self.slots(node) {
-            inner = inner.push_slot(slot);
+        for part in self.parts(node) {
+            inner = inner.push_part(part);
         }
         // A surface that fills its pane gives what it holds the pane's height, so its content is
         // the pane's size and pans inside it instead of growing: the shell a person pans, and a row
@@ -1197,18 +1197,18 @@ impl Reconciler {
             .fill_width()
             .gap(Rhythm::Related)
             .distribute(Distribute::Between)
-            .push_slot(self.fixed_text(&format!("{}~name", node.key), &name, TextRole::Label))
-            .push_slot(self.fixed_text(&format!("{}~state", node.key), &status, TextRole::Caption));
-        card = card.push_slot(Slot::new(Box::new(header)));
+            .push_part(self.fixed_text(&format!("{}~name", node.key), &name, TextRole::Label))
+            .push_part(self.fixed_text(&format!("{}~state", node.key), &status, TextRole::Caption));
+        card = card.push_part(Part::new(Box::new(header)));
         if let Some(result) = crate::date::shown(node, "result") {
-            card = card.push_slot(self.fixed_text(
+            card = card.push_part(self.fixed_text(
                 &format!("{}~result", node.key),
                 &result,
                 TextRole::Body,
             ));
         }
-        for slot in self.slots(node) {
-            card = card.push_slot(slot);
+        for part in self.parts(node) {
+            card = card.push_part(part);
         }
         if state == "suggested" && flag(node, "can_resolve") {
             // An ask the authority raised answers as a confirmation, one answer per line when the
@@ -1216,21 +1216,21 @@ impl Reconciler {
             let choices = Row::row()
                 .wrap()
                 .gap(Rhythm::Related)
-                .push_slot(self.answer(
+                .push_part(self.answer(
                     node,
                     "allow",
                     &crate::i18n::t("tilolang-ask-confirm"),
                     true,
                     false,
                 ))
-                .push_slot(self.answer(
+                .push_part(self.answer(
                     node,
                     "decline",
                     &crate::i18n::t("tilolang-ask-decline"),
                     false,
                     false,
                 ));
-            card = card.push_slot(Slot::new(Box::new(choices)));
+            card = card.push_part(Part::new(Box::new(choices)));
         }
         Box::new(card)
     }
@@ -1260,18 +1260,18 @@ impl Reconciler {
             .push(Box::new(
                 Avatar::person(who, identity).size(AvatarSize::Small),
             ))
-            .push_slot(self.fixed_text(&format!("{}~by", node.key), &says, TextRole::Body));
+            .push_part(self.fixed_text(&format!("{}~by", node.key), &says, TextRole::Body));
         let choices = Row::row()
             .wrap()
             .gap(Rhythm::Related)
-            .push_slot(self.answer(
+            .push_part(self.answer(
                 node,
                 "allow",
                 &crate::i18n::t("tilolang-suggestion-accept"),
                 true,
                 true,
             ))
-            .push_slot(self.answer(
+            .push_part(self.answer(
                 node,
                 "decline",
                 &crate::i18n::t("tilolang-suggestion-dismiss"),
@@ -1328,7 +1328,7 @@ impl Reconciler {
         label: &str,
         approve: bool,
         compact: bool,
-    ) -> Slot {
+    ) -> Part {
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let role = if approve {
@@ -1343,7 +1343,7 @@ impl Reconciler {
         } else {
             ControlSize::Regular
         };
-        Slot::new(Box::new(
+        Part::new(Box::new(
             Button::new(&format!("{}~{suffix}", node.key), label)
                 .role(role)
                 .control_size(size)
@@ -1357,26 +1357,26 @@ impl Reconciler {
         let mut block = Stack::stack()
             .gap(Rhythm::Tight)
             .with_id(node.key.clone())
-            .push_slot(self.fixed_text(
+            .push_part(self.fixed_text(
                 &format!("{}~title", node.key),
                 &crate::i18n::t("tilolang-embed-error"),
                 TextRole::Label,
             ));
         for child in &node.children {
             let line = crate::date::shown(child, "value").unwrap_or_default();
-            block = block.push_slot(self.fixed_text(&child.key, &line, TextRole::Code));
+            block = block.push_part(self.fixed_text(&child.key, &line, TextRole::Code));
         }
         Box::new(block)
     }
 
-    fn fixed_text(&mut self, key: &str, value: &str, role: TextRole) -> Slot {
+    fn fixed_text(&mut self, key: &str, value: &str, role: TextRole) -> Part {
         let state = self
             .texts
             .entry(key.to_owned())
             .or_insert_with(|| LocalState::new(value.to_owned()))
             .clone();
         state.set(value.to_owned());
-        Slot::new(Box::new(
+        Part::new(Box::new(
             Text::from_state(&state, |shown: &String| shown.clone())
                 .with_role(role)
                 .with_id(key),
@@ -1570,7 +1570,7 @@ impl Reconciler {
 
     /// Bring `widget`, built for `old_node`, up to date with `new_node` in place: a changed value
     /// sets the widget that shows it, which draws itself again, and a container's children are
-    /// inserted, removed, moved or replaced by key through its slot operations. `Some` is a widget
+    /// inserted, removed, moved or replaced by key through its part operations. `Some` is a widget
     /// built for `new_node` that its container shows instead (through its own `replace`): `widget`
     /// could not take the change.
     pub fn update_in(
@@ -1648,7 +1648,7 @@ impl Reconciler {
     }
 
     /// Reconcile the children of `container`, built for `old_node`, with `new_node`'s by key,
-    /// through its slot operations: whether it is a container that could.
+    /// through its part operations: whether it is a container that could.
     fn reconcile_children(
         &mut self,
         container: &mut Element,
@@ -1656,7 +1656,7 @@ impl Reconciler {
         new_node: &UiNode,
     ) -> bool {
         with_host(container, |host| {
-            self.reconcile_slots(host, old_node, new_node);
+            self.reconcile_parts(host, old_node, new_node);
         })
         .is_some()
     }
@@ -1682,12 +1682,12 @@ impl Reconciler {
                     let Some(widget) = widget else {
                         break;
                     };
-                    let mut slot = Slot::new(widget);
+                    let mut part = Part::new(widget);
                     let Placement { fit, span, at } = self.place(old_node, &child);
-                    slot.fit = fit;
-                    slot.span = span;
-                    slot.at = at;
-                    host.insert(index, slot);
+                    part.fit = fit;
+                    part.span = span;
+                    part.at = at;
+                    host.insert(index, part);
                 }
             })
         })
@@ -1706,10 +1706,10 @@ impl Reconciler {
         }
     }
 
-    /// Bring the slots of `host`, built for `old_node`'s children, to `new_node`'s by key: those
+    /// Bring the parts of `host`, built for `old_node`'s children, to `new_node`'s by key: those
     /// gone removed, those kept moved to their place and reconciled in it, those new built and
     /// inserted.
-    fn reconcile_slots(&mut self, host: &mut dyn SlotHost, old_node: &UiNode, new_node: &UiNode) {
+    fn reconcile_parts(&mut self, host: &mut dyn PartHost, old_node: &UiNode, new_node: &UiNode) {
         let mut held = placed(old_node);
         let placing = placed(new_node);
         for index in (0..held.len()).rev() {
@@ -1724,13 +1724,13 @@ impl Reconciler {
         for (index, child) in placing.into_iter().enumerate() {
             let node = child.node;
             let Some(at) = held.iter().position(|old| old.node.key == node.key) else {
-                let slot = self.slot(new_node, &child);
-                host.insert(index, slot);
+                let part = self.part(new_node, &child);
+                host.insert(index, part);
                 held.insert(index, child);
                 continue;
             };
             if at != index {
-                host.move_slot(at, index);
+                host.move_part(at, index);
                 let moved = held.remove(at);
                 held.insert(index, moved);
             }
@@ -1842,13 +1842,13 @@ fn frames(node: &UiNode) -> bool {
         .any(|child| child.kind == "ui.Card" || holds_cards(child))
 }
 
-/// The children `node` places in its slots. What a `for` or an `if` places in a grid or a row
+/// The children `node` places in its parts. What a `for` or an `if` places in a grid or a row
 /// arrives as a fragment; there each of its children is a cell or an item of its own, where a
-/// fragment built as a stack would pile them into one. Elsewhere a fragment is a slot of its own,
+/// fragment built as a stack would pile them into one. Elsewhere a fragment is a part of its own,
 /// its children stacked tight.
 fn placed(node: &UiNode) -> Vec<Placed<'_>> {
-    // A row and a grid place every child a loop's fragment holds, as slots of their own, so a row's
-    // items share the row's spans one by one. Every other container keeps a fragment as a slot of
+    // A row and a grid place every child a loop's fragment holds, as parts of their own, so a row's
+    // items share the row's spans one by one. Every other container keeps a fragment as a part of
     // its own: a view call is a box standing where the view put it, and what the view asks for is
     // asked of that box.
     fn flatten<'a>(node: &'a UiNode, through: &mut Vec<&'a UiNode>, out: &mut Vec<Placed<'a>>) {
@@ -2252,7 +2252,7 @@ mod tests {
         harness.targets().into_iter().collect()
     }
 
-    /// `fill` in the language lowers to a slot's `Fit::fill`, and a scroll view to a
+    /// `fill` in the language lowers to a part's `Fit::fill`, and a scroll view to a
     /// `Scrollable` that fills its parent. A page of many lines stands in a scroll view that
     /// fills the room it is given.
     fn filling_scroll(key: &str) -> UiNode {
@@ -2316,8 +2316,8 @@ mod tests {
     /// the room under what is above it, and never pushes the stack past the place's height.
     ///
     /// The language lowers `stack(gap: .none, fill) { handle; content }` to `Fit::fill` on the
-    /// filled slot and a hug on the plain one, and the stack itself to an `Arranged` filling the
-    /// place: this holds that lowering to the rule — the filled slot takes its share, and its
+    /// filled part and a hug on the plain one, and the stack itself to an `Arranged` filling the
+    /// place: this holds that lowering to the rule — the filled part takes its share, and its
     /// content scrolls or clips inside it.
     #[test]
     fn a_stack_of_a_strip_above_filling_content_keeps_the_content_in_the_place() {

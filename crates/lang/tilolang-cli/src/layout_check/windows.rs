@@ -90,11 +90,11 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
         .children
         .iter()
         .find(|child| {
-            child.kind == "slot"
+            child.kind == "part"
                 && child.props.get("name")
                     == Some(&tilo_render_protocol::patch::Value::text("content"))
         })
-        .and_then(|slot| slot.children.first())
+        .and_then(|part| part.children.first())
         .unwrap_or_else(|| panic!("the window's mark opens a catch-up: {window:?}"));
     let labels: Vec<String> = nodes_of(content, "ui.Button")
         .into_iter()
@@ -535,13 +535,13 @@ fn the_windows_header_mark(staged: &mut stage::Staged, count: i64) -> tilo_ui_ho
     the_catch_up_names_each_item_it_changed(&window);
     // The list is the window's content, so its header is the window's: the mark stands among the
     // header actions, first, in the row that carries the title it counts.
-    let mut slots = Vec::new();
-    nodes(&composed, "slot", &mut slots);
-    let header = slots
+    let mut parts = Vec::new();
+    nodes(&composed, "part", &mut parts);
+    let header = parts
         .iter()
-        .find(|slot| {
-            slot.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("actions"))
-                && slot
+        .find(|part| {
+            part.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("actions"))
+                && part
                     .children
                     .iter()
                     .any(|child| child.kind == "ui.ChangeMark")
@@ -575,11 +575,11 @@ fn catch_up_rows(tree: &tilo_ui_host::UiNode) -> Vec<String> {
         .children
         .iter()
         .find(|child| {
-            child.kind == "slot"
+            child.kind == "part"
                 && child.props.get("name")
                     == Some(&tilo_render_protocol::patch::Value::text("content"))
         })
-        .and_then(|slot| slot.children.first())
+        .and_then(|part| part.children.first())
         .unwrap_or_else(|| panic!("the mark opens its catch-up: {window:?}"));
     let said = |node: &tilo_ui_host::UiNode| match node.props.get("value") {
         Some(tilo_render_protocol::patch::Value::Text(value)) => Some(value.clone()),
@@ -1417,16 +1417,16 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
     let mut shells = Vec::new();
     nodes(&tree, "ui.NavShell", &mut shells);
     let shell = shells.first().expect("the window is a shell");
-    let slot = |name: &str| {
+    let part = |name: &str| {
         shell
             .children
             .iter()
             .find(|child| {
-                child.kind == "slot"
+                child.kind == "part"
                     && child.props.get("name")
                         == Some(&tilo_render_protocol::patch::Value::text(name))
             })
-            .unwrap_or_else(|| panic!("the shell has its {name} slot: {shell:?}"))
+            .unwrap_or_else(|| panic!("the shell has its {name} part: {shell:?}"))
     };
     let mut buttons = Vec::new();
     nodes(shell, "ui.Button", &mut buttons);
@@ -1439,7 +1439,7 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
         .collect();
     assert_eq!(starts.len(), 1, "one control starts a note: {starts:?}");
     let mut in_bar = Vec::new();
-    nodes(slot("actions"), "ui.Button", &mut in_bar);
+    nodes(part("actions"), "ui.Button", &mut in_bar);
     assert!(
         in_bar
             .iter()
@@ -1448,13 +1448,13 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
         "the window's bar starts a note"
     );
     let mut in_sidebar = Vec::new();
-    nodes(slot("sidebar_actions"), "ui.Button", &mut in_sidebar);
+    nodes(part("sidebar_actions"), "ui.Button", &mut in_sidebar);
     assert!(
         in_sidebar.is_empty(),
         "the sidebar's header offers no second button of the window's: {in_sidebar:?}"
     );
     let mut menus = Vec::new();
-    nodes(slot("sidebar_actions"), "ui.MenuButton", &mut menus);
+    nodes(part("sidebar_actions"), "ui.MenuButton", &mut menus);
     assert!(
         menus.iter().any(|menu| menu.props.get("label")
             == Some(&tilo_render_protocol::patch::Value::text("File"))),
@@ -2047,7 +2047,7 @@ fn the_window_bar_at(
         let close = furniture
             .controls
             .iter()
-            .find(|control| control.slot == "close" && control.rect[2] > 0.0);
+            .find(|control| control.part == "close" && control.rect[2] > 0.0);
         let inside = close.is_some_and(|close| {
             let [x0, y0, x1, y1] = close.rect;
             window.contains(Rect::new(x0, y0, x1, y1).center())
@@ -2368,11 +2368,11 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
         .children
         .iter()
         .find(|child| {
-            child.kind == "slot"
+            child.kind == "part"
                 && child.props.get("name")
                     == Some(&tilo_render_protocol::patch::Value::text("content"))
         })
-        .and_then(|slot| slot.children.first())
+        .and_then(|part| part.children.first())
         .unwrap_or_else(|| panic!("the mark opens its catch-up: {window:?}"));
     let mut rows = Vec::new();
     nodes(content, "row", &mut rows);

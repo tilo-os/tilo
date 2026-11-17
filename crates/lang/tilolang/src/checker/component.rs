@@ -527,8 +527,8 @@ impl Checker<'_> {
             let event = d.event(name).map(|_| {
                 format!("; `{name}` is an event, written in the block: `on {name}: action(...)`")
             });
-            let slot = d.slot(name).map(|_| {
-                format!("; `{name}` is a slot, written in the block: `{name}: {{ ... }}`")
+            let part = d.part(name).map(|_| {
+                format!("; `{name}` is a part, written in the block: `{name}: {{ ... }}`")
             });
             self.err(
                 "E063",
@@ -537,7 +537,7 @@ impl Checker<'_> {
                     "{} has no argument `{name}`; its arguments: {}{}",
                     shown(d),
                     arguments(d),
-                    event.or(slot).unwrap_or_default()
+                    event.or(part).unwrap_or_default()
                 ),
             );
             let _ = self.expr(value, None);
@@ -695,7 +695,7 @@ impl Checker<'_> {
                         "E020",
                         value.span,
                         format!(
-                            "{}'s `{name}` is {}; found {t}, a collection, which a component's prop does not take: hand it to a view's `Collection<T>` parameter, which gets it live, or loop over it in a slot",
+                            "{}'s `{name}` is {}; found {t}, a collection, which a component's prop does not take: hand it to a view's `Collection<T>` parameter, which gets it live, or loop over it in a part",
                             shown(d),
                             ty.show()
                         ),
@@ -915,7 +915,7 @@ impl Checker<'_> {
         }
     }
 
-    /// The block of a component call: its named slots, its events, and the content of its default slot.
+    /// The block of a component call: its named parts, its events, and the content of its default part.
     fn component_block(
         &mut self,
         n: LocalId,
@@ -927,8 +927,8 @@ impl Checker<'_> {
         let mut opens = false;
         for s in block {
             match &s.kind {
-                UiKind::Slot { node, name, body } => {
-                    opens |= self.slot_content(n, d, *node, name, body);
+                UiKind::Part { node, name, body } => {
+                    opens |= self.part_content(n, d, *node, name, body);
                 }
                 UiKind::On {
                     event,
@@ -942,20 +942,20 @@ impl Checker<'_> {
         if content.is_empty() {
             return;
         }
-        let Some(slot) = d.default_slot() else {
+        let Some(part) = d.default_part() else {
             self.err(
                 "E063",
                 span,
                 format!(
-                    "{} holds no content of its own; its slots: {}",
+                    "{} holds no content of its own; its parts: {}",
                     shown(d),
-                    listed(d.slots.iter().map(|s| format!("`{}: {{ }}`", s.name)))
+                    listed(d.parts.iter().map(|s| format!("`{}: {{ }}`", s.name)))
                 ),
             );
             return;
         };
-        self.slot_accepts(d, slot, &content);
-        // A component whose block gives a slot that only shows while the row stands open says so where
+        self.part_accepts(d, part, &content);
+        // A component whose block gives a part that only shows while the row stands open says so where
         // it stands.
         if opens {
             self.emit(host(
@@ -969,7 +969,7 @@ impl Checker<'_> {
         }
         let outer = self.st.ui.in_card;
         self.st.ui.in_card |= d.name == "Card";
-        self.child_block("slot", &content, n);
+        self.child_block("part", &content, n);
         self.st.ui.in_card = outer;
     }
 
@@ -1152,9 +1152,9 @@ impl Checker<'_> {
         Some(ty)
     }
 
-    /// `name: { ... }`: a named `slot` node of `n` holding the content; the document a row opens into
+    /// `name: { ... }`: a named `part` node of `n` holding the content; the document a row opens into
     /// is rendered only while that row does.
-    fn slot_content(
+    fn part_content(
         &mut self,
         n: LocalId,
         d: &'static Description,
@@ -1162,16 +1162,16 @@ impl Checker<'_> {
         name: &ast::Ident,
         body: &[UiStmt],
     ) -> bool {
-        let Some(slot) = d.slot(&name.name) else {
+        let Some(part) = d.part(&name.name) else {
             self.err(
                 "E063",
                 name.span,
                 format!(
-                    "{} has no slot `{}`; its slots: {}",
+                    "{} has no part `{}`; its parts: {}",
                     shown(d),
                     name.name,
                     listed(
-                        d.slots
+                        d.parts
                             .iter()
                             .map(|s| format!("`{}`{}", s.name, doc_of(&s.doc)))
                     )
@@ -1179,19 +1179,19 @@ impl Checker<'_> {
             );
             return false;
         };
-        self.slot_accepts(d, slot, body);
+        self.part_accepts(d, part, body);
         let key = self.stmt_key(node);
-        let s = self.new_node("slot", key);
+        let s = self.new_node("part", key);
         let s_ex = Ex::local(s, Ty::View);
         self.emit(host(
             Imp::UiPropH,
-            vec![s_ex.clone(), Ex::str("name"), Ex::str(&slot.name)],
+            vec![s_ex.clone(), Ex::str("name"), Ex::str(&part.name)],
         ));
-        if slot.when_open {
+        if part.when_open {
             // The document a row opens into is the row's only while it stands open: a list of rows costs
             // the rows, not a page each.
             self.push_sink();
-            self.child_block_of("slot", body, s, true);
+            self.child_block_of("part", body, s, true);
             let document = self.pop_sink();
             self.emit(Stmt::If(
                 Ex::host(Imp::RowOpen, Vec::new(), Ty::Bool),
@@ -1199,22 +1199,22 @@ impl Checker<'_> {
                 Vec::new(),
             ));
         } else {
-            self.child_block_of("slot", body, s, true);
+            self.child_block_of("part", body, s, true);
         }
         self.emit(host(Imp::UiChild, vec![Ex::local(n, Ty::View), s_ex]));
-        slot.when_open
+        part.when_open
     }
 
-    /// Checks that `body` fits the slot: only the component it accepts, and one at most.
-    fn slot_accepts(
+    /// Checks that `body` fits the part: only the component it accepts, and one at most.
+    fn part_accepts(
         &mut self,
         d: &Description,
-        slot: &tilo_ui_graph::component::Slot,
+        part: &tilo_ui_graph::component::Part,
         body: &[UiStmt],
     ) {
         let mut calls = 0usize;
-        self.slot_calls(d, slot, body, &mut calls);
-        if !slot.many
+        self.part_calls(d, part, body, &mut calls);
+        if !part.many
             && calls > 1
             && let Some(second) = body.get(1)
         {
@@ -1224,17 +1224,17 @@ impl Checker<'_> {
                 format!(
                     "{}'s `{}` holds one view{}",
                     shown(d),
-                    slot.name,
-                    doc_of(&slot.doc)
+                    part.name,
+                    doc_of(&part.doc)
                 ),
             );
         }
     }
 
-    fn slot_calls(
+    fn part_calls(
         &mut self,
         d: &Description,
-        slot: &tilo_ui_graph::component::Slot,
+        part: &tilo_ui_graph::component::Part,
         body: &[UiStmt],
         calls: &mut usize,
     ) {
@@ -1242,7 +1242,7 @@ impl Checker<'_> {
             match &s.kind {
                 UiKind::Call(c) => {
                     *calls = calls.saturating_add(1);
-                    if !slot.accepts.reads_components() {
+                    if !part.accepts.reads_components() {
                         continue;
                     }
                     let own_view = match &c.call.kind {
@@ -1251,14 +1251,14 @@ impl Checker<'_> {
                                 .env
                                 .view_makes
                                 .get(v)
-                                .is_some_and(|made| slot.accepts.takes(made)),
+                                .is_some_and(|made| part.accepts.takes(made)),
                             _ => false,
                         },
                         _ => false,
                     };
                     let from_caller = match &c.call.kind {
                         ExprKind::Call { callee, .. } => match &callee.kind {
-                            ExprKind::Ident(v) => self.macro_slot(d, slot, v, calls),
+                            ExprKind::Ident(v) => self.macro_part(d, part, v, calls),
                             _ => false,
                         },
                         _ => false,
@@ -1268,7 +1268,7 @@ impl Checker<'_> {
                             ExprKind::Field { base, name } => self
                                 .template_at(base, &name.name)
                                 .and_then(|t| crate::resolve::view_root_component(&t.decl.body))
-                                .is_some_and(|made| slot.accepts.takes(&made)),
+                                .is_some_and(|made| part.accepts.takes(&made)),
                             _ => false,
                         },
                         _ => false,
@@ -1277,7 +1277,7 @@ impl Checker<'_> {
                         || from_caller
                         || from_template
                         || component_of(c).is_some_and(|(base, name)| {
-                            slot.accepts.takes(name) && self.names_toolkit(base)
+                            part.accepts.takes(name) && self.names_toolkit(base)
                         });
                     if !fits {
                         self.err(
@@ -1286,23 +1286,23 @@ impl Checker<'_> {
                             format!(
                                 "{}'s `{}` holds {} only{}",
                                 shown(d),
-                                slot.name,
-                                slot.accepts.show(),
-                                doc_of(&slot.doc)
+                                part.name,
+                                part.accepts.show(),
+                                doc_of(&part.doc)
                             ),
                         );
                     }
                 }
-                UiKind::For { body, .. } => self.slot_calls(d, slot, body, calls),
+                UiKind::For { body, .. } => self.part_calls(d, part, body, calls),
                 UiKind::If { then, els, .. } | UiKind::IfLet { then, els, .. } => {
-                    self.slot_calls(d, slot, then, calls);
+                    self.part_calls(d, part, then, calls);
                     if let Some(els) = els {
-                        self.slot_calls(d, slot, els, calls);
+                        self.part_calls(d, part, els, calls);
                     }
                 }
                 UiKind::Match { arms, .. } => {
                     for arm in arms {
-                        self.slot_calls(d, slot, &arm.body, calls);
+                        self.part_calls(d, part, &arm.body, calls);
                     }
                 }
                 _ => {}
@@ -1310,12 +1310,12 @@ impl Checker<'_> {
         }
     }
 
-    /// Whether `name`, a parameter of the template being expanded, fills `slot`: its block is checked
-    /// against the slot as if it stood there.
-    fn macro_slot(
+    /// Whether `name`, a parameter of the template being expanded, fills `part`: its block is checked
+    /// against the part as if it stood there.
+    fn macro_part(
         &mut self,
         d: &Description,
-        slot: &tilo_ui_graph::component::Slot,
+        part: &tilo_ui_graph::component::Part,
         name: &str,
         calls: &mut usize,
     ) -> bool {
@@ -1325,31 +1325,31 @@ impl Checker<'_> {
                     .env
                     .view_makes
                     .get(&v.name)
-                    .is_some_and(|made| slot.accepts.takes(made)),
-                super::template::Macro::Block(block) => self.slot_block(d, slot, block, calls),
+                    .is_some_and(|made| part.accepts.takes(made)),
+                super::template::Macro::Block(block) => self.part_block(d, part, block, calls),
                 _ => false,
             },
             Some(super::template::Macro::View(v)) => self
                 .env
                 .view_makes
                 .get(&v.name)
-                .is_some_and(|made| slot.accepts.takes(made)),
-            Some(super::template::Macro::Block(block)) => self.slot_block(d, slot, &block, calls),
+                .is_some_and(|made| part.accepts.takes(made)),
+            Some(super::template::Macro::Block(block)) => self.part_block(d, part, &block, calls),
             _ => false,
         }
     }
 
-    /// Whether the caller's block fills `slot`: its body is written in the caller's scope, so it is
+    /// Whether the caller's block fills `part`: its body is written in the caller's scope, so it is
     /// read there.
-    fn slot_block(
+    fn part_block(
         &mut self,
         d: &Description,
-        slot: &tilo_ui_graph::component::Slot,
+        part: &tilo_ui_graph::component::Part,
         block: &super::template::UiClosure,
         calls: &mut usize,
     ) -> bool {
         let saved = self.enter(&block.scope, HashMap::new());
-        self.slot_calls(d, slot, &block.body, calls);
+        self.part_calls(d, part, &block.body, calls);
         self.leave(saved);
         true
     }

@@ -1,7 +1,7 @@
 //! A view's tree: the nodes a `#[view]` function builds, and what a component's
 //! description says of them.
 //!
-//! A Rust app's view returns the same component kinds, props, slots and events the
+//! A Rust app's view returns the same component kinds, props, parts and events the
 //! toolkit describes (`crates/dev/ui-graph/components.json`), so the host builds
 //! the widget tree once from the one description, whichever language wrote it.
 //!
@@ -74,9 +74,9 @@ impl BuildError {
     }
 
     #[must_use]
-    pub fn undeclared_slot(component: &str, slot: &str) -> Self {
+    pub fn undeclared_part(component: &str, part: &str) -> Self {
         Self::new(format!(
-            "`ui.{component}` declares no slot `{slot}`; its slots are in the catalogue \
+            "`ui.{component}` declares no part `{part}`; its parts are in the catalogue \
              (crates/dev/ui-graph/components.json)"
         ))
     }
@@ -207,9 +207,9 @@ pub fn primitive(kind: &str, key: &str) -> Node {
 }
 
 #[must_use]
-pub fn slot(mut node: Node, name: &str, children: Vec<Node>) -> Node {
+pub fn part(mut node: Node, name: &str, children: Vec<Node>) -> Node {
     let key = format!("{}#{name}", node.key);
-    let mut held = primitive("slot", &key);
+    let mut held = primitive("part", &key);
     held.props.insert("name".to_owned(), Value::text(name));
     held.children = children;
     node.children.push(held);
@@ -240,9 +240,9 @@ pub fn anchor(mut node: Node, anchor: &str) -> Node {
     node
 }
 
-pub fn slots(node: &Node) -> impl Iterator<Item = (&str, &[Node])> {
+pub fn parts(node: &Node) -> impl Iterator<Item = (&str, &[Node])> {
     node.children.iter().filter_map(|child| {
-        if child.kind != "slot" {
+        if child.kind != "part" {
             return None;
         }
         let Some(Value::Text(name)) = child.props.get("name") else {
@@ -312,11 +312,11 @@ mod tests {
     }
 
     #[test]
-    fn slots_are_named_children_the_host_reads() {
+    fn parts_are_named_children_the_host_reads() {
         let row = component("ListRow", "row").expect("ListRow");
         let badge = component("Badge", "b").expect("Badge");
-        let node = slot(row, "trailing", vec![badge]);
-        let names: Vec<&str> = slots(&node).map(|(name, _)| name).collect();
+        let node = part(row, "trailing", vec![badge]);
+        let names: Vec<&str> = parts(&node).map(|(name, _)| name).collect();
         assert_eq!(names, vec!["trailing"]);
     }
 }

@@ -225,7 +225,7 @@ struct CacheFingerprint {
 
 /// One application tray icon as last painted: where, and what a click on it addresses.
 #[derive(Clone, Debug)]
-struct AppTraySlot {
+struct AppTrayPart {
     key: String,
     id: String,
     /// The application proven to own the item, when one was.
@@ -438,7 +438,7 @@ pub struct TopBarChrome {
     ws_chevron_rect: Rect,
     tray_pill_rect: Rect,
     /// Application tray icons, right to left, as last painted.
-    app_tray: Vec<AppTraySlot>,
+    app_tray: Vec<AppTrayPart>,
     /// Uploaded icon images by item key, reused while the item's pixels are the same allocation.
     app_tray_images: HashMap<String, (usize, vello::peniko::ImageData)>,
     /// Interaction geometry is deliberately larger than the painted pill: the screen's top-right
@@ -1457,7 +1457,7 @@ impl Widget for TopBarChrome {
         let app_tray = self
             .app_tray
             .iter()
-            .map(|slot| (format!("topbar_tray_item_{}", slot.id), slot.rect));
+            .map(|part| (format!("topbar_tray_item_{}", part.id), part.rect));
         let mut rects = vec![
             ("topbar_tilo_mark".to_string(), self.tilo_mark_rect()),
             (
@@ -1552,8 +1552,8 @@ impl Widget for TopBarChrome {
                     && let Some(unread) = self
                         .app_tray
                         .iter()
-                        .find(|slot| slot.key == key)
-                        .and_then(|slot| slot.owner_app.as_deref())
+                        .find(|part| part.key == key)
+                        .and_then(|part| part.owner_app.as_deref())
                         .map(|app| self.app_badge(app))
                         .filter(|unread| *unread > 0)
                 {

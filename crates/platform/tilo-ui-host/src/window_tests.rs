@@ -1,7 +1,7 @@
 //! The window's tests: what a person and an app see of one window.
 
 use super::*;
-use crate::adapter::{SLOT, kind};
+use crate::adapter::{PART, kind};
 use tilo_render_protocol::patch::local;
 
 /// `base` edited to `ours` and, meanwhile, to `theirs`: what the text holds once ours is rebased
@@ -661,7 +661,7 @@ fn keyed_menu(key: &str) -> Vec<ToUi> {
         .events
         .insert("press".to_owned(), wire::Event::default());
     let mut shell = UiNode::empty("ui.NavShell", "shell");
-    let mut actions = UiNode::empty("slot", "actions");
+    let mut actions = UiNode::empty("part", "actions");
     actions
         .props
         .insert("name".to_owned(), Value::text("actions"));
@@ -1370,7 +1370,7 @@ fn list_page_keyed(key: &str) -> Vec<ToUi> {
     list.props.insert("in_column".to_owned(), Value::Bool(true));
     let mut docked = UiNode::empty("ui.Docked", "docked");
     docked.children.push(list);
-    let mut overview = UiNode::empty("slot", "overview");
+    let mut overview = UiNode::empty("part", "overview");
     overview
         .props
         .insert("name".to_owned(), Value::text("overview"));
@@ -1479,16 +1479,16 @@ fn the_row_of_the_view_beside_the_list_is_selected_once_the_rows_arrive() {
     assert!(!selection.is_selected(&"notes/b".to_owned()), "only it is");
 }
 
-fn shell_node(key: &str, props: &[(&str, Value)], slots: Vec<(&str, Vec<UiNode>)>) -> UiNode {
+fn shell_node(key: &str, props: &[(&str, Value)], parts: Vec<(&str, Vec<UiNode>)>) -> UiNode {
     let mut shell = UiNode::empty(&kind("NavShell"), key);
     for (name, value) in props {
         shell.props.insert((*name).to_owned(), value.clone());
     }
-    for (name, children) in slots {
-        let mut slot = UiNode::empty(SLOT, &format!("{key}#{name}"));
-        slot.props.insert("name".to_owned(), Value::text(name));
-        slot.children = children;
-        shell.children.push(slot);
+    for (name, children) in parts {
+        let mut part = UiNode::empty(PART, &format!("{key}#{name}"));
+        part.props.insert("name".to_owned(), Value::text(name));
+        part.children = children;
+        shell.children.push(part);
     }
     shell
 }
@@ -2031,7 +2031,7 @@ fn a_bound_entry_takes_the_next_typing_after_it_sends() {
 fn searching_list_page(rows: i64) -> Vec<ToUi> {
     let mut list = UiNode::empty("ui.VirtualList", "list");
     list.props.insert("in_column".to_owned(), Value::Bool(true));
-    let mut overview = UiNode::empty(SLOT, "shell#overview");
+    let mut overview = UiNode::empty(PART, "shell#overview");
     overview
         .props
         .insert("name".to_owned(), Value::text("overview"));
@@ -2142,8 +2142,8 @@ fn the_window_s_search_narrows_the_list_its_frame_declares() {
 
 fn action_shell(listing: bool) -> Vec<ToUi> {
     use wire::Event;
-    let slot = |name: &str| {
-        let mut node = UiNode::empty(SLOT, &format!("shell#{name}"));
+    let part = |name: &str| {
+        let mut node = UiNode::empty(PART, &format!("shell#{name}"));
         node.props.insert("name".to_owned(), Value::text(name));
         node
     };
@@ -2161,9 +2161,9 @@ fn action_shell(listing: bool) -> Vec<ToUi> {
             ..Event::default()
         },
     );
-    let mut actions = slot("actions");
+    let mut actions = part("actions");
     actions.children.push(button);
-    let mut overview = slot("overview");
+    let mut overview = part("overview");
     if listing {
         let mut row = UiNode::empty(&kind("ListRow"), "shell#row");
         row.props.insert("title".to_owned(), Value::text("First"));
@@ -2175,7 +2175,7 @@ fn action_shell(listing: bool) -> Vec<ToUi> {
             .insert("title".to_owned(), Value::text("No notes yet"));
         overview.children.push(state);
     }
-    let mut content = slot("content");
+    let mut content = part("content");
     let mut unopened = UiNode::empty(&kind("EmptyState"), "shell#unopened");
     unopened
         .props

@@ -1,15 +1,15 @@
 # Draw a part of the shell
 
-Parts of the Tilo shell are **slots**: the window menu, the bar, the
+The Tilo shell is drawn in **parts**: the window menu, the bar, the
 switcher, the overview, quick settings, the launcher, notifications, the layout
 widgets, the people list, the emoji picker, the on-screen displays, the
 workspace menu, the window decoration and the window manager, plus every
 sheet that is not asking the person to trust something (`sheet:power`,
-`sheet:display`, `sheet:shortcuts`, `sheet:directory`). Each slot is drawn by
-a view, and the person can bind a slot to a view of their own — one their app
+`sheet:display`, `sheet:shortcuts`, `sheet:directory`). Each part is drawn by
+a view, and the person can bind a part to a view of their own — one their app
 publishes — in place of the one the shell ships with.
 
-## What a slot's view reads
+## What a part reads
 
 The session publishes what a part of the shell is as a resource. The window
 menu's resource is `desktop:window-menu`: the window it is for, where it
@@ -29,11 +29,11 @@ for row in reading["rows"].as_array().into_iter().flatten() {
 }
 ```
 
-The reading the slot's *first* frame draws is the shell's own resource: a slot
+The reading the part's *first* frame draws is the shell's own resource: a part
 is presentation, and a view that keeps state of its own has nowhere to keep
 it.
 
-## What a slot's view may change
+## What a part's view may change
 
 Only through the resource's own verbs, and each one is a child invocation of
 your app, so it carries your app's attribution and grants like any other
@@ -43,11 +43,11 @@ action:
 menu.invoke("choose", &json!({ "row": "window-close-window" }))?;
 ```
 
-A view never places itself. Where the slot stands, whether it holds the
+A view never places itself. Where the part stands, whether it holds the
 keyboard and what a press outside it closes come from the shell's surface
 stack (`desktop:overlays`). What your view draws is the content.
 
-## Bind the slot
+## Bind the part
 
 The binding is a setting of the person's, `settings:shell-views`, saved with
 what made it and who, and it follows them to their other devices:
@@ -62,25 +62,25 @@ Bind it through the session's action API, as an app, an agent or a script does:
 let views = ui::collaboration::SessionResource::open("settings:shell-views")?;
 views.invoke(
     "bind",
-    &json!({ "slot": "window-menu", "app": "so.tilo.example.menu", "view": "menu" }),
+    &json!({ "part": "window-menu", "app": "so.tilo.example.menu", "view": "menu" }),
 )?;
 ```
 
-`"on": "native"` or `"on": "web"` binds the slot on one kind of device only,
-over the binding for every device. `reset` with a slot shows the shell's own
+`"on": "native"` or `"on": "web"` binds the part on one kind of device only,
+over the binding for every device. `reset` with a part shows the shell's own
 view again:
 
 ```rust
-views.invoke("reset", &json!({ "slot": "window-menu" }))?;
+views.invoke("reset", &json!({ "part": "window-menu" }))?;
 ```
 
 The session starts the app you bound the way it starts its own panels (the
 program `tilo-` and the app id's name after `so.tilo.`), puts its window in
-the slot while the reading says the part is up, and swaps it on the frame
+the part while the reading says the part is up, and swaps it on the frame
 after a rebind: the part is up before and after, and the reading behind it
-never moves. The app draws the slot with the view it publishes for that slot;
+never moves. The app draws the part with the view it publishes for that part;
 the binding names the view too, so the person and their tools can tell which
-one was meant. If your app is not installed on the machine, the slot stays
+one was meant. If your app is not installed on the machine, the part stays
 with the shell's own view rather than going blank.
 
 ## Draw it in tilolang
@@ -92,7 +92,7 @@ program path is a directory holding `app.wasm`, which is how an app you are
 still building is pointed at. Anything else is an app of its own, started by
 its program name as above.
 
-The package is compiled against the surface the session publishes for the slot
+The package is compiled against the surface the session publishes for the part
 — for the window menu, the resource `desktop:window-menu` of kind
 `desktop.window-menu`, which a package reads as `desktop.WindowMenu`:
 
@@ -125,7 +125,7 @@ params = [{ name = "row", required = true, type = "text" }]
 ```
 
 A row is what the menu shows: its id, its label, whether the window can choose
-it, and the reason beside it when it cannot. The view takes the slot's type as
+it, and the reason beside it when it cannot. The view takes the part's type as
 its reading, and every field of it is what the session publishes:
 
 ```tilo
@@ -143,11 +143,11 @@ view menu(m: desktop.WindowMenu) {
 }
 ```
 
-Reading the slot changes nothing; when the session publishes a new reading the
+Reading the part changes nothing; when the session publishes a new reading the
 view runs again over it, so a menu left open while its window changes offers
 what that window offers now. What the view invokes names an app and an action
 of its own, but the view itself changes nothing: the session hands the call to
-the same action API every other caller goes through — the address is the slot's
+the same action API every other caller goes through — the address is the part's
 resource and the verb, the arguments are converted to the shapes the verb's
 parameters declare — so the checks the API makes of any caller (grants,
 consent, destructive actions) are the checks it makes of the view's press.
@@ -155,24 +155,24 @@ Every parameter the verb declares is passed at the call site, `.none` where the
 view means none. A verb that takes a place takes it as the reading gives it
 back (`desktop.open(m, tab: .none, anchor: .some("40,50"))`).
 
-A view of a slot opens nothing and places nothing: the session puts it where
+A view of a part opens nothing and places nothing: the session puts it where
 the reading says the part stands, the overlay stack says when it holds the
-pointer and the keys, and a press away from what it drew closes the slot, as a
+pointer and the keys, and a press away from what it drew closes the part, as a
 press outside a menu does. A package that does not load, that declares no view
 by the name the binding names, or whose view does not run is no view for the
-slot: the session draws the view it ships with again rather than leaving the
-slot blank.
+part: the session draws the view it ships with again rather than leaving the
+part blank.
 
-The window menu is the slot with a tilolang host today
-([`slots::surface`](../../crates/session/session/src/slots.rs)).
+The window menu is the part with a tilolang host today
+([`parts::surface`](../../crates/session/session/src/parts.rs)).
 
 ## What you cannot bind
 
 The lock screen, a workspace's consent, a portal's request, a sign-in and a
 display change being tried are drawn by the system whatever is bound
 elsewhere: a view someone else wrote must not be able to ask for a password
-and look like the machine asking. The settings resource refuses those slots.
+and look like the machine asking. The settings resource refuses those parts.
 
 More: [Build an app](../app-development.md), the
 [window menu's own view](../../crates/session/window-menu), and the
-[resource that binds a slot](../../crates/system/settings-sections/src/shell_views.rs).
+[resource that binds a part](../../crates/system/settings-sections/src/shell_views.rs).

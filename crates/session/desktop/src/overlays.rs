@@ -6,14 +6,14 @@
 //! The stack answers the questions every overlay otherwise answers for itself: which surface the
 //! keyboard goes to, what closing the top one restores, where a surface hangs on its display, and
 //! what a press outside it closes.
-//! Stacking is [`Slot::ALL`] order, topmost first: input is offered to the open surfaces in it,
+//! Stacking is [`Part::ALL`] order, topmost first: input is offered to the open surfaces in it,
 //! assistive technology reads them in it, and Escape closes the first open one. It is not derived
 //! from kinds — a display question answered above onboarding is a fact about the session, not about
 //! either one's modality.
-//! The slots the desktop's own chrome still draws (`Slot::is_chrome`) are mirrored from the widgets
+//! The parts the desktop's own chrome still draws (`Part::is_chrome`) are mirrored from the widgets
 //! that own their state; a press outside one closes it here where the widget says where it stands,
 //! and through the widget that holds the press when the press is the chrome's. The two the session
-//! puts up itself (the window menu and quick settings) declare [`Slot::session_closes`] and are
+//! puts up itself (the window menu and quick settings) declare [`Part::session_closes`] and are
 //! closed by the session's own verbs.
 //! The stack also holds the shell's surface up ([`Overlay`]), what the person typed in its search,
 //! and Alt+Tab's walk: one reading, `desktop:overlays`, says all of it.
@@ -126,7 +126,7 @@ impl Overlay {
 /// open surfaces in it, assistive technology reads them in it, and Escape closes the first open
 /// one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Slot {
+pub enum Part {
     /// The search palette: over everything, the window it was opened from under it.
     Search,
     /// The About sheet: this computer's name and which Tilo it runs.
@@ -150,8 +150,8 @@ pub enum Slot {
     QuickSettings,
 }
 
-impl Slot {
-    /// Every slot, topmost first.
+impl Part {
+    /// Every part, topmost first.
     pub const ALL: [Self; 10] = [
         Self::Search,
         Self::About,
@@ -165,7 +165,7 @@ impl Slot {
         Self::QuickSettings,
     ];
 
-    /// The slot's name, as a reading, a view and an agent name it.
+    /// The part's name, as a reading, a view and an agent name it.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -182,13 +182,13 @@ impl Slot {
         }
     }
 
-    /// The slot `text` names, as the verbs and the readings spell it.
+    /// The part `text` names, as the verbs and the readings spell it.
     #[must_use]
     pub fn named(text: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|slot| slot.as_str() == text)
+        Self::ALL.into_iter().find(|part| part.as_str() == text)
     }
 
-    /// What kind of surface this slot is.
+    /// What kind of surface this part is.
     #[must_use]
     pub const fn role(self) -> Role {
         match self {
@@ -241,7 +241,7 @@ impl Slot {
         }
     }
 
-    /// Whether the desktop's chrome draws and answers this slot itself, as it still does for its
+    /// Whether the desktop's chrome draws and answers this part itself, as it still does for its
     /// menus, the picker, the overview and the strip ribbon. Each leaves this set as its own view
     /// takes it over.
     #[must_use]
@@ -249,8 +249,8 @@ impl Slot {
         !matches!(self, Self::WindowMenu | Self::QuickSettings)
     }
 
-    /// Whether the session's own verbs open and close this slot: the window menu and quick settings
-    /// are the session's, while the chrome's slots close through the widgets that keep their state.
+    /// Whether the session's own verbs open and close this part: the window menu and quick settings
+    /// are the session's, while the chrome's parts close through the widgets that keep their state.
     #[must_use]
     pub const fn session_closes(self) -> bool {
         !self.is_chrome()
@@ -410,16 +410,16 @@ pub enum Target {
     /// The window in front: nothing over the shell wants the keyboard.
     Window,
     /// A surface over the shell holds the keyboard.
-    Surface(Slot),
+    Surface(Part),
 }
 
 impl Target {
     /// The surface, while one holds the keyboard.
     #[must_use]
-    pub const fn slot(self) -> Option<Slot> {
+    pub const fn part(self) -> Option<Part> {
         match self {
             Self::Window => None,
-            Self::Surface(slot) => Some(slot),
+            Self::Surface(part) => Some(part),
         }
     }
 
@@ -428,7 +428,7 @@ impl Target {
     pub fn as_str(self) -> String {
         match self {
             Self::Window => "window".into(),
-            Self::Surface(slot) => format!("overlay:{}", slot.as_str()),
+            Self::Surface(part) => format!("overlay:{}", part.as_str()),
         }
     }
 }
@@ -436,7 +436,7 @@ impl Target {
 /// One open surface, as the stack publishes it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
-    pub slot: Slot,
+    pub part: Part,
     pub role: Role,
     pub anchor: Anchor,
     pub size: Size,
@@ -445,14 +445,14 @@ pub struct Entry {
     pub place: Option<Standing>,
 }
 
-/// One slot's state in the stack.
+/// One part's state in the stack.
 #[derive(Clone, Debug, Default)]
-struct SlotState {
+struct PartState {
     open: bool,
-    /// Where this opening put it; the slot's own anchor while the verb named none.
+    /// Where this opening put it; the part's own anchor while the verb named none.
     anchor: Option<Anchor>,
     /// Where the widget drawing it says it stands, while it is up: a menu is as big as its rows,
-    /// which the slot's anchor cannot say.
+    /// which the part's anchor cannot say.
     stands: Option<Rect>,
     /// Whether a press outside last closed it: it does not open again for that press, which is
     /// still being delivered.
@@ -778,43 +778,43 @@ impl Overlays {
         self.0.borrow().displays.caret
     }
 
-    /// Where the surface standing in `slot` was last seen, as its app drew it: the size a panel
+    /// Where the surface standing in `part` was last seen, as its app drew it: the size a panel
     /// that fits its content asked for, which is shorter than the room when its page is.
     #[must_use]
-    pub fn surface(&self, slot: Slot) -> Option<Rect> {
+    pub fn surface(&self, part: Part) -> Option<Rect> {
         self.0
             .borrow()
-            .slots
-            .get(&slot)
+            .parts
+            .get(&part)
             .and_then(|state| state.stands)
     }
 
-    /// Put `slot` up, standing at `anchor` or where the slot stands by itself.
+    /// Put `part` up, standing at `anchor` or where the part stands by itself.
     /// One anchored surface at a time: the person looks at the one they just opened, so the others
     /// go down with it. Their widgets follow the stack ([`Self::is_open`]), which is how the chrome
     /// learns to close them.
-    pub fn open(&self, slot: Slot, anchor: Option<Anchor>) {
-        self.raise(slot, anchor, false);
+    pub fn open(&self, part: Part, anchor: Option<Anchor>) {
+        self.raise(part, anchor, false);
     }
 
-    /// Put `slot` up over the surface the person types in, standing at `anchor`: what is opened
+    /// Put `part` up over the surface the person types in, standing at `anchor`: what is opened
     /// for that field (the clipboard, to paste into it) leaves the field's surface up under it,
     /// takes the keyboard from it while it stands, and gives it back as it goes. Every other
     /// anchored surface goes down, as [`Self::open`] takes them.
-    pub fn open_over(&self, slot: Slot, anchor: Option<Anchor>) {
-        self.raise(slot, anchor, true);
+    pub fn open_over(&self, part: Part, anchor: Option<Anchor>) {
+        self.raise(part, anchor, true);
     }
 
-    fn raise(&self, slot: Slot, anchor: Option<Anchor>, over: bool) {
+    fn raise(&self, part: Part, anchor: Option<Anchor>, over: bool) {
         {
             let mut stack = self.0.borrow_mut();
             let typed_in = over.then(|| stack.target()).flatten();
-            if slot.stands_beside() {
-                for other in Slot::ALL {
-                    if other != slot
+            if part.stands_beside() {
+                for other in Part::ALL {
+                    if other != part
                         && Some(other) != typed_in
                         && other.stands_beside()
-                        && let Some(state) = stack.slots.get_mut(&other)
+                        && let Some(state) = stack.parts.get_mut(&other)
                         && state.open
                     {
                         state.open = false;
@@ -822,26 +822,26 @@ impl Overlays {
                     }
                 }
             }
-            let state = stack.slots.entry(slot).or_default();
+            let state = stack.parts.entry(part).or_default();
             state.open = true;
-            state.anchor = Some(anchor.unwrap_or_else(|| slot.anchor()));
+            state.anchor = Some(anchor.unwrap_or_else(|| part.anchor()));
             state.dismissed = false;
             state.awaiting_close = false;
             if over {
-                stack.over = Some(slot);
-            } else if stack.over == Some(slot) {
+                stack.over = Some(part);
+            } else if stack.over == Some(part) {
                 stack.over = None;
             }
         }
         self.woke();
     }
 
-    /// Take `slot` down, as the widget drawing it does once the stack has: what the stack took down
-    /// is settled by this, and a slot that is already down moved nothing.
-    pub fn close(&self, slot: Slot) {
+    /// Take `part` down, as the widget drawing it does once the stack has: what the stack took down
+    /// is settled by this, and a part that is already down moved nothing.
+    pub fn close(&self, part: Part) {
         {
             let mut stack = self.0.borrow_mut();
-            let Some(state) = stack.slots.get_mut(&slot) else {
+            let Some(state) = stack.parts.get_mut(&part) else {
                 return;
             };
             let followed = std::mem::take(&mut state.awaiting_close);
@@ -853,27 +853,27 @@ impl Overlays {
         self.woke();
     }
 
-    /// Say where the widget drawing `slot` paints it, while it is up.
+    /// Say where the widget drawing `part` paints it, while it is up.
     ///
     /// A surface the session places is judged by the rect its anchor and size
     /// settle; the chrome's own menus hang off the bar as big as their rows,
     /// which only the widget knows. `None` takes back the last answer, as a
     /// surface going down does.
-    pub fn stands(&self, slot: Slot, stands: Option<Rect>) {
+    pub fn stands(&self, part: Part, stands: Option<Rect>) {
         let mut stack = self.0.borrow_mut();
-        match stack.slots.get_mut(&slot) {
+        match stack.parts.get_mut(&part) {
             Some(state) => state.stands = stands,
-            None if stands.is_some() => stack.slots.entry(slot).or_default().stands = stands,
+            None if stands.is_some() => stack.parts.entry(part).or_default().stands = stands,
             None => {}
         }
     }
 
-    /// A press outside `slot` closed it: it stays down for that press, which is still being
+    /// A press outside `part` closed it: it stays down for that press, which is still being
     /// delivered.
-    pub fn dismiss(&self, slot: Slot) {
+    pub fn dismiss(&self, part: Part) {
         {
             let mut stack = self.0.borrow_mut();
-            let state = stack.slots.entry(slot).or_default();
+            let state = stack.parts.entry(part).or_default();
             state.open = false;
             state.dismissed = true;
             state.awaiting_close = true;
@@ -894,40 +894,40 @@ impl Overlays {
         if !std::mem::take(&mut stack.press_over) {
             return;
         }
-        for state in stack.slots.values_mut() {
+        for state in stack.parts.values_mut() {
             state.dismissed = false;
         }
     }
 
-    /// Whether `slot` was dismissed by a press outside that is still being delivered, so nothing
+    /// Whether `part` was dismissed by a press outside that is still being delivered, so nothing
     /// that press raised may put it back up.
     #[must_use]
-    pub fn dismissed_recently(&self, slot: Slot) -> bool {
+    pub fn dismissed_recently(&self, part: Part) -> bool {
         self.0
             .borrow()
-            .slots
-            .get(&slot)
+            .parts
+            .get(&part)
             .is_some_and(|state| state.dismissed)
     }
 
-    /// Whether `slot` was taken down by the stack and the widget drawing it has yet to follow: its
+    /// Whether `part` was taken down by the stack and the widget drawing it has yet to follow: its
     /// open state is the one being left behind, not a new opening to put back up.
     #[must_use]
-    pub fn awaiting_close(&self, slot: Slot) -> bool {
+    pub fn awaiting_close(&self, part: Part) -> bool {
         self.0
             .borrow()
-            .slots
-            .get(&slot)
+            .parts
+            .get(&part)
             .is_some_and(|state| state.awaiting_close)
     }
 
-    /// Whether `slot` is up.
+    /// Whether `part` is up.
     #[must_use]
-    pub fn is_open(&self, slot: Slot) -> bool {
+    pub fn is_open(&self, part: Part) -> bool {
         self.0
             .borrow()
-            .slots
-            .get(&slot)
+            .parts
+            .get(&part)
             .is_some_and(|state| state.open)
     }
 
@@ -945,33 +945,33 @@ impl Overlays {
     /// The surface opened over the one the person types in ([`Self::open_over`]), while it stands:
     /// it holds the keyboard whatever stands under it.
     #[must_use]
-    pub fn over(&self) -> Option<Slot> {
+    pub fn over(&self) -> Option<Part> {
         self.0.borrow().over()
     }
 
-    /// Where `slot` stands now, if its anchor and size settle a room the host can place it in.
+    /// Where `part` stands now, if its anchor and size settle a room the host can place it in.
     #[must_use]
-    pub fn place(&self, slot: Slot) -> Option<Standing> {
-        self.0.borrow().entry(slot).and_then(|entry| entry.place)
+    pub fn place(&self, part: Part) -> Option<Standing> {
+        self.0.borrow().entry(part).and_then(|entry| entry.place)
     }
 
     /// The surfaces open now, topmost first.
     #[must_use]
     pub fn entries(&self) -> Vec<Entry> {
         let stack = self.0.borrow();
-        Slot::ALL
+        Part::ALL
             .into_iter()
-            .filter_map(|slot| stack.entry(slot))
+            .filter_map(|part| stack.entry(part))
             .collect()
     }
 
     /// The surface Escape closes, by the dismissal table: the topmost one whose kind answers Escape
     /// and that the session may close.
     #[must_use]
-    pub fn escape(&self) -> Option<Slot> {
+    pub fn escape(&self) -> Option<Part> {
         let stack = self.0.borrow();
-        Slot::ALL.into_iter().find(|slot| {
-            slot.session_closes() && slot.role().closes_on_escape() && stack.is_shown(*slot)
+        Part::ALL.into_iter().find(|part| {
+            part.session_closes() && part.role().closes_on_escape() && stack.is_shown(*part)
         })
     }
 
@@ -980,19 +980,19 @@ impl Overlays {
     /// surface its own widget draws says where it stands, and one that says neither is its view's
     /// to close.
     #[must_use]
-    pub fn press_outside(&self, x: f64, y: f64) -> Option<Slot> {
+    pub fn press_outside(&self, x: f64, y: f64) -> Option<Part> {
         let stack = self.0.borrow();
-        Slot::ALL.into_iter().find(|slot| {
-            if !slot.role().closes_on_press_outside() {
+        Part::ALL.into_iter().find(|part| {
+            if !part.role().closes_on_press_outside() {
                 return false;
             }
-            let Some(state) = stack.slots.get(slot).filter(|state| state.open) else {
+            let Some(state) = stack.parts.get(part).filter(|state| state.open) else {
                 return false;
             };
             let place = match state.stands {
                 Some(place) => Some(place),
-                None if slot.session_closes() => stack
-                    .entry(*slot)
+                None if part.session_closes() => stack
+                    .entry(*part)
                     .and_then(|entry| entry.place)
                     .map(|standing| standing.room),
                 None => None,
@@ -1005,11 +1005,11 @@ impl Overlays {
 /// The stack behind the handle.
 #[derive(Clone, Debug, Default)]
 struct Stack {
-    slots: BTreeMap<Slot, SlotState>,
+    parts: BTreeMap<Part, PartState>,
     displays: Displays,
     /// The surface last opened over the one the person types in ([`Overlays::open_over`]): while
     /// it is up it holds the keyboard over that surface, which stays up under it.
-    over: Option<Slot>,
+    over: Option<Part>,
     /// Whether the button of the press that dismissed something has come up,
     /// and what it asked is yet to be carried out.
     press_over: bool,
@@ -1041,36 +1041,36 @@ impl Stack {
 
     /// The surface that holds the keyboard: one opened over the field the person types in, else
     /// the topmost open one that takes it.
-    fn target(&self) -> Option<Slot> {
+    fn target(&self) -> Option<Part> {
         self.over()
-            .or_else(|| Slot::ALL.into_iter().find(|slot| self.is_shown(*slot)))
+            .or_else(|| Part::ALL.into_iter().find(|part| self.is_shown(*part)))
     }
 
     /// The open surface opened over the one the person types in.
-    fn over(&self) -> Option<Slot> {
-        self.over.filter(|slot| self.is_shown(*slot))
+    fn over(&self) -> Option<Part> {
+        self.over.filter(|part| self.is_shown(*part))
     }
 
-    /// Whether `slot` is up and taking input.
-    fn is_shown(&self, slot: Slot) -> bool {
-        self.slots.get(&slot).is_some_and(|state| state.open)
+    /// Whether `part` is up and taking input.
+    fn is_shown(&self, part: Part) -> bool {
+        self.parts.get(&part).is_some_and(|state| state.open)
     }
 
-    /// The open surface `slot` is, with where it stands now.
-    fn entry(&self, slot: Slot) -> Option<Entry> {
-        let state = self.slots.get(&slot)?;
+    /// The open surface `part` is, with where it stands now.
+    fn entry(&self, part: Part) -> Option<Entry> {
+        let state = self.parts.get(&part)?;
         if !state.open {
             return None;
         }
-        let anchor = state.anchor.unwrap_or_else(|| slot.anchor());
-        let size = slot.size();
+        let anchor = state.anchor.unwrap_or_else(|| part.anchor());
+        let size = part.size();
         let place = self
             .displays
             .display_for(anchor.display_of())
             .and_then(|display| place_on(display, anchor, size));
         Some(Entry {
-            slot,
-            role: slot.role(),
+            part,
+            role: part.role(),
             anchor,
             size,
             place,
@@ -1093,15 +1093,15 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_overlay_stack_opens_closes_and_hands_on_the_keyboard;
 
-        phase every_slot_says_what_surface_it_is;
+        phase every_part_says_what_surface_it_is;
         {
-            for slot in Slot::ALL {
-                let role = slot.role();
+            for part in Part::ALL {
+                let role = part.role();
                 assert!(
-                    !role.as_str().is_empty() && !slot.as_str().is_empty(),
-                    "{slot:?} is named"
+                    !role.as_str().is_empty() && !part.as_str().is_empty(),
+                    "{part:?} is named"
                 );
-                assert_eq!(Slot::named(slot.as_str()), Some(slot), "{slot:?}");
+                assert_eq!(Part::named(part.as_str()), Some(part), "{part:?}");
             }
         }
 
@@ -1121,27 +1121,27 @@ mod tests {
         phase one_anchored_surface_stands_at_a_time;
         {
             let overlays = overlays();
-            overlays.open(Slot::WorkspaceMenu, None);
-            overlays.open(Slot::Strips, None);
+            overlays.open(Part::WorkspaceMenu, None);
+            overlays.open(Part::Strips, None);
             assert!(
-                !overlays.is_open(Slot::WorkspaceMenu),
+                !overlays.is_open(Part::WorkspaceMenu),
                 "the strip labels came up, and the menu went down with them"
             );
-            overlays.open(Slot::QuickSettings, None);
+            overlays.open(Part::QuickSettings, None);
             assert!(
-                !overlays.is_open(Slot::Strips),
+                !overlays.is_open(Part::Strips),
                 "and quick settings after them"
             );
-            assert!(overlays.is_open(Slot::QuickSettings));
+            assert!(overlays.is_open(Part::QuickSettings));
             // The overview is the shell the others stand over, not one of them.
-            overlays.open(Slot::Overview, None);
+            overlays.open(Part::Overview, None);
             assert!(
-                overlays.is_open(Slot::QuickSettings),
+                overlays.is_open(Part::QuickSettings),
                 "the overview keeps what stands over it"
             );
-            overlays.open(Slot::Strips, None);
+            overlays.open(Part::Strips, None);
             assert!(
-                overlays.is_open(Slot::Overview),
+                overlays.is_open(Part::Overview),
                 "and the strip labels leave the overview itself up"
             );
         }
@@ -1151,66 +1151,66 @@ mod tests {
             let overlays = overlays();
             assert_eq!(overlays.target(), Target::Window, "the shell has it");
 
-            overlays.open(Slot::Overview, None);
-            assert_eq!(overlays.target(), Target::Surface(Slot::Overview));
-            overlays.open(Slot::QuickSettings, None);
+            overlays.open(Part::Overview, None);
+            assert_eq!(overlays.target(), Target::Surface(Part::Overview));
+            overlays.open(Part::QuickSettings, None);
             assert_eq!(
                 overlays.target(),
-                Target::Surface(Slot::Overview),
+                Target::Surface(Part::Overview),
                 "the top of the stack holds it, not the last one opened"
             );
 
-            overlays.close(Slot::Overview);
+            overlays.close(Part::Overview);
             assert_eq!(
                 overlays.target(),
-                Target::Surface(Slot::QuickSettings),
+                Target::Surface(Part::QuickSettings),
                 "the one it covered takes it back"
             );
-            overlays.close(Slot::QuickSettings);
+            overlays.close(Part::QuickSettings);
             assert_eq!(overlays.target(), Target::Window, "and the window again");
         }
 
         phase a_surface_opened_over_the_field_typed_in_leaves_it_up_and_gives_the_keys_back;
         {
             let overlays = overlays();
-            overlays.open(Slot::Search, None);
-            overlays.open_over(Slot::QuickSettings, None);
+            overlays.open(Part::Search, None);
+            overlays.open_over(Part::QuickSettings, None);
             assert!(
-                overlays.is_open(Slot::Search),
+                overlays.is_open(Part::Search),
                 "the search the clipboard was opened for stays up under it"
             );
-            assert_eq!(overlays.target(), Target::Surface(Slot::QuickSettings));
-            assert_eq!(overlays.over(), Some(Slot::QuickSettings));
+            assert_eq!(overlays.target(), Target::Surface(Part::QuickSettings));
+            assert_eq!(overlays.over(), Some(Part::QuickSettings));
             assert_eq!(
                 overlays.escape(),
-                Some(Slot::QuickSettings),
+                Some(Part::QuickSettings),
                 "Escape puts the clipboard away, not the search"
             );
-            overlays.close(Slot::QuickSettings);
+            overlays.close(Part::QuickSettings);
             assert_eq!(overlays.over(), None);
             assert_eq!(
                 overlays.target(),
-                Target::Surface(Slot::Search),
+                Target::Surface(Part::Search),
                 "the search has the keys back"
             );
 
             // Opened plainly, it stands alone.
-            overlays.open_over(Slot::QuickSettings, None);
-            overlays.open(Slot::QuickSettings, None);
-            assert!(!overlays.is_open(Slot::Search));
+            overlays.open_over(Part::QuickSettings, None);
+            overlays.open(Part::QuickSettings, None);
+            assert!(!overlays.is_open(Part::Search));
             assert_eq!(overlays.over(), None);
         }
 
         phase escape_and_a_press_outside_close_the_top_menu_that_stands_where_it_is_not;
         {
             let overlays = overlays();
-            overlays.open(Slot::QuickSettings, None);
-            let place = overlays.place(Slot::QuickSettings).expect("placed").room;
+            overlays.open(Part::QuickSettings, None);
+            let place = overlays.place(Part::QuickSettings).expect("placed").room;
 
-            assert_eq!(overlays.escape(), Some(Slot::QuickSettings));
+            assert_eq!(overlays.escape(), Some(Part::QuickSettings));
             assert_eq!(
                 overlays.press_outside(4.0, DISPLAY.y1 - 4.0),
-                Some(Slot::QuickSettings),
+                Some(Part::QuickSettings),
                 "a press outside its rect"
             );
             assert_eq!(
@@ -1220,18 +1220,18 @@ mod tests {
             );
 
             // The window menu takes its place: one anchored surface at a time.
-            overlays.open(Slot::WindowMenu, Some(Anchor::At(Point::new(40.0, 50.0))));
+            overlays.open(Part::WindowMenu, Some(Anchor::At(Point::new(40.0, 50.0))));
             assert!(
-                !overlays.is_open(Slot::QuickSettings),
+                !overlays.is_open(Part::QuickSettings),
                 "the panel goes down for the menu the person just opened"
             );
             // It covers the display it was opened on, and its own view stands the card at the
             // point: a press on that display is its view's to judge.
             assert_eq!(
-                overlays.place(Slot::WindowMenu).map(|standing| standing.room),
+                overlays.place(Part::WindowMenu).map(|standing| standing.room),
                 Some(DISPLAY)
             );
-            assert_eq!(overlays.escape(), Some(Slot::WindowMenu));
+            assert_eq!(overlays.escape(), Some(Part::WindowMenu));
             assert_eq!(
                 overlays.press_outside(4.0, DISPLAY.y1 - 4.0),
                 None,
@@ -1246,18 +1246,18 @@ mod tests {
             overlays.wake_with(Rc::clone(&asked));
             assert!(!asked.replace(false), "nothing asked yet");
 
-            overlays.open(Slot::WorkspaceMenu, None);
+            overlays.open(Part::WorkspaceMenu, None);
             assert!(asked.replace(false), "the menu came up");
-            overlays.dismiss(Slot::WorkspaceMenu);
+            overlays.dismiss(Part::WorkspaceMenu);
             assert!(
                 asked.replace(false),
                 "a press outside took it down: the widget has to close it"
             );
             // The widget closing it follows the stack, which hears that: what the widget shows next is
             // a surface of its own again, not the state the stack took down.
-            overlays.close(Slot::WorkspaceMenu);
+            overlays.close(Part::WorkspaceMenu);
             assert!(
-                !overlays.awaiting_close(Slot::WorkspaceMenu),
+                !overlays.awaiting_close(Part::WorkspaceMenu),
                 "the widget followed the stack"
             );
             assert!(asked.replace(false), "the widget followed it");
@@ -1265,38 +1265,38 @@ mod tests {
                 !asked.replace(false),
                 "and nothing is left to draw after that"
             );
-            overlays.open(Slot::QuickSettings, None);
+            overlays.open(Part::QuickSettings, None);
             assert!(asked.replace(false), "another surface came up");
-            overlays.close(Slot::QuickSettings);
+            overlays.close(Part::QuickSettings);
             assert!(asked.replace(false), "and went down");
         }
 
         phase a_dismissed_surface_stays_down_for_the_press_that_dismissed_it;
         {
             let overlays = overlays();
-            overlays.open(Slot::QuickSettings, None);
-            overlays.dismiss(Slot::QuickSettings);
-            assert!(!overlays.is_open(Slot::QuickSettings));
+            overlays.open(Part::QuickSettings, None);
+            overlays.dismiss(Part::QuickSettings);
+            assert!(!overlays.is_open(Part::QuickSettings));
             assert!(
-                overlays.dismissed_recently(Slot::QuickSettings),
+                overlays.dismissed_recently(Part::QuickSettings),
                 "the press is still being delivered"
             );
             overlays.press_ended();
             assert!(
-                overlays.dismissed_recently(Slot::QuickSettings),
+                overlays.dismissed_recently(Part::QuickSettings),
                 "a quick click comes up before what it asked is carried out: \
              the toggle it raised must not raise it again"
             );
             overlays.settle_press();
             assert!(
-                !overlays.dismissed_recently(Slot::QuickSettings),
+                !overlays.dismissed_recently(Part::QuickSettings),
                 "the asks are carried out: the press is over, and it opens again"
             );
 
-            overlays.dismiss(Slot::QuickSettings);
-            overlays.open(Slot::QuickSettings, None);
+            overlays.dismiss(Part::QuickSettings);
+            overlays.open(Part::QuickSettings, None);
             assert!(
-                !overlays.dismissed_recently(Slot::QuickSettings),
+                !overlays.dismissed_recently(Part::QuickSettings),
                 "opened again, it is nobody's dismissed surface"
             );
         }
@@ -1310,17 +1310,17 @@ mod tests {
                 None,
                 "nothing is up, so the press is the shell's"
             );
-            overlays.open(Slot::WorkspaceMenu, None);
+            overlays.open(Part::WorkspaceMenu, None);
             assert_eq!(
                 overlays.press_outside(640.0, 700.0),
                 None,
                 "an anchor alone does not say where a menu as big as its rows stands"
             );
 
-            overlays.stands(Slot::WorkspaceMenu, Some(panel));
+            overlays.stands(Part::WorkspaceMenu, Some(panel));
             assert_eq!(
                 overlays.press_outside(640.0, 700.0),
-                Some(Slot::WorkspaceMenu),
+                Some(Part::WorkspaceMenu),
                 "a press on the shell misses the panel"
             );
             assert_eq!(
@@ -1329,7 +1329,7 @@ mod tests {
                 "a press on the panel is the menu's own"
             );
 
-            overlays.stands(Slot::WorkspaceMenu, None);
+            overlays.stands(Part::WorkspaceMenu, None);
             assert_eq!(
                 overlays.press_outside(640.0, 700.0),
                 None,
@@ -1341,12 +1341,12 @@ mod tests {
         {
             let overlays = overlays();
             assert!(overlays.entries().is_empty(), "nothing is up");
-            overlays.open(Slot::QuickSettings, None);
-            overlays.open(Slot::Overview, None);
+            overlays.open(Part::QuickSettings, None);
+            overlays.open(Part::Overview, None);
             let entries = overlays.entries();
             assert_eq!(
-                entries.iter().map(|entry| entry.slot).collect::<Vec<_>>(),
-                vec![Slot::Overview, Slot::QuickSettings],
+                entries.iter().map(|entry| entry.part).collect::<Vec<_>>(),
+                vec![Part::Overview, Part::QuickSettings],
                 "the overview is the shell the panel stands over, not a second popup"
             );
             let overview = &entries[0];
@@ -1361,8 +1361,8 @@ mod tests {
         phase a_popover_under_the_bars_right_end_leaves_the_margin_and_the_bar;
         {
             let overlays = overlays();
-            overlays.open(Slot::QuickSettings, None);
-            let place = overlays.place(Slot::QuickSettings).expect("placed").room;
+            overlays.open(Part::QuickSettings, None);
+            let place = overlays.place(Part::QuickSettings).expect("placed").room;
             let bar = f64::from(TOPBAR_HEIGHT_PX).ceil();
             assert_eq!(place.x1, DISPLAY.x1 - POPOVER_MARGIN);
             assert_eq!(place.x0, DISPLAY.x1 - POPOVER_MARGIN - POPOVER_WIDTH);
@@ -1380,13 +1380,13 @@ mod tests {
             let overlays = overlays();
             let caret = Rect::new(600.0, 300.0, 602.0, 320.0);
             overlays.open(
-                Slot::QuickSettings,
+                Part::QuickSettings,
                 Some(Anchor::Beside {
                     at: caret,
                     gap: 4.0,
                 }),
             );
-            let standing = overlays.place(Slot::QuickSettings).expect("placed");
+            let standing = overlays.place(Part::QuickSettings).expect("placed");
             assert_eq!(standing.room.x0, caret.x1 + 4.0, "clear of the caret");
             assert!(standing.room.x0 >= caret.x1, "and never over it");
             assert_eq!(standing.room.width(), POPOVER_WIDTH);
@@ -1405,10 +1405,10 @@ mod tests {
             // With no room on the right of the caret, it opens on the left.
             let edge = Rect::new(1200.0, 300.0, 1202.0, 320.0);
             overlays.open(
-                Slot::QuickSettings,
+                Part::QuickSettings,
                 Some(Anchor::Beside { at: edge, gap: 4.0 }),
             );
-            let standing = overlays.place(Slot::QuickSettings).expect("placed");
+            let standing = overlays.place(Part::QuickSettings).expect("placed");
             assert_eq!(standing.room.x1, edge.x0 - 4.0);
             assert!(standing.room.x1 <= edge.x0, "still clear of the caret");
         }
@@ -1419,13 +1419,13 @@ mod tests {
             // Halfway down: the room below the line holds the whole pane, so it goes there.
             let middle = Rect::new(600.0, 200.0, 602.0, 220.0);
             overlays.open(
-                Slot::QuickSettings,
+                Part::QuickSettings,
                 Some(Anchor::Beside {
                     at: middle,
                     gap: 6.0,
                 }),
             );
-            let standing = overlays.place(Slot::QuickSettings).expect("placed");
+            let standing = overlays.place(Part::QuickSettings).expect("placed");
             assert_eq!(standing.room.y0, middle.y1 + 6.0, "just under the line");
             assert_eq!(
                 standing.room.y1,
@@ -1443,10 +1443,10 @@ mod tests {
             // and still covers nothing of the line.
             let low = Rect::new(600.0, 700.0, 602.0, 720.0);
             overlays.open(
-                Slot::QuickSettings,
+                Part::QuickSettings,
                 Some(Anchor::Beside { at: low, gap: 6.0 }),
             );
-            let standing = overlays.place(Slot::QuickSettings).expect("placed");
+            let standing = overlays.place(Part::QuickSettings).expect("placed");
             assert_eq!(standing.room.y1, low.y0 - 6.0, "just over the line");
             assert!(standing.rests_at_bottom, "hanging by its bottom edge");
             assert_eq!(
@@ -1471,10 +1471,10 @@ mod tests {
             overlays.set_displays(&[Rect::new(0.0, 0.0, 1000.0, 700.0)], Some(DISPLAY));
             assert_eq!(overlays.caret(), Some(caret));
             overlays.open(
-                Slot::QuickSettings,
+                Part::QuickSettings,
                 overlays.caret().map(|at| Anchor::Beside { at, gap: 6.0 }),
             );
-            let standing = overlays.place(Slot::QuickSettings).expect("placed");
+            let standing = overlays.place(Part::QuickSettings).expect("placed");
             assert_eq!(standing.room.x0, caret.x1 + 6.0, "clear of the caret");
             assert!(
                 standing.room.y0 >= caret.y1,
@@ -1494,19 +1494,19 @@ mod tests {
             let overlays = Overlays::new();
             overlays.set_displays(&[left, right], Some(left));
             // On the right display's trailing edge, though the person works on the left one.
-            overlays.open(Slot::QuickSettings, Some(Anchor::TopTrailing(8.0)));
-            let place = overlays.place(Slot::QuickSettings).expect("placed").room;
+            overlays.open(Part::QuickSettings, Some(Anchor::TopTrailing(8.0)));
+            let place = overlays.place(Part::QuickSettings).expect("placed").room;
             assert_eq!(place.x1, left.x1 - 8.0, "the display the person works on");
 
             let caret = Rect::new(2000.0, 100.0, 2002.0, 120.0);
             overlays.open(
-                Slot::QuickSettings,
+                Part::QuickSettings,
                 Some(Anchor::Beside {
                     at: caret,
                     gap: 0.0,
                 }),
             );
-            let place = overlays.place(Slot::QuickSettings).expect("placed").room;
+            let place = overlays.place(Part::QuickSettings).expect("placed").room;
             assert!(
                 place.x0 >= right.x0,
                 "the display holding the caret it was opened from"
@@ -1515,13 +1515,13 @@ mod tests {
             // A window's menu opened on the right display covers that display, from the point the
             // person pressed, though the person worked on the left one.
             let pressed = Point::new(1800.0, 60.0);
-            overlays.open(Slot::WindowMenu, Some(Anchor::At(pressed)));
-            let standing = overlays.place(Slot::WindowMenu).expect("placed");
+            overlays.open(Part::WindowMenu, Some(Anchor::At(pressed)));
+            let standing = overlays.place(Part::WindowMenu).expect("placed");
             assert_eq!(standing.room, right, "the display holding the press");
             assert_eq!(standing.from, pressed);
             assert_eq!(
                 overlays.press_outside(100.0, 100.0),
-                Some(Slot::WindowMenu),
+                Some(Part::WindowMenu),
                 "a press on the other display closes it"
             );
         }

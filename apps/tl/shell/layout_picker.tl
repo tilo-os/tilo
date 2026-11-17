@@ -252,7 +252,7 @@ view bar_parts(s: Shell) {
 
 /// One bar part in the settings: its glyph, its name, and whether it shows.
 view part_row(s: Shell, part: BarPart) {
-    ui.ListRow(part_name(part.slot), icon: part.slot.icon(), selected: part.shown) {
+    ui.ListRow(part_name(part.kind), icon: part.kind.icon(), selected: part.shown) {
         trailing: {
             ui.Button(if part.shown { "Shown" } else { "Hidden" }, toggled: part.shown) {
                 on press: show_part(s, part, not part.shown)

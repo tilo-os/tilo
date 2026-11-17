@@ -43,7 +43,7 @@ pub(super) struct LiveHeader {
     /// A fullscreen window has no frame: the bar neither draws, takes
     /// input, nor insets the content until the window leaves fullscreen.
     hidden: bool,
-    /// The app draws the window's one bar itself (its row of slots): this
+    /// The app draws the window's one bar itself (its row of parts): this
     /// header draws no second one and insets nothing, keeping only the
     /// window's edges.
     passenger: bool,
@@ -57,9 +57,9 @@ pub(super) struct Routed {
 
 impl Decorations {
     /// Settle who decorates, then keep the bar current. Call every frame
-    /// before layout, after the window's slot row: the header is the frame
-    /// only while the app shows no bar of its own (`slot_row_shown`).
-    pub(super) fn refresh(&mut self, app: &mut App, window: &Window, slot_row_shown: bool) {
+    /// before layout, after the window's part row: the header is the frame
+    /// only while the app shows no bar of its own (`part_row_shown`).
+    pub(super) fn refresh(&mut self, app: &mut App, window: &Window, part_row_shown: bool) {
         if matches!(self, Self::Unsettled) {
             let chrome = HostChrome::current(app.input.platform);
             *self = match app_draws_frame(chrome, tilo_presentation::desktop_draws_frame(window)) {
@@ -73,7 +73,7 @@ impl Decorations {
             };
         }
         if let Self::Bar(header) = self {
-            header.refresh(app, window, slot_row_shown);
+            header.refresh(app, window, part_row_shown);
         }
     }
 
@@ -128,7 +128,7 @@ impl LiveHeader {
         }
     }
 
-    fn refresh(&mut self, app: &mut App, window: &Window, slot_row_shown: bool) {
+    fn refresh(&mut self, app: &mut App, window: &Window, part_row_shown: bool) {
         let physical = window.inner_size();
         let size =
             crate::scale::logical_size((physical.width, physical.height), window.scale_factor());
@@ -146,8 +146,8 @@ impl LiveHeader {
         }
         // The app's own bar is the window's bar: this header stands aside
         // while it shows, and lays itself out again if it goes.
-        if self.passenger != slot_row_shown {
-            self.passenger = slot_row_shown;
+        if self.passenger != part_row_shown {
+            self.passenger = part_row_shown;
             self.repaint = true;
             self.window = Rect::ZERO;
         }

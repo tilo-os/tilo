@@ -10,7 +10,7 @@ use super::{KeyHint, KeyHints};
 #[component(name = "KeyHints", role = "Group")]
 pub struct KeyHintsProps {
     /// The hints, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub hints: Vec<KeyHintProps>,
 }
 
@@ -26,7 +26,7 @@ pub struct KeyHintProps {
     pub label: String,
 }
 
-crate::component::part_slot!(KeyHintProps);
+crate::component::part_type!(KeyHintProps);
 
 impl Described for KeyHints {
     type Props = KeyHintsProps;

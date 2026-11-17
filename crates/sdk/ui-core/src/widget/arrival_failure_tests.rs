@@ -4,7 +4,7 @@ use std::rc::Rc;
 use super::*;
 use crate::headless::FrameHarness;
 use crate::state::State;
-use crate::widget::{Button, Column, Slot, Spacer};
+use crate::widget::{Button, Column, Part, Spacer};
 
 fn window_failure(retried: &Rc<Cell<u32>>) -> WindowFailure {
     let retry = Rc::clone(retried);
@@ -75,8 +75,8 @@ fn its_retry_answers_the_keyboard_the_pointer_and_assistive_technology() {
 #[test]
 fn it_stands_at_rest_from_its_first_frame_where_a_window_brings_it_in() {
     for in_window in [false, true] {
-        let (slot, handle) = Slot::new(Box::new(Spacer::fixed(10.0)));
-        let mut h = harness(Box::new(Column::new().push(Box::new(slot))), (900, 700));
+        let (part, handle) = Part::new(Box::new(Spacer::fixed(10.0)));
+        let mut h = harness(Box::new(Column::new().push(Box::new(part))), (900, 700));
         let _frame = crate::motion::pin_frame();
         let retried = Rc::new(Cell::new(0));
         let face: Box<dyn Widget> = if in_window {

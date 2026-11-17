@@ -1,12 +1,12 @@
-//! A slot of the shell whose view is a tilolang package, run by the session itself.
+//! A part of the shell whose view is a tilolang package, run by the session itself.
 //!
-//! A slot is a part of the shell the person binds a view to (`settings:shell-views`). The view
+//! A part is a region of the shell the person binds a view to (`settings:shell-views`). The view
 //! the session ships with, and most replacements, are programs of their own; a tilolang package
-//! is run here instead, in the session's process, by a [`SlotView`]: one tilolang instance
+//! is run here instead, in the session's process, by a [`PartView`]: one tilolang instance
 //! ([`tilolang_tilo::instance`]) over the package, and the toolkit's widget tree it shows,
 //! drawn as a layer like any other widget tree the session shows.
 //!
-//! What the view reads is the slot's own state, published by the session's service as a
+//! What the view reads is the part's own state, published by the session's service as a
 //! resource (`desktop:window-menu`) and handed to the instance as the reading of an app the
 //! package does not run ([`Runtime::set_reading`]): the session's watch of that resource is the
 //! one reading the view ever sees. What the view invokes it invokes on that same resource,
@@ -14,9 +14,9 @@
 //! ([`Asked`]), its arguments in the shapes the verb declares, and the session runs it.
 //!
 //! The pointer and the keys reach the view while its surface is the one over the desktop, which
-//! the session answers ([`SlotView::new`]'s `focused`); a press away from what the view drew
-//! closes the slot, as a press outside a menu does. A package that does not load, or whose view
-//! does not come up, is no view for the slot: [`SlotView::open`] says why, and the session
+//! the session answers ([`PartView::new`]'s `focused`); a press away from what the view drew
+//! closes the part, as a press outside a menu does. A package that does not load, or whose view
+//! does not come up, is no view for the part: [`PartView::open`] says why, and the session
 //! keeps the view it ships with.
 //!
 //! [`Runtime::set_reading`]: tilolang_runtime::Runtime::set_reading
@@ -49,10 +49,10 @@ use crate::{Placement, WidgetHost};
 /// is drawn as it is: a press, the invocation it asked for, the answer, the next view run.
 const EXCHANGES: usize = 8;
 
-/// The slot's state as a view of it written in tilolang reads it: the resource the session
-/// publishes for the slot, and the surface a package drawing the slot is compiled against.
+/// The part's state as a view of it written in tilolang reads it: the resource the session
+/// publishes for the part, and the surface a package drawing the part is compiled against.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SlotSurface {
+pub struct PartSurface {
     /// The resource's id, as the session publishes it (`desktop:window-menu`).
     pub id: String,
     /// Its kind (`desktop.window-menu`).
@@ -66,7 +66,7 @@ pub struct SlotSurface {
     pub text: String,
 }
 
-/// The view the session runs for a slot: the package, the view in it, and the state it reads.
+/// The view the session runs for a part: the package, the view in it, and the state it reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spec {
     /// The app the person bound, as the settings reading names it (`so.tilo.menu`).
@@ -75,15 +75,15 @@ pub struct Spec {
     pub view: String,
     /// The package's payload directory.
     pub dir: PathBuf,
-    /// The slot's state, as the view reads it.
-    pub surface: SlotSurface,
+    /// The part's state, as the view reads it.
+    pub surface: PartSurface,
 }
 
-/// One change the view asked the session for: an invocation on the slot's resource, of the
+/// One change the view asked the session for: an invocation on the part's resource, of the
 /// kind any caller of the action API makes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Asked {
-    /// The resource the view invoked: the slot's.
+    /// The resource the view invoked: the part's.
     pub resource: String,
     /// The action, by the id the session publishes.
     pub action: String,
@@ -94,15 +94,15 @@ pub struct Asked {
 
 /// The session's API as the view's invoker: what the view asks waits here for the session's
 /// next pass, which runs it through the API every other caller uses.
-struct SlotInvoker {
+struct PartInvoker {
     /// The app whose surface the view invokes: its own state's.
     meta: Meta,
-    /// The slot's resource: the one the view acts on.
+    /// The part's resource: the one the view acts on.
     target: ResourceRef,
     asked: Rc<RefCell<Vec<Asked>>>,
 }
 
-impl SlotInvoker {
+impl PartInvoker {
     /// What the view's invocation passes `action`, in the shape the API takes: its arguments
     /// by name, each as its declared type reads on the API, and not the resource the address
     /// already names.
@@ -127,7 +127,7 @@ impl SlotInvoker {
                 .ok_or_else(|| format!("`{action}` takes no argument `{name}`"))?;
             let ty = tilolang_tilo::runtime::meta::parse_ty(&param.ty, &self.meta.app)?;
             let json = tilolang_tilo::host::argument_json(
-                &|other| Err(format!("a slot's view names no app but its own: {other}")),
+                &|other| Err(format!("a part's view names no app but its own: {other}")),
                 &self.meta,
                 value,
                 &ty,
@@ -138,7 +138,7 @@ impl SlotInvoker {
     }
 }
 
-impl Invoker for SlotInvoker {
+impl Invoker for PartInvoker {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
         let Invocation::Action {
             app,
@@ -150,13 +150,13 @@ impl Invoker for SlotInvoker {
         } = invocation
         else {
             return Invoked::Failed(
-                "a slot's view reads what the session publishes for it; it does not write it"
+                "a part's view reads what the session publishes for it; it does not write it"
                     .to_owned(),
             );
         };
         if app.as_str() != self.meta.app || subject.as_ref() != Some(&self.target) {
             return Invoked::Failed(format!(
-                "a slot's view invokes `{name}` on the state it reads, and nothing else"
+                "a part's view invokes `{name}` on the state it reads, and nothing else"
             ));
         }
         let arguments = match self.arguments(action, args, subject.is_some()) {
@@ -174,8 +174,8 @@ impl Invoker for SlotInvoker {
 }
 
 /// What the package's instance asks of the session's process.
-struct SlotPlatform {
-    /// The slot's state, as the package knows it: the app the surface is read as.
+struct PartPlatform {
+    /// The part's state, as the package knows it: the app the surface is read as.
     meta: Meta,
     /// The package and the modules it uses.
     bundle: Bundle,
@@ -183,33 +183,33 @@ struct SlotPlatform {
     why: Rc<RefCell<Option<String>>>,
 }
 
-impl Loads for SlotPlatform {
+impl Loads for PartPlatform {
     fn load(&self, host: &Host) -> u64 {
         // The state the view reads exists as an app it does not run, and the package it runs is
         // linked against it: both before either is asked anything.
         if let Err(error) = host.runtime().load_foreign(self.meta.clone()) {
-            tracing::warn!(app = self.meta.app, %error, "a slot's view did not load");
+            tracing::warn!(app = self.meta.app, %error, "a part's view did not load");
             *self.why.borrow_mut() = Some(error.to_string());
             return 0;
         }
         if let Err(error) = host.load_bundle(&self.bundle) {
-            tracing::warn!(app = self.meta.app, %error, "a slot's view did not load");
+            tracing::warn!(app = self.meta.app, %error, "a part's view did not load");
             *self.why.borrow_mut() = Some(error.to_string());
         }
         0
     }
 }
 
-/// A slot's view, open: its package running, and the tree it draws.
+/// A part's view, open: its package running, and the tree it draws.
 struct Open {
-    /// The slot it draws, as the settings and the overlay stack name it.
-    slot: &'static str,
+    /// The part it draws, as the settings and the overlay stack name it.
+    part: &'static str,
     instance: Instance,
     widgets: WidgetHost,
-    /// What a view of a slot keeps of its own: nothing, unless its package declares resources
+    /// What a view of a part keeps of its own: nothing, unless its package declares resources
     /// of its own.
     record: tilo_resource::Doc,
-    /// The slot's resource, as the view reads it.
+    /// The part's resource, as the view reads it.
     target: ResourceRef,
     /// What the view asked the session since it last ran it.
     asked: Rc<RefCell<Vec<Asked>>>,
@@ -235,7 +235,7 @@ impl Open {
             if address.resource != HOST_RESOURCE || address.action != COMMIT {
                 self.instance.answered(
                     &address,
-                    Some("a slot's view runs only its own commits".to_owned()),
+                    Some("a part's view runs only its own commits".to_owned()),
                 );
                 continue;
             }
@@ -253,7 +253,7 @@ impl Open {
                     crate::commit::recorded(&host, &mut self.record, &action)
                 });
             if let Err(why) = &applied {
-                tracing::error!(why, "a slot view's change could not be committed");
+                tracing::error!(why, "a part view's change could not be committed");
             }
             self.instance.answered(&address, applied.err());
             committed = true;
@@ -267,7 +267,7 @@ impl Open {
         committed
     }
 
-    /// What the view said that a slot has no window to show.
+    /// What the view said that a part has no window to show.
     fn hear_notices(&mut self) {
         let Some(window) = self.window() else {
             return;
@@ -277,12 +277,12 @@ impl Open {
                 tilo_render_protocol::patch::NoticeKind::Error => {
                     tracing::warn!(
                         text,
-                        slot = self.slot,
-                        "a slot's view refused what it was asked"
+                        part = self.part,
+                        "a part's view refused what it was asked"
                     );
                 }
                 tilo_render_protocol::patch::NoticeKind::Info => {
-                    tracing::info!(text, slot = self.slot, "a slot's view says");
+                    tracing::info!(text, part = self.part, "a part's view says");
                 }
             }
         }
@@ -323,35 +323,35 @@ impl Open {
     }
 }
 
-/// One slot of the shell, drawn by a tilolang package while the person binds one to it. See
+/// One part of the shell, drawn by a tilolang package while the person binds one to it. See
 /// the module docs.
-pub struct SlotView {
-    /// The slot it draws (`window-menu`), as the overlay stack and the settings name it.
-    slot: &'static str,
+pub struct PartView {
+    /// The part it draws (`window-menu`), as the overlay stack and the settings name it.
+    part: &'static str,
     /// Where the person's displays are, `(x, y, w, h)`, as the compositor last said.
     outputs: Option<(i32, i32, u32, u32)>,
     /// Physical pixels per logical pixel the desktop draws at.
     scale: f64,
-    /// Whether this slot's surface is the one over the desktop, and so takes the pointer and the
+    /// Whether this part's surface is the one over the desktop, and so takes the pointer and the
     /// keys: the overlay stack's answer, which the session holds.
     focused: Rc<dyn Fn() -> bool>,
     /// Where the view hangs: the place the reading gives it, in the desktop's coordinates.
     anchor: Option<(f64, f64)>,
     /// The view, while one is open.
     open: Option<Open>,
-    /// A press landed away from what the view drew while it held the pointer: the slot closes.
+    /// A press landed away from what the view drew while it held the pointer: the part closes.
     pressed_outside: bool,
     /// Where the pointer was last, in the desktop's coordinates.
     at: Option<(f64, f64)>,
 }
 
-impl SlotView {
-    /// The host of `slot`'s tilolang views at `scale`, taking the pointer and the keys while
-    /// `focused` says the slot's surface is the one over the desktop.
+impl PartView {
+    /// The host of `part`'s tilolang views at `scale`, taking the pointer and the keys while
+    /// `focused` says the part's surface is the one over the desktop.
     #[must_use]
-    pub fn new(slot: &'static str, scale: f64, focused: Rc<dyn Fn() -> bool>) -> Self {
+    pub fn new(part: &'static str, scale: f64, focused: Rc<dyn Fn() -> bool>) -> Self {
         Self {
-            slot,
+            part,
             outputs: None,
             scale,
             focused,
@@ -362,8 +362,8 @@ impl SlotView {
         }
     }
 
-    /// Run `spec`'s package over `reading` (the slot's state, as the session publishes it) for
-    /// `person`. `Err` says why the package is no view for the slot: it does not read, it
+    /// Run `spec`'s package over `reading` (the part's state, as the session publishes it) for
+    /// `person`. `Err` says why the package is no view for the part: it does not read, it
     /// declares no such view, or the view does not run.
     ///
     /// # Errors
@@ -411,7 +411,7 @@ impl SlotView {
                 root: tilolang_tilo::host::RootView::default(),
             },
             Rc::new(OnSession {
-                loads: SlotPlatform {
+                loads: PartPlatform {
                     meta: meta.clone(),
                     bundle,
                     why: Rc::clone(&why),
@@ -431,12 +431,12 @@ impl SlotView {
         let Some(host) = instance.host() else {
             return Err("the session could not start a runtime for it".to_owned());
         };
-        // What the view reads is the slot's reading, as the session's watch last had it; what
+        // What the view reads is the part's reading, as the session's watch last had it; what
         // it invokes goes to the session's API, in the shapes the verbs declare.
         host.runtime()
             .set_reading(&target, reading)
             .map_err(|error| error.to_string())?;
-        host.runtime().set_invoker(SlotInvoker {
+        host.runtime().set_invoker(PartInvoker {
             meta,
             target: ResourceRef::clone(&target),
             asked: Rc::clone(&asked),
@@ -457,7 +457,7 @@ impl SlotView {
         );
         self.anchor = anchor_of(reading);
         self.open = Some(Open {
-            slot: self.slot,
+            part: self.part,
             instance,
             widgets,
             record,
@@ -472,7 +472,7 @@ impl SlotView {
         Ok(())
     }
 
-    /// Stop the view: the slot is drawn by what the session ships with again, or draws
+    /// Stop the view: the part is drawn by what the session ships with again, or draws
     /// nothing.
     pub fn close(&mut self) {
         self.open = None;
@@ -487,8 +487,8 @@ impl SlotView {
         self.open.is_some()
     }
 
-    /// Hand the view the slot's state as the session publishes it now: `reading`, the same JSON
-    /// the session's watch of the slot's resource carries. Whether the view has a new reading
+    /// Hand the view the part's state as the session publishes it now: `reading`, the same JSON
+    /// the session's watch of the part's resource carries. Whether the view has a new reading
     /// to run on.
     pub fn publish(&mut self, reading: &str) -> bool {
         let anchor = anchor_of(reading);
@@ -509,7 +509,7 @@ impl SlotView {
                 moved
             }
             Err(error) => {
-                tracing::warn!(%error, "a slot's view did not take its reading");
+                tracing::warn!(%error, "a part's view did not take its reading");
                 false
             }
         }
@@ -532,12 +532,12 @@ impl SlotView {
         let asked: Vec<Asked> = open.asked.borrow_mut().drain(..).collect();
         for ask in &asked {
             if let Err(why) = invoke(ask) {
-                tracing::warn!(?ask, why, "the session refused what a slot's view asked");
+                tracing::warn!(?ask, why, "the session refused what a part's view asked");
             }
         }
     }
 
-    /// Take whether a press landed away from the view while it held the pointer: the slot
+    /// Take whether a press landed away from the view while it held the pointer: the part
     /// closes, as a press outside a menu does.
     pub fn take_pressed_outside(&mut self) -> bool {
         std::mem::take(&mut self.pressed_outside)
@@ -609,7 +609,7 @@ impl SlotView {
     }
 }
 
-impl SurfaceHost for SlotView {
+impl SurfaceHost for PartView {
     fn layers(&self) -> Vec<HostLayer> {
         self.open
             .as_ref()
@@ -618,7 +618,7 @@ impl SurfaceHost for SlotView {
     }
 
     fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
-        // Window-modal: while the slot is over the desktop it takes every press, and one away
+        // Window-modal: while the part is over the desktop it takes every press, and one away
         // from what it drew closes it rather than reaching what lies under it.
         self.focused()
     }

@@ -413,7 +413,7 @@ export interface SetActionChordsArgs {
 
 /** The arguments of `bind`. */
 export interface BindArgs {
-  slot: string;
+  part: string;
   app: string;
   view: string;
   on?: string;
@@ -421,7 +421,7 @@ export interface BindArgs {
 
 /** The arguments of `reset`. */
 export interface ShellViewsResetArgs {
-  slot: string;
+  part: string;
   on?: string;
 }
 
@@ -1111,7 +1111,7 @@ export interface ShellViews extends tilo.Resource {
   readonly bindings: Record<string, Binding>;
   readonly on_device: Record<string, Record<string, Binding>>;
   bind(args: {
-    slot: string;
+    part: string;
     app: string;
     view: string;
     on?: string;
@@ -1119,7 +1119,7 @@ export interface ShellViews extends tilo.Resource {
   /** Runs `bind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   bindMany(items: BindArgs[]): Promise<tilo.ActionAnswer[]>;
   reset(args: {
-    slot: string;
+    part: string;
     on?: string;
   }): Promise<tilo.Run | void>;
   /** Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */

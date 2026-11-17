@@ -602,8 +602,8 @@ fn day_node(field: &Field, text: &str, optional: bool, time: bool) -> ui::Node {
         props.insert("optional".to_owned(), ui::Value::Bool(true));
     }
     let children = if time {
-        let mut slot = BTreeMap::new();
-        slot.insert("name".to_owned(), ui::Value::text("time"));
+        let mut part = BTreeMap::new();
+        part.insert("name".to_owned(), ui::Value::text("time"));
         let clock = node(
             "ui.TimeField",
             &format!("{}~time", field.key),
@@ -616,9 +616,9 @@ fn day_node(field: &Field, text: &str, optional: bool, time: bool) -> ui::Node {
             Vec::new(),
         );
         vec![node(
-            "slot",
-            &format!("{}~time-slot", field.key),
-            slot,
+            "part",
+            &format!("{}~time-part", field.key),
+            part,
             None,
             vec![clock],
         )]

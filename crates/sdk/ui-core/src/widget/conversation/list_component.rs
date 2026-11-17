@@ -44,7 +44,7 @@ pub struct ConversationEntryProps {
     pub delivery: Option<DeliveryState>,
 }
 
-crate::component::part_slot!(ConversationEntryProps);
+crate::component::part_type!(ConversationEntryProps);
 
 /// A conversation, drawn as every conversation is drawn: each line on its own side, runs of one
 /// person's consecutive messages under their name once, a divider where the day changes, and the time
@@ -55,7 +55,7 @@ pub struct ConversationListProps {
     /// What the conversation is, for assistive technology: "Conversation with Ada".
     pub name: Option<String>,
     /// The lines, oldest first.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub lines: Vec<ConversationEntryProps>,
 }
 

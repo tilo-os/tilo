@@ -1771,7 +1771,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             // The page is the app's window, outside any Tilo session: it
             // hosts the app's window-bar slots, search and History in a
             // row of its own, as a native window of its own does.
-            frame.host_window_slots();
+            frame.host_window_parts();
             frame
         }
         // The app's record is on its way: its window reserves the place,
@@ -1786,7 +1786,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                 text_renderer,
                 MemberId::person(config.author()),
             );
-            frame.host_window_slots();
+            frame.host_window_parts();
             frame
         }
         Root::Desktop(surface) => {

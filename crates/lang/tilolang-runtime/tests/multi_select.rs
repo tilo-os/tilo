@@ -110,14 +110,14 @@ mod cases {
         out
     }
 
-    /// The children of the slot `name` of `node`, in order.
-    fn slot<'a>(node: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
+    /// The children of the part `name` of `node`, in order.
+    fn part<'a>(node: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
         node.children
             .iter()
             .filter(|child| {
-                child.kind == "slot" && child.props.get("name") == Some(&Value::text(name))
+                child.kind == "part" && child.props.get("name") == Some(&Value::text(name))
             })
-            .flat_map(|slot| slot.children.iter())
+            .flat_map(|part| part.children.iter())
             .collect()
     }
 
@@ -130,7 +130,7 @@ mod cases {
 
     /// The buttons the window's bar offers, by the words on them.
     fn offered(tree: &UiNode) -> Vec<String> {
-        slot(bar(tree), "actions")
+        part(bar(tree), "actions")
             .iter()
             .filter(|node| node.kind == "ui.Button")
             .map(|node| text_of(node, "label"))
@@ -139,13 +139,13 @@ mod cases {
 
     /// The button the window's bar offers with the label `label`, as the person presses it.
     fn button(tree: &UiNode, label: &str) -> String {
-        slot(bar(tree), "actions")
+        part(bar(tree), "actions")
             .iter()
             .find(|node| node.kind == "ui.Button" && text_of(node, "label") == label)
             .unwrap_or_else(|| {
                 panic!(
                     "the bar offers no {label}: {:?}",
-                    slot(bar(tree), "actions")
+                    part(bar(tree), "actions")
                 )
             })
             .key
@@ -194,7 +194,7 @@ mod cases {
         let chosen: Vec<&ResourceRef> = six.iter().collect();
         choose(&mut window, &chosen);
         let tree = window.tree();
-        let badge = slot(bar(tree), "actions")
+        let badge = part(bar(tree), "actions")
             .into_iter()
             .find(|node| node.kind == "ui.Badge")
             .unwrap_or_else(|| panic!("the bar says what is chosen"));

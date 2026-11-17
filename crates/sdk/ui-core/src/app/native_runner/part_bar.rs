@@ -1,12 +1,12 @@
-//! The app's window-bar slots in its own window, outside a Tilo session: the
-//! shared [`SlotRow`] across the top of the native window, under whatever
-//! frame the host gives it ([`crate::slot_row`] says what the row is).
+//! The app's window-bar parts in its own window, outside a Tilo session: the
+//! shared [`PartRow`] across the top of the native window, under whatever
+//! frame the host gives it ([`crate::part_row`] says what the row is).
 //!
 //! The row is in the window's accessibility tree as one toolbar, first in
 //! reading order ([`window_tree_update`]), and an assistive technology's
-//! action on one of its nodes runs the slot as a press does
-//! ([`SlotBar::perform_accessibility`]): a screen reader, a script and an
-//! agent reach the app's slots, the window's History and its search.
+//! action on one of its nodes runs the part as a press does
+//! ([`PartBar::perform_accessibility`]): a screen reader, a script and an
+//! agent reach the app's parts, the window's History and its search.
 
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -14,12 +14,12 @@ use winit::event::WindowEvent;
 use winit::window::Window;
 
 use super::super::App;
+use crate::part_row::{PartRow, PartRowHost, RowInput, RowPlace, WindowAction};
 use crate::search::SearchRequest;
-use crate::slot_row::{RowInput, RowPlace, SlotRow, SlotRowHost, WindowAction};
 use crate::widget::{HistoryControl, InPlace, Widget};
 use crate::window_toolbar::{SearchOpening, ToolbarEvent};
 
-impl SlotRowHost for App {
+impl PartRowHost for App {
     fn search_root(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
     }
@@ -50,15 +50,15 @@ impl SlotRowHost for App {
         // ([`crate::app::window_bar`]): History is not open yet, or the API
         // refused, and the row is offered again.
         if let Err(error) = self.invoke_window_history_control(control) {
-            tracing::debug!(%error, ?control, "window slots: History control refused");
+            tracing::debug!(%error, ?control, "window parts: History control refused");
         }
     }
 
     fn deliver(&mut self, event: ToolbarEvent) {
-        self.deliver_app_slot_event(event);
+        self.deliver_app_part_event(event);
     }
 
-    fn slots_acted(&mut self) {
+    fn parts_acted(&mut self) {
         self.needs_sync = true;
         self.layout.layout_dirty = true;
     }
@@ -66,13 +66,13 @@ impl SlotRowHost for App {
 
 /// The key of the row's toolbar node under the window's root: no widget's
 /// node hangs there, so the row's nodes keep their own ids.
-const WINDOW_SLOTS_KEY: u64 = u64::from_le_bytes(*b"winslots");
+const WINDOW_PARTS_KEY: u64 = u64::from_le_bytes(*b"winparts");
 
 /// The window's accessibility tree, at `scale`: the app's, with the row of
-/// slots first while it shows.
+/// parts first while it shows.
 pub(super) fn window_tree_update(
     app: &mut App,
-    bar: &SlotBar,
+    bar: &PartBar,
     scale: f64,
 ) -> accesskit::TreeUpdate {
     let mut update = app.build_a11y_tree_update(scale);
@@ -82,24 +82,24 @@ pub(super) fn window_tree_update(
     crate::accesskit_bridge::native_tree_update(update)
 }
 
-pub(super) struct SlotBar {
-    row: SlotRow,
+pub(super) struct PartBar {
+    row: PartRow,
     /// The window's title, which names the row's toolbar.
     title: String,
     /// The row's Close control asked for the window: the runner closes it.
     close: bool,
 }
 
-impl SlotBar {
+impl PartBar {
     pub(super) fn new() -> Self {
         Self {
-            row: SlotRow::new(),
+            row: PartRow::new(),
             title: String::new(),
             close: false,
         }
     }
 
-    /// Keep the row current: shown while nothing hosts the app's slots and
+    /// Keep the row current: shown while nothing hosts the app's parts and
     /// it declared some, under the host's frame (`app.layout.safe_area`).
     /// Call every frame before layout: the row's height is part of the app's
     /// top inset. Answers whether the row stands: while it does it is the
@@ -107,7 +107,7 @@ impl SlotBar {
     #[must_use]
     pub(super) fn refresh(&mut self, app: &mut App, window: &Window) -> bool {
         // Outside a session the row is the window's bar: it hosts the app's
-        // slots and presents its search and History, as the shell's bar
+        // parts and presents its search and History, as the shell's bar
         // does in one. A window the shell hears is hosted by the shell from
         // its first frame: the row never shows there, not even until the
         // shell says so.
@@ -150,8 +150,8 @@ impl SlotBar {
             history,
         );
         self.row.drive_search(app);
-        if (app.layout.slot_bar_inset - height).abs() > f64::EPSILON {
-            app.layout.slot_bar_inset = height;
+        if (app.layout.part_bar_inset - height).abs() > f64::EPSILON {
+            app.layout.part_bar_inset = height;
             app.layout.layout_dirty = true;
             if height > 0.0 {
                 self.row.mark_repaint();
@@ -208,7 +208,7 @@ impl SlotBar {
         );
     }
 
-    /// Hand `event` to the row when it is the row's: a pointer over a slot,
+    /// Hand `event` to the row when it is the row's: a pointer over a part,
     /// over one of its menus, or anything while its location is edited.
     /// Returns whether the row took it; what the person did reaches the app
     /// as the shell's bar delivers it.
@@ -240,7 +240,7 @@ impl SlotBar {
     }
 
     /// The row as one toolbar of the window's accessibility tree, named for
-    /// the window: the app's slots, the window's History in its menu and
+    /// the window: the app's parts, the window's History in its menu and
     /// the search. None while it is hidden or the palette covers the window.
     fn accessibility(&self, app: &App) -> Option<crate::a11y::AccessNode> {
         if !self.row.is_shown() || app.palette_presented() {
@@ -248,7 +248,7 @@ impl SlotBar {
         }
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Toolbar)
-                .with_key(WINDOW_SLOTS_KEY)
+                .with_key(WINDOW_PARTS_KEY)
                 .with_name(self.title.clone())
                 .with_bounds(self.row.band(app.layout.safe_area.left, &app.theme))
                 .with_children(self.row.accessibility()),
@@ -256,7 +256,7 @@ impl SlotBar {
     }
 
     /// Run `action` on the row's node `target`, as assistive technology
-    /// asks: the slot runs as a press on it does, and what it runs reaches
+    /// asks: the part runs as a press on it does, and what it runs reaches
     /// the app as the shell's bar delivers it. Returns whether `target`
     /// is the row's and it took the action; any other node is the app's.
     pub(super) fn perform_accessibility(
@@ -268,11 +268,11 @@ impl SlotBar {
         let Some(row) = self.accessibility(app) else {
             return false;
         };
-        let Some(slot) = crate::accesskit_bridge::surface_action_target(&row, target) else {
+        let Some(part) = crate::accesskit_bridge::surface_action_target(&row, target) else {
             return false;
         };
-        let slot = slot.to_owned();
-        self.row.perform(app, &slot, action)
+        let part = part.to_owned();
+        self.row.perform(app, &part, action)
     }
 }
 
@@ -310,7 +310,7 @@ mod tests {
     }
 
     /// The row as shown in a window 800 wide, without a platform window.
-    fn shown(bar: &mut SlotBar) {
+    fn shown(bar: &mut PartBar) {
         bar.row
             .show_for_test(Rect::new(8.0, 0.0, 792.0, TOOLBAR_ROW_HEIGHT));
     }
@@ -321,7 +321,7 @@ mod tests {
     #[test]
     fn the_standalone_bar_searches_the_apps_list_in_place() {
         let mut app = App::new(crate::State::new(), Box::new(settings_like_list()));
-        let mut bar = SlotBar::new();
+        let mut bar = PartBar::new();
         shown(&mut bar);
         bar.row
             .open_search(&mut app, MotionSource::Keyboard, SearchOpening::Find);
@@ -373,7 +373,7 @@ mod tests {
     /// The row in a window 800 wide titled "Call", showing what the app
     /// declared, as the runner refreshes it each frame without a platform
     /// window.
-    fn shown_declared(bar: &mut SlotBar, app: &mut App) {
+    fn shown_declared(bar: &mut PartBar, app: &mut App) {
         bar.title = "Call".into();
         let height = bar.row.refresh(
             &app.theme,
@@ -386,7 +386,7 @@ mod tests {
             }),
             None,
         );
-        app.layout.slot_bar_inset = height;
+        app.layout.part_bar_inset = height;
         app.layout.layout_dirty = true;
         lay_out(app);
     }
@@ -412,15 +412,15 @@ mod tests {
         }));
     }
 
-    // A window of its own carries its row of slots in its accessibility
+    // A window of its own carries its row of parts in its accessibility
     // tree, first, as one toolbar named for the window, beside the app's
-    // own nodes; a screen reader's or an agent's action on a slot hands the
-    // app the slot's press, as a click on it does.
+    // own nodes; a screen reader's or an agent's action on a part hands the
+    // app the part's press, as a click on it does.
     #[test]
-    fn the_windows_accessibility_tree_carries_its_slots_and_runs_them() {
+    fn the_windows_accessibility_tree_carries_its_parts_and_runs_them() {
         declare_call();
         let mut app = App::new(crate::State::new(), Box::new(settings_like_list()));
-        let mut bar = SlotBar::new();
+        let mut bar = PartBar::new();
         shown_declared(&mut bar, &mut app);
 
         let update = window_tree_update(&mut app, &bar, 2.0);
@@ -442,7 +442,7 @@ mod tests {
         );
 
         let row = bar.accessibility(&app).expect("the row is published");
-        let (mute, mute_node) = labelled(&update, "Mute").expect("the microphone's slot");
+        let (mute, mute_node) = labelled(&update, "Mute").expect("the microphone's part");
         assert!(toolbar.children().contains(mute));
         assert_eq!(
             crate::accesskit_bridge::surface_action_target(&row, *mute),
@@ -452,7 +452,7 @@ mod tests {
             mute_node.supports_action(accesskit::Action::Click),
             "a reader can press it"
         );
-        let (leave, _) = labelled(&update, "Leave").expect("the leave slot");
+        let (leave, _) = labelled(&update, "Leave").expect("the leave part");
         assert_eq!(
             crate::accesskit_bridge::surface_action_target(&row, *leave),
             Some("window-toolbar-action:call-leave")
@@ -486,13 +486,13 @@ mod tests {
         assert!(crate::window_toolbar::take_events().is_empty());
     }
 
-    // The window's search is in the tree with the slots, and a reader opens
+    // The window's search is in the tree with the parts, and a reader opens
     // it as a press on its control does.
     #[test]
     fn a_reader_opens_the_windows_search_from_the_tree() {
         declare_call();
         let mut app = App::new(crate::State::new(), Box::new(settings_like_list()));
-        let mut bar = SlotBar::new();
+        let mut bar = PartBar::new();
         shown_declared(&mut bar, &mut app);
         let row = bar.accessibility(&app).expect("the row is published");
         let update = window_tree_update(&mut app, &bar, 1.0);
@@ -515,7 +515,7 @@ mod tests {
         declare_call();
         let mut app = App::new(crate::State::new(), Box::new(settings_like_list()));
         lay_out(&mut app);
-        let bar = SlotBar::new();
+        let bar = PartBar::new();
         let update = window_tree_update(&mut app, &bar, 1.0);
         assert!(labelled(&update, "Mute").is_none());
         assert!(bar.accessibility(&app).is_none());
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn evidence_is_only_the_apps_while_the_row_is_hidden() {
-        let bar = SlotBar::new();
+        let bar = PartBar::new();
         let snapshot = bar
             .with_search_evidence(Some(serde_json::json!({ "app": "x" })))
             .expect("evidence");

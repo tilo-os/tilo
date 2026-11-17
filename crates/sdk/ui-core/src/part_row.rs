@@ -1,5 +1,5 @@
-//! The app's window-bar slots in a row of the window's own, outside a Tilo session. An
-//! app declares its toolbar once, as slots in the window's bar
+//! The app's window-bar parts in a row of the window's own, outside a Tilo session. An
+//! app declares its toolbar once, as parts in the window's bar
 //! ([`crate::window_toolbar`]); in a Tilo session the shell draws them in the one bar
 //! per window.
 
@@ -33,11 +33,11 @@ const DOUBLE_PRESS: std::time::Duration = std::time::Duration::from_millis(400);
 
 const WINDOW: u64 = 0;
 
-/// The window's History slot, the row's own: a press runs the History API and never
+/// The window's History part, the row's own: a press runs the History API and never
 /// reaches the app.
 pub(crate) const HISTORY: &str = "tilo.window.history";
 
-/// The app's slots with the window's History added to the row's menu.
+/// The app's parts with the window's History added to the row's menu.
 pub(crate) fn with_history(
     mut toolbar: WindowToolbar,
     history: Option<HistoryControl>,
@@ -61,8 +61,8 @@ pub(crate) fn with_history(
     toolbar
 }
 
-/// The app a [`SlotRow`] serves, as its host lends it.
-pub(crate) trait SlotRowHost {
+/// The app a [`PartRow`] serves, as its host lends it.
+pub(crate) trait PartRowHost {
     /// The app's widgets, where the window's search finds.
     fn search_root(&mut self) -> &mut dyn Widget;
     /// What the app offers the window's search in place.
@@ -79,10 +79,10 @@ pub(crate) trait SlotRowHost {
     fn history_control(&self) -> Option<HistoryControl>;
     /// Run the window's History control on the app's History API.
     fn press_history(&mut self, control: HistoryControl);
-    /// Hand the app what the person did in its slots, as the shell's bar hands it over.
+    /// Hand the app what the person did in its parts, as the shell's bar hands it over.
     fn deliver(&mut self, event: ToolbarEvent);
-    /// The slots ran something: the app syncs and lays out again.
-    fn slots_acted(&mut self);
+    /// The parts ran something: the app syncs and lays out again.
+    fn parts_acted(&mut self);
 }
 
 /// Where the row stands: across the top of a window `window` (logical) in size, inside
@@ -104,7 +104,7 @@ pub(crate) struct RowInput<'a> {
     pub(crate) platform: crate::platform::PlatformConventions,
 }
 
-pub(crate) struct SlotRow {
+pub(crate) struct PartRow {
     row: ToolbarRow,
     shown: Option<(WindowToolbar, Rect)>,
     tree: TaffyTree<()>,
@@ -125,7 +125,7 @@ pub(crate) struct SlotRow {
 /// not a band across a wide window.
 const NOTICE_CARD_MAX_WIDTH: f64 = 480.0;
 
-impl SlotRow {
+impl PartRow {
     pub(crate) fn new() -> Self {
         let mut tree = TaffyTree::new();
         let node = tree.new_leaf(taffy::Style::default()).ok();
@@ -199,7 +199,7 @@ impl SlotRow {
         self.shown.is_some()
     }
 
-    /// Keep the row current: shown at `place` (none: hidden), with the app's slots, its
+    /// Keep the row current: shown at `place` (none: hidden), with the app's parts, its
     /// notice and the window's `history` control.
     pub(crate) fn refresh(
         &mut self,
@@ -270,7 +270,7 @@ impl SlotRow {
     fn place_search(&mut self, rect: Rect, row: Rect) {
         let x0 = row.x1 + CONTROL_GAP;
         let y0 = rect.center().y - CONTROL_PX / 2.0;
-        let location = self.row.slots().location;
+        let location = self.row.parts().location;
         let reach = if location.area() > 0.0 {
             location.x0
         } else {
@@ -285,7 +285,7 @@ impl SlotRow {
 
     /// What the app asked of its bar: its Find (open the search), its Ctrl+L (edit the
     /// location).
-    pub(crate) fn serve_app_requests(&mut self, host: &mut dyn SlotRowHost) {
+    pub(crate) fn serve_app_requests(&mut self, host: &mut dyn PartRowHost) {
         if let Some(opening) = crate::window_toolbar::take_search_request() {
             self.open_search(host, MotionSource::Keyboard, opening);
         }
@@ -298,7 +298,7 @@ impl SlotRow {
     /// (for the replace chord, the replacement).
     pub(crate) fn open_search(
         &mut self,
-        host: &mut dyn SlotRowHost,
+        host: &mut dyn PartRowHost,
         source: MotionSource,
         opening: SearchOpening,
     ) {
@@ -319,7 +319,7 @@ impl SlotRow {
         self.repaint = true;
     }
 
-    fn serve_search(&mut self, host: &mut dyn SlotRowHost) -> bool {
+    fn serve_search(&mut self, host: &mut dyn PartRowHost) -> bool {
         let requests = self.search.take_requests();
         let acted = !requests.is_empty();
         for request in requests {
@@ -340,7 +340,7 @@ impl SlotRow {
 
     /// Carry the search to the app's widgets, once a frame: what it found shows in the
     /// frame being built.
-    pub(crate) fn drive_search(&mut self, host: &mut dyn SlotRowHost) {
+    pub(crate) fn drive_search(&mut self, host: &mut dyn PartRowHost) {
         if self.search.wants_drive() && self.search.drive(host.search_root()) {
             host.search_drove();
             self.repaint = true;
@@ -426,7 +426,7 @@ impl SlotRow {
         bounds.inflate(4.0, 4.0).intersect(window)
     }
 
-    /// Paint the row from the host's frame at `left`: its band, its slots and the search,
+    /// Paint the row from the host's frame at `left`: its band, its parts and the search,
     /// then their menus and the search's options over the app.
     pub(crate) fn draw(
         &mut self,
@@ -493,13 +493,13 @@ impl SlotRow {
             .draw_overlay(scene, transform, text, theme, presence);
     }
 
-    /// Hand `event` to the row when it is the row's: a pointer over a slot, over one of
+    /// Hand `event` to the row when it is the row's: a pointer over a part, over one of
     /// its menus, or anything while its location is edited. Returns whether the row took
     /// it, and whether the window must draw again; what the person did reaches the app as
     /// the shell's bar delivers it.
     pub(crate) fn route(
         &mut self,
-        host: &mut dyn SlotRowHost,
+        host: &mut dyn PartRowHost,
         event: &WindowEvent,
         input: &RowInput<'_>,
     ) -> (bool, bool) {
@@ -547,7 +547,7 @@ impl SlotRow {
         }
         // The window's own controls and the bar's empty ground: a press on a control runs
         // it, one on the ground moves the window (a double press maximizes it), and the
-        // app's slots never see either.
+        // app's parts never see either.
         if let Some((took, redraw)) = self.route_window_controls(event) {
             if took || redraw {
                 self.repaint = true;
@@ -610,7 +610,7 @@ impl SlotRow {
         (took, redraw)
     }
 
-    /// A press on the bar's ground that no slot took: the window moves, or a second press
+    /// A press on the bar's ground that no part took: the window moves, or a second press
     /// on it maximizes the window.
     fn press_bar_ground(&mut self) {
         let now = crate::time::now();
@@ -688,7 +688,7 @@ impl SlotRow {
         }
     }
 
-    fn deliver_row_events(&mut self, host: &mut dyn SlotRowHost) -> bool {
+    fn deliver_row_events(&mut self, host: &mut dyn PartRowHost) -> bool {
         let events = self.row.take_events();
         let drafts = self.row.take_drafts();
         let acted = !events.is_empty() || !drafts.is_empty();
@@ -703,12 +703,12 @@ impl SlotRow {
             }
         }
         if acted {
-            host.slots_acted();
+            host.parts_acted();
         }
         acted
     }
 
-    /// The row as assistive technology and automation reach it: the app's slots, the
+    /// The row as assistive technology and automation reach it: the app's parts, the
     /// window's History in the row's menu, the search, and the window's own controls in
     /// their pill.
     pub(crate) fn accessibility(&self) -> Vec<crate::a11y::AccessNode> {
@@ -744,13 +744,13 @@ impl SlotRow {
     }
 
     /// What each part of the row shows, keyed as [`Self::accessibility`] names them: the
-    /// app's slots, the location, the notice and the search's button, each in the face it
+    /// app's parts, the location, the notice and the search's button, each in the face it
     /// is painted with.
     pub(crate) fn composed_parts(
         &self,
         theme: &crate::theme::Theme,
     ) -> Vec<(String, Rect, crate::composition::Own)> {
-        let mut parts = self.row.composed_slots(theme);
+        let mut parts = self.row.composed_parts(theme);
         if let Some(node) = self.search.accessibility()
             && let Some(rect) = node.bounds.map(|bounds| bounds.to_rect())
             && let Some(face) = crate::widget::window_controls::icon_button_face(
@@ -779,13 +779,13 @@ impl SlotRow {
         self.row.strip_band().map(|strip| strip.inflate(pad, 0.0))
     }
 
-    /// Perform `action` on the part of the row `target` names (a `window-toolbar-*` slot,
+    /// Perform `action` on the part of the row `target` names (a `window-toolbar-*` part,
     /// a `window-search-*` part, or one of the window's own controls), as assistive
     /// technology and automation do; what it runs reaches the app as a press does, and a
     /// control's press reaches the host as the window's own.
     pub(crate) fn perform(
         &mut self,
-        host: &mut dyn SlotRowHost,
+        host: &mut dyn PartRowHost,
         target: &str,
         action: &crate::a11y::Action,
     ) -> bool {
@@ -898,7 +898,7 @@ mod tests {
         }
     }
 
-    impl SlotRowHost for NoApp {
+    impl PartRowHost for NoApp {
         fn search_root(&mut self) -> &mut dyn Widget {
             &mut self.root
         }
@@ -923,7 +923,7 @@ mod tests {
 
         fn deliver(&mut self, _: ToolbarEvent) {}
 
-        fn slots_acted(&mut self) {}
+        fn parts_acted(&mut self) {}
     }
 
     fn placed() -> RowPlace<'static> {
@@ -936,7 +936,7 @@ mod tests {
         }
     }
 
-    fn press_at(row: &mut SlotRow, host: &mut NoApp, point: Point) {
+    fn press_at(row: &mut PartRow, host: &mut NoApp, point: Point) {
         let modifiers = winit::event::Modifiers::default();
         let input = RowInput {
             scale: 1.0,
@@ -954,7 +954,7 @@ mod tests {
 
     #[test]
     fn the_one_bar_ends_with_the_windows_controls() {
-        let mut row = SlotRow::new();
+        let mut row = PartRow::new();
         row.set_window_controls(true);
         let height = row.refresh(&Theme::dark(), Some(placed()), None);
         assert_eq!(height, TOOLBAR_ROW_HEIGHT);
@@ -977,27 +977,27 @@ mod tests {
             row.search.anchor(),
             controls.pill
         );
-        for slot in [
-            row.row.slots().sidebar,
-            row.row.slots().back,
-            row.row.slots().forward,
-            row.row.slots().location,
-            row.row.slots().overflow,
-            row.row.slots().views_menu,
+        for part in [
+            row.row.parts().sidebar,
+            row.row.parts().back,
+            row.row.parts().forward,
+            row.row.parts().location,
+            row.row.parts().overflow,
+            row.row.parts().views_menu,
         ]
         .into_iter()
-        .chain(row.row.slots().actions.iter().copied())
+        .chain(row.row.parts().actions.iter().copied())
         {
             assert!(
-                slot.area() == 0.0 || slot.x1 <= row.search.anchor().x0,
-                "the app's slots keep their area before the search: {slot:?}"
+                part.area() == 0.0 || part.x1 <= row.search.anchor().x0,
+                "the app's parts keep their area before the search: {part:?}"
             );
         }
     }
 
     #[test]
     fn a_hosted_frame_leaves_the_row_to_the_app() {
-        let mut row = SlotRow::new();
+        let mut row = PartRow::new();
         row.refresh(&Theme::dark(), Some(placed()), None);
         assert!(!row.shows_window_controls());
         assert!(row.controls.pill.area() == 0.0);
@@ -1011,7 +1011,7 @@ mod tests {
 
     #[test]
     fn the_bar_runs_the_window_it_decorates() {
-        let mut row = SlotRow::new();
+        let mut row = PartRow::new();
         row.set_window_controls(true);
         row.show_for_test(Rect::new(0.0, 0.0, 800.0, TOOLBAR_ROW_HEIGHT));
         let mut host = NoApp::new();

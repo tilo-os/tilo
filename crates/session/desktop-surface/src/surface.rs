@@ -93,7 +93,7 @@ mod window_move;
 mod workspace_share;
 
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
-pub use launch::{StripSlot, slot_among};
+pub use launch::{StripPart, part_among};
 pub use liveness::LivenessChoice;
 pub use notices::{
     AppInbox, AppNotifier, DesktopNotifications, NotificationLayer, NotificationOutcome,
@@ -417,10 +417,10 @@ impl DesktopHandle {
 
     /// Where the floating layer put each docked window this pass, by group, in shell coordinates:
     /// the shell stands each there from its next pass.
-    pub fn dock_at(&self, slots: std::collections::BTreeMap<u64, Rect>) {
+    pub fn dock_at(&self, places: std::collections::BTreeMap<u64, Rect>) {
         let mut shared = self.shared.borrow_mut();
-        if shared.dock.slots != slots {
-            shared.dock.slots = slots;
+        if shared.dock.places != places {
+            shared.dock.places = places;
             shared.wake.wake();
         }
     }
@@ -867,8 +867,8 @@ pub struct DesktopSurface {
     shared: Rc<RefCell<Shared>>,
     tiles: Box<dyn TileSource>,
     rows: HashMap<StripId, GroupRow>,
-    /// The slots the apps put in their windows' bars ([`window_bars`]).
-    window_slots: ui::window_slots::WindowSlots,
+    /// The parts the apps put in their windows' bars ([`window_bars`]).
+    window_parts: ui::window_parts::WindowParts,
     shown: Option<StripId>,
     /// The strips the other displays show, laid out behind the shown one: each display keeps a
     /// strip of its own.
@@ -1010,7 +1010,7 @@ impl DesktopSurface {
             shared,
             tiles,
             rows: HashMap::new(),
-            window_slots: ui::window_slots::WindowSlots::default(),
+            window_parts: ui::window_parts::WindowParts::default(),
             shown: None,
             behind: Vec::new(),
             rect: Rect::ZERO,
@@ -1288,7 +1288,7 @@ impl DesktopSurface {
                 if !floats.is_empty() || !shared.dock.cards.is_empty() {
                     let dock = &mut shared.dock;
                     dock.cards.retain(|group, _| floats.contains_key(group));
-                    dock.slots.retain(|group, _| floats.contains_key(group));
+                    dock.places.retain(|group, _| floats.contains_key(group));
                     // A window that left the column is not folded: it opens whole the next
                     // time it is sent here.
                     dock.collapsed.retain(|group, _| floats.contains_key(group));
@@ -1296,7 +1296,7 @@ impl DesktopSurface {
                 floats
                     .into_iter()
                     .map(|(group, at)| {
-                        let at = shared.dock.slots.get(&group).copied().unwrap_or(at);
+                        let at = shared.dock.places.get(&group).copied().unwrap_or(at);
                         (group, row.keep_float_inside(at))
                     })
                     .collect()
@@ -1822,7 +1822,7 @@ impl DesktopSurface {
             if let Some(display) = shared.tree.outputs.focused_display() {
                 row.set_group_display(group, display);
             }
-            // The strip lands where the window opens, in the pass that opens it: its slots take the
+            // The strip lands where the window opens, in the pass that opens it: its parts take the
             // widths they are going to and its windows the places, so the frame that maps the
             // window shows it in place — the place the compositor is given is one on screen. Eased,
             // the window would be laid out past a neighbour still on its way to its width, often

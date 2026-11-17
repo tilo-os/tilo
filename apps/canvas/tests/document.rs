@@ -32,7 +32,7 @@ fn naming_the_artwork_is_one_step_of_history() {
     // The window bar's location is the title: committing it renames the
     // artwork through its own action.
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Commit {
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Commit {
             text: "Dawn".to_owned(),
         });
     assert_eq!(app.state().title, "Dawn");
@@ -311,7 +311,7 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
     };
     let before = shown(&mut app);
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
             id: "canvas.tools".to_owned(),
         });
     assert_ne!(
@@ -320,7 +320,7 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
         "the toggle shows or hides the panels"
     );
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
             id: "canvas.tools".to_owned(),
         });
     assert_eq!(shown(&mut app), before, "and brings them back");
@@ -540,7 +540,7 @@ fn starting_a_regular_sheet_after_a_sprite_resets_the_pixel_brush() {
     app.harness().key("Enter");
     // New artwork, from the artwork menu the window bar holds.
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
             id: "canvas.carry-out.new".to_owned(),
         });
     app.harness().click_named("canvas-new-size-a4").unwrap();

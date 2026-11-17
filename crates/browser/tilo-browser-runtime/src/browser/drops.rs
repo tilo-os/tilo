@@ -107,9 +107,9 @@ impl Desktop {
         }
         let top = f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX) + SHELL_INSET;
         let bottom = (height - SHELL_INSET).max(top);
-        match self.handle.slot_at(point.x) {
-            Some(slot) if self.handle.shown_tabs().is_empty() => DropTarget::Strip {
-                slot,
+        match self.handle.part_at(point.x) {
+            Some(part) if self.handle.shown_tabs().is_empty() => DropTarget::Strip {
+                part,
                 area: Rect::new(
                     SHELL_INSET,
                     top,
@@ -117,9 +117,9 @@ impl Desktop {
                     bottom,
                 ),
             },
-            Some(slot) => DropTarget::Strip {
-                slot,
-                area: Rect::new(slot.x - 3.0, top, slot.x + 3.0, bottom),
+            Some(part) => DropTarget::Strip {
+                part,
+                area: Rect::new(part.x - 3.0, top, part.x + 3.0, bottom),
             },
             None => DropTarget::Refused("Open a workspace to add files to it".into()),
         }
@@ -139,7 +139,7 @@ impl Desktop {
     ) -> Result<(), String> {
         let opens = match target {
             DropTarget::Refused(why) => return Err(why.clone()),
-            DropTarget::Strip { slot, .. } => Opens::Strip(slot.index),
+            DropTarget::Strip { part, .. } => Opens::Strip(part.index),
             DropTarget::Window { tab, app, .. } => match app.as_deref() {
                 // Files takes them into the folder it shows, and shows them there.
                 Some(FILES_APP) => Opens::Nothing,

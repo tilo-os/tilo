@@ -12,7 +12,7 @@ use super::{Fact, FactMark, Facts};
 #[component(name = "Facts", role = "List")]
 pub struct FactsProps {
     /// The facts, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub facts: Vec<FactProps>,
 }
 
@@ -33,7 +33,7 @@ pub struct FactProps {
     pub priority: i64,
 }
 
-crate::component::part_slot!(FactProps);
+crate::component::part_type!(FactProps);
 
 impl From<FactProps> for Fact {
     fn from(props: FactProps) -> Self {

@@ -1,6 +1,6 @@
 //! [`NavShell`] as a described component.
 
-use crate::component::{Component, Described, Event, PropType, SlotViews, Type, Value};
+use crate::component::{Component, Described, Event, PartViews, PropType, Type, Value};
 use crate::widget::Element;
 
 use super::{Column, ContentKind, NavPane, NavShell};
@@ -24,30 +24,30 @@ pub struct NavShellProps {
     pub sidebar_title: Option<String>,
     /// The sidebar's controls in its header: the action that makes what it lists (a "+"), and
     /// where a person's new thing goes.
-    #[component(slot)]
+    #[component(part)]
     pub sidebar_actions: Vec<Element>,
     /// Whether the content's Back goes back now (a drill-down the app keeps).
     pub can_go_back: bool,
     /// The places of the app: a navigation list.
-    #[component(slot)]
+    #[component(part)]
     pub sidebar: Option<Element>,
     /// The list the content is chosen from.
-    #[component(slot)]
+    #[component(part)]
     pub overview: Option<Element>,
     /// What the window is for.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub content: Option<Element>,
     /// Nothing at all to list: what `content` gives is the window's empty state, in place of
     /// the overview, the content and the inspector.
     pub nothing_listed: bool,
     /// Details of what the content shows, beside it.
-    #[component(slot)]
+    #[component(part)]
     pub inspector: Option<Element>,
     /// The content's actions, in its header.
-    #[component(slot)]
+    #[component(part)]
     pub actions: Vec<Element>,
     /// The overview's actions, in its header: what the list's owner offers.
-    #[component(slot)]
+    #[component(part)]
     pub overview_actions: Vec<Element>,
     /// The column in front of a narrow window.
     #[component(state)]
@@ -187,7 +187,7 @@ impl Described for NavShell {
     }
 
     /// Titles, counts and whether Back goes back change in place; the columns and header
-    /// actions change through their slots.
+    /// actions change through their parts.
     fn set_props(&mut self, props: NavShellProps) -> bool {
         if self.inputs.borrow().kind != props.content_kind {
             return false;
@@ -211,9 +211,9 @@ impl Described for NavShell {
         true
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        self.finish_slot_edit();
-        let column = match slot {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        self.finish_part_edit();
+        let column = match part {
             "sidebar" => Some(Column::Sidebar),
             "overview" => Some(Column::Overview),
             "content" => Some(Column::Content),
@@ -221,10 +221,10 @@ impl Described for NavShell {
             _ => None,
         };
         if let Some(column) = column {
-            self.slot_edit = Some(SlotEdit::Column(column));
+            self.part_edit = Some(PartEdit::Column(column));
             return Some(self);
         }
-        let header = match slot {
+        let header = match part {
             "actions" => Column::Content,
             "overview_actions" => Column::Overview,
             "sidebar_actions" => Column::Sidebar,
@@ -232,7 +232,7 @@ impl Described for NavShell {
         };
         let staged = matches!(self.pending.actions.get(header.index()), Some(Some(_)));
         let actions = self.take_header_actions(header);
-        self.slot_edit = Some(SlotEdit::Actions(
+        self.part_edit = Some(PartEdit::Actions(
             header,
             actions,
             ActionsEdit {
@@ -244,8 +244,8 @@ impl Described for NavShell {
     }
 }
 
-/// A change of one slot under way ([`Described::slot_views`]).
-pub(super) enum SlotEdit {
+/// A change of one part under way ([`Described::part_views`]).
+pub(super) enum PartEdit {
     /// The body of a column: one view, or none.
     Column(Column),
     /// A header's actions, out of the header until the change is done.
@@ -270,8 +270,8 @@ impl NavShell {
     }
 
     /// Put the actions of the change under way back.
-    pub(super) fn finish_slot_edit(&mut self) {
-        let Some(SlotEdit::Actions(column, actions, edit)) = self.slot_edit.take() else {
+    pub(super) fn finish_part_edit(&mut self) {
+        let Some(PartEdit::Actions(column, actions, edit)) = self.part_edit.take() else {
             return;
         };
         if !edit.changed && !edit.staged {
@@ -280,8 +280,8 @@ impl NavShell {
             }
             return;
         }
-        if let Some(slot) = self.pending.actions.get_mut(column.index()) {
-            *slot = Some(actions);
+        if let Some(part) = self.pending.actions.get_mut(column.index()) {
+            *part = Some(actions);
         }
         if edit.changed {
             self.pending_changed();
@@ -289,7 +289,7 @@ impl NavShell {
     }
 
     fn actions_changed(&mut self) {
-        if let Some(SlotEdit::Actions(_, _, edit)) = &mut self.slot_edit {
+        if let Some(PartEdit::Actions(_, _, edit)) = &mut self.part_edit {
             edit.changed = true;
         }
     }
@@ -307,39 +307,39 @@ impl NavShell {
                 .as_mut()
                 .and_then(|super::Staged(pending)| pending.as_mut());
         }
-        match self.body_slot(column) {
-            super::nothing_listed::BodySlot::Optional(slot) => slot.as_mut(),
-            super::nothing_listed::BodySlot::Required(slot) => Some(slot),
+        match self.body_part(column) {
+            super::nothing_listed::BodyPart::Optional(part) => part.as_mut(),
+            super::nothing_listed::BodyPart::Required(part) => Some(part),
         }
     }
 
     fn edit_actions(&mut self) -> Option<&mut Vec<Element>> {
-        match &mut self.slot_edit {
-            Some(SlotEdit::Actions(_, actions, _)) => Some(actions),
+        match &mut self.part_edit {
+            Some(PartEdit::Actions(_, actions, _)) => Some(actions),
             _ => None,
         }
     }
 
     fn edit_column(&self) -> Option<Column> {
-        match &self.slot_edit {
-            Some(SlotEdit::Column(column)) => Some(*column),
+        match &self.part_edit {
+            Some(PartEdit::Column(column)) => Some(*column),
             _ => None,
         }
     }
 }
 
-impl SlotViews for NavShell {
+impl PartViews for NavShell {
     fn len(&self) -> usize {
-        match &self.slot_edit {
-            Some(SlotEdit::Actions(_, actions, _)) => actions.len(),
-            Some(SlotEdit::Column(column)) => usize::from(self.has_column_body(*column)),
+        match &self.part_edit {
+            Some(PartEdit::Actions(_, actions, _)) => actions.len(),
+            Some(PartEdit::Column(column)) => usize::from(self.has_column_body(*column)),
             None => 0,
         }
     }
 
     fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
-        match &self.slot_edit {
-            Some(SlotEdit::Column(column)) => {
+        match &self.part_edit {
+            Some(PartEdit::Column(column)) => {
                 let column = *column;
                 if index == 0 {
                     self.column_body_mut(column)
@@ -347,7 +347,7 @@ impl SlotViews for NavShell {
                     None
                 }
             }
-            Some(SlotEdit::Actions(..)) => self.edit_actions()?.get_mut(index),
+            Some(PartEdit::Actions(..)) => self.edit_actions()?.get_mut(index),
             None => None,
         }
     }
@@ -367,7 +367,7 @@ impl SlotViews for NavShell {
     }
 
     fn remove(&mut self, index: usize) {
-        if let Some(SlotEdit::Actions(_, actions, edit)) = &mut self.slot_edit {
+        if let Some(PartEdit::Actions(_, actions, edit)) = &mut self.part_edit {
             if index < actions.len() {
                 let gone = actions.remove(index);
                 self.retired_actions.push(gone);
@@ -398,7 +398,7 @@ impl SlotViews for NavShell {
     }
 
     fn replace(&mut self, index: usize, view: Element) {
-        if let Some(SlotEdit::Actions(_, actions, edit)) = &mut self.slot_edit {
+        if let Some(PartEdit::Actions(_, actions, edit)) = &mut self.part_edit {
             if let Some(held) = actions.get_mut(index) {
                 let gone = std::mem::replace(held, view);
                 self.retired_actions.push(gone);

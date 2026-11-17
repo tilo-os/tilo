@@ -1,4 +1,4 @@
-//! Code's controls, as slots in the window's bar ([`ui::window_toolbar`]).
+//! Code's controls, as parts in the window's bar ([`ui::window_toolbar`]).
 //!
 
 use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, WindowToolbar};
@@ -10,7 +10,7 @@ impl CodeApp {
         let mut toolbar = self
             .bar
             .as_ref()
-            .map(ui::widget::WindowBarLink::slots)
+            .map(ui::widget::WindowBarLink::parts)
             .unwrap_or_default();
         toolbar.location = self.session.active_buffer().map(|buffer| ToolbarLocation {
             label: buffer.name.clone(),

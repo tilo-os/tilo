@@ -267,7 +267,7 @@ mod tests {
 
     fn choose(app: &mut TestApp<SampleCamera>, id: &str) {
         app.harness()
-            .press_window_slot(ToolbarEvent::Action { id: id.into() });
+            .press_window_part(ToolbarEvent::Action { id: id.into() });
         app.settle();
     }
 

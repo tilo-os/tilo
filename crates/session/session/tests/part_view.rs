@@ -1,12 +1,12 @@
-//! Which view draws a part of the shell is the person's to choose: binding the window-menu slot to
+//! Which view draws a part of the shell is the person's to choose: binding the window-menu part to
 //! another app's view shows that view where the shell shipped its own, while the menu itself stays
 //! the reading it was, and binding it again while the menu is up swaps the view under it.
-//! The probe is an ordinary app the session starts for the slot (`.tests/bin/surface_probe.rs`): it
+//! The probe is an ordinary app the session starts for the part (`.tests/bin/surface_probe.rs`): it
 //! reads `desktop:window-menu` through the connection the session's broker admits it for, and
 //! reports what it saw.
 //! A view written in tilolang is not a program the session starts: the session runs it itself, over
 //! the same reading, and its presses reach the menu's own verbs through the session's API. The
-//! view here is compiled against the surface the session publishes for the slot, as a person
+//! view here is compiled against the surface the session publishes for the part, as a person
 //! writing one does.
 
 #![cfg(target_os = "linux")]
@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 use tilo_compositor::InputEvent;
 use tilo_desktop_model::Layout;
+use tilo_session::parts::BINDINGS;
 use tilo_session::shell::state::WINDOW_MENU;
-use tilo_session::slots::BINDINGS;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_settings_service::SettingsService;
 use tilo_test_env::{ScopedEnv, TestHome};
@@ -41,9 +41,9 @@ const REFRESH: Duration = Duration::from_millis(16);
 const BTN_LEFT: u32 = 0x110;
 
 /// A view of the window menu written in tilolang, over the surface the session publishes for the
-/// slot: it says whether the menu is up, which it reads from the menu, and its buttons invoke the
+/// part: it says whether the menu is up, which it reads from the menu, and its buttons invoke the
 /// menu's own verbs — one that moves the menu and leaves it up, one that closes it.
-const MENU_VIEW: &str = r#"app so.tilo.slotprobe "Window menu probe"
+const MENU_VIEW: &str = r#"app so.tilo.partprobe "Window menu probe"
 
 use desktop as desktop
 
@@ -57,10 +57,10 @@ view menu(m: desktop.WindowMenu) {
 "#;
 
 /// A view of the window menu written in tilolang that shows the rows the menu offers, each a button
-/// invoking the menu's `choose` , over the surface the session publishes for the slot. A rule
+/// invoking the menu's `choose` , over the surface the session publishes for the part. A rule
 /// between groups is a line, not a choice, so it draws no button; the rows of a row that opens a
 /// submenu are drawn beside it, as the menu itself offers them.
-const ROWS_VIEW: &str = r#"app so.tilo.slotrows "Window menu rows"
+const ROWS_VIEW: &str = r#"app so.tilo.partrows "Window menu rows"
 
 use desktop as desktop
 
@@ -109,7 +109,7 @@ fn draws_every_row(session: &Session, rows: &Value) -> bool {
         let drawn = row["separator"].as_bool() == Some(true)
             || row["label"]
                 .as_str()
-                .is_some_and(|label| session.slot_control("window-menu", label).is_some());
+                .is_some_and(|label| session.part_control("window-menu", label).is_some());
         drawn && draws_every_row(session, &row["children"])
     })
 }
@@ -131,21 +131,21 @@ fn row_label(offered: &Value, id: &str) -> String {
         .to_owned()
 }
 
-/// Bind the window-menu slot to the view `view` of `app` , as a person or an agent does through the
+/// Bind the window-menu part to the view `view` of `app` , as a person or an agent does through the
 /// settings API.
 fn bind(session: &mut Session, app: &str, view: &str) {
     let mut arguments = Map::new();
-    arguments.insert("slot".into(), json!("window-menu"));
+    arguments.insert("part".into(), json!("window-menu"));
     arguments.insert("app".into(), json!(app));
     arguments.insert("view".into(), json!(view));
     session
         .invoke(BINDINGS, "bind", &arguments)
-        .expect("the slot takes a binding");
+        .expect("the part takes a binding");
 }
 
 /// The program the probe is pointed at, under the name the app `app` 's view runs as:
 /// `so.tilo.window-menu` runs as `tilo-window-menu`
-/// ([`Binding::program`](tilo_session::slots::Binding::program)).
+/// ([`Binding::program`](tilo_session::parts::Binding::program)).
 fn installed(environment: &mut ScopedEnv, app: &str, probe: &Path) {
     let program = format!(
         "tilo-{}",
@@ -172,20 +172,20 @@ fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bo
         assert!(
             Instant::now() < deadline,
             "the session never {what}: {:?}",
-            session.slot_labels("window-menu")
+            session.part_labels("window-menu")
         );
     }
 }
 
-/// Press the control the slot's view shows as `name` with the pointer, as a person does.
+/// Press the control the part's view shows as `name` with the pointer, as a person does.
 #[track_caller]
 fn press(session: &mut Session, name: &str) {
     let (x, y, w, h) = session
-        .slot_control("window-menu", name)
+        .part_control("window-menu", name)
         .unwrap_or_else(|| {
             panic!(
-                "the slot's view shows {name}: {:?}",
-                session.slot_labels("window-menu")
+                "the part's view shows {name}: {:?}",
+                session.part_labels("window-menu")
             )
         });
     let (x, y) = (x + w / 2.0, y + h / 2.0);
@@ -206,14 +206,14 @@ fn press(session: &mut Session, name: &str) {
     }
 }
 
-/// The package `source` compiles to, against the surface the session publishes for `slot` and
+/// The package `source` compiles to, against the surface the session publishes for `part` and
 /// written where the session finds a package of this machine: a payload directory holding
 /// `app.wasm` , as an installed app's has.
 #[track_caller]
-fn package(dir: &Path, slot: &str, source: &str) -> PathBuf {
-    let surface = tilo_session::slots::surface(slot).expect("the slot's state has a surface");
+fn package(dir: &Path, part: &str, source: &str) -> PathBuf {
+    let surface = tilo_session::parts::surface(part).expect("the part's state has a surface");
     let surfaces = tilolang_tilo::catalogue::parse_surfaces(&surface.text)
-        .expect("the surface the session publishes for the slot");
+        .expect("the surface the session publishes for the part");
     let meta = tilolang_tilo::catalogue::package_of(&surface.app, &surface.title, &surfaces);
     let compiled = tilolang_tilo::tilolang::compile_package(
         source,
@@ -235,14 +235,14 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
     let report = root.path().join("report");
     let mut environment = ScopedEnv::new();
     let probe = probe_binary();
-    // The same probe under two names: what the session starts for the slot when the person binds
+    // The same probe under two names: what the session starts for the part when the person binds
     // one app's view, and another.
     installed(&mut environment, "so.tilo.probe-one", &probe);
     installed(&mut environment, "so.tilo.probe-two", &probe);
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
-    // The probe is the view that draws the slot here: it stays up while the menu is, as a view
-    // does, so the session keeps it as the slot's.
+    // The probe is the view that draws the part here: it stays up while the menu is, as a view
+    // does, so the session keeps it as the part's.
     environment.set("SURFACE_PROBE_STAY", "1");
     let mut session = session_with(&socket, layout_tree());
     session
@@ -258,14 +258,14 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
     let offered = rows(&session);
     let before = session.read(WINDOW_MENU).expect("the menu is up");
 
-    // The person binds the slot while the menu is up: the view they chose draws it, and it reads
+    // The person binds the part while the menu is up: the view they chose draws it, and it reads
     // the menu the shell published.
     bind(&mut session, "so.tilo.probe-one", "menu");
     let first = until_reported(&mut session, &report);
     let seen = reading(&first, "read: ");
     assert_eq!(
         seen["rows"], offered,
-        "the view bound to the slot shows the rows the menu offers: {first}"
+        "the view bound to the part shows the rows the menu offers: {first}"
     );
     assert_eq!(
         session.read(WINDOW_MENU).expect("the reading"),
@@ -274,7 +274,7 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
     );
     assert!(
         session.surfaces().running("window-menu"),
-        "the view the person bound is what draws the slot"
+        "the view the person bound is what draws the part"
     );
 
     // Another binding, while the menu is still up: the view that drew it goes and the one bound now
@@ -290,7 +290,7 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
     assert_eq!(
         session.read(WINDOW_MENU).expect("the reading"),
         before,
-        "rebinding the slot never touched the menu the shell publishes"
+        "rebinding the part never touched the menu the shell publishes"
     );
 }
 
@@ -300,9 +300,9 @@ fn a_part_the_system_draws_refuses_a_binding() {
     let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session_with(&socket, layout_tree());
-    for slot in ["lock", "consent", "portal", "auth", "display-confirm"] {
+    for part in ["lock", "consent", "portal", "auth", "display-confirm"] {
         let mut arguments = Map::new();
-        arguments.insert("slot".into(), json!(slot));
+        arguments.insert("part".into(), json!(part));
         arguments.insert("app".into(), json!("so.tilo.probe-one"));
         arguments.insert("view".into(), json!("menu"));
         let refused = session
@@ -321,16 +321,16 @@ fn a_part_the_system_draws_refuses_a_binding() {
 }
 
 #[test]
-fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb() {
+fn a_package_bound_to_the_part_reads_the_menu_and_closes_it_through_its_own_verb() {
     let _settled = ui::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
     let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
-    let payload = package(&root.path().join("slot-probe"), "window-menu", MENU_VIEW);
+    let payload = package(&root.path().join("part-probe"), "window-menu", MENU_VIEW);
     let mut environment = ScopedEnv::new();
     // The view the person binds, and the one the session ships with while they have bound none.
-    installed(&mut environment, "so.tilo.slotprobe", &payload);
+    installed(&mut environment, "so.tilo.partprobe", &payload);
     installed(&mut environment, "so.tilo.window-menu", &probe_binary());
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
@@ -350,18 +350,18 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
     });
 
     // The person binds a view written in tilolang: the session runs it itself, over the reading it
-    // publishes for the slot, and the program that drew the menu goes.
-    bind(&mut session, "so.tilo.slotprobe", "menu");
+    // publishes for the part, and the program that drew the menu goes.
+    bind(&mut session, "so.tilo.partprobe", "menu");
     until(&mut session, "draws the view the person bound", |session| {
         session
-            .slot_control("window-menu", "Close the menu")
+            .part_control("window-menu", "Close the menu")
             .is_some()
     });
     assert!(
         !session.surfaces().running("window-menu"),
         "the session runs the package in its own process, not as a program"
     );
-    let labels = session.slot_labels("window-menu");
+    let labels = session.part_labels("window-menu");
     assert!(
         labels.iter().any(|label| label == "A window's menu"),
         "the view reads the menu the session publishes, which has a window's menu up: {labels:?}"
@@ -396,7 +396,7 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
     );
     assert!(
         session
-            .slot_control("window-menu", "Close the menu")
+            .part_control("window-menu", "Close the menu")
             .is_some(),
         "the view stands where the reading puts it, with the menu still up"
     );
@@ -412,7 +412,7 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
                 .is_some_and(|reading| reading.get("tab").is_some_and(Value::is_null))
         },
     );
-    let namespace = tilo_session::surfaces::namespace(tilo_session::shell::state::WINDOW_MENU_SLOT);
+    let namespace = tilo_session::surfaces::namespace(tilo_session::shell::state::WINDOW_MENU_PART);
     assert_eq!(
         session.compositor().layer_shown(&namespace),
         Some(false),
@@ -421,15 +421,15 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
 }
 
 #[test]
-fn a_package_that_is_no_view_of_the_slot_leaves_it_to_the_one_the_session_ships_with() {
+fn a_package_that_is_no_view_of_the_part_leaves_it_to_the_one_the_session_ships_with() {
     let _settled = ui::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
     let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
-    let payload = package(&root.path().join("slot-probe"), "window-menu", MENU_VIEW);
+    let payload = package(&root.path().join("part-probe"), "window-menu", MENU_VIEW);
     let mut environment = ScopedEnv::new();
-    installed(&mut environment, "so.tilo.slotprobe", &payload);
+    installed(&mut environment, "so.tilo.partprobe", &payload);
     installed(&mut environment, "so.tilo.window-menu", &probe_binary());
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
@@ -446,10 +446,10 @@ fn a_package_that_is_no_view_of_the_slot_leaves_it_to_the_one_the_session_ships_
         .expect("the menu opens");
     until_reported(&mut session, &report);
 
-    // The package the person bound declares no view by that name: it is no view for the slot, and
+    // The package the person bound declares no view by that name: it is no view for the part, and
     // the session puts its own back rather than leaving the menu undrawn.
     std::fs::remove_file(&report).expect("the shipped view's report");
-    bind(&mut session, "so.tilo.slotprobe", "no-such-view");
+    bind(&mut session, "so.tilo.partprobe", "no-such-view");
     let again = until_reported(&mut session, &report);
     assert!(
         again.starts_with("read: "),
@@ -457,7 +457,7 @@ fn a_package_that_is_no_view_of_the_slot_leaves_it_to_the_one_the_session_ships_
     );
     assert!(
         session
-            .slot_control("window-menu", "Close the menu")
+            .part_control("window-menu", "Close the menu")
             .is_none(),
         "and the package that did not run draws nothing"
     );
@@ -471,15 +471,15 @@ fn a_package_that_is_no_view_of_the_slot_leaves_it_to_the_one_the_session_ships_
 }
 
 #[test]
-fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
+fn a_package_bound_to_the_part_shows_the_menu_rows_and_choosing_one_runs_it() {
     let _settled = ui::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
     let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
-    let payload = package(&root.path().join("slot-rows"), "window-menu", ROWS_VIEW);
+    let payload = package(&root.path().join("part-rows"), "window-menu", ROWS_VIEW);
     let mut environment = ScopedEnv::new();
-    installed(&mut environment, "so.tilo.slotrows", &payload);
+    installed(&mut environment, "so.tilo.partrows", &payload);
     installed(&mut environment, "so.tilo.window-menu", &probe_binary());
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
@@ -502,17 +502,17 @@ fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
     // it, the rows of its submenus with them: the rows of another app's reading read as the records
     // the shell declares, and a submenu is a row of it rather than a second reading to walk.
     let offered = rows(&session);
-    bind(&mut session, "so.tilo.slotrows", "menu");
+    bind(&mut session, "so.tilo.partrows", "menu");
     until(&mut session, "shows the rows the menu offers", |session| {
         draws_every_row(session, &offered)
     });
     let shares = row_label(&offered, "window-width");
     assert!(
         session
-            .slot_control("window-menu", &row_label(&offered, "window-width-wide"))
+            .part_control("window-menu", &row_label(&offered, "window-width-wide"))
             .is_some(),
         "the view reaches a row inside `{shares}`: {:?}",
-        session.slot_labels("window-menu")
+        session.part_labels("window-menu")
     );
 
     // The person presses the row that maximizes the window: the view's own `choose` , through the
@@ -553,6 +553,6 @@ fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
     until(
         &mut session,
         "draws the rows the window offers now",
-        |session| session.slot_control("window-menu", &restore).is_some(),
+        |session| session.part_control("window-menu", &restore).is_some(),
     );
 }

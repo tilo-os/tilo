@@ -2690,10 +2690,10 @@ fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
                 }
                 continue;
             }
-            // What a list holds beside its rows — the slots a host fills with rows of its own,
+            // What a list holds beside its rows — the parts a host fills with rows of its own,
             // such as the items someone removed that the person has not seen go — is no row of
-            // the list: its rows are the ones the steps name, and the slot stands as content.
-            Patch::Insert { parent, node, .. } if node.kind == wire::SLOT => {
+            // the list: its rows are the ones the steps name, and the part stands as content.
+            Patch::Insert { parent, node, .. } if node.kind == wire::PART => {
                 (parent.as_slice(), false)
             }
             // A row the steps take out says where it stood; one they do not is no row.

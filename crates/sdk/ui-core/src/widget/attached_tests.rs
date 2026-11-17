@@ -32,7 +32,7 @@ struct Node {
     key: String,
     props: BTreeMap<String, Value>,
     events: Vec<(&'static str, Option<(&'static str, &'static str)>)>,
-    slots: BTreeMap<&'static str, Vec<Node>>,
+    parts: BTreeMap<&'static str, Vec<Node>>,
     queue: crate::Intents<Fired>,
 }
 
@@ -43,7 +43,7 @@ impl Node {
             key: key.to_owned(),
             props: BTreeMap::new(),
             events: Vec::new(),
-            slots: BTreeMap::new(),
+            parts: BTreeMap::new(),
             queue: queue.clone(),
         }
     }
@@ -58,8 +58,8 @@ impl Node {
         self
     }
 
-    fn slot(mut self, name: &'static str, nodes: Vec<Node>) -> Self {
-        self.slots.insert(name, nodes);
+    fn part(mut self, name: &'static str, nodes: Vec<Node>) -> Self {
+        self.parts.insert(name, nodes);
         self
     }
 }
@@ -87,23 +87,23 @@ impl Source for Node {
         None
     }
 
-    fn children(&mut self, _slot: &str) -> Vec<Element> {
+    fn children(&mut self, _part: &str) -> Vec<Element> {
         Vec::new()
     }
 
-    fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
-        self.slots
-            .get(slot)
+    fn part_kinds(&mut self, part: &str) -> Vec<Option<String>> {
+        self.parts
+            .get(part)
             .map(|nodes| nodes.iter().map(|n| Some(n.kind.to_owned())).collect())
             .unwrap_or_default()
     }
 
     fn components(
         &mut self,
-        slot: &str,
+        part: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
-        let Some(nodes) = self.slots.get_mut(slot) else {
+        let Some(nodes) = self.parts.get_mut(part) else {
             return Ok(0);
         };
         for node in nodes.iter_mut() {
@@ -135,7 +135,7 @@ fn labels(parts: &[MenuPart]) -> Vec<String> {
 }
 
 fn message(queue: &crate::Intents<Fired>) -> (Attachments, Vec<MenuPart>) {
-    let menu = Node::new("ContextMenu", "menu", queue).slot(
+    let menu = Node::new("ContextMenu", "menu", queue).part(
         "items",
         vec![
             Node::new("EmojiBar", "bar", queue)
@@ -150,7 +150,7 @@ fn message(queue: &crate::Intents<Fired>) -> (Attachments, Vec<MenuPart>) {
             item(queue, "Pin", Some(("m1", "pin"))),
         ],
     );
-    let swipe = Node::new("Swipe", "swipe", queue).slot(
+    let swipe = Node::new("Swipe", "swipe", queue).part(
         "trailing",
         vec![
             Node::new("SwipeAction", "reply", queue)
@@ -158,12 +158,12 @@ fn message(queue: &crate::Intents<Fired>) -> (Attachments, Vec<MenuPart>) {
                 .on("swipe", None),
         ],
     );
-    let mut row = Node::new("ListItem", "row", queue).slot("attached", vec![menu, swipe]);
+    let mut row = Node::new("ListItem", "row", queue).part("attached", vec![menu, swipe]);
     let mut attached = Attachments::default();
     attached
         .fill(&mut row, "attached")
         .expect("what the view attached reads");
-    let mut offered = Node::new("ListItem", "item", queue).slot(
+    let mut offered = Node::new("ListItem", "item", queue).part(
         "menu",
         vec![
             item(queue, "Pin", Some(("m1", "pin"))),

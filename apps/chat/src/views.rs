@@ -725,7 +725,7 @@ fn page(c: &Channel, cx: &ViewCx) -> Node {
     // conversation sets its reply box under the messages it answers (`ui.Docked`): the
     // transcript fills the column above it and scrolls, the composer keeps its own height.
     let docked: Node = ui::DockedBuilder::new(&cx.key("docked")).into();
-    let docked = node::slot(docked, "foot", vec![composer(c, cx)]);
+    let docked = node::part(docked, "foot", vec![composer(c, cx)]);
     let docked = node::with(docked, vec![column]);
     // The page is the window's whole body: it fills the height the place gives it, its column
     // takes the width, and the transcript scrolls inside — never the page scrolling away with
@@ -1301,7 +1301,7 @@ fn drag_source(key: &str, node: Node, target: &ResourceRef, title: &str) -> Node
             title.to_owned()
         }),
     );
-    node::slot(source, "content", vec![node])
+    node::part(source, "content", vec![node])
 }
 
 /// The name the message being answered is held under in the view's own state: a message's Reply

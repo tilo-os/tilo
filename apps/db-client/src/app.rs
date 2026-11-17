@@ -1837,7 +1837,7 @@ mod tests {
 
         // --- phase: choosing_a_view_in_the_bar_shows_that_tab ---
         {
-            harness.press_window_slot(ToolbarEvent::Action {
+            harness.press_window_part(ToolbarEvent::Action {
                 id: MainTab::Data.view_id().to_owned(),
             });
             harness.relayout();
@@ -1960,7 +1960,7 @@ mod tests {
             bar.actions
         );
 
-        harness.press_window_slot(ToolbarEvent::Action {
+        harness.press_window_part(ToolbarEvent::Action {
             id: CANCEL_QUERY.into(),
         });
         harness.relayout();
@@ -2018,7 +2018,7 @@ mod tests {
                 !harness.targets().contains_key("db.query.run"),
                 "the editor draws no Run of its own"
             );
-            harness.press_window_slot(ToolbarEvent::Action {
+            harness.press_window_part(ToolbarEvent::Action {
                 id: RUN_QUERY.into(),
             });
             harness.relayout();

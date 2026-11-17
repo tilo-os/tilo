@@ -8,7 +8,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::component::{Component, Described, SlotViews};
+use crate::component::{Component, Described, PartViews};
 use crate::motion::{Drill, DrillDepth, Pose};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -18,11 +18,11 @@ use crate::widget::DrawChild;
 use crate::widget::decorator::concrete::Decorator;
 use crate::widget::{Element, Placement, layout_rect};
 
-/// The identity a slide built by [`PageSlide::new`] leaves its motion under: one page slot in
+/// The identity a slide built by [`PageSlide::new`] leaves its motion under: one page part in
 /// a window.
 const KEY: &str = "page slide";
 
-const PAGE_SLOT: &str = "page";
+const PAGE_PART: &str = "page";
 
 /// One page of a stack that a view shows in place, the replaced page leaving as it swaps: a
 /// panel opening a deeper page, and Back sliding it away.
@@ -35,7 +35,7 @@ pub struct PageSlideProps {
     /// How deep the page is: 0 the first page, 1 the page it opens.
     pub level: i64,
     /// The page it shows.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub page: Option<Element>,
 }
 
@@ -162,17 +162,17 @@ impl Described for PageSlide {
     }
 
     /// A page at the level it stood at takes its changed props where it stands: the page its
-    /// slot swapped for another came through [`Self::slot_views`].
+    /// part swapped for another came through [`Self::part_views`].
     fn set_props(&mut self, props: PageSlideProps) -> bool {
         depth_of(props.level) == self.level
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        (slot == PAGE_SLOT).then_some(self as &mut dyn SlotViews)
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        (part == PAGE_PART).then_some(self as &mut dyn PartViews)
     }
 }
 
-impl SlotViews for PageSlide {
+impl PartViews for PageSlide {
     fn len(&self) -> usize {
         1
     }

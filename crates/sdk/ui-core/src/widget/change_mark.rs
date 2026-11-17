@@ -45,7 +45,7 @@ pub struct ChangeMarkProps {
     pub activate: Event,
     /// What a window's mark opens: the views of its catch-up (*Since you looked*), placed by whoever placed
     /// the mark.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub content: Vec<Element>,
 }
 
@@ -385,8 +385,8 @@ impl component::Described for ChangeMark {
         }
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn component::SlotViews> {
-        if slot != "content" || self.shape != Shape::CatchUp {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn component::PartViews> {
+        if part != "content" || self.shape != Shape::CatchUp {
             return None;
         }
         let pair = self

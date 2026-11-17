@@ -1,4 +1,4 @@
-//! The desktop draws the slots its apps declare in their windows' bars.
+//! The desktop draws the parts its apps declare in their windows' bars.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -11,16 +11,16 @@ use ui::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
 
 use crate::surface::{DesktopSurface, TileSource, seed_tree};
 
-/// An app as the apps moved to the window bar's slots are written: it declares its slots with
+/// An app as the apps moved to the window bar's parts are written: it declares its parts with
 /// [`ui::window_toolbar::declare`] and reads what the person did with
 /// [`ui::window_toolbar::take_events`], knowing nothing of the process it shares with the desktop
 /// and the other apps.
-struct SlotApp {
+struct PartApp {
     action: &'static str,
     heard: Rc<RefCell<Vec<ToolbarEvent>>>,
 }
 
-impl Widget for SlotApp {
+impl Widget for PartApp {
     fn update(&mut self, _: &ui::widget::AppModel, _: &ui::widget::ModelPath) -> bool {
         ui::window_toolbar::declare(Some(WindowToolbar {
             actions: vec![ToolbarAction::new(self.action, "plus", self.action)],
@@ -49,11 +49,11 @@ impl Widget for SlotApp {
     }
 
     fn name(&self) -> &'static str {
-        "SlotApp"
+        "PartApp"
     }
 }
 
-impl AppWidget for SlotApp {
+impl AppWidget for PartApp {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }
@@ -66,20 +66,20 @@ impl AppWidget for SlotApp {
 }
 
 /// Every window's app, each with its own action, and what each heard.
-struct SlotApps(Vec<(&'static str, Rc<RefCell<Vec<ToolbarEvent>>>)>);
+struct PartApps(Vec<(&'static str, Rc<RefCell<Vec<ToolbarEvent>>>)>);
 
-impl TileSource for SlotApps {
+impl TileSource for PartApps {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
         let index = usize::try_from(tab.id % 2).unwrap_or(0);
         let (action, heard) = self.0[index].clone();
-        TileHost::new(TileContent::App(Box::new(SlotApp { action, heard })))
+        TileHost::new(TileContent::App(Box::new(PartApp { action, heard })))
     }
 }
 
 /// Two apps in the desktop's own process, as every app of the browser desktop runs: each one's
-/// slots stand in its own window's bar, and a press on one reaches that app and no other.
+/// parts stand in its own window's bar, and a press on one reaches that app and no other.
 #[test]
-fn each_apps_slots_stand_in_its_windows_bar_and_a_press_reaches_it() {
+fn each_apps_parts_stand_in_its_windows_bar_and_a_press_reaches_it() {
     let mut minter = IdMinter::new(7);
     let tabs: Vec<Tab> = (0..2)
         .map(|i| Tab {
@@ -99,7 +99,7 @@ fn each_apps_slots_stand_in_its_windows_bar_and_a_press_reaches_it() {
         vec![("new-contact", Rc::default()), ("compose", Rc::default())];
     let action_of = |tab: u64| apps[usize::try_from(tab % 2).unwrap_or(0)].0;
     let tree = seed_tree(&mut minter, "Office", tabs);
-    let (surface, _handle) = DesktopSurface::new(tree, 7, Box::new(SlotApps(apps.clone())));
+    let (surface, _handle) = DesktopSurface::new(tree, 7, Box::new(PartApps(apps.clone())));
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
         surface,
@@ -127,7 +127,7 @@ fn each_apps_slots_stand_in_its_windows_bar_and_a_press_reaches_it() {
         .collect();
     assert_eq!(shown.len(), 2, "both windows are shown");
     for (tab, toolbar, button) in &shown {
-        let toolbar = toolbar.as_ref().expect("the app's slots are in its bar");
+        let toolbar = toolbar.as_ref().expect("the app's parts are in its bar");
         assert_eq!(toolbar.actions[0].id, action_of(*tab), "its own app's");
         assert!(button.area() > 0.0, "its action is a button in the bar");
     }
@@ -162,15 +162,15 @@ fn shown_tabs(frame: &ui::headless::FrameHarness) -> Vec<(u64, u64)> {
         .collect()
 }
 
-/// An app in a process of its own declares its slots over its connection: the next pass shows them
-/// in its window's bar, what the person did there goes back on that same connection, and the slots
+/// An app in a process of its own declares its parts over its connection: the next pass shows them
+/// in its window's bar, what the person did there goes back on that same connection, and the parts
 /// go when it closes.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one test, from the declaration to the press it sends back"
 )]
-fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection() {
+fn an_apps_own_process_declares_its_parts_and_hears_the_press_on_its_connection() {
     let (surface, handle) = crate::surface::tests::shell_with(2, Box::new(WithHistory));
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
@@ -210,7 +210,7 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
                 .tab_toolbar(front)
                 .map(|shown| shown.actions[0].id.clone()),
             Some("save".to_owned()),
-            "the app's slot stands in its window's bar"
+            "the app's part stands in its window's bar"
         );
         let (_, _, _, actions) = group.bar_for_tests().toolbar_rects();
         (
@@ -219,7 +219,7 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
         )
     };
     assert!(!edited, "nothing asked for the location yet");
-    assert!(button.area() > 0.0, "the slot is a button in the bar");
+    assert!(button.area() > 0.0, "the part is a button in the bar");
 
     // The window is named by what it shows: its app's location label names the tab, so its bar, the
     // overview and search say the same.
@@ -243,7 +243,7 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
                 id: "save".to_owned(),
             }
         )],
-        "the press goes back on the connection that declared the slot"
+        "the press goes back on the connection that declared the part"
     );
 
     // The app asked for its location to be edited, as its own Ctrl+L does.
@@ -282,7 +282,7 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
         );
     }
 
-    // The app's connection closes: its slots go with it.
+    // The app's connection closes: its parts go with it.
     handle.bar_connection_closed(41);
     for _ in 0..3 {
         frame.relayout();
@@ -437,7 +437,7 @@ fn every_bar_ask_brings_the_shell_its_next_pass() {
     handle.offer_bar(7, 41, ui::window_toolbar::WindowOffer::default());
     assert!(asked.replace(false), "an offer asks for its pass");
     handle.declare_bar(7, 41, None);
-    assert!(asked.replace(false), "taking slots away asks for its pass");
+    assert!(asked.replace(false), "taking parts away asks for its pass");
     handle.edit_bar_location(7);
     assert!(
         asked.replace(false),

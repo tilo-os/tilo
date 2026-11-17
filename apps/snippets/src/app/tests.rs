@@ -634,7 +634,7 @@ fn captures_stage_the_starter_library_and_a_new_window_is_empty() {
     assert!(offers_back(), "the detail is pushed in, Back in the bar");
     detail
         .harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Back);
     detail.settle();
     assert!(
         detail
@@ -975,7 +975,7 @@ fn the_window_bars_sidebar_toggle_collapses_and_expands_the_sidebar() {
     };
     let toggle = |app: &mut TestApp<SnippetsShell>| {
         app.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+            .press_window_part(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
     };
     pump(&mut app);
     let open = width(&mut app);

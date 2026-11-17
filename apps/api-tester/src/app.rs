@@ -1,7 +1,7 @@
 //! The API tester's window: one [`NavShell`], with the sidebar listing saved requests by
 //! collection and the history, and the content a request builder over the response, split
 //! by a draggable divider. Controls report what happened by pushing a [`Cmd`], which the
-//! app applies where it has the document, replacing only the [`Slot`]s that depend on it so
+//! app applies where it has the document, replacing only the [`Part`]s that depend on it so
 //! focus survives.
 
 use std::cell::RefCell;
@@ -34,7 +34,7 @@ use crate::response;
 use crate::sidebar::{self, SidebarView, parse_history, parse_request};
 use ui::framework::{Actions, Dispatcher, Live, Submit, ViewCx};
 use ui::widget::DrawChild;
-use ui::widget::{Slot, SlotHandle};
+use ui::widget::{Part, PartHandle};
 
 mod store;
 pub(crate) use store::window;
@@ -55,9 +55,9 @@ const ENVIRONMENT_COMMANDS: [(&str, Option<FormMode>); 5] = [
     ("Delete environment\u{2026}", None),
 ];
 
-/// A pane of the split: `slot` with room between it and the divider, which is painted over
+/// A pane of the split: `part` with room between it and the divider, which is painted over
 /// both panes' edges.
-fn pane(slot: Slot, below_divider: bool) -> Column {
+fn pane(part: Part, below_divider: bool) -> Column {
     let gap = Spacing::BASE.s3;
     let column = Column::new().with_no_padding();
     let column = if below_divider {
@@ -73,7 +73,7 @@ fn pane(slot: Slot, below_divider: bool) -> Column {
     } else {
         body.with_intrinsic_height()
     };
-    column.push(Box::new(body.push(Box::new(slot))))
+    column.push(Box::new(body.push(Box::new(part))))
 }
 
 /// Keep the shared divider across request-view replacements, with a reset from the header
@@ -147,18 +147,18 @@ struct Stale {
     response_body: bool,
 }
 
-struct Slots {
+struct Parts {
     sidebar: sidebar::NavHandle,
-    url_bar: SlotHandle,
+    url_bar: PartHandle,
     /// Save and Send, which the window's bar shows as its actions.
-    request_actions: SlotHandle,
-    request: SlotHandle,
-    tab_panel: Option<SlotHandle>,
-    panel_inner: Option<SlotHandle>,
-    response: SlotHandle,
-    response_body: Option<SlotHandle>,
-    environments: SlotHandle,
-    dialog: SlotHandle,
+    request_actions: PartHandle,
+    request: PartHandle,
+    tab_panel: Option<PartHandle>,
+    panel_inner: Option<PartHandle>,
+    response: PartHandle,
+    response_body: Option<PartHandle>,
+    environments: PartHandle,
+    dialog: PartHandle,
 }
 
 #[derive(Clone, Copy)]
@@ -225,7 +225,7 @@ pub struct ApiTesterApp {
     pose: Option<Pose>,
     /// The sidebar row menu to open at the next paint, once the window is laid out.
     menu_pending: bool,
-    slots: Slots,
+    parts: Parts,
     /// The active environment's variables, for the URL's variable hint.
     env_vars: Rc<RefCell<HashMap<String, String>>>,
     env_state: LocalState<String>,
@@ -273,20 +273,20 @@ impl ApiTesterApp {
         let selected = demo.then_some((0, 0));
 
         let builtin = request::section(&model.request, RequestTab::Params, &blanks, &sink);
-        let (request_slot, request) = Slot::new(builtin.element);
-        let (response_slot, response_handle, response_body) =
-            Self::response_slot(response.as_ref(), &sink);
-        let (dialog_slot, dialog) = Slot::new(no_dialog());
+        let (request_part, request) = Part::new(builtin.element);
+        let (response_part, response_handle, response_body) =
+            Self::response_part(response.as_ref(), &sink);
+        let (dialog_part, dialog) = Part::new(no_dialog());
         let env_state = LocalState::new(
             Self::environment_name(&model.environments, model.active_env.as_ref()).to_owned(),
         );
-        let (env_slot, environments) = Slot::new(Self::environment_picker(
+        let (env_part, environments) = Part::new(Self::environment_picker(
             &model.environments,
             model.active_env.as_ref(),
             &env_state,
             &sink,
         ));
-        let (lists_slot, sidebar_lists) = sidebar::lists(
+        let (lists_part, sidebar_lists) = sidebar::lists(
             &SidebarView {
                 collections: &model.collections,
                 history: &model.history,
@@ -295,27 +295,27 @@ impl ApiTesterApp {
             &sink,
         );
 
-        let (url_slot, url_bar) = Slot::new(request::url_bar(&sink));
-        let (actions_slot, request_actions) = Slot::new(request::request_actions(&sink, false));
+        let (url_part, url_bar) = Part::new(request::url_bar(&sink));
+        let (actions_part, request_actions) = Part::new(request::request_actions(&sink, false));
         let content = Self::content(
-            url_slot,
-            request_slot,
-            response_slot,
-            dialog_slot,
+            url_part,
+            request_part,
+            response_part,
+            dialog_part,
             &env_vars,
             &sink,
         );
         let nav = NavShell::new()
             .content_kind(ui::widget::ContentKind::Document)
             .with_id("api.shell")
-            .sidebar(sidebar::frame(Box::new(env_slot), Box::new(lists_slot)))
+            .sidebar(sidebar::frame(Box::new(env_part), Box::new(lists_part)))
             .sidebar_header("", vec![sidebar::new_collection(&sink)])
             .content(content)
             // Save and Send stand in the bar beside New collection; resetting the request
             // area is occasional and follows them, in the bar's menu.
             .content_header(
                 model.request.name.clone(),
-                vec![Box::new(actions_slot), Box::new(Self::reset_area(&sink))],
+                vec![Box::new(actions_part), Box::new(Self::reset_area(&sink))],
             );
 
         let app = Self {
@@ -339,12 +339,12 @@ impl ApiTesterApp {
             stale: Stale::default(),
             pose: None,
             menu_pending: false,
-            slots: Slots {
+            parts: Parts {
                 sidebar: sidebar_lists,
                 url_bar,
                 request_actions,
                 request,
-                tab_panel: Some(builtin.slot),
+                tab_panel: Some(builtin.part),
                 panel_inner: builtin.inner,
                 response: response_handle,
                 response_body,
@@ -378,12 +378,12 @@ impl ApiTesterApp {
     }
 
     /// The content column: the URL bar over the request and the response, which a divider
-    /// splits, with the sheet's slot above them.
+    /// splits, with the sheet's part above them.
     fn content(
-        url_bar: Slot,
-        request: Slot,
-        response: Slot,
-        dialog: Slot,
+        url_bar: Part,
+        request: Part,
+        response: Part,
+        dialog: Part,
         env_vars: &Rc<RefCell<HashMap<String, String>>>,
         sink: &Sink,
     ) -> Element {
@@ -423,17 +423,17 @@ impl ApiTesterApp {
         )
     }
 
-    fn response_slot(
+    fn response_part(
         response: Option<&ResponseData>,
         sink: &Sink,
-    ) -> (Slot, SlotHandle, Option<SlotHandle>) {
+    ) -> (Part, PartHandle, Option<PartHandle>) {
         if let Some(data) = response {
             let built = response::response(data, ResponseView::Pretty, sink, None);
-            let (slot, handle) = Slot::new(built.element);
-            (slot, handle, Some(built.body))
+            let (part, handle) = Part::new(built.element);
+            (part, handle, Some(built.body))
         } else {
-            let (slot, handle) = Slot::new(response::empty(sink));
-            (slot, handle, None)
+            let (part, handle) = Part::new(response::empty(sink));
+            (part, handle, None)
         }
     }
 
@@ -623,7 +623,7 @@ impl ApiTesterApp {
 
     fn refresh_views(&mut self) {
         if std::mem::take(&mut self.stale.sidebar) {
-            self.slots.sidebar.set(&SidebarView {
+            self.parts.sidebar.set(&SidebarView {
                 collections: &self.collections,
                 history: &self.history,
                 selected: self.selected,
@@ -633,13 +633,13 @@ impl ApiTesterApp {
             self.nav.set_content_title(self.request.name.clone());
         }
         if std::mem::take(&mut self.stale.url_bar) {
-            self.slots.url_bar.set(request::url_bar(&self.sink));
-            self.slots
+            self.parts.url_bar.set(request::url_bar(&self.sink));
+            self.parts
                 .request_actions
                 .set(request::request_actions(&self.sink, self.sending()));
         }
         if std::mem::take(&mut self.stale.environments) {
-            self.slots.environments.set(Self::environment_picker(
+            self.parts.environments.set(Self::environment_picker(
                 &self.environments,
                 self.active_env.as_ref(),
                 &self.env_state,
@@ -648,9 +648,9 @@ impl ApiTesterApp {
         }
         if std::mem::take(&mut self.stale.request) {
             let built = request::section(&self.request, self.active_tab, &self.blanks, &self.sink);
-            self.slots.request.set(built.element);
-            self.slots.tab_panel = Some(built.slot);
-            self.slots.panel_inner = built.inner;
+            self.parts.request.set(built.element);
+            self.parts.tab_panel = Some(built.part);
+            self.parts.panel_inner = built.inner;
             self.table = built.table;
             self.stale.tab_panel = false;
             self.stale.body_inner = false;
@@ -658,25 +658,25 @@ impl ApiTesterApp {
         }
         if std::mem::take(&mut self.stale.tab_panel) {
             let panel = request::panel(&self.request, self.active_tab, &self.blanks, &self.sink);
-            if let Some(slot) = &self.slots.tab_panel {
-                slot.set(panel.element);
+            if let Some(part) = &self.parts.tab_panel {
+                part.set(panel.element);
             }
-            self.slots.panel_inner = panel.inner;
+            self.parts.panel_inner = panel.inner;
             self.table = panel.table;
             self.stale.body_inner = false;
             self.stale.auth_inner = false;
         }
         if std::mem::take(&mut self.stale.body_inner) {
             let (element, table) = request::body_inner(&self.request, &self.blanks, &self.sink);
-            if let Some(slot) = &self.slots.panel_inner {
-                slot.set(element);
+            if let Some(part) = &self.parts.panel_inner {
+                part.set(element);
             }
             self.table = table;
         }
         if std::mem::take(&mut self.stale.auth_inner)
-            && let Some(slot) = &self.slots.panel_inner
+            && let Some(part) = &self.parts.panel_inner
         {
-            slot.set(request::auth_inner(&self.request.auth, &self.sink));
+            part.set(request::auth_inner(&self.request.auth, &self.sink));
         }
         let copy_failed = {
             let mut state = self.state();
@@ -692,18 +692,18 @@ impl ApiTesterApp {
             self.rebuild_response();
         }
         if std::mem::take(&mut self.stale.response_body)
-            && let (Some(slot), Some(data)) =
-                (&self.slots.response_body, &self.store.borrow().response)
+            && let (Some(part), Some(data)) =
+                (&self.parts.response_body, &self.store.borrow().response)
         {
-            slot.set(response::body_view(data, self.response_view));
+            part.set(response::body_view(data, self.response_view));
         }
     }
 
     fn rebuild_response(&mut self) {
         let store = self.store.borrow();
         if store.sending {
-            self.slots.response.set(response::sending(&self.sink));
-            self.slots.response_body = None;
+            self.parts.response.set(response::sending(&self.sink));
+            self.parts.response_body = None;
             self.stale.response_body = false;
             return;
         }
@@ -715,16 +715,16 @@ impl ApiTesterApp {
                     &self.sink,
                     store.notice.as_deref(),
                 );
-                self.slots.response.set(built.element);
-                self.slots.response_body = Some(built.body);
+                self.parts.response.set(built.element);
+                self.parts.response_body = Some(built.body);
             }
             (None, Some(error)) => {
-                self.slots.response.set(response::failed(error, &self.sink));
-                self.slots.response_body = None;
+                self.parts.response.set(response::failed(error, &self.sink));
+                self.parts.response_body = None;
             }
             (None, None) => {
-                self.slots.response.set(response::empty(&self.sink));
-                self.slots.response_body = None;
+                self.parts.response.set(response::empty(&self.sink));
+                self.parts.response_body = None;
             }
         }
         self.stale.response_body = false;
@@ -1118,7 +1118,7 @@ impl ApiTesterApp {
         // selecting a push pane alone cannot close it.
         self.dismiss_drawer();
         let fields = Fields::new(&initial);
-        self.slots
+        self.parts
             .dialog
             .set(dialog::build(mode, &fields, &self.sink));
         self.form = Some(OpenForm {
@@ -1131,7 +1131,7 @@ impl ApiTesterApp {
 
     fn close_form(&mut self) {
         if self.form.take().is_some() {
-            self.slots.dialog.set(no_dialog());
+            self.parts.dialog.set(no_dialog());
         }
         self.dirty = true;
     }
@@ -1159,7 +1159,7 @@ impl ApiTesterApp {
         let Some(form) = self.form.take() else {
             return;
         };
-        self.slots.dialog.set(no_dialog());
+        self.parts.dialog.set(no_dialog());
         let OpenForm {
             mode,
             target,

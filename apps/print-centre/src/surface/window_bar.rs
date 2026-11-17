@@ -211,7 +211,7 @@ mod tests {
             bar().location.map(|location| location.label).as_deref(),
             Some("Print history")
         );
-        app.harness().press_window_slot(ToolbarEvent::Back);
+        app.harness().press_window_part(ToolbarEvent::Back);
         app.settle();
         assert_eq!(
             page(&mut app),

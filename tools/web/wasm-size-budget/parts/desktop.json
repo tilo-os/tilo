@@ -249,7 +249,7 @@
  "tilo_ui::undo": 9782,
  "tilo_ui::widget": 2137925,
  "tilo_ui::window_share": 8433,
- "tilo_ui::window_slots": 10953,
+ "tilo_ui::window_parts": 10953,
  "tilo_ui::window_toolbar": 40400,
  "tilo_ui::workspace_emoji": 10501,
  "tilo_ui_graph::component": 8899,

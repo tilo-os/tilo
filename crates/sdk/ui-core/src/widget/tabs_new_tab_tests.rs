@@ -25,7 +25,7 @@ fn a_german_bar_names_its_new_tab_and_its_tabs_controls_in_german() {
         .bar_layout()
         .controls
         .into_iter()
-        .find(|control| control.slot == "new-tab")
+        .find(|control| control.part == "new-tab")
         .expect("a bar with area shows its new tab");
     assert_eq!(new_tab.name, "Neuer Tab");
     let at = Point::new(new_tab.rect[0] + 16.0, new_tab.rect[1] + 16.0);

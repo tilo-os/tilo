@@ -339,12 +339,12 @@ mod profiling;
 mod retained_layout;
 mod root_access;
 pub use root_access::{Framed, RootAndStateMut, RootMut};
+mod part_row;
 mod root_component;
 mod root_wake;
 mod search_open;
 mod sidebar_button;
-mod slot_row;
-pub use slot_row::WINDOW_SLOTS;
+pub use part_row::WINDOW_PARTS;
 mod cursor;
 pub mod test_support;
 #[cfg(any(test, feature = "test-support"))]
@@ -443,7 +443,7 @@ pub struct FrameHarness {
     /// widgets that nothing in the tree marks, so the next frame clears its cache.
     drawn_permissions: u64,
     child_node: NodeId,
-    /// The harness takes the place of the shell's window bar, hosting the app's slots, search and
+    /// The harness takes the place of the shell's window bar, hosting the app's parts, search and
     /// History and painting it over every capture.
     window_bar: bool,
     /// The window's bar shows at rest, over the app's frame, as a window whose bar does not hide
@@ -456,15 +456,15 @@ pub struct FrameHarness {
     row_holds: bool,
     /// The window bar's search over the app's widgets, painted in the bar ([`Self::search_in_window`]).
     window_search: Box<crate::widget::WindowSearch>,
-    /// The app's window-bar slots in a row of the frame, as a window of it hosts them
-    /// ([`Self::host_window_slots`]).
-    slot_row: Option<Box<slot_row::HostedSlots>>,
+    /// The app's window-bar parts in a row of the frame, as a window of it hosts them
+    /// ([`Self::host_window_parts`]).
+    part_row: Option<Box<part_row::HostedParts>>,
     /// The window this harness shows the app in, once it takes the place of the shell's bar
-    /// ([`Self::present_in_window_bar`]): the app declares its bar's slots on this window, so windows a
+    /// ([`Self::present_in_window_bar`]): the app declares its bar's parts on this window, so windows a
     /// process lays out beside each other keep their bars apart.
     window: Option<crate::hosted_window::HostedWindow>,
     /// `window` standing as the thread for as long as the harness lives: what the app's bar hands
-    /// it between frames ([`Self::press_window_slot`]) is this window's.
+    /// it between frames ([`Self::press_window_part`]) is this window's.
     window_scope: Option<crate::window_toolbar::WindowScope>,
     /// The app a concrete root is ([`Self::for_app`]): its kind and title, which its window's bar wears
     /// as a shell window's tab does.
@@ -1155,7 +1155,7 @@ impl FrameHarness {
     }
 
     /// The style of the node the root is laid out in, across a window `w` by `h`: the host's, below the
-    /// row of window slots the frame hosts ([`Self::host_window_slots`]).
+    /// row of window parts the frame hosts ([`Self::host_window_parts`]).
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -1173,7 +1173,7 @@ impl FrameHarness {
             },
             ..self.host.style.clone()
         };
-        let inset = self.slot_row_inset();
+        let inset = self.part_row_inset();
         if inset > 0.0 {
             style.padding.top = taffy::LengthPercentage::length(inset as f32);
         }
@@ -1505,7 +1505,7 @@ impl FrameHarness {
             bar_revealed: true,
             row_holds: false,
             window_search: Box::new(crate::widget::WindowSearch::new()),
-            slot_row: None,
+            part_row: None,
             window: None,
             window_scope: None,
             window_app: None,
@@ -2574,8 +2574,8 @@ impl FrameHarness {
                 .as_ref()
                 .is_some_and(crate::session_api::ClientApi::is_busy)
             || self.wake_pending();
-        let (slots_declared, slots_moving) = self.slot_row_wants_frame();
-        let queued_work = queued_work || slots_declared;
+        let (parts_declared, parts_moving) = self.part_row_wants_frame();
+        let queued_work = queued_work || parts_declared;
         let now = crate::time::now();
         self.with_schedule_roots(|roots| {
             let queued_work = queued_work || roots.iter().any(|root| root.needs_idle_sync());
@@ -2588,7 +2588,7 @@ impl FrameHarness {
                 .min();
             FrameSchedule {
                 needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
-                    || slots_moving
+                    || parts_moving
                     || self.settle_frame_owed
                     || self.tooltips.schedule().2
                     || crate::motion::frames_wanted(now)
@@ -3116,7 +3116,7 @@ impl FrameHarness {
         self.adopt_loaded_palette();
         let _wake = self.enter_wake();
         self.activation_recomposed = false;
-        self.refresh_slot_row();
+        self.refresh_part_row();
         let mut result = self.try_relayout_once();
         for _ in 1..8 {
             if !matches!(
@@ -3128,7 +3128,7 @@ impl FrameHarness {
             }
             result = self.try_relayout_once();
         }
-        if result.is_ok() && self.refresh_slot_row() {
+        if result.is_ok() && self.refresh_part_row() {
             result = self.try_relayout_once();
         }
         if result.is_ok() {
@@ -3530,7 +3530,7 @@ impl FrameHarness {
                 );
                 // The header the rebuild builds hears whether the frame's row
                 // presents search, so it never shows a second search control.
-                if self.slot_row.is_some() {
+                if self.part_row.is_some() {
                     crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
                 }
                 self.root.set_interaction_environment(self.interaction);
@@ -3996,7 +3996,7 @@ impl FrameHarness {
             );
             history.mark_drawn();
         }
-        self.draw_slot_row(transform);
+        self.draw_part_row(transform);
         if let Some(palette) = self
             .action_palette
             .as_deref_mut()
@@ -4909,7 +4909,7 @@ impl FrameHarness {
     ///
     /// Returns an error when the id is empty in the current frame — a
     /// stale reference is reported, never quietly retargeted at whatever now
-    /// occupies the slot — or when it addresses the inoperable window root.
+    /// occupies the place — or when it addresses the inoperable window root.
     pub fn perform_a11y_action(
         &mut self,
         target: accesskit::NodeId,
@@ -5275,8 +5275,8 @@ impl FrameHarness {
                 Err("palette owns input".into())
             };
         }
-        if name == WINDOW_SLOTS {
-            return self.perform_slot_row_semantic(semantic_target, action);
+        if name == WINDOW_PARTS {
+            return self.perform_part_row_semantic(semantic_target, action);
         }
         if !self.named_target_nodes().contains_key(name) {
             let owner = match semantic_target {
@@ -5705,7 +5705,7 @@ impl FrameHarness {
             collect_inspection(self.root.as_ref(), "", &mut sibling_counts, None)
         };
         if self.caller_palette.palette.is_none() {
-            root.children.splice(0..0, self.slot_row_inspection());
+            root.children.splice(0..0, self.part_row_inspection());
         }
         root.children.extend(self.tooltip_inspection());
         root.children.extend(self.presence_inspection());
@@ -5985,7 +5985,7 @@ impl FrameHarness {
         }
         let renamed = crate::latin_chord::renamed(event, self.modifiers.state());
         let event = renamed.as_ref().unwrap_or(event);
-        if self.slot_row_event(event) {
+        if self.part_row_event(event) {
             return;
         }
         let history_input = self

@@ -373,7 +373,7 @@ impl AppTabs {
                 answered.answer(&mut self.host_shell, request);
             }
             // What the person did in the windows' bars goes back to the app whose connection
-            // declared the slots there.
+            // declared the parts there.
             answered.deliver_bar_events();
             // A control of a window's own content, pressed where the shell lists it, goes to the app
             // drawing that window.
@@ -1009,7 +1009,7 @@ impl Answers<'_> {
                 generation,
             } => self.answer_protection(connection, &app, &reply, protected, generation),
             FloatingSurfaceClientMessage::Toolbar { toolbar, .. } => {
-                // The slots this app shows in its window's bar, where its window is a tab of the
+                // The parts this app shows in its window's bar, where its window is a tab of the
                 // desktop's.
                 match own {
                     Some(tab) => self.desktop.with_policy(|policy| {
@@ -1323,7 +1323,7 @@ impl Answers<'_> {
     }
 
     /// Write what the person did in the windows' bars to the app whose connection declared the
-    /// slots there.
+    /// parts there.
     fn deliver_bar_events(&self) {
         let events = self
             .desktop

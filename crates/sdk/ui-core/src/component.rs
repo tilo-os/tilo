@@ -1,7 +1,7 @@
 //! Components: the toolkit's widgets as described, composable data.
 //!
 //! A described widget has **props**: a plain struct with `#[derive(Component)]`, and the derive
-//! generates its [`Description`] from it (props, slots, events, bindings, state and semantics, each
+//! generates its [`Description`] from it (props, parts, events, bindings, state and semantics, each
 //! with its doc text), so the description cannot drift from the widget: a prop or an event whose
 //! type has no description does not compile, and an event is an [`Event`], data, never a closure.
 //!
@@ -72,7 +72,7 @@ use crate::widget::Element;
 
 pub use tilo_ui_graph::component::{
     Accepts, Binding as BindingDescription, Catalogue, Description, Event as EventDescription,
-    FORMAT_VERSION, Merge, Offered, Picture, Prop, Semantics, Slot, State as StateDescription,
+    FORMAT_VERSION, Merge, Offered, Part, Picture, Prop, Semantics, State as StateDescription,
     Type, Value,
 };
 pub use tilo_ui_macros::{Component, not_a_component};
@@ -81,7 +81,7 @@ pub use tilo_ui_macros::{Component, not_a_component};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
     pub component: String,
-    /// The prop, slot, binding or state.
+    /// The prop, part, binding or state.
     pub part: String,
     pub message: String,
 }
@@ -528,9 +528,9 @@ macro_rules! choice {
 )]
 pub(crate) use choice;
 
-macro_rules! part_slot {
+macro_rules! part_type {
     ($props:ty) => {
-        impl $crate::component::SlotType for Vec<$props> {
+        impl $crate::component::PartType for Vec<$props> {
             const MANY: bool = true;
 
             fn accepts() -> $crate::component::Accepts {
@@ -542,10 +542,10 @@ macro_rules! part_slot {
             fn fill(
                 &mut self,
                 source: &mut dyn $crate::component::Source,
-                slot: &str,
+                part: &str,
             ) -> Result<(), String> {
                 let mut read = Vec::new();
-                source.components(slot, &mut |child| {
+                source.components(part, &mut |child| {
                     read.push(
                         <$props as $crate::component::Component>::from_source(child)
                             .map_err(|error| error.to_string())?,
@@ -559,7 +559,7 @@ macro_rules! part_slot {
     };
 }
 
-pub(crate) use part_slot;
+pub(crate) use part_type;
 
 choice!(crate::tokens::TextRole, "TextRole", {
     Display => "display",
@@ -864,27 +864,27 @@ impl<B: BindType> BindType for Option<B> {
     }
 }
 
-/// A Rust type a slot may have: [`Option<Element>`] for one view, [`Vec<Element>`] for any number,
+/// A Rust type a part may have: [`Option<Element>`] for one view, [`Vec<Element>`] for any number,
 /// `Option<P>` of another component's props for that component only (the derive implements it).
-pub trait SlotType {
+pub trait PartType {
     /// Whether it has any number of children.
     const MANY: bool;
 
     fn accepts() -> Accepts;
 
-    /// Take the slot `slot`'s content from `source`.
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String>;
+    /// Take the part `part`'s content from `source`.
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String>;
 }
 
-impl SlotType for Option<Element> {
+impl PartType for Option<Element> {
     const MANY: bool = false;
 
     fn accepts() -> Accepts {
         Accepts::View
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
-        let mut children = source.children(slot);
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        let mut children = source.children(part);
         if children.len() > 1 {
             return Err(format!("holds one view, not {}", children.len()));
         }
@@ -893,21 +893,21 @@ impl SlotType for Option<Element> {
     }
 }
 
-impl SlotType for Vec<Element> {
+impl PartType for Vec<Element> {
     const MANY: bool = true;
 
     fn accepts() -> Accepts {
         Accepts::View
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
-        *self = source.children(slot);
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        *self = source.children(part);
         Ok(())
     }
 }
 
 /// An instance of a component as its host gives it: the values of its props, its events and bindings as
-/// data, and its slots' content.
+/// data, and its parts' content.
 pub trait Source {
     /// The instance's stable key.
     fn key(&self) -> &str;
@@ -927,33 +927,33 @@ pub trait Source {
     /// The binding `name`, when the instance binds it.
     fn binding(&mut self, name: &str) -> Option<BoundValue>;
 
-    /// The views in the slot `slot`, built.
-    fn children(&mut self, slot: &str) -> Vec<Element>;
+    /// The views in the part `part`, built.
+    fn children(&mut self, part: &str) -> Vec<Element>;
 
-    /// Each component in the slot `slot`, in order, read by `read`.
+    /// Each component in the part `part`, in order, read by `read`.
     fn components(
         &mut self,
-        slot: &str,
+        part: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String>;
 
-    /// The component each child of the slot `slot` is an instance of, in order: `None` for a child that
+    /// The component each child of the part `part` is an instance of, in order: `None` for a child that
     /// is a view of another kind.
-    fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
-        let _ = slot;
+    fn part_kinds(&mut self, part: &str) -> Vec<Option<String>> {
+        let _ = part;
         Vec::new()
     }
 
-    /// Whether the slot `slot` has anything: a view or a component, built or not.
-    fn holds(&mut self, slot: &str) -> bool {
-        !self.slot_kinds(slot).is_empty()
+    /// Whether the part `part` has anything: a view or a component, built or not.
+    fn holds(&mut self, part: &str) -> bool {
+        !self.part_kinds(part).is_empty()
     }
 
-    /// The rows of the slot `slot` when its host renders them only as they are shown (a loop over a
+    /// The rows of the part `part` when its host renders them only as they are shown (a loop over a
     /// collection of any length): the widget reads them from there rather than from
     /// [`Self::components`].
-    fn rows(&mut self, slot: &str) -> Option<SharedRows> {
-        let _ = slot;
+    fn rows(&mut self, part: &str) -> Option<SharedRows> {
+        let _ = part;
         None
     }
 
@@ -986,7 +986,7 @@ pub trait RowSource {
     fn request_range(&mut self, range: std::ops::Range<usize>, open: Option<String>);
 
     /// Whether the row `key` is rendered now, its content there to read: a row named but not
-    /// rendered yet is on its way, and the list shows a placeholder in its slot until it
+    /// rendered yet is on its way, and the list shows a placeholder in its part until it
     /// arrives ([`crate::widget::virtual_list::ListModel::row_state`]).
     fn rendered(&self, key: &str) -> bool;
 
@@ -997,7 +997,7 @@ pub trait RowSource {
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<bool, String>;
 
-    /// Read the rendered row `key` for its props and what its slots hold, building none of its views:
+    /// Read the rendered row `key` for its props and what its parts hold, building none of its views:
     /// what a list reads of a row beside building it (its group, its place in a tree, the item it
     /// shows), which it asks for every row it has on every pass.
     fn read_props(
@@ -1032,11 +1032,11 @@ pub trait Component: Default + Sized {
     fn from_source(source: &mut dyn Source) -> Result<Self, Error>;
 }
 
-/// The views in one slot of a widget, which a host inserts, removes, moves and replaces by
-/// key: a change of a slot's content costs what changed, and is described to the window
+/// The views in one part of a widget, which a host inserts, removes, moves and replaces by
+/// key: a change of a part's content costs what changed, and is described to the window
 /// ([`crate::widget::StructureChange::Described`]) rather than rebuilding the widget.
-pub trait SlotViews {
-    /// How many views the slot has.
+pub trait PartViews {
+    /// How many views the part has.
     fn len(&self) -> usize;
 
     fn is_empty(&self) -> bool {
@@ -1054,7 +1054,7 @@ pub trait SlotViews {
     fn replace(&mut self, index: usize, view: Element);
 }
 
-impl<L: crate::widget::arrange::Layout + 'static> SlotViews
+impl<L: crate::widget::arrange::Layout + 'static> PartViews
     for crate::widget::arrange::Arranged<L>
 {
     fn len(&self) -> usize {
@@ -1066,7 +1066,7 @@ impl<L: crate::widget::arrange::Layout + 'static> SlotViews
     }
 
     fn insert(&mut self, index: usize, view: Element) {
-        Self::insert(self, index, crate::widget::arrange::Slot::new(view));
+        Self::insert(self, index, crate::widget::arrange::Part::new(view));
     }
 
     fn remove(&mut self, index: usize) {
@@ -1074,7 +1074,7 @@ impl<L: crate::widget::arrange::Layout + 'static> SlotViews
     }
 
     fn move_view(&mut self, from: usize, to: usize) {
-        self.move_slot(from, to);
+        self.move_part(from, to);
     }
 
     fn replace(&mut self, index: usize, view: Element) {
@@ -1096,18 +1096,18 @@ pub trait Described: crate::widget::Widget + Sized + 'static {
         false
     }
 
-    /// The views of its slot `slot`, to change by key in place: `None` when a change of what the slot
+    /// The views of its part `part`, to change by key in place: `None` when a change of what the part
     /// has builds the widget again.
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        let _ = slot;
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        let _ = part;
         None
     }
 
-    /// The views its slot `slot` has for the part `key` — a part being a component the slot takes,
-    /// whose props the widget reads — in that part view slot `of`, to change them by key where they
+    /// The views its part `part` has for the item `key` — an item being a component the part takes,
+    /// whose props the widget reads — in that item's part `of`, to change them by key where they
     /// stand.
-    fn part_views(&mut self, slot: &str, key: &str, of: &str) -> Option<&mut dyn SlotViews> {
-        let _ = (slot, key, of);
+    fn item_views(&mut self, part: &str, key: &str, of: &str) -> Option<&mut dyn PartViews> {
+        let _ = (part, key, of);
         None
     }
 }
@@ -1140,10 +1140,10 @@ pub struct Entry {
     pub build: fn(&mut dyn Source) -> Result<Element, Error>,
     /// Take the instance's props in place: `Ok(false)` when the widget is to be built again.
     pub update: fn(&mut Element, &mut dyn Source) -> Result<bool, Error>,
-    /// The views of one of its slots, to change by key in place.
-    pub slot_views: for<'a> fn(&'a mut Element, &str) -> Option<&'a mut dyn SlotViews>,
-    /// The views of one part of a slot, to change by key in place.
-    pub part_views: for<'a> fn(&'a mut Element, &str, &str, &str) -> Option<&'a mut dyn SlotViews>,
+    /// The views of one of its parts, to change by key in place.
+    pub part_views: for<'a> fn(&'a mut Element, &str) -> Option<&'a mut dyn PartViews>,
+    /// The views of one item of a part, to change by key in place.
+    pub item_views: for<'a> fn(&'a mut Element, &str, &str, &str) -> Option<&'a mut dyn PartViews>,
 }
 
 /// The [`Entry`] of the widget `W`.
@@ -1163,33 +1163,33 @@ pub fn entry<W: Described>() -> Entry {
         let props = W::Props::from_source(source)?;
         Ok(widget.set_props(props))
     }
-    fn slot_views<'a, W: Described>(
-        widget: &'a mut Element,
-        slot: &str,
-    ) -> Option<&'a mut dyn SlotViews> {
-        widget
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<W>())?
-            .slot_views(slot)
-    }
     fn part_views<'a, W: Described>(
         widget: &'a mut Element,
-        slot: &str,
-        key: &str,
-        of: &str,
-    ) -> Option<&'a mut dyn SlotViews> {
+        part: &str,
+    ) -> Option<&'a mut dyn PartViews> {
         widget
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<W>())?
-            .part_views(slot, key, of)
+            .part_views(part)
+    }
+    fn item_views<'a, W: Described>(
+        widget: &'a mut Element,
+        part: &str,
+        key: &str,
+        of: &str,
+    ) -> Option<&'a mut dyn PartViews> {
+        widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<W>())?
+            .item_views(part, key, of)
     }
     Entry {
         name: W::Props::NAME,
         describe: W::Props::describe,
         build: build::<W>,
         update: update::<W>,
-        slot_views: slot_views::<W>,
         part_views: part_views::<W>,
+        item_views: item_views::<W>,
     }
 }
 
@@ -1229,7 +1229,7 @@ pub fn update(name: &str, widget: &mut Element, source: &mut dyn Source) -> Resu
     (entry.update)(widget, source)
 }
 
-/// The components that stand only in a slot of another, which reads their props: a property list's
+/// The components that stand only in a part of another, which reads their props: a property list's
 /// facts, a navigation list's places and sections, a menu's commands, separators and emoji bar, a row's
 /// swipe, the items of a virtual list, and what a view attaches to the element it is in (its context
 /// menu, hover toolbar and swipe).
@@ -1238,28 +1238,28 @@ pub fn parts() -> &'static [fn() -> Description] {
     &GENERATED_PARTS
 }
 
-/// The views its slot `slot` has for the part `key`, in the part view slot `of`, built for an instance
+/// The views its part `part` has for the item `key`, in that item's part `of`, built for an instance
 /// of `name`, to change by key in place: `None` when the widget changes them only by being built again.
+pub fn item_views<'a>(
+    name: &str,
+    widget: &'a mut Element,
+    part: &str,
+    key: &str,
+    of: &str,
+) -> Option<&'a mut dyn PartViews> {
+    let entry = get(name)?;
+    (entry.item_views)(widget, part, key, of)
+}
+
+/// The views of the part `part` of `widget`, built for an instance of `name`, to change by key in
+/// place: `None` when the widget changes them only by being built again.
 pub fn part_views<'a>(
     name: &str,
     widget: &'a mut Element,
-    slot: &str,
-    key: &str,
-    of: &str,
-) -> Option<&'a mut dyn SlotViews> {
+    part: &str,
+) -> Option<&'a mut dyn PartViews> {
     let entry = get(name)?;
-    (entry.part_views)(widget, slot, key, of)
-}
-
-/// The views of the slot `slot` of `widget`, built for an instance of `name`, to change by key in
-/// place: `None` when the widget changes them only by being built again.
-pub fn slot_views<'a>(
-    name: &str,
-    widget: &'a mut Element,
-    slot: &str,
-) -> Option<&'a mut dyn SlotViews> {
-    let entry = get(name)?;
-    (entry.slot_views)(widget, slot)
+    (entry.part_views)(widget, part)
 }
 
 /// The catalogue of every described widget, as this toolkit generates it.
@@ -1301,4 +1301,4 @@ mod controls_tests;
 mod media_tests;
 
 #[cfg(test)]
-mod slot_fill_tests;
+mod part_fill_tests;

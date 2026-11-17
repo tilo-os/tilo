@@ -73,11 +73,11 @@ def adapter_registration_errors(source: str) -> list[str]:
 def window_tree_reaches_adapter(source: str) -> bool:
     """The window of its own's tree: the app's shared tree, with the row of
     window-bar slots the runner draws published beside it, reaches the
-    adapter through ``slot_bar::window_tree_update``, which must build the
+    adapter through ``part_bar::window_tree_update``, which must build the
     app's tree and return it through the native conversion."""
     call = (
         r"adapter\.update_if_active\(\|\|\s*\{?\s*"
-        r"slot_bar::window_tree_update\(\s*app_ref,\s*\w+,\s*scale,?\s*\)\s*\}?\)"
+        r"part_bar::window_tree_update\(\s*app_ref,\s*\w+,\s*scale,?\s*\)\s*\}?\)"
     )
     if not re.search(call, source):
         return False
@@ -139,7 +139,7 @@ def audit(root: Path = ROOT) -> list[str]:
         root / "crates/sdk/ui-core/src/app.rs",
         root / "crates/sdk/ui-core/src/app/host.rs",
         root / "crates/sdk/ui-core/src/app/native_runner.rs",
-        root / "crates/sdk/ui-core/src/app/native_runner/slot_bar.rs",
+        root / "crates/sdk/ui-core/src/app/native_runner/part_bar.rs",
     ]
     app = "\n".join(
         path.read_text(encoding="utf-8") for path in app_paths if path.is_file()

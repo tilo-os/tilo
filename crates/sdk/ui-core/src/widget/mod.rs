@@ -2194,7 +2194,7 @@ pub use nav_shell::{
 };
 pub use window_header::{
     ColumnFrame, HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
-    StatusAction, WindowBar, WindowBarSlot, WindowHeader, WindowHistory, WindowStatus,
+    StatusAction, WindowBar, WindowBarPart, WindowHeader, WindowHistory, WindowStatus,
     merged_row_holds_search, merged_row_width, merged_row_width_in,
 };
 mod nav_list;
@@ -2217,8 +2217,8 @@ mod spacer;
 pub use spacer::Spacer;
 mod when;
 pub use when::{Absent, Fitted, When, optional};
-mod slot;
-pub use slot::{Slot, SlotHandle, Switch};
+mod part;
+pub use part::{Part, PartHandle, Switch};
 mod columns;
 pub use columns::Columns;
 /// The layout primitives: `Stack`, `Row`, `Grid`, `Split`, `Page`, `Layers`.
@@ -2358,7 +2358,7 @@ pub use primitives::{
     FloatingPanelProps, IconButton, KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps,
     LinkKind, LinkStatus, ModalProps, NotificationListControl, NotificationListLayout,
     NotificationListRow, NotificationListView, NotificationRowControls, PopoverProps,
-    StatusCluster, StatusClusterFace, StatusClusterLayout, StatusSlot, Surface, SurfaceLevel,
+    StatusCluster, StatusClusterFace, StatusClusterLayout, StatusPart, Surface, SurfaceLevel,
     TextBlockFace, TextLineAlign, TextLineFace, TextStack, TextStackFace, TextStackProps,
     badge_label, badge_size, control_fill, control_radius, paint_control_row, paint_see_through,
     paint_severity_rail, paint_surface, paint_unread_badge, paint_window_card,

@@ -20,18 +20,18 @@ use tilo_desktop::overlays::Overlays;
 /// It shows nothing and takes nothing: it exists so the compositor's press reaches the stack with
 /// the point it landed on. A press on the display a window's menu covers is that menu's view's to
 /// judge.
-pub(crate) struct SlotsHost {
+pub(crate) struct PartsHost {
     overlays: Overlays,
 }
 
-impl SlotsHost {
+impl PartsHost {
     /// The host feeding `overlays` the session's presses.
     pub(crate) fn new(overlays: Overlays) -> Self {
         Self { overlays }
     }
 }
 
-impl SurfaceHost for SlotsHost {
+impl SurfaceHost for PartsHost {
     fn layers(&self) -> Vec<HostLayer> {
         Vec::new()
     }
@@ -48,8 +48,8 @@ impl SurfaceHost for SlotsHost {
     /// where the press is not, goes down — and stays down for that press, so it does not reopen
     /// under it.
     fn pressed_elsewhere(&mut self, x: f64, y: f64) {
-        if let Some(slot) = self.overlays.press_outside(x, y) {
-            self.overlays.dismiss(slot);
+        if let Some(part) = self.overlays.press_outside(x, y) {
+            self.overlays.dismiss(part);
         }
     }
 
@@ -66,5 +66,5 @@ impl SurfaceHost for SlotsHost {
 
 /// Mount the session's reader of presses outside the overlays over `compositor` .
 pub(crate) fn mount(compositor: &mut tilo_compositor::Compositor, overlays: &Overlays) {
-    compositor.add_host(Rc::new(RefCell::new(SlotsHost::new(overlays.clone()))));
+    compositor.add_host(Rc::new(RefCell::new(PartsHost::new(overlays.clone()))));
 }

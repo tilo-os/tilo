@@ -19,7 +19,7 @@ fn reader() -> (tempfile::TempDir, TestApp<PdfViewerShell>) {
 }
 
 fn press(app: &mut TestApp<PdfViewerShell>, event: ToolbarEvent) {
-    app.harness().press_window_slot(event);
+    app.harness().press_window_part(event);
     app.settle();
 }
 
@@ -36,7 +36,7 @@ fn bar(app: &mut TestApp<PdfViewerShell>) -> WindowToolbar {
     reader_state(app, |pdf| pdf.window_toolbar())
 }
 
-fn slot<'a>(toolbar: &'a WindowToolbar, name: &str) -> &'a ToolbarAction {
+fn part<'a>(toolbar: &'a WindowToolbar, name: &str) -> &'a ToolbarAction {
     toolbar
         .actions
         .iter()
@@ -53,7 +53,7 @@ fn review(toolbar: &WindowToolbar) -> &ToolbarAction {
 }
 
 fn items(toolbar: &WindowToolbar, menu: &str, pick: fn(&ToolbarAction) -> bool) -> Vec<String> {
-    slot(toolbar, menu)
+    part(toolbar, menu)
         .items
         .iter()
         .filter(|item| pick(item))
@@ -175,7 +175,7 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
         [Tool::Ink.label()]
     );
     assert_eq!(
-        slot(&toolbar, &crate::t("pdf-bar-tools")).icon,
+        part(&toolbar, &crate::t("pdf-bar-tools")).icon,
         ui::icons::Icon::Pencil.name()
     );
     app.effect(&PdfEffect::UseTool { tool: Tool::Note })
@@ -221,7 +221,7 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
         HighlightColor::Pink
     );
 
-    assert!(slot(&bar(&mut app), "Save annotated PDF").enabled);
+    assert!(part(&bar(&mut app), "Save annotated PDF").enabled);
 }
 
 #[test]

@@ -51,8 +51,8 @@ fn row_marks(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
             let mark = item
                 .children
                 .iter()
-                .find(|c| c.kind == "slot" && c.props.get("name") == Some(&Value::text("change")))
-                .and_then(|slot| slot.children.first().cloned());
+                .find(|c| c.kind == "part" && c.props.get("name") == Some(&Value::text("change")))
+                .and_then(|part| part.children.first().cloned());
             out.push((of, mark));
         }
     }
@@ -74,8 +74,8 @@ fn tree_marks(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
             let mark = node
                 .children
                 .iter()
-                .find(|c| c.kind == "slot" && c.props.get("name") == Some(&Value::text("change")))
-                .and_then(|slot| slot.children.first().cloned());
+                .find(|c| c.kind == "part" && c.props.get("name") == Some(&Value::text("change")))
+                .and_then(|part| part.children.first().cloned());
             (of, mark)
         })
         .collect()
@@ -307,14 +307,14 @@ fn removed_rows(tree: &UiNode) -> Vec<(String, UiNode)> {
         .into_iter()
         .chain(all(tree, "ui.TreeView"))
     {
-        let Some(slot) = holder
+        let Some(part) = holder
             .children
             .iter()
-            .find(|c| c.kind == "slot" && c.props.get("name") == Some(&Value::text("removed")))
+            .find(|c| c.kind == "part" && c.props.get("name") == Some(&Value::text("removed")))
         else {
             continue;
         };
-        for item in &slot.children {
+        for item in &part.children {
             assert_eq!(item.props.get("removed"), Some(&Value::Bool(true)));
             // A list's row is a list row under it; a tree's node says what it was called.
             let title = all(item, "ui.ListRow")
@@ -426,14 +426,14 @@ fn window_mark(view: &mut ViewInstance) -> UiNode {
 
 /// What a window's mark opens: the views of its catch-up.
 fn catch_up(mark: &UiNode) -> UiNode {
-    let slot = mark
+    let part = mark
         .children
         .iter()
         .find(|child| {
-            child.kind == "slot" && child.props.get("name") == Some(&Value::text("content"))
+            child.kind == "part" && child.props.get("name") == Some(&Value::text("content"))
         })
         .unwrap_or_else(|| panic!("the window's mark opens a catch-up: {mark:?}"));
-    slot.children
+    part.children
         .first()
         .cloned()
         .expect("the catch-up has views")
@@ -932,9 +932,9 @@ fn a_note_the_run_removed_stands_struck_in_the_tree() {
             .into_iter()
             .flat_map(|tree| tree.children.iter())
             .filter(|child| {
-                child.kind == "slot" && child.props.get("name") == Some(&Value::text("removed"))
+                child.kind == "part" && child.props.get("name") == Some(&Value::text("removed"))
             })
-            .flat_map(|slot| slot.children.iter().cloned())
+            .flat_map(|part| part.children.iter().cloned())
             .collect()
     };
     let rows = struck(&mut notebook);

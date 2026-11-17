@@ -1,4 +1,4 @@
-//! [`ActivityTimeline`] as a described component: the changes of a document as entries in a slot, each
+//! [`ActivityTimeline`] as a described component: the changes of a document as entries in a part, each
 //! what it did, who did it and when, and reverting or opening one reported with the change it stands
 //! for.
 
@@ -65,7 +65,7 @@ pub struct ActivityEntryProps {
     pub artifact: Option<ActivityArtifact>,
 }
 
-crate::component::part_slot!(ActivityEntryProps);
+crate::component::part_type!(ActivityEntryProps);
 
 /// The history of a document, grouped: runs of typing fold into one band that opens to its changes,
 /// each day's changes sit under the day's heading, and a change's menu offers reverting it.
@@ -82,7 +82,7 @@ pub struct ActivityTimelineProps {
     /// Whether it offers every person and agent in the history as a filter.
     pub people_filters: bool,
     /// The changes, oldest first.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub entries: Vec<ActivityEntryProps>,
     /// A change was reverted: carries the change it is.
     #[component(event(value = ResourceId))]
@@ -128,8 +128,8 @@ fn change(key: &str) -> Value {
 /// a change the view names is the same change each time the view is built again.
 fn entry_id(key: &str) -> HistoryEntryId {
     let mut bytes = [0u8; 16];
-    for (slot, byte) in bytes.iter_mut().zip(key.as_bytes()) {
-        *slot = *byte;
+    for (part, byte) in bytes.iter_mut().zip(key.as_bytes()) {
+        *part = *byte;
     }
     HistoryEntryId(bytes)
 }

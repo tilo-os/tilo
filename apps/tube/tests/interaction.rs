@@ -154,7 +154,7 @@ impl Harness {
     }
     fn click_id(&mut self, id: &str) {
         if id == "back_btn" {
-            Framed::harness_mut(&mut self.app).press_window_slot(ToolbarEvent::Back);
+            Framed::harness_mut(&mut self.app).press_window_part(ToolbarEvent::Back);
         } else {
             click_id(&mut self.app, id);
         }
@@ -280,7 +280,7 @@ fn the_rail_and_cards_navigate_and_back_returns() {
             bar_offers_back(),
             "the window bar offers Back on browsed content"
         );
-        app.harness().press_window_slot(ToolbarEvent::Back);
+        app.harness().press_window_part(ToolbarEvent::Back);
         app.settle();
         assert_eq!(
             route(&mut app),
@@ -456,7 +456,7 @@ fn pages_lay_out_without_overlap_at_every_size() {
             "narrowing keeps the page in front of the rail"
         );
 
-        app.harness().press_window_slot(ToolbarEvent::ToggleSidebar);
+        app.harness().press_window_part(ToolbarEvent::ToggleSidebar);
         app.settle();
         app.harness().relayout();
         assert!(open(&mut app), "the toggle goes to the rail");
@@ -483,7 +483,7 @@ fn search_inputs_are_present_and_navigate() {
                 .with_surface::<TubeApp, _>(|tube| tube.sidebar_open_for_test())
                 .expect("the window shows Tube");
             if !on_rail {
-                app.harness().press_window_slot(ToolbarEvent::ToggleSidebar);
+                app.harness().press_window_part(ToolbarEvent::ToggleSidebar);
                 app.settle();
                 app.harness().relayout();
             }

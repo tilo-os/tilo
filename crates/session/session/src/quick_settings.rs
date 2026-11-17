@@ -1,6 +1,6 @@
 //! Quick settings, as the session keeps it: the app that draws the panel runs for the session's
 //! life, started with the session so the first opening only shows it, standing where the stack
-//! places it, shown while the stack has its slot up and hidden between openings, and shows what
+//! places it, shown while the stack has its part up and hidden between openings, and shows what
 //! the session's services publish. It is as tall as the page it shows, inside the room the stack
 //! gives a popover.
 //! The panel is a process of its own, so nothing here crosses an `Rc` between the two: what it
@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 
-use tilo_desktop::overlays::{POPOVER_HEIGHT, POPOVER_WIDTH, Slot};
+use tilo_desktop::overlays::{POPOVER_HEIGHT, POPOVER_WIDTH, Part};
 use tilo_desktop_search::providers::settings::SETTINGS_APP;
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_session_core::surface::LayerPose;
@@ -32,7 +32,7 @@ pub const SURFACE: &str = "quick-settings";
 const PROGRAM: &str = "tilo-quick-settings";
 
 /// The name its layer surface asks the compositor for, which the session shows and hides as its
-/// slot opens and closes.
+/// part opens and closes.
 pub const SURFACE_NAMESPACE: &str = "tilo-quick-settings";
 
 /// How many times the panel's app is started before it is given up on until the panel is opened
@@ -45,7 +45,7 @@ const TRIES: u32 = 3;
 const SPEECH_MODELS_ANCHOR: &str = "settings.section:agent_models";
 
 /// Quick settings' surface app, when one is installed: a window of its own
-/// that the session places where the stack placed the slot, and that takes the
+/// that the session places where the stack placed the part, and that takes the
 /// keyboard when the person works it.
 ///
 /// # Errors
@@ -59,7 +59,7 @@ pub fn surface() -> Result<Surface, StartError> {
 pub fn surface_of(program: impl Into<PathBuf>) -> Surface {
     Surface::new(SURFACE, program)
         .layer(Layer::Overlay)
-        // It stands where the stack placed the slot, which the compositor is told: wherever that
+        // It stands where the stack placed the part, which the compositor is told: wherever that
         // is, it is above the windows it covers. Its app starts at a popover's starting size and
         // asks for the height of the page it shows, which the room down to the display's margin
         // holds.
@@ -99,7 +99,7 @@ pub(crate) enum PanelKeys {
 /// The panel's own coming and going, which the compositor draws for it: its app is another
 /// process's layer surface, hidden here between openings, so it cannot tell an opening from a
 /// hiding and draws as it stands. The session poses it on the toolkit's [`Appear`] motion instead,
-/// every frame it moves, from where its slot was opened: the bar's status area, or the caret.
+/// every frame it moves, from where its part was opened: the bar's status area, or the caret.
 pub(crate) struct PanelMotion {
     appear: Appearing,
     motion: EffectiveMotion,
@@ -120,7 +120,7 @@ impl PanelMotion {
         }
     }
 
-    /// Follow the slot: `up` whether the stack has the panel open, `seen` whether the person sees
+    /// Follow the part: `up` whether the stack has the panel open, `seen` whether the person sees
     /// the frame its app drew for this opening, and `place` where it stands and where it was
     /// opened from. A panel that is up but not seen has no first frame to grow from, so its
     /// arrival starts with that frame rather than running unseen while its app draws the page it
@@ -179,7 +179,7 @@ impl PanelMotion {
 
 impl crate::Session {
     /// Follow quick settings: its app runs for the session's life, standing where the stack places
-    /// it, shown while the stack has the slot up and hidden between openings, and is asked for the
+    /// it, shown while the stack has the part up and hidden between openings, and is asked for the
     /// page the keys asked for.
     /// The popover's place is the stack's, and the compositor stands the panel there: the caret that
     /// opened it, another display, or one that changed shape moves it, and costs its app no start.
@@ -190,8 +190,8 @@ impl crate::Session {
             return;
         }
         self.follow_panel_back();
-        let open = self.shared.overlays.is_open(Slot::QuickSettings);
-        let place = self.shared.overlays.place(Slot::QuickSettings);
+        let open = self.shared.overlays.is_open(Part::QuickSettings);
+        let place = self.shared.overlays.place(Part::QuickSettings);
         if let Some(standing) = place {
             // Where the stack places it, and the most room it has there, resting against the edge
             // of that room the stack chose: below the caret's line, or above it. Down, it keeps
@@ -214,7 +214,7 @@ impl crate::Session {
         let visible = self.compositor.layer_visible(SURFACE_NAMESPACE);
         self.shared
             .overlays
-            .stands(Slot::QuickSettings, stands.filter(|_| open && visible));
+            .stands(Part::QuickSettings, stands.filter(|_| open && visible));
         self.quick_settings_panel.follow(
             open,
             visible,
@@ -343,7 +343,7 @@ impl crate::Session {
     /// the paste reaches it.
     pub(crate) fn serve_clipboard_asks(&mut self) {
         if self.shared.clipboard.pasting() {
-            self.shared.overlays.close(Slot::QuickSettings);
+            self.shared.overlays.close(Part::QuickSettings);
             self.compositor.return_layer_keyboard(SURFACE_NAMESPACE);
         }
         self.shared.clipboard.serve_asks(&mut self.compositor);
@@ -352,7 +352,7 @@ impl crate::Session {
     /// Stop trying to run the panel's app until the panel is opened anew; an open panel closes.
     fn give_up_quick_settings(&mut self) {
         self.quick_settings_run = Run::GivenUp;
-        self.shared.overlays.close(Slot::QuickSettings);
+        self.shared.overlays.close(Part::QuickSettings);
     }
 
     /// Tell the running panel what the keys asked of it, in order: the last ask for a page, which
@@ -369,7 +369,7 @@ impl crate::Session {
             match (action, id) {
                 ("back", Some(id)) => self.shared.panel_back.set(Some(id)),
                 // A panel that does not run cannot go back: Escape closes what is open.
-                ("back", None) => self.shared.overlays.close(Slot::QuickSettings),
+                ("back", None) => self.shared.overlays.close(Part::QuickSettings),
                 (_, None) => {
                     tracing::debug!(action, "quick settings was not asked: it does not run");
                 }
@@ -400,13 +400,13 @@ impl crate::Session {
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
                 if !handled {
-                    self.shared.overlays.close(Slot::QuickSettings);
+                    self.shared.overlays.close(Part::QuickSettings);
                 }
             }
             // A panel that could not go back still hears the person's Escape: it closes.
             tilo_actions::InvocationUpdate::Failed { .. }
             | tilo_actions::InvocationUpdate::Cancelled { .. } => {
-                self.shared.overlays.close(Slot::QuickSettings);
+                self.shared.overlays.close(Part::QuickSettings);
             }
         }
         self.shared.panel_back.set(None);
@@ -489,7 +489,7 @@ fn offset(length: f64) -> i32 {
 
 /// Close the panel: what a press that takes the person elsewhere does first.
 pub(crate) fn close(shared: &Shared) {
-    shared.overlays.close(Slot::QuickSettings);
+    shared.overlays.close(Part::QuickSettings);
 }
 
 /// Take the person where the speech models are set up when the dictation card's "Set up" was

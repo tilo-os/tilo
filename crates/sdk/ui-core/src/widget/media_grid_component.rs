@@ -1,7 +1,7 @@
 //! [`MediaGrid`], [`MediaCard`] and [`MediaTransport`] as described components: what plays
 //! and what a library shows, each steered by the view's own events.
 
-use crate::component::{Component, Described, Event, ResourceId, SlotType, Source};
+use crate::component::{Component, Described, Event, PartType, ResourceId, Source};
 use crate::icons::Icon;
 use crate::pictures::Pictures;
 use crate::widget::media_card::MediaSize;
@@ -19,7 +19,7 @@ pub struct MediaGridProps {
     /// than equal columns.
     pub justified: bool,
     /// The cards, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub items: Vec<MediaCardProps>,
 }
 
@@ -59,16 +59,16 @@ pub struct MediaCardProps {
     pub pictures: Option<Pictures>,
 }
 
-impl SlotType for Vec<MediaCardProps> {
+impl PartType for Vec<MediaCardProps> {
     const MANY: bool = true;
 
     fn accepts() -> crate::component::Accepts {
         crate::component::Accepts::Component(MediaCardProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
         let mut read = Vec::new();
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             read.push(MediaCardProps::from_source(child).map_err(|error| error.to_string())?);
             Ok(())
         })?;

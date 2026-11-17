@@ -1,4 +1,4 @@
-//! Slots that are a menu alone, in the title's row.
+//! Parts that are a menu alone, in the title's row.
 
 use super::super::tests::{dispatch_cursor, dispatch_left_button, lay_out_at_width_with, send_key};
 use super::super::{PINNED_W, TAB_BAR_HEIGHT, TabBar, TabDescriptor};
@@ -41,7 +41,7 @@ fn a_menu_alone_is_a_button_in_the_title_row_that_keeps_the_title() {
             (b.bar_height() - TAB_BAR_HEIGHT).abs() < f64::EPSILON,
             "{tabs} tab(s): no row of its own"
         );
-        let more = b.toolbar_row().slots().overflow;
+        let more = b.toolbar_row().parts().overflow;
         assert!(more.area() > 0.0, "{tabs} tab(s): the menu button stands");
         assert!(more.x1 <= b.window_controls().maximize.x0);
         assert!(more.y1 <= b.rect.y0 + TAB_BAR_HEIGHT, "in the tabs' row");

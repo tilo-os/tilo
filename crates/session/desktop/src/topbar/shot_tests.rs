@@ -334,19 +334,19 @@ fn the_right_end_shows_each_person_once_flush_and_in_one_icon_size() {
                 );
             }
         }
-        // No reserved place left empty: the status cluster is its slots and its pad, nothing
+        // No reserved place left empty: the status cluster is its parts and its pad, nothing
         // more, and it ends at the bar's edge pad.
         let pill = bar.tray_pill_rect();
         let pad = f64::from(theme.tokens.spacing.rhythm.tight);
-        let slots = bar.tray_slots().len();
+        let parts = bar.tray_parts().len();
         let mut room =
-            2.0 * pad + f64::from(u32::try_from(slots).unwrap_or(u32::MAX)) * BAR_CONTROL_PX;
+            2.0 * pad + f64::from(u32::try_from(parts).unwrap_or(u32::MAX)) * BAR_CONTROL_PX;
         if bar.status.battery_percent().is_some() {
             room += 40.0;
         }
         assert!(
             pill.width() <= room,
-            "{name}: the status cluster {pill:?} reserves no empty room ({slots} slots)"
+            "{name}: the status cluster {pill:?} reserves no empty room ({parts} parts)"
         );
         assert!(
             (bar.rect.x1 - pill.x1 - f64::from(theme.tokens.spacing.s3)).abs() < 0.5,

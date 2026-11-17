@@ -3,7 +3,7 @@
 //! ([`crate::component::Semantics::attaches`]): it draws nothing where the view puts it, and belongs to
 //! the view it stands in.
 
-use crate::component::{Accepts, Component, Event, SlotType, Source};
+use crate::component::{Accepts, Component, Event, PartType, Source};
 use crate::widget::{Element, MenuEntry, MenuItemProps, SwipeActionProps};
 
 /// A rule between groups of a menu's commands.
@@ -87,18 +87,18 @@ impl MenuPart {
 const MENU_PARTS: [&str; 3] = ["MenuItem", "MenuSeparator", "EmojiBar"];
 
 /// A menu's parts, in order: commands, separators and an emoji bar.
-impl SlotType for Vec<MenuPart> {
+impl PartType for Vec<MenuPart> {
     const MANY: bool = true;
 
     fn accepts() -> Accepts {
         Accepts::OneOf(MENU_PARTS.iter().map(|name| (*name).to_owned()).collect())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
-        let kinds = source.slot_kinds(slot);
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        let kinds = source.part_kinds(part);
         let mut parts = Vec::with_capacity(kinds.len());
         let mut index = 0usize;
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             let kind = kinds.get(index).cloned().flatten().unwrap_or_default();
             index = index.saturating_add(1);
             parts.push(match kind.as_str() {
@@ -127,7 +127,7 @@ impl SlotType for Vec<MenuPart> {
 #[component(name = "ContextMenu", role = "Menu", attaches)]
 pub struct ContextMenuProps {
     /// The menu's content, in order: commands, separators and an emoji bar.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub items: Vec<MenuPart>,
 }
 
@@ -137,7 +137,7 @@ pub struct ContextMenuProps {
 #[component(name = "HoverToolbar", role = "Toolbar", attaches)]
 pub struct HoverToolbarProps {
     /// The controls, in order: buttons, an emoji picker.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub content: Vec<Element>,
 }
 
@@ -147,10 +147,10 @@ pub struct HoverToolbarProps {
 #[component(name = "Swipe", role = "Group", attaches)]
 pub struct SwipeProps {
     /// What swiping from the leading edge towards the trailing edge does.
-    #[component(slot)]
+    #[component(part)]
     pub leading: Option<SwipeActionProps>,
     /// What swiping from the trailing edge towards the leading edge does.
-    #[component(slot)]
+    #[component(part)]
     pub trailing: Option<SwipeActionProps>,
 }
 
@@ -189,19 +189,19 @@ impl Attachments {
 
 const ATTACHMENTS: [&str; 3] = ["ContextMenu", "HoverToolbar", "Swipe"];
 
-impl SlotType for Attachments {
+impl PartType for Attachments {
     const MANY: bool = true;
 
     fn accepts() -> Accepts {
         Accepts::OneOf(ATTACHMENTS.iter().map(|name| (*name).to_owned()).collect())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
-        let kinds = source.slot_kinds(slot);
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        let kinds = source.part_kinds(part);
         let mut index = 0usize;
         let mut swipes = 0usize;
         let attached = &mut *self;
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             let kind = kinds.get(index).cloned().flatten().unwrap_or_default();
             index = index.saturating_add(1);
             match kind.as_str() {

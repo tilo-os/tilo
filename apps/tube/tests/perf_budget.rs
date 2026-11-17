@@ -160,7 +160,7 @@ fn click_back(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) {
         "the watch page offers Back in the window bar"
     );
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Back);
     app.settle();
 }
 

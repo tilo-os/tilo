@@ -157,7 +157,7 @@ pub struct WindowGroup {
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
-    held_bar: Option<crate::widget::WindowBarSlot>,
+    held_bar: Option<crate::widget::WindowBarPart>,
     held: crate::widget::window_header::RowFurniture,
     held_controls: [HeldControl; crate::widget::window_header::ROW_CONTROLS.len()],
     opened_by: OpenedByStop,
@@ -207,10 +207,10 @@ pub struct WindowGroup {
     tab_fade: Option<crate::motion::CrossFade<u64>>,
     rect_spring: Option<FrameSpring<Rect>>,
     width_spring: Option<FrameSpring<f64>>,
-    /// The width the window's bar and content are laid out at while its slot width is in flight:
+    /// The width the window's bar and content are laid out at while its part width is in flight:
     /// the wide end of the motion. A widening window reflows to the width it is going to as the
-    /// motion starts, its app's new frame arriving under the growing slot's clip; a narrowing one
-    /// keeps the width it had, clipped by the slot, and reflows once it rests. Never on every
+    /// motion starts, its app's new frame arriving under the growing part's clip; a narrowing one
+    /// keeps the width it had, clipped by the part, and reflows once it rests. Never on every
     /// frame; read only while `width_spring` is stepping.
     content_px: f64,
     /// The width the window had when it began to restore from maximized:
@@ -531,7 +531,7 @@ impl WindowGroup {
         self.resolved_width_px()
     }
 
-    /// Width the slot is going to, in the same pixels as
+    /// Width the part is going to, in the same pixels as
     /// [`Self::layout_width_px`]. A later usable-basis change does not
     /// rewrite an in-flight target, so overflow can use this instead of
     /// the current fraction.
@@ -590,7 +590,7 @@ impl WindowGroup {
 
     /// The width the bar and content are laid out at while the window's
     /// frame is in flight, when it is not the frame's own: a restoring
-    /// window keeps the width it had until its frame rests, and a slot in
+    /// window keeps the width it had until its frame rests, and a part in
     /// flight lays out at the wide end of its motion.
     fn content_width_in_flight(&self) -> Option<f64> {
         if self.edge_drag.is_some() {
@@ -602,8 +602,8 @@ impl WindowGroup {
         if self.maximized {
             return None;
         }
-        let slot = self.width_spring.as_ref()?.value().max(0.0);
-        ((self.content_px - slot).abs() > 0.5).then_some(self.content_px)
+        let part = self.width_spring.as_ref()?.value().max(0.0);
+        ((self.content_px - part).abs() > 0.5).then_some(self.content_px)
     }
 
     pub(crate) fn step_width_spring(&mut self) {
@@ -674,11 +674,11 @@ impl WindowGroup {
             self.reduce_motion
                 || self.close_lands
                 || (crate::time::now().saturating_duration_since(t) >= self.close_duration
-                    && self.slot_at_rest())
+                    && self.part_at_rest())
         })
     }
 
-    fn slot_at_rest(&self) -> bool {
+    fn part_at_rest(&self) -> bool {
         self.width_spring
             .as_ref()
             .is_none_or(|spring| !spring.motion.is_moving(crate::motion::frame_now()))
@@ -1042,7 +1042,7 @@ impl WindowGroup {
         }
     }
 
-    /// Pin the slot at its persisted width. Used after [`Self::set_width`]
+    /// Pin the part at its persisted width. Used after [`Self::set_width`]
     /// when the dest strip still fits the viewport, so in-flight values
     /// cannot invent overflow.
     pub(crate) fn snap_width_spring(&mut self) {
@@ -1737,9 +1737,9 @@ impl WindowGroup {
             self.style_dirty = true;
             self.grip_dirty = true;
             // Whether the window draws that bar or its app's own row does turns on the app
-            // declaring nothing ([`Self::offer_bar_to_app`]), so an app that declares its slots
+            // declaring nothing ([`Self::offer_bar_to_app`]), so an app that declares its parts
             // (or gives them up) while its window is up is asked again by a layout built whole:
-            // a restyle keeps the row the window holds now, and the app's slots would never
+            // a restyle keeps the row the window holds now, and the app's parts would never
             // reach the bar.
             if id == active && declared_before != self.bar.toolbar(active).is_some() {
                 self.bar_offer_dirty = true;
@@ -2676,7 +2676,7 @@ impl Widget for WindowGroup {
     }
 
     /// The focused window is where Tab travels: its bar (the tab list, the agent that opened it, the
-    /// app's slots, its controls) and the app's own controls, and never the other windows or the
+    /// app's parts, its controls) and the app's own controls, and never the other windows or the
     /// shell's chrome around it. Without that the bar's controls had no keyboard route at all.
     fn scopes_keyboard_focus(&self) -> bool {
         self.focused || self.search_active
@@ -2905,7 +2905,7 @@ impl Widget for WindowGroup {
     ) -> NodeId {
         self.prepare_layout(theme);
         // One bar per window: the app's own header row holds it where it cannot stand as the
-        // bar's slots, and the window draws none above it then.
+        // bar's parts, and the window draws none above it then.
         self.held_bar = self.offer_bar_to_app();
         let active_id = self.bar.active_id();
         let in_place = match self.window_offer(active_id) {
@@ -2999,7 +2999,7 @@ impl Widget for WindowGroup {
         // up to one frame budget, so a window whose app draws in time
         // appears complete. A host that honours the hold
         // (`Widget::holds_frame_until`) keeps its last frame meanwhile; one
-        // that draws anyway shows the slot without the window. Past the
+        // that draws anyway shows the part without the window. Past the
         // budget the window stands, its place reserved, and its content
         // arrives inside its frame ([`TileHost`]).
         if self.holds_first_frame_until(crate::time::now()).is_some() {
@@ -4747,7 +4747,7 @@ mod tests {
     }
 
     #[test]
-    fn maximize_restore_springs_the_drawn_rect_from_the_tiled_slot() {
+    fn maximize_restore_springs_the_drawn_rect_from_the_tiled_part() {
         use std::collections::HashMap;
         use taffy::Style;
         use taffy::prelude::TaffyMaxContent;
@@ -4781,7 +4781,7 @@ mod tests {
             let tiled = at(t0, 0, || layout(&mut g, &theme, 1600.0, 900.0));
             assert!(
                 tiled.width() > 100.0 && tiled.width() < 1600.0,
-                "tiled slot must be narrower than the work area, got {}",
+                "tiled part must be narrower than the work area, got {}",
                 tiled.width(),
             );
             at(t0, 0, || g.toggle_maximized());
@@ -4880,7 +4880,7 @@ mod tests {
             let mut g = make_group();
             g.set_strip_usable_px(1200.0);
             let target = g.resolved_width_px();
-            assert!(target > 100.0, "fixture must have a real slot to grow into");
+            assert!(target > 100.0, "fixture must have a real part to grow into");
             let t0 = crate::time::now();
             at(t0, 0, || g.start_spawn_animation());
             assert!(
@@ -4900,12 +4900,12 @@ mod tests {
                     g.step_width_spring();
                 });
                 let now = g.layout_width_px();
-                assert!(now >= last, "open must grow the slot, {last} → {now}");
+                assert!(now >= last, "open must grow the part, {last} → {now}");
                 last = now;
             }
             assert!(
                 last > 1.0 && last < target,
-                "after a few frames the slot is open but not yet at the target ({last} of {target})",
+                "after a few frames the part is open but not yet at the target ({last} of {target})",
             );
         }
 
@@ -4942,7 +4942,7 @@ mod tests {
             );
             assert!(
                 (g.layout_width_px() - mid).abs() < 0.5,
-                "retargeting must not jump the slot, was {mid} now {}",
+                "retargeting must not jump the part, was {mid} now {}",
                 g.layout_width_px(),
             );
             assert!(
@@ -4952,7 +4952,7 @@ mod tests {
         }
 
         {
-            // The row steps the slot spring only while it rebuilds the
+            // The row steps the part spring only while it rebuilds the
             // layout, and rebuilds only when a group asks for it. Frames at
             // 60 and at 20 a second must both end the motion.
             for frame_ms in [16, 50] {
@@ -4970,14 +4970,14 @@ mod tests {
                 }
                 assert!(
                     g.width_spring.is_none(),
-                    "{frame_ms} ms frames: the slot spring stalled at {:?} after {rebuilds} rebuilds",
+                    "{frame_ms} ms frames: the part spring stalled at {:?} after {rebuilds} rebuilds",
                     g.width_spring
                         .as_ref()
                         .map(|s| (s.value(), s.target(), s.velocity())),
                 );
                 assert!(
                     (g.layout_width_px() - g.resolved_width_px()).abs() < 0.5,
-                    "{frame_ms} ms frames: the slot ends at its width",
+                    "{frame_ms} ms frames: the part ends at its width",
                 );
             }
         }
@@ -4986,7 +4986,7 @@ mod tests {
             // The host's frame: rebuild when a widget asks (the row steps the spring in its build,
             // a frame may take two passes), then a painted frame turns the token. A tick that
             // rebuilds while the presenter is still busy paints nothing, and the step the next
-            // rebuild skips must not leave the slot stopped part-way, asking for frames forever.
+            // rebuild skips must not leave the part stopped part-way, asking for frames forever.
             let mut g = group_opening("Notes", true, crate::arriving::Source::Local);
             g.set_strip_usable_px(1200.0);
             let t0 = crate::time::now();
@@ -5005,14 +5005,14 @@ mod tests {
             }
             assert!(
                 g.width_spring.is_none(),
-                "the slot spring froze at {:?} after {frames} frames",
+                "the part spring froze at {:?} after {frames} frames",
                 g.width_spring
                     .as_ref()
                     .map(|s| (s.value(), s.target(), s.velocity())),
             );
             assert!(
                 (g.layout_width_px() - g.resolved_width_px()).abs() < 0.5,
-                "the slot ends at its width"
+                "the part ends at its width"
             );
         }
 
@@ -5034,7 +5034,7 @@ mod tests {
             );
             assert!(
                 at(t0, 0, || painted_anything(&mut g)),
-                "a closing group is drawn from its last frame while the slot collapses",
+                "a closing group is drawn from its last frame while the part collapses",
             );
             let mut last = g.layout_width_px();
             for frame in 1..=8 {
@@ -5044,12 +5044,12 @@ mod tests {
                     g.step_width_spring();
                 });
                 let now = g.layout_width_px();
-                assert!(now <= last, "close must collapse the slot, {last} → {now}");
+                assert!(now <= last, "close must collapse the part, {last} → {now}");
                 last = now;
             }
             assert!(
                 last < from,
-                "the slot must have started to collapse ({last} from {from})",
+                "the part must have started to collapse ({last} from {from})",
             );
         }
 
@@ -5084,11 +5084,11 @@ mod tests {
     }
 
     /// A host that lays out at ~12 fps (a headless session rendering in
-    /// software) steps the opening slot 50 ms at a time. The slot must
+    /// software) steps the opening part 50 ms at a time. The part must
     /// still settle at its width; it used to grow until the client was
     /// configured `i32::MAX` wide.
     #[test]
-    fn a_slow_host_opens_the_slot_to_its_width() {
+    fn a_slow_host_opens_the_part_to_its_width() {
         let mut g = make_group();
         g.set_strip_usable_px(996.0);
         let target = g.resolved_width_px();
@@ -5102,12 +5102,12 @@ mod tests {
             let width = g.layout_width_px();
             assert!(
                 width <= target * 1.05,
-                "frame {frame}: slot at {width} past its {target} px width",
+                "frame {frame}: part at {width} past its {target} px width",
             );
         }
         assert!(
             g.width_spring.is_none() && (g.layout_width_px() - target).abs() < 0.5,
-            "the slot settles at {target}, got {}",
+            "the part settles at {target}, got {}",
             g.layout_width_px(),
         );
     }

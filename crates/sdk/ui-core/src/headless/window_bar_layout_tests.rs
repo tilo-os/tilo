@@ -1,4 +1,4 @@
-//! The window bar at every width from a phone's to a wide display's: every control has a slot of its
+//! The window bar at every width from a phone's to a wide display's: every control has a part of its
 //! own, and the location stays inside the width the controls leave it.
 
 use vello::Scene;
@@ -75,7 +75,7 @@ fn bar_at(harness: &mut FrameHarness, width: f64) -> TabBar {
     bar
 }
 
-/// Every control the bar shows, by name: the app's icon, the app's slots, the window's search and its
+/// Every control the bar shows, by name: the app's icon, the app's parts, the window's search and its
 /// own controls.
 fn controls(bar: &TabBar) -> Vec<(String, Rect)> {
     let mut out: Vec<(String, Rect)> = bar
@@ -88,7 +88,7 @@ fn controls(bar: &TabBar) -> Vec<(String, Rect)> {
                 && name != "tabbar_new_tab"
         })
         .collect();
-    if let Some((row, _)) = bar.toolbar_search_slot() {
+    if let Some((row, _)) = bar.toolbar_search_part() {
         let px = crate::widget::window_controls::CONTROL_PX;
         let x0 = row.x1 + crate::widget::window_controls::CONTROL_GAP;
         let y0 = row.center().y - px / 2.0;
@@ -106,7 +106,7 @@ fn overlap(a: Rect, b: Rect) -> bool {
 /// location stands clear of all of them, and its breadcrumb paints inside it: its middle levels fold
 /// into the `…`, then the folder's own name is cut short, and nothing runs past its end.
 #[test]
-fn a_deep_folders_bar_gives_every_control_its_slot_at_every_width() {
+fn a_deep_folders_bar_gives_every_control_its_part_at_every_width() {
     let _hosted = HostedReset;
     let mut harness = FrameHarness::for_app(
         crate::State::new(),
@@ -235,7 +235,7 @@ fn the_windows_controls_stand_apart_at_a_fixed_trailing_edge() {
                 .fold(f64::MIN, f64::max);
             assert!(
                 app_end <= history.x0,
-                "{width} px: the app's slots stop before its own History action: {app_end} \
+                "{width} px: the app's parts stop before its own History action: {app_end} \
                  to {history:?}"
             );
             placed.push(controls);

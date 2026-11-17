@@ -129,7 +129,7 @@ fn the_bar_is_html_and_its_notice_does_not_move_the_note() {
     let mut app = notes();
     let page = add_note(&mut app, "Trip to Lisbon", "Flights are booked.");
     open(&mut app, page);
-    app.harness().host_window_slots();
+    app.harness().host_window_parts();
     app.harness().resize((390, 844)).unwrap();
     let _ = app.harness().poll_frame();
     let title_at = |app: &mut ui::framework::testing::TestApp<notes::NotesShell>| {
@@ -158,7 +158,7 @@ fn the_bar_is_html_and_its_notice_does_not_move_the_note() {
         .layers
         .iter()
         .chain(std::iter::once(&composition.root))
-        .flat_map(|layer| find(layer, "WindowSlots"))
+        .flat_map(|layer| find(layer, "WindowParts"))
         .next()
         .expect("the window's bar");
     assert!(bar.own.is_none(), "the bar is not a picture of its paint");
@@ -170,7 +170,7 @@ fn the_bar_is_html_and_its_notice_does_not_move_the_note() {
         face.label.as_ref().map(|label| label.text.as_str()),
         Some("Imported Trip to Lisbon")
     );
-    let buttons: Vec<_> = find(bar, "WindowSlot")
+    let buttons: Vec<_> = find(bar, "WindowPart")
         .into_iter()
         .filter(|slot| slot.tag == Some("button"))
         .collect();
@@ -193,7 +193,7 @@ fn a_wide_windows_notice_is_a_card_and_the_title_stays() {
     let mut app = notes();
     let page = add_note(&mut app, "Trip to Lisbon", "Flights are booked.");
     open(&mut app, page);
-    app.harness().host_window_slots();
+    app.harness().host_window_parts();
     app.harness().resize((1280, 800)).unwrap();
     let _ = app.harness().poll_frame();
     ui::window_toolbar::notify(Some(ui::window_toolbar::ToolbarNotice::new(
@@ -208,7 +208,7 @@ fn a_wide_windows_notice_is_a_card_and_the_title_stays() {
         .layers
         .iter()
         .chain(std::iter::once(&composition.root))
-        .flat_map(|layer| find(layer, "WindowSlots"))
+        .flat_map(|layer| find(layer, "WindowParts"))
         .next()
         .expect("the window's bar");
     let words = |node: &Composed| match &node.own {

@@ -11,7 +11,7 @@ use crate::support::layout_tree;
 use crate::support::with_chrome;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
-use tilo_desktop::overlays::{Overlays, Slot};
+use tilo_desktop::overlays::{Overlays, Part};
 use tilo_desktop::overlays::{POPOVER_MARGIN, POPOVER_WIDTH, Target};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_surface::notifications::Notification;
@@ -80,11 +80,11 @@ fn the_workspace_name_typed_in_the_bar_holds_the_keyboard() {
     frame.relayout();
     assert_eq!(
         overlays.target(),
-        Target::Surface(Slot::WorkspaceName),
+        Target::Surface(Part::WorkspaceName),
         "the field holds the keyboard"
     );
     assert!(
-        !overlays.is_open(Slot::WorkspaceMenu),
+        !overlays.is_open(Part::WorkspaceMenu),
         "the menu gave way to it"
     );
     frame.type_text("Projekt");
@@ -124,21 +124,21 @@ fn a_press_on_the_shell_closes_the_workspace_menu_and_it_stays_down() {
     });
     frame.relayout();
     assert!(with_chrome(&mut frame, |chrome| chrome.menu_open()));
-    let slot = overlays.press_outside(SHELL_PRESS.0, SHELL_PRESS.1);
+    let part = overlays.press_outside(SHELL_PRESS.0, SHELL_PRESS.1);
     assert_eq!(
-        slot,
-        Some(Slot::WorkspaceMenu),
+        part,
+        Some(Part::WorkspaceMenu),
         "the shell press misses the menu the bar opened"
     );
 
-    overlays.dismiss(Slot::WorkspaceMenu);
+    overlays.dismiss(Part::WorkspaceMenu);
     frame.relayout();
     assert!(
         !with_chrome(&mut frame, |chrome| chrome.menu_open()),
         "the menu follows the stack down"
     );
     assert!(
-        !overlays.is_open(Slot::WorkspaceMenu),
+        !overlays.is_open(Part::WorkspaceMenu),
         "and the stack takes the widget's word for it again: it is not put back up"
     );
 }
@@ -155,10 +155,10 @@ fn the_press_that_takes_the_menu_down_does_not_raise_it_again() {
     let chip = with_chrome(&mut frame, |chrome| chrome.bar().workspace_menu_rect());
     assert_eq!(
         overlays.press_outside(chip.center().x, chip.center().y),
-        Some(Slot::WorkspaceMenu),
+        Some(Part::WorkspaceMenu),
         "the chip is not where the menu paints itself"
     );
-    overlays.dismiss(Slot::WorkspaceMenu);
+    overlays.dismiss(Part::WorkspaceMenu);
     frame.relayout();
     assert!(!with_chrome(&mut frame, |chrome| chrome.menu_open()));
 
@@ -172,7 +172,7 @@ fn the_press_that_takes_the_menu_down_does_not_raise_it_again() {
         !with_chrome(&mut frame, |chrome| chrome.menu_open()),
         "the press that closed it is still being delivered"
     );
-    assert!(!overlays.is_open(Slot::WorkspaceMenu));
+    assert!(!overlays.is_open(Part::WorkspaceMenu));
 
     // The press is over: the next one on the chip opens the menu again.
     overlays.press_ended();
@@ -238,14 +238,14 @@ fn the_bell_opens_and_closes_the_centre() {
         chrome.apply_intent(ChromeIntent::ToggleNotifications);
     });
     frame.relayout();
-    assert!(overlays.is_open(Slot::Centre), "the bell opens the centre");
+    assert!(overlays.is_open(Part::Centre), "the bell opens the centre");
     assert!(notifications.centre_open(), "and the chrome shows it");
     with_chrome(&mut frame, |chrome| {
         chrome.apply_intent(ChromeIntent::ToggleNotifications);
     });
     frame.relayout();
     assert!(
-        !overlays.is_open(Slot::Centre),
+        !overlays.is_open(Part::Centre),
         "a second press on the bell closes it"
     );
     assert!(!notifications.centre_open(), "the chrome follows it down");
@@ -265,7 +265,7 @@ fn banners_line_up_with_the_centre_and_quick_settings() {
     let (mut frame, overlays) = chrome_over(Some(notifications.clone()));
     notifications.ask_centre(true);
     frame.relayout();
-    let centre = overlays.place(Slot::Centre).expect("the centre is placed");
+    let centre = overlays.place(Part::Centre).expect("the centre is placed");
     assert!(
         (banner.x1 - centre.room.x1).abs() < f64::EPSILON,
         "the banner's edge is the centre's edge"
@@ -288,11 +288,11 @@ fn the_centre_stands_on_the_stack_where_quick_settings_hangs() {
     let (mut frame, overlays) = chrome_over(Some(notifications.clone()));
     notifications.ask_centre(true);
     frame.relayout();
-    assert!(overlays.is_open(Slot::Centre), "the centre is on the stack");
+    assert!(overlays.is_open(Part::Centre), "the centre is on the stack");
     assert!(notifications.centre_open(), "and the chrome shows it");
-    assert_eq!(overlays.target(), Target::Surface(Slot::Centre));
+    assert_eq!(overlays.target(), Target::Surface(Part::Centre));
     let place = overlays
-        .place(Slot::Centre)
+        .place(Part::Centre)
         .expect("the stack places it")
         .room;
     let x1 = DISPLAY.x1 - POPOVER_MARGIN;
@@ -310,14 +310,14 @@ fn the_centre_stands_on_the_stack_where_quick_settings_hangs() {
     );
     assert_eq!(
         overlays.press_outside(SHELL_PRESS.0, SHELL_PRESS.1),
-        Some(Slot::Centre),
+        Some(Part::Centre),
         "a press on the windows misses it"
     );
-    overlays.dismiss(Slot::Centre);
+    overlays.dismiss(Part::Centre);
     frame.relayout();
     assert!(
         !notifications.centre_open(),
         "the centre follows the stack down"
     );
-    assert!(!overlays.is_open(Slot::Centre), "and stays down");
+    assert!(!overlays.is_open(Part::Centre), "and stays down");
 }

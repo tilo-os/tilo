@@ -5,7 +5,7 @@
 //! without being Rust: tilolang reads the catalogue as its package `ui`, the generic host adapter
 //! builds widgets from it, and a serialized graph names component instances by it.
 //!
-//! A description holds props (typed values), slots (child content, typed by what may go in it),
+//! A description holds props (typed values), parts (child content, typed by what may go in it),
 //! events (data, never closures), bindings (two-way to a resource field, with the merge an edit is
 //! applied with), state (what the widget keeps between frames, which is lens state) and semantics
 //! (its accessibility role, and which props name it and the resource it shows). [`FORMAT_VERSION`]
@@ -14,9 +14,9 @@
 use serde::{Deserialize, Serialize};
 
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 
-/// The prop a component carries when its block gives such a slot: the row offers to open into its
+/// The prop a component carries when its block gives such a part: the row offers to open into its
 /// document, which comes once it is open.
 pub const OPENS_PROP: &str = "opens";
 
@@ -138,7 +138,7 @@ pub struct Description {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub props: Vec<Prop>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub slots: Vec<Slot>,
+    pub parts: Vec<Part>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<Event>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -155,14 +155,14 @@ impl Description {
     }
 
     #[must_use]
-    pub fn slot(&self, name: &str) -> Option<&Slot> {
-        self.slots.iter().find(|s| s.name == name)
+    pub fn part(&self, name: &str) -> Option<&Part> {
+        self.parts.iter().find(|s| s.name == name)
     }
 
-    /// The slot a component's block fills when it names none.
+    /// The part a component's block fills when it names none.
     #[must_use]
-    pub fn default_slot(&self) -> Option<&Slot> {
-        self.slots.iter().find(|s| s.default)
+    pub fn default_part(&self) -> Option<&Part> {
+        self.parts.iter().find(|s| s.default)
     }
 
     #[must_use]
@@ -253,7 +253,7 @@ pub struct Prop {
 /// Child content a component takes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Slot {
+pub struct Part {
     pub name: String,
     pub doc: String,
     /// What may go in it.
@@ -261,36 +261,36 @@ pub struct Slot {
     /// Whether it holds any number of children (else at most one).
     #[serde(default, skip_serializing_if = "is_false")]
     pub many: bool,
-    /// Whether it is what the component's block fills when no slot is named.
+    /// Whether it is what the component's block fills when no part is named.
     #[serde(default, skip_serializing_if = "is_false")]
     pub default: bool,
     /// Whether it holds the document a row opens into: rendered only for the open row, so closed
-    /// rows cost none of it. A component with such a slot says so (`opens`) where it is built, so a
+    /// rows cost none of it. A component with such a part says so (`opens`) where it is built, so a
     /// row still offers to open.
     #[serde(default, skip_serializing_if = "is_false")]
     pub when_open: bool,
 }
 
-/// What a slot accepts.
+/// What a part accepts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Accepts {
     View,
-    /// Only the component of this name, whose props the slot's owner reads.
+    /// Only the component of this name, whose props the part's owner reads.
     Component(String),
     /// Any of the components of these names, in any order (a menu's commands, separators and
-    /// emoji bar), whose props the slot's owner reads.
+    /// emoji bar), whose props the part's owner reads.
     OneOf(Vec<String>),
 }
 
 impl Accepts {
-    /// Whether the slot holds components whose props its owner reads, rather than views.
+    /// Whether the part holds components whose props its owner reads, rather than views.
     #[must_use]
     pub fn reads_components(&self) -> bool {
         !matches!(self, Self::View)
     }
 
-    /// Whether a component of the name `name` may stand in the slot.
+    /// Whether a component of the name `name` may stand in the part.
     #[must_use]
     pub fn takes(&self, name: &str) -> bool {
         match self {

@@ -551,7 +551,7 @@ impl Photos {
             .chrome
             .bar
             .as_ref()
-            .map(WindowBarLink::slots)
+            .map(WindowBarLink::parts)
             .unwrap_or_default();
         toolbar.location = Some(ToolbarLocation {
             label: if self.chrome.title.is_empty() {

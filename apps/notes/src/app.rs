@@ -4436,7 +4436,7 @@ mod tests {
         std::fs::remove_file(&directory).unwrap();
         std::fs::rename(&backup, &directory).unwrap();
         host.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: retry.id });
+            .press_window_part(ui::window_toolbar::ToolbarEvent::Action { id: retry.id });
         host.settle();
         host.surface::<NotesApp, _>(|notes| {
             assert_eq!(

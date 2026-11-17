@@ -1340,6 +1340,10 @@ impl App {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per VM command, each a report of its own"
+    )]
     fn vm(&mut self, command: VmCommand) -> Result<Outcome, CliError> {
         match command {
             VmCommand::Actions { name, command } => {
@@ -3942,6 +3946,10 @@ impl App {
         .next(&["tilo-vm status"]))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per account command, each a report of its own"
+    )]
     fn account(&mut self, command: AccountCommand) -> Result<Outcome, CliError> {
         if let AccountCommand::Apps(AccountAppsCommand::Install { set, .. }) = &command {
             app_set(set)?;

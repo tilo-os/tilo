@@ -1542,11 +1542,11 @@ tilo_test_env::scenario! {
             "History stands before the window's controls: {g:?}"
         );
         assert!(g.actions_band(Column::Content).x1 <= g.history.x0);
-        let slot = h
+        let part = h
             .root::<NavShell>()
-            .window_bar_slot()
-            .expect("the row reports its slot");
-        assert_eq!(slot.controls, g.window_controls);
+            .window_bar_part()
+            .expect("the row reports its part");
+        assert_eq!(part.controls, g.window_controls);
         assert_eq!(
             child_rect(&h, "content").map(|r| r.y0),
             Some(g.header_height),
@@ -1561,7 +1561,7 @@ tilo_test_env::scenario! {
             (g.history.x1 - (1280.0 - m.row.gutter)).abs() < 1e-9,
             "the history chip keeps the gutter the title starts at"
         );
-        assert!(h.root::<NavShell>().window_bar_slot().is_none());
+        assert!(h.root::<NavShell>().window_bar_part().is_none());
     }
 
     // A bar no wider than a phone's is the app's row: the window keeps its own controls at the
@@ -1589,11 +1589,11 @@ tilo_test_env::scenario! {
             wide,
             "a bar of a regular window's width keeps all of the window's furniture"
         );
-        let slot = crate::widget::WindowBarSlot {
+        let part = crate::widget::WindowBarPart {
             row: Rect::new(0.0, 0.0, phone, f64::from(m.header_height)),
             controls: Rect::new(phone - kept, 0.0, phone, f64::from(m.header_height)),
         };
-        let furniture = crate::widget::window_header::RowFurniture::of(slot);
+        let furniture = crate::widget::window_header::RowFurniture::of(part);
         assert!(
             furniture.controls.pill.area() > 0.0,
             "the window's own controls stand in the area it keeps: {furniture:?}"
@@ -1674,10 +1674,10 @@ tilo_test_env::scenario! {
         }
     }
 
-    // A shell whose toolbar is its window bar's slots draws no header row, at
+    // A shell whose toolbar is its window bar's parts draws no header row, at
     // any width, whatever titles and actions it was given; its own buttons
-    // become slots and run from the bar.
-    phase a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots;
+    // become parts and run from the bar.
+    phase a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_parts;
     {
         use crate::window_toolbar::ToolbarEvent;
         let shell = mail_shell().with_window_toolbar();
@@ -1694,7 +1694,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             toolbar.sidebar,
             Some(true),
-            "the sidebar's toggle is a slot"
+            "the sidebar's toggle is a part"
         );
         assert!(
             toolbar.leading.is_empty(),
@@ -1794,14 +1794,14 @@ tilo_test_env::scenario! {
         {
             let mut shell = h.root_mut::<NavShell>();
             let views = shell
-                .slot_views("actions")
+                .part_views("actions")
                 .expect("the content header's actions");
             assert_eq!(views.len(), 2);
             assert!(
                 views.view_mut(0).is_some(),
                 "an action, reconciled where it stands"
             );
-            shell.finish_slot_edit();
+            shell.finish_part_edit();
             assert_eq!(
                 shell.take_structure_change(),
                 StructureChange::None,
@@ -1812,10 +1812,10 @@ tilo_test_env::scenario! {
         {
             let mut shell = h.root_mut::<NavShell>();
             let views = shell
-                .slot_views("actions")
+                .part_views("actions")
                 .expect("the content header's actions");
             views.remove(1);
-            shell.finish_slot_edit();
+            shell.finish_part_edit();
             assert_eq!(
                 shell.take_structure_change(),
                 StructureChange::Rebuild,
@@ -2327,7 +2327,7 @@ fn a_notices_button_is_the_window_bars_and_a_press_reports_it() {
     crate::window_toolbar::deliver(ToolbarEvent::Action { id: button.id });
     assert!(
         crate::window_toolbar::take_events().is_empty(),
-        "the press is the notice's, not among the app's slot events"
+        "the press is the notice's, not among the app's part events"
     );
     drop(shell);
     settle(&mut h, 1280, 800);

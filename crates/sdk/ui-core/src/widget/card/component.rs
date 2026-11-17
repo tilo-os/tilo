@@ -1,6 +1,6 @@
 //! [`Card`] as a described component.
 
-use crate::component::{Component, Described, Event, ResourceId, SlotViews};
+use crate::component::{Component, Described, Event, PartViews, ResourceId};
 use crate::tokens::Rhythm;
 use crate::widget::{Element, SectionHeader};
 
@@ -20,7 +20,7 @@ pub struct CardProps {
     /// Whether it is the selected one among its peers.
     pub selected: bool,
     /// What the card shows, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub body: Vec<Element>,
     /// The card was pressed: open what it stands for.
     #[component(event(press))]
@@ -30,8 +30,8 @@ pub struct CardProps {
 impl Described for Card {
     type Props = CardProps;
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        if slot != "body" {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        if part != "body" {
             return None;
         }
         let at = usize::from(self.has_header && !self.media_first);
@@ -59,7 +59,7 @@ impl Described for Card {
                 .fill_width()
                 .gap(Rhythm::Related)
                 .with_id(key.to_owned()),
-            |column, part| column.push_slot(crate::widget::arrange::Slot::new(part)),
+            |column, part| column.push_part(crate::widget::arrange::Part::new(part)),
         );
         let mut card = Self::new(Box::new(column)).selected(selected);
         if !activate.is_none() {

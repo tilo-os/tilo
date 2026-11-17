@@ -96,7 +96,7 @@ fn press_mode(app: &mut TestApp<CalculatorShell>, mode: Mode) {
         .find(|view| view.label == mode.label())
         .expect("the bar offers the mode");
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
             id: view.id.clone(),
         });
     app.settle();
@@ -132,7 +132,7 @@ fn press_slot(app: &mut TestApp<CalculatorShell>, name: &str) {
         .unwrap_or_else(|| panic!("the bar has {name}"))
         .id;
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id });
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action { id });
     app.settle();
 }
 
@@ -1139,7 +1139,7 @@ tilo_test_env::scenario! {
         let sidebar = || ui::window_toolbar::declared().and_then(|bar| bar.sidebar);
         assert_eq!(sidebar(), Some(false), "narrow default starts collapsed");
         app.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+            .press_window_part(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
         app.settle();
         assert_eq!(
             sidebar(),

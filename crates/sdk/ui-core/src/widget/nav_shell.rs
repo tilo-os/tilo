@@ -458,7 +458,7 @@ struct HeaderRowFacts {
 /// host runs, so the policy and the shell compute the same rects.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "which slots the app filled are independent facts"
+    reason = "which parts the app filled are independent facts"
 )]
 #[derive(Clone, Debug)]
 struct Inputs {
@@ -486,10 +486,10 @@ struct Inputs {
     /// Area for the window's controls at the trailing end of the row, while
     /// the host merged the window's bar into it (a maximized window).
     window_controls: Option<f64>,
-    /// The window's bar shows the sidebar toggle among the app's slots
+    /// The window's bar shows the sidebar toggle among the app's parts
     /// ([`NavShell::set_sidebar_toggle_in_window_bar`]).
     toggle_in_bar: bool,
-    /// The app's toolbar is its window bar's slots
+    /// The app's toolbar is its window bar's parts
     /// ([`NavShell::with_window_toolbar`]): the shell draws no header row.
     toolbar_in_bar: bool,
     /// The host lists the window's actions where the person reaches them; actions that do not fit
@@ -809,8 +809,8 @@ pub struct NavShell {
     /// Whether Back goes back now, for a shell made from its description with a `back`
     /// event: taken in place as the description changes.
     can_back: Option<Rc<std::cell::Cell<bool>>>,
-    /// The slot a host is changing through [`crate::component::Described::slot_views`].
-    slot_edit: Option<component::SlotEdit>,
+    /// The part a host is changing through [`crate::component::Described::part_views`].
+    part_edit: Option<component::PartEdit>,
     /// The window's search narrows the sidebar's list wherever it stands
     /// ([`Self::search_sidebar`]).
     sidebar_search: bool,
@@ -929,7 +929,7 @@ impl NavShell {
             status_action_spec: None,
             retired_status_actions: Vec::new(),
             can_back: None,
-            slot_edit: None,
+            part_edit: None,
             sidebar_search: false,
             interaction: crate::interaction::InteractionEnvironment::default(),
         }
@@ -1059,7 +1059,7 @@ impl NavShell {
     #[must_use]
     pub fn with_filter(mut self, filter: SearchField) -> Self {
         self.filter = Some(Box::new(filter));
-        self.slots_changed();
+        self.parts_changed();
         self
     }
 
@@ -1077,7 +1077,7 @@ impl NavShell {
     #[must_use]
     pub fn mode(mut self, mode: NavMode) -> Self {
         self.inputs.borrow_mut().mode = mode;
-        self.slots_changed();
+        self.parts_changed();
         self
     }
 
@@ -1087,7 +1087,7 @@ impl NavShell {
     #[must_use]
     pub fn content_kind(mut self, kind: ContentKind) -> Self {
         self.inputs.borrow_mut().kind = kind;
-        self.slots_changed();
+        self.parts_changed();
         self
     }
 
@@ -1190,7 +1190,7 @@ impl NavShell {
             go_back: Box::new(go_back),
         });
         self.inputs.borrow_mut().content_back = can;
-        self.slots_changed();
+        self.parts_changed();
         self
     }
 
@@ -1230,15 +1230,15 @@ impl NavShell {
     }
 
     pub fn set_content_header_leading(&mut self, leading: Option<Element>) {
-        if let Some(slot) = self.pending.leading.get_mut(Column::Content.index()) {
-            *slot = Some(Staged(leading));
+        if let Some(part) = self.pending.leading.get_mut(Column::Content.index()) {
+            *part = Some(Staged(leading));
         }
         self.pending_changed();
     }
 
     fn stage_body(&mut self, column: Column, element: Option<Element>) {
-        if let Some(slot) = self.pending.bodies.get_mut(column.index()) {
-            *slot = Some(Staged(element));
+        if let Some(part) = self.pending.bodies.get_mut(column.index()) {
+            *part = Some(Staged(element));
         }
         self.pending_changed();
     }
@@ -1264,8 +1264,8 @@ impl NavShell {
             actions.retain(|action| !is_app_search(action.as_ref()));
         }
         self.set_title(column, title);
-        if let Some(slot) = self.pending.actions.get_mut(column.index()) {
-            *slot = Some(actions);
+        if let Some(part) = self.pending.actions.get_mut(column.index()) {
+            *part = Some(actions);
         }
         self.pending_changed();
     }
@@ -1322,7 +1322,7 @@ impl NavShell {
         let comes_or_goes = header.title.is_shown() != title.is_some();
         header.title.title = title;
         if comes_or_goes {
-            self.slots_changed();
+            self.parts_changed();
         } else {
             self.invalidate();
         }
@@ -1337,7 +1337,7 @@ impl NavShell {
         }
     }
 
-    /// A slot or header waits for the next build; before the first one there is no tree to wait
+    /// A part or header waits for the next build; before the first one there is no tree to wait
     /// for.
     fn drop_app_search(&mut self) {
         let mut changed = false;
@@ -1366,8 +1366,8 @@ impl NavShell {
                 // The host may still hold the row's nodes: the row is staged
                 // anew, and what it drops lives until the build replaces it.
                 self.retired_actions.extend(gone);
-                if let Some(slot) = self.pending.actions.get_mut(index) {
-                    *slot = Some(keep);
+                if let Some(part) = self.pending.actions.get_mut(index) {
+                    *part = Some(keep);
                 }
             } else {
                 header.actions = keep;
@@ -1383,10 +1383,10 @@ impl NavShell {
         if !self.built {
             self.apply_pending();
         }
-        self.slots_changed();
+        self.parts_changed();
     }
 
-    /// Put the waiting slots and headers in place, dropping what they
+    /// Put the waiting parts and headers in place, dropping what they
     /// replace. Only before the first build or from `build_layout`, when the
     /// host holds no part of the old tree.
     fn apply_pending(&mut self) {
@@ -1409,10 +1409,10 @@ impl NavShell {
         self.apply_nothing_listed(leave);
         for (column, body) in Column::ALL.into_iter().zip(bodies) {
             let Some(Staged(body)) = body else { continue };
-            match (self.body_slot(column), body) {
-                (nothing_listed::BodySlot::Optional(slot), body) => *slot = body,
-                (nothing_listed::BodySlot::Required(slot), Some(body)) => *slot = body,
-                (nothing_listed::BodySlot::Required(_), None) => {}
+            match (self.body_part(column), body) {
+                (nothing_listed::BodyPart::Optional(part), body) => *part = body,
+                (nothing_listed::BodyPart::Required(part), Some(body)) => *part = body,
+                (nothing_listed::BodyPart::Required(_), None) => {}
             }
         }
         self.apply_nothing_listed(enter);
@@ -1440,15 +1440,15 @@ impl NavShell {
     fn reset_fit(&mut self) {
         let inputs = self.inputs.borrow();
         let mut fit = inputs.fit.borrow_mut();
-        for (slot, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
+        for (part, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
             let (capable, compact_now, menu_from, primary) = fit_of(header);
-            if slot.full.len() == capable.len() {
-                slot.capable = capable;
-                slot.compact_now = compact_now;
-                slot.menu_from = menu_from;
-                slot.primary = primary;
+            if part.full.len() == capable.len() {
+                part.capable = capable;
+                part.compact_now = compact_now;
+                part.menu_from = menu_from;
+                part.primary = primary;
             } else {
-                *slot = ColumnFit {
+                *part = ColumnFit {
                     full: vec![None; capable.len()],
                     capable,
                     compact_now,
@@ -1462,15 +1462,15 @@ impl NavShell {
         }
     }
 
-    fn slots_changed(&mut self) {
-        self.refresh_slot_inputs();
+    fn parts_changed(&mut self) {
+        self.refresh_part_inputs();
         self.structure_dirty = true;
         self.invalidate();
     }
 
-    /// Plan the parts from the slots, headers and columns as they are now (which columns and
+    /// Plan the parts from the parts, headers and columns as they are now (which columns and
     /// titles there are, how many actions each holds), marking nothing.
-    fn refresh_slot_inputs(&self) {
+    fn refresh_part_inputs(&self) {
         {
             let mut inputs = self.inputs.borrow_mut();
             let has = |current: bool, pending: Option<&Staged>| match pending {
@@ -1515,22 +1515,22 @@ impl NavShell {
     /// shown, if a swap is pending), through its `Widget::as_any_mut`
     /// (which the widget answers with `Some(self)`).
     pub fn sidebar_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
-        let slot = match at_mut(&mut self.pending.bodies, Column::Sidebar) {
+        let part = match at_mut(&mut self.pending.bodies, Column::Sidebar) {
             Some(Staged(pending)) => pending.as_deref_mut(),
             None => self.sidebar.as_deref_mut(),
         };
-        downcast(slot)
+        downcast(part)
     }
 
     /// The sidebar as the widget the app gave it, to read: the one waiting
     /// to be shown, if a swap is pending.
     pub fn sidebar_ref<T: Widget + 'static>(&self) -> Option<&T> {
         let [sidebar, ..] = &self.pending.bodies;
-        let slot = match sidebar {
+        let part = match sidebar {
             Some(Staged(pending)) => pending.as_deref(),
             None => self.sidebar.as_deref(),
         };
-        slot.and_then(|widget| widget.as_any())
+        part.and_then(|widget| widget.as_any())
             .and_then(|any| any.downcast_ref::<T>())
     }
 
@@ -1776,7 +1776,7 @@ impl NavShell {
         {
             state.binding.publish(&inspector);
         }
-        self.publish_window_slots();
+        self.publish_window_parts();
         self.publish_inspector_frame();
     }
 
@@ -1784,12 +1784,12 @@ impl NavShell {
     /// changed, once the layout knows where they stand.
     fn apply_open_states(&mut self) {
         for sidebar in [true, false] {
-            let slot = if sidebar {
+            let part = if sidebar {
                 &mut self.sidebar_state
             } else {
                 &mut self.inspector_state
             };
-            let Some(state) = slot.as_mut() else {
+            let Some(state) = part.as_mut() else {
                 continue;
             };
             if let Some(value) = state.binding.poll() {
@@ -2437,36 +2437,36 @@ impl NavShell {
         };
         let mut fit = fit.borrow_mut();
         let mut gave = false;
-        for (slot, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
+        for (part, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
             let (capable, compact_now, menu_from, primary) = fit_of(header);
-            gave |= slot.capable != capable
-                || slot.compact_now != compact_now
-                || slot.primary != primary;
-            if slot.full.len() != capable.len() {
-                slot.full = vec![None; capable.len()];
-                slot.compact = false;
-                slot.shown = None;
+            gave |= part.capable != capable
+                || part.compact_now != compact_now
+                || part.primary != primary;
+            if part.full.len() != capable.len() {
+                part.full = vec![None; capable.len()];
+                part.compact = false;
+                part.shown = None;
             }
-            slot.capable = capable;
-            slot.compact_now = compact_now;
-            slot.menu_from = menu_from;
-            slot.primary = primary;
-            let shown = slot.shown.unwrap_or(header.actions.len());
+            part.capable = capable;
+            part.compact_now = compact_now;
+            part.menu_from = menu_from;
+            part.primary = primary;
+            let shown = part.shown.unwrap_or(header.actions.len());
             header
                 .more
                 .set_shown(!listed && shown < header.actions.len());
             for (i, action) in header.actions.iter_mut().enumerate() {
-                if !slot.capable.get(i).copied().unwrap_or(false) {
+                if !part.capable.get(i).copied().unwrap_or(false) {
                     continue;
                 }
-                let want = slot.compact;
-                if slot.compact_now.get(i).copied() == Some(want) {
+                let want = part.compact;
+                if part.compact_now.get(i).copied() == Some(want) {
                     continue;
                 }
                 if let Some(button) = button_of_mut(&mut **action) {
                     button.set_compact_toolbar_presentation(want);
                     gave = true;
-                    if let Some(now) = slot.compact_now.get_mut(i) {
+                    if let Some(now) = part.compact_now.get_mut(i) {
                         *now = want;
                     }
                 }
@@ -2738,9 +2738,9 @@ impl NavShell {
 }
 
 fn downcast<'a, T: Widget + 'static>(
-    slot: Option<&'a mut (dyn Widget + 'static)>,
+    part: Option<&'a mut (dyn Widget + 'static)>,
 ) -> Option<&'a mut T> {
-    slot.and_then(|widget| widget.as_any_mut())
+    part.and_then(|widget| widget.as_any_mut())
         .and_then(|any| any.downcast_mut::<T>())
 }
 
@@ -2885,7 +2885,7 @@ impl Widget for NavShell {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.finish_slot_edit();
+        self.finish_part_edit();
         let mut changed = self.take_requests();
         self.for_each_owned_mut(|child| changed |= child.update(state, path));
         changed |= self.follow_navigation();
@@ -2903,10 +2903,10 @@ impl Widget for NavShell {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.finish_slot_edit();
+        self.finish_part_edit();
         self.apply_pending();
         self.tell_parts_input();
-        self.refresh_slot_inputs();
+        self.refresh_part_inputs();
         *self.layout_theme = theme.clone();
         let size = if self.rect.width() > 0.0 {
             (self.rect.width(), self.rect.height())
@@ -3217,8 +3217,8 @@ impl Widget for NavShell {
         let inputs = self.inputs.borrow();
         let fit = inputs.fit.borrow();
         let mut rows: [Option<crate::widget::HeaderRowLayout>; 4] = [None; 4];
-        for (index, (row, slot)) in rows.iter_mut().zip(fit.iter()).enumerate() {
-            *row = slot.header.map(|facts| crate::widget::HeaderRowLayout {
+        for (index, (row, part)) in rows.iter_mut().zip(fit.iter()).enumerate() {
+            *row = part.header.map(|facts| crate::widget::HeaderRowLayout {
                 column: Column::ALL[index].key(),
                 title_needs: crate::num::f32_of_f64(facts.title_needs),
                 title_has: crate::num::f32_of_f64(facts.title_has),

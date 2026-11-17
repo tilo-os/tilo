@@ -1,11 +1,11 @@
-//! Chat's toolbar, as slots in the window's bar ([`ui::window_toolbar`]).
+//! Chat's toolbar, as parts in the window's bar ([`ui::window_toolbar`]).
 //!
 //! The bar shows the shell's sidebar toggle, the conversation (a channel, a
 //! person or an agent's task) as the window's location, and what can be done
 //! to it: stopping a shared view, the call in progress, its microphone and
 //! leaving it, the pinned messages and the people; the host's
 //! model commands and creating a channel in its menu. Search is the bar's
-//! own. Each slot runs the window's own [`Hit`], as a press on the control
+//! own. Each part runs the window's own [`Hit`], as a press on the control
 //! the conversation used to draw did. A thread that fills the window is the
 //! window's location, with Back to the conversation.
 
@@ -118,14 +118,14 @@ impl ChatApp {
         actions
     }
 
-    /// The window bar's slots for the conversation shown, starting from the
+    /// The window bar's parts for the conversation shown, starting from the
     /// shell's own.
     fn window_toolbar(&self) -> WindowToolbar {
         let identity = self.header_identity_text();
         let mut bar = self
             .bar
             .as_ref()
-            .map(ui::widget::WindowBarLink::slots)
+            .map(ui::widget::WindowBarLink::parts)
             .unwrap_or_default();
         let page = self.thread_is_page();
         if page {

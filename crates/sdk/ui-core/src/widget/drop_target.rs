@@ -18,7 +18,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
-use crate::widget::arrange::{Slot, Stack};
+use crate::widget::arrange::{Part, Stack};
 use crate::widget::{Decorator, DrawChild, Element, Widget};
 
 /// The resource a payload names, when it names one: a
@@ -62,7 +62,7 @@ impl DropTarget {
             column: Stack::stack()
                 .fill_width()
                 .gap(Rhythm::None)
-                .push_slot(Slot::new(child)),
+                .push_part(Part::new(child)),
             hovered: None,
             drop,
             key: key.into(),
@@ -202,7 +202,7 @@ impl Decorator for DropTarget {
     }
 }
 
-impl crate::component::SlotViews for DropTarget {
+impl crate::component::PartViews for DropTarget {
     fn len(&self) -> usize {
         1
     }
@@ -213,7 +213,7 @@ impl crate::component::SlotViews for DropTarget {
     }
 
     fn insert(&mut self, index: usize, view: Element) {
-        self.column.insert(index, Slot::new(view));
+        self.column.insert(index, Part::new(view));
     }
 
     fn remove(&mut self, index: usize) {
@@ -221,7 +221,7 @@ impl crate::component::SlotViews for DropTarget {
     }
 
     fn move_view(&mut self, from: usize, to: usize) {
-        self.column.move_slot(from, to);
+        self.column.move_part(from, to);
     }
 
     fn replace(&mut self, index: usize, view: Element) {

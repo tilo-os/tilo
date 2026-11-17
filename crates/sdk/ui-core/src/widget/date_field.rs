@@ -298,7 +298,7 @@ struct Chip<'a> {
     time: Vec<Element>,
 }
 
-/// The chip and its popover: the time the day is due at (the `time` slot), the calendar, and
+/// The chip and its popover: the time the day is due at (the `time` part), the calendar, and
 /// "Clear date" when the date may be empty.
 fn field(
     chip: Chip<'_>,

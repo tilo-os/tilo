@@ -1,4 +1,4 @@
-//! `TreeView` as a described component: a tree of nodes, each a part in a slot, with its
+//! `TreeView` as a described component: a tree of nodes, each a part in a part, with its
 //! children named under it by key, and selecting or activating a node reported with the
 //! resource it stands for.
 //!
@@ -23,7 +23,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 
 use crate::component::{
-    Accepts, Component, Described, Event, Person, ResourceId, SharedRows, SlotType, Source, Value,
+    Accepts, Component, Described, Event, PartType, Person, ResourceId, SharedRows, Source, Value,
 };
 use crate::icons::Icon;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
@@ -117,7 +117,7 @@ pub struct TreeViewNodeProps {
     /// nothing of the host's own, so the page the tree shows is the only one.
     pub navigates: Option<bool>,
     /// What the row shows besides its label.
-    #[component(slot)]
+    #[component(part)]
     pub row: Option<TreeViewRowProps>,
     /// How far the branch got ("1/3"), which the owner counts of its own children: the same
     /// count names a list row and an outline node, so both say one thing, folded or open.
@@ -129,23 +129,23 @@ pub struct TreeViewNodeProps {
     pub check: Event,
     /// The commands of its context menu: a right-click, the Menu key or a long press opens it,
     /// so every action a row has stays reachable without a drag.
-    #[component(slot)]
+    #[component(part)]
     pub menu: Vec<MenuItemProps>,
     /// The controls the row shows over its trailing corner while it is hovered or holds focus:
     /// the quick action of the thing it stands for (a note's "+", a folder's), without opening a
     /// menu. A node that gives none shows no hover toolbar.
-    #[component(slot)]
+    #[component(part)]
     pub toolbar: Vec<ButtonProps>,
     /// What someone else changed of the row's resource that the person has not seen yet: the
     /// row shows it, in their colour, on its trailing edge. The UI host places it
     /// (task-legibility §3).
-    #[component(slot)]
+    #[component(part)]
     pub change: Option<ChangeMarkProps>,
 }
 
-crate::component::part_slot!(TreeViewNodeProps);
-crate::component::part_slot!(TreeViewRowProps);
-crate::component::part_slot!(ButtonProps);
+crate::component::part_type!(TreeViewNodeProps);
+crate::component::part_type!(TreeViewRowProps);
+crate::component::part_type!(ButtonProps);
 
 impl TreeViewRows {
     /// The nodes the view gave whole, as it wrote them.
@@ -198,20 +198,20 @@ enum Held {
     Rendered(SharedRows),
 }
 
-impl SlotType for TreeViewRows {
+impl PartType for TreeViewRows {
     const MANY: bool = true;
 
     fn accepts() -> Accepts {
         Accepts::Component(TreeViewNodeProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
-        if let Some(rows) = source.rows(slot) {
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        if let Some(rows) = source.rows(part) {
             self.nodes = Held::Rendered(rows);
             return Ok(());
         }
         let mut given = Vec::new();
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             given.push(TreeViewNodeProps::from_source(child).map_err(|error| error.to_string())?);
             Ok(())
         })?;
@@ -231,16 +231,16 @@ impl From<Vec<TreeViewNodeProps>> for RemovedNodes {
     }
 }
 
-impl SlotType for RemovedNodes {
+impl PartType for RemovedNodes {
     const MANY: bool = true;
 
     fn accepts() -> Accepts {
         Accepts::Component(TreeViewNodeProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
         let mut nodes: Vec<TreeViewNodeProps> = Vec::new();
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             let node = TreeViewNodeProps::from_source(child).map_err(|error| error.to_string())?;
             if !node.removed {
                 return Err("the removed rows of a tree stand for removed nodes".to_owned());
@@ -288,11 +288,11 @@ pub struct TreeViewProps {
     /// [`Self::reorder`]; off, `Tab` moves the focus on as it otherwise would.
     pub tab_indents: bool,
     /// The nodes, in order, parents before their children.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub nodes: TreeViewRows,
     /// The rows standing in for nodes someone else removed that the person has not seen go:
     /// they stand after the nodes, struck, each with its mark. The UI host places them.
-    #[component(slot)]
+    #[component(part)]
     pub removed: RemovedNodes,
     /// The nodes open now, by the resource each stands for. Given, it is where the view says the tree
     /// is; without it the tree keeps what a person opened.
@@ -2485,13 +2485,13 @@ mod tests {
             None
         }
 
-        fn children(&mut self, _slot: &str) -> Vec<crate::Element> {
+        fn children(&mut self, _part: &str) -> Vec<crate::Element> {
             Vec::new()
         }
 
         fn components(
             &mut self,
-            _slot: &str,
+            _part: &str,
             _read: &mut dyn FnMut(&mut dyn crate::component::Source) -> Result<(), String>,
         ) -> Result<usize, String> {
             Ok(0)
@@ -2613,20 +2613,20 @@ mod tests {
                 None
             }
 
-            fn children(&mut self, _slot: &str) -> Vec<crate::Element> {
+            fn children(&mut self, _part: &str) -> Vec<crate::Element> {
                 Vec::new()
             }
 
             fn components(
                 &mut self,
-                _slot: &str,
+                _part: &str,
                 _read: &mut dyn FnMut(&mut dyn crate::component::Source) -> Result<(), String>,
             ) -> Result<usize, String> {
                 Ok(0)
             }
 
-            fn rows(&mut self, slot: &str) -> Option<crate::component::SharedRows> {
-                (slot == "nodes").then(|| std::rc::Rc::clone(&self.rows))
+            fn rows(&mut self, part: &str) -> Option<crate::component::SharedRows> {
+                (part == "nodes").then(|| std::rc::Rc::clone(&self.rows))
             }
         }
         let shown = std::rc::Rc::new(std::cell::RefCell::new(ShownRows {

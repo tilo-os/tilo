@@ -7,7 +7,7 @@ use vello::kurbo::{Affine, Rect, Vec2};
 
 use super::{Ask, Embed, EmbedState, OpenWindow, ResourceView, SharedWindow};
 use crate::time::{Duration, Instant};
-use crate::window_slots::{TabId, WindowSlots};
+use crate::window_parts::{TabId, WindowParts};
 use crate::window_toolbar::ToolbarAction;
 
 /// The size an embedded view is laid out at before it is scaled into its place: about a
@@ -51,23 +51,23 @@ pub fn menu_item(window: &OpenWindow, shared: &[SharedWindow]) -> ToolbarAction 
 /// Put each of `windows`' share item in its menu, and take it out of the menus of the
 /// windows in `offered` (the ones it replaced) that are no longer among them.
 pub fn offer<S: std::hash::BuildHasher + Default>(
-    slots: &mut WindowSlots,
+    parts: &mut WindowParts,
     windows: &[OpenWindow],
     shared: &[SharedWindow],
     offered: &mut HashSet<TabId, S>,
 ) {
     let now: HashSet<TabId, S> = windows.iter().map(|window| window.tab).collect();
     for window in windows {
-        slots.set_host_items(window.tab, vec![menu_item(window, shared)]);
+        parts.set_host_items(window.tab, vec![menu_item(window, shared)]);
     }
     for gone in offered.difference(&now) {
-        slots.set_host_items(*gone, Vec::new());
+        parts.set_host_items(*gone, Vec::new());
     }
     *offered = now;
 }
 
 /// What the person's `chosen` items of the shell's own (by tab, as
-/// [`WindowSlots::take_host_actions`] hands them) ask of the sharing app, oldest first.
+/// [`WindowParts::take_host_actions`] hands them) ask of the sharing app, oldest first.
 #[must_use]
 pub fn asks(
     chosen: Vec<(TabId, String)>,
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn the_menus_offer_sharing_until_shared_and_choices_become_asks() {
-        let mut slots = WindowSlots::default();
+        let mut parts = WindowParts::default();
         let mut offered = HashSet::new();
         let windows = vec![window(1, "plan"), window(2, "notes")];
         let shared = vec![SharedWindow {
@@ -378,9 +378,9 @@ mod tests {
         }];
         assert_eq!(menu_item(&windows[0], &shared).id, STOP_ITEM);
         assert_eq!(menu_item(&windows[1], &shared).id, SHARE_ITEM);
-        offer(&mut slots, &windows, &shared, &mut offered);
+        offer(&mut parts, &windows, &shared, &mut offered);
         assert_eq!(offered, HashSet::from([1, 2]));
-        offer(&mut slots, &windows[1..], &shared, &mut offered);
+        offer(&mut parts, &windows[1..], &shared, &mut offered);
         assert_eq!(
             offered,
             HashSet::from([2]),

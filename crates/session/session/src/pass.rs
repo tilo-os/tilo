@@ -241,7 +241,7 @@ impl Session {
         self.follow_bars();
         self.follow_switcher();
         self.follow_shell()?;
-        self.follow_slot_views()?;
+        self.follow_part_views()?;
         // The toolkit's clock, which a capture pins the frame's instant on.
         let now = ui::time::now();
         self.windows.step(&mut self.compositor, now);
@@ -376,11 +376,11 @@ impl Session {
         answered
     }
 
-    /// What the session reads of the frame just drawn: the shell and the slots laid out again, what
+    /// What the session reads of the frame just drawn: the shell and the parts laid out again, what
     /// their records say, and the picture of the workspace in front.
     fn follow_shell_over_frame(&mut self) -> Result<(), Error> {
         self.follow_shell()?;
-        self.follow_slot_views()?;
+        self.follow_part_views()?;
         self.settle()?;
         // The session this turn drew is the session kept: its records are written here, where a change
         // made by this turn's layout goes with it.
@@ -741,7 +741,7 @@ impl Session {
             self.with_chrome_mut(tilo_desktop::desktop_host::DesktopChrome::publish_overlays);
         }
         self.follow_pending_paste();
-        // Quick settings runs while the stack has its slot up, where the stack placed it.
+        // Quick settings runs while the stack has its part up, where the stack placed it.
         self.follow_quick_settings();
         // Which apps stopped answering reaches the session, and the person's Wait or Force quit
         // reaches the compositor.

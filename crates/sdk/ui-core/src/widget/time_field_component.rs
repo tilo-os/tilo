@@ -7,7 +7,7 @@ use crate::widget::date_field::time_in;
 use super::TimeField;
 
 /// The time of day a day is due at: the hour and the minute it is due at, with "Remove time"
-/// beside them, or a quiet "Add time" while it has none. It stands in the `time` slot of a
+/// beside them, or a quiet "Add time" while it has none. It stands in the `time` part of a
 /// [`DateField`](crate::widget::DateField), so the day and its time read as one fact.
 #[derive(Component)]
 #[component(name = "TimeField", role = "Group")]

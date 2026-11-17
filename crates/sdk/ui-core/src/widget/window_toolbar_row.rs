@@ -1,4 +1,4 @@
-//! The app's slots in a window's bar ([`crate::window_toolbar`]): back and forward, the location,
+//! The app's parts in a window's bar ([`crate::window_toolbar`]): back and forward, the location,
 //! and the actions, laid out across one row and drawn with the window's own icon button
 //! ([`super::window_controls::paint_icon_button`]). At most
 //! [`MAX_ACTIONS`](crate::window_toolbar::MAX_ACTIONS) actions stand in the row, fewer when the
@@ -31,12 +31,12 @@ mod layout;
 #[path = "window_toolbar_location_label.rs"]
 mod location_label;
 mod paint;
+mod part_change;
 mod reactions;
-mod slot_change;
 mod strip;
 pub(crate) use compose::{LOCATION_KEY, STRIP_KEY};
 use layout::{
-    LocationForms, LocationLead, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome,
+    LocationForms, LocationLead, MeasureKey, Measured, Part, Parts, ViewsMeasure, location_chrome,
 };
 #[cfg(test)]
 use location_label::edited_word;
@@ -133,14 +133,14 @@ fn menu_rows(
 pub(crate) struct ToolbarRow {
     shown: Option<(u64, WindowToolbar)>,
     fade: CrossFade<Option<u64>>,
-    outgoing: Option<(WindowToolbar, Slots)>,
-    changed_from: Option<(WindowToolbar, Slots)>,
-    slot_changes: slot_change::SlotChanges,
+    outgoing: Option<(WindowToolbar, Parts)>,
+    changed_from: Option<(WindowToolbar, Parts)>,
+    part_changes: part_change::PartChanges,
     row: Rect,
-    slots: Slots,
+    parts: Parts,
     measured: bool,
-    hover: Option<Slot>,
-    pressed: Option<Slot>,
+    hover: Option<Part>,
+    pressed: Option<Part>,
     pressed_action: Option<String>,
     field: Option<TextInput>,
     heard: String,
@@ -148,7 +148,7 @@ pub(crate) struct ToolbarRow {
     menu: ContextMenu,
     menu_entries: Vec<Option<MenuEntry>>,
     choice_trigger: Rect,
-    menu_slot: Option<Slot>,
+    menu_part: Option<Part>,
     menu_action: Option<String>,
     views_size: Option<Measured>,
     suggestions: SuggestionList,
@@ -183,9 +183,9 @@ impl ToolbarRow {
             fade: CrossFade::new(None),
             outgoing: None,
             changed_from: None,
-            slot_changes: slot_change::SlotChanges::default(),
+            part_changes: part_change::PartChanges::default(),
             row: Rect::ZERO,
-            slots: Slots::default(),
+            parts: Parts::default(),
             measured: false,
             hover: None,
             pressed: None,
@@ -196,7 +196,7 @@ impl ToolbarRow {
             menu: ContextMenu::new(),
             menu_entries: Vec::new(),
             choice_trigger: Rect::ZERO,
-            menu_slot: None,
+            menu_part: None,
             menu_action: None,
             views_size: None,
             suggestions: SuggestionList::new(),
@@ -234,7 +234,7 @@ impl ToolbarRow {
     }
 
     pub(crate) fn control_hit(&self, p: Point) -> bool {
-        self.active_toolbar_shown() && self.hit_slot(p).is_some_and(|slot| slot != Slot::Location)
+        self.active_toolbar_shown() && self.hit_part(p).is_some_and(|part| part != Part::Location)
     }
 
     fn active_toolbar_shown(&self) -> bool {
@@ -302,7 +302,7 @@ impl ToolbarRow {
             self.outgoing = self
                 .shown
                 .take()
-                .map(|(_, toolbar)| (toolbar, self.slots.clone()));
+                .map(|(_, toolbar)| (toolbar, self.parts.clone()));
             if previous_tab.is_some() {
                 self.fade
                     .show(next_tab, theme_motion, MotionSource::Pointer, now);
@@ -310,13 +310,13 @@ impl ToolbarRow {
                 self.fade = CrossFade::new(next_tab);
             }
             self.changed_from = None;
-            self.slot_changes.clear();
+            self.part_changes.clear();
         } else if self.changed_from.is_none()
             && self.row.area() > 0.0
             && let (Some((_, was)), Some((_, toolbar))) = (self.shown.as_ref(), next.as_ref())
             && was != toolbar
         {
-            self.changed_from = Some((was.clone(), self.slots.clone()));
+            self.changed_from = Some((was.clone(), self.parts.clone()));
         }
         self.shown = next;
         self.sync_crumbs();
@@ -387,7 +387,7 @@ impl ToolbarRow {
     }
 
     fn place_suggestions(&mut self) {
-        self.suggestions.set_anchor(self.slots.location);
+        self.suggestions.set_anchor(self.parts.location);
         if self.popup_area.area() > 0.0 {
             self.suggestions.set_viewport(self.popup_area);
         }
@@ -555,14 +555,14 @@ impl ToolbarRow {
         self.shown.as_ref().map(|(_, toolbar)| toolbar)
     }
 
-    /// Whether the last layout was short of the width the slots need: a button
+    /// Whether the last layout was short of the width the parts need: a button
     /// sharing another's place, the app's location with nowhere to stand, or
     /// that location cut short in the shorter form it names itself in. A bar
     /// that can give the row more width asks before it keeps it.
     pub(crate) fn crowded(&self) -> bool {
         let (app_row, _, _) = self.place_reactions(self.row);
         let forms = self.views_size.as_ref().map(|measured| &measured.forms);
-        self.slots.crowded(self.toolbar(), app_row, forms)
+        self.parts.crowded(self.toolbar(), app_row, forms)
     }
 
     pub(crate) fn take_measured(&mut self) -> bool {
@@ -584,23 +584,23 @@ impl ToolbarRow {
                     )
                 });
         let (app_row, reactions, reaction_add) = self.place_reactions(row);
-        self.slots = self
+        self.parts = self
             .toolbar()
-            .map(|toolbar| Slots::lay_out(toolbar, app_row, views, (forms, labels, action_labels)))
+            .map(|toolbar| Parts::lay_out(toolbar, app_row, views, (forms, labels, action_labels)))
             .unwrap_or_default();
-        self.slots.reactions = reactions;
-        self.slots.reaction_add = reaction_add;
+        self.parts.reactions = reactions;
+        self.parts.reaction_add = reaction_add;
         if let Some(Measured { tabs, .. }) = self.views_size.as_ref()
-            && let Some(strip_x0) = self.slots.views.first().map(|tab| tab.x0)
-            && tabs.len() == self.slots.views.len()
+            && let Some(strip_x0) = self.parts.views.first().map(|tab| tab.x0)
+            && tabs.len() == self.parts.views.len()
         {
             let mut x = strip_x0;
-            for (tab, width) in self.slots.views.iter_mut().zip(tabs) {
+            for (tab, width) in self.parts.views.iter_mut().zip(tabs) {
                 *tab = Rect::new(x, tab.y0, x + width, tab.y1);
                 x = tab.x1;
             }
         }
-        let location = self.slots.location;
+        let location = self.parts.location;
         if let Some(field) = self.field.as_mut() {
             if location.area() > 0.0 {
                 field.apply_layout_external(location);
@@ -609,11 +609,11 @@ impl ToolbarRow {
                 self.abandon_edit();
             }
         }
-        let anchor = match self.menu_slot {
-            Some(Slot::Action(_) | Slot::Leading(_)) => self.menu_button_rect(),
-            Some(Slot::Location) => self.choice_anchor(),
-            Some(Slot::ViewsMenu) => self.slots.views_menu,
-            _ => self.slots.overflow,
+        let anchor = match self.menu_part {
+            Some(Part::Action(_) | Part::Leading(_)) => self.menu_button_rect(),
+            Some(Part::Location) => self.choice_anchor(),
+            Some(Part::ViewsMenu) => self.parts.views_menu,
+            _ => self.parts.overflow,
         };
         if anchor.area() <= 0.0 {
             self.close_menu();
@@ -629,7 +629,7 @@ impl ToolbarRow {
     }
 
     pub(crate) fn choices_open(&self) -> bool {
-        self.menu.is_open() && self.menu_slot == Some(Slot::Location)
+        self.menu.is_open() && self.menu_part == Some(Part::Location)
     }
 
     #[cfg(test)]
@@ -659,15 +659,15 @@ impl ToolbarRow {
     }
 
     fn choice_anchor(&self) -> Rect {
-        let slot = self.slots.location;
-        if slot.area() <= 0.0 {
+        let part = self.parts.location;
+        if part.area() <= 0.0 {
             return Rect::ZERO;
         }
-        let trigger = self.choice_trigger.intersect(slot);
+        let trigger = self.choice_trigger.intersect(part);
         if trigger.width() > 0.0 && trigger.height() > 0.0 {
             trigger
         } else {
-            slot
+            part
         }
     }
 
@@ -697,7 +697,7 @@ impl ToolbarRow {
         self.menu.set_align(super::PanelAlign::Leading);
         self.menu.open_anchored(anchor, self.popup_area);
         self.menu_entries = rows;
-        self.menu_slot = Some(Slot::Location);
+        self.menu_part = Some(Part::Location);
         true
     }
 
@@ -725,8 +725,8 @@ impl ToolbarRow {
         self.touched = None;
     }
 
-    pub(crate) fn slots(&self) -> &Slots {
-        &self.slots
+    pub(crate) fn parts(&self) -> &Parts {
+        &self.parts
     }
 
     #[cfg(test)]
@@ -766,11 +766,11 @@ impl ToolbarRow {
         ))
     }
 
-    fn hit_slot(&self, p: Point) -> Option<Slot> {
+    fn hit_part(&self, p: Point) -> Option<Part> {
         if let Some(i) = self.strip.buttons().iter().position(|r| r.contains(p)) {
-            return Some(Slot::Notice(i));
+            return Some(Part::Notice(i));
         }
-        self.slot_at(p)
+        self.part_at(p)
     }
 
     /// Whether the notice up stands whole in the location, as measured
@@ -779,7 +779,7 @@ impl ToolbarRow {
         self.toolbar()?.notice.as_ref()?;
         let forms = &self.views_size.as_ref()?.forms;
         let whole = forms.text.first()? + forms.chrome;
-        Some(self.slots.location.width() + 0.5 >= whole)
+        Some(self.parts.location.width() + 0.5 >= whole)
     }
 
     pub(crate) fn row(&self) -> Rect {
@@ -787,18 +787,18 @@ impl ToolbarRow {
     }
 
     pub(crate) fn location_content_end(&self) -> Option<f64> {
-        let location = self.slots.location;
+        let location = self.parts.location;
         if location.area() <= 0.0 {
             return None;
         }
         let forms = &self.views_size.as_ref()?.forms;
-        let mut label = location.x0 + forms.text.get(self.slots.form)? + forms.chrome;
+        let mut label = location.x0 + forms.text.get(self.parts.form)? + forms.chrome;
         if let Some((word, gap)) = forms.trailing
             && location.width() - forms.chrome - word - gap >= word
         {
             label += gap + word;
         }
-        let notice = self.slots.notice.iter().map(|rect| rect.x1);
+        let notice = self.parts.notice.iter().map(|rect| rect.x1);
         Some(notice.fold(label, f64::max).min(location.x1))
     }
 
@@ -827,7 +827,7 @@ impl ToolbarRow {
         else {
             return false;
         };
-        if self.slots.location.area() <= 0.0 {
+        if self.parts.location.area() <= 0.0 {
             return false;
         }
         let go_name = if location.go_name.is_empty() {
@@ -843,7 +843,7 @@ impl ToolbarRow {
             .with_accessible_name(location.name.clone())
             .with_enter_submits(true)
             .with_trailing_accessory(Icon::ArrowRight, &go_name, AccessoryAction::Submit);
-        field.apply_layout_external(self.slots.location);
+        field.apply_layout_external(self.parts.location);
         field.set_focus(true);
         field.select_all();
         field.value().clone_into(&mut self.heard);
@@ -942,25 +942,25 @@ impl ToolbarRow {
         std::mem::take(&mut self.events)
     }
 
-    fn enabled(&self, slot: &Slot) -> bool {
+    fn enabled(&self, part: &Part) -> bool {
         let Some(toolbar) = self.toolbar() else {
             return false;
         };
-        match slot {
-            Slot::Sidebar => toolbar.sidebar.is_some() && !toolbar.sidebar_unavailable,
-            Slot::Back => toolbar.navigation.is_some_and(|nav| nav.back),
-            Slot::Forward => toolbar.navigation.is_some_and(|nav| nav.forward),
-            Slot::Leading(i) => toolbar.leading.get(*i).is_some_and(|a| a.enabled),
-            Slot::Location => toolbar.location.is_some(),
-            Slot::View(i) => toolbar
+        match part {
+            Part::Sidebar => toolbar.sidebar.is_some() && !toolbar.sidebar_unavailable,
+            Part::Back => toolbar.navigation.is_some_and(|nav| nav.back),
+            Part::Forward => toolbar.navigation.is_some_and(|nav| nav.forward),
+            Part::Leading(i) => toolbar.leading.get(*i).is_some_and(|a| a.enabled),
+            Part::Location => toolbar.location.is_some(),
+            Part::View(i) => toolbar
                 .views
                 .as_ref()
                 .is_some_and(|views| *i < views.choices.len()),
-            Slot::ViewsMenu => self.slots.views_menu.area() > 0.0,
-            Slot::Action(i) => toolbar.actions.get(*i).is_some_and(|a| a.enabled),
-            Slot::Notice(i) => self.notice_action(*i).is_some_and(|a| a.enabled),
-            Slot::Overflow => self.slots.overflow.area() > 0.0,
-            Slot::Reaction(_) | Slot::ReactionAdd => self.may_react(),
+            Part::ViewsMenu => self.parts.views_menu.area() > 0.0,
+            Part::Action(i) => toolbar.actions.get(*i).is_some_and(|a| a.enabled),
+            Part::Notice(i) => self.notice_action(*i).is_some_and(|a| a.enabled),
+            Part::Overflow => self.parts.overflow.area() > 0.0,
+            Part::Reaction(_) | Part::ReactionAdd => self.may_react(),
         }
     }
 
@@ -986,7 +986,7 @@ impl ToolbarRow {
                 entries.push(Some(entry));
             }
         }
-        let folded: Vec<usize> = self.slots.folded_leading().collect();
+        let folded: Vec<usize> = self.parts.folded_leading().collect();
         if !items.is_empty() && !folded.is_empty() {
             items.push(MenuItem::separator());
             entries.push(None);
@@ -996,7 +996,7 @@ impl ToolbarRow {
                 menu_rows((&mut items, &mut entries), action, MenuEntry::Leading(i));
             }
         }
-        let shown = self.slots.actions.len();
+        let shown = self.parts.actions.len();
         let hidden = shown..toolbar.actions.len();
         if !items.is_empty() && !hidden.is_empty() {
             items.push(MenuItem::separator());
@@ -1010,7 +1010,7 @@ impl ToolbarRow {
             if host_section
                 && action
                     .id
-                    .starts_with(crate::window_slots::HOST_ACTION_PREFIX)
+                    .starts_with(crate::window_parts::HOST_ACTION_PREFIX)
             {
                 host_section = false;
                 if !items.is_empty() {
@@ -1026,8 +1026,8 @@ impl ToolbarRow {
         self.open_menu(
             items,
             entries,
-            Slot::Overflow,
-            self.slots.overflow,
+            Part::Overflow,
+            self.parts.overflow,
             super::PanelAlign::Trailing,
         );
         true
@@ -1038,10 +1038,10 @@ impl ToolbarRow {
             return Vec::new();
         };
         let mut entries = Vec::new();
-        if self.slots.sidebar_folded(toolbar) {
+        if self.parts.sidebar_folded(toolbar) {
             entries.push(MenuEntry::Sidebar);
         }
-        if self.slots.forward_folded(toolbar) {
+        if self.parts.forward_folded(toolbar) {
             entries.push(MenuEntry::Forward);
         }
         entries
@@ -1067,7 +1067,7 @@ impl ToolbarRow {
     }
 
     fn views_in_overflow(&self) -> bool {
-        self.slots.views.is_empty() && self.slots.views_menu.area() <= 0.0
+        self.parts.views.is_empty() && self.parts.views_menu.area() <= 0.0
     }
 
     fn view_items(&self) -> Vec<(MenuItem, MenuEntry)> {
@@ -1095,22 +1095,22 @@ impl ToolbarRow {
         if items.is_empty() {
             return false;
         }
-        let anchor = self.slots.views_menu;
+        let anchor = self.parts.views_menu;
         if anchor.area() <= 0.0 {
             return false;
         }
         self.open_menu(
             items,
             entries,
-            Slot::ViewsMenu,
+            Part::ViewsMenu,
             anchor,
             super::PanelAlign::Trailing,
         );
         true
     }
 
-    fn open_action_menu(&mut self, slot: &Slot) -> bool {
-        let Some(action) = self.action_at(slot) else {
+    fn open_action_menu(&mut self, part: &Part) -> bool {
+        let Some(action) = self.action_at(part) else {
             return false;
         };
         let items = action.items.iter().map(menu_item).collect();
@@ -1118,15 +1118,15 @@ impl ToolbarRow {
         let entries = (0..action.items.len())
             .map(|j| Some(MenuEntry::Item(id.clone(), j)))
             .collect();
-        let Some(anchor) = self.action_rect(slot) else {
+        let Some(anchor) = self.action_rect(part) else {
             return false;
         };
-        let align = if matches!(slot, Slot::Leading(_)) {
+        let align = if matches!(part, Part::Leading(_)) {
             super::PanelAlign::Leading
         } else {
             super::PanelAlign::Trailing
         };
-        self.open_menu(items, entries, slot.clone(), anchor, align);
+        self.open_menu(items, entries, part.clone(), anchor, align);
         self.menu_action = Some(id);
         true
     }
@@ -1135,7 +1135,7 @@ impl ToolbarRow {
         &mut self,
         items: Vec<MenuItem>,
         entries: Vec<Option<MenuEntry>>,
-        slot: Slot,
+        part: Part,
         anchor: Rect,
         align: super::PanelAlign,
     ) {
@@ -1143,7 +1143,7 @@ impl ToolbarRow {
         self.menu.set_align(align);
         self.menu.open_anchored(anchor, self.popup_area);
         self.menu_entries = entries;
-        self.menu_slot = Some(slot);
+        self.menu_part = Some(part);
         self.menu_action = None;
     }
 
@@ -1152,24 +1152,24 @@ impl ToolbarRow {
         self.menu_action = None;
     }
 
-    fn lists_items(&self, slot: &Slot) -> bool {
-        self.action_at(slot)
+    fn lists_items(&self, part: &Part) -> bool {
+        self.action_at(part)
             .is_some_and(|action| !action.items.is_empty())
     }
 
-    fn action_at(&self, slot: &Slot) -> Option<&crate::window_toolbar::ToolbarAction> {
+    fn action_at(&self, part: &Part) -> Option<&crate::window_toolbar::ToolbarAction> {
         let toolbar = self.toolbar()?;
-        match slot {
-            Slot::Leading(i) => toolbar.leading.get(*i),
-            Slot::Action(i) => toolbar.actions.get(*i),
+        match part {
+            Part::Leading(i) => toolbar.leading.get(*i),
+            Part::Action(i) => toolbar.actions.get(*i),
             _ => None,
         }
     }
 
-    fn action_rect(&self, slot: &Slot) -> Option<Rect> {
-        match slot {
-            Slot::Leading(i) => self.slots.leading.get(*i).copied(),
-            Slot::Action(i) => self.slots.actions.get(*i).copied(),
+    fn action_rect(&self, part: &Part) -> Option<Rect> {
+        match part {
+            Part::Leading(i) => self.parts.leading.get(*i).copied(),
+            Part::Action(i) => self.parts.actions.get(*i).copied(),
             _ => None,
         }
         .filter(|rect| rect.area() > 0.0)
@@ -1192,13 +1192,13 @@ impl ToolbarRow {
             return Rect::ZERO;
         };
         if let Some(index) = toolbar.leading.iter().position(|action| action.id == id) {
-            return self.slots.leading.get(index).copied().unwrap_or(Rect::ZERO);
+            return self.parts.leading.get(index).copied().unwrap_or(Rect::ZERO);
         }
         toolbar
             .actions
             .iter()
             .position(|action| action.id == id)
-            .and_then(|index| self.slots.actions.get(index).copied())
+            .and_then(|index| self.parts.actions.get(index).copied())
             .unwrap_or(Rect::ZERO)
     }
 
@@ -1266,8 +1266,8 @@ impl ToolbarRow {
 
     fn run_menu_entry(&mut self, row: usize) -> bool {
         match self.menu_entries.get(row).cloned().flatten() {
-            Some(MenuEntry::Sidebar) => self.activate(&Slot::Sidebar),
-            Some(MenuEntry::Forward) => self.activate(&Slot::Forward),
+            Some(MenuEntry::Sidebar) => self.activate(&Part::Sidebar),
+            Some(MenuEntry::Forward) => self.activate(&Part::Forward),
             Some(MenuEntry::Action(index)) => self.run_action(index),
             Some(MenuEntry::Leading(index)) => self.run_leading(index),
             Some(MenuEntry::View(index)) => self.choose_view(index),
@@ -1277,40 +1277,40 @@ impl ToolbarRow {
         }
     }
 
-    fn activate(&mut self, slot: &Slot) -> bool {
-        if !self.enabled(slot) {
+    fn activate(&mut self, part: &Part) -> bool {
+        if !self.enabled(part) {
             return false;
         }
-        match slot {
-            Slot::Sidebar => self.push(ToolbarEvent::ToggleSidebar),
-            Slot::Back => self.push(ToolbarEvent::Back),
-            Slot::Forward => self.push(ToolbarEvent::Forward),
-            Slot::Location if self.has_choices() => return self.open_choices(),
-            Slot::Leading(_) | Slot::Action(_) if self.lists_items(slot) => {
-                return self.open_action_menu(slot);
+        match part {
+            Part::Sidebar => self.push(ToolbarEvent::ToggleSidebar),
+            Part::Back => self.push(ToolbarEvent::Back),
+            Part::Forward => self.push(ToolbarEvent::Forward),
+            Part::Location if self.has_choices() => return self.open_choices(),
+            Part::Leading(_) | Part::Action(_) if self.lists_items(part) => {
+                return self.open_action_menu(part);
             }
-            Slot::Leading(i) => return self.run_leading(*i),
-            Slot::Location => return self.begin_edit(),
-            Slot::View(i) => return self.choose_view(*i),
-            Slot::Action(i) => return self.run_action(*i),
-            Slot::Notice(i) => {
+            Part::Leading(i) => return self.run_leading(*i),
+            Part::Location => return self.begin_edit(),
+            Part::View(i) => return self.choose_view(*i),
+            Part::Action(i) => return self.run_action(*i),
+            Part::Notice(i) => {
                 let Some(id) = self.notice_action(*i).map(|action| action.id.clone()) else {
                     return false;
                 };
                 self.push(ToolbarEvent::Action { id });
             }
-            Slot::Overflow => return self.open_overflow(),
-            Slot::ViewsMenu => return self.open_views_menu(),
-            Slot::Reaction(_) | Slot::ReactionAdd => return self.activate_reaction(slot),
+            Part::Overflow => return self.open_overflow(),
+            Part::ViewsMenu => return self.open_views_menu(),
+            Part::Reaction(_) | Part::ReactionAdd => return self.activate_reaction(part),
         }
         true
     }
 
     pub(crate) fn pointer_moved(&mut self, p: Point) -> bool {
-        let hover = self.hit_slot(p);
+        let hover = self.hit_part(p);
         let changed = hover != self.hover;
         self.hover = hover;
-        let on_location = self.field.is_none() && self.slots.location.contains(p);
+        let on_location = self.field.is_none() && self.parts.location.contains(p);
         let crumbs = self
             .crumbs
             .as_mut()
@@ -1332,38 +1332,38 @@ impl ToolbarRow {
     pub(crate) fn tooltip_at(&self, p: Point) -> Option<(Rect, String)> {
         let toolbar = self.toolbar()?;
         let lookup = crate::i18n::I18nManager::lookup_plain;
-        match self.hit_slot(p)? {
-            Slot::Sidebar => Some((self.slots.sidebar, lookup(sidebar_key(toolbar)))),
-            Slot::Back => Some((self.slots.back, lookup("window-toolbar-back"))),
-            Slot::Forward => Some((self.slots.forward, lookup("window-toolbar-forward"))),
-            Slot::Leading(i) => {
+        match self.hit_part(p)? {
+            Part::Sidebar => Some((self.parts.sidebar, lookup(sidebar_key(toolbar)))),
+            Part::Back => Some((self.parts.back, lookup("window-toolbar-back"))),
+            Part::Forward => Some((self.parts.forward, lookup("window-toolbar-forward"))),
+            Part::Leading(i) => {
                 let action = toolbar.leading.get(i)?;
-                let rect = self.slots.leading.get(i).filter(|rect| rect.area() > 0.0)?;
+                let rect = self.parts.leading.get(i).filter(|rect| rect.area() > 0.0)?;
                 Some((*rect, action.name.clone()))
             }
-            Slot::Action(i) => {
+            Part::Action(i) => {
                 let action = toolbar.actions.get(i)?;
-                Some((*self.slots.actions.get(i)?, action.name.clone()))
+                Some((*self.parts.actions.get(i)?, action.name.clone()))
             }
-            Slot::Notice(i) => {
+            Part::Notice(i) => {
                 let rect = self
-                    .slots
+                    .parts
                     .notice
                     .get(i)
                     .copied()
                     .or_else(|| self.strip.buttons().get(i).copied())?;
                 Some((rect, self.notice_action(i)?.name.clone()))
             }
-            Slot::Overflow => Some((self.slots.overflow, lookup("window-toolbar-more"))),
-            Slot::Reaction(_) | Slot::ReactionAdd => self.reaction_tooltip(p),
-            Slot::View(_) | Slot::ViewsMenu | Slot::Location => None,
+            Part::Overflow => Some((self.parts.overflow, lookup("window-toolbar-more"))),
+            Part::Reaction(_) | Part::ReactionAdd => self.reaction_tooltip(p),
+            Part::View(_) | Part::ViewsMenu | Part::Location => None,
         }
     }
 
     /// Whether `p` is on the location or the suggestions under it: a press
     /// there keeps the edit.
     pub(crate) fn location_hit(&self, p: Point) -> bool {
-        self.slots.location.contains(p)
+        self.parts.location.contains(p)
             || self
                 .suggestions_rect()
                 .is_some_and(|panel| panel.contains(p))
@@ -1513,51 +1513,51 @@ impl ToolbarRow {
     }
 
     pub(crate) fn hit(&self, p: Point) -> bool {
-        self.hit_slot(p).is_some()
+        self.hit_part(p).is_some()
     }
 
     pub(crate) fn owns_secondary_press(&self, p: Point) -> bool {
-        match self.hit_slot(p) {
-            Some(Slot::Location) => self.field.is_some(),
-            slot => slot.is_some(),
+        match self.hit_part(p) {
+            Some(Part::Location) => self.field.is_some(),
+            part => part.is_some(),
         }
     }
 
     pub(crate) fn press(&mut self, p: Point) -> bool {
-        let slot = self.hit_slot(p);
-        if self.field.is_some() && slot != Some(Slot::Location) {
+        let part = self.hit_part(p);
+        if self.field.is_some() && part != Some(Part::Location) {
             self.abandon_edit();
         }
-        match slot {
-            Some(Slot::Location) if self.field.is_none() && self.carriable => {
-                self.pressed = Some(Slot::Location);
+        match part {
+            Some(Part::Location) if self.field.is_none() && self.carriable => {
+                self.pressed = Some(Part::Location);
                 self.location_press = Some(p);
                 true
             }
-            Some(Slot::Location) if self.field.is_none() => {
+            Some(Part::Location) if self.field.is_none() => {
                 if let Some(value) = self.crumb_at(p) {
                     self.push(ToolbarEvent::Commit { text: value });
                     return true;
                 }
                 if self.has_choices() {
-                    self.pressed = Some(Slot::Location);
+                    self.pressed = Some(Part::Location);
                     return true;
                 }
                 self.begin_edit()
             }
-            Some(slot) if slot != Slot::Location => {
-                self.pressed_action = self.action_id(slot.clone());
-                self.pressed = Some(slot);
+            Some(part) if part != Part::Location => {
+                self.pressed_action = self.action_id(part.clone());
+                self.pressed = Some(part);
                 true
             }
             _ => false,
         }
     }
 
-    pub(crate) fn pressing_app_slot(&self) -> bool {
+    pub(crate) fn pressing_app_part(&self) -> bool {
         match &self.pressed {
-            Some(Slot::Sidebar | Slot::View(_) | Slot::Notice(_) | Slot::Reaction(_)) => true,
-            Some(slot @ (Slot::Leading(_) | Slot::Action(_))) => !self.lists_items(slot),
+            Some(Part::Sidebar | Part::View(_) | Part::Notice(_) | Part::Reaction(_)) => true,
+            Some(part @ (Part::Leading(_) | Part::Action(_))) => !self.lists_items(part),
             _ => false,
         }
     }
@@ -1567,26 +1567,26 @@ impl ToolbarRow {
             return false;
         };
         if let Some(at) = self.location_press.take()
-            && pressed == Slot::Location
+            && pressed == Part::Location
         {
-            if self.hit_slot(p).as_ref() == Some(&Slot::Location) {
+            if self.hit_part(p).as_ref() == Some(&Part::Location) {
                 match self.crumb_at(at) {
                     Some(value) => self.push(ToolbarEvent::Commit { text: value }),
                     None => {
-                        self.activate(&Slot::Location);
+                        self.activate(&Part::Location);
                     }
                 }
             }
             return true;
         }
-        let over = self.hit_slot(p);
-        // The app may have declared its slots again while the button was down, which can move a
+        let over = self.hit_part(p);
+        // The app may have declared its parts again while the button was down, which can move a
         // command to another place of the row without moving the button: the release ends the
         // command it began on, and a control the app put under the pointer since is not it.
         let same = over.as_ref() == Some(&pressed)
             || match (&self.pressed_action, over.as_ref()) {
-                (Some(pressed), Some(slot)) => {
-                    self.action_id(slot.clone()).as_ref() == Some(pressed)
+                (Some(pressed), Some(part)) => {
+                    self.action_id(part.clone()).as_ref() == Some(pressed)
                 }
                 _ => false,
             };
@@ -1597,13 +1597,13 @@ impl ToolbarRow {
         true
     }
 
-    /// The command `slot` stands for, by its id: an action of the app's, or one of the leading
+    /// The command `part` stands for, by its id: an action of the app's, or one of the leading
     /// actions before the location. None for the bar's own controls, which the app cannot move.
-    fn action_id(&self, slot: Slot) -> Option<String> {
+    fn action_id(&self, part: Part) -> Option<String> {
         let toolbar = self.toolbar()?;
-        match slot {
-            Slot::Action(i) => toolbar.actions.get(i).map(|action| action.id.clone()),
-            Slot::Leading(i) => toolbar.leading.get(i).map(|action| action.id.clone()),
+        match part {
+            Part::Action(i) => toolbar.actions.get(i).map(|action| action.id.clone()),
+            Part::Leading(i) => toolbar.leading.get(i).map(|action| action.id.clone()),
             _ => None,
         }
     }
@@ -1673,7 +1673,7 @@ impl ToolbarRow {
         handled || key
     }
 
-    /// Whether a frame must follow: the cross-fade, slots arriving, leaving
+    /// Whether a frame must follow: the cross-fade, parts arriving, leaving
     /// or moving, the field's caret, or a menu arriving or leaving. Read at
     /// the frame's instant: asked while a frame is laid out, the live clock
     /// would read the motions at an instant the frame's passes never saw.
@@ -1681,7 +1681,7 @@ impl ToolbarRow {
         let now = crate::motion::frame_now();
         self.fade.is_moving(now)
             || self.strip.needs_frame()
-            || self.slot_changes.is_moving(now)
+            || self.part_changes.is_moving(now)
             || self
                 .field
                 .as_ref()
@@ -1702,28 +1702,28 @@ impl ToolbarRow {
     }
 
     fn ran_from_menu(&mut self, ran: bool) -> bool {
-        if ran && self.menu.is_open() && !self.menu_open_for(&Slot::Location) {
+        if ran && self.menu.is_open() && !self.menu_open_for(&Part::Location) {
             self.close_menu();
         }
         ran
     }
 
-    fn slot_at(&self, p: Point) -> Option<Slot> {
+    fn part_at(&self, p: Point) -> Option<Part> {
         let now = crate::motion::frame_now();
-        let Some(toolbar) = self.toolbar().filter(|_| self.slot_changes.glides(now)) else {
-            return self.slots.hit(p);
+        let Some(toolbar) = self.toolbar().filter(|_| self.part_changes.glides(now)) else {
+            return self.parts.hit(p);
         };
-        let offset = |slot: &Slot| {
-            self.slot_changes
-                .offset(&slot_change::SlotKey::of(toolbar, slot), now)
+        let offset = |part: &Part| {
+            self.part_changes
+                .offset(&part_change::PartKey::of(toolbar, part), now)
         };
-        self.slots
-            .hit_where(p, |slot| Some(offset(slot)).filter(|o| o.hypot() > 0.5))
-            .or_else(|| self.slots.hit_where(p, |slot| Some(offset(slot))))
+        self.parts
+            .hit_where(p, |part| Some(offset(part)).filter(|o| o.hypot() > 0.5))
+            .or_else(|| self.parts.hit_where(p, |part| Some(offset(part))))
     }
 
-    fn menu_open_for(&self, slot: &Slot) -> bool {
-        self.menu.is_open() && self.menu_slot.as_ref() == Some(slot)
+    fn menu_open_for(&self, part: &Part) -> bool {
+        self.menu.is_open() && self.menu_part.as_ref() == Some(part)
     }
 }
 

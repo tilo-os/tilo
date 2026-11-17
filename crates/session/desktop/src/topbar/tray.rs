@@ -1,4 +1,4 @@
-//! The bar's status cluster: the tray pill's slots and badges, the volume,
+//! The bar's status cluster: the tray pill's parts and badges, the volume,
 //! network and battery glyphs, the media indicator, the running applications'
 //! icons and the presses they answer, and the status the bar caches on.
 
@@ -35,39 +35,39 @@ impl TopBarChrome {
         self.tray_pill_rect
     }
 
-    /// The slots the cluster shows: each a reading the machine has, the bell always. A reading that
+    /// The parts the cluster shows: each a reading the machine has, the bell always. A reading that
     /// never arrived contributes nothing rather than a plausible default.
-    pub(super) fn tray_slots(&self) -> Vec<ui::widget::StatusSlot> {
-        use ui::widget::StatusSlot;
-        let mut slots = vec![StatusSlot::Bell {
+    pub(super) fn tray_parts(&self) -> Vec<ui::widget::StatusPart> {
+        use ui::widget::StatusPart;
+        let mut parts = vec![StatusPart::Bell {
             unread: self.bell.unread,
             quiet: self.bell.quiet,
         }];
         if let Some(_volume) = self.status.volume {
-            slots.push(StatusSlot::Volume {
+            parts.push(StatusPart::Volume {
                 silent: self.status.audio_is_silent(),
             });
         }
         if let Some(link) = self.status.link.as_ref() {
-            slots.push(StatusSlot::Link {
+            parts.push(StatusPart::Link {
                 kind: link.kind,
                 bars: link.bars(),
             });
         }
         if let Some(percent) = self.status.battery_percent() {
-            slots.push(StatusSlot::Battery {
+            parts.push(StatusPart::Battery {
                 percent,
                 charging: self.status.battery_is_charging(),
             });
         }
-        slots
+        parts
     }
 
-    /// The tray's status cluster as it shows now: its slots, the battery's reading and whether
+    /// The tray's status cluster as it shows now: its parts, the battery's reading and whether
     /// the pointer lights it.
     fn tray_face<'a>(
         &self,
-        slots: &'a [ui::widget::StatusSlot],
+        parts: &'a [ui::widget::StatusPart],
     ) -> ui::widget::StatusClusterFace<'a> {
         use ui::widget::{StatusCluster, StatusClusterFace};
         // The battery's percentage is drawn only where the machine has a reading: an unknown
@@ -84,7 +84,7 @@ impl TopBarChrome {
             self.hovered_control().as_deref(),
             Some(Self::CONTROL_NOTIFICATIONS | Self::CONTROL_QUICK_SETTINGS)
         );
-        StatusClusterFace::new(slots, status)
+        StatusClusterFace::new(parts, status)
             .hovered(hovered)
             .at_height(BAR_CONTROL_PX)
     }
@@ -101,8 +101,8 @@ impl TopBarChrome {
         let tokens = &theme.tokens;
         let pad_x = f64::from(tokens.spacing.s3);
         let rx = self.rect.x1 - pad_x;
-        let slots = self.tray_slots();
-        let face = self.tray_face(&slots);
+        let parts = self.tray_parts();
+        let face = self.tray_face(&parts);
         let tray_w = face.width(text_renderer, theme);
         self.tray_pill_rect =
             StatusClusterFace::place_at(rx - tray_w, center_y, tray_w, BAR_CONTROL_PX);
@@ -114,28 +114,28 @@ impl TopBarChrome {
             self.rect.x1,
             self.rect.y1,
         );
-        // The bell's slot is the cluster's first; a press there opens the notification centre, and
+        // The bell's part is the cluster's first; a press there opens the notification centre, and
         // a press on the readings beside it opens quick settings. The bell's target takes the
-        // pill's leading padding and stops halfway to the next slot, and the readings' target
+        // pill's leading padding and stops halfway to the next part, and the readings' target
         // starts where it ends, so the two meet without overlapping. A host with no quick settings
         // has one target: the whole pill.
-        let bell = layout.slots.first().copied().unwrap_or(Rect::ZERO);
+        let bell = layout.parts.first().copied().unwrap_or(Rect::ZERO);
         self.bell_hit_rect = if self.bell.only {
             self.tray_hit_rect
         } else if bell.is_zero_area() {
             Rect::ZERO
         } else {
             let next = layout
-                .slots
+                .parts
                 .iter()
                 .skip(1)
-                .find(|slot| !slot.is_zero_area())
+                .find(|part| !part.is_zero_area())
                 .copied();
             let right = next.map_or_else(
                 || bell.x1 + f64::from(tokens.spacing.s2),
                 |next| f64::midpoint(bell.x1, next.x0),
             );
-            // The bell's target never takes the readings' slots.
+            // The bell's target never takes the readings' parts.
             let right = next.map_or(right, |next| right.min(next.x0));
             Rect::new(
                 self.tray_pill_rect.x0,
@@ -160,8 +160,8 @@ impl TopBarChrome {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) {
-        let slots = self.tray_slots();
-        let _ = self.tray_face(&slots).paint(
+        let parts = self.tray_parts();
+        let _ = self.tray_face(&parts).paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.tray_pill_rect,
             theme.tokens.colors.surfaces.base,
@@ -337,17 +337,17 @@ impl TopBarChrome {
             self.placed.app_tray = items;
             return rx;
         }
-        let slot = f64::from(tokens.spacing.s6);
+        let part = f64::from(tokens.spacing.s6);
         let gap = f64::from(tokens.spacing.s1);
         let mut right = rx;
         for item in items.iter().rev() {
             let hit = Rect::new(
-                right - slot,
+                right - part,
                 center_y - BAR_CONTROL_PX / 2.0,
                 right,
                 center_y + BAR_CONTROL_PX / 2.0,
             );
-            self.app_tray.push(AppTraySlot {
+            self.app_tray.push(AppTrayPart {
                 key: item.key.clone(),
                 id: item.id.clone(),
                 owner_app: item.owner_app.clone(),
@@ -374,9 +374,9 @@ impl TopBarChrome {
         let colors = &tokens.colors;
         let icon_px = 18.0_f64;
         let items = std::mem::take(&mut self.placed.app_tray);
-        // The slots were placed right to left.
+        // The parts were placed right to left.
         for (index, item) in items.iter().rev().enumerate() {
-            let Some(hit) = self.app_tray.get(index).map(|slot| slot.rect) else {
+            let Some(hit) = self.app_tray.get(index).map(|part| part.rect) else {
                 continue;
             };
             let icon_rect = Rect::from_center_size(hit.center(), (icon_px, icon_px));
@@ -504,12 +504,12 @@ impl TopBarChrome {
         let Some(point) = self.last_cursor else {
             return false;
         };
-        let Some(slot) = self.app_tray.iter().find(|slot| slot.rect.contains(point)) else {
+        let Some(part) = self.app_tray.iter().find(|part| part.rect.contains(point)) else {
             return false;
         };
         let (x, y) = pointer_coordinates(point);
         let request = match button {
-            winit::event::MouseButton::Left if slot.item_is_menu => {
+            winit::event::MouseButton::Left if part.item_is_menu => {
                 AppTrayRequest::ContextMenu { x, y }
             }
             winit::event::MouseButton::Left => AppTrayRequest::Activate { x, y },
@@ -519,7 +519,7 @@ impl TopBarChrome {
         };
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.intent(ChromeIntent::AppTray {
-                key: slot.key.clone(),
+                key: part.key.clone(),
                 request,
             });
         }

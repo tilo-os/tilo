@@ -20,7 +20,7 @@ use crate::kv::{self, KvQueue};
 use crate::model::{Auth, BodyMode, HttpMethod, KeyValue, Request, RequestTab};
 use crate::resource::Workspace;
 use crate::vars;
-use ui::widget::{Slot, SlotHandle};
+use ui::widget::{Part, PartHandle};
 
 #[derive(Clone, Debug)]
 pub(crate) struct BlankRows {
@@ -60,8 +60,8 @@ impl BlankRows {
 
 pub(crate) struct Panel {
     pub(crate) element: Element,
-    /// The slot the panel's own mode switch replaces.
-    pub(crate) inner: Option<SlotHandle>,
+    /// The part the panel's own mode switch replaces.
+    pub(crate) inner: Option<PartHandle>,
     /// The key/value table showing, and the queue its rows change through.
     pub(crate) table: Option<(Table, KvQueue)>,
 }
@@ -69,10 +69,10 @@ pub(crate) struct Panel {
 /// The tab row and the panel it chooses, built together.
 pub(crate) struct Built {
     pub(crate) element: Element,
-    /// The slot the tab's panel sits in.
-    pub(crate) slot: SlotHandle,
-    /// The slot inside the first panel, and its table.
-    pub(crate) inner: Option<SlotHandle>,
+    /// The part the tab's panel sits in.
+    pub(crate) part: PartHandle,
+    /// The part inside the first panel, and its table.
+    pub(crate) inner: Option<PartHandle>,
     pub(crate) table: Option<(Table, KvQueue)>,
 }
 
@@ -225,16 +225,16 @@ pub(crate) fn section(
         tab_sink.borrow_mut().push(Cmd::SetTab(i));
     });
     let first = panel(request, tab, blanks, sink);
-    let (slot, handle) = Slot::new(first.element);
+    let (part, handle) = Part::new(first.element);
     let column = Column::new()
         .with_no_padding()
         .with_rhythm(ui::tokens::Rhythm::Related)
         .with_intrinsic_height()
         .push(Box::new(tabs))
-        .push(Box::new(slot));
+        .push(Box::new(part));
     Built {
         element: Box::new(column),
-        slot: handle,
+        part: handle,
         inner: first.inner,
         table: first.table,
     }
@@ -412,12 +412,12 @@ fn auth_panel(request: &Request, sink: &Sink) -> Panel {
     .on_view("api.auth-kind", move |i| {
         kind_sink.borrow_mut().push(Cmd::SetAuthKind(i));
     });
-    let (slot, handle) = Slot::new(auth_fields(&request.auth, sink));
+    let (part, handle) = Part::new(auth_fields(&request.auth, sink));
     let column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .push(Box::new(kind))
-        .push(Box::new(slot));
+        .push(Box::new(part));
     Panel {
         element: scrolling(Box::new(column)),
         inner: Some(handle),
@@ -482,11 +482,11 @@ fn body_panel(request: &Request, blanks: &BlankRows, sink: &Sink) -> Panel {
         mode_sink.borrow_mut().push(Cmd::SetBodyMode(i));
     });
     let (inner, table) = body_inner(request, blanks, sink);
-    let (slot, handle) = Slot::new(inner);
+    let (part, handle) = Part::new(inner);
     let column = Column::new()
         .with_no_padding()
         .push(Box::new(modes))
-        .push(Box::new(slot));
+        .push(Box::new(part));
     Panel {
         element: scrolling(Box::new(column)),
         inner: Some(handle),

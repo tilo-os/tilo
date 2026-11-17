@@ -313,7 +313,7 @@ fn yield_full_width_children(taffy: &mut TaffyTree<()>, children: &[NodeId]) {
 
 /// The row's children are its slot: a component that holds a row takes the views it is given
 /// where they stand, and the row lays them out again.
-impl crate::component::SlotViews for Row {
+impl crate::component::PartViews for Row {
     fn len(&self) -> usize {
         self.flow.children.len()
     }

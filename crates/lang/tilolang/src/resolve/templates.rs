@@ -192,7 +192,7 @@ fn qualify_ui(
                 qualify_expr(label, alias, package, names, scope);
                 qualify_expr(value, alias, package, names, scope);
             }
-            UiKind::Slot { body, .. } => {
+            UiKind::Part { body, .. } => {
                 qualify_ui(body, alias, package, names, scope);
             }
             UiKind::On {

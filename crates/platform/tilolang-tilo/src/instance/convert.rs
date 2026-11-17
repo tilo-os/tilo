@@ -377,7 +377,7 @@ pub(crate) fn bound_values(
         out.push((node.key.clone(), convert.value(&value)));
     }
     for child in &node.children {
-        if !ui::is_virtual_list(&node.kind) || child.kind == wire::SLOT {
+        if !ui::is_virtual_list(&node.kind) || child.kind == wire::PART {
             bound_values(child, view, convert, out);
         }
     }

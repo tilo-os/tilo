@@ -3,7 +3,7 @@
 use taffy::style_helpers::{fr, length, minmax, repeat};
 use taffy::{Size, Style};
 
-use super::arranged::{Arranged, Layout, Resolved, Slot, lead_container, wrapper_style};
+use super::arranged::{Arranged, Layout, Part, Resolved, lead_container, wrapper_style};
 use super::units::{Axis, Length, columns_for};
 use crate::tokens::Rhythm;
 
@@ -97,10 +97,10 @@ impl Layout for GridLayout {
             self.leading(),
         )
     }
-    fn slot(&self, _index: usize, slot: &Slot, resolved: &Resolved) -> Style {
+    fn part(&self, _index: usize, part: &Part, resolved: &Resolved) -> Style {
         let mut style = wrapper_style();
-        slot.fit.apply(&mut style, Axis::Inline, resolved.rem);
-        let span = slot.span.clamp(1, self.count.max(1));
+        part.fit.apply(&mut style, Axis::Inline, resolved.rem);
+        let span = part.span.clamp(1, self.count.max(1));
         style.grid_column = taffy::Line {
             start: taffy::GridPlacement::Span(span),
             end: taffy::GridPlacement::Auto,
@@ -176,9 +176,9 @@ impl Arranged<GridLayout> {
 
     #[must_use]
     pub fn push_span(mut self, child: crate::widget::Element, span: u16) -> Self {
-        let mut slot = Slot::new(child);
-        slot.span = span.max(1);
-        self.slots.push(slot);
+        let mut part = Part::new(child);
+        part.span = span.max(1);
+        self.parts.push(part);
         self
     }
 }

@@ -437,7 +437,7 @@ fn a_chosen_picture_is_placed_in_the_frame_its_answer_arrives_in() {
         // The bar's own add-a-picture control asks the host, and the host
         // reads the chosen file off the frame.
         app.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
                 id: "canvas.add-picture".into(),
             });
         work.run_pending();

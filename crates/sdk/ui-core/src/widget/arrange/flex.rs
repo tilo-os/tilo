@@ -4,7 +4,7 @@ use taffy::style_helpers::length;
 use taffy::{Size, Style};
 
 use super::Side;
-use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
+use super::arranged::{Arranged, Layout, Part, Resolved, wrapper_style};
 use super::units::{Align, Axis, Direction, Distribute};
 use crate::tokens::Rhythm;
 
@@ -86,12 +86,12 @@ impl Layout for FlexLayout {
         }
     }
 
-    fn slot(&self, index: usize, slot: &Slot, resolved: &Resolved) -> Style {
+    fn part(&self, index: usize, part: &Part, resolved: &Resolved) -> Style {
         let mut style = wrapper_style();
-        slot.fit.apply(&mut style, self.axis, resolved.rem);
+        part.fit.apply(&mut style, self.axis, resolved.rem);
         let along = match self.axis {
-            Axis::Inline => slot.fit.width.fill,
-            Axis::Block => slot.fit.height.fill,
+            Axis::Inline => part.fit.width.fill,
+            Axis::Block => part.fit.height.fill,
         };
         // A row that wraps flows its items at their own width: one that fills breaks onto a
         // line of its own when its own width does not fit beside what comes before it, and
@@ -104,7 +104,7 @@ impl Layout for FlexLayout {
         // container puts between its children is not put on both sides of it as well, so a row
         // with no width to spare lays out as if it had none (a card's title and its menu keep their
         // one gap), and a row with width to spare sends what follows it to the far end.
-        if along.is_some() && slot.element.name() == "Spacer" {
+        if along.is_some() && part.element.name() == "Spacer" {
             let back = length(-resolved.gap(self.gap));
             let before = index > 0;
             match (self.axis, before == (self.direction == Direction::Ltr)) {

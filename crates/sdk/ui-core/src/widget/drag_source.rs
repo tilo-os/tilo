@@ -26,7 +26,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
-use crate::widget::arrange::{Slot, Stack};
+use crate::widget::arrange::{Part, Stack};
 use crate::widget::{Decorator, DrawChild, Element, Widget};
 
 /// What a `DragSource` carries on the drag bus: the kind its payload is written as, so a target
@@ -78,7 +78,7 @@ impl DragSource {
             column: Stack::stack()
                 .fill_width()
                 .gap(Rhythm::None)
-                .push_slot(Slot::new(child)),
+                .push_part(Part::new(child)),
             resource: resource.into(),
             title: title.into(),
             key: key.into(),
@@ -339,7 +339,7 @@ impl Decorator for DragSource {
 #[path = "drag_source_tests.rs"]
 mod tests;
 
-impl crate::component::SlotViews for DragSource {
+impl crate::component::PartViews for DragSource {
     fn len(&self) -> usize {
         1
     }
@@ -350,7 +350,7 @@ impl crate::component::SlotViews for DragSource {
     }
 
     fn insert(&mut self, index: usize, view: Element) {
-        self.column.insert(index, Slot::new(view));
+        self.column.insert(index, Part::new(view));
     }
 
     fn remove(&mut self, index: usize) {
@@ -358,7 +358,7 @@ impl crate::component::SlotViews for DragSource {
     }
 
     fn move_view(&mut self, from: usize, to: usize) {
-        self.column.move_slot(from, to);
+        self.column.move_part(from, to);
     }
 
     fn replace(&mut self, index: usize, view: Element) {

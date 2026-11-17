@@ -35,7 +35,7 @@ fn prop_of<T: crate::component::PropType + Default>(
 impl ItemFacts {
     pub(super) fn read(source: &mut dyn Source) -> Result<Self, String> {
         let mut title = None;
-        if matches!(source.slot_kinds("row").as_slice(), [Some(kind)] if kind == ListRowProps::NAME)
+        if matches!(source.part_kinds("row").as_slice(), [Some(kind)] if kind == ListRowProps::NAME)
         {
             source.components("row", &mut |row| {
                 title = Some(prop_of::<String>(row, "title")?);

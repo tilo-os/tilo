@@ -10,7 +10,7 @@ use tilo_actions::remote::session_actions::INVITE_RESOURCE;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
-use tilo_desktop::overlays::{Overlay, Overlays, Slot};
+use tilo_desktop::overlays::{Overlay, Overlays, Part};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
@@ -253,15 +253,15 @@ impl Surfaces {
             self.settled();
             return;
         }
-        // The quick settings are their own app, standing where the stack places its slot: a
-        // press opens the slot, and the panel's app draws it there. A device without that app,
+        // The quick settings are their own app, standing where the stack places its part: a
+        // press opens the part, and the panel's app draws it there. A device without that app,
         // or one the shell covers, keeps the shell's own view of the surface.
         if self.panel_shows(surface) {
-            if self.overlays.is_open(Slot::QuickSettings) {
-                self.overlays.close(Slot::QuickSettings);
+            if self.overlays.is_open(Part::QuickSettings) {
+                self.overlays.close(Part::QuickSettings);
             } else {
                 self.clear_shell();
-                self.overlays.open(Slot::QuickSettings, None);
+                self.overlays.open(Part::QuickSettings, None);
             }
             return;
         }
@@ -288,7 +288,7 @@ impl Surfaces {
         }
         if self.panel_shows(name) {
             self.clear_shell();
-            self.overlays.open(Slot::QuickSettings, None);
+            self.overlays.open(Part::QuickSettings, None);
             return;
         }
         self.panel_closes();
@@ -310,9 +310,9 @@ impl Surfaces {
 
     /// Take every popover of the shell's own down: a surface outside its stack is coming up instead.
     pub(crate) fn clear_panel(&self) {
-        for slot in Slot::ALL {
-            if slot.stands_beside() {
-                self.overlays.close(slot);
+        for part in Part::ALL {
+            if part.stands_beside() {
+                self.overlays.close(part);
             }
         }
     }
@@ -330,18 +330,18 @@ impl Surfaces {
 
     /// Whether any of the shell's own popovers stands over the windows now.
     pub(crate) fn beside_up(&self) -> bool {
-        Slot::ALL
+        Part::ALL
             .into_iter()
-            .filter(|slot| !self.drawn_by_the_shell(*slot))
-            .any(|slot| slot.stands_beside() && self.overlays.is_open(slot))
+            .filter(|part| !self.drawn_by_the_shell(*part))
+            .any(|part| part.stands_beside() && self.overlays.is_open(part))
     }
 
-    /// Whether the shell's own view draws `slot` instead of the shell, so what the shell keeps in
-    /// that slot stands over nothing: the shell's launcher is the search under the shell's screen,
+    /// Whether the shell's own view draws `part` instead of the shell, so what the shell keeps in
+    /// that part stands over nothing: the shell's launcher is the search under the shell's screen,
     /// as the quick settings are the shell's view of them. A popover nobody draws is not a surface
     /// the person is looking at, so it neither takes the shell's surface down nor keeps its keys.
-    fn drawn_by_the_shell(&self, slot: Slot) -> bool {
-        self.shell && slot == Slot::Search
+    fn drawn_by_the_shell(&self, part: Part) -> bool {
+        self.shell && part == Part::Search
     }
 
     /// Close `surface` (`close-surface`), when it is the one up.
@@ -352,7 +352,7 @@ impl Surfaces {
             return;
         }
         if self.panel_shows(surface) {
-            self.overlays.close(Slot::QuickSettings);
+            self.overlays.close(Part::QuickSettings);
             return;
         }
         if let Some(surface) = Overlay::named(surface) {
@@ -364,8 +364,8 @@ impl Surfaces {
     /// Close the panel when a surface of the shell's own opens: one surface stands at a time,
     /// so the centre is not opened behind the panel that asked for it.
     fn panel_closes(&self) {
-        if self.overlays.is_open(Slot::QuickSettings) {
-            self.overlays.close(Slot::QuickSettings);
+        if self.overlays.is_open(Part::QuickSettings) {
+            self.overlays.close(Part::QuickSettings);
         }
     }
 
@@ -1051,7 +1051,7 @@ mod tests {
     fn the_shells_own_centre_is_opened_where_the_shell_draws_it() {
         let surfaces = surfaces(true, false);
         surfaces.open(crate::quick_settings::SURFACE);
-        assert!(surfaces.overlays.is_open(Slot::QuickSettings));
+        assert!(surfaces.overlays.is_open(Part::QuickSettings));
         surfaces.toggle(Overlay::Centre.name());
         assert_eq!(
             surfaces.notices.take_centre_ask(),
@@ -1064,7 +1064,7 @@ mod tests {
             "the shell draws no centre of its own over a shell that draws one"
         );
         assert!(
-            !surfaces.overlays.is_open(Slot::QuickSettings),
+            !surfaces.overlays.is_open(Part::QuickSettings),
             "one surface at a time: the centre is not opened behind the panel"
         );
 
@@ -1086,7 +1086,7 @@ mod tests {
             let surfaces = surfaces(status_panel, true);
             surfaces.toggle(crate::quick_settings::SURFACE);
             assert_eq!(surfaces.overlays.here(), Overlay::QuickSettings);
-            assert!(!surfaces.overlays.is_open(Slot::QuickSettings));
+            assert!(!surfaces.overlays.is_open(Part::QuickSettings));
             surfaces.close(crate::quick_settings::SURFACE);
             assert_eq!(surfaces.overlays.here(), Overlay::Rest);
         }
@@ -1096,10 +1096,10 @@ mod tests {
     fn the_shell_leaves_the_quick_settings_to_the_panels_app_it_has() {
         let surfaces = surfaces(true, false);
         surfaces.toggle(crate::quick_settings::SURFACE);
-        assert!(surfaces.overlays.is_open(Slot::QuickSettings));
+        assert!(surfaces.overlays.is_open(Part::QuickSettings));
         assert_eq!(surfaces.overlays.here(), Overlay::Rest);
         surfaces.close(crate::quick_settings::SURFACE);
-        assert!(!surfaces.overlays.is_open(Slot::QuickSettings));
+        assert!(!surfaces.overlays.is_open(Part::QuickSettings));
     }
 
     #[test]
@@ -1107,6 +1107,6 @@ mod tests {
         let surfaces = surfaces(false, false);
         surfaces.open(crate::quick_settings::SURFACE);
         assert_eq!(surfaces.overlays.here(), Overlay::QuickSettings);
-        assert!(!surfaces.overlays.is_open(Slot::QuickSettings));
+        assert!(!surfaces.overlays.is_open(Part::QuickSettings));
     }
 }

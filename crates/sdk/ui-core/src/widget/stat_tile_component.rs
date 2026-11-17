@@ -130,11 +130,11 @@ impl Described for StatTile {
 #[component(name = "StatGroup", role = "Group")]
 pub struct StatGroupProps {
     /// The tiles, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub tiles: Vec<StatTileProps>,
 }
 
-crate::component::part_slot!(StatTileProps);
+crate::component::part_type!(StatTileProps);
 
 impl Described for StatGroup {
     type Props = StatGroupProps;

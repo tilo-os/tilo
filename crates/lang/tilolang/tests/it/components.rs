@@ -43,7 +43,7 @@ tilo_test_env::scenario! {
     /// A component call, and what the checker says of a wrong one.
     fn a_component_call_is_checked_against_the_toolkits_description;
 
-    phase a_component_call_compiles_to_its_node_with_props_slots_and_events;
+    phase a_component_call_compiles_to_its_node_with_props_parts_and_events;
     {
         let c = compile_body(&with_note(
             r#"view row_of(n: Note) {
@@ -60,7 +60,7 @@ tilo_test_env::scenario! {
             "ui.ListRow",
             "ui.Avatar",
             "ui.Text",
-            "slot",
+            "part",
             "trailing",
             "activate",
             "caption",
@@ -159,7 +159,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_unknown_component_slot_or_event_is_refused;
+    phase an_unknown_component_part_or_event_is_refused;
     {
         let (code, message) = one_error("view v() {\n    ui.Gauge(3)\n}");
         assert_eq!(code, "E060");
@@ -171,10 +171,10 @@ tilo_test_env::scenario! {
             "view v(n: Note) {\n    ui.ListRow(title: n.title) {\n        footer: { ui.Text(\"x\") }\n    }\n}",
         ));
         assert_eq!(code, "E063");
-        assert!(message.contains("no slot `footer`"), "{message}");
+        assert!(message.contains("no part `footer`"), "{message}");
         assert!(
             message.contains("`trailing`"),
-            "the slots are listed: {message}"
+            "the parts are listed: {message}"
         );
         let (code, message) = one_error(&with_note(
             "view v(n: Note) {\n    ui.ListRow(title: n.title) {\n        on swipe: open_note(n)\n    }\n}",
@@ -183,7 +183,7 @@ tilo_test_env::scenario! {
         assert!(message.contains("no event `swipe`"), "{message}");
     }
 
-    phase a_slot_that_accepts_one_component_refuses_others;
+    phase a_part_that_accepts_one_component_refuses_others;
     {
         let (code, message) = one_error(&with_note(
             "view v(n: Note) {\n    ui.ListRow(title: n.title) {\n        avatar: { ui.Text(n.title) }\n    }\n}",
@@ -205,12 +205,12 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    /// Part slots, bindings and rows of a component.
-    fn slots_bindings_and_rows_follow_the_description;
+    /// Parts, bindings and rows of a component.
+    fn parts_bindings_and_rows_follow_the_description;
 
-    phase a_templates_item_block_fills_a_components_part_slot;
+    phase a_templates_item_block_fills_a_components_part_part;
     {
-        // The caller's block or view is what the component's slot holds.
+        // The caller's block or view is what the component's part holds.
         let c = compile_body(&with_note(
             r"view note_row(n: Note) {
     ui.TreeViewRow(checkbox: n.done, secondary: n.title)
@@ -323,7 +323,7 @@ view v(nb: Notebook) {
         validate(&c.wasm);
     }
 
-    phase slots_and_events_print_back_as_written;
+    phase parts_and_events_print_back_as_written;
     {
         let src = "app t.x \"X\"\n\naction go() {\n}\n\nview v() {\n    ui.Card(title: \"Today\") {\n        ui.Text(\"Three things\")\n        on activate: go()\n    }\n    ui.ListRow(title: \"Row\") {\n        trailing: {\n            ui.Text(\"now\")\n        }\n    }\n}\n";
         let module = tilolang::parse(src).expect("parses");

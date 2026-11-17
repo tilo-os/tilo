@@ -326,6 +326,7 @@ pub mod richtext;
 /// Rich text as a component shows it: paragraphs with their marks, and how each reference in them reads
 /// (`ui.BlockEditor`'s value), the one model the runtime sends and the window draws.
 pub use tilo_ui_graph::rich;
+mod part_row;
 pub mod save_status;
 pub mod scale;
 pub mod scene_parts;
@@ -340,7 +341,6 @@ pub mod session_api;
 pub mod shared_selection;
 pub mod shell_cards;
 pub mod shell_tabs;
-mod slot_row;
 pub mod snap;
 pub mod state;
 pub mod step;
@@ -372,9 +372,9 @@ pub mod view;
 pub mod virtual_viewport;
 pub mod window_link;
 pub mod window_name;
+pub mod window_parts;
 pub mod window_pictures;
 pub mod window_share;
-pub mod window_slots;
 pub mod window_targets;
 pub mod window_toolbar;
 pub mod workspace_emoji;

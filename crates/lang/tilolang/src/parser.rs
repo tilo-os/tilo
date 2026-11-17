@@ -490,7 +490,7 @@ impl<'a> Parser<'a> {
                 }
                 self.expect(&Tok::Dot)?;
                 let value = self.ident("a name after the dot, such as `.note`")?;
-                let slot = match key.name.as_str() {
+                let part = match key.name.as_str() {
                     "icon" => &mut out.icon,
                     "category" => {
                         if !APP_CATEGORIES.contains(&value.name.as_str()) {
@@ -532,7 +532,7 @@ impl<'a> Parser<'a> {
                         );
                     }
                 };
-                if slot.replace(value.name).is_some() {
+                if part.replace(value.name).is_some() {
                     return self.fail(key.span, format!("`{}:` is given twice", key.name));
                 }
             }
@@ -2641,10 +2641,10 @@ impl<'a> Parser<'a> {
                     && matches!(self.peek_at(2), Tok::LBrace) =>
             {
                 let node = self.node();
-                let name = self.ident("a slot name")?;
+                let name = self.ident("a part name")?;
                 self.expect(&Tok::Colon)?;
                 let body = self.ui_block()?;
-                UiKind::Slot { node, name, body }
+                UiKind::Part { node, name, body }
             }
             Tok::Str(_) if matches!(self.peek_at(1), Tok::Colon) => {
                 let node = self.node();

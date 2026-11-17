@@ -13,7 +13,7 @@ impl WindowHeader for NavShell {
                 self.drop_app_search();
             }
             if self.inputs.borrow().toolbar_in_bar {
-                self.slots_changed();
+                self.parts_changed();
                 self.structure_dirty = true;
                 self.invalidate();
             }
@@ -93,9 +93,9 @@ impl WindowHeader for NavShell {
             .collect()
     }
 
-    fn window_bar_slot(&self) -> Option<crate::widget::WindowBarSlot> {
+    fn window_bar_part(&self) -> Option<crate::widget::WindowBarPart> {
         let g = &self.geometry;
-        (g.window_controls.width() > 0.0).then_some(crate::widget::WindowBarSlot {
+        (g.window_controls.width() > 0.0).then_some(crate::widget::WindowBarPart {
             row: g.window_row,
             controls: g.window_controls,
         })

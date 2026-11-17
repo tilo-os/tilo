@@ -1225,7 +1225,7 @@ mod tests {
                 .clone();
             window
                 .harness()
-                .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: health });
+                .press_window_part(ui::window_toolbar::ToolbarEvent::Action { id: health });
             window.settle();
             assert_eq!(
                 window
@@ -1481,7 +1481,7 @@ mod tests {
             "the page draws no tabs of its own"
         );
 
-        Framed::harness_mut(&mut app).press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+        Framed::harness_mut(&mut app).press_window_part(ui::window_toolbar::ToolbarEvent::Action {
             id: Tab::Partitions.view_id().to_owned(),
         });
         Framed::harness_mut(&mut app).poll_frame().unwrap();

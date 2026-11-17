@@ -13,7 +13,7 @@
 
 use tilo_ui::State;
 use tilo_ui::headless::FrameHarness;
-use tilo_ui::widget::arrange::{Fit, Slot, Stack};
+use tilo_ui::widget::arrange::{Fit, Part, Stack};
 use tilo_ui::widget::{Column, Container, Fitted, Row, Scrollable, Text};
 
 /// A stack of a strip above `content`, `content` filled (`fill` in the language), inside a
@@ -26,8 +26,8 @@ fn stack_in_a_place(
     let stack = Stack::stack()
         .fill_width()
         .fill_height()
-        .push_slot(Slot::new(Box::new(strip)))
-        .push_slot(Slot::new(Box::new(Fitted::new(content, Fit::fill(1.0)))));
+        .push_part(Part::new(Box::new(strip)))
+        .push_part(Part::new(Box::new(Fitted::new(content, Fit::fill(1.0)))));
     let place = Container::new()
         .with_no_padding()
         .with_id("place")

@@ -53,10 +53,10 @@ pub struct ListRowProps {
     pub selected: bool,
     /// Who the item is: their face among its facts, between when it is due and how far it
     /// has got.
-    #[component(slot)]
+    #[component(part)]
     pub avatar: Option<AvatarProps>,
     /// A control on the trailing edge, which moves under the text when the row is narrow.
-    #[component(slot)]
+    #[component(part)]
     pub trailing: Option<Element>,
     /// A checkbox in the leading column, bound to whether the item is done.
     #[component(bind)]

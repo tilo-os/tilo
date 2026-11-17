@@ -271,7 +271,7 @@ fn press_notice_button(app: &mut Live, name: &str) {
         .unwrap_or_else(|| panic!("the window's bar offers {name} beside its notice"));
     assert_eq!(button.name, name);
     app.harness_mut()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: button.id });
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action { id: button.id });
     app.settle();
 }
 

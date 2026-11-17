@@ -2,7 +2,7 @@
 //! Back and Forward, the name the window goes by, and the actions beside them — so no two controls
 //! share a place at any width.
 
-use super::tests::{browser_slots, lay_out_at_width_with};
+use super::tests::{browser_parts, lay_out_at_width_with};
 use super::*;
 use crate::widget::window_toolbar_row::MIN_LOCATION_PX;
 
@@ -49,7 +49,7 @@ tilo_test_env::scenario! {
         let theme = crate::theme::Theme::light().with_reduce_motion(true);
         let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
         b.set_window_controls(true);
-        b.set_toolbar(1, Some(browser_slots()));
+        b.set_toolbar(1, Some(browser_parts()));
         lay_out_at_width_with(&mut b, 390.0, &theme);
         let bar = b.get_rect();
         let plus = b.new_tab_rect();

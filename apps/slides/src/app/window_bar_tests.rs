@@ -15,7 +15,7 @@ fn action(id: &str) -> ToolbarEvent {
 /// Press a slot of the window's bar, as the desktop hands the press to the
 /// editor, and let what it asked for run.
 fn press(bench: &mut Bench, event: ToolbarEvent) {
-    bench.app.harness().press_window_slot(event);
+    bench.app.harness().press_window_part(event);
     bench.frame();
     bench.frame();
 }

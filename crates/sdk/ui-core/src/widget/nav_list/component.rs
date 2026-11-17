@@ -18,7 +18,7 @@ pub struct NavListProps {
     /// A compact rail of icons that fits beside the content at every width.
     pub rail: bool,
     /// The places, in order, and sections of them under a heading.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub items: Vec<NavEntry>,
     /// A place was chosen: its key is the value.
     #[component(event(value = String))]
@@ -39,7 +39,7 @@ pub struct NavSectionProps {
     /// the heading.
     pub add: Option<OfferedAction>,
     /// The places, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub items: Vec<NavItemProps>,
 }
 
@@ -286,7 +286,7 @@ impl NavList {
 const NAV_PARTS: [&str; 2] = ["NavItem", "NavSection"];
 
 /// A navigation list's places and sections, in order.
-impl crate::component::SlotType for Vec<NavEntry> {
+impl crate::component::PartType for Vec<NavEntry> {
     const MANY: bool = true;
 
     fn accepts() -> crate::component::Accepts {
@@ -296,12 +296,12 @@ impl crate::component::SlotType for Vec<NavEntry> {
     fn fill(
         &mut self,
         source: &mut dyn crate::component::Source,
-        slot: &str,
+        part: &str,
     ) -> Result<(), String> {
-        let kinds = source.slot_kinds(slot);
+        let kinds = source.part_kinds(part);
         let mut read = Vec::with_capacity(kinds.len());
         let mut index = 0usize;
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             let kind = kinds.get(index).cloned().flatten().unwrap_or_default();
             index = index.saturating_add(1);
             read.push(match kind.as_str() {
@@ -324,7 +324,7 @@ impl crate::component::SlotType for Vec<NavEntry> {
     }
 }
 
-impl crate::component::SlotType for Vec<NavItemProps> {
+impl crate::component::PartType for Vec<NavItemProps> {
     const MANY: bool = true;
 
     fn accepts() -> crate::component::Accepts {
@@ -334,10 +334,10 @@ impl crate::component::SlotType for Vec<NavItemProps> {
     fn fill(
         &mut self,
         source: &mut dyn crate::component::Source,
-        slot: &str,
+        part: &str,
     ) -> Result<(), String> {
         let mut read = Vec::new();
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             read.push(NavItemProps::from_source(child).map_err(|error| error.to_string())?);
             Ok(())
         })?;

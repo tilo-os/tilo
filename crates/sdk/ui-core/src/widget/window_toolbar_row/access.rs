@@ -1,11 +1,11 @@
 //! A window bar's row as assistive technology and automation reach it:
-//! its slots and menus as nodes, and the targets they run.
+//! its parts and menus as nodes, and the targets they run.
 
 use super::{
     ACTION_TARGET_PREFIX, BACK_TARGET, CHOICE_TARGET_PREFIX, FORWARD_TARGET, LEADING_TARGET_PREFIX,
-    LOCATION_TARGET, MenuEntry, NOTICE_TARGET_PREFIX, OVERFLOW_TARGET, Rect, SEGMENT_TARGET_PREFIX,
-    SIDEBAR_TARGET, SUGGESTION_TARGET_PREFIX, Slot, ToolbarEvent, ToolbarRow, VIEW_TARGET_PREFIX,
-    VIEWS_MENU_TARGET, Widget, listed_entries, sidebar_key, trailing_word,
+    LOCATION_TARGET, MenuEntry, NOTICE_TARGET_PREFIX, OVERFLOW_TARGET, Part, Rect,
+    SEGMENT_TARGET_PREFIX, SIDEBAR_TARGET, SUGGESTION_TARGET_PREFIX, ToolbarEvent, ToolbarRow,
+    VIEW_TARGET_PREFIX, VIEWS_MENU_TARGET, Widget, listed_entries, sidebar_key, trailing_word,
 };
 
 impl ToolbarRow {
@@ -27,12 +27,12 @@ impl ToolbarRow {
         };
         let mut nodes = Vec::new();
         if let Some(open) = toolbar.sidebar
-            && !self.slots.sidebar_folded(toolbar)
+            && !self.parts.sidebar_folded(toolbar)
         {
             let mut toggle = button(
                 crate::i18n::I18nManager::lookup_plain(sidebar_key(toolbar)),
                 SIDEBAR_TARGET.into(),
-                self.slots.sidebar,
+                self.parts.sidebar,
                 !toolbar.sidebar_unavailable,
             );
             toggle.role = Role::ToggleButton;
@@ -43,14 +43,14 @@ impl ToolbarRow {
             nodes.push(button(
                 crate::i18n::I18nManager::lookup_plain("window-toolbar-back"),
                 BACK_TARGET.into(),
-                self.slots.back,
+                self.parts.back,
                 nav.back,
             ));
-            if !self.slots.forward_folded(toolbar) {
+            if !self.parts.forward_folded(toolbar) {
                 nodes.push(button(
                     crate::i18n::I18nManager::lookup_plain("window-toolbar-forward"),
                     FORWARD_TARGET.into(),
-                    self.slots.forward,
+                    self.parts.forward,
                     nav.forward,
                 ));
             }
@@ -58,7 +58,7 @@ impl ToolbarRow {
         for (index, (action, rect)) in toolbar
             .leading
             .iter()
-            .zip(&self.slots.leading)
+            .zip(&self.parts.leading)
             .enumerate()
             .filter(|(_, (_, rect))| rect.area() > 0.0)
         {
@@ -73,13 +73,13 @@ impl ToolbarRow {
                 node.state.checked = Some(action.on);
             }
             if !action.items.is_empty() {
-                let slot = Slot::Leading(index);
-                node.state.expanded = Some(self.menu_open_for(&slot));
+                let part = Part::Leading(index);
+                node.state.expanded = Some(self.menu_open_for(&part));
                 let entries =
                     (0..action.items.len()).map(|j| MenuEntry::Item(action.id.clone(), j));
                 node = node.with_children(vec![self.menu_node(
                     action.name.clone(),
-                    &slot,
+                    &part,
                     *rect,
                     entries,
                 )]);
@@ -87,8 +87,8 @@ impl ToolbarRow {
             nodes.push(node);
         }
         if let Some(location) = toolbar.location.as_ref()
-            && self.slots.location.area() > 0.0
-            && !self.slots.views_in_location()
+            && self.parts.location.area() > 0.0
+            && !self.parts.views_in_location()
         {
             if let Some(field) = self.field.as_ref().and_then(Widget::accessibility) {
                 nodes.push(field);
@@ -107,7 +107,7 @@ impl ToolbarRow {
                 })
                 .with_name(name)
                 .with_optional_value(Some(location.edit_value().to_owned()))
-                .with_bounds(self.slots.location);
+                .with_bounds(self.parts.location);
                 if let Some(word) = trailing_word(location)
                     && toolbar.notice.is_none()
                 {
@@ -151,20 +151,20 @@ impl ToolbarRow {
         }
         if let Some(location) = toolbar.location.as_ref()
             && self.field.is_none()
-            && self.slots.location.area() > 0.0
+            && self.parts.location.area() > 0.0
         {
             let ancestors = location.segments.len().saturating_sub(1);
             for (i, segment) in location.segments.iter().take(ancestors).enumerate() {
                 nodes.push(button(
                     segment.label.clone(),
                     format!("{SEGMENT_TARGET_PREFIX}{i}"),
-                    self.slots.location,
+                    self.parts.location,
                     true,
                 ));
             }
         }
         if let Some(notice) = toolbar.notice.as_ref() {
-            for (action, rect) in notice.actions.iter().zip(&self.slots.notice) {
+            for (action, rect) in notice.actions.iter().zip(&self.parts.notice) {
                 nodes.push(button(
                     action.name.clone(),
                     format!("{NOTICE_TARGET_PREFIX}{}", action.id),
@@ -190,7 +190,7 @@ impl ToolbarRow {
             }
         }
         if let Some(views) = toolbar.views.as_ref() {
-            for (view, rect) in views.choices.iter().zip(&self.slots.views) {
+            for (view, rect) in views.choices.iter().zip(&self.parts.views) {
                 let mut node = button(
                     view.label.clone(),
                     format!("{VIEW_TARGET_PREFIX}{}", view.id),
@@ -204,7 +204,7 @@ impl ToolbarRow {
                 }
                 nodes.push(node);
             }
-            if self.slots.views_menu.area() > 0.0 {
+            if self.parts.views_menu.area() > 0.0 {
                 let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
                 let views_name = if views.name.is_empty() {
                     crate::i18n::I18nManager::lookup_plain("window-toolbar-views")
@@ -214,29 +214,29 @@ impl ToolbarRow {
                 let in_location = toolbar
                     .location
                     .as_ref()
-                    .filter(|_| self.slots.views_in_location());
+                    .filter(|_| self.parts.views_in_location());
                 let name = in_location.map_or_else(|| views_name.clone(), |l| l.label.clone());
                 let mut menu = button(
                     name.clone(),
                     VIEWS_MENU_TARGET.into(),
-                    self.slots.views_menu,
+                    self.parts.views_menu,
                     true,
                 )
                 .with_optional_value(chosen.map(|view| view.label.clone()));
                 if in_location.is_some() {
                     menu = menu.with_description(views_name);
                 }
-                menu.state.expanded = Some(self.menu_open_for(&Slot::ViewsMenu));
+                menu.state.expanded = Some(self.menu_open_for(&Part::ViewsMenu));
                 menu = menu.with_children(vec![self.menu_node(
                     name,
-                    &Slot::ViewsMenu,
-                    self.slots.views_menu,
+                    &Part::ViewsMenu,
+                    self.parts.views_menu,
                     (0..views.choices.len()).map(MenuEntry::View),
                 )]);
                 nodes.push(menu);
             }
         }
-        for ((i, action), rect) in toolbar.actions.iter().enumerate().zip(&self.slots.actions) {
+        for ((i, action), rect) in toolbar.actions.iter().enumerate().zip(&self.parts.actions) {
             let mut node = button(
                 action.name.clone(),
                 format!("{ACTION_TARGET_PREFIX}{}", action.id),
@@ -248,34 +248,34 @@ impl ToolbarRow {
                 node.state.checked = Some(action.on);
             }
             if !action.items.is_empty() {
-                let slot = Slot::Action(i);
-                node.state.expanded = Some(self.menu_open_for(&slot));
+                let part = Part::Action(i);
+                node.state.expanded = Some(self.menu_open_for(&part));
                 let entries =
                     (0..action.items.len()).map(|j| MenuEntry::Item(action.id.clone(), j));
                 node = node.with_children(vec![self.menu_node(
                     action.name.clone(),
-                    &slot,
+                    &part,
                     *rect,
                     entries,
                 )]);
             }
             nodes.push(node);
         }
-        if self.slots.overflow.area() > 0.0 {
+        if self.parts.overflow.area() > 0.0 {
             let name = crate::i18n::I18nManager::lookup_plain("window-toolbar-more");
             let mut more = button(
                 name.clone(),
                 OVERFLOW_TARGET.into(),
-                self.slots.overflow,
+                self.parts.overflow,
                 true,
             );
-            more.state.expanded = Some(self.menu_open_for(&Slot::Overflow));
+            more.state.expanded = Some(self.menu_open_for(&Part::Overflow));
             let entries = self.overflow_entries();
             if !entries.is_empty() {
                 more = more.with_children(vec![self.menu_node(
                     name,
-                    &Slot::Overflow,
-                    self.slots.overflow,
+                    &Part::Overflow,
+                    self.parts.overflow,
                     entries.into_iter(),
                 )]);
             }
@@ -295,7 +295,7 @@ impl ToolbarRow {
         {
             entries.extend((0..views.choices.len()).map(MenuEntry::View));
         }
-        for i in self.slots.folded_leading().collect::<Vec<_>>() {
+        for i in self.parts.folded_leading().collect::<Vec<_>>() {
             if let Some(action) = toolbar.leading.get(i) {
                 entries.extend(listed_entries(action, MenuEntry::Leading(i)));
             }
@@ -304,7 +304,7 @@ impl ToolbarRow {
             .actions
             .iter()
             .enumerate()
-            .skip(self.slots.actions.len())
+            .skip(self.parts.actions.len())
         {
             entries.extend(listed_entries(action, MenuEntry::Action(i)));
         }
@@ -314,12 +314,12 @@ impl ToolbarRow {
     pub(super) fn menu_node(
         &self,
         name: String,
-        slot: &Slot,
+        part: &Part,
         anchor: Rect,
         entries: impl Iterator<Item = MenuEntry>,
     ) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
-        let open = self.menu_open_for(slot);
+        let open = self.menu_open_for(part);
         let entries: Vec<MenuEntry> = entries.collect();
         let count = entries.len();
         let items = entries
@@ -472,13 +472,13 @@ impl ToolbarRow {
         {
             return self.commit_choice(index);
         }
-        let slot = match target {
-            SIDEBAR_TARGET => Slot::Sidebar,
-            BACK_TARGET => Slot::Back,
-            FORWARD_TARGET => Slot::Forward,
-            LOCATION_TARGET => Slot::Location,
-            OVERFLOW_TARGET => Slot::Overflow,
-            VIEWS_MENU_TARGET => Slot::ViewsMenu,
+        let part = match target {
+            SIDEBAR_TARGET => Part::Sidebar,
+            BACK_TARGET => Part::Back,
+            FORWARD_TARGET => Part::Forward,
+            LOCATION_TARGET => Part::Location,
+            OVERFLOW_TARGET => Part::Overflow,
+            VIEWS_MENU_TARGET => Part::ViewsMenu,
             _ => {
                 if let Some(level) = target
                     .strip_prefix(SEGMENT_TARGET_PREFIX)
@@ -502,7 +502,7 @@ impl ToolbarRow {
                     else {
                         return false;
                     };
-                    return self.activate(&Slot::Notice(i));
+                    return self.activate(&Part::Notice(i));
                 }
                 if let Some(id) = target.strip_prefix(LEADING_TARGET_PREFIX) {
                     let Some(i) = self
@@ -511,8 +511,8 @@ impl ToolbarRow {
                     else {
                         return false;
                     };
-                    let opens = self.lists_items(&Slot::Leading(i));
-                    let ran = self.activate(&Slot::Leading(i));
+                    let opens = self.lists_items(&Part::Leading(i));
+                    let ran = self.activate(&Part::Leading(i));
                     return if opens { ran } else { self.ran_from_menu(ran) };
                 }
                 if let Some(id) = target.strip_prefix(VIEW_TARGET_PREFIX) {
@@ -534,7 +534,7 @@ impl ToolbarRow {
                 };
                 if let Some(i) = toolbar.actions.iter().position(|a| a.id == id) {
                     let opens = toolbar.actions.get(i).is_some_and(|a| !a.items.is_empty());
-                    let ran = self.activate(&Slot::Action(i));
+                    let ran = self.activate(&Part::Action(i));
                     return if opens { ran } else { self.ran_from_menu(ran) };
                 }
                 let Some((action, j)) =
@@ -556,6 +556,6 @@ impl ToolbarRow {
                 return self.ran_from_menu(ran);
             }
         };
-        self.activate(&slot)
+        self.activate(&part)
     }
 }

@@ -43,7 +43,7 @@ tilo_test_env::scenario! {
                 .props
                 .iter()
                 .map(|p| p.name.as_str())
-                .chain(d.slots.iter().map(|s| s.name.as_str()))
+                .chain(d.parts.iter().map(|s| s.name.as_str()))
                 .chain(d.events.iter().map(|e| e.name.as_str()))
                 .chain(d.bindings.iter().map(|b| b.name.as_str()))
                 .chain(d.state.iter().map(|s| s.name.as_str()))
@@ -52,9 +52,9 @@ tilo_test_env::scenario! {
             names.sort_unstable();
             names.dedup();
             assert_eq!(names.len(), all, "{} names each part once", d.name);
-            assert!(d.slots.iter().filter(|s| s.default).count() <= 1);
-            for slot in &d.slots {
-                let names = match &slot.accepts {
+            assert!(d.parts.iter().filter(|s| s.default).count() <= 1);
+            for part in &d.parts {
+                let names = match &part.accepts {
                     Accepts::View => Vec::new(),
                     Accepts::Component(name) => vec![name.clone()],
                     Accepts::OneOf(names) => names.clone(),
@@ -64,7 +64,7 @@ tilo_test_env::scenario! {
                         catalogue.get(&name).is_some(),
                         "{}.{} accepts described components, and {name} is one",
                         d.name,
-                        slot.name
+                        part.name
                     );
                 }
             }
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
         assert!(
             !holding.is_empty(),
             "no described widget held a child, so this check proves nothing: give the harness views \
-             in the slots the widgets ask for (`Given::views`)"
+             in the parts the widgets ask for (`Given::views`)"
         );
         assert!(
             disagreeing.is_empty(),
@@ -259,7 +259,7 @@ impl Source for Given {
         None
     }
 
-    fn children(&mut self, _slot: &str) -> Vec<Element> {
+    fn children(&mut self, _part: &str) -> Vec<Element> {
         (0..self.views)
             .map(|_| Box::new(crate::widget::Text::new("view")) as Element)
             .collect()
@@ -267,7 +267,7 @@ impl Source for Given {
 
     fn components(
         &mut self,
-        _slot: &str,
+        _part: &str,
         _read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
         Ok(0)
@@ -589,12 +589,12 @@ impl Source for ItemSource<'_> {
         None
     }
 
-    fn children(&mut self, _slot: &str) -> Vec<Element> {
+    fn children(&mut self, _part: &str) -> Vec<Element> {
         Vec::new()
     }
 
-    fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
-        match slot {
+    fn part_kinds(&mut self, part: &str) -> Vec<Option<String>> {
+        match part {
             "row" => vec![Some("ListRow".to_owned())],
             "menu" => vec![Some("MenuItem".to_owned())],
             _ => Vec::new(),
@@ -603,10 +603,10 @@ impl Source for ItemSource<'_> {
 
     fn components(
         &mut self,
-        slot: &str,
+        part: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
-        match slot {
+        match part {
             "row" => {
                 let row = given(
                     &self.item.key,
@@ -655,16 +655,16 @@ impl Source for AvatarRow {
         self.row.binding(name)
     }
 
-    fn children(&mut self, slot: &str) -> Vec<Element> {
-        self.row.children(slot)
+    fn children(&mut self, part: &str) -> Vec<Element> {
+        self.row.children(part)
     }
 
     fn components(
         &mut self,
-        slot: &str,
+        part: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
-        if slot == "avatar" && self.avatar {
+        if part == "avatar" && self.avatar {
             read(&mut given("who", &[("name", Value::Text("Ada".into()))]))?;
             return Ok(1);
         }
@@ -762,19 +762,19 @@ impl Source for ListSource {
         None
     }
 
-    fn children(&mut self, _slot: &str) -> Vec<Element> {
+    fn children(&mut self, _part: &str) -> Vec<Element> {
         Vec::new()
     }
 
     fn components(
         &mut self,
-        _slot: &str,
+        _part: &str,
         _read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
         Ok(0)
     }
 
-    fn rows(&mut self, _slot: &str) -> Option<SharedRows> {
+    fn rows(&mut self, _part: &str) -> Option<SharedRows> {
         Some(std::rc::Rc::clone(&self.rows))
     }
 }
@@ -801,16 +801,16 @@ impl Source for WholeList {
         None
     }
 
-    fn children(&mut self, _slot: &str) -> Vec<Element> {
+    fn children(&mut self, _part: &str) -> Vec<Element> {
         Vec::new()
     }
 
     fn components(
         &mut self,
-        slot: &str,
+        part: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
-        if slot != "rows" {
+        if part != "rows" {
             return Ok(0);
         }
         for item in &mut self.items {

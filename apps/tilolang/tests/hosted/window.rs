@@ -70,23 +70,23 @@ fn all_of<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
     }
 }
 
-/// The nodes of the shell's slot `name`.
-fn slot_of<'a>(shell: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
+/// The nodes of the shell's part `name`.
+fn part_of<'a>(shell: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
     shell
         .children
         .iter()
         .filter(|child| {
-            child.kind == tilo_ui_host::adapter::SLOT
+            child.kind == tilo_ui_host::adapter::PART
                 && child.props.get("name") == Some(&Value::text(name))
         })
         .flat_map(|child| child.children.iter())
         .collect()
 }
 
-/// The labels of the buttons the shell's slot `name` holds, however deep.
+/// The labels of the buttons the shell's part `name` holds, however deep.
 fn buttons_in(shell: &UiNode, name: &str) -> Vec<String> {
     let mut buttons = Vec::new();
-    for node in slot_of(shell, name) {
+    for node in part_of(shell, name) {
         all_of(node, "ui.Button", &mut buttons);
     }
     buttons
@@ -372,7 +372,7 @@ fn a_notebook_is_its_tree_with_the_chosen_note_beside_it_naming_the_window() {
         Some("Standups"),
         "the bar names the note the page shows, for when the page's heading scrolls away"
     );
-    let title = slot_of(&shell_tree, "content")
+    let title = part_of(&shell_tree, "content")
         .into_iter()
         .find_map(|node| find(node, &|node| node.kind == "ui.TextInput"))
         .expect("the page edits the note's title");
@@ -791,7 +791,7 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
         "the window says it lists nothing"
     );
     assert!(
-        slot_of(&shell, "sidebar").is_empty(),
+        part_of(&shell, "sidebar").is_empty(),
         "the places draw no second state"
     );
     let mut empty = Vec::new();
@@ -1188,11 +1188,11 @@ fn an_apps_own_list_window_gets_the_platforms_title_bar_rows_menu_and_swipe() {
         "the bar leads with the shelf's primary action"
     );
     assert!(
-        slot_of(&shell, "overview_actions")
+        part_of(&shell, "overview_actions")
             .iter()
             .any(|node| node.kind == "ui.SearchButton"),
         "and the window's search stands beside it: {:?}",
-        slot_of(&shell, "overview_actions")
+        part_of(&shell, "overview_actions")
     );
     assert_eq!(
         listed(&mut session),

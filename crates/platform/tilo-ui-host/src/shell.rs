@@ -11,7 +11,7 @@
 //! The window after the root's keeps its own keys in the composed tree, each carrying [`DETAIL`],
 //! so what its controls report reaches its view.
 
-use crate::adapter::{SLOT, kind};
+use crate::adapter::{PART, kind};
 use crate::{Event, UiNode, Value};
 
 /// What the keys of the window after the root's carry in the composed tree.
@@ -56,7 +56,7 @@ pub fn as_shell(tree: &UiNode) -> UiNode {
     };
     shell
         .children
-        .push(slot("content", &shell.key, vec![content]));
+        .push(part("content", &shell.key, vec![content]));
     shell
 }
 
@@ -86,40 +86,40 @@ fn framed(tree: &UiNode, owner: &str) -> UiNode {
     scroll
 }
 
-fn slot(name: &str, owner: &str, children: Vec<UiNode>) -> UiNode {
-    let mut node = UiNode::empty(SLOT, &format!("{owner}#{name}"));
+fn part(name: &str, owner: &str, children: Vec<UiNode>) -> UiNode {
+    let mut node = UiNode::empty(PART, &format!("{owner}#{name}"));
     node.props
         .insert("name".to_owned(), Value::Text(name.to_owned()));
     node.children = children;
     node
 }
 
-pub(crate) fn slot_children<'a>(shell: &'a UiNode, name: &str) -> &'a [UiNode] {
+pub(crate) fn part_children<'a>(shell: &'a UiNode, name: &str) -> &'a [UiNode] {
     shell
         .children
         .iter()
         .find(|child| {
-            child.kind == SLOT
-                && matches!(child.props.get("name"), Some(Value::Text(slot)) if slot == name)
+            child.kind == PART
+                && matches!(child.props.get("name"), Some(Value::Text(part)) if part == name)
         })
         .map_or(&[], |child| child.children.as_slice())
 }
 
-fn with_slot(mut shell: UiNode, name: &str, children: Vec<UiNode>) -> UiNode {
+fn with_part(mut shell: UiNode, name: &str, children: Vec<UiNode>) -> UiNode {
     let owner = shell.key.clone();
     shell.children.retain(|child| {
-        !(child.kind == SLOT
-            && matches!(child.props.get("name"), Some(Value::Text(slot)) if slot == name))
+        !(child.kind == PART
+            && matches!(child.props.get("name"), Some(Value::Text(part)) if part == name))
     });
     if !children.is_empty() {
-        shell.children.push(slot(name, &owner, children));
+        shell.children.push(part(name, &owner, children));
     }
     shell
 }
 
 #[must_use]
 pub fn has_overview(shell: &UiNode) -> bool {
-    !slot_children(shell, "overview").is_empty()
+    !part_children(shell, "overview").is_empty()
 }
 
 /// The prop naming the title of the view a list is under, and the one naming how many things that
@@ -192,7 +192,7 @@ fn hand_title(node: &mut UiNode, title: Option<&Title>) {
     for child in &mut node.children {
         // A shell gives its title to the column it heads, and none to the others.
         let content = !shell
-            || (child.kind == SLOT
+            || (child.kind == PART
                 && matches!(child.props.get("name"), Some(Value::Text(name)) if name == "content"));
         if content {
             hand_title(child, here.as_ref());
@@ -205,7 +205,7 @@ fn hand_title(node: &mut UiNode, title: Option<&Title>) {
 #[must_use]
 pub fn offers_switch(shell: &UiNode) -> bool {
     ["actions", "overview_actions"].into_iter().any(|name| {
-        slot_children(shell, name)
+        part_children(shell, name)
             .iter()
             .any(|node| node.kind == kind("ViewTabs"))
     })
@@ -225,7 +225,7 @@ pub fn without_rows(node: &UiNode) -> UiNode {
         children: if virtual_list {
             node.children
                 .iter()
-                .filter(|child| child.kind == SLOT)
+                .filter(|child| child.kind == PART)
                 .map(without_rows)
                 .collect()
         } else {
@@ -256,7 +256,7 @@ pub fn compose(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
 }
 
 fn only_states(node: &UiNode) -> bool {
-    let wrapper = node.kind == SLOT
+    let wrapper = node.kind == PART
         || [
             "fragment",
             "stack",
@@ -299,7 +299,7 @@ pub fn nothing_listed(mut shell: UiNode) -> UiNode {
     // list's own; then the content's, which says what would stand there.
     let mut state = None;
     for name in ["sidebar", "overview", "content"] {
-        let children = slot_children(&shell, name);
+        let children = part_children(&shell, name);
         if !children.iter().all(only_states) {
             return shell;
         }
@@ -312,16 +312,16 @@ pub fn nothing_listed(mut shell: UiNode) -> UiNode {
     };
     // The bar keeps what the columns offered: the way to make the first thing is there, where the
     // column that held it is gone.
-    let offered_actions = slot_children(&shell, "actions");
+    let offered_actions = part_children(&shell, "actions");
     let bar = if offered_actions.is_empty() {
-        slot_children(&shell, "overview_actions").to_vec()
+        part_children(&shell, "overview_actions").to_vec()
     } else {
         offered_actions.to_vec()
     };
-    shell = with_slot(shell, "sidebar", Vec::new());
-    shell = with_slot(shell, "overview", Vec::new());
-    shell = with_slot(shell, "actions", bar);
-    shell = with_slot(shell, "content", vec![state]);
+    shell = with_part(shell, "sidebar", Vec::new());
+    shell = with_part(shell, "overview", Vec::new());
+    shell = with_part(shell, "actions", bar);
+    shell = with_part(shell, "content", vec![state]);
     shell
         .props
         .insert(NOTHING_LISTED.to_owned(), Value::Bool(true));
@@ -334,7 +334,7 @@ fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     let overview = has_overview(root);
     let mut shell = root.clone();
     let chooses =
-        !slot_children(root, "sidebar").is_empty() && placeholder(slot_children(root, "content"));
+        !part_children(root, "sidebar").is_empty() && placeholder(part_children(root, "content"));
     if !overview && !chooses {
         // A window of a page or a document goes back from the window after it.
         shell.events.insert(BACK.to_owned(), Event::default());
@@ -352,7 +352,7 @@ fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     // offers, never a merge of the two.
     if has_overview(detail) || offers_switch(detail) {
         let mut moved = detail.clone();
-        moved = with_slot(moved, "sidebar", slot_children(root, "sidebar").to_vec());
+        moved = with_part(moved, "sidebar", part_children(root, "sidebar").to_vec());
         for name in ["sidebar_title", "can_go_back", "back", "pane"] {
             match root.props.get(name) {
                 Some(value) => {
@@ -380,26 +380,26 @@ fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
             }
         }
     }
-    let mut actions: Vec<UiNode> = slot_children(detail, "actions").to_vec();
+    let mut actions: Vec<UiNode> = part_children(detail, "actions").to_vec();
     if has_overview(&shell) {
         // The overview's header searches for the window.
         actions.retain(|node| node.kind != kind("SearchButton"));
     }
-    let content = slot_children(detail, "content").to_vec();
-    let shell = with_slot(shell, "actions", actions);
-    with_slot(shell, "content", content)
+    let content = part_children(detail, "content").to_vec();
+    let shell = with_part(shell, "actions", actions);
+    with_part(shell, "content", content)
 }
 
 /// Apply the header rules to the composed shell: its bar repeats no action its content or its
-/// sidebar offers (an empty sidebar's "New channel"), whichever slot the bar's controls stand in. A
+/// sidebar offers (an empty sidebar's "New channel"), whichever part the bar's controls stand in. A
 /// title the content shows as its own heading is the shell's business, not the host's: the shell
 /// leaves it to the heading and takes it back once that scrolls away.
 #[must_use]
 pub fn header_rules(mut shell: UiNode) -> UiNode {
     let mut shown: Vec<String> = Vec::new();
     let mut bound: Vec<(String, String)> = Vec::new();
-    for slot in ["content", "sidebar"] {
-        for node in slot_children(&shell, slot) {
+    for part in ["content", "sidebar"] {
+        for node in part_children(&shell, part) {
             offered(node, &mut shown, &mut bound);
         }
     }
@@ -427,7 +427,7 @@ pub fn header_rules(mut shell: UiNode) -> UiNode {
             // commands stands in a fragment), and those it is given as actions of the resource it
             // offers.
             let commands = crate::adapter::description_of(node).is_some_and(|description| {
-                crate::adapter::slot_parts(node, description, "items")
+                crate::adapter::part_components(node, description, "items")
                     .iter()
                     .any(|item| item.kind == kind("MenuItem") && !repeated(item, "choose"))
             }) || matches!(
@@ -438,10 +438,10 @@ pub fn header_rules(mut shell: UiNode) -> UiNode {
         }
         Some(node.clone())
     };
-    for slot in ["actions", "overview_actions"] {
-        let children = slot_children(&shell, slot);
+    for part in ["actions", "overview_actions"] {
+        let children = part_children(&shell, part);
         let actions: Vec<UiNode> = children.iter().filter_map(&kept).collect();
-        shell = with_slot(shell, slot, actions);
+        shell = with_part(shell, part, actions);
     }
     shell
 }
@@ -508,10 +508,10 @@ mod tests {
         button
     }
 
-    fn shell(key: &str, slots: Vec<(&str, Vec<UiNode>)>, props: &[(&str, Value)]) -> UiNode {
+    fn shell(key: &str, parts: Vec<(&str, Vec<UiNode>)>, props: &[(&str, Value)]) -> UiNode {
         let mut shell = node("NavShell", key, props);
-        for (name, children) in slots {
-            shell.children.push(slot(name, key, children));
+        for (name, children) in parts {
+            shell.children.push(part(name, key, children));
         }
         shell
     }
@@ -567,7 +567,7 @@ mod tests {
         );
         let handed = titled_lists(untitled);
         assert!(
-            !slot_children(&handed, "content")[0]
+            !part_children(&handed, "content")[0]
                 .props
                 .contains_key("view_title"),
             "no title stands over the list: its headings stand as they say"
@@ -609,12 +609,12 @@ mod tests {
             composed.props.get("overview_title"),
             Some(&Value::text("All notes"))
         );
-        let content: Vec<&str> = slot_children(&composed, "content")
+        let content: Vec<&str> = part_children(&composed, "content")
             .iter()
             .map(|node| node.key.as_str())
             .collect();
         assert_eq!(content, ["detail~body"]);
-        let actions: Vec<&str> = slot_children(&composed, "actions")
+        let actions: Vec<&str> = part_children(&composed, "actions")
             .iter()
             .map(|node| node.key.as_str())
             .collect();
@@ -692,7 +692,7 @@ mod tests {
             DETAIL,
         );
         let composed = compose(&root, Some(&project));
-        let overview: Vec<&str> = slot_children(&composed, "overview")
+        let overview: Vec<&str> = part_children(&composed, "overview")
             .iter()
             .map(|node| node.key.as_str())
             .collect();
@@ -706,7 +706,7 @@ mod tests {
             Some(&Value::text("Launch"))
         );
         assert_eq!(composed.props.get("overview_count"), Some(&Value::Int(2)));
-        let actions: Vec<&str> = slot_children(&composed, "overview_actions")
+        let actions: Vec<&str> = part_children(&composed, "overview_actions")
             .iter()
             .map(|node| node.key.as_str())
             .collect();
@@ -754,7 +754,7 @@ mod tests {
             )
         };
         let ruled = header_rules(build());
-        let actions: Vec<&str> = slot_children(&ruled, "actions")
+        let actions: Vec<&str> = part_children(&ruled, "actions")
             .iter()
             .map(|node| node.key.as_str())
             .collect();
@@ -781,7 +781,7 @@ mod tests {
         );
         let ruled = header_rules(bare);
         assert!(
-            slot_children(&ruled, "actions").is_empty(),
+            part_children(&ruled, "actions").is_empty(),
             "the empty state's own action is the only one"
         );
 
@@ -798,7 +798,7 @@ mod tests {
             &[],
         );
         let ruled = header_rules(over);
-        let actions: Vec<&str> = slot_children(&ruled, "overview_actions")
+        let actions: Vec<&str> = part_children(&ruled, "overview_actions")
             .iter()
             .map(|node| node.key.as_str())
             .collect();
@@ -819,7 +819,7 @@ mod tests {
             &[],
         );
         assert!(
-            slot_children(&header_rules(listing_nothing), "actions").is_empty(),
+            part_children(&header_rules(listing_nothing), "actions").is_empty(),
             "the sidebar's empty state holds the one New channel"
         );
 
@@ -833,7 +833,7 @@ mod tests {
         );
         let ruled = header_rules(filled);
         assert_eq!(
-            slot_children(&ruled, "actions").len(),
+            part_children(&ruled, "actions").len(),
             1,
             "the bar keeps its primary once the content offers nothing"
         );
@@ -917,14 +917,14 @@ mod tests {
             "the window says it lists nothing"
         );
         assert!(
-            slot_children(&composed, "sidebar").is_empty(),
+            part_children(&composed, "sidebar").is_empty(),
             "the places draw no second state"
         );
         assert!(
             find(&composed, "unopened").is_none(),
             "nor what stood where a thing would"
         );
-        let content = slot_children(&composed, "content");
+        let content = part_children(&composed, "content");
         assert_eq!(
             content.len(),
             1,
@@ -940,7 +940,7 @@ mod tests {
             Some(&Value::text("Channels are where your workspace talks.")),
             "with the line it says the thing is for"
         );
-        let actions: Vec<&str> = slot_children(&composed, "actions")
+        let actions: Vec<&str> = part_children(&composed, "actions")
             .iter()
             .map(|node| node.key.as_str())
             .collect();
@@ -965,8 +965,8 @@ mod tests {
         );
         let composed = compose(&listing, None);
         assert!(!composed.props.contains_key("nothing_listed"));
-        assert!(!slot_children(&composed, "sidebar").is_empty());
-        assert_eq!(slot_children(&composed, "content").len(), 1);
+        assert!(!part_children(&composed, "sidebar").is_empty());
+        assert_eq!(part_children(&composed, "content").len(), 1);
 
         // Nothing to choose from and something chosen: a conversation open in a window whose places
         // say they hold none keeps both.
@@ -1022,7 +1022,7 @@ mod tests {
         );
         let shelled = as_shell(&row);
         assert_eq!(shelled.kind, kind("NavShell"), "the window's shell");
-        let content = slot_children(&shelled, "content");
+        let content = part_children(&shelled, "content");
         let [scroll] = content else {
             panic!("the shell's content, not {:?}", content.len());
         };
@@ -1046,7 +1046,7 @@ mod tests {
         );
         let filling = node("layers", "shell", &[]);
         let filled = as_shell(&filling);
-        let content = slot_children(&filled, "content");
+        let content = part_children(&filled, "content");
         assert_eq!(
             content.first().map(|node| node.key.as_str()),
             Some("shell"),

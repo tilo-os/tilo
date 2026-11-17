@@ -332,7 +332,7 @@ impl Staged {
             harness,
             work: Work::default(),
         };
-        // The window a person sees: the desktop's bar over the app's frame, the app's slots in it,
+        // The window a person sees: the desktop's bar over the app's frame, the app's parts in it,
         // and the app told that the bar hosts them, as the desktop tells it.
         Self::name_window(&mut staged.harness, app, packages);
         staged.harness.present_in_window_bar();
@@ -2429,7 +2429,7 @@ mod tests {
             node.children.iter().for_each(|child| labeled(child, out));
         }
         fn collect(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
-            if node.kind == "slot" && node.props.get("name") == Some(&Value::text("menu")) {
+            if node.kind == "part" && node.props.get("name") == Some(&Value::text("menu")) {
                 labeled(node, out);
             }
             node.children.iter().for_each(|child| collect(child, out));

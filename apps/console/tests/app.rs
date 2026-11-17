@@ -37,7 +37,7 @@ fn shows(app: &mut TestApp<App>, target: &str) -> bool {
 /// Press the way back the window's bar carries, as a person does.
 fn back(app: &mut TestApp<App>) {
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
             id: ui::widget::WINDOW_BACK.to_owned(),
         });
     app.frame();

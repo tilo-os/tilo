@@ -1,10 +1,10 @@
-//! Slots that are an overflow menu alone, in the title's row.
+//! Parts that are an overflow menu alone, in the title's row.
 use super::{Rect, TabBar};
 use crate::widget::window_controls::{CONTROL_GAP, CONTROL_PX};
 use crate::window_toolbar::WindowToolbar;
 
 impl TabBar {
-    pub(super) fn active_slots(&self) -> Option<&WindowToolbar> {
+    pub(super) fn shown_toolbar(&self) -> Option<&WindowToolbar> {
         self.active_toolbar().filter(|toolbar| !toolbar.menu_only())
     }
 

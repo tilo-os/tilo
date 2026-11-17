@@ -182,7 +182,7 @@ tilo_test_env::scenario! {
     }
 
     phase quiet_mode_silences_the_bell_in_the_status_cluster;
-    // Do Not Disturb is shown in the status cluster, as the bell silenced in its own slot, not as a
+    // Do Not Disturb is shown in the status cluster, as the bell silenced in its own part, not as a
     // card over the person's work.
     {
         let mut bar = sample_chrome();
@@ -196,7 +196,7 @@ tilo_test_env::scenario! {
         bar.bell.quiet = true;
         lay_out_and_draw(&mut bar, 1280.0);
         let quiet = bar.tray_pill_rect;
-        assert_eq!(quiet, loud, "the bell's slot was there all along");
+        assert_eq!(quiet, loud, "the bell's part was there all along");
         bar.bell.unread = 2;
         let node = bar.accessibility().expect("topbar semantics");
         let tray = node
@@ -265,10 +265,10 @@ tilo_test_env::scenario! {
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         lay_out_and_draw(&mut bar, 1280.0);
         let desktop = bar.tray_pill_rect;
-        assert_eq!(bar.tray_slots().len(), 1, "the bell, with nothing unread");
+        assert_eq!(bar.tray_parts().len(), 1, "the bell, with nothing unread");
         chrome.borrow_mut().notifications_only = true;
         lay_out_and_draw(&mut bar, 1280.0);
-        assert_eq!(bar.tray_slots().len(), 1, "the same bell");
+        assert_eq!(bar.tray_parts().len(), 1, "the same bell");
         assert_eq!(bar.tray_pill_rect, desktop, "one tray on both hosts");
         assert_eq!(
             bar.bell_hit_rect, bar.tray_hit_rect,
@@ -912,7 +912,7 @@ tilo_test_env::scenario! {
             .borrow_mut()
             .app_badges
             .insert("org.keepassxc.KeePassXC".into(), 3);
-        bar.app_tray.push(AppTraySlot {
+        bar.app_tray.push(AppTrayPart {
             key: key.to_string(),
             id: "keepassxc".into(),
             owner_app: Some("org.keepassxc.KeePassXC".into()),
@@ -2742,7 +2742,7 @@ tilo_test_env::scenario! {
     // empty cluster is a machine that read nothing, never a full battery.
     {
         let mut bar = sample_chrome();
-        assert_eq!(bar.tray_slots().len(), 1, "the bell alone");
+        assert_eq!(bar.tray_parts().len(), 1, "the bell alone");
         bar.status = crate::chrome::SystemStatus {
             battery_percent: Some(72),
             battery_charging: false,
@@ -2761,7 +2761,7 @@ tilo_test_env::scenario! {
             summary: String::new(),
         };
         assert_eq!(
-            bar.tray_slots().len(),
+            bar.tray_parts().len(),
             4,
             "the bell, the volume, the link and the battery"
         );
@@ -2773,7 +2773,7 @@ tilo_test_env::scenario! {
         );
         bar.status = crate::chrome::SystemStatus::default();
         lay_out_and_draw(&mut bar, 1280.0);
-        assert_eq!(bar.tray_slots().len(), 1, "nothing known, nothing drawn");
+        assert_eq!(bar.tray_parts().len(), 1, "nothing known, nothing drawn");
         assert!(bar.tray_pill_rect.width() < known.width());
     }
 

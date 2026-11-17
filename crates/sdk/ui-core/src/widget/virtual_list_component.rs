@@ -15,13 +15,13 @@ use std::rc::Rc;
 use vello::kurbo::Point;
 
 use crate::component::{
-    Accepts, Component, Described, Event, Moment, Person, ResourceId, SharedRows, SlotType, Source,
+    Accepts, Component, Described, Event, Moment, PartType, Person, ResourceId, SharedRows, Source,
     Value,
 };
 use crate::selection::KeySelection;
 use crate::tokens::{Rhythm, TextRole};
 use crate::widget::arrange::{
-    Align, Fit, Length, MEASURE_REM, Page, Row, Slot, Stack, TranscriptEdges,
+    Align, Fit, Length, MEASURE_REM, Page, Part, Row, Stack, TranscriptEdges,
 };
 use crate::widget::conversation::list::RUN_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, SectionDivider};
@@ -69,20 +69,20 @@ pub struct ListItemProps {
     /// opens it, and selects the row unless the row opens where it stands): each of its
     /// allowed actions, after the menu the row's view placed (`attached`) and without those
     /// that menu placed already, so every action stays reachable.
-    #[component(slot)]
+    #[component(part)]
     pub menu: Vec<MenuPart>,
     /// What swiping the row from its trailing edge does, unless its view says
     /// (`attached`).
-    #[component(slot)]
+    #[component(part)]
     pub swipe: Option<SwipeActionProps>,
     /// What the row's view attached to it (`ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe`
     /// anywhere in the row's view): its own menu, first in the row's menu; a toolbar shown
     /// while the row is hovered or holds focus; a swipe either way.
-    #[component(slot)]
+    #[component(part)]
     pub attached: Attachments,
     /// What someone else changed of the item that the person has not seen yet: the row shows
     /// it, in their colour, on its trailing edge. The UI host places it (task-legibility §3).
-    #[component(slot)]
+    #[component(part)]
     pub change: Option<ChangeMarkProps>,
     /// The group the row is in, as the platform reads it over the group's first row: a day
     /// for a date. Rows of one group stand together under its heading, in the order they come.
@@ -116,14 +116,14 @@ pub struct ListItemProps {
     /// Its open subtasks of all of them, on the row's trailing edge: "1/3".
     pub progress: Option<String>,
     /// The row: a `ui.ListRow`, or any view.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub row: ItemRow,
     /// The item's document, shown in the row's place while the row stands open into it: a row with a
     /// document opens where it stands in the list when it is chosen, and the list's own motion grows
     /// the row to hold it. The document opens with the item's own leading control and title, in the
     /// row's column — the row becomes the item, its title written once — and what the item holds
     /// follows under them.
-    #[component(slot(when_open))]
+    #[component(part(when_open))]
     pub detail: ItemRow,
     /// The row opens into a document of its own where it stands: what its view gives as `detail`
     /// comes once it stands open. The list's rows offer to open when this says so, whether or not
@@ -144,25 +144,25 @@ pub enum ItemRow {
 }
 
 /// The row of an item: one list row, or one view of any kind.
-impl SlotType for ItemRow {
+impl PartType for ItemRow {
     const MANY: bool = false;
 
     fn accepts() -> Accepts {
         Accepts::View
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
-        let kinds = source.slot_kinds(slot);
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        let kinds = source.part_kinds(part);
         if matches!(kinds.as_slice(), [Some(kind)] if kind == ListRowProps::NAME) {
             let mut row = None;
-            source.components(slot, &mut |child| {
+            source.components(part, &mut |child| {
                 row = Some(ListRowProps::from_source(child).map_err(|error| error.to_string())?);
                 Ok(())
             })?;
             *self = row.map_or(Self::None, |row| Self::Row(Box::new(row)));
             return Ok(());
         }
-        let mut views = source.children(slot);
+        let mut views = source.children(part);
         *self = match views.len() {
             0 => Self::None,
             1 => views.pop().map_or(Self::None, Self::View),
@@ -237,11 +237,11 @@ pub struct VirtualListProps {
     /// ([`VirtualList::following_end`]). `None` draws neither.
     pub unseen_from: Option<ResourceId>,
     /// The items, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub rows: DescribedRows,
     /// Items someone else removed that the person has not seen go: each a row after the
     /// items, its title struck through. The UI host places them.
-    #[component(slot)]
+    #[component(part)]
     pub removed: RemovedRows,
     /// The selected rows, by key.
     #[component(state)]
@@ -305,16 +305,16 @@ impl RemovedRows {
     }
 }
 
-impl SlotType for RemovedRows {
+impl PartType for RemovedRows {
     const MANY: bool = true;
 
     fn accepts() -> Accepts {
         Accepts::Component(ListItemProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
         let mut items: Vec<ListItemProps> = Vec::new();
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             let item = ListItemProps::from_source(child).map_err(|error| error.to_string())?;
             if !item.removed {
                 return Err("the removed rows of a list stand for removed items".to_owned());
@@ -338,20 +338,20 @@ enum Held {
 }
 
 /// The items of a list: [`ListItemProps`] only.
-impl SlotType for DescribedRows {
+impl PartType for DescribedRows {
     const MANY: bool = true;
 
     fn accepts() -> Accepts {
         Accepts::Component(ListItemProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
-        if let Some(rows) = source.rows(slot) {
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        if let Some(rows) = source.rows(part) {
             self.held = Held::Rendered(rows);
             return Ok(());
         }
         let mut items: Vec<ListItemProps> = Vec::new();
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             let item = ListItemProps::from_source(child).map_err(|error| error.to_string())?;
             match &item.row {
                 _ if !item.attached.toolbar.is_empty() => {
@@ -560,7 +560,7 @@ impl ListModel for DescribedRows {
         }
     }
 
-    /// A row the host has named but not rendered is on its way: the list keeps its slot, of the
+    /// A row the host has named but not rendered is on its way: the list keeps its part, of the
     /// height the rows around it take, and shows a placeholder there until it arrives, rather
     /// than a row of nothing.
     ///
@@ -921,9 +921,9 @@ fn indent_view(
     if indent > 0.0 {
         line = line.push(Box::new(Spacer::fixed(indent)));
     }
-    let mut slot = Slot::new(view);
-    slot.fit = Fit::hug().width(crate::widget::arrange::Sizing::fill(1.0));
-    line = line.push_slot(slot);
+    let mut part = Part::new(view);
+    part.fit = Fit::hug().width(crate::widget::arrange::Sizing::fill(1.0));
+    line = line.push_part(part);
     if let Some(progress) = progress {
         line = line
             .push(Box::new(Spacer::token(crate::tokens::SpacingStep::S2)))
@@ -1097,14 +1097,14 @@ fn nesting_parent(
 fn with_mark(row: Element, mark: Option<crate::widget::Chip>, align: Align) -> Element {
     match mark {
         Some(mark) => {
-            let mut row = Slot::new(row);
+            let mut row = Part::new(row);
             row.fit =
                 crate::widget::arrange::Fit::hug().width(crate::widget::arrange::Sizing::fill(1.0));
             Box::new(
                 Row::row()
                     .fill_width()
                     .align(align)
-                    .push_slot(row)
+                    .push_part(row)
                     .push(Box::new(mark)),
             )
         }
@@ -1304,7 +1304,7 @@ fn page_row(content: Element, gap: Rhythm, measure: Option<Length>) -> Element {
         Some(measure) => page.measure(measure),
         None => page,
     };
-    Box::new(page.push_slot(Slot::new(content)))
+    Box::new(page.push_part(Part::new(content)))
 }
 
 /// Whether the row of `key` offers a menu: what its item offers on one, or the view put on it.
@@ -2253,7 +2253,7 @@ mod tests {
             "the item the host holds open is the row standing open"
         );
         lay_out(inner, 400.0);
-        // // The item's document stands in the row's place: the rows over it keep their slots, // and the
+        // // The item's document stands in the row's place: the rows over it keep their parts, // and the
         // rows under it follow where the document ends, never standing one row above // it. What the row
         // writes there is the layout check's to read (`repeated_row_title`), // which watches a title
         // written in a row and again in the item it opened into.
@@ -2267,7 +2267,7 @@ mod tests {
         assert_eq!(
             inner.row_box(2).map(|row| row.y0),
             Some(standing),
-            "the row drawn for the item starts where its slot does"
+            "the row drawn for the item starts where its part does"
         );
         let below = standing + inner.viewport.item_height(2).unwrap_or_default();
         assert_eq!(
@@ -2360,7 +2360,7 @@ mod tests {
         );
     }
 
-    /// A row the host has named but not rendered is on its way: the list keeps its slot, of the
+    /// A row the host has named but not rendered is on its way: the list keeps its part, of the
     /// height the rows around it take, with a placeholder there rather than a row of nothing.
     #[test]
     fn a_row_the_host_has_not_rendered_is_on_its_way() {
@@ -2385,7 +2385,7 @@ mod tests {
     /// The rows standing in for items someone else removed are the list's own: the host that
     /// renders the rows it shows, one at a time, has never rendered them and never will. A list
     /// showing one row builds such a row beside the one it holds, struck, rather than leaving
-    /// its slot on its way.
+    /// its part on its way.
     #[test]
     fn a_row_standing_in_for_a_removed_item_is_built_beside_the_hosts_rows() {
         let props = |removed: Vec<ListItemProps>| VirtualListProps {
@@ -2625,15 +2625,15 @@ mod tests {
             None
         }
 
-        fn children(&mut self, slot: &str) -> Vec<Element> {
-            match slot {
+        fn children(&mut self, part: &str) -> Vec<Element> {
+            match part {
                 "detail" => vec![document(&self.item.key, self.lead, self.gap)],
                 _ => Vec::new(),
             }
         }
 
-        fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
-            match slot {
+        fn part_kinds(&mut self, part: &str) -> Vec<Option<String>> {
+            match part {
                 "row" => vec![Some(ListRowProps::NAME.to_owned())],
                 "detail" => vec![None],
                 _ => Vec::new(),
@@ -2642,10 +2642,10 @@ mod tests {
 
         fn components(
             &mut self,
-            slot: &str,
+            part: &str,
             read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
         ) -> Result<usize, String> {
-            if slot != "row" {
+            if part != "row" {
                 return Ok(0);
             }
             read(&mut ViewRowSource {
@@ -2680,13 +2680,13 @@ mod tests {
             (name == "checkbox").then(|| BoundValue::Bool(crate::component::Bound::default()))
         }
 
-        fn children(&mut self, _slot: &str) -> Vec<Element> {
+        fn children(&mut self, _part: &str) -> Vec<Element> {
             Vec::new()
         }
 
         fn components(
             &mut self,
-            _slot: &str,
+            _part: &str,
             _read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
         ) -> Result<usize, String> {
             Ok(0)

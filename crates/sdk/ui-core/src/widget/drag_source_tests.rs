@@ -154,10 +154,10 @@ fn a_press_on_a_source_inside_a_scroll_lifts_it_and_keeps_it_past_the_viewport()
     // source's, and what it holds lifts as it does anywhere else.
     let mut laid = Laid::of(
         scroll_of(
-            Box::new(crate::widget::arrange::Stack::stack().push_slot(
-                crate::widget::arrange::Slot::new(Box::new(
-                    crate::widget::arrange::Page::full().push_slot(
-                        crate::widget::arrange::Slot::new(Box::new(source("notes.page:one", 40.0))),
+            Box::new(crate::widget::arrange::Stack::stack().push_part(
+                crate::widget::arrange::Part::new(Box::new(
+                    crate::widget::arrange::Page::full().push_part(
+                        crate::widget::arrange::Part::new(Box::new(source("notes.page:one", 40.0))),
                     ),
                 )),
             )),
@@ -190,10 +190,10 @@ fn a_drag_out_of_a_scroll_is_let_go_where_the_person_let_go() {
     // a source that lost the pointer as it left would say.
     let mut laid = Laid::of(
         scroll_of(
-            Box::new(crate::widget::arrange::Stack::stack().push_slot(
-                crate::widget::arrange::Slot::new(Box::new(
-                    crate::widget::arrange::Page::full().push_slot(
-                        crate::widget::arrange::Slot::new(Box::new(source("notes.page:one", 40.0))),
+            Box::new(crate::widget::arrange::Stack::stack().push_part(
+                crate::widget::arrange::Part::new(Box::new(
+                    crate::widget::arrange::Page::full().push_part(
+                        crate::widget::arrange::Part::new(Box::new(source("notes.page:one", 40.0))),
                     ),
                 )),
             )),
@@ -261,14 +261,14 @@ fn a_press_outside_a_source_is_not_the_sources_and_leaves_the_release_to_what_wa
     let button = crate::widget::Button::new("bar", "Bar").on_click(move || {
         counted.set(counted.get().saturating_add(1));
     });
-    // The button stands in the column's top slot, the source under it: the stack asks its
+    // The button stands in the column's top part, the source under it: the stack asks its
     // children from the last, so the source hears the press first and the button hears it
     // after, as the shell's window handles and its bar do.
     let mut laid = Laid::of(
         crate::widget::arrange::Stack::stack()
             .gap(crate::tokens::Rhythm::None)
-            .push_slot(crate::widget::arrange::Slot::new(Box::new(button)))
-            .push_slot(crate::widget::arrange::Slot::new(Box::new(source(
+            .push_part(crate::widget::arrange::Part::new(Box::new(button)))
+            .push_part(crate::widget::arrange::Part::new(Box::new(source(
                 "notes.page:one",
                 40.0,
             )))),
@@ -323,8 +323,8 @@ fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
     let mut laid = Laid::of(
         crate::widget::arrange::Stack::stack()
             .gap(crate::tokens::Rhythm::None)
-            .push_slot(crate::widget::arrange::Slot::new(Box::new(source)))
-            .push_slot(crate::widget::arrange::Slot::new(Box::new(target))),
+            .push_part(crate::widget::arrange::Part::new(Box::new(source)))
+            .push_part(crate::widget::arrange::Part::new(Box::new(target))),
         300.0,
         300.0,
     );

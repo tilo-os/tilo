@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crate::component::{Component, Described, Event, ResourceId, SlotType, Source, Value};
+use crate::component::{Component, Described, Event, PartType, ResourceId, Source, Value};
 use crate::icons::Icon;
 use crate::widget::{
     Card, CardBody, CardProps, ContextMenuArea, Element, MenuEntry, MenuItemProps, Press,
@@ -19,7 +19,7 @@ pub struct BoardProps {
     /// What the board is, for assistive technology.
     pub name: Option<String>,
     /// The lanes, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub lanes: Vec<BoardLaneProps>,
 }
 
@@ -40,10 +40,10 @@ pub struct BoardLaneProps {
     /// The label of the one action that adds to the lane, at its foot under the cards: "New card".
     pub action: Option<String>,
     /// The cards, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub cards: Vec<BoardCardProps>,
     /// What stands at the lane's foot, under its cards: the entry that adds to the lane.
-    #[component(slot)]
+    #[component(part)]
     pub foot: Option<Element>,
     /// The lane's action was pressed.
     #[component(event)]
@@ -67,10 +67,10 @@ pub struct BoardCardProps {
     /// Whether it is the selected one.
     pub selected: bool,
     /// The commands of its context menu: a right-click, the Menu key or a long press opens it.
-    #[component(slot)]
+    #[component(part)]
     pub menu: Vec<MenuItemProps>,
     /// What the card shows, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub body: Vec<Element>,
     /// The card was pressed: open what it stands for.
     #[component(event(press))]
@@ -82,11 +82,11 @@ pub struct BoardCardProps {
 
 fn read_all<T>(
     source: &mut dyn Source,
-    slot: &str,
+    part: &str,
     read: fn(&mut dyn Source) -> Result<T, crate::component::Error>,
 ) -> Result<Vec<T>, String> {
     let mut out = Vec::new();
-    source.components(slot, &mut |child| {
+    source.components(part, &mut |child| {
         out.push(read(child).map_err(|error| error.to_string())?);
         Ok(())
     })?;
@@ -94,29 +94,29 @@ fn read_all<T>(
 }
 
 /// A board's lanes: [`BoardLaneProps`] only.
-impl SlotType for Vec<BoardLaneProps> {
+impl PartType for Vec<BoardLaneProps> {
     const MANY: bool = true;
 
     fn accepts() -> crate::component::Accepts {
         crate::component::Accepts::Component(BoardLaneProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
-        *self = read_all(source, slot, BoardLaneProps::from_source)?;
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        *self = read_all(source, part, BoardLaneProps::from_source)?;
         Ok(())
     }
 }
 
 /// A lane's cards: [`BoardCardProps`] only.
-impl SlotType for Vec<BoardCardProps> {
+impl PartType for Vec<BoardCardProps> {
     const MANY: bool = true;
 
     fn accepts() -> crate::component::Accepts {
         crate::component::Accepts::Component(BoardCardProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
-        *self = read_all(source, slot, BoardCardProps::from_source)?;
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        *self = read_all(source, part, BoardCardProps::from_source)?;
         Ok(())
     }
 }

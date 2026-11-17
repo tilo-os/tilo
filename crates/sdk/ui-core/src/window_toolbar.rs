@@ -1,5 +1,5 @@
-//! An app's toolbar is slots in the window's bar, never a row it draws. The shell draws
-//! one bar per window; what an app adds it declares here, as slots the bar lays out and
+//! An app's toolbar is parts in the window's bar, never a row it draws. The shell draws
+//! one bar per window; what an app adds it declares here, as parts the bar lays out and
 //! draws with the system's own controls.
 
 use std::cell::{Cell, RefCell};
@@ -70,7 +70,7 @@ pub struct WindowToolbar {
 /// The reactions to the one thing a window shows (a shared document), as its bar shows
 /// them: a pill per emoji, the person's own marked, and an add button where they may
 /// react. Whoever shows them takes the presses ([`take_reaction_presses`]); the app's
-/// slot events never carry them.
+/// part events never carry them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarReactions {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -517,7 +517,7 @@ impl ToolbarAction {
     }
 }
 
-/// What the person did with the app's slots in the bar.
+/// What the person did with the app's parts in the bar.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolbarEvent {
@@ -766,7 +766,7 @@ impl WindowToolbar {
                 .is_none_or(ToolbarReactions::is_empty)
     }
 
-    /// Whether the slots are an overflow menu alone: actions, every one of them in the
+    /// Whether the parts are an overflow menu alone: actions, every one of them in the
     /// menu, and nothing else.
     #[must_use]
     pub fn menu_only(&self) -> bool {
@@ -787,7 +787,7 @@ impl WindowToolbar {
                 .is_none_or(ToolbarReactions::is_empty)
     }
 
-    /// The slots as the bar lays them out: the notice up, if any, in the location's place
+    /// The parts as the bar lays them out: the notice up, if any, in the location's place
     /// (its kind's icon, then its text). Its action is the notice's own, laid out right
     /// after its text, never among the actions.
     #[must_use]
@@ -1056,7 +1056,7 @@ pub fn current_window() -> Option<u64> {
         .map(crate::hosted_window::HostedWindow::identity)
 }
 
-/// Declare the window's slots (`None`: none).
+/// Declare the window's parts (`None`: none).
 pub fn declare(toolbar: Option<WindowToolbar>) {
     if let Some(window) = window() {
         window.declare(toolbar);
@@ -1084,7 +1084,7 @@ pub(crate) fn declaration(toolbar: WindowToolbar) -> WindowToolbar {
     }
 }
 
-/// The slots last declared on this thread.
+/// The parts last declared on this thread.
 #[must_use]
 pub fn declared() -> Option<WindowToolbar> {
     if let Some(window) = window() {
@@ -1144,7 +1144,7 @@ pub fn notice() -> Option<ToolbarNotice> {
     NOTICE.with(|notice| notice.borrow().clone())
 }
 
-/// What the window's bar shows: the slots declared, with the notice up and the reactions
+/// What the window's bar shows: the parts declared, with the notice up and the reactions
 /// shown.
 #[must_use]
 pub fn shown() -> Option<WindowToolbar> {
@@ -1265,7 +1265,7 @@ pub(crate) enum ReactionPress {
 
 /// What `event` is to the window's `reactions`: `None` where it is no press on them (an
 /// event of the app's). Every press on them is the reactions' shower's
-/// ([`take_reaction_presses`]), never among the app's slot events.
+/// ([`take_reaction_presses`]), never among the app's part events.
 pub(crate) fn reaction_press(
     reactions: Option<&ToolbarReactions>,
     event: &ToolbarEvent,
@@ -1305,7 +1305,7 @@ pub fn revision() -> u64 {
 }
 
 /// The id of the notice's button `event` presses, if it presses one: such a press is the
-/// notice's poster's ([`take_notice_press`]), never among the app's slot events.
+/// notice's poster's ([`take_notice_press`]), never among the app's part events.
 pub(crate) fn notice_press(notice: Option<&ToolbarNotice>, event: &ToolbarEvent) -> Option<String> {
     let ToolbarEvent::Action { id } = event else {
         return None;
@@ -1339,7 +1339,7 @@ pub fn take_events() -> Vec<ToolbarEvent> {
     EVENTS.with(|events| events.borrow_mut().drain(..).collect())
 }
 
-/// Whether the shell's bar shows this window's slots, so the app draws no toolbar of
+/// Whether the shell's bar shows this window's parts, so the app draws no toolbar of
 /// its own.
 #[must_use]
 pub fn is_hosted() -> bool {
@@ -1349,7 +1349,7 @@ pub fn is_hosted() -> bool {
     HOSTED.with(Cell::get)
 }
 
-/// Why a control of the app's own stays where it is although the bar has a slot for it:
+/// Why a control of the app's own stays where it is although the bar has a part for it:
 /// the closed set of reasons `tools/policy/check_app_toolbars.py` accepts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Exemption {
@@ -1364,7 +1364,7 @@ pub enum Exemption {
 }
 
 /// `body` with the reason it keeps a control of its own although the bar has
-/// a slot for it ([`Exemption`]).
+/// a part for it ([`Exemption`]).
 ///
 /// A reason outside [`Exemption`] does not compile, and the policy check
 /// reads this call rather than a comment, so tidying the comments around the
@@ -1388,7 +1388,7 @@ macro_rules! window_bar_exempt {
 pub use crate::window_bar_exempt as exempt;
 
 /// Ask the bar to turn the window's editable location into a field, as a click on it
-/// does: the app's Ctrl+L (or F6) while the bar hosts its slots.
+/// does: the app's Ctrl+L (or F6) while the bar hosts its parts.
 pub fn edit_location() {
     if let Some(window) = window() {
         window.edit_location();
@@ -1429,7 +1429,7 @@ pub fn take_search_request() -> Option<SearchOpening> {
 }
 
 /// Hand the app what the person did in the bar, answering whether it is a press on the
-/// app's own slots: the host hands the app the keyboard then, if nothing in its window
+/// app's own parts: the host hands the app the keyboard then, if nothing in its window
 /// holds it.
 pub(crate) fn deliver_to_app(event: ToolbarEvent) -> bool {
     let hands_keyboard = matches!(
@@ -1490,7 +1490,7 @@ pub fn deliver(event: ToolbarEvent) {
     });
 }
 
-/// Whether a shell bar shows the slots (the runner, as its shell connection comes and
+/// Whether a shell bar shows the parts (the runner, as its shell connection comes and
 /// goes).
 pub fn set_hosted(hosted: bool) -> bool {
     HOSTED.with(|cell| cell.replace(hosted) != hosted)
@@ -1500,10 +1500,10 @@ pub fn set_hosted(hosted: bool) -> bool {
 /// and where it stands.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct BarControl {
-    /// The slot it stands in: `sidebar`, `back`, `forward`, `leading`, `views`,
+    /// The part it stands in: `sidebar`, `back`, `forward`, `leading`, `views`,
     /// `views-menu`, `action`, `overflow`, `notice`, `reaction`, `search`, `history`,
     /// `minimize`, `maximize`, `close`.
-    pub slot: &'static str,
+    pub part: &'static str,
     pub id: String,
     pub name: String,
     /// Its icon, by the icon set's name (none: it shows words only).
@@ -1521,11 +1521,11 @@ pub struct BarControl {
 }
 
 impl BarControl {
-    /// The control as one of `slot`, at `rect`.
+    /// The control as one of `part`, at `rect`.
     #[must_use]
-    pub fn new(slot: &'static str, id: impl Into<String>, rect: crate::kurbo::Rect) -> Self {
+    pub fn new(part: &'static str, id: impl Into<String>, rect: crate::kurbo::Rect) -> Self {
         Self {
-            slot,
+            part,
             id: id.into(),
             name: String::new(),
             icon: None,
@@ -1956,7 +1956,7 @@ mod tests {
             vec![ToolbarEvent::Action {
                 id: "reload".into()
             }],
-            "the app hears its own slots only"
+            "the app hears its own parts only"
         );
 
         show_reactions(Some(ToolbarReactions {

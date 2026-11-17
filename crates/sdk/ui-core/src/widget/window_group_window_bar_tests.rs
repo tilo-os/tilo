@@ -247,7 +247,7 @@ fn a_phone_window_bar_stands_clear_of_the_bar_shown_over_it() {
     let mut theme = Theme::light();
     theme.reduce_motion = true;
     let mut g = page_group();
-    assert!(g.set_tab_toolbar(1, Some(slots())));
+    assert!(g.set_tab_toolbar(1, Some(parts())));
     g.set_top_overlay_inset(TOP);
     lay_out_in_strip(&mut g, &theme);
     let bar = g.bar_rect();
@@ -270,7 +270,7 @@ fn a_phone_window_bar_stands_clear_of_the_bar_shown_over_it() {
     );
 }
 
-fn slots() -> crate::window_toolbar::WindowToolbar {
+fn parts() -> crate::window_toolbar::WindowToolbar {
     use crate::window_toolbar::{ToolbarLocation, ToolbarNavigation, WindowToolbar};
     WindowToolbar {
         sidebar: None,
@@ -302,12 +302,12 @@ fn pages(count: u64) -> WindowGroup {
 }
 
 #[test]
-fn an_apps_slots_live_in_the_bar_and_the_content_starts_under_it() {
+fn an_apps_parts_live_in_the_bar_and_the_content_starts_under_it() {
     let _settled = crate::motion::testing::settled();
     let theme = Theme::dark().with_reduce_motion(true);
     for count in [1, 2] {
         let mut g = pages(count);
-        assert!(g.set_tab_toolbar(1, Some(slots())));
+        assert!(g.set_tab_toolbar(1, Some(parts())));
         lay_out(&mut g, &theme);
         let bar = g.bar_rect();
         let expected = if count == 1 {
@@ -345,7 +345,7 @@ fn a_window_whose_app_names_no_location_shows_its_own_name() {
     for count in [1, 2] {
         for label in [None, Some(String::new()), Some("   ".to_owned())] {
             let mut g = pages(count);
-            let mut toolbar = slots();
+            let mut toolbar = parts();
             match label.clone() {
                 Some(label) => toolbar.location.as_mut().unwrap().label = label,
                 None => toolbar.location = None,
@@ -374,7 +374,7 @@ fn a_named_windows_name_stands_in_the_bar_once() {
     let _settled = crate::motion::testing::settled();
     let theme = Theme::dark().with_reduce_motion(true);
     let mut g = pages(1);
-    let mut toolbar = slots();
+    let mut toolbar = parts();
     toolbar.location = None;
     assert!(g.set_tab_toolbar(1, Some(toolbar)));
     let mut named = TabDescriptor::new(1, "Friday plan");
@@ -514,7 +514,7 @@ fn a_pointer_on_a_tabs_pill_names_the_whole_title() {
 }
 
 /// An app whose window is the one a person's shell draws: its shell declares what its header
-/// row holds as the window's bar's slots, unless the row holds something the bar cannot draw (a
+/// row holds as the window's bar's parts, unless the row holds something the bar cannot draw (a
 /// catch-up, a popover), when the shell keeps the row.
 struct ShellApp {
     shell: crate::widget::NavShell,
@@ -587,13 +587,13 @@ fn shell_window(
 
 fn frame_of(
     frame: &mut crate::headless::FrameHarness,
-    slots: &mut crate::window_slots::WindowSlots,
+    parts: &mut crate::window_parts::WindowParts,
     window: &crate::hosted_window::HostedWindow,
 ) {
     frame.relayout();
     {
         let mut root = frame.root_mut::<WindowGroup>();
-        slots.sync_hosted(&[(1, window.clone())], [&mut *root]);
+        parts.sync_hosted(&[(1, window.clone())], [&mut *root]);
     }
     frame.relayout();
 }
@@ -607,9 +607,9 @@ fn row_of(frame: &mut crate::headless::FrameHarness) -> f64 {
         .map_or(0.0, crate::widget::WindowHeader::header_row_height)
 }
 
-/// A header row that cannot stand as the window's bar's slots (it holds a popover) is the window's
+/// A header row that cannot stand as the window's bar's parts (it holds a popover) is the window's
 /// bar: the app draws it at the window's top, the window draws no bar of its own above it, and its
-/// controls stand at the row's trailing end. A header row that stands as the slots draws none and
+/// controls stand at the row's trailing end. A header row that stands as the parts draws none and
 /// leaves the window its bar.
 #[test]
 fn a_header_row_that_holds_a_popover_is_the_window_bar() {
@@ -704,15 +704,15 @@ fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
     );
     let (row, kept, controls, search, new_tab, window, grab_ground) = {
         let g = frame.root_mut::<WindowGroup>();
-        let slot = g
+        let part = g
             .held_bar_for_tests()
             .expect("the app's row is the window's bar");
         let search = g.window_search().anchor();
-        let grab = Point::new(slot.row.x0 + 40.0, slot.row.center().y);
+        let grab = Point::new(part.row.x0 + 40.0, part.row.center().y);
         (
-            slot.row,
-            slot.controls,
-            crate::widget::window_controls::WindowControls::lay_out(slot.controls),
+            part.row,
+            part.controls,
+            crate::widget::window_controls::WindowControls::lay_out(part.controls),
             search,
             g.new_tab_rect(),
             g.get_rect(),
@@ -806,13 +806,13 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
     let (mut frame, _window) = shell_window(holding_row_shell());
     let (row, new_tab, controls) = {
         let g = frame.root_mut::<WindowGroup>();
-        let slot = g
+        let part = g
             .held_bar_for_tests()
             .expect("the app's row is the window's bar");
         (
-            slot.row,
+            part.row,
             g.new_tab_rect(),
-            crate::widget::window_controls::WindowControls::lay_out(slot.controls),
+            crate::widget::window_controls::WindowControls::lay_out(part.controls),
         )
     };
     let search = frame.root_mut::<WindowGroup>().window_search().anchor();
@@ -900,7 +900,7 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
 /// holds the bar, so a person gets one answer either way: the search and the window's controls
 /// stand at the bar's trailing end, and the bar's ground moves the window.
 #[test]
-fn a_row_standing_as_slots_keeps_the_windows_functions() {
+fn a_row_standing_as_parts_keeps_the_windows_functions() {
     let _settled = crate::motion::testing::settled();
     let (mut frame, _window) = shell_window(
         crate::widget::NavShell::new()
@@ -948,7 +948,7 @@ struct MenuApp {
     heard: std::rc::Rc<std::cell::RefCell<Vec<crate::window_toolbar::ToolbarEvent>>>,
 }
 
-fn menu_slots() -> crate::window_toolbar::WindowToolbar {
+fn menu_parts() -> crate::window_toolbar::WindowToolbar {
     crate::window_toolbar::WindowToolbar {
         actions: vec![
             crate::window_toolbar::ToolbarAction::new("sort", "arrow-up-down", "Sort")
@@ -1000,11 +1000,11 @@ fn menu_window() -> (
     std::rc::Rc<std::cell::RefCell<crate::window_toolbar::WindowToolbar>>,
     std::rc::Rc<std::cell::RefCell<Vec<crate::window_toolbar::ToolbarEvent>>>,
 ) {
-    menu_window_with(menu_slots(), W)
+    menu_window_with(menu_parts(), W)
 }
 
 fn menu_window_with(
-    slots: crate::window_toolbar::WindowToolbar,
+    parts: crate::window_toolbar::WindowToolbar,
     width: f64,
 ) -> (
     crate::headless::FrameHarness,
@@ -1013,7 +1013,7 @@ fn menu_window_with(
     std::rc::Rc<std::cell::RefCell<Vec<crate::window_toolbar::ToolbarEvent>>>,
 ) {
     crate::window_toolbar::set_hosted(true);
-    let toolbar = std::rc::Rc::new(std::cell::RefCell::new(slots));
+    let toolbar = std::rc::Rc::new(std::cell::RefCell::new(parts));
     let heard = std::rc::Rc::default();
     let app = MenuApp {
         content: crate::widget::Column::new().push(Box::new(crate::widget::Text::new("Body"))),
@@ -1056,7 +1056,7 @@ fn sort_button(frame: &mut crate::headless::FrameHarness) -> Point {
                 .iter()
                 .position(|action| action.id == "sort")
         })
-        .and_then(|index| g.bar.toolbar_row().slots().actions.get(index).copied())
+        .and_then(|index| g.bar.toolbar_row().parts().actions.get(index).copied())
         .expect("the bar lists the sort menu where its button stands")
         .center()
 }
@@ -1079,12 +1079,12 @@ fn menu_row(frame: &mut crate::headless::FrameHarness, label: &str) -> Rect {
 fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
     let _settled = crate::motion::testing::settled();
     let (mut frame, window, toolbar, heard) = menu_window();
-    let mut slots = crate::window_slots::WindowSlots::default();
-    frame_of(&mut frame, &mut slots, &window);
+    let mut parts = crate::window_parts::WindowParts::default();
+    frame_of(&mut frame, &mut parts, &window);
     let sort = sort_button(&mut frame);
 
     frame.click_at(sort.x, sort.y);
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     let (open, labels) = menu(&mut frame);
     assert!(open, "one click opens the sort menu");
     assert_eq!(labels, ["Everything", "Title"], "the menu's rows are up");
@@ -1094,22 +1094,22 @@ fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
     );
 
     for _ in 0..3 {
-        frame_of(&mut frame, &mut slots, &window);
+        frame_of(&mut frame, &mut parts, &window);
     }
     toolbar.borrow_mut().actions.insert(
         0,
         crate::window_toolbar::ToolbarAction::new("archive", "archive", "Archive"),
     );
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     let (open, _) = menu(&mut frame);
     assert!(
         open,
-        "the menu stays open while it is read and the app declares its slots again"
+        "the menu stays open while it is read and the app declares its parts again"
     );
 
     let row = menu_row(&mut frame, "Title");
     frame.click_at(row.center().x, row.center().y);
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     assert_eq!(
         heard.borrow().as_slice(),
         [crate::window_toolbar::ToolbarEvent::Action {
@@ -1122,10 +1122,10 @@ fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
 
     let sort = sort_button(&mut frame);
     frame.click_at(sort.x, sort.y);
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     assert!(menu(&mut frame).0, "the button opens it again");
     frame.click_at(sort.x, sort.y);
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     assert!(
         !menu(&mut frame).0,
         "a second click on the button closes it"
@@ -1133,11 +1133,11 @@ fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
 }
 
 #[test]
-fn a_press_on_a_menu_survives_the_app_declaring_its_slots_again() {
+fn a_press_on_a_menu_survives_the_app_declaring_its_parts_again() {
     let _settled = crate::motion::testing::settled();
     let (mut frame, window, toolbar, _heard) = menu_window();
-    let mut slots = crate::window_slots::WindowSlots::default();
-    frame_of(&mut frame, &mut slots, &window);
+    let mut parts = crate::window_parts::WindowParts::default();
+    frame_of(&mut frame, &mut parts, &window);
     let sort = sort_button(&mut frame);
 
     frame.send(&crate::synthetic_input::cursor_moved(sort.x, sort.y));
@@ -1149,15 +1149,15 @@ fn a_press_on_a_menu_survives_the_app_declaring_its_slots_again() {
         0,
         crate::window_toolbar::ToolbarAction::new("archive", "archive", "Archive"),
     );
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     frame.send(&crate::synthetic_input::mouse_release());
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     let (open, labels) = menu(&mut frame);
     assert!(open, "the press ends on the command it began on");
     assert_eq!(labels, ["Everything", "Title"], "the sort menu opened");
 }
 
-fn leading_menu_slots() -> crate::window_toolbar::WindowToolbar {
+fn leading_menu_parts() -> crate::window_toolbar::WindowToolbar {
     crate::window_toolbar::WindowToolbar {
         leading: vec![
             crate::window_toolbar::ToolbarAction::new("custody", "bot", "Visitor window")
@@ -1179,7 +1179,7 @@ fn leading_button(frame: &mut crate::headless::FrameHarness, id: &str) -> Point 
         .and_then(|toolbar| toolbar.leading.iter().position(|action| action.id == id))
         .expect("the app declares the leading button");
     let rect = row
-        .slots()
+        .parts()
         .leading
         .get(index)
         .copied()
@@ -1190,7 +1190,7 @@ fn leading_button(frame: &mut crate::headless::FrameHarness, id: &str) -> Point 
 
 fn overflow_button(frame: &mut crate::headless::FrameHarness) -> Point {
     let g = frame.root_mut::<WindowGroup>();
-    let rect = g.bar.toolbar_row().slots().overflow;
+    let rect = g.bar.toolbar_row().parts().overflow;
     assert!(rect.area() > 0.0, "the bar has an overflow button");
     rect.center()
 }
@@ -1198,13 +1198,13 @@ fn overflow_button(frame: &mut crate::headless::FrameHarness) -> Point {
 #[test]
 fn a_menu_before_the_location_opens_like_one_after_it() {
     let _settled = crate::motion::testing::settled();
-    let (mut frame, window, toolbar, heard) = menu_window_with(leading_menu_slots(), W);
-    let mut slots = crate::window_slots::WindowSlots::default();
-    frame_of(&mut frame, &mut slots, &window);
+    let (mut frame, window, toolbar, heard) = menu_window_with(leading_menu_parts(), W);
+    let mut parts = crate::window_parts::WindowParts::default();
+    frame_of(&mut frame, &mut parts, &window);
     let button = leading_button(&mut frame, "custody");
 
     frame.click_at(button.x, button.y);
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     let (open, labels) = menu(&mut frame);
     assert!(open, "one click opens the menu of a leading button");
     assert_eq!(labels, ["Open in your window"], "the menu's rows are up");
@@ -1214,22 +1214,22 @@ fn a_menu_before_the_location_opens_like_one_after_it() {
     );
 
     for _ in 0..3 {
-        frame_of(&mut frame, &mut slots, &window);
+        frame_of(&mut frame, &mut parts, &window);
     }
     assert!(menu(&mut frame).0, "the menu stays open while it is read");
     toolbar.borrow_mut().leading.insert(
         0,
         crate::window_toolbar::ToolbarAction::new("site", "arrow-left", "Back to site"),
     );
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     assert!(
         menu(&mut frame).0,
-        "the menu stays open while the app declares its slots again"
+        "the menu stays open while the app declares its parts again"
     );
 
     let row = menu_row(&mut frame, "Open in your window");
     frame.click_at(row.center().x, row.center().y);
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     assert_eq!(
         heard.borrow().as_slice(),
         [crate::window_toolbar::ToolbarEvent::Action {
@@ -1241,10 +1241,10 @@ fn a_menu_before_the_location_opens_like_one_after_it() {
 
     let button = leading_button(&mut frame, "custody");
     frame.click_at(button.x, button.y);
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     assert!(menu(&mut frame).0, "the button opens it again");
     frame.click_at(button.x, button.y);
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     assert!(
         !menu(&mut frame).0,
         "a second click on the button closes it"
@@ -1256,7 +1256,7 @@ fn a_menu_before_the_location_opens_like_one_after_it() {
 #[test]
 fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
     let _settled = crate::motion::testing::settled();
-    let mut declared = leading_menu_slots();
+    let mut declared = leading_menu_parts();
     declared.location = Some(crate::window_toolbar::ToolbarLocation {
         label: "tilo.coffee".into(),
         value: "https://tilo.coffee/".into(),
@@ -1264,11 +1264,11 @@ fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
         ..crate::window_toolbar::ToolbarLocation::default()
     });
     let (mut frame, window, _toolbar, heard) = menu_window_with(declared, 220.0);
-    let mut slots = crate::window_slots::WindowSlots::default();
-    frame_of(&mut frame, &mut slots, &window);
+    let mut parts = crate::window_parts::WindowParts::default();
+    frame_of(&mut frame, &mut parts, &window);
     {
         let g = frame.root_mut::<WindowGroup>();
-        let leading = g.bar.toolbar_row().slots().leading.clone();
+        let leading = g.bar.toolbar_row().parts().leading.clone();
         assert_eq!(
             leading.first().map(|rect| rect.area()),
             Some(0.0),
@@ -1278,7 +1278,7 @@ fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
 
     let more = overflow_button(&mut frame);
     frame.click_at(more.x, more.y);
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     let (open, labels) = menu(&mut frame);
     assert!(open, "the overflow menu opens");
     assert_eq!(
@@ -1289,7 +1289,7 @@ fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
 
     let row = menu_row(&mut frame, "Open in your window");
     frame.click_at(row.center().x, row.center().y);
-    frame_of(&mut frame, &mut slots, &window);
+    frame_of(&mut frame, &mut parts, &window);
     assert_eq!(
         heard.borrow().as_slice(),
         [crate::window_toolbar::ToolbarEvent::Action {
@@ -1365,7 +1365,7 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
     );
     let close_rect = {
         let mut g = frame.root_mut::<WindowGroup>();
-        let slot = g
+        let part = g
             .held_bar_for_tests()
             .expect("the app's row is the window's bar");
         g.set_focused(true);
@@ -1382,7 +1382,7 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
             Widget::scopes_keyboard_focus(&*g),
             "the focused window carries the keyboard"
         );
-        crate::widget::window_controls::WindowControls::lay_out(slot.controls).close
+        crate::widget::window_controls::WindowControls::lay_out(part.controls).close
     };
 
     let mut reached = false;

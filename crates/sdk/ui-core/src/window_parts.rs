@@ -1,6 +1,6 @@
-//! What a shell keeps of the slots its apps put in their windows' bars
+//! What a shell keeps of the parts its apps put in their windows' bars
 //! ([`crate::window_toolbar`]), and how it shows them: every shell, the session's shell
-//! and the browser's alike, holds one [`WindowSlots`].
+//! and the browser's alike, holds one [`WindowParts`].
 
 use std::collections::HashMap;
 
@@ -12,7 +12,7 @@ use crate::window_toolbar::{
 
 pub type TabId = u64;
 
-/// The connection id the slots of an app in the host's own process are kept under: what
+/// The connection id the parts of an app in the host's own process are kept under: what
 /// the person does with them goes back on its window, never on a connection.
 const IN_PROCESS: u64 = u64::MAX;
 
@@ -20,10 +20,10 @@ const IN_PROCESS: u64 = u64::MAX;
 /// choice of one reaches the shell alone.
 pub const HOST_ACTION_PREFIX: &str = "tilo.shell.";
 
-/// Every tab's declared slots and the connection of the app that declared them, and what
+/// Every tab's declared parts and the connection of the app that declared them, and what
 /// goes back to the apps on the next pump.
 #[derive(Default)]
-pub struct WindowSlots {
+pub struct WindowParts {
     by_tab: HashMap<TabId, (u64, WindowToolbar)>,
     cleared: Vec<TabId>,
     offers: HashMap<TabId, (u64, WindowOffer)>,
@@ -38,7 +38,7 @@ pub struct WindowSlots {
     told_floating: HashMap<TabId, bool>,
 }
 
-/// What [`WindowSlots::sync_hosted`] found.
+/// What [`WindowParts::sync_hosted`] found.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct HostedSync {
     pub changed: bool,
@@ -47,7 +47,7 @@ pub struct HostedSync {
     pub declared: Vec<TabId>,
 }
 
-impl WindowSlots {
+impl WindowParts {
     /// `connection`'s app declared `toolbar` for `tab`.
     pub fn declare(&mut self, tab: TabId, connection: u64, toolbar: Option<WindowToolbar>) -> bool {
         let Some(toolbar) = toolbar
@@ -89,7 +89,7 @@ impl WindowSlots {
         self.offers.get(&tab).map(|(_, offer)| offer)
     }
 
-    /// `connection` closed: its app's slots and offers go with it.
+    /// `connection` closed: its app's parts and offers go with it.
     pub fn disconnected(&mut self, connection: u64) -> bool {
         let gone: Vec<TabId> = self
             .by_tab
@@ -117,7 +117,7 @@ impl WindowSlots {
         any
     }
 
-    /// `tab`'s declared slots, as its bar shows them.
+    /// `tab`'s declared parts, as its bar shows them.
     #[must_use]
     pub fn toolbar(&self, tab: TabId) -> Option<&WindowToolbar> {
         self.by_tab.get(&tab).map(|(_, toolbar)| toolbar)
@@ -132,7 +132,7 @@ impl WindowSlots {
             .collect();
         self.shown.remove(&tab);
         if items.is_empty() {
-            // A window whose only slots they were shows none again.
+            // A window whose only parts they were shows none again.
             if self.host_items.remove(&tab).is_some() && !self.by_tab.contains_key(&tab) {
                 self.cleared.push(tab);
             }
@@ -180,7 +180,7 @@ impl WindowSlots {
         self.shown.get(&tab)
     }
 
-    /// Queue `event` for the app that declared `tab`'s slots or offered its window to the
+    /// Queue `event` for the app that declared `tab`'s parts or offered its window to the
     /// bar.
     pub fn route(&mut self, tab: TabId, event: ToolbarEvent) -> bool {
         if let ToolbarEvent::Action { id } = &event
@@ -223,7 +223,7 @@ impl WindowSlots {
         std::mem::take(&mut self.outbox)
     }
 
-    /// Tab `tab`, shown in the host's own process, is gone: its slots go.
+    /// Tab `tab`, shown in the host's own process, is gone: its parts go.
     pub fn forget_hosted(&mut self, tab: TabId) {
         self.hosted_seen.remove(&tab);
         self.host_items.remove(&tab);
@@ -234,7 +234,7 @@ impl WindowSlots {
         }
     }
 
-    /// Every group shows its tabs' declared slots, and what the person did with them is
+    /// Every group shows its tabs' declared parts, and what the person did with them is
     /// queued for the apps.
     pub fn sync_groups<'a>(&mut self, groups: impl IntoIterator<Item = &'a mut WindowGroup>) {
         let cleared = std::mem::take(&mut self.cleared);
@@ -279,9 +279,9 @@ impl WindowSlots {
     }
 
     /// Look at the windows of the apps the host shows in its own process, `windows` being
-    /// every one of them by tab: show the slots each declared in its tab's bar, with the
+    /// every one of them by tab: show the parts each declared in its tab's bar, with the
     /// notice and reactions its window shows, run its asks to edit its location or open
-    /// its search, and hand it what the person did with its slots.
+    /// its search, and hand it what the person did with its parts.
     pub fn sync_hosted<'a>(
         &mut self,
         windows: &[(TabId, HostedWindow)],
@@ -349,5 +349,5 @@ impl WindowSlots {
 }
 
 #[cfg(test)]
-#[path = "window_slots_tests.rs"]
+#[path = "window_parts_tests.rs"]
 mod tests;

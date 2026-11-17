@@ -14,7 +14,7 @@ use tilo_compositor::{
 use tilo_session_core::layout;
 
 use tilo_desktop::osd::{Hint, Osd, OsdKind};
-use tilo_desktop::overlays::{Overlays, Slot};
+use tilo_desktop::overlays::{Overlays, Part};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_lock::MutexRecover as _;
@@ -1782,7 +1782,7 @@ impl Session {
             })
         });
         let surface_apps = std::mem::take(&mut options.surfaces);
-        let slot_views = crate::slot_views::SlotViews::new(
+        let part_views = crate::part_views::PartViews::new(
             shared.handle.clone(),
             shared.overlays.clone(),
             options.scale,
@@ -1853,8 +1853,8 @@ impl Session {
             _settings_watch: settings_watch,
             surfaces,
             surface_apps,
-            slots: crate::slots::Slots::default(),
-            slot_views,
+            parts: crate::parts::Parts::default(),
+            part_views,
             displays: crate::display_settings::Displays::default(),
             displays_service,
             readout_place,
@@ -1973,7 +1973,7 @@ impl Session {
         for surface in &self.surface_apps {
             // The lock screen is started when the session locks, the
             // on-screen keyboard when the person may need it and quick
-            // settings while its slot is up: what their windows show is never
+            // settings while its part is up: what their windows show is never
             // the shell's to open.
             if surface.lock
                 || surface.name == crate::keyboard::SURFACE
@@ -2556,7 +2556,7 @@ impl Session {
     /// Whether quick settings is open.
     #[must_use]
     pub fn quick_settings_open(&self) -> bool {
-        self.shared.overlays.is_open(Slot::QuickSettings)
+        self.shared.overlays.is_open(Part::QuickSettings)
     }
 
     /// The input preferences the compositor runs with now.

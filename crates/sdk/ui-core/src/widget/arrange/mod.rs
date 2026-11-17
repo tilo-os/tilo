@@ -9,7 +9,7 @@ mod page;
 mod split;
 mod units;
 
-pub use arranged::{Arranged, Layout, Resolved, Slot};
+pub use arranged::{Arranged, Layout, Part, Resolved};
 pub use flex::{FlexLayout, Row, Stack};
 pub use grid::{Columns, Grid, GridLayout};
 pub use layers::{Layers, LayersLayout};

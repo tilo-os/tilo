@@ -6,7 +6,7 @@ use crate::widget::Picture;
 use super::{PictureChoice, PictureOption};
 use crate::widget::picture as picture_module;
 
-crate::component::part_slot!(PictureOptionProps);
+crate::component::part_type!(PictureOptionProps);
 
 /// A choice among pictures whose meaning is visual (a text size, a pointer size, a colour
 /// filter), each tile showing its picture over its name, the chosen one edged.
@@ -14,7 +14,7 @@ crate::component::part_slot!(PictureOptionProps);
 #[component(name = "PictureChoice", role = "Group", label = "label")]
 pub struct PictureChoiceProps {
     /// The tiles, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub options: Vec<PictureOptionProps>,
     /// Which tile is chosen, counted from 0: none until a person chooses one.
     pub selected: Option<i64>,

@@ -8,8 +8,8 @@
 //! - a **binding** goes through the model-binding path: the reconciler keeps the value in step with
 //!   what it is bound to, and each edit is reported for the runtime to merge (text is spliced,
 //!   never written over);
-//! - a **slot**'s content is the node's children: a named slot's are those of its `slot` child, the
-//!   default slot's are the node's own. A slot that accepts a component reads that component's
+//! - a **part**'s content is the node's children: a named part's are those of its `part` child, the
+//!   default part's are the node's own. A part that accepts a component reads that component's
 //!   props; one that accepts views holds each child built, in a [`Pane`] the reconciler reaches
 //!   again.
 
@@ -32,7 +32,7 @@ use crate::reconcile::{Reconciler, UiEvent, presence_path};
 /// What a node of a described component is called: `ui.` and the component's name.
 pub const KIND_PREFIX: &str = "ui.";
 
-pub const SLOT: &str = "slot";
+pub const PART: &str = "part";
 
 #[must_use]
 pub fn catalogue() -> &'static Catalogue {
@@ -469,10 +469,14 @@ fn presented(node: &UiNode, description: &Description) -> Option<ResourceRef> {
     }
 }
 
-/// The nodes in the slot `slot` of `node`, a view call's or a loop row's fragment seen through: the
-/// components a slot that takes components holds, wherever the view's calls and loops put them.
+/// The nodes in the part `part` of `node`, a view call's or a loop row's fragment seen through: the
+/// components a part that takes components holds, wherever the view's calls and loops put them.
 #[must_use]
-pub fn slot_parts<'a>(node: &'a UiNode, description: &Description, slot: &str) -> Vec<&'a UiNode> {
+pub fn part_components<'a>(
+    node: &'a UiNode,
+    description: &Description,
+    part: &str,
+) -> Vec<&'a UiNode> {
     fn through<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
         if node.kind == "fragment" {
             for child in &node.children {
@@ -483,24 +487,24 @@ pub fn slot_parts<'a>(node: &'a UiNode, description: &Description, slot: &str) -
         }
     }
     let mut out = Vec::new();
-    for child in slot_nodes(node, description, slot) {
+    for child in part_nodes(node, description, part) {
         through(child, &mut out);
     }
     out
 }
 
-/// The nodes in the slot `slot` of `node`: those of its `slot` child of that name, and for the
-/// default slot those given without a name too.
+/// The nodes in the part `part` of `node`: those of its `part` child of that name, and for the
+/// default part those given without a name too.
 #[must_use]
-pub fn slot_nodes<'a>(node: &'a UiNode, description: &Description, slot: &str) -> Vec<&'a UiNode> {
-    let unnamed = description.slot(slot).is_some_and(|s| s.default);
+pub fn part_nodes<'a>(node: &'a UiNode, description: &Description, part: &str) -> Vec<&'a UiNode> {
+    let unnamed = description.part(part).is_some_and(|s| s.default);
     let named = node.children.iter().filter(|child| {
-        child.kind == SLOT
-            && matches!(child.props.get("name"), Some(Value::Text(name)) if name == slot)
+        child.kind == PART
+            && matches!(child.props.get("name"), Some(Value::Text(name)) if name == part)
     });
     node.children
         .iter()
-        .filter(|child| unnamed && child.kind != SLOT)
+        .filter(|child| unnamed && child.kind != PART)
         .chain(named.flat_map(|child| child.children.iter()))
         .collect()
 }
@@ -509,7 +513,7 @@ pub struct NodeSource<'a> {
     node: &'a UiNode,
     description: &'static Description,
     reconciler: &'a mut Reconciler,
-    /// Whether the views in its slots are built: not when its props are read to take them in place,
+    /// Whether the views in its parts are built: not when its props are read to take them in place,
     /// where the reconciler reaches the views it has.
     build_views: bool,
     /// Whether what it reads is remembered as built ([`Adapter::remember`]): not when only its
@@ -537,7 +541,7 @@ impl<'a> NodeSource<'a> {
         }
     }
 
-    /// `node`, as [`Self::under_heading`], its props and what its slots hold read alone: nothing
+    /// `node`, as [`Self::under_heading`], its props and what its parts hold read alone: nothing
     /// built, nothing remembered.
     pub fn props_of(
         node: &'a UiNode,
@@ -876,32 +880,32 @@ impl Source for NodeSource<'_> {
 
     /// Each view built: a component as its widget (a header's button stays the button the header
     /// lays out), anything else in a pane the reconciler reaches again, each carrying the fit its
-    /// node wrote so the component's slot sizes it as the view asked ([`Fitted`]).
-    fn children(&mut self, slot: &str) -> Vec<Element> {
+    /// node wrote so the component's part sizes it as the view asked ([`Fitted`]).
+    fn children(&mut self, part: &str) -> Vec<Element> {
         if !self.build_views {
             return Vec::new();
         }
-        slot_nodes(self.node, self.description, slot)
+        part_nodes(self.node, self.description, part)
             .into_iter()
-            .map(|child| self.reconciler.slot_view(child))
+            .map(|child| self.reconciler.part_view(child))
             .collect()
     }
 
-    fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
-        slot_parts(self.node, self.description, slot)
+    fn part_kinds(&mut self, part: &str) -> Vec<Option<String>> {
+        part_components(self.node, self.description, part)
             .into_iter()
             .map(|child| component_name(&child.kind).map(str::to_owned))
             .collect()
     }
 
-    fn holds(&mut self, slot: &str) -> bool {
-        !slot_nodes(self.node, self.description, slot).is_empty()
+    fn holds(&mut self, part: &str) -> bool {
+        !part_nodes(self.node, self.description, part).is_empty()
     }
 
-    fn rows(&mut self, slot: &str) -> Option<ui::component::SharedRows> {
+    fn rows(&mut self, part: &str) -> Option<ui::component::SharedRows> {
         let is_rows = self
             .description
-            .slot(slot)
+            .part(part)
             .is_some_and(|s| s.default && s.many);
         if !is_rows || !tilo_render_protocol::patch::is_virtual_list(&self.node.kind) {
             return None;
@@ -915,10 +919,10 @@ impl Source for NodeSource<'_> {
 
     fn components(
         &mut self,
-        slot: &str,
+        part: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
-        let nodes = slot_parts(self.node, self.description, slot);
+        let nodes = part_components(self.node, self.description, part);
         // The heading over the rows it holds: the group they stand in, where it names a day, else
         // the heading the rows above it stood under.
         let under = crate::date::group_heading(self.node).or_else(|| self.under.clone());
@@ -950,7 +954,7 @@ impl Source for NodeSource<'_> {
 
 /// Whether two nodes of a component give its widget the same data: the same props, binding and
 /// events (an event name bound to another action is another event: the widget holds the action it
-/// was built with), and in the slots that accept components, the same components by the same rule.
+/// was built with), and in the parts that accept components, the same components by the same rule.
 #[must_use]
 pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
     // The rows of a virtual list change through the host's rows, never through the node.
@@ -959,14 +963,14 @@ pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
         && a.binding == b.binding
         && a.events == b.events
         && description
-            .slots
+            .parts
             .iter()
-            .filter(|slot| slot.accepts.reads_components())
-            .filter(|slot| !(virtual_rows && slot.default))
-            .all(|slot| {
+            .filter(|part| part.accepts.reads_components())
+            .filter(|part| !(virtual_rows && part.default))
+            .all(|part| {
                 let (old, new) = (
-                    slot_parts(a, description, &slot.name),
-                    slot_parts(b, description, &slot.name),
+                    part_components(a, description, &part.name),
+                    part_components(b, description, &part.name),
                 );
                 old.len() == new.len()
                     && old.iter().zip(&new).all(|(x, y)| {
@@ -980,18 +984,18 @@ pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
             })
 }
 
-/// The views in a component node's slots, in order, by slot, key and kind: a component whose views
+/// The views in a component node's parts, in order, by part, key and kind: a component whose views
 /// keep this shape keeps its widget, and its views are reconciled where they stand.
 #[must_use]
 pub fn views_of<'a>(node: &'a UiNode, description: &'a Description) -> Vec<(&'a str, &'a UiNode)> {
     description
-        .slots
+        .parts
         .iter()
-        .filter(|slot| slot.accepts == Accepts::View)
-        .flat_map(|slot| {
-            slot_nodes(node, description, &slot.name)
+        .filter(|part| part.accepts == Accepts::View)
+        .flat_map(|part| {
+            part_nodes(node, description, &part.name)
                 .into_iter()
-                .map(move |child| (slot.name.as_str(), child))
+                .map(move |child| (part.name.as_str(), child))
         })
         .collect()
 }
@@ -1083,7 +1087,7 @@ mod tests {
     }
 
     #[test]
-    fn slot_patches_insert_remove_and_move_views_by_key() {
+    fn part_patches_insert_remove_and_move_views_by_key() {
         let mut reconciler = reconciler();
         let section = |children: Vec<UiNode>| UiNode {
             children,
@@ -1112,7 +1116,7 @@ mod tests {
             "the change is described, not a rebuild"
         );
 
-        // A named slot is a `slot` child: the card's body is its default slot.
+        // A named part is a `part` child: the card's body is its default part.
         let card = |children: Vec<UiNode>| UiNode {
             children,
             ..node("Card", "card", &[("title", Value::text("Notes"))])
@@ -1127,9 +1131,9 @@ mod tests {
     }
 
     #[test]
-    fn a_named_slot_holds_the_children_of_its_slot_node() {
+    fn a_named_part_holds_the_children_of_its_part_node() {
         let mut row = node("ListRow", "row", &[("title", Value::text("Ada"))]);
-        let mut avatar = UiNode::empty(SLOT, "row#avatar");
+        let mut avatar = UiNode::empty(PART, "row#avatar");
         avatar
             .props
             .insert("name".to_owned(), Value::text("avatar"));
@@ -1143,14 +1147,14 @@ mod tests {
         ));
         row.children.push(avatar);
         let description = description_of(&row).expect("described");
-        assert_eq!(slot_nodes(&row, description, "avatar").len(), 1);
-        assert!(slot_nodes(&row, description, "trailing").is_empty());
+        assert_eq!(part_nodes(&row, description, "avatar").len(), 1);
+        assert!(part_nodes(&row, description, "trailing").is_empty());
         let mut reconciler = reconciler();
         let mut source = NodeSource::new(&row, description, &mut reconciler);
         let props = ui::widget::ListRowProps::from_source(&mut source).expect("reads");
         let avatar = props
             .avatar
-            .expect("the avatar slot reads the Avatar's props");
+            .expect("the avatar part reads the Avatar's props");
         assert_eq!(avatar.name.as_deref(), Some("Ada"));
         assert_eq!(avatar.glyph, Some(ui::icons::Icon::Users));
     }
@@ -1366,7 +1370,7 @@ mod tests {
     }
 
     #[test]
-    fn same_data_compares_events_and_component_slots_by_value() {
+    fn same_data_compares_events_and_component_parts_by_value() {
         let description = catalogue().get("ListRow").expect("described");
         let mut a = node("ListRow", "r", &[("title", Value::text("x"))]);
         a.events.insert("activate".to_owned(), Event::default());

@@ -899,7 +899,7 @@ mod interaction_tests {
                 "a pushed forecast has Back in the window bar"
             );
             Framed::harness_mut(&mut h.app)
-                .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+                .press_window_part(ui::window_toolbar::ToolbarEvent::Back);
             h.redraw();
             assert_ne!(
                 h.app.nav.front_pane(),

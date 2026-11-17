@@ -3,7 +3,7 @@
 use taffy::style_helpers::length;
 use taffy::{Size, Style};
 
-use super::arranged::{Arranged, Layout, Resolved, Slot, lead_container, wrapper_style};
+use super::arranged::{Arranged, Layout, Part, Resolved, lead_container, wrapper_style};
 use super::units::{Axis, Direction, Length, PaneSplit, pane_split_for};
 use crate::tokens::Rhythm;
 
@@ -163,7 +163,7 @@ impl Layout for SplitLayout {
         )
     }
 
-    fn slot(&self, index: usize, _slot: &Slot, resolved: &Resolved) -> Style {
+    fn part(&self, index: usize, _part: &Part, resolved: &Resolved) -> Style {
         let mut style = wrapper_style();
         let pane = Self::pane_of(index);
         let min = match pane {

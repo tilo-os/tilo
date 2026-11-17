@@ -55,7 +55,7 @@ impl HoverToolbar {
     #[must_use]
     pub fn new(row: Element, controls: Vec<Element>) -> Self {
         Self::around(
-            crate::widget::arrange::Slot::new(row),
+            crate::widget::arrange::Part::new(row),
             controls,
             Stands::Straddling,
             None,
@@ -70,9 +70,9 @@ impl HoverToolbar {
     /// what they belong to.
     #[must_use]
     pub fn above(row: Element, controls: Vec<Element>, band: f64) -> Self {
-        let mut slot = crate::widget::arrange::Slot::new(row);
-        slot.fit = crate::widget::arrange::Fit::fill(1.0);
-        Self::around(slot, controls, Stands::Above(band), None)
+        let mut part = crate::widget::arrange::Part::new(row);
+        part.fit = crate::widget::arrange::Fit::fill(1.0);
+        Self::around(part, controls, Stands::Above(band), None)
     }
 
     /// [`Self::above`], with `caption` standing at the band's leading end at rest as well as on
@@ -86,15 +86,15 @@ impl HoverToolbar {
         band: f64,
         caption: Element,
     ) -> Self {
-        let mut slot = crate::widget::arrange::Slot::new(row);
-        slot.fit = crate::widget::arrange::Fit::fill(1.0);
-        Self::around(slot, controls, Stands::Above(band), Some(caption))
+        let mut part = crate::widget::arrange::Part::new(row);
+        part.fit = crate::widget::arrange::Fit::fill(1.0);
+        Self::around(part, controls, Stands::Above(band), Some(caption))
     }
 
     /// The row in `row`, with `controls` shown on hover and focus where `stands` says, and
     /// `caption` at rest in a band over it.
     fn around(
-        row: crate::widget::arrange::Slot,
+        row: crate::widget::arrange::Part,
         controls: Vec<Element>,
         stands: Stands,
         caption: Option<Element>,
@@ -116,7 +116,7 @@ impl HoverToolbar {
         let layers = match stands {
             // Over the row's top edge, half above it: a one-line message keeps its text clear.
             Stands::Straddling => Layers::layers()
-                .push_slot(row)
+                .push_part(row)
                 .push_straddling(Box::new(face), At::TopTrailing),
             // The band over the content, the controls at its trailing end, a tight step above
             // the content's edge.
@@ -133,9 +133,9 @@ impl HoverToolbar {
                 // The caption takes the band's room up to the controls, at its leading end,
                 // a tight step above the content's edge as the controls stand.
                 if let Some(caption) = caption {
-                    let mut said = crate::widget::arrange::Slot::new(caption);
+                    let mut said = crate::widget::arrange::Part::new(caption);
                     said.fit = crate::widget::arrange::Fit::fill(1.0);
-                    bar = bar.push_slot(said);
+                    bar = bar.push_part(said);
                 }
                 let bar = bar.push(Box::new(face));
                 #[expect(
@@ -143,18 +143,18 @@ impl HoverToolbar {
                     reason = "a band a few dozen pixels tall"
                 )]
                 let tall = crate::widget::arrange::Length::Dp(height as f32);
-                let mut band = crate::widget::arrange::Slot::new(Box::new(bar));
+                let mut band = crate::widget::arrange::Part::new(Box::new(bar));
                 band.fit = crate::widget::arrange::Fit::fill(1.0)
                     .height(crate::widget::arrange::Sizing::hug().min(tall).max(tall));
                 let column = Stack::stack()
                     .fill_width()
                     .fill_height()
                     .gap(Rhythm::None)
-                    .push_slot(band)
-                    .push_slot(row);
-                let mut whole = crate::widget::arrange::Slot::new(Box::new(column));
+                    .push_part(band)
+                    .push_part(row);
+                let mut whole = crate::widget::arrange::Part::new(Box::new(column));
                 whole.fit = crate::widget::arrange::Fit::fill(1.0);
-                Layers::layers().push_slot(whole)
+                Layers::layers().push_part(whole)
             }
         };
         Self {

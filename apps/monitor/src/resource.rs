@@ -191,7 +191,7 @@ mod tests {
 
     fn press(app: &mut TestApp<MonitorShell>, id: &str) {
         app.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+            .press_window_part(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
     }
 
     fn press_named(app: &mut TestApp<MonitorShell>, name: &str) {

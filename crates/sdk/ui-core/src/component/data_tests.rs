@@ -379,27 +379,27 @@ tilo_test_env::scenario! {
     {
         let queue = crate::Intents::default();
         assert_eq!(
-            <Vec<crate::widget::DataTableColumnProps> as SlotType>::accepts(),
+            <Vec<crate::widget::DataTableColumnProps> as PartType>::accepts(),
             Accepts::Component("DataTableColumn".into())
         );
         assert_eq!(
-            <Vec<crate::widget::DataTableRowProps> as SlotType>::accepts(),
+            <Vec<crate::widget::DataTableRowProps> as PartType>::accepts(),
             Accepts::Component("DataTableRow".into())
         );
         assert_eq!(
-            <Vec<crate::widget::CardGridCardProps> as SlotType>::accepts(),
+            <Vec<crate::widget::CardGridCardProps> as PartType>::accepts(),
             Accepts::Component("CardGridCard".into())
         );
         assert_eq!(
-            <Vec<crate::widget::TreeViewNodeProps> as SlotType>::accepts(),
+            <Vec<crate::widget::TreeViewNodeProps> as PartType>::accepts(),
             Accepts::Component("TreeViewNode".into())
         );
         assert_eq!(
-            <Vec<crate::widget::ConversationEntryProps> as SlotType>::accepts(),
+            <Vec<crate::widget::ConversationEntryProps> as PartType>::accepts(),
             Accepts::Component("ConversationEntry".into())
         );
         assert_eq!(
-            <Vec<crate::widget::ActivityEntryProps> as SlotType>::accepts(),
+            <Vec<crate::widget::ActivityEntryProps> as PartType>::accepts(),
             Accepts::Component("ActivityEntry".into())
         );
         let mut node = table_node(&queue);

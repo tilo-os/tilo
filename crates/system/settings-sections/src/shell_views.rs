@@ -1,6 +1,6 @@
 //! The view bound to each swappable part of the shell: the person's setting
 //! (`settings:shell-views`), kept wherever the session runs the shell, so an
-//! agent or a script binds a slot the way a person does.
+//! agent or a script binds a part the way a person does.
 
 use std::collections::BTreeMap;
 
@@ -30,10 +30,10 @@ pub const SWAPPABLE: &[&str] = &[
 /// The parts the system draws itself, whatever is bound to them.
 pub const FIXED: &[&str] = &["lock", "consent", "portal", "auth", "display-confirm"];
 
-/// The prefix of a sheet's slot: `sheet:power`, `sheet:display`.
+/// The prefix of a sheet's part: `sheet:power`, `sheet:display`.
 pub const SHEET: &str = "sheet:";
 
-/// The view bound to a slot.
+/// The view bound to a part.
 #[derive(
     Clone,
     Debug,
@@ -48,20 +48,20 @@ pub const SHEET: &str = "sheet:";
 )]
 #[model(defaults)]
 pub struct Binding {
-    /// The app whose view draws the slot.
+    /// The app whose view draws the part.
     pub app: String,
     /// The view it publishes, by the id it is published under.
     pub view: String,
 }
 
-/// The view bound to each slot: everywhere the person works, and on one kind
+/// The view bound to each part: everywhere the person works, and on one kind
 /// of device where that differs.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
 )]
 #[model(defaults)]
 pub struct ShellViews {
-    /// The view each slot shows, by the slot's name.
+    /// The view each part shows, by the part's name.
     #[serde(default)]
     #[model(readonly)]
     pub bindings: BTreeMap<String, Binding>,
@@ -79,18 +79,18 @@ impl ui::storage::SettingsSchema for ShellViews {
 
 #[ui::tilo_resource::resource(kind = "shell-views")]
 impl ShellViews {
-    /// Bind `slot` to the view `view` of `app`, on every device or on the
+    /// Bind `part` to the view `view` of `app`, on every device or on the
     /// kind of device `on` names.
     #[action(id = "bind")]
     pub fn bind(
         &mut self,
-        #[param("The part of the shell: `window-menu`, `bar`, `sheet:power`, …")] slot: String,
+        #[param("The part of the shell: `window-menu`, `bar`, `sheet:power`, …")] part: String,
         #[param("The app whose view draws it")] app: String,
         #[param("The view the app publishes")] view: String,
         #[param("The kind of device it is for (`native`, `web`); every device by default")]
         on: Option<String>,
     ) -> Result<(), tilo_resource::Refusal> {
-        let slot = slot_named(&slot)?;
+        let part = part_named(&part)?;
         let app = app.trim();
         let view = view.trim();
         if app.is_empty() {
@@ -100,7 +100,7 @@ impl ShellViews {
         }
         if view.is_empty() {
             return Err(tilo_resource::Refusal::new(
-                "the app publishes its views: name the one to draw the slot",
+                "the app publishes its views: name the one to draw the part",
             ));
         }
         let binding = Binding {
@@ -112,30 +112,30 @@ impl ShellViews {
                 .on_device
                 .entry(device_named(class)?)
                 .or_default()
-                .insert(slot, binding),
-            None => self.bindings.insert(slot, binding),
+                .insert(part, binding),
+            None => self.bindings.insert(part, binding),
         };
         Ok(())
     }
 
-    /// Show `slot` the way the shell ships it again, on every device or on
+    /// Show `part` the way the shell ships it again, on every device or on
     /// one kind of device.
     #[action(id = "reset")]
     pub fn reset(
         &mut self,
-        #[param("The part of the shell to show as the shell ships it")] slot: String,
+        #[param("The part of the shell to show as the shell ships it")] part: String,
         #[param("The kind of device it is for (`native`, `web`); every device by default")]
         on: Option<String>,
     ) -> Result<(), tilo_resource::Refusal> {
-        let slot = slot_named(&slot)?;
+        let part = part_named(&part)?;
         match on.as_deref() {
             Some(class) => {
                 if let Some(bindings) = self.on_device.get_mut(&device_named(class)?) {
-                    bindings.remove(&slot);
+                    bindings.remove(&part);
                 }
             }
             None => {
-                self.bindings.remove(&slot);
+                self.bindings.remove(&part);
             }
         }
         Ok(())
@@ -143,22 +143,22 @@ impl ShellViews {
 }
 
 impl ShellViews {
-    /// The view bound to `slot` on `device`: the one bound for that kind of
+    /// The view bound to `part` on `device`: the one bound for that kind of
     /// device, else the one bound everywhere.
     #[must_use]
-    pub fn bound(&self, slot: &str, device: DeviceClass) -> Option<&Binding> {
+    pub fn bound(&self, part: &str, device: DeviceClass) -> Option<&Binding> {
         self.on_device
             .get(settings_store::shell_views::device_key(device))
-            .and_then(|bindings| bindings.get(slot))
-            .or_else(|| self.bindings.get(slot))
+            .and_then(|bindings| bindings.get(part))
+            .or_else(|| self.bindings.get(part))
     }
 }
 
-/// `slot`, as the shell names the part it is.
-fn slot_named(slot: &str) -> Result<String, tilo_resource::Refusal> {
-    let slot = slot.trim();
-    let sheet = slot.strip_prefix(SHEET);
-    let kind = sheet.unwrap_or(slot);
+/// `part`, as the shell names the part it is.
+fn part_named(part: &str) -> Result<String, tilo_resource::Refusal> {
+    let part = part.trim();
+    let sheet = part.strip_prefix(SHEET);
+    let kind = sheet.unwrap_or(part);
     if FIXED.contains(&kind) {
         return Err(tilo_resource::Refusal::new(format!(
             "the shell draws {kind} itself: it asks the person something on the machine's \
@@ -169,7 +169,7 @@ fn slot_named(slot: &str) -> Result<String, tilo_resource::Refusal> {
         if kind.is_empty() {
             return Err(tilo_resource::Refusal::new("a sheet is named by its kind"));
         }
-        return Ok(slot.to_owned());
+        return Ok(part.to_owned());
     }
     SWAPPABLE
         .contains(&kind)

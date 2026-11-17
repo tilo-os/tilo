@@ -1,4 +1,4 @@
-//! The shell's own buttons as slots in the window's bar, for an app that declares its toolbar
+//! The shell's own buttons as parts in the window's bar, for an app that declares its toolbar
 //! there itself ([`NavShell::with_window_toolbar`]).
 
 use std::cell::{Cell, RefCell};
@@ -24,7 +24,7 @@ pub(super) struct Requests {
     pub(super) put_drawer_away: Cell<bool>,
     /// A notice the app asked the window's bar to show ([`WindowBarLink::toast`]).
     pub(super) toast: RefCell<Option<(String, crate::widget::toast::ToastKind)>>,
-    slots: RefCell<WindowToolbar>,
+    parts: RefCell<WindowToolbar>,
     /// The inspector's frame as of the last layout, and what an
     /// [`super::InspectorLink`] asked of it.
     pub(super) inspector_frame: Cell<super::InspectorFrame>,
@@ -34,7 +34,7 @@ pub(super) struct Requests {
 
 /// The shell's own buttons in the window's bar, for an app that paints
 /// inside the shell's content column and declares the bar itself: it
-/// starts its declaration from [`Self::slots`] (the sidebar toggle, Back
+/// starts its declaration from [`Self::parts`] (the sidebar toggle, Back
 /// while it goes anywhere, the inspector's toggle) and hands what the
 /// person did in the bar to [`Self::event`] first, as an app that owns its
 /// shell does with [`NavShell::window_toolbar`] and
@@ -44,13 +44,13 @@ pub struct WindowBarLink(Rc<Requests>);
 
 impl WindowBarLink {
     #[must_use]
-    pub fn slots(&self) -> WindowToolbar {
-        self.0.slots.borrow().clone()
+    pub fn parts(&self) -> WindowToolbar {
+        self.0.parts.borrow().clone()
     }
 
     #[must_use]
     pub fn is_sidebar_open(&self) -> bool {
-        self.0.slots.borrow().sidebar == Some(true)
+        self.0.parts.borrow().sidebar == Some(true)
     }
 
     /// Show the sidebar open or closed at once, with no motion: what a
@@ -79,7 +79,7 @@ impl WindowBarLink {
     }
 
     /// Run what the person did in the window's bar on the shell's own
-    /// slots. Returns whether it was one of them; the app handles the rest.
+    /// parts. Returns whether it was one of them; the app handles the rest.
     pub fn event(&self, event: &ToolbarEvent) -> bool {
         let request = match event {
             ToolbarEvent::ToggleSidebar => &self.0.toggle,
@@ -93,7 +93,7 @@ impl WindowBarLink {
     }
 }
 
-/// The action ids of the shell's own slots in the window's bar
+/// The action ids of the shell's own parts in the window's bar
 /// ([`NavShell::window_toolbar`]).
 pub const WINDOW_BACK: &str = "nav-shell-back";
 pub const WINDOW_SIDEBAR: &str = "nav-shell-sidebar";
@@ -171,7 +171,7 @@ impl NavShell {
         acted
     }
 
-    /// The app's toolbar is its window bar's slots ([`crate::window_toolbar`]): the shell draws
+    /// The app's toolbar is its window bar's parts ([`crate::window_toolbar`]): the shell draws
     /// no header row of its own, in a Tilo session or out of it.
     #[must_use]
     pub fn with_window_toolbar(self) -> Self {
@@ -206,7 +206,7 @@ impl NavShell {
         self.geometry.back_column.is_some() || self.sheet_shown()
     }
 
-    /// The shell's own slots for the window's bar ([`Self::with_window_toolbar`]): the sidebar
+    /// The shell's own parts for the window's bar ([`Self::with_window_toolbar`]): the sidebar
     /// toggle while there is a sidebar, Back while it goes anywhere (leading), and the
     /// inspector's toggle while there is an inspector (the last action).
     #[must_use]
@@ -257,11 +257,11 @@ impl NavShell {
         WindowBarLink(Rc::clone(&self.requests))
     }
 
-    /// Keep the shell's own slots where its [`WindowBarLink`] reads them.
-    pub(super) fn publish_window_slots(&self) {
-        let slots = self.window_toolbar();
-        if *self.requests.slots.borrow() != slots {
-            *self.requests.slots.borrow_mut() = slots;
+    /// Keep the shell's own parts where its [`WindowBarLink`] reads them.
+    pub(super) fn publish_window_parts(&self) {
+        let parts = self.window_toolbar();
+        if *self.requests.parts.borrow() != parts {
+            *self.requests.parts.borrow_mut() = parts;
         }
     }
 
@@ -284,7 +284,7 @@ impl NavShell {
     }
 
     /// Run what the person did in the window's bar on the shell's own
-    /// slots. Returns whether it was one of them; the app handles the rest.
+    /// parts. Returns whether it was one of them; the app handles the rest.
     pub fn window_toolbar_event(&mut self, event: &ToolbarEvent) -> bool {
         match event {
             ToolbarEvent::ToggleSidebar => self.toggle_sidebar(),

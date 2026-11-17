@@ -33,7 +33,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_compositor::{Compositor, InputEvent};
 
-use tilo_desktop::overlays::{Overlays, Slot};
+use tilo_desktop::overlays::{Overlays, Part};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
@@ -704,8 +704,8 @@ impl Control {
         let mut hasher = std::hash::DefaultHasher::new();
         session.handle.navigation_revision().hash(&mut hasher);
         session.locked.hash(&mut hasher);
-        for slot in Slot::ALL {
-            session.overlays.is_open(slot).hash(&mut hasher);
+        for part in Part::ALL {
+            session.overlays.is_open(part).hash(&mut hasher);
         }
         session.overview.get().hash(&mut hasher);
         presence_stamp(session, &mut hasher);

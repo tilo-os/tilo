@@ -62,7 +62,7 @@ enum Size {
 
 /// One part a person can put on the top bar, in their order. The case's icon is the glyph the
 /// settings and the drag ghost show for it.
-enum Slot {
+enum BarPartKind {
     /// The system's menu: Tilo, and the device's own commands.
     menu (icon: .tilo)
     /// The workspace in front, opening the workspaces to switch between.
@@ -159,33 +159,33 @@ type Shell {
 type BarPart {
     /// What the part is; the bar draws it from this, so a part moved is a part the same, and its
     /// name is the one that part goes by.
-    slot: Slot = .menu
+    kind: BarPartKind = .menu
     /// Whether it shows on the bar; a part off keeps its place in the record.
     shown: Bool = true
 }
 
 /// What a part of the bar is called, on the bar and in the settings, from what it is: this
 /// package's words, so a shell shows them in the person's language.
-fn part_name(slot: Slot) -> Text {
-    if slot == .menu {
+fn part_name(kind: BarPartKind) -> Text {
+    if kind == .menu {
         std.say("Tilo")
-    } else if slot == .workspace {
+    } else if kind == .workspace {
         std.say("Workspace")
-    } else if slot == .app_menu {
+    } else if kind == .app_menu {
         std.say("App menus")
-    } else if slot == .strip {
+    } else if kind == .strip {
         std.say("Strip")
-    } else if slot == .tasks {
+    } else if kind == .tasks {
         std.say("Tasks")
-    } else if slot == .clock {
+    } else if kind == .clock {
         std.say("Clock")
-    } else if slot == .people {
+    } else if kind == .people {
         std.say("People")
-    } else if slot == .status {
+    } else if kind == .status {
         std.say("Status")
-    } else if slot == .power {
+    } else if kind == .power {
         std.say("Battery")
-    } else if slot == .agent { std.say("Agents") } else { std.say("Gap") }
+    } else if kind == .agent { std.say("Agents") } else { std.say("Gap") }
 }
 
 /// One thing on the dock: a pinned app or resource, the launcher, or an app running now.
@@ -215,15 +215,15 @@ root shell: Shell
 /// then on.
 migration action seed(s: Shell) {
     if s.bar_parts.is_empty() {
-        s.bar_parts.insert(BarPart(slot: .menu))
-        s.bar_parts.insert(BarPart(slot: .workspace))
-        s.bar_parts.insert(BarPart(slot: .strip))
-        s.bar_parts.insert(BarPart(slot: .agent, shown: false))
-        s.bar_parts.insert(BarPart(slot: .space))
-        s.bar_parts.insert(BarPart(slot: .clock))
-        s.bar_parts.insert(BarPart(slot: .space))
-        s.bar_parts.insert(BarPart(slot: .people))
-        s.bar_parts.insert(BarPart(slot: .status))
+        s.bar_parts.insert(BarPart(kind: .menu))
+        s.bar_parts.insert(BarPart(kind: .workspace))
+        s.bar_parts.insert(BarPart(kind: .strip))
+        s.bar_parts.insert(BarPart(kind: .agent, shown: false))
+        s.bar_parts.insert(BarPart(kind: .space))
+        s.bar_parts.insert(BarPart(kind: .clock))
+        s.bar_parts.insert(BarPart(kind: .space))
+        s.bar_parts.insert(BarPart(kind: .people))
+        s.bar_parts.insert(BarPart(kind: .status))
     }
     if s.dock_items.is_empty() and s.dock_launcher {
         s.dock_items.insert(DockItem(key: "launcher", icon: "layout-grid"))
@@ -232,13 +232,13 @@ migration action seed(s: Shell) {
 
 /// A shell that kept the retired `power` part beside the status loses it.
 migration action drop_the_power_part(s: Shell) {
-    s.bar_parts.remove_where(p -> p.slot == Slot.power)
+    s.bar_parts.remove_where(p -> p.kind == BarPartKind.power)
 }
 
 /// A shell that kept the retired `tasks` part loses it: what an agent does is the turn of a
 /// conversation, which Chat shows, so the bar has no running-tasks cluster.
 migration action drop_the_tasks_part(s: Shell) {
-    s.bar_parts.remove_where(p -> p.slot == Slot.tasks)
+    s.bar_parts.remove_where(p -> p.kind == BarPartKind.tasks)
 }
 
 /// Uses the preset `layout`: every setting it names at once. The result is exactly that preset,
@@ -251,7 +251,7 @@ primary action apply(s: Shell, layout: ChromePreset) (
     s.based_on = layout
     s.tuned = false
     if layout != .macos and layout != .windows_desktop {
-        s.bar_parts.remove_where(p -> p.slot == Slot.app_menu)
+        s.bar_parts.remove_where(p -> p.kind == BarPartKind.app_menu)
     }
     if layout == .tilo {
         s.bar_shown = true
@@ -336,10 +336,10 @@ primary action apply(s: Shell, layout: ChromePreset) (
         s.dock_launcher = true
     }
     if (layout == .macos or layout == .windows_desktop)
-        and not s.bar_parts.any(p -> p.slot == Slot.app_menu) {
-        s.bar_parts.insert(BarPart(slot: .app_menu))
-        if let brand = s.bar_parts.find(p -> p.slot == Slot.app_menu),
-            after = s.bar_parts.find(p -> p.slot == Slot.menu) {
+        and not s.bar_parts.any(p -> p.kind == BarPartKind.app_menu) {
+        s.bar_parts.insert(BarPart(kind: .app_menu))
+        if let brand = s.bar_parts.find(p -> p.kind == BarPartKind.app_menu),
+            after = s.bar_parts.find(p -> p.kind == BarPartKind.menu) {
             s.bar_parts.move(brand, after: after)
         }
     }
@@ -348,10 +348,10 @@ primary action apply(s: Shell, layout: ChromePreset) (
 /// Puts the focused app's menus on the bar, after the system's: what the app in front can do
 /// now, on its resource.
 action show_app_menus(s: Shell) (icon: .menu, label: "Show the app's menus", group: "Top bar") {
-    require not s.bar_parts.any(p -> p.slot == Slot.app_menu) "The app's menus are on the bar already"
-    s.bar_parts.insert(BarPart(slot: .app_menu))
-    if let menus = s.bar_parts.find(p -> p.slot == Slot.app_menu),
-        brand = s.bar_parts.find(p -> p.slot == Slot.menu) {
+    require not s.bar_parts.any(p -> p.kind == BarPartKind.app_menu) "The app's menus are on the bar already"
+    s.bar_parts.insert(BarPart(kind: .app_menu))
+    if let menus = s.bar_parts.find(p -> p.kind == BarPartKind.app_menu),
+        brand = s.bar_parts.find(p -> p.kind == BarPartKind.menu) {
         s.bar_parts.move(menus, after: brand)
     }
     s.tuned = true
@@ -359,7 +359,7 @@ action show_app_menus(s: Shell) (icon: .menu, label: "Show the app's menus", gro
 
 /// Takes the focused app's menus off the bar.
 action hide_app_menus(s: Shell) (icon: .menu, label: "Hide the app's menus", group: "Top bar") {
-    s.bar_parts.remove_where(p -> p.slot == Slot.app_menu)
+    s.bar_parts.remove_where(p -> p.kind == BarPartKind.app_menu)
     s.tuned = true
 }
 
@@ -607,7 +607,9 @@ fn bar_lists_actions_for(s: Shell, roomy: Bool, traditional: Bool) -> Bool {
     // On the canvas the bar keeps no window menu (`canvas_keeps`), so its frames keep theirs.
     roomy
         and s.bar_parts.any(
-            p -> p.slot == Slot.app_menu and p.shown and (not frames_style() or canvas_keeps(p)),
+            p -> p.kind == BarPartKind.app_menu
+                and p.shown
+                and (not frames_style() or canvas_keeps(p)),
         )
 }
 

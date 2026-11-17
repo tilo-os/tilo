@@ -8,7 +8,7 @@ use std::hash::Hash as _;
 use serde_json::{Value as Json, json};
 use tilo_desktop_model::Layout;
 
-use super::{Context, Gate, Scope, Session, Slot};
+use super::{Context, Gate, Part, Scope, Session};
 
 /// What a socket at `gate` may see of the state `dump`: a development socket sees the session as
 /// it is, and the owner's API sees it too — except while the screen is locked, where it learns
@@ -142,10 +142,10 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
         .map(|workspace| json!({"workspace": workspace.id()}))
         .collect();
     let mut open = serde_json::Map::new();
-    for slot in Slot::ALL {
+    for part in Part::ALL {
         let up =
-            session.overlays.is_open(slot) || (slot == Slot::Overview && session.overview.get());
-        open.insert(slot.as_str().to_owned(), up.into());
+            session.overlays.is_open(part) || (part == Part::Overview && session.overview.get());
+        open.insert(part.as_str().to_owned(), up.into());
     }
     let tree = tilo_desktop_model::history::without_history(|| serde_json::to_value(tree))
         .unwrap_or(Json::Null);
@@ -180,20 +180,20 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
             // Where the person types, which a surface a key opens stands beside, and where the
             // stack placed each surface that is up: `[x0, y0, x1, y1]`.
             "caret": session.overlays.caret().map(|at| [at.x0, at.y0, at.x1, at.y1]),
-            "places": Slot::ALL
+            "places": Part::ALL
                 .into_iter()
-                .filter_map(|slot| {
-                    let at = session.overlays.place(slot)?.room;
-                    Some((slot.as_str().to_owned(), json!([at.x0, at.y0, at.x1, at.y1])))
+                .filter_map(|part| {
+                    let at = session.overlays.place(part)?.room;
+                    Some((part.as_str().to_owned(), json!([at.x0, at.y0, at.x1, at.y1])))
                 })
                 .collect::<serde_json::Map<_, _>>(),
             // Where each surface that is up stands as its app drew it: a panel that fits its
             // content is shorter than the room the stack gave it.
-            "surfaces": Slot::ALL
+            "surfaces": Part::ALL
                 .into_iter()
-                .filter_map(|slot| {
-                    let at = session.overlays.surface(slot)?;
-                    Some((slot.as_str().to_owned(), json!([at.x0, at.y0, at.x1, at.y1])))
+                .filter_map(|part| {
+                    let at = session.overlays.surface(part)?;
+                    Some((part.as_str().to_owned(), json!([at.x0, at.y0, at.x1, at.y1])))
                 })
                 .collect::<serde_json::Map<_, _>>(),
             // Whether freed heap is still to be handed back to the kernel

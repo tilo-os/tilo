@@ -1140,7 +1140,7 @@ fn window_slot_target(frame: &ui::headless::FrameHarness, name: &str) -> Option<
         .root
         .children
         .iter()
-        .find(|node| node.path == ui::headless::WINDOW_SLOTS)?;
+        .find(|node| node.path == ui::headless::WINDOW_PARTS)?;
     find(row.semantics.as_ref()?, name)
 }
 
@@ -1160,7 +1160,7 @@ fn a_chat_mounted_alone_shows_its_call_in_the_windows_row_of_slots() {
         1,
         "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
     );
-    frame.host_window_slots();
+    frame.host_window_parts();
     let join = ui::bound_dispatch::BoundActionAddress {
         instance_id: 1,
         address: crate::effects::ChatEffect::JOIN_CALL.on(crate::testing::call_row("c_voice")),
@@ -1176,7 +1176,7 @@ fn a_chat_mounted_alone_shows_its_call_in_the_windows_row_of_slots() {
     let leave = window_slot_target(&frame, "Leave call").expect("Leave is in the row");
     frame
         .perform_semantic_named(
-            ui::headless::WINDOW_SLOTS,
+            ui::headless::WINDOW_PARTS,
             Some(&leave),
             &ui::a11y::Action::Activate,
         )

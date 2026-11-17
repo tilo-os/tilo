@@ -1,6 +1,6 @@
 //! [`DragSource`](super::DragSource) as a described component.
 
-use crate::component::{Component, Described, Event, SlotViews};
+use crate::component::{Component, Described, Event, PartViews};
 use crate::widget::Element;
 
 use super::DragSource;
@@ -22,7 +22,7 @@ pub struct DragSourceProps {
     /// instead of the resource's address.
     pub title: Option<String>,
     /// What it draws.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub content: Option<Element>,
     /// It was picked up and let go without travelling: the content's own press did not take
     /// it. Reported so a source that wraps something inert still says what happened.
@@ -61,7 +61,7 @@ impl Described for DragSource {
         true
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        (slot == "content").then_some(self as &mut dyn SlotViews)
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        (part == "content").then_some(self as &mut dyn PartViews)
     }
 }

@@ -1,5 +1,5 @@
 //! The window's reactions at the row's end: the shared reaction strip
-//! ([`crate::widget::reaction_strip`]), a pill per emoji and the add button, after the app's slots
+//! ([`crate::widget::reaction_strip`]), a pill per emoji and the add button, after the app's parts
 //! and before the window's own controls. They are the window's, not the app's
 //! ([`crate::window_toolbar::show_reactions`]): a press on a pill, or a pick in the shared emoji
 //! picker the add button opens, goes back as [`crate::window_toolbar::reaction_action`].
@@ -7,7 +7,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use super::{CONTROL_PX, SECTION_GAP, Slot, ToolbarRow, Widget};
+use super::{CONTROL_PX, Part, SECTION_GAP, ToolbarRow, Widget};
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -91,7 +91,7 @@ fn groups(toolbar: &WindowToolbar, count: usize) -> Vec<tilo_resource::ReactionG
 }
 
 /// Where the reactions measured `measure` stand at the end of `row`, and
-/// the row left before them for the app's slots: the pills that fit in a
+/// the row left before them for the app's parts: the pills that fit in a
 /// third of the row (one at most where `compact`), then the add button.
 /// Nothing where there are none.
 pub(super) fn place(
@@ -228,19 +228,19 @@ impl ToolbarRow {
         true
     }
 
-    pub(super) fn activate_reaction(&mut self, slot: &Slot) -> bool {
-        match slot {
-            Slot::Reaction(i) => match self.pill_emoji(*i) {
+    pub(super) fn activate_reaction(&mut self, part: &Part) -> bool {
+        match part {
+            Part::Reaction(i) => match self.pill_emoji(*i) {
                 Some(emoji) => self.react(&emoji),
                 None => false,
             },
-            Slot::ReactionAdd => self.open_picker(),
+            Part::ReactionAdd => self.open_picker(),
             _ => false,
         }
     }
 
     pub(super) fn open_picker(&mut self) -> bool {
-        let anchor = self.slots.reaction_add;
+        let anchor = self.parts.reaction_add;
         if !self.may_react() || anchor.area() <= 0.0 {
             return false;
         }
@@ -329,28 +329,28 @@ impl ToolbarRow {
         transform: Affine,
         (tr, theme): (&mut TextRenderer, &Theme),
     ) {
-        let slots = &self.slots;
-        let Some(origin) = slots
+        let parts = &self.parts;
+        let Some(origin) = parts
             .reactions
             .first()
             .copied()
-            .or_else(|| (slots.reaction_add.area() > 0.0).then_some(slots.reaction_add))
+            .or_else(|| (parts.reaction_add.area() > 0.0).then_some(parts.reaction_add))
         else {
             return;
         };
-        let end = if slots.reaction_add.area() > 0.0 {
-            slots.reaction_add.x1
+        let end = if parts.reaction_add.area() > 0.0 {
+            parts.reaction_add.x1
         } else {
-            slots.reactions.last().map_or(origin.x1, |last| last.x1)
+            parts.reactions.last().map_or(origin.x1, |last| last.x1)
         };
         let Some(toolbar) = self.shown.as_ref().map(|(_, toolbar)| toolbar) else {
             return;
         };
-        let groups = groups(toolbar, slots.reactions.len());
-        let can_react = slots.reaction_add.area() > 0.0;
+        let groups = groups(toolbar, parts.reactions.len());
+        let can_react = parts.reaction_add.area() > 0.0;
         let hover = match &self.hover {
-            Some(Slot::Reaction(i)) => slots.reactions.get(*i).map(|rect| rect.center()),
-            Some(Slot::ReactionAdd) => Some(slots.reaction_add.center()),
+            Some(Part::Reaction(i)) => parts.reactions.get(*i).map(|rect| rect.center()),
+            Some(Part::ReactionAdd) => Some(parts.reaction_add.center()),
             _ => None,
         };
         self.reactions.strip.layout(
@@ -381,7 +381,7 @@ impl ToolbarRow {
             .map(|(i, node)| {
                 let target = match self
                     .pill_emoji(i)
-                    .filter(|_| i < self.slots.reactions.len())
+                    .filter(|_| i < self.parts.reactions.len())
                 {
                     Some(emoji) => format!("{REACTION_TARGET_PREFIX}{emoji}"),
                     None => REACTION_ADD_TARGET.to_owned(),

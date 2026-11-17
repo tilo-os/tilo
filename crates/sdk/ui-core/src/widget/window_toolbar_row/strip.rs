@@ -2,7 +2,7 @@
 //! and its actions as buttons that name themselves, on the bar's own surface. The row stands as it
 //! does without a notice, and the strip comes and goes on the standard motion. The shell's bar
 //! grows by the strip, so the window's content moves down once as the notice comes and back once it
-//! has gone; a window's own row ([`crate::slot_row`]) floats it over the app at the window's foot
+//! has gone; a window's own row ([`crate::part_row`]) floats it over the app at the window's foot
 //! instead.
 use super::paint::{labelled_face, layered};
 use super::{Affine, CONTROL_PX, LOCATION_ICON_PX, Point, Rect, Scene, TextRenderer, Theme};

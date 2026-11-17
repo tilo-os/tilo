@@ -1020,9 +1020,9 @@ fn find<'a>(
     node.children.iter().find_map(|child| find(child, want))
 }
 
-/// The nodes of the content slot of `tree`, the window shell's page beside its sidebar.
+/// The nodes of the content part of `tree`, the window shell's page beside its sidebar.
 fn content_nodes<'a>(tree: &'a tilo_ui_host::UiNode, out: &mut Vec<&'a tilo_ui_host::UiNode>) {
-    if tree.kind == "slot" && tree.props.get("name") == Some(&tilo_ui_host::Value::text("content"))
+    if tree.kind == "part" && tree.props.get("name") == Some(&tilo_ui_host::Value::text("content"))
     {
         out.extend(tree.children.iter());
         return;

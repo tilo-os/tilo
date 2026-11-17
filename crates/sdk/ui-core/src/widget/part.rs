@@ -1,17 +1,17 @@
-//! Parts of a widget tree that change while their neighbours stay: [`Slot`] and [`Switch`].
+//! Parts of a widget tree that change while their neighbours stay: [`Part`] and [`Switch`].
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::{AppModel, Element, ModelPath, Widget};
 
-/// What the app holds to replace a [`Slot`]'s content.
+/// What the app holds to replace a [`Part`]'s content.
 #[derive(Clone)]
-pub struct SlotHandle {
+pub struct PartHandle {
     pending: Rc<RefCell<Option<Element>>>,
 }
 
-impl SlotHandle {
+impl PartHandle {
     pub fn set(&self, content: Element) {
         *self.pending.borrow_mut() = Some(content);
     }
@@ -23,17 +23,17 @@ impl SlotHandle {
     framework,
     "content its owner swaps in place; the language swaps content with `if`"
 )]
-pub struct Slot {
+pub struct Part {
     content: Element,
     pending: Rc<RefCell<Option<Element>>>,
     structure_dirty: bool,
     repaint: Cell<bool>,
 }
 
-impl Slot {
-    pub fn new(content: Element) -> (Self, SlotHandle) {
+impl Part {
+    pub fn new(content: Element) -> (Self, PartHandle) {
         let pending = Rc::new(RefCell::new(None));
-        let handle = SlotHandle {
+        let handle = PartHandle {
             pending: Rc::clone(&pending),
         };
         (
@@ -47,8 +47,8 @@ impl Slot {
         )
     }
 
-    /// A slot with nothing in it yet: it takes up nothing until it is set.
-    pub fn empty() -> (Self, SlotHandle) {
+    /// A part with nothing in it yet: it takes up nothing until it is set.
+    pub fn empty() -> (Self, PartHandle) {
         Self::new(super::optional(None))
     }
 
@@ -62,7 +62,7 @@ impl Slot {
     }
 }
 
-impl super::Decorator for Slot {
+impl super::Decorator for Part {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -112,7 +112,7 @@ impl super::Decorator for Slot {
     }
 
     fn name(&self) -> &str {
-        "Slot"
+        "Part"
     }
 }
 
@@ -227,27 +227,27 @@ mod tests {
     use crate::widget::{Text, TextInput};
 
     tilo_test_env::scenario! {
-        /// A slot and a switch.
+        /// A part and a switch.
         /// Each phase was a test of its own and builds its own fixture.
-        fn a_slot_adopts_content_and_keeps_its_parts;
+        fn a_part_adopts_content_and_keeps_its_parts;
 
-        phase a_slot_adopts_new_content_at_its_next_sync;
+        phase a_part_adopts_new_content_at_its_next_sync;
         {
-            let (mut slot, handle) = Slot::new(Box::new(Text::new("Loading")));
+            let (mut part, handle) = Part::new(Box::new(Text::new("Loading")));
             handle.set(Box::new(Text::new("Ready")));
             assert_eq!(
-                Widget::accessibility(&slot).and_then(|n| n.name).as_deref(),
+                Widget::accessibility(&part).and_then(|n| n.name).as_deref(),
                 Some("Loading"),
                 "not before the sync"
             );
             let doc = automerge::AutoCommit::new();
-            Widget::sync(&mut slot, &doc, &automerge::ROOT);
+            Widget::sync(&mut part, &doc, &automerge::ROOT);
             assert_eq!(
-                Widget::accessibility(&slot).and_then(|n| n.name).as_deref(),
+                Widget::accessibility(&part).and_then(|n| n.name).as_deref(),
                 Some("Ready")
             );
-            assert!(Widget::take_structure_dirty(&mut slot));
-            let (empty, _) = Slot::empty();
+            assert!(Widget::take_structure_dirty(&mut part));
+            let (empty, _) = Part::empty();
             assert!(Widget::children(&empty).is_empty());
         }
 

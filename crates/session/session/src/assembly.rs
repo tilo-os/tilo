@@ -89,7 +89,7 @@ pub(crate) struct Shared {
     /// Where the chrome takes intents the session raises.
     pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
     /// Whether this session shows quick settings at all: its app is one of the
-    /// surface apps it runs, and the bar's status keys open its slot.
+    /// surface apps it runs, and the bar's status keys open its part.
     pub(crate) quick_settings: bool,
     /// What the keys asked the panel to show before it ran — the notifications,
     /// the clipboard opened to paste, the page Escape goes back from — waiting
@@ -654,14 +654,14 @@ pub struct Session {
     /// own.
     #[cfg(target_os = "linux")]
     pub(crate) surface_apps: Vec<crate::surfaces::Surface>,
-    /// The views the person bound to the shell's slots, and the one running
-    /// each slot now.
+    /// The views the person bound to the shell's parts, and the one running
+    /// each part now.
     #[cfg(target_os = "linux")]
-    pub(crate) slots: crate::slots::Slots,
-    /// The slots whose view is a tilolang package, which the session runs
+    pub(crate) parts: crate::parts::Parts,
+    /// The parts whose view is a tilolang package, which the session runs
     /// itself.
     #[cfg(target_os = "linux")]
-    pub(crate) slot_views: crate::slot_views::SlotViews,
+    pub(crate) part_views: crate::part_views::PartViews,
     /// The displays as the person arranged them, kept in step with the ones
     /// attached.
     #[cfg(target_os = "linux")]

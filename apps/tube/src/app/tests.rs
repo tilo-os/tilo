@@ -905,7 +905,7 @@ tilo_test_env::scenario! {
                 );
                 if placement == Screen && !framed.sidebar_open_for_test() {
                     ui::headless::Framed::harness_mut(&mut framed)
-                        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+                        .press_window_part(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
                 }
                 assert!(
                     framed.sidebar_open_for_test(),

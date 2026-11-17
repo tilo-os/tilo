@@ -11,7 +11,7 @@ use super::Breadcrumb;
 #[component(name = "Breadcrumb", role = "Group")]
 pub struct BreadcrumbProps {
     /// The places, outermost first; the last is the page itself, which is not pressed.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub segments: Vec<BreadcrumbSegmentProps>,
     /// A glyph before the first place: a drive, Home.
     pub root_icon: Option<Icon>,
@@ -42,7 +42,7 @@ pub struct BreadcrumbSegmentProps {
     pub activate: Event,
 }
 
-crate::component::part_slot!(BreadcrumbSegmentProps);
+crate::component::part_type!(BreadcrumbSegmentProps);
 
 impl Described for Breadcrumb {
     type Props = BreadcrumbProps;

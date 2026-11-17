@@ -21,7 +21,7 @@ impl WindowGroup {
     }
 
     #[cfg(test)]
-    pub fn held_bar_for_tests(&self) -> Option<crate::widget::WindowBarSlot> {
+    pub fn held_bar_for_tests(&self) -> Option<crate::widget::WindowBarPart> {
         self.held_bar
     }
 
@@ -33,7 +33,7 @@ impl WindowGroup {
     ///
     /// A window of several places shows them as its bar, and a fullscreen window's bar is the
     /// shell's: neither hands its bar to the app.
-    pub(super) fn offer_bar_to_app(&mut self) -> Option<crate::widget::WindowBarSlot> {
+    pub(super) fn offer_bar_to_app(&mut self) -> Option<crate::widget::WindowBarPart> {
         let active = self.bar.active_id();
         let declares_nothing = self.bar.toolbar(active).is_none();
         let hands_its_bar = declares_nothing
@@ -55,7 +55,7 @@ impl WindowGroup {
         crate::widget::window_header::content_bar(app)
     }
 
-    pub(super) fn read_held_bar(&mut self) -> Option<crate::widget::WindowBarSlot> {
+    pub(super) fn read_held_bar(&mut self) -> Option<crate::widget::WindowBarPart> {
         let active = self.bar.active_id();
         let host = self
             .hosts

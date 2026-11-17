@@ -9,7 +9,7 @@ use super::{Property, PropertyList};
 #[component(name = "PropertyList", role = "List")]
 pub struct PropertyListProps {
     /// The facts, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub properties: Vec<PropertyProps>,
     /// Shade every other row, for a long list read across.
     pub striped: bool,
@@ -62,7 +62,7 @@ impl Described for PropertyList {
     }
 }
 
-impl crate::component::SlotType for Vec<PropertyProps> {
+impl crate::component::PartType for Vec<PropertyProps> {
     const MANY: bool = true;
 
     fn accepts() -> crate::component::Accepts {
@@ -72,11 +72,11 @@ impl crate::component::SlotType for Vec<PropertyProps> {
     fn fill(
         &mut self,
         source: &mut dyn crate::component::Source,
-        slot: &str,
+        part: &str,
     ) -> Result<(), String> {
         self.clear();
         let mut read = Vec::new();
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             read.push(PropertyProps::from_source(child).map_err(|error| error.to_string())?);
             Ok(())
         })?;

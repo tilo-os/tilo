@@ -1,7 +1,7 @@
 //! [`DragRun`] as a described component: a run of items a person reorders by dragging one.
 
 use crate::component::{
-    Accepts, Component, Described, Event, ResourceId, SlotType, SlotViews, Source,
+    Accepts, Component, Described, Event, PartType, PartViews, ResourceId, Source,
 };
 
 use super::drag_run::{DragDrop, DragRun, RunAxis, RunItem};
@@ -21,11 +21,11 @@ pub struct DragRunProps {
     /// Where the items pack across the run: centred (the default).
     pub align: Option<crate::widget::arrange::Align>,
     /// The items, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub items: DragItems,
     /// What stands beside the items at the run's trailing end and is never moved: a
     /// taskbar's time and device status.
-    #[component(slot)]
+    #[component(part)]
     pub trailing: Vec<crate::widget::Element>,
     /// An item was let go in a new place: carries the resource it stands for and its place
     /// among the run's other items, from 0 — what `items.move(item, to: at)` takes.
@@ -33,7 +33,7 @@ pub struct DragRunProps {
     pub drop: Event,
 }
 
-/// One item of a run: what it stands for, and the view drawn in its slot.
+/// One item of a run: what it stands for, and the view drawn in its part.
 #[derive(Component, Default)]
 #[component(name = "DragItem", role = "ListItem", label = "title")]
 pub struct DragItemProps {
@@ -51,7 +51,7 @@ pub struct DragItemProps {
     /// group, or the gap between two groups.
     pub group: Option<super::drag_run::RunGroup>,
     /// What it shows.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub body: Vec<crate::widget::Element>,
     /// It was pressed and let go without moving: open what it stands for.
     #[component(event)]
@@ -62,16 +62,16 @@ pub struct DragItemProps {
 #[derive(Default)]
 pub struct DragItems(Vec<DragItemProps>);
 
-impl SlotType for DragItems {
+impl PartType for DragItems {
     const MANY: bool = true;
 
     fn accepts() -> Accepts {
         Accepts::Component(DragItemProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
         let mut items = Vec::new();
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             items.push(DragItemProps::from_source(child).map_err(|error| error.to_string())?);
             Ok(())
         })?;
@@ -240,12 +240,12 @@ impl Described for DragRun {
     }
 
     /// The view of the item `key` shows, to change where the item stands.
-    fn part_views(&mut self, slot: &str, key: &str, of: &str) -> Option<&mut dyn SlotViews> {
-        if slot != "items" || of != "body" {
+    fn item_views(&mut self, part: &str, key: &str, of: &str) -> Option<&mut dyn PartViews> {
+        if part != "items" || of != "body" {
             return None;
         }
         let at = self.index_of(key)?;
         self.edit_item(Some(at));
-        Some(self as &mut dyn SlotViews)
+        Some(self as &mut dyn PartViews)
     }
 }

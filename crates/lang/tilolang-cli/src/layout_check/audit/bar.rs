@@ -46,10 +46,10 @@ pub fn offered_twice(layout: &ui::window_toolbar::BarLayout, buttons: &[String])
     layout
         .controls
         .iter()
-        // The app's own slots: the window's furniture, navigation and controls are the window's.
+        // The app's own parts: the window's furniture, navigation and controls are the window's.
         .filter(|control| {
             !control.furniture
-                && matches!(control.slot, "leading" | "views" | "views-menu" | "action")
+                && matches!(control.part, "leading" | "views" | "views-menu" | "action")
                 && !control.name.is_empty()
         })
         .filter(|control| buttons.contains(&control.name))
@@ -106,9 +106,9 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
                  for what does not fit in it",
                 what(control),
                 what(second),
-                control.slot,
+                control.part,
                 control.rect[0],
-                second.slot,
+                second.part,
                 second.rect[0],
             ),
         });
@@ -119,7 +119,7 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
         // leaves over, which a label may take: a person cannot read what it
         // does.
         if control.furniture
-            || control.slot == "overflow"
+            || control.part == "overflow"
             || control.icon.is_none()
             || control.words <= 0.0
         {

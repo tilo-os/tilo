@@ -11,9 +11,9 @@ fn the_inspector_drawer_holds_its_controls_inside_the_window() {
     let mut app = TestApp::<App>::capture(Some("landscape")).expect("the scenario stages");
     let width = 600.0;
     app.harness().resize((600, 800)).expect("resizes");
-    // The tools' toggle is the window bar's slot now, not a control in a row
+    // The tools' toggle is the window bar's part now, not a control in a row
     // of the app's own.
-    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    let declared = ui::window_toolbar::declared().expect("the window declares its parts");
     assert!(
         declared
             .actions
@@ -25,7 +25,7 @@ fn the_inspector_drawer_holds_its_controls_inside_the_window() {
     // the inspector docks and stands open; only a closed one is opened.
     if !app.harness().targets().contains_key("canvas-dock") {
         app.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
                 id: "canvas.tools".to_owned(),
             });
     }
@@ -84,13 +84,13 @@ fn blank_phone_welcome_and_header_controls_stay_inside_the_window() {
     );
     // The artwork has the window from its top edge: the row that used to hold
     // the title, the menu and the zoom stands in the window bar now, and the
-    // controls it held are slots there rather than buttons over the artwork.
+    // controls it held are parts there rather than buttons over the artwork.
     let canvas = targets.get("canvas").expect("the artwork pane");
     assert!(
         canvas.y0 <= 0.5,
         "no row stands above the artwork on a phone: {canvas:?}"
     );
-    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    let declared = ui::window_toolbar::declared().expect("the window declares its parts");
     let ids: Vec<&str> = declared
         .actions
         .iter()
@@ -107,7 +107,7 @@ fn blank_phone_welcome_and_header_controls_stay_inside_the_window() {
         "canvas.zoom-fit",
         "canvas.tools",
     ] {
-        assert!(ids.contains(&wanted), "{wanted} is a slot in {ids:?}");
+        assert!(ids.contains(&wanted), "{wanted} is a part in {ids:?}");
     }
     assert!(
         declared.location.is_some(),

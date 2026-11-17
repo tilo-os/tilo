@@ -16,7 +16,7 @@ use crate::widget::AppWidget;
 /// One window the process already has open.
 #[cfg(any(feature = "native", test))]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DevWindowSlot {
+pub(crate) struct DevWindowEntry {
     pub id: String,
     /// The previous library's bytes for this window, or the checkpoint on the
     /// first reload. Passed to the new code as this window's state.
@@ -35,7 +35,7 @@ pub struct DevRoot {
 /// windows it already has; a `None` root leaves those widgets alone.
 #[cfg(any(feature = "native", test))]
 pub(crate) struct DevReload {
-    pub windows: Vec<DevWindowSlot>,
+    pub windows: Vec<DevWindowEntry>,
     pub root: Option<DevRoot>,
     /// `dlopen` and symbol lookup, before any of the library's code ran.
     pub load: std::time::Duration,
@@ -93,7 +93,7 @@ struct DevFns {
 #[cfg(all(unix, any(feature = "native", test)))]
 pub(crate) fn reload_from_library(
     path: &Path,
-    windows: &[DevWindowSlot],
+    windows: &[DevWindowEntry],
 ) -> Result<DevReload, String> {
     let started = crate::time::now();
     let bytes = path.as_os_str().as_encoded_bytes();
@@ -135,7 +135,7 @@ pub(crate) fn reload_from_library(
 #[cfg(all(not(unix), any(feature = "native", test)))]
 pub(crate) fn reload_from_library(
     _path: &Path,
-    _windows: &[DevWindowSlot],
+    _windows: &[DevWindowEntry],
 ) -> Result<DevReload, String> {
     Err("in-place reload loads a shared library on unix".to_owned())
 }
@@ -155,7 +155,7 @@ impl Drop for ReloadSchemas {
 }
 
 #[cfg(any(feature = "native", test))]
-fn reload_with(fns: &DevFns, windows: &[DevWindowSlot]) -> Result<DevReload, String> {
+fn reload_with(fns: &DevFns, windows: &[DevWindowEntry]) -> Result<DevReload, String> {
     let mut root = None;
     let mut schemas = None;
     if let (Some(linked_ui), Some(publish)) = (fns.linked_ui, fns.publish) {
@@ -215,7 +215,7 @@ fn reload_with(fns: &DevFns, windows: &[DevWindowSlot]) -> Result<DevReload, Str
             ));
         }
         out.truncate(written);
-        next.push(DevWindowSlot {
+        next.push(DevWindowEntry {
             id: window.id.clone(),
             state: out,
         });
@@ -262,18 +262,18 @@ fn last_dlerror(what: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DevFns, DevWindowSlot, dev_stamp_addr, publish_dev_root, reload_from_library, reload_with,
+        DevFns, DevWindowEntry, dev_stamp_addr, publish_dev_root, reload_from_library, reload_with,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    fn windows() -> Vec<DevWindowSlot> {
+    fn windows() -> Vec<DevWindowEntry> {
         vec![
-            DevWindowSlot {
+            DevWindowEntry {
                 id: "primary".to_owned(),
                 state: b"hello".to_vec(),
             },
-            DevWindowSlot {
+            DevWindowEntry {
                 id: "notes".to_owned(),
                 state: b"draft".to_vec(),
             },

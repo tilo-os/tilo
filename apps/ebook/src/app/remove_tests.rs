@@ -62,7 +62,7 @@ fn grant(app: &mut TestApp<EbookShell>, id: &str) -> Option<PathBuf> {
 /// Go back to the library, as the window bar's Back does.
 fn back_to_library(app: &mut TestApp<EbookShell>) {
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Back);
     app.settle();
 }
 

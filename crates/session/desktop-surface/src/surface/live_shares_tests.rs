@@ -298,7 +298,7 @@ fn a_window_on_a_record_is_offered_for_sharing_from_its_menu() {
     assert_eq!(actions[1].name, "Share to channel…");
     assert!(actions[1].menu);
 
-    frame.root_mut::<DesktopSurface>().window_slots.route(
+    frame.root_mut::<DesktopSurface>().window_parts.route(
         notes,
         ToolbarEvent::Action {
             id: actions[1].id.clone(),
@@ -319,7 +319,7 @@ fn a_window_on_a_record_is_offered_for_sharing_from_its_menu() {
     frame.relayout();
     let actions = menu(&mut frame);
     assert_eq!(actions[1].name, "Stop sharing in #general");
-    frame.root_mut::<DesktopSurface>().window_slots.route(
+    frame.root_mut::<DesktopSurface>().window_parts.route(
         notes,
         ToolbarEvent::Action {
             id: actions[1].id.clone(),
@@ -360,7 +360,7 @@ fn a_window_without_a_bar_is_offered_for_sharing_from_its_title_row() {
     assert_eq!(shown.actions.len(), 1);
     assert_eq!(shown.actions[0].name, "Share to channel…");
 
-    frame.root_mut::<DesktopSurface>().window_slots.route(
+    frame.root_mut::<DesktopSurface>().window_parts.route(
         sketch,
         ToolbarEvent::Action {
             id: shown.actions[0].id.clone(),

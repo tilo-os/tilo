@@ -518,8 +518,8 @@ tilo_test_env::scenario! {
         let kept = std::ptr::from_ref(stack.children()[1]).cast::<()>();
         stack.replace(0, boxed(30.0));
         assert_eq!(stack.take_structure_change(), StructureChange::Described);
-        stack.insert(2, Slot::new(boxed(40.0)));
-        stack.move_slot(2, 0);
+        stack.insert(2, Part::new(boxed(40.0)));
+        stack.move_part(2, 0);
         stack.set_placement(1, Fit::hug(), 2, None);
         assert_eq!(stack.take_structure_change(), StructureChange::Described);
         assert!(stack.remove(0).is_some());
@@ -540,8 +540,8 @@ tilo_test_env::scenario! {
             vec![30.0, 20.0]
         );
 
-        let slots = stack.take_slots();
-        stack.set_slots(slots);
+        let parts = stack.take_parts();
+        stack.set_parts(parts);
         assert_eq!(stack.take_structure_change(), StructureChange::Rebuild);
     }
 
@@ -673,13 +673,13 @@ tilo_test_env::scenario! {
         let between = gap(&theme, Rhythm::Related);
         for direction in [Direction::Ltr, Direction::Rtl] {
             let row = || {
-                let mut spacer = Slot::new(Box::new(Spacer::new()));
+                let mut spacer = Part::new(Box::new(Spacer::new()));
                 spacer.fit = Fit::fill(1.0);
                 Stack::row()
                     .fill_width()
                     .direction(direction)
                     .push(boxed(100.0))
-                    .push_slot(spacer)
+                    .push_part(spacer)
                     .push(boxed(100.0))
             };
             #[allow(clippy::cast_possible_truncation, reason = "a small test width")]
@@ -822,7 +822,7 @@ fn filling_view() -> crate::widget::Element {
 
 fn subject_rect(root: &dyn Widget) -> vello::kurbo::Rect {
     crate::widget::find_test_id(root, SUBJECT)
-        .expect("the view in the slot is laid out")
+        .expect("the view in the part is laid out")
         .get_rect()
 }
 
@@ -858,8 +858,8 @@ tilo_test_env::scenario! {
     }
 
     phase a_child_that_fills_at_an_aspect_keeps_its_ratio_in_a_column;
-    // A child that says `aspect: 16/9` and `fill` is 16:9 wide in the slot it fills. The slot's
-    // width is the container's, decided during layout, so the ratio decides the height the slot
+    // A child that says `aspect: 16/9` and `fill` is 16:9 wide in the part it fills. The part's
+    // width is the container's, decided during layout, so the ratio decides the height the part
     // takes once that width is solved.
     {
         let theme = Theme::dark();
@@ -1180,7 +1180,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_page_rows_width_does_not_decide_its_height_in_a_row;
-    // The page row a virtual list wraps each row in is a page whose slot takes the row's whole
+    // The page row a virtual list wraps each row in is a page whose part takes the row's whole
     // width. In a row beside another child, that `width: 100%` is measured against a width the
     // row is still deciding, and the page comes out as tall as its content at the narrowest width
     // it was measured at: the row's own height must not come from that measurement.
@@ -1264,11 +1264,11 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_rows_slot_keeps_its_own_height_beside_a_foot;
+    phase a_rows_part_keeps_its_own_height_beside_a_foot;
     // A row of a list that fills its column keeps its own height, not the column's: a chat
     // message's row in a transcript is as tall as what it says, however tall the list around it
-    // is. A slot asking for no aspect gets no derived height, so nothing about a ratio may reach
-    // it — the same rule for a row inside a virtual list as for any other slot.
+    // is. A part asking for no aspect gets no derived height, so nothing about a ratio may reach
+    // it — the same rule for a row inside a virtual list as for any other part.
     {
         use crate::widget::{Button, VecListModel, VirtualList};
         let theme = Theme::dark();

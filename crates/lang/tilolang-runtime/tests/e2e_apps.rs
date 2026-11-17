@@ -368,7 +368,7 @@ mod cases {
         tree.children
             .iter()
             .find(|child| {
-                child.kind == "slot" && child.props.get("name") == Some(&Value::text("content"))
+                child.kind == "part" && child.props.get("name") == Some(&Value::text("content"))
             })
             .unwrap_or_else(|| panic!("no content in\n{}", dump(tree)))
     }

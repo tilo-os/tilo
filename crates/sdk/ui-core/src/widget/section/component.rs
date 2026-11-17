@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use vello::kurbo::Point;
 
-use crate::component::{Component, Described, Event, SlotViews, Value};
+use crate::component::{Component, Described, Event, PartViews, Value};
 use crate::widget::{Element, Interaction};
 
 use super::Section;
@@ -20,7 +20,7 @@ pub struct SectionProps {
     /// Whether its title opens and closes it.
     pub collapsible: bool,
     /// The content, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub content: Vec<Element>,
     /// Whether a collapsible section shows what it holds.
     #[component(state)]
@@ -36,8 +36,8 @@ pub struct SectionProps {
 impl Described for Section {
     type Props = SectionProps;
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        (slot == "content").then_some(self as &mut dyn SlotViews)
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        (part == "content").then_some(self as &mut dyn PartViews)
     }
 
     fn from_props(_key: &str, props: SectionProps) -> Self {
@@ -146,7 +146,7 @@ impl Section {
     }
 }
 
-impl SlotViews for Section {
+impl PartViews for Section {
     fn len(&self) -> usize {
         self.parts
             .children

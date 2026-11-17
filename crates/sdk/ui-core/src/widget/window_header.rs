@@ -137,7 +137,7 @@ pub trait WindowHeader {
         false
     }
 
-    fn window_bar_slot(&self) -> Option<WindowBarSlot> {
+    fn window_bar_part(&self) -> Option<WindowBarPart> {
         None
     }
 
@@ -171,7 +171,7 @@ pub struct WindowBar {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WindowBarSlot {
+pub struct WindowBarPart {
     pub row: Rect,
     pub controls: Rect,
 }
@@ -187,7 +187,7 @@ pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) ->
 
 /// Whether a header row of `content` holds the window's bar as the window's own bar: the row the
 /// content draws at the window's top is the bar then — the window draws none of its own and its
-/// controls stand at the row's trailing end — where a row that stands as the bar's slots, or a
+/// controls stand at the row's trailing end — where a row that stands as the bar's parts, or a
 /// content that draws no row at all, leaves the window its bar.
 ///
 /// Every window asks this of its content, whatever draws it: a frame of the shell's preset
@@ -196,12 +196,12 @@ pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) ->
 /// ([`crate::headless::FrameHarness`]), so a window shows one bar, never two stacked, and no two
 /// of them can disagree about which.
 #[must_use]
-pub(crate) fn content_bar(content: &dyn Widget) -> Option<WindowBarSlot> {
+pub(crate) fn content_bar(content: &dyn Widget) -> Option<WindowBarPart> {
     let row = root_header_row(content)?;
     (row.header_row_height() > 0.0)
-        .then(|| row.window_bar_slot())
+        .then(|| row.window_bar_part())
         .flatten()
-        .filter(|slot| slot.row.height() > 0.0)
+        .filter(|part| part.row.height() > 0.0)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -214,15 +214,15 @@ pub(crate) struct RowFurniture {
 }
 
 impl RowFurniture {
-    /// The furniture of the row holding the bar in `slot`. Nothing a row cannot fit is
+    /// The furniture of the row holding the bar in `part`. Nothing a row cannot fit is
     /// placed, so a narrow window's furniture never runs into what the app draws.
-    pub(crate) fn of(slot: WindowBarSlot) -> Self {
+    pub(crate) fn of(part: WindowBarPart) -> Self {
         use crate::widget::window_controls::{CONTROL_GAP, CONTROL_PX, LEAD_GAP, WindowControls};
-        let trailing = slot.controls;
+        let trailing = part.controls;
         let controls = WindowControls::lay_out(trailing);
         if controls.pill.area() <= 0.0 {
             return Self {
-                row: slot.row,
+                row: part.row,
                 trailing,
                 ..Self::default()
             };
@@ -249,7 +249,7 @@ impl RowFurniture {
             Rect::ZERO
         };
         Self {
-            row: slot.row,
+            row: part.row,
             trailing,
             controls,
             search,
@@ -390,11 +390,11 @@ pub fn merged_row_width() -> f64 {
 #[must_use]
 pub fn merged_row_width_in(width: f64) -> f64 {
     let wide = Rect::new(0.0, 0.0, WIDE_ENOUGH, WIDE_ENOUGH);
-    let slot = WindowBarSlot {
+    let part = WindowBarPart {
         row: wide,
         controls: wide,
     };
-    let furniture = RowFurniture::of(slot);
+    let furniture = RowFurniture::of(part);
     let leading = if merged_row_holds_search(width) {
         furniture.new_tab.x0
     } else {
@@ -441,11 +441,11 @@ pub(crate) fn offer_root_header_bar(root: &mut dyn Widget, bar: Option<WindowBar
         .any(|child| offer_root_header_bar(child, bar))
 }
 
-pub(crate) fn window_bar_slot(root: &dyn Widget) -> Option<WindowBarSlot> {
+pub(crate) fn window_bar_part(root: &dyn Widget) -> Option<WindowBarPart> {
     if let Some(header) = super::capability::capability::<dyn WindowHeader>(root) {
-        return header.window_bar_slot();
+        return header.window_bar_part();
     }
-    root.children().into_iter().find_map(window_bar_slot)
+    root.children().into_iter().find_map(window_bar_part)
 }
 
 pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&WindowStatus>) -> bool {

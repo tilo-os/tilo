@@ -1,5 +1,5 @@
-//! A described component's slot sizes a view as the view asked: a view that says `fill` fills the slot
-//! it is put in, for every component with a body slot, never only for the layout primitives whose slots
+//! A described component's part sizes a view as the view asked: a view that says `fill` fills the part
+//! it is put in, for every component with a body part, never only for the layout primitives whose parts
 //! are the view arguments.
 
 #![allow(
@@ -20,7 +20,7 @@ use crate::widget::{Card, CardProps, Element, Fitted};
 struct Node {
     key: String,
     props: BTreeMap<String, Value>,
-    slots: Vec<(&'static str, Element)>,
+    parts: Vec<(&'static str, Element)>,
 }
 
 impl Node {
@@ -28,12 +28,12 @@ impl Node {
         Self {
             key: key.to_owned(),
             props: BTreeMap::new(),
-            slots: Vec::new(),
+            parts: Vec::new(),
         }
     }
 
-    fn holding(mut self, slot: &'static str, view: Element) -> Self {
-        self.slots.push((slot, view));
+    fn holding(mut self, part: &'static str, view: Element) -> Self {
+        self.parts.push((part, view));
         self
     }
 }
@@ -55,17 +55,17 @@ impl Source for Node {
         None
     }
 
-    fn children(&mut self, slot: &str) -> Vec<Element> {
-        self.slots
+    fn children(&mut self, part: &str) -> Vec<Element> {
+        self.parts
             .iter_mut()
-            .filter(|(name, _)| *name == slot)
+            .filter(|(name, _)| *name == part)
             .map(|(_, view)| std::mem::replace(view, Box::new(crate::widget::Absent::new())))
             .collect()
     }
 
     fn components(
         &mut self,
-        _slot: &str,
+        _part: &str,
         _read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
         Ok(0)
@@ -97,9 +97,9 @@ fn body_height(card: Card, height: u32) -> f64 {
 }
 
 tilo_test_env::scenario! {
-    fn a_body_slot_sizes_its_view_as_the_view_asked;
+    fn a_body_part_sizes_its_view_as_the_view_asked;
 
-    phase a_body_slot_child_that_fills_gets_the_slots_size;
+    phase a_body_part_child_that_fills_gets_the_parts_size;
     {
         let mut node = Node::new("card").holding("body", filling_view());
         let props = CardProps::from_source(&mut node).expect("the card reads its body");
@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_fill_is_the_slots_and_scales_with_it;
+    phase the_fill_is_the_parts_and_scales_with_it;
     {
         for (height, least) in [(300u32, 200.0), (500u32, 400.0)] {
             let mut node = Node::new("card").holding("body", filling_view());
@@ -135,9 +135,9 @@ tilo_test_env::scenario! {
     }
 
     // The same view saying `aspect: 16/9` and `fill` is 16:9 wide in the card's body: the fit
-    // reaches a described component's slot as a `stack`'s does, aspect included, and the ratio
+    // reaches a described component's part as a `stack`'s does, aspect included, and the ratio
     // decides the height from the width the body gives it.
-    phase a_body_slot_child_that_fills_at_an_aspect_keeps_its_ratio;
+    phase a_body_part_child_that_fills_at_an_aspect_keeps_its_ratio;
     {
         let view = Box::new(Fitted::new(subject(), Fit::fill(1.0).aspect(16.0 / 9.0))) as Element;
         let mut node = Node::new("card").holding("body", view);

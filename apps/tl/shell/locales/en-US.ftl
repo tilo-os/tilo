@@ -121,13 +121,13 @@ d-sfhd6wko = Bar part
        *[other] bar parts
     }
 
-d-fjzbw5un = Slot
+d-fjzbw5un = Kind
     .doc = What the part is; the bar draws it from this, so a part moved is a part the same, and its name is the one that part goes by.
 
 d-pbly7ymy = Shown
     .doc = Whether it shows on the bar; a part off keeps its place in the record.
 
-d-sfhd6wko-filter-slot = Slot
+d-sfhd6wko-filter-kind = Kind
 
 d-sfhd6wko-filter-shown = Shown
 
@@ -437,7 +437,7 @@ d-uv33v3c2 = Regular
 
 d-5czgy2f6 = Large
 
-d-vtiohdqj = Slot
+d-vtiohdqj = Bar part kind
     .doc = One part a person can put on the top bar, in their order.
 
 d-2k6zzh2i = The system's menu: Tilo, and the device's own commands

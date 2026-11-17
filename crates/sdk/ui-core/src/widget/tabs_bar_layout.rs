@@ -5,7 +5,7 @@ use super::{TabBar, WINDOW_HISTORY_TARGET, icons, new_tab_control};
 
 impl TabBar {
     /// The bar as it lays itself out now: every control it shows, in reading order (the active
-    /// tab's own slots — the sidebar toggle, Back and Forward, the leading actions, the views
+    /// tab's own parts — the sidebar toggle, Back and Forward, the leading actions, the views
     /// and the location's picker, the actions and the overflow button — then the window's
     /// History control and own controls), and the width it leaves empty beside its location's
     /// label.
@@ -25,9 +25,9 @@ impl TabBar {
             push(new_tab_control(self.new_tab_rect));
         }
         if let Some(toolbar) = self.active_toolbar() {
-            let slots = self.toolbar_row.slots();
-            spare = slots.spare;
-            if toolbar.sidebar.is_some() && !slots.sidebar_folded(toolbar) {
+            let parts = self.toolbar_row.parts();
+            spare = parts.spare;
+            if toolbar.sidebar.is_some() && !parts.sidebar_folded(toolbar) {
                 let key = if toolbar.sidebar == Some(true) {
                     "window-toolbar-hide-sidebar"
                 } else {
@@ -37,7 +37,7 @@ impl TabBar {
                     BarControl::new(
                         "sidebar",
                         crate::widget::window_toolbar_row::SIDEBAR_TARGET,
-                        slots.sidebar,
+                        parts.sidebar,
                     )
                     .named(lookup(key)),
                 );
@@ -47,16 +47,16 @@ impl TabBar {
                     BarControl::new(
                         "back",
                         crate::widget::window_toolbar_row::BACK_TARGET,
-                        slots.back,
+                        parts.back,
                     )
                     .named(lookup("window-toolbar-back")),
                 );
-                if !slots.forward_folded(toolbar) {
+                if !parts.forward_folded(toolbar) {
                     push(
                         BarControl::new(
                             "forward",
                             crate::widget::window_toolbar_row::FORWARD_TARGET,
-                            slots.forward,
+                            parts.forward,
                         )
                         .named(lookup("window-toolbar-forward")),
                     );
@@ -67,20 +67,20 @@ impl TabBar {
                     BarControl::new(
                         "location",
                         crate::widget::window_toolbar_row::LOCATION_TARGET,
-                        slots.location,
+                        parts.location,
                     )
                     .named(location.label.clone()),
                 );
             }
-            for (index, (action, rect)) in toolbar.leading.iter().zip(&slots.leading).enumerate() {
-                let labelled = action.labelled && slots.labelled;
+            for (index, (action, rect)) in toolbar.leading.iter().zip(&parts.leading).enumerate() {
+                let labelled = action.labelled && parts.labelled;
                 let icon = (!action.icon.is_empty()).then(|| action.icon.clone());
                 if icon.is_none() && !labelled {
                     continue;
                 }
                 let control = BarControl::new("leading", action.id.clone(), *rect)
                     .named(action.name.clone())
-                    .words(slots.leading_words.get(index).copied().unwrap_or(0.0));
+                    .words(parts.leading_words.get(index).copied().unwrap_or(0.0));
                 let control = if action.primary {
                     control.primary()
                 } else {
@@ -94,8 +94,8 @@ impl TabBar {
             }
             if let (Some(views), Some(first), Some(last)) = (
                 toolbar.views.as_ref(),
-                slots.views.first(),
-                slots.views.last(),
+                parts.views.first(),
+                parts.views.last(),
             ) {
                 push(
                     BarControl::new(
@@ -107,7 +107,7 @@ impl TabBar {
                 );
             }
             if let Some(views) = toolbar.views.as_ref()
-                && slots.views_menu.area() > 0.0
+                && parts.views_menu.area() > 0.0
             {
                 let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
                 let label = chosen.map_or(views.name.as_str(), |view| view.label.as_str());
@@ -115,17 +115,17 @@ impl TabBar {
                     BarControl::new(
                         "views-menu",
                         crate::widget::window_toolbar_row::VIEWS_MENU_TARGET,
-                        slots.views_menu,
+                        parts.views_menu,
                     )
                     .named(label.to_owned())
                     .icon(Some(icons::Icon::ChevronDown.name().to_owned()))
                     .menu(),
                 );
             }
-            for (index, (action, rect)) in toolbar.actions.iter().zip(&slots.actions).enumerate() {
+            for (index, (action, rect)) in toolbar.actions.iter().zip(&parts.actions).enumerate() {
                 let mut control = BarControl::new("action", action.id.clone(), *rect)
                     .named(action.name.clone())
-                    .words(slots.action_words.get(index).copied().unwrap_or(0.0));
+                    .words(parts.action_words.get(index).copied().unwrap_or(0.0));
                 if !action.icon.is_empty() {
                     control = control.icon(Some(action.icon.clone()));
                 }
@@ -135,18 +135,18 @@ impl TabBar {
                 if action.primary {
                     control = control.primary();
                 }
-                push(if action.labelled && slots.actions_labelled {
+                push(if action.labelled && parts.actions_labelled {
                     control.labelled()
                 } else {
                     control
                 });
             }
-            if slots.overflow.area() > 0.0 {
+            if parts.overflow.area() > 0.0 {
                 push(
                     BarControl::new(
                         "overflow",
                         crate::widget::window_toolbar_row::OVERFLOW_TARGET,
-                        slots.overflow,
+                        parts.overflow,
                     )
                     .named(lookup("window-toolbar-more"))
                     .icon(Some(icons::Icon::MoreHorizontal.name().to_owned()))
@@ -160,13 +160,13 @@ impl TabBar {
                     .named(lookup("history-mode-title")),
             );
         }
-        for (slot, control, rect) in [
+        for (part, control, rect) in [
             ("minimize", WindowControl::Minimize, self.controls.minimize),
             ("maximize", WindowControl::Maximize, self.controls.maximize),
             ("close", WindowControl::Close, self.controls.close),
         ] {
             push(
-                BarControl::new(slot, control.target(), rect)
+                BarControl::new(part, control.target(), rect)
                     .named(lookup(control.name_key(self.resize)))
                     .icon(Some(control.icon(self.resize).name().to_owned())),
             );

@@ -161,7 +161,7 @@ tilo_test_env::scenario! {
                     ))),
                 )))),
         ) as crate::widget::Element;
-        let Some(views) = crate::component::Described::slot_views(&mut docked, "content") else {
+        let Some(views) = crate::component::Described::part_views(&mut docked, "content") else {
             panic!("a column changes its content in place");
         };
         views.insert(0, content);

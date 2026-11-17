@@ -12,8 +12,8 @@ use crate::runtime::rich::{Reference, RichValue};
 use crate::runtime::{Binding, NameHost, ResourceRef, UiNode, Value};
 use tilo_render_protocol::patch::rich::{self as rich_wire, InlineView};
 
-/// The kind of a node holding a component's named slot.
-pub const SLOT: &str = "slot";
+/// The kind of a node holding a component's named part.
+pub const PART: &str = "part";
 
 /// The prop of a `choice` node the window shows its cases from: `[name, label, icon]` each.
 pub const CASES: &str = "cases";
@@ -109,7 +109,7 @@ impl Convert<'_> {
             children: node
                 .children
                 .iter()
-                .filter(|child| !virtual_list || child.kind == SLOT)
+                .filter(|child| !virtual_list || child.kind == PART)
                 .map(|child| self.node(child))
                 .collect(),
         }

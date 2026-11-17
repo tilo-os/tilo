@@ -76,11 +76,11 @@ tilo_test_env::scenario! {
             );
             row.lay_out(bounds);
             assert_eq!(
-                row.slots().location,
-                quiet.slots().location,
+                row.parts().location,
+                quiet.parts().location,
                 "the notice reserves no area of its own at {width}"
             );
-            assert!(row.slots().location.width() > 0.0);
+            assert!(row.parts().location.width() > 0.0);
             let nodes = row.accessibility();
             let said = nodes
                 .iter()
@@ -110,17 +110,17 @@ tilo_test_env::scenario! {
         );
         row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
         assert!(row.measure_views(&Theme::dark()), "the notice is measured");
-        let slots = row.slots();
+        let parts = row.parts();
         assert!(
-            slots.notice_labelled == [true] && slots.notice[0].width() > CONTROL_PX,
-            "Undo names itself in a wide row: {slots:?}"
+            parts.notice_labelled == [true] && parts.notice[0].width() > CONTROL_PX,
+            "Undo names itself in a wide row: {parts:?}"
         );
         assert!(
-            (slots.notice[0].x0 - slots.location.x1 - CONTROL_GAP).abs() < 1e-9,
+            (parts.notice[0].x0 - parts.location.x1 - CONTROL_GAP).abs() < 1e-9,
             "right after the notice's text"
         );
-        assert_eq!(row.slots().actions.len(), 1, "and is not among the actions");
-        let button = row.slots().notice[0].center();
+        assert_eq!(row.parts().actions.len(), 1, "and is not among the actions");
+        let button = row.parts().notice[0].center();
         assert!(row.press(button));
         assert!(row.release(button));
         assert_eq!(
@@ -149,20 +149,20 @@ tilo_test_env::scenario! {
                 .take_while(|width| *width <= 1100.0)
             {
                 let row = calendar_row_of(&toolbar, width);
-                let slots = row.slots();
+                let parts = row.parts();
                 assert_eq!(
-                    slots.notice.len(),
+                    parts.notice.len(),
                     names.len(),
-                    "{names:?} stand in a {width} px row: {slots:?}"
+                    "{names:?} stand in a {width} px row: {parts:?}"
                 );
                 assert!(
-                    slots.location.area() > 0.0
-                        && slots.notice[0].x0 >= slots.location.x1 + CONTROL_GAP - 1e-9
-                        && slots
+                    parts.location.area() > 0.0
+                        && parts.notice[0].x0 >= parts.location.x1 + CONTROL_GAP - 1e-9
+                        && parts
                             .notice
                             .windows(2)
                             .all(|pair| pair[1].x0 >= pair[0].x1 + CONTROL_GAP - 1e-9),
-                    "{names:?} stand in order after the notice's text at {width} px: {slots:?}"
+                    "{names:?} stand in order after the notice's text at {width} px: {parts:?}"
                 );
                 let nodes = row.accessibility();
                 for name in &names {
@@ -179,25 +179,25 @@ tilo_test_env::scenario! {
                 }
                 if row.notice_whole() != Some(true) {
                     assert!(
-                        slots.actions.is_empty()
-                            && slots
+                        parts.actions.is_empty()
+                            && parts
                                 .leading
                                 .iter()
                                 .zip(&toolbar.leading)
                                 .all(|(rect, action)| action.navigates || rect.area() <= 0.0),
                         "the notice is cut short at {width} px only with every plain action \
-                     in the menu: {slots:?}"
+                     in the menu: {parts:?}"
                     );
                 }
                 assert!(
-                    slots
+                    parts
                         .notice_labelled
                         .windows(2)
                         .all(|pair| pair[0] || !pair[1]),
-                    "the last gives its label up first at {width} px: {slots:?}"
+                    "the last gives its label up first at {width} px: {parts:?}"
                 );
                 for (i, name) in names.iter().enumerate() {
-                    let labelled = slots.notice_labelled[i];
+                    let labelled = parts.notice_labelled[i];
                     match (labelled, labelled_from[i]) {
                         (true, None) => labelled_from[i] = Some(width),
                         (false, Some(from)) => {
@@ -207,7 +207,7 @@ tilo_test_env::scenario! {
                     }
                     if !labelled {
                         assert!(
-                            (slots.notice[i].width() - CONTROL_PX).abs() < 1e-9,
+                            (parts.notice[i].width() - CONTROL_PX).abs() < 1e-9,
                             "folded, {name} is its icon"
                         );
                     }
@@ -274,8 +274,8 @@ tilo_test_env::scenario! {
             );
             row.lay_out(Rect::new(0.0, 0.0, 220.0, 40.0));
             assert_eq!(
-                row.slots(),
-                quiet.slots(),
+                row.parts(),
+                quiet.parts(),
                 "the row stands as it does without a notice"
             );
             assert!(row.measure_strip(&theme, 404.0), "the strip is measured");
@@ -325,24 +325,24 @@ tilo_test_env::scenario! {
     phase navigation_leads_actions_trail_and_the_location_fills_between;
     {
         let row = row();
-        let slots = row.slots();
-        assert!(slots.back.x1 < slots.forward.x0);
-        assert!(slots.forward.x1 < slots.location.x0);
-        assert!(slots.location.x1 < slots.actions[0].x0);
-        assert!((slots.actions[0].x1 - 640.0).abs() < f64::EPSILON);
-        assert!(slots.location.width() > 400.0);
+        let parts = row.parts();
+        assert!(parts.back.x1 < parts.forward.x0);
+        assert!(parts.forward.x1 < parts.location.x0);
+        assert!(parts.location.x1 < parts.actions[0].x0);
+        assert!((parts.actions[0].x1 - 640.0).abs() < f64::EPSILON);
+        assert!(parts.location.width() > 400.0);
     }
 
     phase back_runs_only_where_it_can_and_forward_not_at_the_end;
     {
         let mut row = row();
-        let back = row.slots().back.center();
+        let back = row.parts().back.center();
         assert!(row.press(back));
         assert!(row.release(back));
-        let forward = row.slots().forward.center();
+        let forward = row.parts().forward.center();
         assert!(row.press(forward));
         assert!(row.release(forward));
-        let reload = row.slots().actions[0].center();
+        let reload = row.parts().actions[0].center();
         assert!(row.press(reload));
         assert!(row.release(reload));
         assert_eq!(
@@ -363,7 +363,7 @@ tilo_test_env::scenario! {
     phase a_click_on_the_location_edits_the_whole_address_and_esc_puts_it_back;
     {
         let mut row = row();
-        let location = row.slots().location.center();
+        let location = row.parts().location.center();
         assert!(row.press(location));
         assert!(row.is_editing());
         assert_eq!(row.field_text(), Some("https://duckduckgo.com/"));
@@ -393,7 +393,7 @@ tilo_test_env::scenario! {
         );
         row.set_popup_area(Rect::new(0.0, 0.0, 800.0, 600.0));
         row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
-        let location = row.slots().location.center();
+        let location = row.parts().location.center();
         assert!(row.press(location));
         assert!(!row.is_editing(), "a picker never turns into a field");
         assert!(!row.choices_open(), "it opens as the press ends");
@@ -500,7 +500,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase slots_shown_where_none_stood_are_at_rest_at_once;
+    phase parts_shown_where_none_stood_are_at_rest_at_once;
     {
         let mut row = ToolbarRow::new();
         let now = crate::time::now();
@@ -512,7 +512,7 @@ tilo_test_env::scenario! {
         row.show(8, Some(&browser()), Theme::dark().motion(), now);
         assert!(
             row.needs_animation_frame(),
-            "another tab's slots cross-fade"
+            "another tab's parts cross-fade"
         );
     }
 
@@ -524,7 +524,7 @@ tilo_test_env::scenario! {
         row.show(8, None, Theme::dark().motion(), now);
         assert!(!row.is_editing());
         assert!(row.toolbar().is_none());
-        assert!(row.needs_animation_frame(), "the old slots fade out");
+        assert!(row.needs_animation_frame(), "the old parts fade out");
     }
 }
 
@@ -611,7 +611,7 @@ fn address_book_row(editing: bool, width: f64) -> ToolbarRow {
 tilo_test_env::scenario! {
     fn the_rows_actions_stand_fold_into_the_menu_and_run;
 
-    phase every_slot_and_overflow_item_is_found_by_role_and_name_and_runs;
+    phase every_part_and_overflow_item_is_found_by_role_and_name_and_runs;
     {
         let wide = address_book_row(false, 900.0).accessibility();
         assert!(
@@ -644,7 +644,7 @@ tilo_test_env::scenario! {
         assert_ne!(new.bounds, more.bounds);
 
         let mut narrow = address_book_row(false, 240.0);
-        assert!(narrow.slots().actions.is_empty(), "no area for any action");
+        assert!(narrow.parts().actions.is_empty(), "no area for any action");
         assert!(narrow.perform(OVERFLOW_TARGET), "More opens its menu");
         assert!(narrow.popup_open());
         let nodes = narrow.accessibility();
@@ -696,7 +696,7 @@ tilo_test_env::scenario! {
     {
         // As wide as the row a compact (420 px) window leaves the toolbar.
         let compact = Rect::new(0.0, 0.0, 220.0, 40.0);
-        let one = Slots::lay_out(
+        let one = Parts::lay_out(
             &file_toolbar(1),
             compact,
             None,
@@ -706,21 +706,21 @@ tilo_test_env::scenario! {
         assert_eq!(one.overflow, Rect::ZERO, "no menu for one action");
 
         for declared in [2, 3] {
-            let slots = Slots::lay_out(
+            let parts = Parts::lay_out(
                 &file_toolbar(declared),
                 compact,
                 None,
                 (&LocationForms::default(), &[], &[]),
             );
-            let folded = declared - slots.actions.len();
+            let folded = declared - parts.actions.len();
             assert!(
                 folded == 0 || folded >= 2,
                 "{declared} actions: the menu holds {folded}"
             );
-            assert_eq!(slots.overflow.area() > 0.0, folded > 0);
+            assert_eq!(parts.overflow.area() > 0.0, folded > 0);
         }
 
-        let wide = Slots::lay_out(
+        let wide = Parts::lay_out(
             &file_toolbar(1),
             Rect::new(0.0, 0.0, 900.0, 40.0),
             None,
@@ -751,7 +751,7 @@ tilo_test_env::scenario! {
             crate::motion::frame_now(),
         );
         row.lay_out(Rect::new(0.0, 0.0, 800.0, 40.0));
-        let format = row.slots().actions[0].center();
+        let format = row.parts().actions[0].center();
         assert!(row.press(format) && row.release(format));
         assert!(
             row.take_events().is_empty(),
@@ -794,7 +794,7 @@ tilo_test_env::scenario! {
         );
         narrow.lay_out(Rect::new(0.0, 0.0, 240.0, 40.0));
         assert!(
-            narrow.slots().actions.is_empty(),
+            narrow.parts().actions.is_empty(),
             "no area: Format goes in the menu"
         );
         assert!(narrow.open_overflow());
@@ -885,12 +885,12 @@ tilo_test_env::scenario! {
             );
             row.lay_out(Rect::new(0.0, 0.0, 600.0, 40.0));
             assert_eq!(
-                shows_on(&toolbar, &Slot::Sidebar),
+                shows_on(&toolbar, &Part::Sidebar),
                 open,
                 "drawn on while open"
             );
             assert_eq!(
-                shows_on(&toolbar, &Slot::Action(0)),
+                shows_on(&toolbar, &Part::Action(0)),
                 open,
                 "drawn on while open"
             );
@@ -932,11 +932,11 @@ tilo_test_env::scenario! {
         let available = row_for(false);
         let mut unavailable = row_for(true);
         assert_eq!(
-            unavailable.slots().sidebar,
-            available.slots().sidebar,
+            unavailable.parts().sidebar,
+            available.parts().sidebar,
             "the toggle keeps its place"
         );
-        assert_eq!(unavailable.slots().location, available.slots().location);
+        assert_eq!(unavailable.parts().location, available.parts().location);
 
         let toggle = find_node(
             &unavailable.accessibility(),
@@ -947,7 +947,7 @@ tilo_test_env::scenario! {
         .expect("the toggle is still found");
         assert!(toggle.state.disabled, "and says it cannot act");
         assert!(!unavailable.perform(SIDEBAR_TARGET));
-        let center = unavailable.slots().sidebar.center();
+        let center = unavailable.parts().sidebar.center();
         unavailable.press(center);
         unavailable.release(center);
         assert!(
@@ -1060,15 +1060,15 @@ tilo_test_env::scenario! {
     phase leading_actions_follow_the_navigation_and_views_stand_before_the_actions;
     {
         let row = calendar_row(1000.0);
-        let slots = row.slots();
-        assert_eq!(slots.leading.len(), 3);
-        assert!(slots.sidebar.x1 < slots.leading[0].x0);
-        assert!(slots.leading[2].x1 < slots.location.x0);
-        assert_eq!(slots.views.len(), 3, "the switcher fits in the row");
-        assert!(slots.location.x1 < slots.views_strip().x0);
-        assert!(slots.views_strip().x1 < slots.actions[0].x0);
-        assert_eq!(slots.actions.len(), 1, "Import is the menu's only");
-        assert!(slots.overflow.area() > 0.0, "the menu holds Import");
+        let parts = row.parts();
+        assert_eq!(parts.leading.len(), 3);
+        assert!(parts.sidebar.x1 < parts.leading[0].x0);
+        assert!(parts.leading[2].x1 < parts.location.x0);
+        assert_eq!(parts.views.len(), 3, "the switcher fits in the row");
+        assert!(parts.location.x1 < parts.views_strip().x0);
+        assert!(parts.views_strip().x1 < parts.actions[0].x0);
+        assert_eq!(parts.actions.len(), 1, "Import is the menu's only");
+        assert!(parts.overflow.area() > 0.0, "the menu holds Import");
     }
 
     phase each_view_tab_is_as_wide_as_its_label;
@@ -1078,7 +1078,7 @@ tilo_test_env::scenario! {
         let widths = crate::text_render::with_layout_renderer(&theme, |text| {
             SegmentedFace::tab_widths(&["Month", "Week", "Day"], VIEWS_SIZE, text, &theme)
         });
-        let tabs = &row.slots().views;
+        let tabs = &row.parts().views;
         assert_eq!(tabs.len(), widths.len());
         for (tab, width) in tabs.iter().zip(&widths) {
             assert!(
@@ -1095,10 +1095,10 @@ tilo_test_env::scenario! {
     phase a_view_is_chosen_in_the_row_or_from_the_menu_when_the_row_is_too_small;
     {
         let mut row = calendar_row(1000.0);
-        let month = row.slots().views[0].center();
+        let month = row.parts().views[0].center();
         assert!(row.press(month));
         assert!(row.release(month));
-        let today = row.slots().leading[2].center();
+        let today = row.parts().leading[2].center();
         assert!(row.press(today));
         assert!(row.release(today));
         assert_eq!(
@@ -1111,10 +1111,10 @@ tilo_test_env::scenario! {
 
         let mut narrow = calendar_row(120.0);
         assert!(
-            narrow.slots().views.is_empty() && narrow.slots().views_menu == Rect::ZERO,
+            narrow.parts().views.is_empty() && narrow.parts().views_menu == Rect::ZERO,
             "no area even for the views menu: the views go in the overflow menu"
         );
-        assert!(narrow.slots().overflow.area() > 0.0);
+        assert!(narrow.parts().overflow.area() > 0.0);
         assert!(narrow.open_overflow());
         assert_eq!(
             narrow.menu_entries.first().cloned().flatten(),
@@ -1145,27 +1145,27 @@ tilo_test_env::scenario! {
     {
         let at = (233..=900)
             .map(f64::from)
-            .find(|width| calendar_row(*width).slots().views_in_location())
+            .find(|width| calendar_row(*width).parts().views_in_location())
             .expect("a row wide enough for the period's narrower form makes it the views' picker");
 
         let mut below = calendar_row(at - 1.0);
-        assert!(below.slots().views.is_empty() && below.slots().views_menu == Rect::ZERO);
+        assert!(below.parts().views.is_empty() && below.parts().views_menu == Rect::ZERO);
         assert!(
-            below.slots().location.area() > 0.0,
+            below.parts().location.area() > 0.0,
             "the period still stands"
         );
         assert!(below.open_overflow());
         let in_overflow = listed_views(&below);
 
         let mut picker = calendar_row(at);
-        let slots = picker.slots().clone();
+        let parts = picker.parts().clone();
         assert_eq!(
-            slots.views_menu, slots.location,
+            parts.views_menu, parts.location,
             "the location picks the view"
         );
-        assert!(slots.views.is_empty(), "no switcher beside it");
-        assert!(picker.press(slots.location.center()));
-        assert!(picker.release(slots.location.center()));
+        assert!(parts.views.is_empty(), "no switcher beside it");
+        assert!(picker.press(parts.location.center()));
+        assert!(picker.release(parts.location.center()));
         assert_eq!(picker.menu_labels(), ["Month", "Week", "Day"]);
         assert_eq!(
             listed_views(&picker),
@@ -1201,11 +1201,11 @@ tilo_test_env::scenario! {
         const TODAY: usize = 2;
         let shown = |width: f64| {
             let row = calendar_row(width);
-            let slots = row.slots();
-            let rect = slots.leading[TODAY];
+            let parts = row.parts();
+            let rect = parts.leading[TODAY];
             if rect.area() <= 0.0 {
                 "in the menu"
-            } else if slots.labelled {
+            } else if parts.labelled {
                 assert!(
                     rect.width() > CONTROL_PX,
                     "a text button is wider than an icon"
@@ -1254,27 +1254,27 @@ tilo_test_env::scenario! {
             let mut narrower: Option<(f64, usize)> = None;
             for width in (120..=1400).map(f64::from) {
                 let row = calendar_row_of(&toolbar, width);
-                let slots = row.slots();
-                if slots.location.area() <= 0.0 {
+                let parts = row.parts();
+                if parts.location.area() <= 0.0 {
                     continue;
                 }
                 if width >= 233.0 {
                     assert!(
-                        slots.leading[..2].iter().all(|rect| rect.area() > 0.0),
+                        parts.leading[..2].iter().all(|rect| rect.area() > 0.0),
                         "{width} px keeps the navigation for {:?}",
-                        forms[slots.form.min(forms.len() - 1)],
+                        forms[parts.form.min(forms.len() - 1)],
                     );
                 }
                 if let Some((at, form)) = narrower {
                     assert!(
-                        slots.form <= form,
+                        parts.form <= form,
                         "{width} px names {:?} as {:?}, narrower than {:?} at {at} px",
                         forms[0],
-                        forms[slots.form.min(forms.len() - 1)],
+                        forms[parts.form.min(forms.len() - 1)],
                         forms[form.min(forms.len() - 1)],
                     );
                 }
-                narrower = Some((width, slots.form));
+                narrower = Some((width, parts.form));
             }
             assert_eq!(
                 narrower.map(|(_, form)| form),
@@ -1290,17 +1290,17 @@ tilo_test_env::scenario! {
         // A compact window's row: the views go into the overflow menu before
         // previous and next do, and the location keeps at least its least width.
         let mut compact = calendar_row(COMPACT_CALENDAR_ROW);
-        let slots = compact.slots().clone();
-        assert!(slots.views.is_empty() && slots.views_menu == Rect::ZERO);
-        assert!(slots.leading[0].area() > 0.0 && slots.leading[1].area() > 0.0);
-        assert_eq!(slots.leading[2], Rect::ZERO, "Today folds");
+        let parts = compact.parts().clone();
+        assert!(parts.views.is_empty() && parts.views_menu == Rect::ZERO);
+        assert!(parts.leading[0].area() > 0.0 && parts.leading[1].area() > 0.0);
+        assert_eq!(parts.leading[2], Rect::ZERO, "Today folds");
         assert!(
-            slots.location.width() >= MIN_LOCATION_PX,
+            parts.location.width() >= MIN_LOCATION_PX,
             "{:?}",
-            slots.location
+            parts.location
         );
-        assert!(slots.location.x0 >= slots.leading[1].x1);
-        assert!(slots.overflow.x0 >= slots.location.x1);
+        assert!(parts.location.x0 >= parts.leading[1].x1);
+        assert!(parts.overflow.x0 >= parts.location.x1);
         assert!(compact.open_overflow());
         let listed: Vec<MenuEntry> = compact.menu_entries.iter().flatten().cloned().collect();
         assert_eq!(
@@ -1320,12 +1320,12 @@ tilo_test_env::scenario! {
     phase a_narrow_row_folds_the_views_into_a_menu_of_every_view;
     {
         let mut row = calendar_row_of(&calendar_with_a_field(), 420.0);
-        let slots = row.slots().clone();
-        assert!(slots.views.is_empty(), "no segmented switcher");
-        let menu = slots.views_menu;
+        let parts = row.parts().clone();
+        assert!(parts.views.is_empty(), "no segmented switcher");
+        let menu = parts.views_menu;
         assert!(menu.area() > 0.0, "the views menu stands in the row");
-        assert!(menu.x0 >= slots.leading[2].x1, "after the leading buttons");
-        assert!(slots.overflow.area() > 0.0, "Import is the overflow menu's");
+        assert!(menu.x0 >= parts.leading[2].x1, "after the leading buttons");
+        assert!(parts.overflow.area() > 0.0, "Import is the overflow menu's");
         assert!(row.open_overflow());
         assert!(
             row.menu_entries
@@ -1369,7 +1369,7 @@ tilo_test_env::scenario! {
             crate::motion::frame_now(),
         );
         row.lay_out(Rect::new(0.0, 0.0, 420.0, 40.0));
-        assert_eq!(row.slots().views_menu, menu, "another view, the same place");
+        assert_eq!(row.parts().views_menu, menu, "another view, the same place");
     }
 }
 
@@ -1378,7 +1378,7 @@ tilo_test_env::scenario! {
 /// chosen one checked, and choosing one hands the app its id. The menu is
 /// as wide as its widest view, so choosing another never moves the row.
 /// As wide as the row a compact (420 px) window leaves the calendar's
-/// slots beside its bar's own search, History and window controls.
+/// parts beside its bar's own search, History and window controls.
 const COMPACT_CALENDAR_ROW: f64 = 233.0;
 
 fn listed_views(row: &ToolbarRow) -> Vec<(String, String, bool, Option<bool>)> {
@@ -1448,7 +1448,7 @@ fn changed_to(row: &mut ToolbarRow, toolbar: &WindowToolbar, theme: &Theme) {
     let rect = row.row;
     row.show(7, Some(toolbar), theme.motion(), crate::motion::frame_now());
     row.lay_out(rect);
-    row.start_slot_change(theme);
+    row.start_part_change(theme);
 }
 
 fn later(t0: crate::time::Instant) -> crate::time::Instant {
@@ -1457,50 +1457,50 @@ fn later(t0: crate::time::Instant) -> crate::time::Instant {
 }
 
 tilo_test_env::scenario! {
-    fn a_changed_slot_fades_and_the_slots_it_moves_glide;
+    fn a_changed_part_fades_and_the_parts_it_moves_glide;
 
-    phase a_slot_the_app_adds_fades_in_and_the_slots_it_pushes_glide;
+    phase a_part_the_app_adds_fades_in_and_the_parts_it_pushes_glide;
     {
         use crate::time::testing::with_monotonic_time;
         let theme = Theme::dark();
         let t0 = crate::time::now();
         let mut row = with_monotonic_time(t0, row);
-        let back_before = row.slots().back;
+        let back_before = row.parts().back;
         let mut with_sidebar = browser();
         with_sidebar.sidebar = Some(false);
         with_monotonic_time(t0, || {
             changed_to(&mut row, &with_sidebar, &theme);
-            let back = row.slots().back;
+            let back = row.parts().back;
             assert!(back.x0 > back_before.x0, "the sidebar pushed back along");
             assert!(row.needs_animation_frame(), "the change moves");
-            let poses = row.slot_changes.poses(t0);
-            let (opacity, _) = poses[&slot_change::SlotKey::Sidebar];
+            let poses = row.part_changes.poses(t0);
+            let (opacity, _) = poses[&part_change::PartKey::Sidebar];
             assert!(opacity < 0.05, "the sidebar fades in from clear: {opacity}");
-            let (_, offset) = poses[&slot_change::SlotKey::Back];
+            let (_, offset) = poses[&part_change::PartKey::Back];
             assert!(
                 (back.x0 + offset.x - back_before.x0).abs() < 0.5,
                 "back starts where it stood"
             );
             assert_eq!(
-                row.slot_at(back_before.center()),
-                Some(Slot::Back),
+                row.part_at(back_before.center()),
+                Some(Part::Back),
                 "back is pressed where it is drawn"
             );
         });
         let end = later(t0);
         with_monotonic_time(end, || {
             assert!(!row.needs_animation_frame(), "and settles");
-            row.start_slot_change(&theme);
-            assert!(row.slot_changes.poses(end).is_empty());
-            assert_eq!(row.slot_at(row.slots().back.center()), Some(Slot::Back));
+            row.start_part_change(&theme);
+            assert!(row.part_changes.poses(end).is_empty());
+            assert_eq!(row.part_at(row.parts().back.center()), Some(Part::Back));
             assert_eq!(
-                row.slot_at(row.slots().sidebar.center()),
-                Some(Slot::Sidebar)
+                row.part_at(row.parts().sidebar.center()),
+                Some(Part::Sidebar)
             );
         });
     }
 
-    phase a_frame_laid_out_while_the_slots_glide_asks_for_frames_at_its_own_instant;
+    phase a_frame_laid_out_while_the_parts_glide_asks_for_frames_at_its_own_instant;
     {
         use crate::time::testing::with_monotonic_time;
         let theme = Theme::dark();
@@ -1523,36 +1523,36 @@ tilo_test_env::scenario! {
         drop(frame);
     }
 
-    phase a_slot_the_app_takes_away_fades_out_where_it_stood;
+    phase a_part_the_app_takes_away_fades_out_where_it_stood;
     {
         use crate::time::testing::with_monotonic_time;
         let theme = Theme::dark();
         let t0 = crate::time::now();
         let mut row = with_monotonic_time(t0, row);
-        let reload = row.slots().actions[0];
+        let reload = row.parts().actions[0];
         let mut without_reload = browser();
         without_reload.actions.clear();
         with_monotonic_time(t0, || {
             changed_to(&mut row, &without_reload, &theme);
-            let leaving = row.slot_changes.leaving();
+            let leaving = row.part_changes.leaving();
             assert_eq!(leaving.len(), 1, "reload fades out");
             assert_eq!(leaving[0].rect, reload, "where it stood");
             assert!(leaving[0].opacity(t0) > 0.95, "from whole");
             assert_ne!(
-                row.slot_at(reload.center()),
-                Some(Slot::Action(0)),
-                "a slot that left takes no press"
+                row.part_at(reload.center()),
+                Some(Part::Action(0)),
+                "a part that left takes no press"
             );
         });
         let end = later(t0);
         with_monotonic_time(end, || {
-            row.start_slot_change(&theme);
-            assert!(row.slot_changes.leaving().is_empty(), "and is gone");
+            row.start_part_change(&theme);
+            assert!(row.part_changes.leaving().is_empty(), "and is gone");
             assert!(!row.needs_animation_frame());
         });
     }
 
-    phase reduced_motion_lands_the_slots_and_still_fades_what_arrives;
+    phase reduced_motion_lands_the_parts_and_still_fades_what_arrives;
     {
         use crate::time::testing::with_monotonic_time;
         let theme = Theme::dark().with_reduce_motion(true);
@@ -1562,13 +1562,13 @@ tilo_test_env::scenario! {
         with_sidebar.sidebar = Some(false);
         with_monotonic_time(t0, || {
             changed_to(&mut row, &with_sidebar, &theme);
-            let poses = row.slot_changes.poses(t0);
+            let poses = row.part_changes.poses(t0);
             assert!(
-                !poses.contains_key(&slot_change::SlotKey::Back),
+                !poses.contains_key(&part_change::PartKey::Back),
                 "back lands in its new place"
             );
             assert!(
-                poses[&slot_change::SlotKey::Sidebar].0 < 0.05,
+                poses[&part_change::PartKey::Sidebar].0 < 0.05,
                 "the sidebar fades in"
             );
         });
@@ -1593,7 +1593,7 @@ fn a_change_a_key_just_asked_for_lands_and_one_of_state_moves_nothing() {
         changed_to(&mut row, &opened, &theme);
         assert!(
             !row.needs_animation_frame(),
-            "the sidebar opening moves no slot"
+            "the sidebar opening moves no part"
         );
     });
 }

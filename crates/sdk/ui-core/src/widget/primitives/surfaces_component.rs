@@ -49,7 +49,7 @@ pub struct ModalProps {
     /// The main answer cannot be taken yet, so it is disabled.
     pub primary_enabled: bool,
     /// The view's content, inside the sheet.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub body: Vec<Element>,
     /// The main answer was taken.
     #[component(event)]
@@ -254,8 +254,8 @@ impl Described for DeclaredModal {
         true
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
-        if slot != "body" {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn crate::component::PartViews> {
+        if part != "body" {
             return None;
         }
         let column = self
@@ -269,19 +269,19 @@ impl Described for DeclaredModal {
     }
 }
 
-/// A floating panel with a header slot, a body and a footer slot, which a view rarely places
+/// A floating panel with a header part, a body and a footer part, which a view rarely places
 /// itself: a menu is a `Popover` and a question a `ModalDialog`.
 #[derive(Component, Default)]
 #[component(name = "FloatingPanel", role = "Group")]
 pub struct FloatingPanelProps {
     /// The panel's body.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub body: Vec<Element>,
     /// Its header, above the body; a field there renders embedded.
-    #[component(slot)]
+    #[component(part)]
     pub header: Option<Element>,
     /// Its footer, under the body.
-    #[component(slot)]
+    #[component(part)]
     pub footer: Option<Element>,
     /// A fixed width, in logical pixels (a utility panel).
     pub width: Option<f64>,
@@ -290,12 +290,12 @@ pub struct FloatingPanelProps {
 pub struct DeclaredPanel {
     panel: FloatingPanel,
     rect: Rect,
-    /// The one-view slot being changed ([`Described::slot_views`]): the header or the footer.
-    editing: PanelSlot,
+    /// The one-view part being changed ([`Described::part_views`]): the header or the footer.
+    editing: PanelPart,
 }
 
 #[derive(Clone, Copy)]
-enum PanelSlot {
+enum PanelPart {
     Header,
     Footer,
 }
@@ -316,22 +316,22 @@ impl DeclaredPanel {
         Self {
             panel,
             rect: Rect::ZERO,
-            editing: PanelSlot::Header,
+            editing: PanelPart::Header,
         }
     }
 
-    fn slot(&mut self) -> &mut Option<Element> {
+    fn part(&mut self) -> &mut Option<Element> {
         match self.editing {
-            PanelSlot::Header => self.panel.header_mut(),
-            PanelSlot::Footer => self.panel.footer_mut(),
+            PanelPart::Header => self.panel.header_mut(),
+            PanelPart::Footer => self.panel.footer_mut(),
         }
     }
 
     fn put(&mut self, mut view: Element) {
-        if matches!(self.editing, PanelSlot::Header) {
+        if matches!(self.editing, PanelPart::Header) {
             FloatingPanel::embed_header(view.as_mut());
         }
-        *self.slot() = Some(view);
+        *self.part() = Some(view);
     }
 
     #[must_use]
@@ -424,17 +424,17 @@ impl Described for DeclaredPanel {
     }
 
     /// The panel's width changes where it stands; its body, header and footer change by key
-    /// through [`Self::slot_views`], so a field in the header keeps what was typed in it.
+    /// through [`Self::part_views`], so a field in the header keeps what was typed in it.
     fn set_props(&mut self, props: FloatingPanelProps) -> bool {
         self.panel
             .set_width(props.width.map(crate::num::f32_of_f64));
         true
     }
 
-    /// Each slot's views change by key in place, so a change of what the body or footer
+    /// Each part's views change by key in place, so a change of what the body or footer
     /// shows keeps the header's field, and with it focus and what is being typed.
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
-        match slot {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn crate::component::PartViews> {
+        match part {
             "body" => {
                 let column = self
                     .panel
@@ -449,11 +449,11 @@ impl Described for DeclaredPanel {
                 Some(column)
             }
             "header" => {
-                self.editing = PanelSlot::Header;
+                self.editing = PanelPart::Header;
                 Some(self)
             }
             "footer" => {
-                self.editing = PanelSlot::Footer;
+                self.editing = PanelPart::Footer;
                 Some(self)
             }
             _ => None,
@@ -461,20 +461,20 @@ impl Described for DeclaredPanel {
     }
 }
 
-impl crate::component::SlotViews for DeclaredPanel {
+impl crate::component::PartViews for DeclaredPanel {
     fn len(&self) -> usize {
-        let slot = match self.editing {
-            PanelSlot::Header => self.panel.has_header(),
-            PanelSlot::Footer => self.panel.has_footer(),
+        let part = match self.editing {
+            PanelPart::Header => self.panel.has_header(),
+            PanelPart::Footer => self.panel.has_footer(),
         };
-        usize::from(slot)
+        usize::from(part)
     }
 
     fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
         if index != 0 {
             return None;
         }
-        self.slot().as_mut()
+        self.part().as_mut()
     }
 
     fn insert(&mut self, _index: usize, view: Element) {
@@ -482,7 +482,7 @@ impl crate::component::SlotViews for DeclaredPanel {
     }
 
     fn remove(&mut self, _index: usize) {
-        *self.slot() = None;
+        *self.part() = None;
     }
 
     fn move_view(&mut self, _from: usize, _to: usize) {}
@@ -506,7 +506,7 @@ pub struct PopoverProps {
     #[component(event)]
     pub dismiss: Event,
     /// Its content.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub content: Vec<Element>,
 }
 
@@ -660,8 +660,8 @@ impl Described for DeclaredPopover {
         true
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
-        if slot != "content" {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn crate::component::PartViews> {
+        if part != "content" {
             return None;
         }
         let column = self
@@ -690,7 +690,7 @@ pub struct PopoverButtonProps {
     /// Whether it opens at the button's trailing edge, not its leading edge.
     pub trailing: bool,
     /// The popover's content.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub content: Vec<Element>,
 }
 
@@ -849,8 +849,8 @@ impl Described for DeclaredPopoverButton {
         true
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
-        if slot != "content" {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn crate::component::PartViews> {
+        if part != "content" {
             return None;
         }
         let column = self

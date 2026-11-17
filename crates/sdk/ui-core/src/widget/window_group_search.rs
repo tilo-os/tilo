@@ -140,7 +140,7 @@ impl WindowGroup {
 
 pub(crate) fn place_search(bar: &crate::widget::TabBar, search: &mut crate::widget::WindowSearch) {
     let px = crate::widget::window_controls::CONTROL_PX;
-    if let Some((row, reach)) = bar.toolbar_search_slot() {
+    if let Some((row, reach)) = bar.toolbar_search_part() {
         let x0 = row.x1 + crate::widget::window_controls::CONTROL_GAP;
         let y0 = row.center().y - px / 2.0;
         search.place_trailing(

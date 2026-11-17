@@ -193,7 +193,7 @@ fn collect(
                     collect(&arm.body, placed, calls, argument_views);
                 }
             }
-            UiKind::Slot { node, name, body } => {
+            UiKind::Part { node, name, body } => {
                 calls.insert(
                     *node,
                     Call {

@@ -359,7 +359,7 @@ mod tests {
         );
         let back = bar.leading.first().expect("Back leads the bar").id.clone();
         app.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: back });
+            .press_window_part(ui::window_toolbar::ToolbarEvent::Action { id: back });
         app.settle();
         let bar = ui::window_toolbar::declared().expect("the window's slots");
         assert_eq!(

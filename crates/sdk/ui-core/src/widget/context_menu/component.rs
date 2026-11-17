@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use crate::component::{Component, Described, Event, OfferedAction, ResourceId, SlotType, Source};
+use crate::component::{Component, Described, Event, OfferedAction, PartType, ResourceId, Source};
 use crate::icons::Icon;
 use crate::widget::{ButtonRole, MenuEntry, Press};
 
@@ -136,16 +136,16 @@ impl From<OfferedAction> for MenuItemProps {
 }
 
 /// The commands of a menu, in order.
-impl SlotType for Vec<MenuItemProps> {
+impl PartType for Vec<MenuItemProps> {
     const MANY: bool = true;
 
     fn accepts() -> crate::component::Accepts {
         crate::component::Accepts::Component(MenuItemProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
         let mut read = Vec::new();
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             read.push(MenuItemProps::from_source(child).map_err(|error| error.to_string())?);
             Ok(())
         })?;
@@ -177,7 +177,7 @@ pub struct MenuButtonProps {
     /// lists the window in front's commands names the window and leaves the commands to it.
     pub subject: Option<ResourceId>,
     /// The commands, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub items: Vec<MenuItemProps>,
 }
 

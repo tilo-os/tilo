@@ -6,7 +6,7 @@
 //! its resource. As each node of a view is built, the host reads [`crate::seen::unseen`] there
 //! and marks it:
 //!
-//! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which run; a row a list
+//! - a row gets a `ui.ChangeMark` in its `change` part: who, in which run; a row a list
 //!   folds away as done with stands with the rows above while the change is unseen, so the mark
 //!   is read where it happened. A row in the unseen part of a list that stands a divider where
 //!   it starts (`unseen_from:`) takes no mark: the divider says it is new;
@@ -44,11 +44,11 @@ const NAV_SHELL: &str = "ui.NavShell";
 const TEXT_INPUT: &str = "ui.TextInput";
 /// The node kind of a place in a navigation list.
 const NAV_ITEM: &str = "ui.NavItem";
-/// The kind of a node holding a component's named slot.
-const SLOT: &str = "slot";
-/// The content's actions slot of a window's shell, its header's own.
+/// The kind of a node holding a component's named part.
+const PART: &str = "part";
+/// The content's actions part of a window's shell, its header's own.
 const ACTIONS: &str = "actions";
-/// The overview's actions slot: the window's actions where it lists items beside what they
+/// The overview's actions part: the window's actions where it lists items beside what they
 /// open, which is the header in front when the window is narrow.
 const OVERVIEW_ACTIONS: &str = "overview_actions";
 /// The node kind of a list of any length, whose rows are its items'.
@@ -123,7 +123,7 @@ impl Core {
     }
 
     /// A row of a list, or of a tree, showing the resource it presents: what someone else
-    /// changed of it that the person has not seen goes in its `change` slot, and a row of a
+    /// changed of it that the person has not seen goes in its `change` part, and a row of a
     /// list's folded tail stands with the rows above it while its change is unseen.
     fn mark_row(
         &self,
@@ -167,7 +167,7 @@ impl Core {
             viewer,
             acc,
         );
-        node.children.push(slot("change", &node.key, mark));
+        node.children.push(part("change", &node.key, mark));
         Ok(())
     }
 
@@ -244,11 +244,11 @@ impl Core {
                 item
             };
             row.props.insert("removed".to_owned(), Value::Bool(true));
-            row.children.push(slot("change", &key, mark));
+            row.children.push(part("change", &key, mark));
             rows.push(row);
         }
         if !rows.is_empty() {
-            let mut removed = UiNode::empty(SLOT, &format!("{}~slot-removed", node.key));
+            let mut removed = UiNode::empty(PART, &format!("{}~part-removed", node.key));
             removed
                 .props
                 .insert("name".to_owned(), Value::Text("removed".to_owned()));
@@ -554,7 +554,7 @@ impl Core {
         // The catch-up: a row per record someone changed, saying who and what.
         let content = self.catch_up(&mark.key.clone(), &changed, viewer, acc);
         mark.children
-            .push(slot("content", &mark.key.clone(), content));
+            .push(part("content", &mark.key.clone(), content));
         // First among the actions of the title it marks: a window that lists items beside what
         // they open has a header over its list, and a window narrow enough to show one column
         // shows that one, so the mark stands there whatever the width and wherever the app put
@@ -566,7 +566,7 @@ impl Core {
         };
         match place(node, name) {
             Some(actions) => actions.children.insert(0, mark),
-            None => node.children.push(slot(name, &node.key, mark)),
+            None => node.children.push(part(name, &node.key, mark)),
         }
         Ok(())
     }
@@ -937,21 +937,21 @@ impl Core {
     }
 }
 
-/// The slot `name` under `node`, if it has one.
+/// The part `name` under `node`, if it has one.
 fn place<'a>(node: &'a mut UiNode, name: &str) -> Option<&'a mut UiNode> {
     node.children.iter_mut().find(|child| {
-        child.kind == SLOT
+        child.kind == PART
             && matches!(child.props.get("name"), Some(Value::Text(held)) if held == name)
     })
 }
 
-/// A slot `name` of the node `key` holding `child`.
-fn slot(name: &str, key: &str, child: UiNode) -> UiNode {
-    let mut slot = UiNode::empty(SLOT, &format!("{key}~slot-{name}"));
-    slot.props
+/// A part `name` of the node `key` holding `child`.
+fn part(name: &str, key: &str, child: UiNode) -> UiNode {
+    let mut part = UiNode::empty(PART, &format!("{key}~part-{name}"));
+    part.props
         .insert("name".to_owned(), Value::Text(name.to_owned()));
-    slot.children.push(child);
-    slot
+    part.children.push(child);
+    part
 }
 
 /// Whether the view placed a `ui.ChangeMark` of `resource` inside `node`.

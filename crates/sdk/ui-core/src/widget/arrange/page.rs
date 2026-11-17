@@ -3,7 +3,7 @@
 use taffy::style_helpers::length;
 use taffy::{Size, Style};
 
-use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
+use super::arranged::{Arranged, Layout, Part, Resolved, wrapper_style};
 use super::units::Length;
 
 /// The readable width of a page, in `rem`.
@@ -83,7 +83,7 @@ impl Layout for PageLayout {
         }
     }
 
-    fn slot(&self, _index: usize, _slot: &Slot, resolved: &Resolved) -> Style {
+    fn part(&self, _index: usize, _part: &Part, resolved: &Resolved) -> Style {
         let mut style = wrapper_style();
         style.size.width = taffy::style_helpers::percent(1.0_f32);
         if self.fill {

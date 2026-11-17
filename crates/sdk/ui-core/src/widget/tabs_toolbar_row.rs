@@ -1,12 +1,12 @@
-//! Where the active tab's slots stand in the bar: in the window's title's row for one tab, past the
+//! Where the active tab's parts stand in the bar: in the window's title's row for one tab, past the
 //! strip's own controls, across a row of their own under several, and between the two on the tabs'
-//! motion — and how much of that row the strip's own "+" takes, which yields where the slots need
+//! motion — and how much of that row the strip's own "+" takes, which yields where the parts need
 //! the width.
 use super::{ICON_W, PILL_PAD_X, Rect, TOOLBAR_LEAD_GAP, TOOLBAR_ROW_HEIGHT, TabBar};
 use crate::widget::window_controls;
 
 impl TabBar {
-    /// Where the active tab's slots stand: in the title's row for one tab, past the strip's own
+    /// Where the active tab's parts stand: in the title's row for one tab, past the strip's own
     /// leading controls (so the title never paints under the "+"), across a row of their own under
     /// several, and between the two on the tabs' motion.
     pub(super) fn toolbar_row_rect(&self) -> Rect {
@@ -47,11 +47,11 @@ impl TabBar {
         self.touch();
         self.show_toolbar_row();
         self.toolbar_row.lay_out(self.toolbar_row_rect());
-        // The strip's own "+" stands between the window's icon and the app's slots, which start
+        // The strip's own "+" stands between the window's icon and the app's parts, which start
         // past it so neither paints over the other. A narrow window cannot fit both: the "+"
         // gives up its place, so the app's Back, its name and its actions keep their own, and the
         // window's search keeps the width it reaches back over.
-        if self.strip_squeezes_slots() {
+        if self.strip_squeezes_parts() {
             self.new_tab_rect = Rect::ZERO;
             self.toolbar_row.lay_out(self.toolbar_row_rect());
         }
@@ -69,12 +69,12 @@ impl TabBar {
         });
     }
 
-    /// Whether the strip's "+" is what leaves the active tab's slots short of the width they need,
-    /// while the slots stand in the title's row beside it: their buttons' places and the app's
+    /// Whether the strip's "+" is what leaves the active tab's parts short of the width they need,
+    /// while the parts stand in the title's row beside it: their buttons' places and the app's
     /// location, or the width the window's search reaches back over to keep its query typeable.
-    pub(super) fn strip_squeezes_slots(&self) -> bool {
+    pub(super) fn strip_squeezes_parts(&self) -> bool {
         if self.new_tab_rect.area() <= 0.0
-            || self.active_slots().is_none()
+            || self.shown_toolbar().is_none()
             || self.tabbed_progress() > 0.0
         {
             return false;

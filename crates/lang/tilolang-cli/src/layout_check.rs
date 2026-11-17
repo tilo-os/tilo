@@ -566,7 +566,7 @@ fn declared_headers(shell: &tilo_ui_host::UiNode) -> Vec<&'static str> {
         };
         named
             || shell.children.iter().any(|child| {
-                child.kind == "slot"
+                child.kind == "part"
                     && child.props.get("name") == Some(&Value::text(*actions))
                     && !child.children.is_empty()
             })
@@ -1028,8 +1028,8 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
                     if found.is_err() {
                         stopped.store(true, Ordering::Relaxed);
                     }
-                    if let Some(slot) = taken.get(at) {
-                        *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(found);
+                    if let Some(result) = taken.get(at) {
+                        *result.lock().unwrap_or_else(PoisonError::into_inner) = Some(found);
                     }
                 }
             });
@@ -1051,8 +1051,8 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
     // failure, named after the unit that hit it, never the first unit the stop left empty.
     let mut failed: Option<String> = None;
     let mut unrun: Option<String> = None;
-    for (at, slot) in taken.into_iter().enumerate() {
-        let held = slot.into_inner().unwrap_or_else(PoisonError::into_inner);
+    for (at, result) in taken.into_iter().enumerate() {
+        let held = result.into_inner().unwrap_or_else(PoisonError::into_inner);
         let named = || units.get(at).map(|unit| unit.named(apps));
         match held {
             Some(Ok(found)) => out.push(found),
@@ -1078,21 +1078,21 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
 
 /// Run `chain` for each app of `busy` at once, each on a
 /// worker of its own, and write what it found in that app's
-/// slot.
+/// result.
 fn opens_together(
     busy: &[usize],
-    slots: &[Mutex<Option<Result<Opened, String>>>],
+    results: &[Mutex<Option<Result<Opened, String>>>],
     chain: &(impl Fn(usize) -> Result<Opened, String> + Sync),
 ) -> Result<(), String> {
     let unstarted: Mutex<Option<String>> = Mutex::new(None);
     std::thread::scope(|scope| {
         for &app in busy {
-            let Some(slot) = slots.get(app) else {
+            let Some(result) = results.get(app) else {
                 continue;
             };
             let started = spawn_worker(scope, move || {
                 tilo_ui_host::i18n::ensure();
-                *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
+                *result.lock().unwrap_or_else(PoisonError::into_inner) = Some(chain(app));
             });
             if let Err(failure) = started {
                 *unstarted.lock().unwrap_or_else(PoisonError::into_inner) = Some(failure);
@@ -1128,7 +1128,7 @@ fn run_opens(
             held.push(index);
         }
     }
-    let slots: Vec<Mutex<Option<Result<Opened, String>>>> =
+    let results: Vec<Mutex<Option<Result<Opened, String>>>> =
         per_app.iter().map(|_| Mutex::new(None)).collect();
     let busy: Vec<usize> = per_app
         .iter()
@@ -1178,20 +1178,20 @@ fn run_opens(
         }
         Ok(opened)
     };
-    opens_together(&busy, &slots, &chain)?;
+    opens_together(&busy, &results, &chain)?;
     let mut opened: Vec<Found> = (0..scenes.len()).map(|_| Found::default()).collect();
     let mut shown: Vec<Shown> = vec![Shown::new(); apps.len()];
-    for (app, slot) in slots.into_iter().enumerate() {
-        let Some(result) = slot.into_inner().unwrap_or_else(PoisonError::into_inner) else {
+    for (app, result) in results.into_iter().enumerate() {
+        let Some(entries) = result.into_inner().unwrap_or_else(PoisonError::into_inner) else {
             continue;
         };
-        let Some(held) = shown.get_mut(app) else {
+        let Some(shown) = shown.get_mut(app) else {
             continue;
         };
-        for (index, found) in result? {
-            held.extend(found.shown.iter().cloned());
-            if let Some(slot) = opened.get_mut(index) {
-                *slot = found;
+        for (index, found) in entries? {
+            shown.extend(found.shown.iter().cloned());
+            if let Some(entry) = opened.get_mut(index) {
+                *entry = found;
             }
         }
     }
@@ -1210,11 +1210,11 @@ fn run_opens(
 /// The units every scene has in the first phase, in the order the check ran them.
 fn scene_units(phase: &[Found], index: usize) -> [Option<&Found>; 3] {
     let mut held = [None, None, None];
-    for (slot, found) in held
+    for (entry, found) in held
         .iter_mut()
         .zip(phase.chunks(3).nth(index).unwrap_or_default())
     {
-        *slot = Some(found);
+        *entry = Some(found);
     }
     held
 }
@@ -2167,7 +2167,7 @@ impl AppCheck<'_> {
         self.ran = self.ran.saturating_add(1);
         let viewport = (layout.size.width, layout.size.height);
         let inspection = staged.harness().inspection();
-        // The bar the desktop draws over the frame: the app's own slots merged with the window's
+        // The bar the desktop draws over the frame: the app's own parts merged with the window's
         // navigation, its one "…" and its controls.
         let bar = staged
             .harness_mut()
@@ -2281,7 +2281,7 @@ impl AppCheck<'_> {
             bar_height,
             staged.harness().window_header_row_height(),
         ));
-        // The bar's primary action is read off the slots this window declared, never the process's:
+        // The bar's primary action is read off the parts this window declared, never the process's:
         // windows laid out side by side in one process keep their bars apart.
         if one_window {
             problems.extend(audit::bar_primary(
@@ -2458,9 +2458,9 @@ impl AppCheck<'_> {
     }
 }
 
-/// The keys of a row's tree, outermost first, leaving out its slots (a menu, a swipe).
+/// The keys of a row's tree, outermost first, leaving out its parts (a menu, a swipe).
 fn row_keys(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
-    if node.kind == "slot" {
+    if node.kind == "part" {
         return;
     }
     out.push(node.key.clone());

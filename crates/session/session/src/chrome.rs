@@ -13,7 +13,7 @@ use tilo_desktop::chrome::{
 };
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
 use tilo_desktop::launchpad::LaunchpadAction;
-use tilo_desktop::overlays::{Overlays, Slot, Target};
+use tilo_desktop::overlays::{Overlays, Part, Target};
 use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::Layout;
 use tilo_desktop_model::commands::Standing;
@@ -762,7 +762,7 @@ pub(crate) fn keyboard_target(handle: &DesktopHandle, overlays: &Overlays) -> Ta
     if let Some(over) = overlays.over() {
         Target::Surface(over)
     } else if handle.search_open() {
-        Target::Surface(Slot::Search)
+        Target::Surface(Part::Search)
     } else {
         overlays.target()
     }
@@ -833,8 +833,8 @@ pub(crate) fn host(
     let holds = overlays.clone();
     let keyboard = Rc::new(move || {
         keyboard_target(&shell, &holds)
-            .slot()
-            .is_some_and(Slot::is_chrome)
+            .part()
+            .is_some_and(Part::is_chrome)
     });
     let placement = SurfacePlacement {
         origin: (0, 0),

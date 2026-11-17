@@ -1,13 +1,13 @@
 //! What a view attaches to the element it is in (`ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe`:
 //! components whose description says they attach), taken to the element that runs them. A list item
 //! (`ui.ListItem`) takes the attachments anywhere in its row's view, through its calls (fragments)
-//! and the layouts that only arrange children, into its `attached` slot, so the list runs the row's
+//! and the layouts that only arrange children, into its `attached` part, so the list runs the row's
 //! menu, toolbar and swipe; a card or a section is a place of its own and keeps what it holds. This
 //! runs on the tree as the app sent it, before the window reads it, so the reconciler and the rows
 //! see one shape.
 
 use crate::UiNode;
-use crate::adapter::{SLOT, description_of, slot_nodes};
+use crate::adapter::{PART, description_of, part_nodes};
 
 const LIST_ITEM: &str = "ui.ListItem";
 const ATTACHED: &str = "attached";
@@ -57,11 +57,11 @@ fn hoist_item(item: &mut UiNode) {
     let Some(description) = description_of(item) else {
         return;
     };
-    let Some(row_slot) = description.default_slot().map(|slot| slot.name.clone()) else {
+    let Some(row_part) = description.default_part().map(|part| part.name.clone()) else {
         return;
     };
-    // Only the item's row slot is searched, not its named slots.
-    let in_row = slot_nodes(item, description, &row_slot)
+    // Only the item's row part is searched, not its named parts.
+    let in_row = part_nodes(item, description, &row_part)
         .iter()
         .any(|child| holds_attachment(child));
     if !in_row {
@@ -70,28 +70,28 @@ fn hoist_item(item: &mut UiNode) {
     let mut taken = Vec::new();
     let mut kept = Vec::with_capacity(item.children.len());
     for mut child in std::mem::take(&mut item.children) {
-        if child.kind != SLOT && attaches(&child) {
+        if child.kind != PART && attaches(&child) {
             taken.push(child);
             continue;
         }
-        if child.kind != SLOT {
+        if child.kind != PART {
             take_attachments(&mut child, &mut taken);
         }
         kept.push(child);
     }
     item.children = kept;
     let named = item.children.iter_mut().find(|child| {
-        child.kind == SLOT
+        child.kind == PART
             && matches!(child.props.get("name"), Some(crate::Value::Text(name)) if name == ATTACHED)
     });
-    if let Some(slot) = named {
-        slot.children.extend(taken);
+    if let Some(part) = named {
+        part.children.extend(taken);
     } else {
-        let mut slot = UiNode::empty(SLOT, &format!("{}/{ATTACHED}", item.key));
-        slot.props
+        let mut part = UiNode::empty(PART, &format!("{}/{ATTACHED}", item.key));
+        part.props
             .insert("name".to_owned(), crate::Value::text(ATTACHED));
-        slot.children = taken;
-        item.children.push(slot);
+        part.children = taken;
+        item.children.push(part);
     }
 }
 
@@ -166,14 +166,14 @@ mod tests {
             "the row keeps what it draws"
         );
         assert!(row.children[1].children.is_empty());
-        let slot = hoisted
+        let part = hoisted
             .children
             .iter()
-            .find(|c| c.kind == SLOT)
-            .expect("the item has its attached slot");
-        assert_eq!(slot.props.get("name"), Some(&Value::text(ATTACHED)));
+            .find(|c| c.kind == PART)
+            .expect("the item has its attached part");
+        assert_eq!(part.props.get("name"), Some(&Value::text(ATTACHED)));
         assert_eq!(
-            kinds(slot),
+            kinds(part),
             ["ui.HoverToolbar", "ui.ContextMenu", "ui.Swipe"],
             "in the order the view wrote them"
         );
@@ -200,12 +200,12 @@ mod tests {
         ];
         item.children = vec![fragment("row", vec![stack])];
         let hoisted = hoist(&item);
-        let slot = hoisted
+        let part = hoisted
             .children
             .iter()
-            .find(|c| c.kind == SLOT)
-            .expect("the item has its attached slot");
-        let kinds: Vec<String> = slot.children.iter().map(|c| c.kind.clone()).collect();
+            .find(|c| c.kind == PART)
+            .expect("the item has its attached part");
+        let kinds: Vec<String> = part.children.iter().map(|c| c.kind.clone()).collect();
         assert_eq!(
             kinds,
             ["ui.ContextMenu", "ui.HoverToolbar", "ui.Swipe"],
@@ -238,7 +238,7 @@ mod tests {
         item.children = vec![fragment("row", vec![card])];
         let hoisted = hoist(&item);
         assert!(
-            !hoisted.children.iter().any(|c| c.kind == SLOT),
+            !hoisted.children.iter().any(|c| c.kind == PART),
             "a card's menu is the card's, not the row's"
         );
     }

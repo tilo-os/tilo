@@ -543,7 +543,7 @@ fn a_banner_added_to_a_hugging_answer_stands_without_the_pointer() {
             .expect("the card");
         let banner =
             crate::widget::Banner::new(crate::widget::BannerKind::Error, "Request refused");
-        stack.insert(1, crate::widget::arrange::Slot::new(Box::new(banner)));
+        stack.insert(1, crate::widget::arrange::Part::new(Box::new(banner)));
     })
     .expect("the scroll");
     // The window draws what it asks for, as time passes, and nothing moves the pointer.

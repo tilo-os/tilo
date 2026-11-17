@@ -920,7 +920,7 @@ fn press_view(app: &mut TestApp<App>, name: &str) {
         .iter()
         .find(|view| view.label == name)
         .expect("the bar offers the view");
-    harness.press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+    harness.press_window_part(ui::window_toolbar::ToolbarEvent::Action {
         id: view.id.clone(),
     });
     let _ = harness.poll_frame();

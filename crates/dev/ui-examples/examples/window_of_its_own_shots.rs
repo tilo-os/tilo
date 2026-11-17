@@ -68,7 +68,7 @@ fn tasks() -> NavShell {
 /// window's controls in the bar's pill.
 fn shoot(theme: &Theme, size: (u32, u32), out: &Path) {
     let mut harness = FrameHarness::for_root(State::new(), tasks(), size, theme.clone());
-    harness.host_window_slots();
+    harness.host_window_parts();
     harness.host_window_controls();
     for _ in 0..2 {
         harness.root_mut::<NavShell>().snap();
@@ -92,7 +92,7 @@ fn shoot(theme: &Theme, size: (u32, u32), out: &Path) {
         .root
         .children
         .iter()
-        .find(|node| node.path == tilo_ui::headless::WINDOW_SLOTS)
+        .find(|node| node.path == tilo_ui::headless::WINDOW_PARTS)
     else {
         eprintln!("window_of_its_own: the window has no bar");
         std::process::exit(1);

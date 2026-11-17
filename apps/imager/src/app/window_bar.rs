@@ -98,7 +98,7 @@ mod tests {
 
         host.with_widget::<ImagerApp, _>(|app| app.status.clear());
         host.harness()
-            .press_window_slot(ToolbarEvent::Action { id: RESCAN.into() });
+            .press_window_part(ToolbarEvent::Action { id: RESCAN.into() });
         host.settle();
         assert_eq!(
             host.with_widget::<ImagerApp, _>(|app| app.status.clone())

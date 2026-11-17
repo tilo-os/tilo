@@ -7,7 +7,7 @@ use crate::widget::Tone;
 use super::{EnumField, field};
 use crate::widget::binding::derived;
 
-crate::component::part_slot!(EnumOptionProps);
+crate::component::part_type!(EnumOptionProps);
 
 /// One case an [`EnumField`] offers: its name, what it reads as, and how it reads.
 #[derive(Clone, Component, Default)]
@@ -34,7 +34,7 @@ pub struct EnumFieldProps {
     #[component(bind(ty = crate::component::EnumCase))]
     pub value: Bound<String>,
     /// The cases to pick from, in the enum's order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub cases: Vec<EnumOptionProps>,
     /// What the field is for ("Priority"), as the app named it: what a screen reader hears
     /// before the case itself.

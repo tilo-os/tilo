@@ -175,6 +175,8 @@ mod owner_control;
 mod palette_captures;
 #[path = "panel_services.rs"]
 mod panel_services;
+#[path = "part_view.rs"]
+mod part_view;
 #[path = "people.rs"]
 mod people;
 #[path = "personal_store.rs"]
@@ -241,8 +243,6 @@ mod shell_themes;
 mod shortcut_effects;
 #[path = "shortcut_guide.rs"]
 mod shortcut_guide;
-#[path = "slot_view.rs"]
-mod slot_view;
 #[path = "strips_tabs.rs"]
 mod strips_tabs;
 #[path = "style_packages.rs"]

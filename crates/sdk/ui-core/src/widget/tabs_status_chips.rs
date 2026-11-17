@@ -142,7 +142,7 @@ impl TabBar {
         let label = run.label.clone();
         let (x0, limit, cy) = match self.mark_span() {
             Some(spare) => spare,
-            None if self.active_slots().is_some() => return None,
+            None if self.shown_toolbar().is_some() => return None,
             None => {
                 let tab_row = self.tab_row();
                 (
@@ -164,19 +164,19 @@ impl TabBar {
     }
 
     fn mark_span(&self) -> Option<(f64, f64, f64)> {
-        self.active_slots()?;
+        self.shown_toolbar()?;
         if self.toolbar_row.is_editing() {
             return None;
         }
         let shown = self.toolbar_row.location_content_end()?;
-        let slots = self.toolbar_row.slots();
-        let location = slots.location;
-        let after = slots
+        let parts = self.toolbar_row.parts();
+        let location = parts.location;
+        let after = parts
             .views
             .iter()
-            .chain(&slots.actions)
-            .chain(&slots.reactions)
-            .chain([&slots.views_menu, &slots.overflow, &slots.reaction_add])
+            .chain(&parts.actions)
+            .chain(&parts.reactions)
+            .chain([&parts.views_menu, &parts.overflow, &parts.reaction_add])
             .filter(|rect| rect.area() > 0.0 && rect.x0 >= location.x1)
             .map(|rect| rect.x0)
             .fold(self.toolbar_row_rect().x1, f64::min);

@@ -761,7 +761,7 @@ pub enum UiKind {
         label: Expr,
         value: Expr,
     },
-    Slot {
+    Part {
         node: NodeId,
         name: Ident,
         body: Vec<UiStmt>,

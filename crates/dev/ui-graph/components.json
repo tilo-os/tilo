@@ -1,5 +1,5 @@
 {
-  "format": 8,
+  "format": 9,
   "toolkit": "0.1.0",
   "components": [
     {
@@ -34,7 +34,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "entries",
           "doc": "The changes, oldest first.",
@@ -85,7 +85,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "suggestions",
           "doc": "The completions to offer, in order.",
@@ -410,7 +410,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "lanes",
           "doc": "The lanes, in order.",
@@ -438,7 +438,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "segments",
           "doc": "The places, outermost first; the last is the page itself, which is not pressed.",
@@ -625,7 +625,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "controls",
           "doc": "The handle's controls after the name: the resource's actions, pin and close.",
@@ -683,7 +683,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "body",
           "doc": "What the card shows, in order.",
@@ -733,7 +733,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "cards",
           "doc": "The cards, in order.",
@@ -832,7 +832,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "content",
           "doc": "What a window's mark opens: the views of its catch-up (*Since you looked*), placed by whoever placed the mark.",
@@ -1217,7 +1217,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "body",
           "doc": "What the body holds.",
@@ -1454,7 +1454,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "items",
           "doc": "The commands, in order.",
@@ -1513,7 +1513,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "lines",
           "doc": "The lines, oldest first.",
@@ -1556,7 +1556,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "columns",
           "doc": "The columns, in order.",
@@ -1632,7 +1632,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "time",
           "doc": "The control that picks the time of day the day is due at: `ui.TimeField(bind: t.at)`.",
@@ -1703,7 +1703,7 @@
     {
       "name": "DisclosureBand",
       "doc": "Content a view shows only while something is open, unrolling from its top.",
-      "slots": [
+      "parts": [
         {
           "name": "content",
           "doc": "What it shows, in order.",
@@ -1719,7 +1719,7 @@
     {
       "name": "Docked",
       "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer.",
-      "slots": [
+      "parts": [
         {
           "name": "content",
           "doc": "What fills the column; it scrolls itself.",
@@ -1797,7 +1797,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "items",
           "doc": "The items, in order.",
@@ -1847,7 +1847,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "content",
           "doc": "What it draws.",
@@ -1944,7 +1944,7 @@
     {
       "name": "DropTarget",
       "doc": "A view that takes what another view dragged to it: a chat composer takes an attachment, a dock takes a resource. A drag over it draws the toolkit's drop line, and letting go inside it reports what the drag carried.\nIt takes a resource dragged out of any [`ui.DragSource`](super::DragSource) and a run's item ([`ui.DragItem`](super::DragItem)); nothing else, so a file dragged in from another application is not silently swallowed (`ui.DropZone` is the component for files).",
-      "slots": [
+      "parts": [
         {
           "name": "content",
           "doc": "What it draws.",
@@ -2225,7 +2225,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "cases",
           "doc": "The cases to pick from, in the enum's order.",
@@ -2787,7 +2787,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "avatar",
           "doc": "Who the item is: their face among its facts, between when it is due and how far it has got.",
@@ -2844,7 +2844,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "children",
           "doc": "What the row holds, in order: its thumbnail, its name, and the controls its item has.",
@@ -2895,7 +2895,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "pins",
           "doc": "The pins, in the order the map draws them (the last on top).",
@@ -2984,7 +2984,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "items",
           "doc": "The cards, in order.",
@@ -3197,7 +3197,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "items",
           "doc": "The places, in order, and sections of them under a heading.",
@@ -3290,7 +3290,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "sidebar_actions",
           "doc": "The sidebar's controls in its header: the action that makes what it lists (a \"+\"), and where a person's new thing goes.",
@@ -3547,7 +3547,7 @@
           "type": "int"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "page",
           "doc": "The page it shows.",
@@ -3616,7 +3616,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "options",
           "doc": "The tiles, in order.",
@@ -3801,7 +3801,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "body",
           "doc": "What opens under the row, in order.",
@@ -3830,7 +3830,7 @@
     {
       "name": "Facts",
       "doc": "Facts in one row, each an optional glyph and its text, spaced apart with no separator (\"12 files\", \"3 MB\", \"Edited today\"); when the row is too narrow the least important give way first.",
-      "slots": [
+      "parts": [
         {
           "name": "facts",
           "doc": "The facts, in order.",
@@ -3848,7 +3848,7 @@
     {
       "name": "KeyHints",
       "doc": "Shortcuts and what they do, side by side, each hint the drawn keycaps of a chord and its label (\"Enter Save\") in the person's keyboard legends.",
-      "slots": [
+      "parts": [
         {
           "name": "hints",
           "doc": "The hints, in order.",
@@ -3924,7 +3924,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "body",
           "doc": "The view's content, inside the sheet.",
@@ -3958,7 +3958,7 @@
     },
     {
       "name": "FloatingPanel",
-      "doc": "A floating panel with a header slot, a body and a footer slot, which a view rarely places itself: a menu is a `Popover` and a question a `ModalDialog`.",
+      "doc": "A floating panel with a header part, a body and a footer part, which a view rarely places itself: a menu is a `Popover` and a question a `ModalDialog`.",
       "props": [
         {
           "name": "width",
@@ -3968,7 +3968,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "body",
           "doc": "The panel's body.",
@@ -4025,7 +4025,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "content",
           "doc": "Its content.",
@@ -4086,7 +4086,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "content",
           "doc": "The popover's content.",
@@ -4226,7 +4226,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "properties",
           "doc": "The facts, in order.",
@@ -4472,7 +4472,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "content",
           "doc": "What scrolls.",
@@ -4519,7 +4519,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "content",
           "doc": "The content, in order.",
@@ -4869,7 +4869,7 @@
     {
       "name": "StatGroup",
       "doc": "Stat tiles that reflow by width: one row when they fit, then half per row (2 by 2 for four), then one per row; separated by space, never boxed.",
-      "slots": [
+      "parts": [
         {
           "name": "tiles",
           "doc": "The tiles, in order.",
@@ -5035,7 +5035,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "tabs",
           "doc": "The tabs, in order.",
@@ -5243,7 +5243,7 @@
     },
     {
       "name": "TimeField",
-      "doc": "The time of day a day is due at: the hour and the minute it is due at, with \"Remove time\" beside them, or a quiet \"Add time\" while it has none. It stands in the `time` slot of a [`DateField`](crate::widget::DateField), so the day and its time read as one fact.",
+      "doc": "The time of day a day is due at: the hour and the minute it is due at, with \"Remove time\" beside them, or a quiet \"Add time\" while it has none. It stands in the `time` part of a [`DateField`](crate::widget::DateField), so the day and its time read as one fact.",
       "events": [
         {
           "name": "change",
@@ -5376,7 +5376,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "options",
           "doc": "The choices, in order.",
@@ -5442,7 +5442,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "tabs",
           "doc": "The tabs, in order.",
@@ -5475,7 +5475,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "items",
           "doc": "Its commands, separators and spacers, in order.",
@@ -5558,7 +5558,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "nodes",
           "doc": "The nodes, in order, parents before their children.",
@@ -5835,7 +5835,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "rows",
           "doc": "The items, in order.",
@@ -5985,7 +5985,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "controls",
           "doc": "The frame's controls (close, and what else the shell offers on the window), at the trailing end of the window's bar.",
@@ -6166,7 +6166,7 @@
     {
       "name": "ContextMenu",
       "doc": "A context menu of the view it stands in: a right-click, the Menu key or a long press opens it.",
-      "slots": [
+      "parts": [
         {
           "name": "items",
           "doc": "The menu's content, in order: commands, separators and an emoji bar.",
@@ -6189,7 +6189,7 @@
     {
       "name": "HoverToolbar",
       "doc": "Controls shown over the trailing edge of the view they stand in while it is hovered or holds focus: quick reactions, Reply.",
-      "slots": [
+      "parts": [
         {
           "name": "content",
           "doc": "The controls, in order: buttons, an emoji picker.",
@@ -6206,7 +6206,7 @@
     {
       "name": "Swipe",
       "doc": "What swiping the view it stands in across does: it follows the finger, uncovers the command and runs it when let go past the threshold, or springs back.",
-      "slots": [
+      "parts": [
         {
           "name": "leading",
           "doc": "What swiping from the leading edge towards the trailing edge does.",
@@ -6314,7 +6314,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "cards",
           "doc": "The cards, in order.",
@@ -6366,7 +6366,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "menu",
           "doc": "The commands of its context menu: a right-click, the Menu key or a long press opens it.",
@@ -6462,7 +6462,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "body",
           "doc": "What the card shows, in order.",
@@ -6736,7 +6736,7 @@
           "positional": true
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "cells",
           "doc": "The cells, in the order of the table's columns.",
@@ -6754,7 +6754,7 @@
     },
     {
       "name": "DragItem",
-      "doc": "One item of a run: what it stands for, and the view drawn in its slot.",
+      "doc": "One item of a run: what it stands for, and the view drawn in its part.",
       "props": [
         {
           "name": "item",
@@ -6788,7 +6788,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "body",
           "doc": "What it shows.",
@@ -6953,7 +6953,7 @@
           "data": true
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "body",
           "doc": "What it shows.",
@@ -7068,7 +7068,7 @@
           }
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "items",
           "doc": "The places, in order.",
@@ -7351,7 +7351,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "presence",
           "doc": "Who else has this resource open now, drawn on the pill: their faces, from the resource's lenses.",
@@ -7493,7 +7493,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "menu",
           "doc": "The commands of a menu it opens instead of doing one thing: Sort, Insert, View.",
@@ -7663,7 +7663,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "row",
           "doc": "What the row shows besides its label.",
@@ -7825,7 +7825,7 @@
           "type": "bool"
         }
       ],
-      "slots": [
+      "parts": [
         {
           "name": "menu",
           "doc": "What the item offers on its context menu (a right-click, the Menu key or a long press opens it, and selects the row unless the row opens where it stands): each of its allowed actions, after the menu the row's view placed (`attached`) and without those that menu placed already, so every action stays reachable.",

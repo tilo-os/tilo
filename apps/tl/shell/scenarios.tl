@@ -1991,7 +1991,7 @@ scenario "the agents on the bar" {
     )
     seed(shell)
     let s = shell
-    if let part = s.bar_parts.find(p -> p.slot == Slot.agent) { show_part(s, part, true) }
+    if let part = s.bar_parts.find(p -> p.kind == BarPartKind.agent) { show_part(s, part, true) }
 }
 
 /// The text channel named `name` in the chat's sidebar, standing alone or in a category.

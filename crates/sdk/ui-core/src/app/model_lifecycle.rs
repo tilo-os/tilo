@@ -384,7 +384,7 @@ impl super::App {
         let settled = crate::doc::settle_mark(&self.state.doc) != before;
         // Declaring window-bar slots (or ceasing to) moves the app's
         // History between a band of its own and the bar.
-        if self.floating.window_bar.note_slots_declared() {
+        if self.floating.window_bar.note_parts_declared() {
             self.layout.request_rebuild();
         }
         // The record's durability changed and the root synced with it: a

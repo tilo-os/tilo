@@ -105,8 +105,8 @@ fn the_picker_opens_at_the_cursor_and_inserts_where_it_closed() {
             "the card opens against the field's caret"
         );
         assert_eq!(
-            chrome.overlays().target().slot(),
-            Some(tilo_desktop::overlays::Slot::Emoji),
+            chrome.overlays().target().part(),
+            Some(tilo_desktop::overlays::Part::Emoji),
             "the keys are the card's while it is up"
         );
     });
@@ -144,7 +144,7 @@ fn the_picker_opens_at_the_cursor_and_inserts_where_it_closed() {
     with_chrome(&mut frame, |chrome| {
         assert!(!chrome.emoji().is_open(), "and the card closes");
         assert!(
-            chrome.overlays().target().slot().is_none(),
+            chrome.overlays().target().part().is_none(),
             "the field it came from has the keys back"
         );
     });
@@ -193,7 +193,7 @@ fn the_picker_opens_centred_without_a_caret_and_its_shortcut_closes_it() {
     press_emoji_shortcut(&mut frame);
     with_chrome(&mut frame, |chrome| {
         assert!(!chrome.emoji().is_open(), "its own chord closes it");
-        assert!(chrome.overlays().target().slot().is_none());
+        assert!(chrome.overlays().target().part().is_none());
     });
     assert!(
         link.take_picks().is_empty(),

@@ -22,7 +22,7 @@ use tilo_actions::ActionAddress;
 use tilo_session_core::surface::{KeyClaim, KeyModifiers};
 
 use tilo_desktop::osd::OsdKind;
-use tilo_desktop::overlays::{Overlay, Overlays, Slot, SwitcherScope};
+use tilo_desktop::overlays::{Overlay, Overlays, Part, SwitcherScope};
 use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_desktop::widgets::Fold;
 use tilo_session_core::shell::OVERLAYS;
@@ -213,7 +213,7 @@ impl SwitcherKey {
             Self::Place(at) => Some(Invocation::new(OVERLAYS, "select-switcher").with("at", at)),
             Self::Commit => Some(Invocation::new(OVERLAYS, "commit-switcher")),
             Self::Cancel => {
-                Some(Invocation::new(OVERLAYS, "close-surface").with("slot", "switcher"))
+                Some(Invocation::new(OVERLAYS, "close-surface").with("part", "switcher"))
             }
             Self::Hold => None,
         }
@@ -467,7 +467,7 @@ impl SessionKeys {
 
     /// The surface `press` closes, by the stack's dismissal table: Escape, for the topmost surface
     /// that answers it. The surface is drawn elsewhere, so this surface is the one that hears it.
-    fn closes_the_top_surface(&self, press: &Press) -> Option<Slot> {
+    fn closes_the_top_surface(&self, press: &Press) -> Option<Part> {
         (press.bare == Key::Named(NamedKey::Escape))
             .then(|| self.overlays.escape())
             .flatten()
@@ -728,8 +728,8 @@ impl SessionKeys {
         if self.walk_the_switcher(press) {
             return;
         }
-        if let Some(slot) = self.closes_the_top_surface(press) {
-            if slot == Slot::QuickSettings
+        if let Some(part) = self.closes_the_top_surface(press) {
+            if part == Part::QuickSettings
                 && let Some(asks) = &self.panel
             {
                 // The panel's own pages are its own: Escape goes back one of them, and the panel
@@ -740,7 +740,7 @@ impl SessionKeys {
             }
             self.invocations
                 .borrow_mut()
-                .push(Invocation::new(OVERLAYS, "close-surface").with("slot", slot.as_str()));
+                .push(Invocation::new(OVERLAYS, "close-surface").with("part", part.as_str()));
             return;
         }
         if self.folds_the_shell(press) {
@@ -1040,7 +1040,7 @@ mod tests {
             keys.key(&escape);
             assert_eq!(
                 asked(&keys),
-                vec![surfaces("close-surface").with("slot", "switcher")]
+                vec![surfaces("close-surface").with("part", "switcher")]
             );
 
             for commit in [keysyms::Return, keysyms::KP_Enter, keysyms::space] {
@@ -1214,7 +1214,7 @@ mod tests {
             // and the session waits for its answer.
             let asks = Rc::new(RefCell::new(Vec::new()));
             let overlays = Overlays::new();
-            overlays.open(Slot::QuickSettings, None);
+            overlays.open(Part::QuickSettings, None);
             let mut keys = over(
                 ShellKeys::new(Fold::default(), overlays.clone()).with_panel(Some(Rc::clone(&asks))),
             );
@@ -1232,7 +1232,7 @@ mod tests {
             shell.key(&escape);
             assert_eq!(
                 asked(&shell),
-                vec![Invocation::new(OVERLAYS, "close-surface").with("slot", "quick-settings")]
+                vec![Invocation::new(OVERLAYS, "close-surface").with("part", "quick-settings")]
             );
         }
 

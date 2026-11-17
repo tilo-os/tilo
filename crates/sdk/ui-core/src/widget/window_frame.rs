@@ -18,7 +18,7 @@
 //!   is typing into.
 //!
 //! The window's own controls stand in a pill of the floating material at the trailing end of the
-//! bar in every state, and the app's own slots stay the app's. A view says which window is in
+//! bar in every state, and the app's own parts stay the app's. A view says which window is in
 //! front and what its controls are; the theme decides everything the frame is made of.
 
 use taffy::{NodeId, TaffyTree};
@@ -29,13 +29,13 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::chrome::HeaderRowMetrics;
-use crate::component::{Component, Described, SlotViews};
+use crate::component::{Component, Described, PartViews};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{Rhythm, SpacingStep, TextRole};
 use crate::widget::DrawChild;
-use crate::widget::arrange::{Align, At, Fit, Layers, Length, Slot, Stack};
+use crate::widget::arrange::{Align, At, Fit, Layers, Length, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
 use crate::widget::tabs::{TAB_BAR_HEIGHT, TabStrip};
 use crate::widget::window_controls::WindowControls;
@@ -62,12 +62,12 @@ pub struct WindowFrameProps {
     pub lists_actions: bool,
     /// The frame's controls (close, and what else the shell offers on the window), at the
     /// trailing end of the window's bar.
-    #[component(slot)]
+    #[component(part)]
     pub controls: Option<Element>,
     /// The places the window shows, as its tabs: the bar is theirs while there are any, and
     /// the content is the tab in front. Empty for a window of one place, whose bar is the
     /// place's own header or the frame's.
-    #[component(slot)]
+    #[component(part)]
     pub tabs: Option<Element>,
     /// The resource the window's bar carries when a person picks it up, by its published
     /// address: a place on the canvas is dragged onto a composer, or back onto the canvas, by
@@ -75,7 +75,7 @@ pub struct WindowFrameProps {
     /// leaves the bar no source, as a foreign window's bar has nothing to carry.
     pub carries: Option<String>,
     /// The window's content, filling the window.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub body: Option<Element>,
 }
 
@@ -103,7 +103,7 @@ pub struct WindowFrame {
     focused: bool,
     lists_actions: bool,
     layers: Layers,
-    /// The slot a host is changing: 0 for the controls, 1 for the tabs, 2 for the content.
+    /// The part a host is changing: 0 for the controls, 1 for the tabs, 2 for the content.
     editing: usize,
     /// The window shows tabs: its bar is theirs, and the content's header row takes no bar.
     tabbed: bool,
@@ -177,7 +177,7 @@ fn empty() -> Element {
 }
 
 /// How the tabs stand in the frame's own bar: the bar of a window of several places is
-/// theirs, so they take its width; a window of one leaves that slot empty.
+/// theirs, so they take its width; a window of one leaves that part empty.
 fn tabs_fit(tabbed: bool) -> Fit {
     if tabbed { Fit::fill(1.0) } else { Fit::hug() }
 }
@@ -188,8 +188,8 @@ fn after_fit(tabbed: bool) -> Fit {
     if tabbed { Fit::hug() } else { Fit::fill(1.0) }
 }
 
-/// Whether `widget` holds the window's tabs: a view names the tabs slot on every window, so
-/// what the slot holds says whether this window has tabs, never the slot's mere presence.
+/// Whether `widget` holds the window's tabs: a view names the tabs part on every window, so
+/// what the part holds says whether this window has tabs, never the part's mere presence.
 fn holds_tabs(widget: &dyn Widget) -> bool {
     let tabs = widget
         .as_any()
@@ -198,10 +198,10 @@ fn holds_tabs(widget: &dyn Widget) -> bool {
     tabs || widget.children().iter().any(|child| holds_tabs(*child))
 }
 
-fn slot(element: Element, fit: Fit) -> Slot {
-    let mut slot = Slot::new(element);
-    slot.fit = fit;
-    slot
+fn part(element: Element, fit: Fit) -> Part {
+    let mut part = Part::new(element);
+    part.fit = fit;
+    part
 }
 
 /// The fit of a bar: at least one bar tall, hugging what it holds across. A window narrow
@@ -236,20 +236,20 @@ impl Described for WindowFrame {
         let tabbed = tabs.as_deref().is_some_and(holds_tabs);
         let own = Stack::row()
             .align(Align::Center)
-            .push_slot(slot(tabs.unwrap_or_else(empty), tabs_fit(tabbed)))
-            .push_slot(slot(empty(), Fit::hug()))
-            .push_slot(slot(empty(), after_fit(tabbed)));
+            .push_part(part(tabs.unwrap_or_else(empty), tabs_fit(tabbed)))
+            .push_part(part(empty(), Fit::hug()))
+            .push_part(part(empty(), after_fit(tabbed)));
         let column = Stack::stack()
             .fill_width()
             .fill_height()
             .gap(Rhythm::None)
-            .push_slot(slot(Box::new(own), bar_fit(tabbed)))
-            .push_slot(slot(body.unwrap_or_else(empty), Fit::fill(1.0)));
+            .push_part(part(Box::new(own), bar_fit(tabbed)))
+            .push_part(part(body.unwrap_or_else(empty), Fit::fill(1.0)));
         let controls = Stack::row()
             .align(Align::Center)
             .push(controls.unwrap_or_else(empty));
         let layers = Layers::layers()
-            .push_slot(slot(Box::new(column), Fit::fill(1.0)))
+            .push_part(part(Box::new(column), Fit::fill(1.0)))
             .push_at(Box::new(controls), At::TopTrailing);
         Self {
             key,
@@ -299,8 +299,8 @@ impl Described for WindowFrame {
         true
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        self.editing = match slot {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        self.editing = match part {
             "controls" => 0,
             "tabs" => 1,
             "body" => 2,
@@ -310,8 +310,8 @@ impl Described for WindowFrame {
     }
 }
 
-/// The view of the slot being changed: the controls, the tabs, or the content.
-impl SlotViews for WindowFrame {
+/// The view of the part being changed: the controls, the tabs, or the content.
+impl PartViews for WindowFrame {
     fn len(&self) -> usize {
         1
     }
@@ -374,7 +374,7 @@ impl WindowFrame {
         self.column()?.child_mut(BODY)
     }
 
-    /// Put `view` in the slot being changed.
+    /// Put `view` in the part being changed.
     fn put(&mut self, view: Element) {
         match self.editing {
             0 => {
@@ -502,7 +502,7 @@ impl WindowFrame {
             .align(Align::Center)
             .push(Box::new(gutter))
             .push(Box::new(title))
-            .push_slot(slot(empty(), Fit::fill(1.0)));
+            .push_part(part(empty(), Fit::fill(1.0)));
         Box::new(row)
     }
 
@@ -513,7 +513,7 @@ impl WindowFrame {
                 .layers
                 .children()
                 .first()
-                .and_then(|column| crate::widget::window_header::window_bar_slot(*column))
+                .and_then(|column| crate::widget::window_header::window_bar_part(*column))
                 .map_or_else(
                     || {
                         Rect::new(
@@ -523,7 +523,7 @@ impl WindowFrame {
                             self.rect.y0 + m.height,
                         )
                     },
-                    |slot| slot.row,
+                    |part| part.row,
                 );
         }
         self.layers

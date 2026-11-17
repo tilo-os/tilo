@@ -394,9 +394,9 @@ impl Checker<'_> {
                 }
             }
         }
-        // The block: named slots for the view parameters it names, the rest for the view parameter of
+        // The block: named parts for the view parameters it names, the rest for the view parameter of
         // the content.
-        let (slots, content) = split_block(c);
+        let (parts, content) = split_block(c);
         let mut values: HashMap<String, LocalId> = HashMap::new();
         let mut states: HashMap<String, StateRef> = HashMap::new();
         let mut macros: HashMap<String, Macro> = HashMap::new();
@@ -559,7 +559,7 @@ impl Checker<'_> {
                     )
                 }
                 Kind::View => {
-                    let body = slots
+                    let body = parts
                         .iter()
                         .find(|(name, _)| name.name == p.name.name)
                         .map(|(_, body)| (*body).clone())
@@ -608,7 +608,7 @@ impl Checker<'_> {
                 }
             }
         }
-        for (name, _) in &slots {
+        for (name, _) in &parts {
             if !view.params.iter().any(|p| p.name.name == name.name) {
                 self.err(
                     "E063",
@@ -1352,21 +1352,21 @@ fn function_result(te: &TypeExpr) -> Option<&TypeExpr> {
     }
 }
 
-/// The block of a template call taken apart: its named slots, and the rest. An item block names
-/// slots too, which do not see the item.
+/// The block of a template call taken apart: its named parts, and the rest. An item block names
+/// parts too, which do not see the item.
 struct Content {
     params: Vec<ast::Ident>,
     body: Vec<UiStmt>,
 }
 
 fn split_block(c: &UiCall) -> (Vec<(&ast::Ident, &Vec<UiStmt>)>, Content) {
-    let mut slots = Vec::new();
+    let mut parts = Vec::new();
     let mut body = Vec::new();
     for s in c.block.iter().flatten() {
         match &s.kind {
-            UiKind::Slot {
+            UiKind::Part {
                 name, body: inner, ..
-            } => slots.push((name, inner)),
+            } => parts.push((name, inner)),
             _ => body.push(s.clone()),
         }
     }
@@ -1374,10 +1374,10 @@ fn split_block(c: &UiCall) -> (Vec<(&ast::Ident, &Vec<UiStmt>)>, Content) {
         params: c.params.clone(),
         body,
     };
-    (slots, content)
+    (parts, content)
 }
 
-/// Whether `p` is the view parameter a call's block fills when it names no slot: the first `View`
+/// Whether `p` is the view parameter a call's block fills when it names no part: the first `View`
 /// parameter, or the one called `content`.
 fn is_content_param(view: &ast::ViewDecl, p: &ast::Param) -> bool {
     let views: Vec<&ast::Param> = view

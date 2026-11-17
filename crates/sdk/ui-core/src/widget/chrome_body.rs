@@ -5,7 +5,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 
-use crate::component::{Component, Described, SlotViews};
+use crate::component::{Component, Described, PartViews};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -55,7 +55,7 @@ pub struct ChromeProps {
     /// calm.
     pub material: Option<ChromeMaterial>,
     /// What the body holds.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub body: Option<Element>,
 }
 
@@ -105,8 +105,8 @@ impl Described for ChromeBody {
         built
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        (slot == "body").then_some(self as &mut dyn SlotViews)
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        (part == "body").then_some(self as &mut dyn PartViews)
     }
 
     fn set_props(&mut self, props: ChromeProps) -> bool {
@@ -114,13 +114,13 @@ impl Described for ChromeBody {
         self.shape = props.shape.unwrap_or_default();
         self.edge = props.edge.unwrap_or_default();
         self.material = props.material.unwrap_or_default();
-        // The body in the slot is reconciled in place; what the body is made of changed, so
+        // The body in the part is reconciled in place; what the body is made of changed, so
         // the container is built again around it by the host when the shape changed.
         true
     }
 }
 
-impl SlotViews for ChromeBody {
+impl PartViews for ChromeBody {
     fn len(&self) -> usize {
         usize::from(self.container.has_child())
     }

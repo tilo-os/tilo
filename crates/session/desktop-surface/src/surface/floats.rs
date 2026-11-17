@@ -184,7 +184,7 @@ pub(super) struct Dock {
     /// The docked windows, by group, each at its card size.
     pub(super) cards: std::collections::BTreeMap<u64, DockedCard>,
     /// Where the layer put each docked window, in shell coordinates.
-    pub(super) slots: std::collections::BTreeMap<u64, Rect>,
+    pub(super) places: std::collections::BTreeMap<u64, Rect>,
     /// The docked windows folded to their header, with the size they open to again.
     pub(super) collapsed: std::collections::BTreeMap<u64, (f64, f64)>,
     /// The windows that opened here as cards: snapped into their strip and floated again, they go
@@ -317,7 +317,7 @@ pub(super) fn carry_out(
         FloatAsk::Float { group, .. } | FloatAsk::Snap { group } => group,
     };
     shared.dock.cards.remove(&group);
-    shared.dock.slots.remove(&group);
+    shared.dock.places.remove(&group);
     shared.dock.collapsed.remove(&group);
     let group = match ask {
         FloatAsk::Float { group, at } => {

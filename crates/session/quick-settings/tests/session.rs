@@ -61,7 +61,7 @@ fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
     // The screen as it stands before the panel appears: what the panel leaves
     // alone has to stay exactly this, pixel for pixel.
     let screen = drawn_screen(&mut session);
-    // Started by itself, with no slot that places it, it stands where its anchor holds it.
+    // Started by itself, with no part that places it, it stands where its anchor holds it.
     let anchored = panel().anchor(Anchor::TOP | Anchor::RIGHT);
     session.start_surface(&anchored).expect("the panel starts");
 
@@ -643,7 +643,7 @@ fn a_press_outside_the_panel_closes_it() {
     until_ready(session, "toggle-wifi");
 
     // A press beside the panel takes the person elsewhere, and the panel
-    // goes with the slot it was placed in.
+    // goes with the part it was placed in.
     press(session, 40.0, f64::from(HEIGHT) / 2.0);
     let deadline = Instant::now() + OPENING;
     while session.quick_settings_open()
@@ -747,7 +747,7 @@ fn pixel(frame: &Screenshot, x: i32, y: i32) -> [u8; 4] {
 }
 
 /// The panel open on the screen, its app running: what the bar's tray press
-/// does, which is to open the stack's quick-settings slot.
+/// does, which is to open the stack's quick-settings part.
 fn open_the_panel(session: &mut Session) {
     // The screen as it stands before the panel, at rest: what changes after it
     // opens is the panel coming up, never the screen still settling.
@@ -762,7 +762,7 @@ fn open_the_panel_over(session: &mut Session, screen: &Screenshot) {
         .invoke(
             OVERLAYS,
             "open-surface",
-            &arguments(&json!({ "slot": "quick-settings" })),
+            &arguments(&json!({ "part": "quick-settings" })),
         )
         .expect("the panel opens");
     pump(session);

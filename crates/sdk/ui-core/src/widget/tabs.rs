@@ -240,7 +240,7 @@ pub struct TabDescriptor {
     /// The window is waiting for the person: a refusal, a background open, a dialog they are not
     /// looking at. One dot at the pill's trailing edge, cleared when the tab takes focus.
     pub attention: bool,
-    /// A person named the tab: the title is theirs, so the bar shows it even where its app's slots
+    /// A person named the tab: the title is theirs, so the bar shows it even where its app's parts
     /// would leave a window's one tab as its icon alone.
     pub named: bool,
     /// The name of the app the tab is a window of: said after the title, lighter, where another
@@ -403,7 +403,7 @@ pub struct TabBar {
     /// Per-tab leading-marker tint, keyed by tab id: a host that classifies its tabs by something
     /// the shell cannot know hands the colour in, so the mark re-tints with the theme.
     pub(crate) accent_ids: HashMap<u64, vello::peniko::Color>,
-    /// Tab ids whose content has unsaved changes: a modified tab holds its close slot open at rest
+    /// Tab ids whose content has unsaved changes: a modified tab holds its close part open at rest
     /// and paints a dot there, and hovering swaps the × back in, so it stays closable.
     pub(crate) modified_ids: HashSet<u64>,
     /// Tabs someone else holds ([`TabHolder`]), by id. Sidecar for the same
@@ -421,8 +421,8 @@ pub struct TabBar {
     closable: bool,
     new_tab: bool,
     /// The width the window's search keeps for its open query at the least (`None`: the app does
-    /// not search in place, so the bar's slots need no width for it): a narrow window's bar leaves
-    /// the app's slots at least that much to reach back over.
+    /// not search in place, so the bar's parts need no width for it): a narrow window's bar leaves
+    /// the app's parts at least that much to reach back over.
     search_least: Option<f64>,
     marks: HashMap<u64, TabMark>,
     /// When each busy tab became busy: its arc turns for [`BUSY_TURNING`].
@@ -493,7 +493,7 @@ pub struct TabBar {
     /// grow in, or fade back into a plain title.
     tabbed: bool,
     tabbed_changed_at: Option<Instant>,
-    /// The slots each tab's app declared for the window's bar
+    /// The parts each tab's app declared for the window's bar
     /// ([`crate::window_toolbar`]), by tab id. Sidecar like the others.
     toolbars: HashMap<u64, crate::window_toolbar::WindowToolbar>,
     /// The window floats as a card: its bar is the card's header, naming what the window is about
@@ -501,9 +501,9 @@ pub struct TabBar {
     card: Option<HashMap<u64, crate::window_toolbar::WindowToolbar>>,
     pending_collapse: bool,
     /// Each tab's location picture (a page's favicon), decoded from its
-    /// slots: it stands where the app's icon would.
+    /// parts: it stands where the app's icon would.
     location_images: HashMap<u64, icons::AppImage>,
-    /// The active tab's slots: in the title's row while the window shows
+    /// The active tab's parts: in the title's row while the window shows
     /// one tab, in a row of their own under the tabs while it shows several.
     toolbar_row: Box<super::window_toolbar_row::ToolbarRow>,
     motion: EffectiveMotion,
@@ -572,7 +572,7 @@ impl TabBar {
     }
 
     /// Source pill's opacity while the drag-ghost is visible; low enough to read as
-    /// inactive but the slot still holds its place (no neighbour reflow).
+    /// inactive but the part still holds its place (no neighbour reflow).
     pub const SOURCE_PILL_DIM_ALPHA: f32 = 0.35;
     /// The handle is visibly lifted but remains translucent enough for a drop
     /// target to stay legible beneath it.
@@ -711,20 +711,20 @@ impl TabBar {
     }
 
     /// The window's search keeps `least` of width for its open query, reaching back over the
-    /// active tab's slots ([`crate::widget::WindowSearch::least_span`]); `None` where the app
-    /// does not search in place, and the slots owe it nothing.
+    /// active tab's parts ([`crate::widget::WindowSearch::least_span`]); `None` where the app
+    /// does not search in place, and the parts owe it nothing.
     pub fn set_search_least(&mut self, least: Option<f64>) {
         self.touch();
         self.search_least = least;
     }
 
-    /// Where the window's search control stands when the active tab put its slots in the bar, and
-    /// how far left an open search may reach; `None` without slots: it follows the tabs.
+    /// Where the window's search control stands when the active tab put its parts in the bar, and
+    /// how far left an open search may reach; `None` without parts: it follows the tabs.
     #[must_use]
-    pub fn toolbar_search_slot(&self) -> Option<(Rect, f64)> {
-        self.active_slots()?;
+    pub fn toolbar_search_part(&self) -> Option<(Rect, f64)> {
+        self.shown_toolbar()?;
         let row = self.toolbar_row_rect();
-        let location = self.toolbar_row.slots().location;
+        let location = self.toolbar_row.parts().location;
         let reach = if location.area() > 0.0 {
             location.x0
         } else {
@@ -795,7 +795,7 @@ impl TabBar {
         self.window_controls && self.tabs.len() <= 1
     }
 
-    /// Show the slots `id`'s app declared for the window's bar, or none.
+    /// Show the parts `id`'s app declared for the window's bar, or none.
     /// Returns whether that changed what the bar shows.
     pub fn set_toolbar(
         &mut self,
@@ -847,7 +847,7 @@ impl TabBar {
         &mut self.toolbar_row
     }
 
-    /// The slots `id`'s app declared.
+    /// The parts `id`'s app declared.
     #[must_use]
     pub fn toolbar(&self, id: u64) -> Option<&crate::window_toolbar::WindowToolbar> {
         self.toolbars.get(&id)
@@ -915,19 +915,19 @@ impl TabBar {
     /// Where the active tab's location stands (`Rect::ZERO` for none).
     #[must_use]
     pub fn location_rect(&self) -> Rect {
-        self.toolbar_row.slots().location
+        self.toolbar_row.parts().location
     }
 
-    /// Where each of the active tab's slots stands, for tests and the
+    /// Where each of the active tab's parts stands, for tests and the
     /// host: back, forward, location, then the actions.
     #[must_use]
     pub fn toolbar_rects(&self) -> (Rect, Rect, Rect, Vec<Rect>) {
-        let slots = self.toolbar_row.slots();
+        let parts = self.toolbar_row.parts();
         (
-            slots.back,
-            slots.forward,
-            slots.location,
-            slots.actions.clone(),
+            parts.back,
+            parts.forward,
+            parts.location,
+            parts.actions.clone(),
         )
     }
 
@@ -951,25 +951,25 @@ impl TabBar {
     }
 
     /// A pill shown as its icon alone: a pinned tab, or the one tab of a
-    /// window whose app put its slots in the title's row — unless a person
+    /// window whose app put its parts in the title's row — unless a person
     /// named it or is naming it, when its name stands beside the icon.
     fn icon_only(&self, id: u64) -> bool {
         self.pinned_ids.contains(&id)
             || (self.solo()
                 && id == self.active_id
-                && self.active_slots().is_some()
+                && self.shown_toolbar().is_some()
                 && self.renaming() != Some(id)
                 && !self.tabs.iter().any(|tab| tab.id == id && tab.named))
     }
 
-    /// Whether the bar stands two rows tall: the tabs, then the active tab's slots. A window going
-    /// back to one tab keeps the row until the slots have moved up, so content is resized once.
+    /// Whether the bar stands two rows tall: the tabs, then the active tab's parts. A window going
+    /// back to one tab keeps the row until the parts have moved up, so content is resized once.
     fn two_rows(&self) -> bool {
-        self.active_slots().is_some()
+        self.shown_toolbar().is_some()
             && (self.tabs.len() > 1 || (!self.tabbed && self.tabbed_in_flight()))
     }
 
-    /// The bar's height: one row, or two with the active tab's slots under
+    /// The bar's height: one row, or two with the active tab's parts under
     /// the tabs, and a compact window's notice strip under those.
     #[must_use]
     pub fn bar_height(&self) -> f64 {
@@ -977,7 +977,7 @@ impl TabBar {
     }
 
     /// The height of the bar's rows: the tabs (or the title), and the active
-    /// tab's slots under them where they have a row of their own.
+    /// tab's parts under them where they have a row of their own.
     fn rows_height(&self) -> f64 {
         if self.two_rows() {
             self.tab_row_height() + TOOLBAR_ROW_HEIGHT
@@ -1602,7 +1602,7 @@ impl TabBar {
             );
             ICON_W + ICON_GAP
         } else if let Some(dot) = accent {
-            // One slot, two occupants: the app glyph, or the accent dot for a host whose tabs are
+            // One part, two occupants: the app glyph, or the accent dot for a host whose tabs are
             // classified by something the shell cannot name. Same width, so a sized leading zone
             // always fits.
             let c = vello::kurbo::Circle::new(icon_rect.center(), ACCENT_DOT_R);
@@ -1742,18 +1742,18 @@ impl TabBar {
             pill.look.fill.with_alpha(1.0),
             pill.look.fill.components[3],
         );
-        let face_rect = |slot: usize| {
+        let face_rect = |part: usize| {
             square_at(
                 Point::new(
-                    x0 + metrics.face / 2.0 + crate::num::f64_of_usize(slot) * metrics.step(),
+                    x0 + metrics.face / 2.0 + crate::num::f64_of_usize(part) * metrics.step(),
                     cy,
                 ),
                 metrics.face,
             )
         };
         let peers = self.pill_people(pill.tab.id, presence);
-        for (slot, user) in peers.iter().take(faces.faces).enumerate() {
-            let rect = face_rect(slot);
+        for (part, user) in peers.iter().take(faces.faces).enumerate() {
+            let rect = face_rect(part);
             let dimmed = presence.availability_of(user).dims();
             if dimmed {
                 ctx.scene.push_layer(
@@ -1840,7 +1840,7 @@ impl TabBar {
         let close_hover =
             !suppress_hover && Some(i) == self.hover_close_idx && self.pointer_settled();
         if self.modified_ids.contains(&t.id) && !is_hover && !close_hover {
-            // Unsaved changes with the pointer elsewhere: the slot reads as a dot rather than an ×;
+            // Unsaved changes with the pointer elsewhere: the part reads as a dot rather than an ×;
             // hovering swaps it back, so the two meanings never share a frame.
             let dot = vello::kurbo::Circle::new(close_r.center(), MODIFIED_DOT_R);
             let color = if is_active { text_primary } else { text_dim };
@@ -2934,7 +2934,7 @@ impl TabBar {
         if self.pending_drag.is_some() {
             if let Some((from, _)) = self.press_origin {
                 if self.rect.contains(self.last_cursor) {
-                    // Removing the dragged pill shifts every later slot down one, so an insertion
+                    // Removing the dragged pill shifts every later part down one, so an insertion
                     // point past its own position maps to `ins - 1`.
                     let ins = self.drop_index_for(self.last_cursor);
                     let to = if ins > from {
@@ -3588,7 +3588,7 @@ const PINNED_W: f64 = 28.0;
 /// Radius of the leading accent dot, when a tab is classified by colour
 /// rather than by a typed app glyph.
 const ACCENT_DOT_R: f64 = 4.0;
-/// Radius of the unsaved-changes dot painted in the close slot. Slightly
+/// Radius of the unsaved-changes dot painted in the close part. Slightly
 /// smaller than the accent dot so the two never read as the same mark.
 const MODIFIED_DOT_R: f64 = 3.5;
 const PILL_MIN_PX: f64 = 84.0;
@@ -3744,9 +3744,9 @@ impl PillFaces {
     fn width(self, metrics: FaceMetrics) -> f64 {
         match self.slots() {
             0 => 0.0,
-            slots => {
+            parts => {
                 metrics.face
-                    + crate::num::f64_of_usize(slots.saturating_sub(1)) * metrics.step()
+                    + crate::num::f64_of_usize(parts.saturating_sub(1)) * metrics.step()
                     + metrics.gap
             }
         }
@@ -3926,9 +3926,9 @@ impl Widget for TabBar {
             f64::INFINITY
         };
         let mut x = row.x0;
-        for (slot, &i) in visual_order.iter().enumerate() {
+        for (part, &i) in visual_order.iter().enumerate() {
             let is_pinned = self.tabs.get(i).is_some_and(|t| self.icon_only(t.id));
-            let w = widths.get(slot).copied().unwrap_or(0.0);
+            let w = widths.get(part).copied().unwrap_or(0.0);
             let x1 = (x + w).min(right_limit);
             let r = Rect::new(x, pill_y0, x1.max(x), pill_y1);
             let effective = if is_pinned {
@@ -3946,7 +3946,7 @@ impl Widget for TabBar {
                     .min(MIN_TITLE_PX)
                     .min((leftover - kept).max(0.0));
                 let afford = (leftover - protect).max(0.0);
-                let grow_px = grow.get(slot).copied().unwrap_or(0.0);
+                let grow_px = grow.get(part).copied().unwrap_or(0.0);
                 (resting.reserve() + grow_px).min(afford)
             };
             let (close, max_rect, search_rect) = chip_rects(
@@ -3973,37 +3973,37 @@ impl Widget for TabBar {
             } else {
                 Rect::ZERO
             };
-            if let Some(slot) = self.reveal_px.get_mut(i) {
-                *slot = effective;
+            if let Some(part) = self.reveal_px.get_mut(i) {
+                *part = effective;
             }
-            if let Some(slot) = self.tab_rects.get_mut(i) {
-                *slot = r;
+            if let Some(part) = self.tab_rects.get_mut(i) {
+                *part = r;
             }
-            if let Some(slot) = self.mark_rects.get_mut(i)
+            if let Some(part) = self.mark_rects.get_mut(i)
                 && !is_pinned
             {
-                *slot = leading_glyph_rect(r);
+                *part = leading_glyph_rect(r);
             }
-            if let Some(slot) = self.close_rects.get_mut(i) {
-                *slot = close;
+            if let Some(part) = self.close_rects.get_mut(i) {
+                *part = close;
             }
-            if let Some(slot) = self.close_hit_rects.get_mut(i) {
-                *slot = close_hit;
+            if let Some(part) = self.close_hit_rects.get_mut(i) {
+                *part = close_hit;
             }
-            if let Some(slot) = self.max_rects.get_mut(i) {
-                *slot = max_rect;
+            if let Some(part) = self.max_rects.get_mut(i) {
+                *part = max_rect;
             }
             let search_rect = if self.search_control.is_some() {
                 Rect::ZERO
             } else {
                 search_rect
             };
-            if let Some(slot) = self.search_rects.get_mut(i) {
-                *slot = search_rect;
+            if let Some(part) = self.search_rects.get_mut(i) {
+                *part = search_rect;
             }
             let history_rect = self.history_chip_rect(i, search_rect, effective);
-            if let Some(slot) = self.history_rects.get_mut(i) {
-                *slot = history_rect;
+            if let Some(part) = self.history_rects.get_mut(i) {
+                *part = history_rect;
             }
             x = r.x1 + gap;
         }
@@ -4041,7 +4041,7 @@ impl Widget for TabBar {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.touch();
-        // An open menu of the slots (the overflow's, the suggestions) takes
+        // An open menu of the parts (the overflow's, the suggestions) takes
         // the pointer over it first, and a press off it closes it.
         if self.toolbar_row.popup_open() && self.toolbar_row.popup_event(event, ctx) {
             if let WindowEvent::CursorMoved { position, .. } = event {
@@ -4062,7 +4062,7 @@ impl Widget for TabBar {
                 self.last_cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
-            let in_field = self.toolbar_row.slots().location.contains(self.last_cursor);
+            let in_field = self.toolbar_row.parts().location.contains(self.last_cursor);
             let pointer = matches!(
                 event,
                 WindowEvent::MouseInput { .. } | WindowEvent::CursorMoved { .. }
@@ -4116,13 +4116,13 @@ impl Widget for TabBar {
         "TabBar"
     }
 
-    /// Every button in the bar names its outcome: the slots' buttons and
+    /// Every button in the bar names its outcome: the parts' buttons and
     /// the window's controls. See [`tips::TabBar::tip_at`].
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
         self.tip_at(point)
     }
 
-    /// The slots' menus (overflow, suggestions) float in the window's top
+    /// The parts' menus (overflow, suggestions) float in the window's top
     /// layer, over the content.
     fn draw_overlay(
         &mut self,
@@ -4149,31 +4149,31 @@ impl Widget for TabBar {
             out.push((format!("window_tab:{i}"), *rect));
         }
         if self.active_toolbar().is_some() {
-            let slots = self.toolbar_row.slots();
-            out.push(("window_back".to_string(), slots.back));
-            out.push(("window_forward".to_string(), slots.forward));
-            out.push(("window_location".to_string(), slots.location));
-            out.push(("window_more".to_string(), slots.overflow));
-            out.push(("window_views_menu".to_string(), slots.views_menu));
-            out.push(("window_sidebar".to_string(), slots.sidebar));
-            for (i, rect) in slots.actions.iter().enumerate() {
+            let parts = self.toolbar_row.parts();
+            out.push(("window_back".to_string(), parts.back));
+            out.push(("window_forward".to_string(), parts.forward));
+            out.push(("window_location".to_string(), parts.location));
+            out.push(("window_more".to_string(), parts.overflow));
+            out.push(("window_views_menu".to_string(), parts.views_menu));
+            out.push(("window_sidebar".to_string(), parts.sidebar));
+            for (i, rect) in parts.actions.iter().enumerate() {
                 out.push((format!("window_action:{i}"), *rect));
             }
             for (i, rect) in self.toolbar_row.suggestion_rects().into_iter().enumerate() {
                 out.push((format!("window_suggestion:{i}"), rect));
             }
-            for (i, rect) in slots.leading.iter().enumerate() {
+            for (i, rect) in parts.leading.iter().enumerate() {
                 if rect.area() > 0.0 {
                     out.push((format!("window_leading:{i}"), *rect));
                 }
             }
-            for (i, rect) in slots.views.iter().enumerate() {
+            for (i, rect) in parts.views.iter().enumerate() {
                 out.push((format!("window_view:{i}"), *rect));
             }
-            for (i, rect) in slots.reactions.iter().enumerate() {
+            for (i, rect) in parts.reactions.iter().enumerate() {
                 out.push((format!("window_reaction:{i}"), *rect));
             }
-            out.push(("window_reaction_add".to_string(), slots.reaction_add));
+            out.push(("window_reaction_add".to_string(), parts.reaction_add));
         }
         out.extend([
             (WINDOW_HISTORY_TARGET.to_string(), self.history_action),
@@ -4370,17 +4370,17 @@ impl Widget for TabBar {
                     self.controls.close,
                 ));
             }
-            // The active tab's slots, before the window's controls in
+            // The active tab's parts, before the window's controls in
             // reading order.
-            let slots = self.toolbar_row.accessibility();
-            if !slots.is_empty() {
+            let parts = self.toolbar_row.accessibility();
+            if !parts.is_empty() {
                 let controls = 1
                     + usize::from(collapses)
                     + usize::from(closes)
                     + usize::from(self.history.contains_key(&self.active_id));
                 let at = tab_children.len().saturating_sub(controls);
-                for (offset, slot) in slots.into_iter().enumerate() {
-                    tab_children.insert(at + offset, slot);
+                for (offset, part) in parts.into_iter().enumerate() {
+                    tab_children.insert(at + offset, part);
                 }
             }
         }
@@ -4601,7 +4601,7 @@ impl TabBar {
             || self.toolbar_row.needs_animation_frame()
     }
 
-    /// Visual-slot ordering (pinned first) plus each slot's fitted width and in-flight reveal
+    /// Visual-part ordering (pinned first) plus each part's fitted width and in-flight reveal
     /// growth — the inputs `apply_layout`'s placement loop turns into rects — and whether the
     /// row stands at its least, its tabs down to their glyphs.
     fn compute_pill_layout(&mut self) -> (Vec<usize>, Vec<f64>, Vec<f64>, bool) {
@@ -6654,11 +6654,11 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// What a pill draws: its slot, fill, marks and close glyph, at every width.
+        /// What a pill draws: its part, fill, marks and close glyph, at every width.
         /// Each phase was a test of its own and builds its own fixture.
         fn pills_show_state_marks_and_fit_the_bar;
 
-        phase leading_slot_reserves_width_for_accents_and_app_icons;
+        phase leading_part_reserves_width_for_accents_and_app_icons;
         {
             {
                 // app_kind must default to None so `TabBar::draw` skips the
@@ -6724,7 +6724,7 @@ mod tests {
             }
 
             {
-                // One slot, two occupants, one width: a strip mixing accented and app-typed tabs
+                // One part, two occupants, one width: a strip mixing accented and app-typed tabs
                 // must not wobble from one pill to the next — an accent has to reserve exactly what
                 // the glyph does.
                 let mut plain = TabBar::new("g1", vec![TabDescriptor::new(1, "Documentation")], 1);
@@ -6783,7 +6783,7 @@ mod tests {
                     "glyph starts on the text inset"
                 );
                 assert_eq!(glyph.width(), ICON_W);
-                assert_eq!(glyph.height(), ICON_W, "the glyph slot is square");
+                assert_eq!(glyph.height(), ICON_W, "the glyph part is square");
                 assert!(
                     (glyph.center().y - r.center().y).abs() < 1e-9,
                     "the glyph sits on the pill's centre line"
@@ -6958,7 +6958,7 @@ mod tests {
 
             // Case `pinned_active_tab_still_paints_no_close_glyph`.
             // Pinned tabs stay icon-only even while active — the compact 28-px
-            // slot cannot fit a `×`, and the press hit-test filters them out.
+            // part cannot fit a `×`, and the press hit-test filters them out.
             {
                 let theme = Theme::dark();
                 let mut b = bar();
@@ -7782,7 +7782,7 @@ mod tests {
             );
             let speaker = tabs
                 .mark_rect(2)
-                .expect("the mark stands in the leading slot");
+                .expect("the mark stands in the leading part");
             assert!(tabs.tab_rects()[1].contains(speaker.center()));
             let mut handled = false;
             dispatch_cursor(&mut tabs, speaker.center(), &mut handled);
@@ -7861,7 +7861,7 @@ mod tests {
             assert_ne!(
                 b.close_rects[idx],
                 Rect::ZERO,
-                "a modified tab holds its close slot open even when idle and \
+                "a modified tab holds its close part open even when idle and \
              inactive"
             );
 
@@ -7870,7 +7870,7 @@ mod tests {
             assert_eq!(
                 b.close_rects[idx],
                 Rect::ZERO,
-                "clearing modified must let the slot close back up"
+                "clearing modified must let the part close back up"
             );
         }
 
@@ -8849,7 +8849,7 @@ mod tests {
         (taffy, node)
     }
 
-    pub(super) fn browser_slots() -> crate::window_toolbar::WindowToolbar {
+    pub(super) fn browser_parts() -> crate::window_toolbar::WindowToolbar {
         use crate::window_toolbar::{
             ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,
         };
@@ -8895,9 +8895,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// The window bar around the tabs: location, slots, overflow and the new-tab control.
+        /// The window bar around the tabs: location, parts, overflow and the new-tab control.
         /// Each phase was a test of its own and builds its own fixture.
-        fn the_bar_carries_location_slots_and_the_new_tab_control;
+        fn the_bar_carries_location_parts_and_the_new_tab_control;
 
         phase the_bar_edits_an_apps_location_and_commits_it_to_that_tab;
         {
@@ -8905,8 +8905,8 @@ mod tests {
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
             b.set_window_controls(true);
-            assert!(b.set_toolbar(1, Some(browser_slots())));
-            assert!(!b.set_toolbar(1, Some(browser_slots())), "unchanged");
+            assert!(b.set_toolbar(1, Some(browser_parts())));
+            assert!(!b.set_toolbar(1, Some(browser_parts())), "unchanged");
             lay_out_at_width_with(&mut b, 900.0, &theme);
             assert!(
                 (b.bar_height() - TAB_BAR_HEIGHT).abs() < f64::EPSILON,
@@ -8980,11 +8980,11 @@ mod tests {
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
             b.set_window_controls(true);
-            b.set_toolbar(1, Some(crowded_slots()));
+            b.set_toolbar(1, Some(crowded_parts()));
             lay_out_at_width_with(&mut b, 900.0, &theme);
             b.set_carriable(true);
             let (_, _, location, actions) = b.toolbar_rects();
-            let more = b.toolbar_row.slots().overflow;
+            let more = b.toolbar_row.parts().overflow;
             assert!(
                 !b.control_hit(location.center()),
                 "the location carries the window"
@@ -9043,11 +9043,11 @@ mod tests {
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
             b.set_window_controls(true);
-            b.set_toolbar(1, Some(crowded_slots()));
+            b.set_toolbar(1, Some(crowded_parts()));
             lay_out_at_width_with(&mut b, 900.0, &theme);
             let (_, _, location, actions) = b.toolbar_rects();
             assert_eq!(actions.len(), crate::window_toolbar::MAX_ACTIONS);
-            let more = b.toolbar_row.slots().overflow;
+            let more = b.toolbar_row.parts().overflow;
             assert!(more.area() > 0.0, "six actions do not fit in the row");
             assert!(
                 actions
@@ -9095,7 +9095,7 @@ mod tests {
             let (_, _, narrow_location, narrow_actions) = b.toolbar_rects();
             assert!(narrow_actions.len() < crate::window_toolbar::MAX_ACTIONS);
             assert!(narrow_location.area() > 0.0);
-            assert!(b.toolbar_row.slots().overflow.area() > 0.0);
+            assert!(b.toolbar_row.parts().overflow.area() > 0.0);
         }
 
         phase a_locations_levels_are_a_breadcrumb_whose_levels_commit;
@@ -9105,8 +9105,8 @@ mod tests {
             use crate::window_toolbar::LocationSegment;
             let _settled = crate::motion::testing::settled();
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
-            let mut slots = browser_slots();
-            if let Some(location) = slots.location.as_mut() {
+            let mut parts = browser_parts();
+            if let Some(location) = parts.location.as_mut() {
                 location.label = "Downloads".into();
                 location.value = "~/Downloads".into();
                 location.segments = vec![
@@ -9122,7 +9122,7 @@ mod tests {
             }
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Downloads")], 1);
             b.set_window_controls(true);
-            b.set_toolbar(1, Some(slots));
+            b.set_toolbar(1, Some(parts));
             lay_out_at_width_with(&mut b, 900.0, &theme);
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
@@ -9170,7 +9170,7 @@ mod tests {
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
             b.set_window_controls(true);
-            b.set_toolbar(1, Some(browser_slots()));
+            b.set_toolbar(1, Some(browser_parts()));
             b.set_popup_area(Rect::new(0.0, 0.0, 900.0, 700.0));
             lay_out_at_width_with(&mut b, 900.0, &theme);
             assert!(b.edit_location());
@@ -9199,7 +9199,7 @@ mod tests {
             );
             assert!(b.take_toolbar_events().is_empty(), "typing is no commit");
 
-            let mut answered = browser_slots();
+            let mut answered = browser_parts();
             if let Some(location) = answered.location.as_mut() {
                 location.suggestions = vec![
                     LocationSuggestion {
@@ -9245,12 +9245,12 @@ mod tests {
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
             b.set_window_controls(true);
-            b.set_toolbar(1, Some(browser_slots()));
+            b.set_toolbar(1, Some(browser_parts()));
             let window = Rect::new(0.0, 0.0, 900.0, 700.0);
             b.set_popup_area(window);
             lay_out_at_width_with(&mut b, 900.0, &theme);
             assert!(b.edit_location());
-            let mut answered = browser_slots();
+            let mut answered = browser_parts();
             if let Some(location) = answered.location.as_mut() {
                 location.suggestions = vec![
                     LocationSuggestion {
@@ -9270,7 +9270,7 @@ mod tests {
             b.set_toolbar(1, Some(answered));
             lay_out_at_width_with(&mut b, 900.0, &theme);
             let under = |b: &TabBar| {
-                let location = b.toolbar_row.slots().location;
+                let location = b.toolbar_row.parts().location;
                 let rows = b.toolbar_row.suggestion_rects();
                 let panel = b.toolbar_row.suggestions_rect().expect("the list is open");
                 assert_eq!(rows.len(), 2, "one row per suggestion");
@@ -9295,30 +9295,30 @@ mod tests {
 
         phase the_locations_picture_stands_in_for_the_apps_icon;
         {
-            let mut slots = browser_slots();
+            let mut parts = browser_parts();
             let png = crate::png::encode_rgba8(2, 2, &[255; 16]).unwrap();
-            if let Some(location) = slots.location.as_mut() {
+            if let Some(location) = parts.location.as_mut() {
                 location.image = Some(crate::window_toolbar::ToolbarImage { png });
             }
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
             b.set_window_controls(true);
-            b.set_toolbar(1, Some(slots));
+            b.set_toolbar(1, Some(parts));
             let tab = b.tabs()[0].clone();
             let image = b.tab_image(&tab).expect("the favicon");
             assert!(image.pixels(16).is_some());
-            b.set_toolbar(1, Some(browser_slots()));
+            b.set_toolbar(1, Some(browser_parts()));
             assert!(b.tab_image(&tab).is_none(), "no favicon, no picture");
         }
 
-        phase tabbed_the_slots_take_a_row_under_the_tabs_and_the_controls_stay;
-        // Tabbed, the slots take a row of their own under the tabs, and the
+        phase tabbed_the_parts_take_a_row_under_the_tabs_and_the_controls_stay;
+        // Tabbed, the parts take a row of their own under the tabs, and the
         // window's controls stand exactly where they stand untabbed.
         {
             let _settled = crate::motion::testing::settled();
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let mut solo = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
             solo.set_window_controls(true);
-            solo.set_toolbar(1, Some(browser_slots()));
+            solo.set_toolbar(1, Some(browser_parts()));
             lay_out_at_width_with(&mut solo, 900.0, &theme);
             let mut tabbed = TabBar::new(
                 "g1",
@@ -9329,7 +9329,7 @@ mod tests {
                 1,
             );
             tabbed.set_window_controls(true);
-            tabbed.set_toolbar(1, Some(browser_slots()));
+            tabbed.set_toolbar(1, Some(browser_parts()));
             lay_out_at_width_with(&mut tabbed, 900.0, &theme);
             assert!((tabbed.bar_height() - (TAB_BAR_HEIGHT + TOOLBAR_ROW_HEIGHT)).abs() < f64::EPSILON);
             assert_eq!(tabbed.window_controls(), solo.window_controls());
@@ -9355,7 +9355,7 @@ mod tests {
 
         phase the_new_tab_control_stands_as_its_glyph_and_names_itself_at_every_width;
         // The strip's own API to another application is a control of the bar as much as the app's
-        // slots are: the bar reads it at every width, always as the "+" every browser and tabbed
+        // parts are: the bar reads it at every width, always as the "+" every browser and tabbed
         // app wears, and never in words — they would start a one-tab window's bar with a label
         // ahead of the app's controls.
         {
@@ -9368,7 +9368,7 @@ mod tests {
                     .bar_layout()
                     .controls
                     .into_iter()
-                    .find(|control| control.slot == "new-tab")
+                    .find(|control| control.part == "new-tab")
                     .expect("a bar with area shows its api");
                 assert_eq!(
                     (api.rect[2], api.rect[3]),
@@ -9429,8 +9429,8 @@ mod tests {
         }
     }
 
-    fn crowded_slots() -> crate::window_toolbar::WindowToolbar {
-        let mut slots = browser_slots();
+    fn crowded_parts() -> crate::window_toolbar::WindowToolbar {
+        let mut parts = browser_parts();
         for (id, icon, name) in [
             ("bookmark", "star", "Bookmark this page"),
             ("library", "history", "History and bookmarks"),
@@ -9438,7 +9438,7 @@ mod tests {
             ("hidden", "eye", "Show hidden"),
             ("new-folder", "folder-plus", "New folder"),
         ] {
-            slots.actions.push(crate::window_toolbar::ToolbarAction {
+            parts.actions.push(crate::window_toolbar::ToolbarAction {
                 id: id.into(),
                 icon: icon.into(),
                 name: name.into(),
@@ -9453,7 +9453,7 @@ mod tests {
                 primary: false,
             });
         }
-        slots
+        parts
     }
 
     pub(super) fn four_tab_bar() -> TabBar {

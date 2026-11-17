@@ -291,6 +291,12 @@ mod pairing_link;
 #[cfg(target_os = "linux")]
 mod panels;
 #[cfg(target_os = "linux")]
+mod part_binding;
+#[cfg(target_os = "linux")]
+mod part_views;
+#[cfg(target_os = "linux")]
+pub mod parts;
+#[cfg(target_os = "linux")]
 mod pass;
 pub mod people;
 #[cfg(target_os = "linux")]
@@ -359,12 +365,6 @@ pub mod shell;
 mod shell_record;
 #[cfg(target_os = "linux")]
 mod shortcut_guide;
-#[cfg(target_os = "linux")]
-mod slot_binding;
-#[cfg(target_os = "linux")]
-mod slot_views;
-#[cfg(target_os = "linux")]
-pub mod slots;
 #[cfg(target_os = "linux")]
 mod sockets;
 #[cfg(target_os = "linux")]

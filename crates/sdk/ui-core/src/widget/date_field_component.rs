@@ -1,6 +1,6 @@
 //! [`DateField`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event, SlotViews};
+use crate::component::{Bound, Component, Described, Event, PartViews};
 
 use super::DateField;
 
@@ -23,7 +23,7 @@ pub struct DateFieldProps {
     /// the chip shows the calendar icon alone, opening the calendar and the time.
     pub compact: bool,
     /// The control that picks the time of day the day is due at: `ui.TimeField(bind: t.at)`.
-    #[component(slot)]
+    #[component(part)]
     pub time: Vec<crate::widget::Element>,
     /// A day was picked, or the date was cleared: carries the moment, or nothing for a cleared one.
     #[component(event(value = crate::component::Moment))]
@@ -84,7 +84,7 @@ impl Described for DateField {
         true
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        (slot == "time").then(|| self.popover_content_mut() as &mut dyn SlotViews)
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        (part == "time").then(|| self.popover_content_mut() as &mut dyn PartViews)
     }
 }

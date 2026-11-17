@@ -1,8 +1,8 @@
-//! The slots the apps this desktop runs put in their windows' bars.
+//! The parts the apps this desktop runs put in their windows' bars.
 //! Every app here runs in the host's process, each on the window its tile is shown in
 //! ([`ui::hosted_window::HostedWindow`], given as the tile is built): the desktop shows what each
 //! declared in its tab's bar and hands it what the person did there, through the toolkit's
-//! [`ui::window_slots::WindowSlots`], as the session's shell does.
+//! [`ui::window_parts::WindowParts`], as the session's shell does.
 //! An app in a process of its own reaches the same bar over its `shell-ui` connection: the session
 //! passes on what it asked ([`DesktopHandle::declare_bar`] and its siblings), and takes back what
 //! the person did there for the app's connection ([`DesktopHandle::take_bar_events`]).
@@ -16,12 +16,12 @@ use ui::window_toolbar::{SearchOpening, ToolbarEvent, WindowOffer, WindowToolbar
 
 /// What the apps in processes of their own asked of their windows' bars since the last update pass,
 /// and what the person did there for them.
-/// An app reaches its window's bar over its `shell-ui` connection ([`ui::window_slots`]): the
+/// An app reaches its window's bar over its `shell-ui` connection ([`ui::window_parts`]): the
 /// session passes on what it declared and what it offers, its asks to edit the location or open the
 /// search, and takes back what the person did there, to write on the same connection.
 #[derive(Default)]
 pub(super) struct Bars {
-    /// Slots declared for a tab, by the connection that declared them.
+    /// Parts declared for a tab, by the connection that declared them.
     declared: Vec<(u64, u64, Option<WindowToolbar>)>,
     /// What a tab's window offers the bar's search and History control.
     offered: Vec<(u64, u64, WindowOffer)>,
@@ -69,7 +69,7 @@ pub struct TargetPress {
 
 impl Bars {
     /// Take `names` as what the windows' apps call what they show; whether that changed anything.
-    /// The bar reads them from the slots the apps declared, so an unchanged pass costs one
+    /// The bar reads them from the parts the apps declared, so an unchanged pass costs one
     /// comparison.
     fn take_names(&mut self, names: std::collections::BTreeMap<u64, String>) -> bool {
         if self.names == names {
@@ -318,7 +318,7 @@ impl DesktopHandle {
         std::mem::take(&mut self.shared.borrow_mut().bars.presses)
     }
 
-    /// `connection` closed: the slots and offers its app declared go with it.
+    /// `connection` closed: the parts and offers its app declared go with it.
     pub fn bar_connection_closed(&self, connection: u64) {
         self.queue_bar_ask(|bars| bars.gone.push(connection));
     }
@@ -365,7 +365,7 @@ impl DesktopSurface {
         shared.changed();
     }
 
-    /// Show every window's declared slots in its bar, hand each app what the person did with them,
+    /// Show every window's declared parts in its bar, hand each app what the person did with them,
     /// and close the tabs whose app asked to. Returns whether the desktop shows something new or an
     /// app has something to hear.
     pub(super) fn sync_window_bars(&mut self) -> bool {
@@ -382,7 +382,7 @@ impl DesktopSurface {
                 }
             }
         }
-        let sync = self.window_slots.sync_hosted(
+        let sync = self.window_parts.sync_hosted(
             &windows,
             self.rows.values_mut().flat_map(|row| row.groups.iter_mut()),
         );
@@ -398,7 +398,7 @@ impl DesktopSurface {
         changed |= self.publish_window_names();
         changed |= self.ask_bar_changes();
         self.publish_bar_typing();
-        let events = self.window_slots.take_outbox();
+        let events = self.window_parts.take_outbox();
         if !events.is_empty() {
             self.shared.borrow_mut().bars.events.extend(events);
             changed = true;
@@ -430,7 +430,7 @@ impl DesktopSurface {
         for group in self.rows.values().flat_map(|row| row.groups.iter()) {
             for tab in group.tabs() {
                 let Some(location) = self
-                    .window_slots
+                    .window_parts
                     .toolbar(tab.id)
                     .and_then(|toolbar| toolbar.location.as_ref())
                 else {
@@ -494,7 +494,7 @@ impl DesktopSurface {
         changed
     }
 
-    /// Take what the apps in processes of their own asked of their windows' bars: their slots, what
+    /// Take what the apps in processes of their own asked of their windows' bars: their parts, what
     /// their windows offer, and the connections that closed.
     fn take_bar_asks(&mut self) -> bool {
         let (declared, offered, targets, gone) = {
@@ -508,7 +508,7 @@ impl DesktopSurface {
         };
         let mut changed = false;
         for connection in gone {
-            changed |= self.window_slots.disconnected(connection);
+            changed |= self.window_parts.disconnected(connection);
             // What its app described of a window's content goes with it.
             let mut shared = self.shared.borrow_mut();
             let before = shared.bars.targets.len();
@@ -519,10 +519,10 @@ impl DesktopSurface {
             changed |= shared.bars.targets.len() != before;
         }
         for (tab, connection, toolbar) in declared {
-            changed |= self.window_slots.declare(tab, connection, toolbar);
+            changed |= self.window_parts.declare(tab, connection, toolbar);
         }
         for (tab, connection, offer) in offered {
-            changed |= self.window_slots.offer(tab, connection, offer);
+            changed |= self.window_parts.offer(tab, connection, offer);
         }
         for (tab, connection, described) in targets {
             let mut shared = self.shared.borrow_mut();

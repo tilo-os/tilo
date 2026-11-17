@@ -1,6 +1,6 @@
 //! [`Toolbar`] and its parts as described components.
 
-use crate::component::{Accepts, Component, Described, Event, SlotType, Source};
+use crate::component::{Accepts, Component, Described, Event, PartType, Source};
 use crate::icons::Icon;
 use crate::widget::MenuItemProps;
 
@@ -13,7 +13,7 @@ use super::{Orientation, Toolbar, ToolbarItem};
 #[component(name = "Toolbar", role = "Toolbar")]
 pub struct ToolbarProps {
     /// Its commands, separators and spacers, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub items: Vec<ToolbarPart>,
     /// Stand the commands in a column rather than a row.
     pub vertical: bool,
@@ -46,7 +46,7 @@ pub struct ToolbarButtonProps {
     /// together, never one alone.
     pub joined: bool,
     /// The commands of a menu it opens instead of doing one thing: Sort, Insert, View.
-    #[component(slot)]
+    #[component(part)]
     pub menu: Vec<MenuItemProps>,
     /// It was pressed (a click, Enter or Space, the More menu, an assistive technology).
     #[component(event)]
@@ -93,7 +93,7 @@ pub enum ToolbarPart {
 const TOOLBAR_PARTS: [&str; 3] = ["ToolbarButton", "ToolbarSeparator", "ToolbarSpacer"];
 
 /// A toolbar's parts, in order: commands, separators and spacers.
-impl SlotType for Vec<ToolbarPart> {
+impl PartType for Vec<ToolbarPart> {
     const MANY: bool = true;
 
     fn accepts() -> Accepts {
@@ -105,11 +105,11 @@ impl SlotType for Vec<ToolbarPart> {
         )
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
-        let kinds = source.slot_kinds(slot);
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        let kinds = source.part_kinds(part);
         let mut parts = Vec::with_capacity(kinds.len());
         let mut index = 0usize;
-        source.components(slot, &mut |child| {
+        source.components(part, &mut |child| {
             let kind = kinds.get(index).cloned().flatten().unwrap_or_default();
             index = index.saturating_add(1);
             parts.push(match kind.as_str() {

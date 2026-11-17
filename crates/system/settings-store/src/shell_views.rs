@@ -2,7 +2,7 @@
 //! follows them to their other devices.
 //!
 //! A part of the shell that can be replaced — the window menu, the bar, the
-//! switcher — is named by its slot, and the person binds the slot to a view
+//! switcher — goes by its own name, and the person binds the part to a view
 //! an app publishes ([`SECTION`]). A part that asks the person something on
 //! the system's behalf is not in it: the lock screen and the questions a
 //! workspace or a portal puts are drawn by the system, whatever the person

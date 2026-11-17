@@ -3,7 +3,7 @@
 //! belongs to what the window shows.
 
 use super::tests::{
-    bar_with_laid_out_rects, browser_slots, built_layout, holder, lay_out_at_width_with, move_to,
+    bar_with_laid_out_rects, browser_parts, built_layout, holder, lay_out_at_width_with, move_to,
 };
 use super::*;
 use crate::testing::{Dispatch, dispatch};
@@ -265,7 +265,7 @@ tilo_test_env::scenario! {
             1,
         );
         b.set_window_controls(true);
-        assert!(b.set_toolbar(1, Some(browser_slots())));
+        assert!(b.set_toolbar(1, Some(browser_parts())));
         lay_out_at_width_with(&mut b, 900.0, &crate::theme::Theme::dark());
         let location = b.location_rect();
         assert!(location.y0 >= b.tab_row().y1, "{location:?}");
@@ -478,6 +478,6 @@ fn window_bar_app_action_shots() {
 fn solo_bar_with_slots() -> TabBar {
     let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
     b.set_window_controls(true);
-    assert!(b.set_toolbar(1, Some(browser_slots())));
+    assert!(b.set_toolbar(1, Some(browser_parts())));
     b
 }

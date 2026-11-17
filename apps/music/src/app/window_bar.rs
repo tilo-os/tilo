@@ -1,4 +1,4 @@
-//! Music's slots in the window's bar: the library toggle, Back, the location and the page's
+//! Music's parts in the window's bar: the library toggle, Back, the location and the page's
 //! one action.
 
 use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
@@ -19,7 +19,7 @@ impl Music {
         let mut toolbar = self
             .bar
             .as_ref()
-            .map(ui::widget::WindowBarLink::slots)
+            .map(ui::widget::WindowBarLink::parts)
             .unwrap_or_default();
         toolbar.location = Some(ToolbarLocation {
             label: self.view_title(),
@@ -85,7 +85,7 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         app.declare_window_toolbar();
-        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its parts");
         let new = toolbar
             .actions
             .iter()

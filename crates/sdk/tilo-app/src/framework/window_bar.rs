@@ -1,13 +1,13 @@
 //! An app's window bar, declared as bindings.
 //!
 //! The bar is the window's own row (`ui_core::window_toolbar`): the app says
-//! what its slots are, the desktop draws them and the app hears what the
+//! what its parts are, the desktop draws them and the app hears what the
 //! person did in them. This module is that declaration in the framework's
 //! terms: an app builds one [`WindowBar`] out of what the window shows and
 //! does — the location, the views, the actions, toggles and menus — and the
-//! framework makes the slots of it.
+//! framework makes the parts of it.
 //!
-//! A slot is a *binding*, never an id the app builds and later takes apart,
+//! A part is a *binding*, never an id the app builds and later takes apart,
 //! and never a callback: what pressing it does is a change the framework
 //! makes itself, through the same API an assistive technology, a script or
 //! an agent uses.
@@ -45,19 +45,19 @@
 //! }
 //! ```
 //!
-//! # The shell's own slots
+//! # The shell's own parts
 //!
 //! A window with a [`NavShell`] shows the shell's sidebar toggle, Back and
 //! inspector toggle in the bar. [`WindowBar::over`] (or [`WindowBar::under`]
 //! with the shell's [`WindowBarLink`], for an app painted inside the shell's
-//! content) starts the declaration from those slots and hands the shell the
+//! content) starts the declaration from those parts and hands the shell the
 //! presses on them; the shell draws no header row of its own
 //! ([`NavShell::with_window_toolbar`]).
 //!
 //! # Declaring and hearing
 //!
 //! A window declares its bar for what it shows now, and hears the bar's
-//! events through it: a press names a slot of the slots on screen, so the
+//! events through it: a press names a part of the parts on screen, so the
 //! declaration that made it is the one that dispatches it. A widget that
 //! settles each frame keeps the bar it declared, hears it, then declares it
 //! again:
@@ -71,7 +71,7 @@
 //! ```
 //!
 //! Outside a Tilo session (a window of its own, a test) nothing hosts the
-//! slots, and the app's own row — if it keeps one — stays as it was.
+//! parts, and the app's own row — if it keeps one — stays as it was.
 
 use tilo_resource::{Effect, Path, Resource};
 use ui_core::widget::{NavShell, WindowBarLink};
@@ -85,7 +85,7 @@ use super::{BarActions, Dispatcher, Submit};
 /// show together.
 const MAX_ENTRIES: usize = 128;
 
-/// What a slot of the bar does when pressed: a verb of the record with its
+/// What a part of the bar does when pressed: a verb of the record with its
 /// arguments, a field edit, an effect the app answers. A binding is submitted
 /// through the window's dispatcher, never run by the app's own code, so the
 /// window's bar and an assistive technology take the same API.
@@ -128,19 +128,19 @@ impl<R: Resource> Choice<R> {
     }
 }
 
-/// The window's bar: the slots the app declares now, and what pressing each
+/// The window's bar: the parts the app declares now, and what pressing each
 /// of them submits.
 pub struct WindowBar<R: Resource> {
-    /// The shell's own slots, and the app's location, views and leading
+    /// The shell's own parts, and the app's location, views and leading
     /// actions.
-    slots: WindowToolbar,
+    parts: WindowToolbar,
     /// The app's own entries, in the order declared: the row's buttons and
     /// the overflow menu's.
     entries: Vec<ToolbarAction>,
     /// The actions and effects of the app's record, each submitted through
     /// the window's dispatcher when pressed.
     actions: BarActions<R>,
-    /// The shell the bar starts from ([`Self::over`]): its slots' presses go
+    /// The shell the bar starts from ([`Self::over`]): its parts' presses go
     /// to it.
     shell: Option<WindowBarLink>,
     /// The entry the sidebar toggle presses, for a window whose app shows the
@@ -154,7 +154,7 @@ impl<R: Resource> WindowBar<R> {
     #[must_use]
     pub fn new(dispatcher: Dispatcher<R>) -> Self {
         Self {
-            slots: WindowToolbar::default(),
+            parts: WindowToolbar::default(),
             entries: Vec::new(),
             actions: BarActions::new(dispatcher),
             shell: None,
@@ -169,21 +169,21 @@ impl<R: Resource> WindowBar<R> {
         self.actions.dispatcher().clone()
     }
 
-    /// Start from `shell`'s own slots — its sidebar toggle, Back, the
+    /// Start from `shell`'s own parts — its sidebar toggle, Back, the
     /// inspector toggle — and hand it the presses on them. The shell draws
     /// no header row of its own ([`NavShell::with_window_toolbar`]).
     #[must_use]
     pub fn over(mut self, shell: &NavShell) -> Self {
-        self.slots = shell.window_toolbar();
+        self.parts = shell.window_toolbar();
         self.shell = Some(shell.window_bar_link());
         self
     }
 
-    /// Start from the slots the shell of `link` last laid out, for an app
+    /// Start from the parts the shell of `link` last laid out, for an app
     /// painted inside the shell's content column.
     #[must_use]
     pub fn under(mut self, link: &WindowBarLink) -> Self {
-        self.slots = link.slots();
+        self.parts = link.parts();
         self.shell = Some(link.clone());
         self
     }
@@ -191,7 +191,7 @@ impl<R: Resource> WindowBar<R> {
     /// The window shows `label`: its mode, the open document, the place.
     #[must_use]
     pub fn label(mut self, label: impl Into<String>) -> Self {
-        self.slots
+        self.parts
             .location
             .get_or_insert_with(ToolbarLocation::default)
             .label = label.into();
@@ -202,7 +202,7 @@ impl<R: Resource> WindowBar<R> {
     /// opened: the shell names the window by its app ([`ToolbarLocation::section`]).
     #[must_use]
     pub fn section(mut self, section: bool) -> Self {
-        if let Some(location) = self.slots.location.as_mut() {
+        if let Some(location) = self.parts.location.as_mut() {
             location.section = section;
         }
         self
@@ -213,7 +213,7 @@ impl<R: Resource> WindowBar<R> {
     /// shows no location (its sidebar stands in front of the content).
     #[must_use]
     pub fn place(mut self, location: Option<ToolbarLocation>) -> Self {
-        self.slots.location = location;
+        self.parts.location = location;
         self
     }
 
@@ -221,7 +221,7 @@ impl<R: Resource> WindowBar<R> {
     /// app shows the sidebar itself: pressing it submits `binding`.
     #[must_use]
     pub fn sidebar(mut self, open: bool, binding: impl Binding<R>) -> Self {
-        self.slots.sidebar = Some(open);
+        self.parts.sidebar = Some(open);
         if let Some(invoke) = binding.bound() {
             self.sidebar = Some(self.actions.action(invoke).id).filter(|id| !id.is_empty());
         }
@@ -251,14 +251,14 @@ impl<R: Resource> WindowBar<R> {
             });
         }
         let Some(last) = views.len().checked_sub(1) else {
-            self.slots.views = None;
+            self.parts.views = None;
             return self;
         };
         let Some(chosen) = views.get(chosen.min(last)).map(|view| view.id.clone()) else {
-            self.slots.views = None;
+            self.parts.views = None;
             return self;
         };
-        self.slots.views = Some(ToolbarViews {
+        self.parts.views = Some(ToolbarViews {
             name: name.into(),
             chosen,
             choices: views,
@@ -293,7 +293,7 @@ impl<R: Resource> WindowBar<R> {
     #[must_use]
     pub fn leading(mut self, submit: impl Submit<R>) -> Self {
         let entry = self.actions.action(submit);
-        self.slots.leading.push(entry);
+        self.parts.leading.push(entry);
         self
     }
 
@@ -362,22 +362,22 @@ impl<R: Resource> WindowBar<R> {
         self
     }
 
-    /// The slots as the app declared them: the shell's own, then the app's,
+    /// The parts as the app declared them: the shell's own, then the app's,
     /// in the row and in the menu.
     #[must_use]
-    pub fn slots(&self) -> WindowToolbar {
-        let mut toolbar = self.slots.clone();
+    pub fn parts(&self) -> WindowToolbar {
+        let mut toolbar = self.parts.clone();
         NavShell::push_window_actions(&mut toolbar, self.entries.clone());
         toolbar
     }
 
-    /// Declare these slots as the window's.
+    /// Declare these parts as the window's.
     pub fn declare(&self) {
-        ui_core::window_toolbar::declare(Some(self.slots()));
+        ui_core::window_toolbar::declare(Some(self.parts()));
     }
 
     /// Submit what the person pressed in the window's bar since the last
-    /// call: on the shell's own slots, the sidebar toggle, then the record's
+    /// call: on the shell's own parts, the sidebar toggle, then the record's
     /// actions and effects. Returns whether anything was asked.
     pub fn take_events(&self) -> bool {
         let mut asked = false;
@@ -389,7 +389,7 @@ impl<R: Resource> WindowBar<R> {
     }
 
     /// Submit one event the bar sent. Returns whether it was one of these
-    /// slots (then it is handled, even where the slot is gone).
+    /// parts (then it is handled, even where the part is gone).
     pub fn press(&self, event: &ToolbarEvent) -> bool {
         if let Some(shell) = &self.shell
             && shell.event(event)

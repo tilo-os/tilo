@@ -2394,7 +2394,7 @@ fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
         .expect("the row it listed")
 }
 
-/// The menu a task's row offers: the slot of the item the row presents, not one of a row drawn
+/// The menu a task's row offers: the part of the item the row presents, not one of a row drawn
 /// inside it — a task opened in the row holds rows of its own.
 fn row_menu<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
     let row = home_row(view, want);
@@ -2403,7 +2403,7 @@ fn row_menu<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
         .find(|item| item.props.get("item").and_then(target) == target(want))
         .unwrap_or_else(|| panic!("the row presents the task: {row:?}"));
     let menu = |node: &'a UiNode| {
-        node.kind == "slot" && node.props.get("name") == Some(&Value::text("menu"))
+        node.kind == "part" && node.props.get("name") == Some(&Value::text("menu"))
     };
     item.children
         .iter()
@@ -2422,9 +2422,9 @@ fn row_commands(view: &mut ViewInstance, want: &Value) -> Vec<Command> {
 /// The command a task's row runs when it is swiped, as its label reads.
 fn row_swipe(view: &mut ViewInstance, want: &Value) -> Option<String> {
     let row = home_row(view, want);
-    let swipe = all(row, "slot")
+    let swipe = all(row, "part")
         .into_iter()
-        .find(|slot| slot.props.get("name") == Some(&Value::text("swipe")))?;
+        .find(|part| part.props.get("name") == Some(&Value::text("swipe")))?;
     let action = all(swipe, "ui.SwipeAction").into_iter().next()?;
     text_of(action, "label")
 }

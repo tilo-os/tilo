@@ -624,7 +624,7 @@ mod window_tests {
         frame_at(&mut app, after(600));
         assert_eq!(bar(), held, "and held while it stands");
         app.harness()
-            .press_window_slot(ui_core::window_toolbar::ToolbarEvent::Action {
+            .press_window_part(ui_core::window_toolbar::ToolbarEvent::Action {
                 id: ui_core::SAVE_RETRY_ACTION.to_owned(),
             });
         app.settle();

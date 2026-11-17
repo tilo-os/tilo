@@ -56,9 +56,9 @@ pub(crate) struct WindowBarRuntime {
     adopted: Option<crate::window_toolbar::AdoptedQuery>,
     /// What the shell was last told on this connection.
     sent: Option<WindowOffer>,
-    /// The app declared window-bar slots when last looked at: its History
+    /// The app declared window-bar parts when last looked at: its History
     /// then stands in the bar, not in a band above it.
-    slots_declared: bool,
+    parts_declared: bool,
     /// What the person did in the bar after input the window has not handled yet, oldest
     /// first, each with the serial of the input it came after
     /// ([`crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent`]).
@@ -84,12 +84,12 @@ impl WindowBarRuntime {
         self.presents
     }
 
-    /// Note whether the app declares window-bar slots now. Returns whether
+    /// Note whether the app declares window-bar parts now. Returns whether
     /// that changed: the structure is rebuilt then, so its History leaves
     /// (or regains) the band above the app.
-    pub(crate) fn note_slots_declared(&mut self) -> bool {
+    pub(crate) fn note_parts_declared(&mut self) -> bool {
         let declared = crate::window_toolbar::declared().is_some();
-        std::mem::replace(&mut self.slots_declared, declared) != declared
+        std::mem::replace(&mut self.parts_declared, declared) != declared
     }
 
     /// The widget tree changed: what it offers the search is looked at
@@ -241,14 +241,14 @@ impl App {
     }
 
     /// Run what the person did in the window's bar: the bar's search and History here, the
-    /// app's own slots by the widgets that declared them, now, so that what it does comes
+    /// app's own parts by the widgets that declared them, now, so that what it does comes
     /// before what the input after it does.
     #[cfg(feature = "native")]
     fn run_bar_event(&mut self, event: &ToolbarEvent) {
         if self.apply_window_bar_event(event).is_some() {
             return;
         }
-        self.deliver_app_slot_event(event.clone());
+        self.deliver_app_part_event(event.clone());
         // A host message asks for a new frame, but a frame syncs only when something asked
         // for it: without this, what the person typed or committed in the bar waited, unread,
         // for whatever made the app sync next (Enter in the address opened nothing).
@@ -257,24 +257,24 @@ impl App {
             &mut crate::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         );
-        // A slot bound to an action runs it as a control invocation, as a frame's sync does.
+        // A part bound to an action runs it as a control invocation, as a frame's sync does.
         self.dispatch_control_invocations();
     }
 
-    /// Hand the app an event about its own slots
-    /// ([`crate::window_toolbar::take_events`]). A press on a slot is a
+    /// Hand the app an event about its own parts
+    /// ([`crate::window_toolbar::take_events`]). A press on a part is a
     /// press on the app: it hands the app the keyboard
     /// ([`Self::hand_keyboard_to_app`]), as in the frame harness
-    /// (`FrameHarness::press_window_slot`).
+    /// (`FrameHarness::press_window_part`).
     #[cfg(feature = "native")]
-    pub(crate) fn deliver_app_slot_event(&mut self, event: ToolbarEvent) {
+    pub(crate) fn deliver_app_part_event(&mut self, event: ToolbarEvent) {
         if crate::window_toolbar::deliver_to_app(event) {
             self.hand_keyboard_to_app();
         }
     }
 
     /// Run what the bar's search or History control asked of this app.
-    /// `None` for an event about the app's slots, which the app reads
+    /// `None` for an event about the app's parts, which the app reads
     /// itself ([`crate::window_toolbar::take_events`]); else whether
     /// anything the app shows changed.
     #[cfg(feature = "native")]

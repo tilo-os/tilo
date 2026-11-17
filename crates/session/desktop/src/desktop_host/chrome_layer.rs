@@ -29,7 +29,7 @@ use crate::control_hints::{ControlHints, HintFrame, HintsFeed};
 use crate::display_identify::DisplayIdentify;
 use crate::emoji::EmojiLink;
 use crate::host_contract::{DesktopAsk, DesktopRules, JOIN_WORKSPACE, WORKSPACE_SETTINGS};
-use crate::overlays::{Overlays, Slot};
+use crate::overlays::{Overlays, Part};
 use crate::overview::workspace_cards;
 use crate::overview_panel::{OverviewCards, OverviewPanel, OverviewPick};
 use crate::search_overlay::SearchOverlay;
@@ -419,7 +419,7 @@ impl DesktopChrome {
             || self.overview.is_open()
             || self.emoji.is_open()
             || self.switcher.is_up()
-            || self.overlays.target().slot().is_some()
+            || self.overlays.target().part().is_some()
             || !self.placement.fullscreen.is_empty();
         busy.then_some(ui::control_hints::Quiet::Busy)
     }
@@ -471,35 +471,35 @@ impl DesktopChrome {
         // Where the chrome's own menus paint themselves, for the stack to judge a press that misses
         // them: a press on the shell reaches the shell, not the chrome over it.
         self.overlays
-            .stands(Slot::WorkspaceMenu, self.workspace_menu.panel_rect());
+            .stands(Part::WorkspaceMenu, self.workspace_menu.panel_rect());
         let centre = self.notices.as_ref().and_then(NotificationLayer::panel);
-        self.overlays.stands(Slot::Centre, centre);
+        self.overlays.stands(Part::Centre, centre);
         self.overlays
-            .stands(Slot::WorkspaceName, self.bar.workspace_name_rect());
-        for (slot, open) in [
-            (Slot::Emoji, self.emoji.is_open()),
-            (Slot::WorkspaceMenu, self.workspace_menu.is_open()),
+            .stands(Part::WorkspaceName, self.bar.workspace_name_rect());
+        for (part, open) in [
+            (Part::Emoji, self.emoji.is_open()),
+            (Part::WorkspaceMenu, self.workspace_menu.is_open()),
             // The name typed in the bar holds the keyboard until Enter or Escape ends it.
-            (Slot::WorkspaceName, self.bar.renaming_workspace()),
-            (Slot::Overview, self.overview.is_open()),
-            (Slot::Strips, self.navigator.takes_keys()),
-            (Slot::Search, self.search.is_open()),
-            (Slot::About, self.about.is_about_open()),
-            (Slot::Centre, centre.is_some()),
+            (Part::WorkspaceName, self.bar.renaming_workspace()),
+            (Part::Overview, self.overview.is_open()),
+            (Part::Strips, self.navigator.takes_keys()),
+            (Part::Search, self.search.is_open()),
+            (Part::About, self.about.is_about_open()),
+            (Part::Centre, centre.is_some()),
         ] {
             // The stack took it down — a press outside it, another surface opening — and the widget
             // has yet to follow: what it still shows is the state being left behind, not an opening
             // to raise again.
-            if !self.overlays.is_open(slot) && self.overlays.awaiting_close(slot) {
+            if !self.overlays.is_open(part) && self.overlays.awaiting_close(part) {
                 continue;
             }
-            if open == self.overlays.is_open(slot) {
+            if open == self.overlays.is_open(part) {
                 continue;
             }
             if open {
-                self.overlays.open(slot, None);
+                self.overlays.open(part, None);
             } else {
-                self.overlays.close(slot);
+                self.overlays.close(part);
             }
         }
         if !self.is_focusable() {
@@ -510,43 +510,43 @@ impl DesktopChrome {
 
     /// Take down the widgets whose surface the stack took down.
     /// The stack is the one ledger of what stands over the shell: when another surface comes up —
-    /// the person opened it, the session did, or Escape took one away — the slot closes there, and
+    /// the person opened it, the session did, or Escape took one away — the part closes there, and
     /// the widget that draws it closes here so the two never disagree about what the person sees.
     /// Each closing is reported back to the stack, which is how it hears the widget followed
     /// ([`Overlays::close`]): what it still shows until then is the state the stack left behind,
     /// and the widget opening again after that is a new surface to publish, not that state coming
     /// back.
     fn follow_the_stack(&mut self) {
-        if self.emoji.is_open() && !self.overlays.is_open(Slot::Emoji) {
+        if self.emoji.is_open() && !self.overlays.is_open(Part::Emoji) {
             self.emoji.close();
-            self.overlays.close(Slot::Emoji);
+            self.overlays.close(Part::Emoji);
         }
-        if self.workspace_menu.is_open() && !self.overlays.is_open(Slot::WorkspaceMenu) {
+        if self.workspace_menu.is_open() && !self.overlays.is_open(Part::WorkspaceMenu) {
             self.workspace_menu.close();
-            self.overlays.close(Slot::WorkspaceMenu);
+            self.overlays.close(Part::WorkspaceMenu);
         }
-        if self.bar.renaming_workspace() && !self.overlays.is_open(Slot::WorkspaceName) {
+        if self.bar.renaming_workspace() && !self.overlays.is_open(Part::WorkspaceName) {
             self.bar.cancel_workspace_rename();
-            self.overlays.close(Slot::WorkspaceName);
+            self.overlays.close(Part::WorkspaceName);
         }
-        if self.navigator.takes_keys() && !self.overlays.is_open(Slot::Strips) {
+        if self.navigator.takes_keys() && !self.overlays.is_open(Part::Strips) {
             self.navigator.close();
-            self.overlays.close(Slot::Strips);
+            self.overlays.close(Part::Strips);
         }
-        if self.search.is_open() && !self.overlays.is_open(Slot::Search) {
+        if self.search.is_open() && !self.overlays.is_open(Part::Search) {
             self.search.close();
-            self.overlays.close(Slot::Search);
+            self.overlays.close(Part::Search);
         }
-        if self.about.is_about_open() && !self.overlays.is_open(Slot::About) {
+        if self.about.is_about_open() && !self.overlays.is_open(Part::About) {
             self.about.set_about_open(false);
-            self.overlays.close(Slot::About);
+            self.overlays.close(Part::About);
         }
         if let Some(notices) = self.notices.as_mut()
             && notices.center_open()
-            && !self.overlays.is_open(Slot::Centre)
+            && !self.overlays.is_open(Part::Centre)
         {
             notices.set_center_open(false);
-            self.overlays.close(Slot::Centre);
+            self.overlays.close(Part::Centre);
         }
     }
 
@@ -555,11 +555,11 @@ impl DesktopChrome {
     /// settings stands. Whether it opened or closed.
     fn follow_notices(&mut self) -> bool {
         let fallback =
-            crate::overlays::place_on(self.rect, Slot::Centre.anchor(), Slot::Centre.size())
+            crate::overlays::place_on(self.rect, Part::Centre.anchor(), Part::Centre.size())
                 .map(|standing| standing.room);
         let place = self
             .overlays
-            .place(Slot::Centre)
+            .place(Part::Centre)
             .map(|standing| standing.room)
             .or(fallback);
         let Some(notices) = self.notices.as_mut() else {
@@ -876,7 +876,7 @@ impl DesktopChrome {
                 // The press that took it down is still being delivered, and the bar answers it: the
                 // same press does not raise it again. A secondary press elsewhere asks for the menu
                 // there, which is the point it names, not this one.
-                if at.is_none() && self.overlays.dismissed_recently(Slot::WorkspaceMenu) {
+                if at.is_none() && self.overlays.dismissed_recently(Part::WorkspaceMenu) {
                     return;
                 }
                 let model = self.workspace_menu_model(at.is_some());
@@ -2527,7 +2527,7 @@ impl Widget for DesktopChrome {
         }
         // The workspace's menu takes what it covers, the keyboard and the press that dismisses it,
         // in the order the stack stands it.
-        if self.overlays.is_open(Slot::WorkspaceMenu) {
+        if self.overlays.is_open(Part::WorkspaceMenu) {
             self.workspace_menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, *workspace_menu));
         }
@@ -2598,7 +2598,7 @@ impl Widget for DesktopChrome {
     /// so a reader standing in the emoji card stays there as the chrome
     /// rebuilds under it rather than falling back to the window.
     fn is_focusable(&self) -> bool {
-        self.overlays.target().slot().is_some_and(Slot::is_chrome)
+        self.overlays.target().part().is_some_and(Part::is_chrome)
     }
 
     fn set_focus(&mut self, focused: bool) {

@@ -124,7 +124,7 @@ const REASONS: [&str; 13] = [
     "render",
     "overlay",
     "decorations",
-    "slot-bar",
+    "part-bar",
     "presence",
     "layer",
     "moves",

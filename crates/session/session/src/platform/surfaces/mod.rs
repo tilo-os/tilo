@@ -33,7 +33,7 @@ pub use tilo_surface_host::shell_part::{ShellIdentity, compile_shell, installed_
 #[cfg(target_os = "linux")]
 pub use tilo_surface_host::{
     AppHost, DesktopHost, PointerSamples, SessionLink, ShellGesture, ShellPart, ShellWork,
-    StripPolicy, WellPolicy, WidgetHost, WindowObserver, desktop, desktop_with, slot_view,
+    StripPolicy, WellPolicy, WidgetHost, WindowObserver, desktop, desktop_with, part_view,
 };
 
 /// What a role places over the windows: the host's layers.

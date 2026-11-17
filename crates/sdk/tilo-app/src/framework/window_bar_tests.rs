@@ -69,7 +69,7 @@ tilo_test_env::scenario! {
     {
         let dispatcher = testing::dispatcher::<Tally>("test.window-bar");
         let bar = bar(&dispatcher).action(Tally::ADD.with(()));
-        let add = bar.slots().actions.first().cloned().expect("a slot");
+        let add = bar.parts().actions.first().cloned().expect("a part");
         assert_eq!((add.name.as_str(), add.icon.as_str()), ("Add one", "plus"));
         assert!(add.id.starts_with("invoke:"), "the framework's id: {add:?}");
         assert!(add.enabled && !add.toggles);
@@ -82,7 +82,7 @@ tilo_test_env::scenario! {
     {
         let dispatcher = testing::dispatcher::<Tally>("test.window-bar");
         let bar = bar(&dispatcher).effect(&TallyView::Sidebar);
-        let entry = bar.slots().actions.first().cloned().expect("a slot");
+        let entry = bar.parts().actions.first().cloned().expect("a part");
         assert_eq!(entry.name, "Show the tally's sidebar");
         assert!(entry.enabled && !entry.toggles);
 
@@ -94,7 +94,7 @@ tilo_test_env::scenario! {
     {
         let dispatcher = testing::dispatcher::<Tally>("test.window-bar");
         let off = bar(&dispatcher).flag("pin", "Pin", &Tally::paths().pinned, false);
-        let entry = off.slots().actions.first().cloned().expect("a slot");
+        let entry = off.parts().actions.first().cloned().expect("a part");
         assert!(entry.toggles && !entry.on, "it shows the flag's value");
         assert!(entry.enabled, "the participant may edit the record");
 
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
         );
 
         let on = bar(&dispatcher).flag("pin", "Pin", &Tally::paths().pinned, true);
-        let entry = on.slots().actions.first().cloned().expect("a slot");
+        let entry = on.parts().actions.first().cloned().expect("a part");
         assert!(entry.toggles && entry.on);
         assert!(on.press(&press(&entry.id)));
         assert!(!landed(&dispatcher).pinned, "and back");
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
                 Choice::new("Board", &TallyView::Board),
             ],
         );
-        let switcher = views.slots().views.expect("the views are a slot");
+        let switcher = views.parts().views.expect("the views are a part");
         assert_eq!(switcher.name, "View");
         assert_eq!(
             switcher
@@ -146,7 +146,7 @@ tilo_test_env::scenario! {
     {
         let dispatcher = testing::dispatcher::<Tally>("test.window-bar");
         let views = bar(&dispatcher).views("View", 0, [Choice::new("Count", Tally::ADD.with(()))]);
-        let switcher = views.slots().views.expect("the views are a slot");
+        let switcher = views.parts().views.expect("the views are a part");
         assert_eq!(switcher.choices.len(), 1);
         assert!(views.press(&press(&switcher.choices[0].id)));
         assert_eq!(landed(&dispatcher).count, 1);
@@ -159,7 +159,7 @@ tilo_test_env::scenario! {
             .effect(&TallyView::Sidebar)
             .named("panel-left", "Sidebar")
             .on(true);
-        let entry = bar.slots().actions.first().cloned().expect("a slot");
+        let entry = bar.parts().actions.first().cloned().expect("a part");
         assert!(entry.toggles && entry.on, "it shows the state it sets");
         assert_eq!(
             (entry.name.as_str(), entry.icon.as_str()),
@@ -173,7 +173,7 @@ tilo_test_env::scenario! {
     {
         let dispatcher = testing::dispatcher::<Tally>("test.window-bar");
         let bar = bar(&dispatcher).sidebar(true, &TallyView::Sidebar);
-        assert_eq!(bar.slots().sidebar, Some(true));
+        assert_eq!(bar.parts().sidebar, Some(true));
         assert!(bar.press(&ToolbarEvent::ToggleSidebar));
         assert_eq!(queued(&dispatcher), TallyView::Sidebar.id());
         assert!(!bar.press(&ToolbarEvent::Back), "no navigation to run");
@@ -183,7 +183,7 @@ tilo_test_env::scenario! {
     {
         let dispatcher = testing::dispatcher::<Tally>("test.window-bar");
         let actions = bar(&dispatcher).action(Tally::ADD.with(()));
-        let add = actions.slots().actions.first().cloned().expect("a slot");
+        let add = actions.parts().actions.first().cloned().expect("a part");
         deliver(press(&add.id));
         assert!(actions.take_events());
         assert_eq!(
@@ -194,7 +194,7 @@ tilo_test_env::scenario! {
         assert!(!actions.take_events(), "nothing left to take");
 
         let effects = bar(&dispatcher).effect(&TallyView::Sidebar);
-        let sidebar = effects.slots().actions.first().cloned().expect("a slot");
+        let sidebar = effects.parts().actions.first().cloned().expect("a part");
         deliver(press(&sidebar.id));
         assert!(effects.take_events());
         assert_eq!(queued(&dispatcher), TallyView::Sidebar.id());
@@ -223,7 +223,7 @@ tilo_test_env::scenario! {
                 .effect(&TallyView::Sidebar)
                 .flag("pin", "Pin", &Tally::paths().pinned, true)
                 .action(Tally::ADD.with(()))
-                .slots()
+                .parts()
         };
         assert_eq!(declare(&dispatcher), declare(&dispatcher));
     }
@@ -238,9 +238,9 @@ tilo_test_env::scenario! {
             .effect(&TallyView::Board)
             .named("check", "Apply")
             .enabled(false);
-        let toolbar = bar.slots();
-        let import = toolbar.actions.first().expect("a slot");
-        let apply = toolbar.actions.get(1).expect("a slot");
+        let toolbar = bar.parts();
+        let import = toolbar.actions.first().expect("a part");
+        let apply = toolbar.actions.get(1).expect("a part");
         assert!(import.menu && import.enabled, "the menu holds the import");
         assert!(
             !apply.menu && !apply.enabled,
@@ -257,9 +257,9 @@ tilo_test_env::scenario! {
             .named("minus", "Remove one")
             .enabled(false)
             .enabled(true);
-        let toolbar = bar.slots();
+        let toolbar = bar.parts();
         assert!(toolbar.location.is_none(), "the window shows no location");
-        let entry = toolbar.actions.first().expect("a slot");
+        let entry = toolbar.actions.first().expect("a part");
         assert_eq!(
             (entry.icon.as_str(), entry.name.as_str()),
             ("minus", "Remove one")
@@ -270,14 +270,14 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_location_and_the_leading_actions_are_slots_like_any_other;
+    phase the_location_and_the_leading_actions_are_parts_like_any_other;
     {
         let dispatcher = testing::dispatcher::<Tally>("test.window-bar");
         let bar = bar(&dispatcher)
             .label("Graph 2D")
             .leading(Tally::ADD.with(()))
             .action(Tally::ADD.with(()));
-        let toolbar = bar.slots();
+        let toolbar = bar.parts();
         assert_eq!(
             toolbar.location.as_ref().map(|place| place.label.as_str()),
             Some("Graph 2D")

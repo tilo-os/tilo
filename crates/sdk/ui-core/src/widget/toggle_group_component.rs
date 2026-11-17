@@ -7,7 +7,7 @@ use crate::widget::ControlSize;
 use super::{Press, Segment, ToggleGroup};
 use crate::widget::ViewTabs;
 
-crate::component::part_slot!(SegmentProps);
+crate::component::part_type!(SegmentProps);
 
 /// A small set of choices, one of which is made: an alignment, a density, a unit. The chosen one is
 /// a thumb lifted off the track.
@@ -15,7 +15,7 @@ crate::component::part_slot!(SegmentProps);
 #[component(name = "ToggleGroup", role = "Group", label = "caption")]
 pub struct ToggleGroupProps {
     /// The choices, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub options: Vec<SegmentProps>,
     /// Which choice is made, counted from 0: none until the person makes one.
     pub selected: Option<i64>,
@@ -130,7 +130,7 @@ fn chosen_at(selected: Option<i64>, options: &[SegmentProps]) -> usize {
 #[component(name = "ViewTabs", role = "TabBar", label = "label")]
 pub struct ViewTabsProps {
     /// The tabs, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub tabs: Vec<SegmentProps>,
     /// Which tab shows, counted from 0.
     pub selected: Option<i64>,

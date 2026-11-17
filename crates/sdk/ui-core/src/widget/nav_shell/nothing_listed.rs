@@ -53,15 +53,15 @@ impl NavShell {
 
     /// The slot a staged body for `column` lands in: the held one while the
     /// empty state stands in for it.
-    pub(super) fn body_slot(&mut self, column: Column) -> BodySlot<'_> {
+    pub(super) fn body_part(&mut self, column: Column) -> BodyPart<'_> {
         match (self.held.as_mut(), column) {
-            (_, Column::Sidebar) => BodySlot::Optional(&mut self.sidebar),
-            (Some(held), Column::Overview) => BodySlot::Optional(&mut held.overview),
-            (Some(held), Column::Content) => BodySlot::Required(&mut held.content),
-            (Some(held), Column::Inspector) => BodySlot::Optional(&mut held.inspector),
-            (None, Column::Overview) => BodySlot::Optional(&mut self.overview),
-            (None, Column::Content) => BodySlot::Required(&mut self.content),
-            (None, Column::Inspector) => BodySlot::Optional(&mut self.inspector),
+            (_, Column::Sidebar) => BodyPart::Optional(&mut self.sidebar),
+            (Some(held), Column::Overview) => BodyPart::Optional(&mut held.overview),
+            (Some(held), Column::Content) => BodyPart::Required(&mut held.content),
+            (Some(held), Column::Inspector) => BodyPart::Optional(&mut held.inspector),
+            (None, Column::Overview) => BodyPart::Optional(&mut self.overview),
+            (None, Column::Content) => BodyPart::Required(&mut self.content),
+            (None, Column::Inspector) => BodyPart::Optional(&mut self.inspector),
         }
     }
 
@@ -101,14 +101,14 @@ impl NavShell {
                 .as_mut()
                 .and_then(|Staged(pending)| pending.as_deref_mut());
         }
-        match self.body_slot(column) {
-            BodySlot::Optional(slot) => slot.as_deref_mut(),
-            BodySlot::Required(slot) => Some(slot.as_mut()),
+        match self.body_part(column) {
+            BodyPart::Optional(slot) => slot.as_deref_mut(),
+            BodyPart::Required(slot) => Some(slot.as_mut()),
         }
     }
 }
 
-pub(super) enum BodySlot<'a> {
+pub(super) enum BodyPart<'a> {
     Optional(&'a mut Option<Element>),
     Required(&'a mut Element),
 }

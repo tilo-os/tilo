@@ -25,7 +25,7 @@ use std::rc::Rc;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
-use tilo_desktop::overlays::{Anchor as Place, Overlay, Slot, SwitcherScope};
+use tilo_desktop::overlays::{Anchor as Place, Overlay, Part, SwitcherScope};
 use tilo_desktop_model::TabId;
 use tilo_desktop_surface::DesktopHandle;
 
@@ -43,8 +43,8 @@ pub const WINDOW_MENU: &str = "desktop:window-menu";
 /// What kind of resource [`WINDOW_MENU`] is.
 pub const WINDOW_MENU_KIND: &str = "desktop.window-menu";
 
-/// The slot the window menu is drawn in, as the settings reading names it.
-pub const WINDOW_MENU_SLOT: &str = "window-menu";
+/// The part the window menu is drawn in, as the settings reading names it.
+pub const WINDOW_MENU_PART: &str = "window-menu";
 
 /// The app a tilolang view of the menu reads it as: the first part of its kind, which is what a
 /// package names in `use desktop as desktop` .
@@ -52,7 +52,7 @@ pub const WINDOW_MENU_APP: &str = "desktop";
 
 /// The window menu's surface, as a tilolang package drawing it is compiled against: the fields
 /// [`WINDOW_MENU`] reads and the verbs that change it, in the vocabulary a surface file declares
-/// (`tilo_actions::surface`, see `docs/developers/slot-views.md` ). A view reads the menu through
+/// (`tilo_actions::surface`, see `docs/developers/part-views.md` ). A view reads the menu through
 /// this and invokes it through this; the session publishes the same fields and verbs on its API.
 pub const WINDOW_MENU_SURFACE: &str = r#"
 [[resources]]
@@ -192,7 +192,7 @@ pub enum OverlayEffect {
     OpenSurface {
         /// The surface, as the reading names it.
         #[param("The surface to open, as the reading names it")]
-        slot: String,
+        part: String,
         /// Where to hang it, as the reading gives it back: `at:x,y` over the thing it acts on,
         /// `beside:x0,y0,x1,y1,gap` clear of it. Its own place by default.
         #[param("Where to hang it, as \"at:x,y\" or \"beside:x0,y0,x1,y1,gap\"")]
@@ -203,7 +203,7 @@ pub enum OverlayEffect {
     CloseSurface {
         /// The surface, as the reading names it.
         #[param("The surface to close, as the reading names it")]
-        slot: String,
+        part: String,
     },
     /// Show the surface `surface` over the shell's windows, or close it when it is up.
     ShowSurface {
@@ -341,7 +341,7 @@ struct StackReading {
 /// One open surface.
 #[derive(Debug, Serialize)]
 struct Surface {
-    slot: &'static str,
+    part: &'static str,
     role: &'static str,
     anchor: String,
     size: Extent,
@@ -372,15 +372,15 @@ struct Area {
 /// What holds the keyboard.
 #[derive(Debug, Serialize)]
 struct Focus {
-    /// `window` , or `overlay:<slot>` .
+    /// `window` , or `overlay:<part>` .
     target: String,
     /// The surface, while one holds it.
     surface: Option<&'static str>,
 }
 
 /// The surface `text` names, as the readings and the verbs spell it.
-fn named(text: &str) -> Result<Slot, ApiError> {
-    Slot::named(text.trim()).ok_or_else(|| ApiError::Unavailable {
+fn named(text: &str) -> Result<Part, ApiError> {
+    Part::named(text.trim()).ok_or_else(|| ApiError::Unavailable {
         code: "unknown-surface".into(),
         reason: format!("{text} is not a surface"),
     })
@@ -454,7 +454,7 @@ impl ShellService {
         let corner = self
             .surfaces
             .overlays
-            .place(Slot::WindowMenu)
+            .place(Part::WindowMenu)
             .map_or(ui::kurbo::Point::ZERO, |standing| standing.room.origin());
         Some(Anchor {
             x: x - corner.x,
@@ -509,7 +509,7 @@ impl ShellService {
         });
         self.state.menu = Some(OpenMenu { tab, at });
         self.surfaces.overlays.open(
-            Slot::WindowMenu,
+            Part::WindowMenu,
             at.map(|(x, y)| Place::At(ui::kurbo::Point::new(x, y))),
         );
         Ok(())
@@ -518,25 +518,25 @@ impl ShellService {
     /// Close the menu, if one is up.
     fn close(&mut self) {
         self.state.menu = None;
-        self.surfaces.overlays.close(Slot::WindowMenu);
+        self.surfaces.overlays.close(Part::WindowMenu);
     }
 
     /// Open a surface the session itself puts up, at `anchor` or where it
     /// stands by itself. The desktop's own chrome keeps the rest: its menus,
     /// the picker, the overview and the strip ribbon open and close with the
     /// widgets that draw them, and say so to the same stack.
-    fn open_surface(&self, slot: &str, anchor: Option<&str>) -> Result<(), ApiError> {
-        let slot = named(slot)?;
-        if !slot.session_closes() {
+    fn open_surface(&self, part: &str, anchor: Option<&str>) -> Result<(), ApiError> {
+        let part = named(part)?;
+        if !part.session_closes() {
             return Err(ApiError::Unavailable {
                 code: "not-mine".into(),
                 reason: format!(
                     "The desktop shows {} itself, in the widget that owns it",
-                    slot.as_str()
+                    part.as_str()
                 ),
             });
         }
-        if slot == Slot::WindowMenu {
+        if part == Part::WindowMenu {
             return Err(ApiError::Unavailable {
                 code: "use-window-menu".into(),
                 reason: "The window menu opens from \"desktop:window-menu\", which names \
@@ -552,27 +552,27 @@ impl ShellService {
                 })
             })
             .transpose()?;
-        self.surfaces.overlays.open(slot, anchor);
+        self.surfaces.overlays.open(part, anchor);
         Ok(())
     }
 
     /// Close a surface the session itself puts up.
-    fn close_surface(&mut self, slot: &str) -> Result<(), ApiError> {
-        let slot = named(slot)?;
-        if !slot.session_closes() {
+    fn close_surface(&mut self, part: &str) -> Result<(), ApiError> {
+        let part = named(part)?;
+        if !part.session_closes() {
             return Err(ApiError::Unavailable {
                 code: "not-mine".into(),
                 reason: format!(
                     "The desktop shows {} itself, in the widget that owns it",
-                    slot.as_str()
+                    part.as_str()
                 ),
             });
         }
-        if slot == Slot::WindowMenu {
+        if part == Part::WindowMenu {
             // The menu keeps its window and place beside the stack; both go together.
             self.close();
         }
-        self.surfaces.overlays.close(slot);
+        self.surfaces.overlays.close(part);
         Ok(())
     }
 
@@ -626,7 +626,7 @@ impl Service for ShellService {
                 let target = crate::chrome::keyboard_target(&self.handle, &self.surfaces.overlays);
                 Some(reading(&Focus {
                     target: target.as_str(),
-                    surface: target.slot().map(Slot::as_str),
+                    surface: target.part().map(Part::as_str),
                 }))
             }
             _ => None,
@@ -670,22 +670,22 @@ impl Service for ShellService {
                 match decode::<OverlayEffect>(&self.resources(), resource, action, arguments)? {
                     // A surface the shell draws opens through the shell's surfaces; the ones the
                     // session puts up in the stack itself (quick settings) keep their place there.
-                    OverlayEffect::OpenSurface { slot, anchor: None }
-                        if Overlay::named(&slot).is_some()
-                            && !Slot::named(&slot).is_some_and(Slot::session_closes) =>
+                    OverlayEffect::OpenSurface { part, anchor: None }
+                        if Overlay::named(&part).is_some()
+                            && !Part::named(&part).is_some_and(Part::session_closes) =>
                     {
-                        self.surfaces.open(&slot);
+                        self.surfaces.open(&part);
                     }
-                    OverlayEffect::OpenSurface { slot, anchor } => {
-                        self.open_surface(&slot, anchor.as_deref())?;
+                    OverlayEffect::OpenSurface { part, anchor } => {
+                        self.open_surface(&part, anchor.as_deref())?;
                     }
-                    OverlayEffect::CloseSurface { slot } if Overlay::named(&slot).is_some() => {
-                        self.surfaces.close(&slot);
-                        if Slot::named(&slot).is_some_and(Slot::session_closes) {
-                            self.close_surface(&slot)?;
+                    OverlayEffect::CloseSurface { part } if Overlay::named(&part).is_some() => {
+                        self.surfaces.close(&part);
+                        if Part::named(&part).is_some_and(Part::session_closes) {
+                            self.close_surface(&part)?;
                         }
                     }
-                    OverlayEffect::CloseSurface { slot } => self.close_surface(&slot)?,
+                    OverlayEffect::CloseSurface { part } => self.close_surface(&part)?,
                     OverlayEffect::ShowSurface { surface } => self.surfaces.toggle(&surface),
                     OverlayEffect::WalkSwitcher { steps, scope } => {
                         crate::windows::walk_switcher(
@@ -725,7 +725,7 @@ impl ShellService {
                 .entries()
                 .into_iter()
                 .map(|entry| Surface {
-                    slot: entry.slot.as_str(),
+                    part: entry.part.as_str(),
                     role: entry.role.as_str(),
                     anchor: entry.anchor.as_str(),
                     size: Extent {

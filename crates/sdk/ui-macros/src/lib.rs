@@ -25,9 +25,9 @@ use syn::{
 ///   reads (a key, an address), not words it shows, so a view's literal there is no message;
 ///   `#[component(identity)]` says it names the value among its siblings (a list's chosen
 ///   item), which takes a typed filter in its place, the query it asks;
-/// - `#[component(slot)]`, `#[component(slot(default))]`: a **slot**, whose type implements
-///   `SlotType` (`Option<Element>`, `Vec<Element>`, or `Option<P>` of another component's props:
-///   the slot accepts only that component);
+/// - `#[component(part)]`, `#[component(part(default))]`: a **part**, whose type implements
+///   `PartType` (`Option<Element>`, `Vec<Element>`, or `Option<P>` of another component's props:
+///   the part accepts only that component);
 /// - `#[component(event)]`, `#[component(event(value = T))]`: an **event**, of type `Event`;
 ///   `event(value = T, at = i64)` also says where the value lands (a drop's place);
 /// - `#[component(bind)]`, `#[component(bind(merge = "splice"))]`: a **binding**, of type
@@ -116,16 +116,16 @@ struct Head {
 }
 
 /// What a field is.
-enum Part {
+enum Member {
     Prop {
         required: bool,
         positional: bool,
         data: bool,
         identity: bool,
     },
-    Slot {
+    Part {
         default: bool,
-        /// The slot holds the document a row opens into where it stands, rendered only while
+        /// The part holds the document a row opens into where it stands, rendered only while
         /// that row stands open.
         when_open: bool,
     },
@@ -212,7 +212,7 @@ fn head_of(attrs: &[Attribute]) -> syn::Result<Head> {
 
 /// `event`, `event(value = T)`, `event(at = U)` or `event(press)`: an event, what it carries,
 /// where that lands and whether a press of its control runs the action the view bound.
-fn event_part(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Part> {
+fn event_part(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Member> {
     let (mut value, mut at) = (None, None);
     let mut press = false;
     if meta.input.peek(syn::token::Paren) {
@@ -231,12 +231,12 @@ fn event_part(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Part> {
             }
         })?;
     }
-    Ok(Part::Event { value, at, press })
+    Ok(Member::Event { value, at, press })
 }
 
-/// `slot`, `slot(default)` or `slot(when_open)`: a slot, and whether the block fills it when it
+/// `part`, `part(default)` or `part(when_open)`: a part, and whether the block fills it when it
 /// names none, and whether it holds the document a row opens into where it stands.
-fn slot_part(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Part> {
+fn part_member(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Member> {
     let (mut default, mut when_open) = (false, false);
     if meta.input.peek(syn::token::Paren) {
         meta.parse_nested_meta(|inner| {
@@ -245,21 +245,21 @@ fn slot_part(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Part> {
             } else if inner.path.is_ident("when_open") {
                 when_open = true;
             } else {
-                return Err(inner.error("a slot takes `default` or `when_open`"));
+                return Err(inner.error("a part takes `default` or `when_open`"));
             }
             Ok(())
         })?;
     }
-    Ok(Part::Slot { default, when_open })
+    Ok(Member::Part { default, when_open })
 }
 
-fn part_of(field: &syn::Field) -> syn::Result<Part> {
+fn part_of(field: &syn::Field) -> syn::Result<Member> {
     let mut part = None;
     let mut required = false;
     let mut positional = false;
     let mut data = false;
     let mut identity = false;
-    let set = |part: &mut Option<Part>, new: Part, span: proc_macro2::Span| {
+    let set = |part: &mut Option<Member>, new: Member, span: proc_macro2::Span| {
         if part.is_some() {
             return Err(syn::Error::new(span, "a field is one part of a component"));
         }
@@ -281,8 +281,8 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
                 data = true;
             } else if meta.path.is_ident("identity") {
                 identity = true;
-            } else if meta.path.is_ident("slot") {
-                set(&mut part, slot_part(&meta)?, span)?;
+            } else if meta.path.is_ident("part") {
+                set(&mut part, part_member(&meta)?, span)?;
             } else if meta.path.is_ident("event") {
                 set(&mut part, event_part(&meta)?, span)?;
             } else if meta.path.is_ident("bind") {
@@ -314,16 +314,16 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
                         }
                     })?;
                 }
-                set(&mut part, Part::Bind { merge, described }, span)?;
+                set(&mut part, Member::Bind { merge, described }, span)?;
             } else if meta.path.is_ident("state") {
-                set(&mut part, Part::State, span)?;
+                set(&mut part, Member::State, span)?;
             } else if meta.path.is_ident("key") {
-                set(&mut part, Part::Key, span)?;
+                set(&mut part, Member::Key, span)?;
             } else if meta.path.is_ident("skip") {
-                set(&mut part, Part::Skip, span)?;
+                set(&mut part, Member::Skip, span)?;
             } else {
                 return Err(meta.error(
-                    "a component field is `required`, `positional`, `data`, `identity`, `slot`, `event`, `bind`, `state`, `key` or `skip`",
+                    "a component field is `required`, `positional`, `data`, `identity`, `part`, `event`, `bind`, `state`, `key` or `skip`",
                 ));
             }
             Ok(())
@@ -333,12 +333,12 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
         Some(other) if required || positional || data || identity => Err(syn::Error::new(
             field.span(),
             match other {
-                Part::Skip | Part::Key => "a skipped field or the key is not a prop",
+                Member::Skip | Member::Key => "a skipped field or the key is not a prop",
                 _ => "only a prop is `required`, `positional`, `data` or `identity`",
             },
         )),
         Some(part) => Ok(part),
-        None => Ok(Part::Prop {
+        None => Ok(Member::Prop {
             required,
             positional,
             data,
@@ -394,7 +394,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
     }
     let Generated {
         props,
-        slots,
+        parts,
         events,
         bindings,
         states,
@@ -431,7 +431,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
                     name: #name.into(),
                     doc: #doc.into(),
                     props: vec![#(#props),*],
-                    slots: vec![#(#slots),*],
+                    parts: vec![#(#parts),*],
                     events: vec![#(#events),*],
                     bindings: vec![#(#bindings),*],
                     state: vec![#(#states),*],
@@ -452,8 +452,8 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         }
 
-        /// A slot that accepts only this component reads its props.
-        impl #impl_generics #k::SlotType for ::core::option::Option<#ident #ty_generics> #where_clause {
+        /// A part that accepts only this component reads its props.
+        impl #impl_generics #k::PartType for ::core::option::Option<#ident #ty_generics> #where_clause {
             const MANY: bool = false;
 
             fn accepts() -> #k::Accepts {
@@ -463,10 +463,10 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
             fn fill(
                 &mut self,
                 source: &mut dyn #k::Source,
-                slot: &str,
+                part: &str,
             ) -> ::core::result::Result<(), ::std::string::String> {
                 let mut read = None;
-                let count = source.components(slot, &mut |child| {
+                let count = source.components(part, &mut |child| {
                     read = Some(<#ident #ty_generics as #k::Component>::from_source(child)
                         .map_err(|error| error.to_string())?);
                     Ok(())
@@ -486,7 +486,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
 #[derive(Default)]
 struct Generated {
     props: Vec<Tokens>,
-    slots: Vec<Tokens>,
+    parts: Vec<Tokens>,
     events: Vec<Tokens>,
     bindings: Vec<Tokens>,
     states: Vec<Tokens>,
@@ -516,7 +516,7 @@ impl Generated {
         }
         self.known.push(key.clone());
         match part {
-            Part::Prop {
+            Member::Prop {
                 required,
                 positional,
                 data,
@@ -530,23 +530,23 @@ impl Generated {
                 &field_doc,
                 (required, positional, data, identity),
             ),
-            Part::Slot { default, when_open } => {
-                self.slots.push(quote! {
-                    #k::Slot {
+            Member::Part { default, when_open } => {
+                self.parts.push(quote! {
+                    #k::Part {
                         name: #key.into(),
                         doc: #field_doc.into(),
-                        accepts: <#ty as #k::SlotType>::accepts(),
-                        many: <#ty as #k::SlotType>::MANY,
+                        accepts: <#ty as #k::PartType>::accepts(),
+                        many: <#ty as #k::PartType>::MANY,
                         default: #default,
                         when_open: #when_open,
                     }
                 });
                 self.reads.push(quote! {
-                    <#ty as #k::SlotType>::fill(&mut props.#member, source, #key)
+                    <#ty as #k::PartType>::fill(&mut props.#member, source, #key)
                         .map_err(|message| #k::Error::value(#name, #key, message))?;
                 });
             }
-            Part::Event { value, at, press } => {
+            Member::Event { value, at, press } => {
                 let ty = |t: Option<Box<syn::Type>>| {
                     t.map_or_else(
                         || quote!(None),
@@ -568,7 +568,7 @@ impl Generated {
                     props.#member = source.event(#key);
                 });
             }
-            Part::Bind { merge, described } => {
+            Member::Bind { merge, described } => {
                 self.binding(
                     k,
                     name,
@@ -579,7 +579,7 @@ impl Generated {
                     described.as_deref(),
                 );
             }
-            Part::State => {
+            Member::State => {
                 self.states.push(quote! {
                     #k::StateDescription {
                         name: #key.into(),
@@ -594,16 +594,16 @@ impl Generated {
                     }
                 });
             }
-            Part::Key | Part::Skip => {}
+            Member::Key | Member::Skip => {}
         }
         Ok(())
     }
 
     /// A field that is not part of the description: skipped, or the instance's key.
-    fn undescribed(&mut self, part: &Part, member: &syn::Ident) -> bool {
+    fn undescribed(&mut self, part: &Member, member: &syn::Ident) -> bool {
         match part {
-            Part::Skip => true,
-            Part::Key => {
+            Member::Skip => true,
+            Member::Key => {
                 self.reads.push(quote! {
                     props.#member = ::std::string::ToString::to_string(source.key());
                 });

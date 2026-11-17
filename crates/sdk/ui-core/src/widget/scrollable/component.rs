@@ -1,6 +1,6 @@
 //! [`Scrollable`] as a described component: a column's body that scrolls.
 
-use crate::component::{Component, Described, SlotViews};
+use crate::component::{Component, Described, PartViews};
 use crate::widget::Element;
 
 use super::Scrollable;
@@ -22,7 +22,7 @@ pub struct ScrollProps {
     /// held to a height whose words go on below it, so the person sees there is more.
     pub shows_bar: bool,
     /// What scrolls.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub content: Option<Element>,
 }
 
@@ -72,12 +72,12 @@ impl Described for Scrollable {
         props.follow_end == self.follow_end && same_axis
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        (slot == "content").then_some(self as &mut dyn SlotViews)
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        (part == "content").then_some(self as &mut dyn PartViews)
     }
 }
 
-impl SlotViews for Scrollable {
+impl PartViews for Scrollable {
     fn len(&self) -> usize {
         usize::from(self.child.is_some())
     }

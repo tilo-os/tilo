@@ -1,7 +1,7 @@
 //! The probe the component tests read an instance's parts from. A described widget reads what a host
 //! gives it through [`Source`]; the probe is that host as a test gives it: values by prop, the widget
 //! state to restore, the binding it offers, the events it handles queued as intents, and the components
-//! in its slots.
+//! in its parts.
 
 #![allow(
     dead_code,
@@ -16,13 +16,13 @@ use crate::theme::Theme;
 use crate::widget::Widget;
 
 /// An instance as a test gives it: values by prop, the events it handles queued on `queue`, and the
-/// components in its slots.
+/// components in its parts.
 pub(super) struct Node {
     kind: &'static str,
     key: String,
     props: BTreeMap<String, Value>,
     events: Vec<&'static str>,
-    slots: Vec<(&'static str, Node)>,
+    parts: Vec<(&'static str, Node)>,
     bound: Option<BoundValue>,
     queue: crate::Intents<Fired>,
 }
@@ -34,7 +34,7 @@ impl Node {
             key: key.to_owned(),
             props: BTreeMap::new(),
             events: Vec::new(),
-            slots: Vec::new(),
+            parts: Vec::new(),
             bound: None,
             queue: queue.clone(),
         }
@@ -55,8 +55,8 @@ impl Node {
         self
     }
 
-    pub(super) fn holding(mut self, slot: &'static str, child: Node) -> Self {
-        self.slots.push((slot, child));
+    pub(super) fn holding(mut self, part: &'static str, child: Node) -> Self {
+        self.parts.push((part, child));
         self
     }
 }
@@ -86,26 +86,26 @@ impl Source for Node {
         self.bound.clone()
     }
 
-    fn children(&mut self, _slot: &str) -> Vec<Element> {
+    fn children(&mut self, _part: &str) -> Vec<Element> {
         Vec::new()
     }
 
-    fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
-        self.slots
+    fn part_kinds(&mut self, part: &str) -> Vec<Option<String>> {
+        self.parts
             .iter()
-            .filter(|(name, _)| *name == slot)
+            .filter(|(name, _)| *name == part)
             .map(|(_, child)| Some(child.kind.to_owned()))
             .collect()
     }
 
     fn components(
         &mut self,
-        slot: &str,
+        part: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
         let mut count = 0;
-        for (name, child) in &mut self.slots {
-            if *name == slot {
+        for (name, child) in &mut self.parts {
+            if *name == part {
                 read(child)?;
                 count += 1;
             }

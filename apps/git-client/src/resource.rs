@@ -521,7 +521,7 @@ mod tests {
             "git.screen.changes",
         ] {
             app.harness()
-                .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: target.into() });
+                .press_window_part(ui::window_toolbar::ToolbarEvent::Action { id: target.into() });
             app.settle();
             assert_eq!(screen(&mut app).as_deref(), Some(target));
         }

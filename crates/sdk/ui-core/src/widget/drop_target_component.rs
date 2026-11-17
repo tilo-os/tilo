@@ -1,6 +1,6 @@
 //! [`DropTarget`](super::DropTarget) as a described component.
 
-use crate::component::{Component, Described, Event, ResourceId, SlotViews};
+use crate::component::{Component, Described, Event, PartViews, ResourceId};
 use crate::widget::Element;
 
 use super::DropTarget;
@@ -16,7 +16,7 @@ use super::DropTarget;
 #[component(name = "DropTarget", role = "Group")]
 pub struct DropTargetProps {
     /// What it draws.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub content: Option<Element>,
     /// A resource was dropped on it: carries the resource the drag carried, as its address.
     /// The view decides what to do with it — a composer attaches it to the draft, a canvas
@@ -41,7 +41,7 @@ impl Described for DropTarget {
         true
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        (slot == "content").then_some(self as &mut dyn SlotViews)
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        (part == "content").then_some(self as &mut dyn PartViews)
     }
 }

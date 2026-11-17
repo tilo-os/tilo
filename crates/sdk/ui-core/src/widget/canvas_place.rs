@@ -23,7 +23,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{Rhythm, SpacingStep, TextRole};
-use crate::widget::arrange::{Align, Fit, Slot, Stack};
+use crate::widget::arrange::{Align, Fit, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
 use crate::widget::{
     ContextMenuArea, Decorator, DragSource, DrawChild, Element, HoverToolbar, MenuItemProps,
@@ -42,10 +42,10 @@ pub struct PlaceProps {
     #[component(data)]
     pub carries: Option<String>,
     /// The handle's controls after the name: the resource's actions, pin and close.
-    #[component(slot)]
+    #[component(part)]
     pub controls: Option<Element>,
     /// The view the place shows, filling it.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub body: Option<Element>,
     /// The resource the place shows, whose published actions its menu lists, which the host
     /// fills as it fills a `ui.MenuButton`'s: a right-click on the place opens them, and typing
@@ -54,7 +54,7 @@ pub struct PlaceProps {
     /// content's.
     pub subject: Option<crate::component::ResourceId>,
     /// The place's menu: the commands the host filled from its subject.
-    #[component(slot)]
+    #[component(part)]
     pub items: Vec<MenuItemProps>,
 }
 
@@ -115,15 +115,15 @@ impl Described for CanvasPlace {
             .align(Align::Center)
             .gap(Rhythm::Tight)
             .push(controls.unwrap_or_else(empty));
-        let mut slot = Slot::new(body.unwrap_or_else(empty));
-        slot.fit = Fit::fill(1.0);
+        let mut part = Part::new(body.unwrap_or_else(empty));
+        part.fit = Fit::fill(1.0);
         let ground = PlaceGround {
             name: name.clone(),
             column: Stack::stack()
                 .fill_width()
                 .fill_height()
                 .gap(Rhythm::None)
-                .push_slot(slot),
+                .push_part(part),
         };
         // The place's menu: the resource's own actions, read when it opens so it offers what
         // is true then. It stands around the view and the handle both, so a right-click on the
@@ -152,7 +152,7 @@ impl Described for CanvasPlace {
     }
 
     /// The same place told it again keeps its view, its handle and the hover it is in: only
-    /// another name, another resource or new views in its slots build it again.
+    /// another name, another resource or new views in its parts build it again.
     fn set_props(&mut self, props: PlaceProps) -> bool {
         let kept = props.controls.is_none()
             && props.body.is_none()

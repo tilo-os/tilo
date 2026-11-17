@@ -1,11 +1,11 @@
-//! How a window bar's row draws: its slots, the location, and the
+//! How a window bar's row draws: its parts, the location, and the
 //! pickers.
 
-use super::slot_change::{Pose, SlotKey};
+use super::part_change::{PartKey, Pose};
 use super::{
-    Affine, Breadcrumb, ButtonFace, FieldFace, Icon, LOCATION_ICON_PX, LocationLabel, Point,
-    PresenceCtx, Rect, Scene, SegmentedFace, Slot, Slots, TextRenderer, Theme, ToggleGroup,
-    ToolbarRow, VIEWS_SIZE, Widget, WindowToolbar, paint_icon_button, trailing_word,
+    Affine, Breadcrumb, ButtonFace, FieldFace, Icon, LOCATION_ICON_PX, LocationLabel, Part, Parts,
+    Point, PresenceCtx, Rect, Scene, SegmentedFace, TextRenderer, Theme, ToggleGroup, ToolbarRow,
+    VIEWS_SIZE, Widget, WindowToolbar, paint_icon_button, trailing_word,
 };
 use crate::widget::DrawChild;
 
@@ -39,19 +39,19 @@ impl ToolbarRow {
         let mut words = std::mem::take(&mut self.labels);
         words.clear();
         let now = crate::motion::frame_now();
-        self.start_slot_change(theme);
+        self.start_part_change(theme);
         if let Some((outgoing, opacity)) = self.fade.outgoing(now)
             && outgoing.is_some()
-            && let Some((toolbar, slots)) = self.outgoing.as_ref()
+            && let Some((toolbar, parts)) = self.outgoing.as_ref()
         {
             let mut leaving = Vec::new();
             layered(scene, transform, self.row, opacity, |scene| {
-                let _ = paint_slots(
+                let _ = paint_parts(
                     scene,
                     transform,
                     (tr, theme, presence),
                     toolbar,
-                    slots,
+                    parts,
                     (None, None),
                     Some(&mut leaving),
                 );
@@ -64,28 +64,28 @@ impl ToolbarRow {
             return;
         };
         let interaction = Interaction {
-            poses: self.slot_changes.poses(crate::motion::frame_now()),
+            poses: self.part_changes.poses(crate::motion::frame_now()),
             hover: self.hover.clone(),
             pressed: self.pressed.clone(),
             editing: self.field.is_some(),
             menu_open: self
                 .menu
                 .is_open()
-                .then(|| self.menu_slot.clone())
+                .then(|| self.menu_part.clone())
                 .flatten(),
         };
         let row = self.row;
-        let slots = &self.slots;
+        let parts = &self.parts;
         let field = self.field.as_mut();
         let crumbs = self.crumbs.as_mut().map(|(_, crumbs)| crumbs);
         let mut trigger = None;
         layered(scene, transform, row, incoming, |scene| {
-            trigger = paint_slots(
+            trigger = paint_parts(
                 scene,
                 transform,
                 (tr, theme, presence),
                 toolbar,
-                slots,
+                parts,
                 (Some(&interaction), crumbs),
                 Some(&mut words),
             );
@@ -102,11 +102,11 @@ impl ToolbarRow {
             (tr, theme),
             (
                 match interaction.hover {
-                    Some(Slot::Notice(i)) => Some(i),
+                    Some(Part::Notice(i)) => Some(i),
                     _ => None,
                 },
                 match interaction.pressed {
-                    Some(Slot::Notice(i)) => Some(i),
+                    Some(Part::Notice(i)) => Some(i),
                     _ => None,
                 },
             ),
@@ -123,19 +123,19 @@ impl ToolbarRow {
         self.labels = words;
     }
 
-    pub(super) fn start_slot_change(&mut self, theme: &Theme) {
+    pub(super) fn start_part_change(&mut self, theme: &Theme) {
         let now = crate::motion::frame_now();
         if let Some(before) = self.changed_from.take()
             && let Some((_, toolbar)) = self.shown.as_ref()
         {
-            self.slot_changes.start(
+            self.part_changes.start(
                 std::rc::Rc::new(before),
-                (toolbar, &self.slots),
+                (toolbar, &self.parts),
                 theme.motion(),
                 now,
             );
         }
-        self.slot_changes.prune(now);
+        self.part_changes.prune(now);
     }
 
     fn paint_leaving(
@@ -146,7 +146,7 @@ impl ToolbarRow {
         incoming: f32,
     ) {
         let now = crate::motion::frame_now();
-        for leaving in self.slot_changes.leaving() {
+        for leaving in self.part_changes.leaving() {
             let opacity = leaving.opacity(now) * incoming;
             if opacity <= 0.0 {
                 continue;
@@ -159,13 +159,13 @@ impl ToolbarRow {
                 at,
                 &leaving.rect.inflate(2.0, 2.0),
             );
-            let (toolbar, slots) = leaving.from.as_ref();
-            let _ = paint_slots(
+            let (toolbar, parts) = leaving.from.as_ref();
+            let _ = paint_parts(
                 scene,
                 at,
                 (tr, theme, presence),
                 toolbar,
-                slots,
+                parts,
                 (None, None),
                 None,
             );
@@ -175,11 +175,11 @@ impl ToolbarRow {
 }
 
 pub(super) struct Interaction {
-    pub(super) poses: std::collections::HashMap<SlotKey, Pose>,
-    pub(super) hover: Option<Slot>,
-    pub(super) pressed: Option<Slot>,
+    pub(super) poses: std::collections::HashMap<PartKey, Pose>,
+    pub(super) hover: Option<Part>,
+    pub(super) pressed: Option<Part>,
     pub(super) editing: bool,
-    pub(super) menu_open: Option<Slot>,
+    pub(super) menu_open: Option<Part>,
 }
 
 pub(super) fn layered(
@@ -208,25 +208,25 @@ pub(super) fn layered(
     }
 }
 
-pub(super) fn shows_on(toolbar: &WindowToolbar, slot: &Slot) -> bool {
-    match slot {
-        Slot::Sidebar => toolbar.sidebar == Some(true),
-        Slot::Leading(i) => toolbar.leading.get(*i).is_some_and(|action| action.on),
-        Slot::Action(i) => toolbar.actions.get(*i).is_some_and(|action| action.on),
+pub(super) fn shows_on(toolbar: &WindowToolbar, part: &Part) -> bool {
+    match part {
+        Part::Sidebar => toolbar.sidebar == Some(true),
+        Part::Leading(i) => toolbar.leading.get(*i).is_some_and(|action| action.on),
+        Part::Action(i) => toolbar.actions.get(*i).is_some_and(|action| action.on),
         _ => false,
     }
 }
 
-type Poses<'a> = Option<&'a std::collections::HashMap<SlotKey, Pose>>;
+type Poses<'a> = Option<&'a std::collections::HashMap<PartKey, Pose>>;
 
 fn posed(
     scene: &mut Scene,
     transform: Affine,
     (poses, toolbar): (Poses<'_>, &WindowToolbar),
-    (slot, rect): (&Slot, Rect),
+    (part, rect): (&Part, Rect),
     paint: impl FnOnce(&mut Scene, Affine),
 ) {
-    let Some((opacity, offset)) = poses.and_then(|poses| poses.get(&SlotKey::of(toolbar, slot)))
+    let Some((opacity, offset)) = poses.and_then(|poses| poses.get(&PartKey::of(toolbar, part)))
     else {
         paint(scene, transform);
         return;
@@ -235,18 +235,18 @@ fn posed(
     layered(scene, at, rect, *opacity, |scene| paint(scene, at));
 }
 
-pub(super) fn paint_slots(
+pub(super) fn paint_parts(
     scene: &mut Scene,
     transform: Affine,
     (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
     toolbar: &WindowToolbar,
-    slots: &Slots,
+    parts: &Parts,
     (interaction, crumbs): (Option<&Interaction>, Option<&mut Breadcrumb>),
     mut words: Option<&mut Vec<crate::window_toolbar::BarLabel>>,
 ) -> Option<Rect> {
-    let face = |slot: Slot, enabled: bool, on: bool| ButtonFace {
-        hovered: interaction.is_some_and(|i| i.hover.as_ref() == Some(&slot)),
-        pressed: interaction.is_some_and(|i| i.pressed.as_ref() == Some(&slot)),
+    let face = |part: Part, enabled: bool, on: bool| ButtonFace {
+        hovered: interaction.is_some_and(|i| i.hover.as_ref() == Some(&part)),
+        pressed: interaction.is_some_and(|i| i.pressed.as_ref() == Some(&part)),
         on,
         enabled,
         destructive: false,
@@ -256,71 +256,71 @@ pub(super) fn paint_slots(
         .map(|i| &i.poses)
         .filter(|poses| !poses.is_empty());
     let pose = (poses, toolbar);
-    if toolbar.sidebar.is_some() && slots.sidebar.area() > 0.0 {
+    if toolbar.sidebar.is_some() && parts.sidebar.area() > 0.0 {
         let lifted = face(
-            Slot::Sidebar,
+            Part::Sidebar,
             !toolbar.sidebar_unavailable,
-            shows_on(toolbar, &Slot::Sidebar),
+            shows_on(toolbar, &Part::Sidebar),
         );
         posed(
             scene,
             transform,
             pose,
-            (&Slot::Sidebar, slots.sidebar),
+            (&Part::Sidebar, parts.sidebar),
             |scene, at| {
                 paint_icon_button(
                     scene,
                     at,
                     tr,
                     theme,
-                    (slots.sidebar, Icon::PanelLeft),
+                    (parts.sidebar, Icon::PanelLeft),
                     lifted,
                 );
             },
         );
     }
     if let Some(nav) = toolbar.navigation {
-        let back = face(Slot::Back, nav.back, false);
+        let back = face(Part::Back, nav.back, false);
         posed(
             scene,
             transform,
             pose,
-            (&Slot::Back, slots.back),
+            (&Part::Back, parts.back),
             |scene, at| {
-                paint_icon_button(scene, at, tr, theme, (slots.back, Icon::ArrowLeft), back);
+                paint_icon_button(scene, at, tr, theme, (parts.back, Icon::ArrowLeft), back);
             },
         );
-        let forward = face(Slot::Forward, nav.forward, false);
-        if slots.forward.area() > 0.0 {
+        let forward = face(Part::Forward, nav.forward, false);
+        if parts.forward.area() > 0.0 {
             posed(
                 scene,
                 transform,
                 pose,
-                (&Slot::Forward, slots.forward),
+                (&Part::Forward, parts.forward),
                 |scene, at| {
                     paint_icon_button(
                         scene,
                         at,
                         tr,
                         theme,
-                        (slots.forward, Icon::ArrowRight),
+                        (parts.forward, Icon::ArrowRight),
                         forward,
                     );
                 },
             );
         }
     }
-    for (i, (action, rect)) in toolbar.leading.iter().zip(&slots.leading).enumerate() {
-        let slot = Slot::Leading(i);
-        let mut lifted = face(slot.clone(), action.enabled, shows_on(toolbar, &slot));
-        lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Leading(i)));
-        if action.labelled && slots.labelled && rect.area() > 0.0 {
+    for (i, (action, rect)) in toolbar.leading.iter().zip(&parts.leading).enumerate() {
+        let part = Part::Leading(i);
+        let mut lifted = face(part.clone(), action.enabled, shows_on(toolbar, &part));
+        lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Part::Leading(i)));
+        if action.labelled && parts.labelled && rect.area() > 0.0 {
             let face = labelled_face(*rect, &action.name, action.primary)
                 .hovered(lifted.hovered && lifted.enabled)
                 .pressed(lifted.pressed && lifted.enabled)
                 .toggled(lifted.on)
                 .disabled(!lifted.enabled);
-            posed(scene, transform, pose, (&slot, *rect), |scene, at| {
+            posed(scene, transform, pose, (&part, *rect), |scene, at| {
                 crate::widget::Button::paint(scene, at, tr, theme, &face);
             });
             continue;
@@ -332,20 +332,20 @@ pub(super) fn paint_slots(
             primary: action.primary,
             ..lifted
         };
-        posed(scene, transform, pose, (&slot, *rect), |scene, at| {
+        posed(scene, transform, pose, (&part, *rect), |scene, at| {
             paint_icon_button(scene, at, tr, theme, (*rect, icon), lifted);
         });
     }
     if let Some(views) = toolbar.views.as_ref()
-        && let (Some(first), Some(last)) = (slots.views.first(), slots.views.last())
+        && let (Some(first), Some(last)) = (parts.views.first(), parts.views.last())
     {
         let labels: Vec<&str> = views.choices.iter().map(|v| v.label.as_str()).collect();
         let hovered = interaction.and_then(|i| match &i.hover {
-            Some(Slot::View(index)) => Some(*index),
+            Some(Part::View(index)) => Some(*index),
             _ => None,
         });
         let face = SegmentedFace::new(
-            &slots.views,
+            &parts.views,
             &labels,
             views
                 .chosen_index()
@@ -360,22 +360,22 @@ pub(super) fn paint_slots(
             scene,
             transform,
             pose,
-            (&Slot::View(0), first.union(*last)),
+            (&Part::View(0), first.union(*last)),
             |scene, at| ToggleGroup::paint(scene, at, tr, theme, &face),
         );
     }
     if let Some(views) = toolbar.views.as_ref()
-        && slots.views_menu.area() > 0.0
+        && parts.views_menu.area() > 0.0
     {
-        let open = interaction.is_some_and(|i| i.menu_open == Some(Slot::ViewsMenu));
+        let open = interaction.is_some_and(|i| i.menu_open == Some(Part::ViewsMenu));
         let lift = LocationLift {
-            hovered: interaction.is_some_and(|i| i.hover == Some(Slot::ViewsMenu)),
-            pressed: open || interaction.is_some_and(|i| i.pressed == Some(Slot::ViewsMenu)),
+            hovered: interaction.is_some_and(|i| i.hover == Some(Part::ViewsMenu)),
+            pressed: open || interaction.is_some_and(|i| i.pressed == Some(Part::ViewsMenu)),
             focused: false,
         };
         let picker = match toolbar.location.as_ref() {
-            Some(location) if slots.views_in_location() => {
-                let (shown, ink) = location_shown(location, slots.form, theme);
+            Some(location) if parts.views_in_location() => {
+                let (shown, ink) = location_shown(location, parts.form, theme);
                 PickerText::new(shown, ink).trailing(trailing_word(location))
             }
             _ => {
@@ -388,33 +388,33 @@ pub(super) fn paint_slots(
             scene,
             transform,
             pose,
-            (&Slot::ViewsMenu, slots.views_menu),
+            (&Part::ViewsMenu, parts.views_menu),
             |scene, at| {
                 paint_picker(
                     scene,
                     at,
                     (tr, theme),
                     picker,
-                    slots.views_menu,
+                    parts.views_menu,
                     lift,
                     words.as_deref_mut(),
                 );
             },
         );
     }
-    for (i, (action, rect)) in toolbar.actions.iter().zip(&slots.actions).enumerate() {
-        let slot = Slot::Action(i);
-        let mut lifted = face(slot.clone(), action.enabled, shows_on(toolbar, &slot));
-        lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Action(i)));
+    for (i, (action, rect)) in toolbar.actions.iter().zip(&parts.actions).enumerate() {
+        let part = Part::Action(i);
+        let mut lifted = face(part.clone(), action.enabled, shows_on(toolbar, &part));
+        lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Part::Action(i)));
         lifted.destructive = action.destructive;
         lifted.primary = action.primary;
-        if action.labelled && slots.actions_labelled {
+        if action.labelled && parts.actions_labelled {
             let face = labelled_face(*rect, &action.name, action.primary)
                 .hovered(lifted.hovered && lifted.enabled)
                 .pressed(lifted.pressed && lifted.enabled)
                 .toggled(lifted.on)
                 .disabled(!lifted.enabled);
-            posed(scene, transform, pose, (&slot, *rect), |scene, at| {
+            posed(scene, transform, pose, (&part, *rect), |scene, at| {
                 crate::widget::Button::paint(scene, at, tr, theme, &face);
             });
             continue;
@@ -422,26 +422,26 @@ pub(super) fn paint_slots(
         let Some(icon) = Icon::from_name(&action.icon) else {
             continue;
         };
-        posed(scene, transform, pose, (&slot, *rect), |scene, at| {
+        posed(scene, transform, pose, (&part, *rect), |scene, at| {
             paint_icon_button(scene, at, tr, theme, (*rect, icon), lifted);
         });
     }
-    if slots.overflow.area() > 0.0 {
-        let open = interaction.is_some_and(|i| i.menu_open == Some(Slot::Overflow));
-        let mut overflow = face(Slot::Overflow, true, false);
+    if parts.overflow.area() > 0.0 {
+        let open = interaction.is_some_and(|i| i.menu_open == Some(Part::Overflow));
+        let mut overflow = face(Part::Overflow, true, false);
         overflow.hovered |= open;
         posed(
             scene,
             transform,
             pose,
-            (&Slot::Overflow, slots.overflow),
+            (&Part::Overflow, parts.overflow),
             |scene, at| {
                 paint_icon_button(
                     scene,
                     at,
                     tr,
                     theme,
-                    (slots.overflow, Icon::MoreHorizontal),
+                    (parts.overflow, Icon::MoreHorizontal),
                     overflow,
                 );
             },
@@ -451,32 +451,32 @@ pub(super) fn paint_slots(
         .notice
         .as_ref()
         .map_or(&[][..], |notice| notice.actions.as_slice());
-    for (i, (action, rect)) in actions.iter().zip(&slots.notice).enumerate() {
-        let slot = Slot::Notice(i);
-        let lifted = face(slot.clone(), action.enabled, false);
-        if slots.notice_labelled.get(i).copied().unwrap_or(false) {
+    for (i, (action, rect)) in actions.iter().zip(&parts.notice).enumerate() {
+        let part = Part::Notice(i);
+        let lifted = face(part.clone(), action.enabled, false);
+        if parts.notice_labelled.get(i).copied().unwrap_or(false) {
             let face = labelled_face(*rect, &action.name, action.primary)
                 .hovered(lifted.hovered && lifted.enabled)
                 .pressed(lifted.pressed && lifted.enabled)
                 .disabled(!lifted.enabled);
-            posed(scene, transform, pose, (&slot, *rect), |scene, at| {
+            posed(scene, transform, pose, (&part, *rect), |scene, at| {
                 crate::widget::Button::paint(scene, at, tr, theme, &face);
             });
         } else if let Some(icon) = Icon::from_name(&action.icon) {
-            posed(scene, transform, pose, (&slot, *rect), |scene, at| {
+            posed(scene, transform, pose, (&part, *rect), |scene, at| {
                 paint_icon_button(scene, at, tr, theme, (*rect, icon), lifted);
             });
         }
     }
     let editing = interaction.is_some_and(|i| i.editing);
     let location = toolbar.location.as_ref()?;
-    if slots.location.area() <= 0.0 || editing || slots.views_in_location() {
+    if parts.location.area() <= 0.0 || editing || parts.views_in_location() {
         return None;
     }
     let lifted = LocationLift {
-        hovered: interaction.is_some_and(|i| i.hover == Some(Slot::Location)),
+        hovered: interaction.is_some_and(|i| i.hover == Some(Part::Location)),
         pressed: interaction.is_some_and(|i| {
-            i.pressed == Some(Slot::Location) || i.menu_open == Some(Slot::Location)
+            i.pressed == Some(Part::Location) || i.menu_open == Some(Part::Location)
         }),
         focused: false,
     };
@@ -485,14 +485,14 @@ pub(super) fn paint_slots(
         scene,
         transform,
         pose,
-        (&Slot::Location, slots.location),
+        (&Part::Location, parts.location),
         |scene, at| {
             trigger = paint_location(
                 scene,
                 at,
                 (tr, theme, presence),
                 (location, crumbs),
-                (slots.location, slots.form),
+                (parts.location, parts.form),
                 (lifted, toolbar.notice.as_ref().map(|notice| notice.kind)),
                 words,
             );

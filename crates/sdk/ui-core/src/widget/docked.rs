@@ -1,7 +1,7 @@
 //! Content above a bar docked at the foot of its column, as a described component.
 
-use crate::component::{Component, Described, SlotViews};
-use crate::widget::arrange::{Fit, Length, Page, Slot, Stack};
+use crate::component::{Component, Described, PartViews};
+use crate::widget::arrange::{Fit, Length, Page, Part, Stack};
 use crate::widget::{Decorator, Element, Widget};
 
 /// Content that fills its column above a bar that stays at the column's foot: a
@@ -10,10 +10,10 @@ use crate::widget::{Decorator, Element, Widget};
 #[component(name = "Docked", role = "Group")]
 pub struct DockedProps {
     /// What fills the column; it scrolls itself.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub content: Option<Element>,
     /// The bar at the foot, as tall as it needs.
-    #[component(slot)]
+    #[component(part)]
     pub foot: Option<Element>,
 }
 
@@ -21,14 +21,14 @@ pub struct DockedProps {
 /// leaves.
 pub struct Docked {
     stack: Stack,
-    /// The slot a host is changing: its place in the stack.
+    /// The part a host is changing: its place in the stack.
     editing: usize,
 }
 
-fn slot(element: Element, fit: Fit) -> Slot {
-    let mut slot = Slot::new(element);
-    slot.fit = fit;
-    slot
+fn part(element: Element, fit: Fit) -> Part {
+    let mut part = Part::new(element);
+    part.fit = fit;
+    part
 }
 
 /// The readable column `node` holds its content in, at any depth: a page bounds what it
@@ -57,21 +57,21 @@ impl Described for Docked {
         let stack = Stack::stack()
             .fill_width()
             .fill_height()
-            .push_slot(slot(content, Fit::fill(1.0)))
-            .push_slot(slot(
-                Box::new(page.push_slot(Slot::new(foot.unwrap_or_else(empty)))),
+            .push_part(part(content, Fit::fill(1.0)))
+            .push_part(part(
+                Box::new(page.push_part(Part::new(foot.unwrap_or_else(empty)))),
                 Fit::hug(),
             ));
         Self { stack, editing: 0 }
     }
 
-    /// It takes nothing but its slots, which change in place.
+    /// It takes nothing but its parts, which change in place.
     fn set_props(&mut self, _props: DockedProps) -> bool {
         true
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        self.editing = match slot {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        self.editing = match part {
             "content" => 0,
             "foot" => 1,
             _ => return None,
@@ -80,8 +80,8 @@ impl Described for Docked {
     }
 }
 
-/// The view of the slot being changed: the content, or the foot.
-impl SlotViews for Docked {
+/// The view of the part being changed: the content, or the foot.
+impl PartViews for Docked {
     fn len(&self) -> usize {
         1
     }
@@ -146,7 +146,7 @@ impl Docked {
             .downcast_mut::<Page>()
     }
 
-    /// Put `view` in the slot being changed.
+    /// Put `view` in the part being changed.
     fn put(&mut self, view: Element) {
         if self.editing == 0 {
             let _ = self.stack.replace(0, view);

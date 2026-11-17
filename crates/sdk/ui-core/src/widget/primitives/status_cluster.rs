@@ -12,7 +12,7 @@ use crate::tokens::TextRole;
 use crate::widget::{BadgeFace, BarControlFace, ChipStyle};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum StatusSlot {
+pub enum StatusPart {
     /// The notification bell; `quiet` when fresh banners are held.
     Bell { unread: u32, quiet: bool },
     /// The volume, `silent` when it is muted.
@@ -72,7 +72,7 @@ pub struct LinkStatus {
 }
 
 impl LinkStatus {
-    /// The signal as the status cluster's link slot counts it: `1..=4` on
+    /// The signal as the status cluster's link part counts it: `1..=4` on
     /// Wi-Fi, `0` where it has no bars to draw.
     #[must_use]
     pub fn bars(&self) -> u8 {
@@ -83,7 +83,7 @@ impl LinkStatus {
     }
 }
 
-/// The cluster's one control: its slots, the state they share and how it
+/// The cluster's one control: its parts, the state they share and how it
 /// tells the degrees that matter.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StatusCluster {
@@ -113,7 +113,7 @@ impl StatusCluster {
 
 #[derive(Clone, Copy, Debug)]
 pub struct StatusClusterFace<'a> {
-    slots: &'a [StatusSlot],
+    parts: &'a [StatusPart],
     battery: Option<u8>,
     charging: bool,
     open: bool,
@@ -127,24 +127,24 @@ pub struct StatusClusterFace<'a> {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StatusClusterLayout {
     pub cluster: Rect,
-    /// Each slot's glyph square, in the order they were given.
-    pub slots: [Rect; MAX_SLOTS],
+    /// Each part's glyph square, in the order they were given.
+    pub parts: [Rect; MAX_PARTS],
     pub badge: Rect,
 }
 
 /// How far past its glyph's top right corner the bell's count is centred.
 const BADGE_PAST_CORNER: f64 = 3.0;
 
-/// The most slots a cluster takes: the bell, the volume, the link, the battery, and one glyph of
+/// The most parts a cluster takes: the bell, the volume, the link, the battery, and one glyph of
 /// width.
-pub const MAX_SLOTS: usize = 5;
+pub const MAX_PARTS: usize = 5;
 
 impl<'a> StatusClusterFace<'a> {
-    /// The cluster of `slots`, at the battery reading it shares.
+    /// The cluster of `parts`, at the battery reading it shares.
     #[must_use]
-    pub fn new(slots: &'a [StatusSlot], status: StatusCluster) -> Self {
+    pub fn new(parts: &'a [StatusPart], status: StatusCluster) -> Self {
         Self {
-            slots,
+            parts,
             battery: status.battery,
             charging: status.charging,
             open: false,
@@ -195,7 +195,7 @@ impl<'a> StatusClusterFace<'a> {
         BarControlFace::height(theme)
     }
 
-    fn slot(&self, theme: &Theme) -> f64 {
+    fn part(&self, theme: &Theme) -> f64 {
         self.height.unwrap_or_else(|| Self::height(theme))
     }
 
@@ -203,7 +203,7 @@ impl<'a> StatusClusterFace<'a> {
         f64::from(theme.tokens.spacing.rhythm.tight)
     }
 
-    /// A slot's glyph: the size every bar control's glyph is drawn at
+    /// A part's glyph: the size every bar control's glyph is drawn at
     /// ([`crate::widget::BarChipFace`]), so the bell and the people beside it
     /// read as one set.
     fn glyph(theme: &Theme) -> f64 {
@@ -216,38 +216,38 @@ impl<'a> StatusClusterFace<'a> {
             .with_weight(TextWeight::Semibold)
     }
 
-    fn slots_shown(&self) -> usize {
-        self.slots.len().min(MAX_SLOTS)
+    fn parts_shown(&self) -> usize {
+        self.parts.len().min(MAX_PARTS)
     }
 
-    /// The width after the bell, when a slot follows it: as much as its widest count reaches past
+    /// The width after the bell, when a part follows it: as much as its widest count reaches past
     /// it, and a hairline more, so a count never stands on the glyph beside the bell. The same
     /// whether anything is unread, so news arriving moves nothing.
     fn bell_shoulder(&self, index: usize, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        if !matches!(self.slots.get(index), Some(StatusSlot::Bell { .. }))
-            || index + 1 >= self.slots_shown()
+        if !matches!(self.parts.get(index), Some(StatusPart::Bell { .. }))
+            || index + 1 >= self.parts_shown()
         {
             return 0.0;
         }
         let (label_w, label_h) =
             text.measure_style(&badge_label(10), None, &Self::percentage_style(theme));
         let (width, _) = badge_size(label_w, label_h, theme);
-        let (slot, glyph) = (self.slot(theme), Self::glyph(theme));
-        let reach = (slot + glyph) / 2.0 + BADGE_PAST_CORNER + width / 2.0;
-        let next_glyph = slot + (slot - glyph) / 2.0;
+        let (part, glyph) = (self.part(theme), Self::glyph(theme));
+        let reach = (part + glyph) / 2.0 + BADGE_PAST_CORNER + width / 2.0;
+        let next_glyph = part + (part - glyph) / 2.0;
         (reach + f64::from(theme.tokens.spacing.s1) / 2.0 - next_glyph)
             .max(0.0)
             .ceil()
     }
 
-    /// The cluster's width: its pad each side, a square per slot, and the battery's percentage
+    /// The cluster's width: its pad each side, a square per part, and the battery's percentage
     /// where it has a reading.
     #[must_use]
     pub fn width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let slots = self.slots_shown();
+        let parts = self.parts_shown();
         let mut w = 2.0 * Self::pad(theme)
-            + f64::from(u32::try_from(slots).unwrap_or(u32::MAX)) * self.slot(theme)
-            + (0..slots)
+            + f64::from(u32::try_from(parts).unwrap_or(u32::MAX)) * self.part(theme)
+            + (0..parts)
                 .map(|index| self.bell_shoulder(index, text, theme))
                 .sum::<f64>();
         if let Some(percent) = self.battery {
@@ -255,7 +255,7 @@ impl<'a> StatusClusterFace<'a> {
             let (label_w, _) = text.measure_style(&label, None, &Self::percentage_style(theme));
             w += f64::from(theme.tokens.spacing.rhythm.tight) + f64::from(label_w);
         }
-        w.ceil().max(self.slot(theme))
+        w.ceil().max(self.part(theme))
     }
 
     /// Whether the whole control should wear the danger wash: the battery is
@@ -266,7 +266,7 @@ impl<'a> StatusClusterFace<'a> {
             .is_some_and(|percent| percent <= StatusCluster::CRITICAL)
     }
 
-    /// Where the cluster at `rect` stands its slots and the bell's count, as
+    /// Where the cluster at `rect` stands its parts and the bell's count, as
     /// [`Self::paint`] paints them: what a host places its targets by
     /// before anything is painted.
     #[must_use]
@@ -283,14 +283,14 @@ impl<'a> StatusClusterFace<'a> {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return StatusClusterLayout::default();
         }
-        let slot = self.slot(theme);
+        let part = self.part(theme);
         let glyph = Self::glyph(theme);
         let cy = rect.center().y;
         let mut x = rect.x0 + Self::pad(theme);
-        for (index, status) in self.slots.iter().take(MAX_SLOTS).enumerate() {
-            let cell = Rect::new(x, cy - slot / 2.0, x + slot, cy + slot / 2.0);
-            layout.slots[index] = cell;
-            if let StatusSlot::Bell { unread, .. } = *status
+        for (index, status) in self.parts.iter().take(MAX_PARTS).enumerate() {
+            let cell = Rect::new(x, cy - part / 2.0, x + part, cy + part / 2.0);
+            layout.parts[index] = cell;
+            if let StatusPart::Bell { unread, .. } = *status
                 && unread > 0
             {
                 let square = Rect::from_center_size(cell.center(), (glyph, glyph));
@@ -307,7 +307,7 @@ impl<'a> StatusClusterFace<'a> {
                 layout.badge =
                     Rect::from_center_size(Point::new(centre_x, centre_y), (width, height));
             }
-            x += slot + self.bell_shoulder(index, text, theme);
+            x += part + self.bell_shoulder(index, text, theme);
         }
         layout
     }
@@ -354,11 +354,11 @@ impl<'a> StatusClusterFace<'a> {
         let glyph = Self::glyph(theme);
         let cy = rect.center().y;
         let placed = self.layout(ctx.text, theme, rect);
-        for (index, status) in self.slots.iter().take(MAX_SLOTS).enumerate() {
-            let cell = placed.slots[index];
+        for (index, status) in self.parts.iter().take(MAX_PARTS).enumerate() {
+            let cell = placed.parts[index];
             let square = Rect::from_center_size(cell.center(), (glyph, glyph));
             match *status {
-                StatusSlot::Bell { unread, quiet } => {
+                StatusPart::Bell { unread, quiet } => {
                     let ink = if unread == 0 && !quiet { dim } else { bright };
                     let icon = if quiet { Icon::BellOff } else { Icon::Bell };
                     icon.draw_with_stroke(
@@ -401,7 +401,7 @@ impl<'a> StatusClusterFace<'a> {
                         );
                     }
                 }
-                StatusSlot::Volume { silent } => {
+                StatusPart::Volume { silent } => {
                     let icon = if silent { Icon::VolumeX } else { Icon::Volume2 };
                     let ink = if silent { bright } else { dim };
                     icon.draw_with_stroke(
@@ -412,10 +412,10 @@ impl<'a> StatusClusterFace<'a> {
                         LUCIDE_DEFAULT_STROKE_PX,
                     );
                 }
-                StatusSlot::Link { kind, bars } => {
+                StatusPart::Link { kind, bars } => {
                     self.paint_link(ctx, square, kind, bars, (dim, low));
                 }
-                StatusSlot::Battery { percent, charging } => {
+                StatusPart::Battery { percent, charging } => {
                     let percent = self.battery.unwrap_or(percent);
                     paint_battery_gauge(
                         ctx.scene,
@@ -450,7 +450,7 @@ impl<'a> StatusClusterFace<'a> {
                     );
                     let _ = label_w;
                 }
-                StatusSlot::Glyph(icon) => {
+                StatusPart::Glyph(icon) => {
                     icon.draw_with_stroke(
                         ctx.scene,
                         ctx.transform,
@@ -676,15 +676,15 @@ mod tests {
     use super::*;
     use vello::kurbo::Affine;
 
-    const BELL: StatusSlot = StatusSlot::Bell {
+    const BELL: StatusPart = StatusPart::Bell {
         unread: 3,
         quiet: false,
     };
 
-    fn paint(slots: &[StatusSlot], status: StatusCluster) -> (StatusClusterLayout, usize) {
+    fn paint(parts: &[StatusPart], status: StatusCluster) -> (StatusClusterLayout, usize) {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let face = StatusClusterFace::new(slots, status);
+        let face = StatusClusterFace::new(parts, status);
         let width = face.width(&mut text, &theme);
         let rect = Rect::new(0.0, 0.0, width, StatusClusterFace::height(&theme));
         let mut scene = vello::Scene::new();
@@ -696,9 +696,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_status_cluster_draws_its_slots_glyphs_and_counts;
+        fn a_status_cluster_draws_its_parts_glyphs_and_counts;
 
-        phase a_cluster_is_as_wide_as_its_slots_and_grows_for_the_percentage;
+        phase a_cluster_is_as_wide_as_its_parts_and_grows_for_the_percentage;
         {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
@@ -706,7 +706,7 @@ mod tests {
             let bell_and_battery = StatusClusterFace::new(
                 &[
                     BELL,
-                    StatusSlot::Battery {
+                    StatusPart::Battery {
                         percent: 82,
                         charging: true,
                     },
@@ -721,15 +721,15 @@ mod tests {
 
         phase the_critical_battery_wears_the_danger_wash_on_the_whole_control;
         {
-            let slots = [StatusSlot::Battery {
+            let parts = [StatusPart::Battery {
                 percent: 3,
                 charging: false,
             }];
             assert!(
-                StatusClusterFace::new(&slots, StatusCluster::new().battery(3, false)).is_critical()
+                StatusClusterFace::new(&parts, StatusCluster::new().battery(3, false)).is_critical()
             );
             assert!(
-                !StatusClusterFace::new(&slots, StatusCluster::new().battery(40, false)).is_critical()
+                !StatusClusterFace::new(&parts, StatusCluster::new().battery(40, false)).is_critical()
             );
         }
 
@@ -739,14 +739,14 @@ mod tests {
             assert_eq!(badge_label(120), "9+");
         }
 
-        // The link slot draws what kind of connection the machine has: a cable's
+        // The link part draws what kind of connection the machine has: a cable's
         // port, Wi-Fi's arcs, or the crossed-out arcs when nothing is connected.
-        phase the_link_slot_draws_the_glyph_of_its_kind;
+        phase the_link_part_draws_the_glyph_of_its_kind;
         {
             assert_eq!(LinkKind::Wired.icon(), Icon::EthernetPort);
             assert_eq!(LinkKind::Wifi.icon(), Icon::Wifi);
             assert_eq!(LinkKind::Offline.icon(), Icon::WifiOff);
-            let of = |kind, bars| paths(&[StatusSlot::Link { kind, bars }]);
+            let of = |kind, bars| paths(&[StatusPart::Link { kind, bars }]);
             let (wired, wifi, offline) = (
                 of(LinkKind::Wired, 0),
                 of(LinkKind::Wifi, 4),
@@ -782,16 +782,16 @@ mod tests {
         {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
-            let mut width = |slots: &[StatusSlot]| {
-                StatusClusterFace::new(slots, StatusCluster::new()).width(&mut text, &theme)
+            let mut width = |parts: &[StatusPart]| {
+                StatusClusterFace::new(parts, StatusCluster::new()).width(&mut text, &theme)
             };
-            let resting = width(&[StatusSlot::Bell {
+            let resting = width(&[StatusPart::Bell {
                 unread: 0,
                 quiet: false,
             }]);
             for unread in [1, 9, 42, 120] {
                 assert_eq!(
-                    width(&[StatusSlot::Bell {
+                    width(&[StatusPart::Bell {
                         unread,
                         quiet: false
                     }]),
@@ -799,14 +799,14 @@ mod tests {
                     "{unread} unread"
                 );
             }
-            let glyph = width(&[StatusSlot::Glyph(Icon::Bell)]);
+            let glyph = width(&[StatusPart::Glyph(Icon::Bell)]);
             assert_eq!(resting, glyph, "the bell is as wide as any one glyph");
             let (layout, _) = paint(&[BELL], StatusCluster::new());
             assert!(
-                layout.badge.overlaps(layout.slots[0]),
+                layout.badge.overlaps(layout.parts[0]),
                 "the count sits on the bell: {:?} on {:?}",
                 layout.badge,
-                layout.slots[0]
+                layout.parts[0]
             );
         }
 
@@ -816,14 +816,14 @@ mod tests {
         {
             let theme = Theme::dark();
             let glyph = StatusClusterFace::glyph(&theme);
-            let volume = StatusSlot::Glyph(Icon::Volume2);
+            let volume = StatusPart::Glyph(Icon::Volume2);
             for unread in [1, 9, 120] {
-                let bell = StatusSlot::Bell {
+                let bell = StatusPart::Bell {
                     unread,
                     quiet: false,
                 };
                 let (layout, _) = paint(&[bell, volume], StatusCluster::new());
-                let next = Rect::from_center_size(layout.slots[1].center(), (glyph, glyph));
+                let next = Rect::from_center_size(layout.parts[1].center(), (glyph, glyph));
                 assert!(
                     layout.badge.x1 < next.x0,
                     "{unread} unread: the count {:?} reaches the volume {next:?}",
@@ -832,7 +832,7 @@ mod tests {
             }
             let (quiet, _) = paint(
                 &[
-                    StatusSlot::Bell {
+                    StatusPart::Bell {
                         unread: 0,
                         quiet: false,
                     },
@@ -841,7 +841,7 @@ mod tests {
                 StatusCluster::new(),
             );
             let (busy, _) = paint(&[BELL, volume], StatusCluster::new());
-            assert_eq!(quiet.slots[1], busy.slots[1], "news arriving moves nothing");
+            assert_eq!(quiet.parts[1], busy.parts[1], "news arriving moves nothing");
         }
 
         // The bell is drawn at the glyph size, and in the stroke, of every other bar control, so
@@ -862,7 +862,7 @@ mod tests {
             let theme = Theme::dark();
             let (layout, _) = paint(&[BELL], StatusCluster::new());
             let glyph = StatusClusterFace::glyph(&theme);
-            let bell = Rect::from_center_size(layout.slots[0].center(), (glyph, glyph));
+            let bell = Rect::from_center_size(layout.parts[0].center(), (glyph, glyph));
             let covered = layout.badge.intersect(bell);
             let share = covered.area() / bell.area();
             assert!(
@@ -885,7 +885,7 @@ mod tests {
             let (layout, _) = paint(&[BELL], StatusCluster::new());
             assert!(layout.badge.width() > 0.0, "the count sits on the bell");
             let (quiet, _) = paint(
-                &[StatusSlot::Bell {
+                &[StatusPart::Bell {
                     unread: 0,
                     quiet: true,
                 }],
@@ -895,10 +895,10 @@ mod tests {
         }
     }
 
-    fn paths(slots: &[StatusSlot]) -> vello::Scene {
+    fn paths(parts: &[StatusPart]) -> vello::Scene {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let face = StatusClusterFace::new(slots, StatusCluster::new());
+        let face = StatusClusterFace::new(parts, StatusCluster::new());
         let width = face.width(&mut text, &theme);
         let rect = Rect::new(0.0, 0.0, width, StatusClusterFace::height(&theme));
         let mut scene = vello::Scene::new();

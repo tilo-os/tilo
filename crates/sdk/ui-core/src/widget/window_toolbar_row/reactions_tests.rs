@@ -37,31 +37,31 @@ fn row_of(toolbar: &WindowToolbar, width: f64, compact: bool) -> ToolbarRow {
 tilo_test_env::scenario! {
     fn the_windows_reactions_stand_in_the_row_and_react;
 
-    phase the_reactions_stand_at_the_rows_end_after_the_apps_slots;
+    phase the_reactions_stand_at_the_rows_end_after_the_apps_parts;
     {
         let toolbar = reacted(vec![pill("👍", 2, true), pill("🎉", 1, false)], true);
         let row = row_of(&toolbar, 900.0, false);
-        let slots = row.slots();
-        assert_eq!(slots.reactions.len(), 2, "both pills stand");
-        assert!(slots.reaction_add.area() > 0.0, "the add button stands");
+        let parts = row.parts();
+        assert_eq!(parts.reactions.len(), 2, "both pills stand");
+        assert!(parts.reaction_add.area() > 0.0, "the add button stands");
         assert!(
-            (slots.reaction_add.x1 - 940.0).abs() < 0.5,
+            (parts.reaction_add.x1 - 940.0).abs() < 0.5,
             "the add button ends the row"
         );
-        assert!(slots.reactions[0].x1 <= slots.reactions[1].x0);
-        assert!(slots.reactions[1].x1 <= slots.reaction_add.x0);
-        let last_app = slots
+        assert!(parts.reactions[0].x1 <= parts.reactions[1].x0);
+        assert!(parts.reactions[1].x1 <= parts.reaction_add.x0);
+        let last_app = parts
             .actions
             .last()
             .copied()
             .expect("the reload action stands");
         assert!(
-            last_app.x1 + SECTION_GAP <= slots.reactions[0].x0 + 0.5,
+            last_app.x1 + SECTION_GAP <= parts.reactions[0].x0 + 0.5,
             "the app's actions stand clear before them: {last_app:?} {:?}",
-            slots.reactions[0]
+            parts.reactions[0]
         );
-        assert!(slots.location.width() > 0.0, "the location stays");
-        for rect in slots.reactions.iter().chain([&slots.reaction_add]) {
+        assert!(parts.location.width() > 0.0, "the location stays");
+        for rect in parts.reactions.iter().chain([&parts.reaction_add]) {
             assert!(
                 (rect.center().y - 20.0).abs() < 0.5,
                 "on the row's centre line"
@@ -69,8 +69,8 @@ tilo_test_env::scenario! {
         }
 
         let quiet = row_of(&browser(), 900.0, false);
-        assert!(quiet.slots().reactions.is_empty());
-        assert_eq!(quiet.slots().reaction_add, Rect::ZERO);
+        assert!(quiet.parts().reactions.is_empty());
+        assert_eq!(quiet.parts().reaction_add, Rect::ZERO);
     }
 
     phase the_reactions_give_way_to_the_app_and_a_compact_window_shows_one;
@@ -84,33 +84,33 @@ tilo_test_env::scenario! {
             .collect();
         let toolbar = reacted(many, true);
         let row = row_of(&toolbar, 600.0, false);
-        let slots = row.slots();
-        let start = slots
+        let parts = row.parts();
+        let start = parts
             .reactions
             .first()
-            .map_or(slots.reaction_add.x0, |r| r.x0);
+            .map_or(parts.reaction_add.x0, |r| r.x0);
         assert!(
-            slots.reaction_add.x1 - start <= 600.0 / 3.0 + 0.5,
+            parts.reaction_add.x1 - start <= 600.0 / 3.0 + 0.5,
             "a third of the row at most"
         );
-        assert!(slots.reactions.len() < 10, "the last pills gave way");
-        assert!(slots.reaction_add.area() > 0.0, "the add button stays");
+        assert!(parts.reactions.len() < 10, "the last pills gave way");
+        assert!(parts.reaction_add.area() > 0.0, "the add button stays");
 
         let compact = row_of(&toolbar, 600.0, true);
-        assert!(compact.slots().reactions.len() <= 1);
-        assert!(compact.slots().reaction_add.area() > 0.0);
+        assert!(compact.parts().reactions.len() <= 1);
+        assert!(compact.parts().reaction_add.area() > 0.0);
 
         // Someone who may not react keeps the first pill, however narrow.
         let viewer = row_of(&reacted(vec![pill("👍", 2, false)], false), 200.0, true);
-        assert_eq!(viewer.slots().reactions.len(), 1);
-        assert_eq!(viewer.slots().reaction_add, Rect::ZERO);
+        assert_eq!(viewer.parts().reactions.len(), 1);
+        assert_eq!(viewer.parts().reaction_add, Rect::ZERO);
     }
 
     phase a_pill_reacts_through_the_window_and_the_add_button_opens_the_picker;
     {
         let toolbar = reacted(vec![pill("👍", 2, true), pill("🎉", 1, false)], true);
         let mut row = row_of(&toolbar, 900.0, false);
-        let party = row.slots().reactions[1].center();
+        let party = row.parts().reactions[1].center();
         assert!(row.press(party));
         assert!(row.release(party));
         assert_eq!(
@@ -122,9 +122,9 @@ tilo_test_env::scenario! {
                 }
             )]
         );
-        assert!(!row.pressing_app_slot());
+        assert!(!row.pressing_app_part());
 
-        let add = row.slots().reaction_add.center();
+        let add = row.parts().reaction_add.center();
         assert!(row.press(add));
         assert!(row.release(add));
         assert!(row.popup_open(), "the emoji picker opens");
@@ -146,7 +146,7 @@ tilo_test_env::scenario! {
 
         let viewer_toolbar = reacted(vec![pill("👍", 2, false)], false);
         let mut viewer = row_of(&viewer_toolbar, 900.0, false);
-        let thumbs = viewer.slots().reactions[0].center();
+        let thumbs = viewer.parts().reactions[0].center();
         viewer.press(thumbs);
         viewer.release(thumbs);
         assert!(

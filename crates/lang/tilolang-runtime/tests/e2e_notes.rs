@@ -121,13 +121,13 @@ mod cases {
             .unwrap_or_else(|| panic!("no tree in\n{}", dump(view.tree())))
     }
 
-    /// What the slot `name` of the window's shell holds: a pane of it.
-    fn slot<'a>(shell: &'a UiNode, name: &str) -> &'a UiNode {
+    /// What the part `name` of the window's shell holds: a pane of it.
+    fn part<'a>(shell: &'a UiNode, name: &str) -> &'a UiNode {
         shell
             .children
             .iter()
             .find(|child| {
-                child.kind == "slot" && child.props.get("name") == Some(&Value::text(name))
+                child.kind == "part" && child.props.get("name") == Some(&Value::text(name))
             })
             .unwrap_or_else(|| panic!("no {name} in\n{}", dump(shell)))
     }
@@ -278,8 +278,8 @@ mod cases {
         assert_eq!(text_prop(shell, "sidebar_title"), "Notes");
         // The notes stand in the sidebar and the note the window shows in the content beside
         // them: the two panes a wide window docks side by side.
-        let sidebar = slot(shell, "sidebar");
-        let content = slot(shell, "content");
+        let sidebar = part(shell, "sidebar");
+        let content = part(shell, "content");
         assert_eq!(
             labels(&view),
             ["Q3 plan"],
@@ -306,7 +306,7 @@ mod cases {
         );
         // The window's "+": the primary action that makes a note, in the window's bar, where a
         // narrow window's page keeps it too rather than in the sidebar's header.
-        let head = of_kind(slot(shell, "actions"), "ui.Button")
+        let head = of_kind(part(shell, "actions"), "ui.Button")
             .into_iter()
             .find(|button| text_prop(button, "label") == "New note")
             .unwrap_or_else(|| panic!("no New note button in\n{}", dump(view.tree())));

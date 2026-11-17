@@ -115,7 +115,7 @@ pub(super) struct FloatingRuntime {
     pub window_resource_sent: Told<Option<tilo_actions::ActionResource>>,
     /// Outside a Tilo session, "close this tab" closes this window.
     pub close_window_requested: bool,
-    /// The [`crate::window_toolbar::revision`] of the slots last sent to
+    /// The [`crate::window_toolbar::revision`] of the parts last sent to
     /// the shell on this connection.
     pub toolbar_sent: Option<u64>,
     /// The controls of the window's content last told the shell on this
@@ -515,8 +515,8 @@ impl App {
             changed = true;
         }
         // No shell bar: the runner's own row is the window's bar, hosting
-        // the app's slots and serving its search and location requests
-        // (`native_runner::slot_bar`).
+        // the app's parts and serving its search and location requests
+        // (`native_runner::part_bar`).
         // No shell agent to ask: offer no entry, and drop what was asked
         // while the connection went away.
         if crate::shared_selection::send_host_available() {
@@ -735,7 +735,7 @@ impl App {
             client.send(&tab_request_message(request, instance))?;
             *changed = true;
         }
-        // The window's bar shows the app's slots while the shell hears it.
+        // The window's bar shows the app's parts while the shell hears it.
         if crate::window_toolbar::set_hosted(true) {
             *changed = true;
         }
@@ -1337,7 +1337,7 @@ impl App {
             self.layout.layout_dirty = true;
             self.layout.request_rebuild();
         }
-        // The bar that showed the app's slots is gone with the shell; a new
+        // The bar that showed the app's parts is gone with the shell; a new
         // connection is told them afresh.
         crate::window_toolbar::set_hosted(false);
         self.floating.toolbar_sent = None;

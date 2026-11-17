@@ -332,7 +332,7 @@ fn collect_anchors(view: &str, stmts: &[crate::ast::UiStmt], out: &mut Vec<Strin
                     collect_anchors(view, b, out);
                 }
             }
-            UiKind::For { body, .. } | UiKind::Slot { body, .. } => {
+            UiKind::For { body, .. } | UiKind::Part { body, .. } => {
                 collect_anchors(view, body, out);
             }
             UiKind::If { then, els, .. } | UiKind::IfLet { then, els, .. } => {

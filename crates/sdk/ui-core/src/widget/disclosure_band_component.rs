@@ -1,9 +1,9 @@
 //! [`DisclosureBand`] as a described component.
 
-use crate::component::{Component, Described, SlotViews};
+use crate::component::{Component, Described, PartViews};
 use crate::tokens::Rhythm;
 use crate::widget::Element;
-use crate::widget::arrange::{Arranged, FlexLayout, Slot, Stack};
+use crate::widget::arrange::{Arranged, FlexLayout, Part, Stack};
 
 use super::DisclosureBand;
 
@@ -12,15 +12,15 @@ use super::DisclosureBand;
 #[component(name = "DisclosureBand", role = "Group")]
 pub struct DisclosureBandProps {
     /// What it shows, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub content: Vec<Element>,
 }
 
 impl Described for DisclosureBand {
     type Props = DisclosureBandProps;
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        if slot != "content" {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        if part != "content" {
             return None;
         }
         let column = self
@@ -36,7 +36,7 @@ impl Described for DisclosureBand {
                 .fill_width()
                 .gap(Rhythm::Related)
                 .with_id(format!("{key}.content")),
-            |column, view| column.push_slot(Slot::new(view)),
+            |column, view| column.push_part(Part::new(view)),
         );
         Self::new(key, Box::new(column))
     }

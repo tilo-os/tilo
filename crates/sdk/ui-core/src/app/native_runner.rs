@@ -11,9 +11,9 @@ mod ime;
 mod input_backlog;
 #[cfg(target_os = "linux")]
 mod linux_header;
+mod part_bar;
 mod private_text_input;
 mod process_windows;
-mod slot_bar;
 #[cfg(any(windows, target_os = "linux"))]
 pub(super) mod startup;
 
@@ -176,8 +176,8 @@ struct AppHandler {
     /// Who decorates the window, and the header bar when the app does.
     #[cfg(target_os = "linux")]
     decorations: linux_header::Decorations,
-    /// The app's window-bar slots, drawn here while nothing hosts them.
-    slot_bar: slot_bar::SlotBar,
+    /// The app's window-bar parts, drawn here while nothing hosts them.
+    part_bar: part_bar::PartBar,
     /// The host OS's appearance, for a standalone app outside Tilo OS.
     host_appearance: Option<crate::host_appearance::Source>,
     /// Settings.json changed while this process was idle. The next
@@ -2466,10 +2466,10 @@ impl AppHandler {
             }
         }
         sync_safe_area(&mut self.app, window);
-        // The app's own row of slots, then the frame around it: where the row
+        // The app's own row of parts, then the frame around it: where the row
         // is the window's bar, the header draws no second one. Only the Linux
         // header asks: elsewhere the host draws the frame.
-        let _shown = self.slot_bar.refresh(&mut self.app, window);
+        let _shown = self.part_bar.refresh(&mut self.app, window);
         // What the window shows names it: the shell reads the title, so its tab, the switcher
         // and assistive technology say the page or record the window is at.
         self.app.refresh_window_title(window);
@@ -2748,7 +2748,7 @@ impl AppHandler {
         };
         // An empty state waiting for its workspace's first sync turns a spinner
         // no widget's damage covers (`crate::workspace_sync`): a new pose damages
-        // its slot, in scene pixels.
+        // its place, in scene pixels.
         let spinner_damage = crate::workspace_sync::take_spinner_damage();
         let (transform, window_rect, t_draw_us) =
             (drawn.transform, drawn.window_rect, drawn.draw_us);
@@ -2765,8 +2765,8 @@ impl AppHandler {
             full_redraw_required |=
                 repaint_why.note("decorations", self.decorations.take_repaint());
         }
-        self.slot_bar.draw(app, over, transform);
-        full_redraw_required |= repaint_why.note("slot-bar", self.slot_bar.take_repaint());
+        self.part_bar.draw(app, over, transform);
+        full_redraw_required |= repaint_why.note("part-bar", self.part_bar.take_repaint());
         let decorated = over.encoding().draw_tags.len() != before_decorations;
         // Culled, the floating surfaces drawn into the frame's scenes reach
         // its scene once they are composed into it.
@@ -2818,7 +2818,7 @@ impl AppHandler {
                         "frame_commit_us": self.native_input_origin.map(|origin| origin.elapsed().as_micros()),
                         // Capture after drawing: layout may clamp scroll state.
                         // Input-time effects alone cannot prove the frame used it.
-                        "state": self.slot_bar.with_search_evidence(app.native_input_snapshot()),
+                        "state": self.part_bar.with_search_evidence(app.native_input_snapshot()),
                     }),
                 );
             }
@@ -3007,8 +3007,8 @@ impl AppHandler {
                 let _a11y = slow_event::phase("a11y");
                 let app_ref: &mut App = app;
                 let scale = window_scale;
-                let bar = &self.slot_bar;
-                adapter.update_if_active(|| slot_bar::window_tree_update(app_ref, bar, scale));
+                let bar = &self.part_bar;
+                adapter.update_if_active(|| part_bar::window_tree_update(app_ref, bar, scale));
             }
             record_main_stage(&mut native_main_stages, MainStage::AfterAccessibility);
         });
@@ -3065,7 +3065,7 @@ impl AppHandler {
                 && trace.has_pending()
                 && let Some(row) = trace.drawn(
                     cpu_frame_id,
-                    self.slot_bar
+                    self.part_bar
                         .with_search_evidence(app.native_input_snapshot()),
                 )
             {
@@ -3299,9 +3299,9 @@ impl AppHandler {
         let _ = super::write_dev_checkpoint(&self.app, &session);
         let checkpoint = std::fs::read(session.join("checkpoint.bin")).unwrap_or_default();
         let checkpointed = started.elapsed();
-        let slots = windows
+        let dev_windows = windows
             .iter()
-            .map(|(id, _)| super::DevWindowSlot {
+            .map(|(id, _)| super::DevWindowEntry {
                 id: id.clone(),
                 state: self
                     .dev_window_state
@@ -3311,7 +3311,7 @@ impl AppHandler {
             })
             .collect::<Vec<_>>();
         let loading = crate::time::now();
-        let reloaded = match super::reload_from_library(&library, &slots) {
+        let reloaded = match super::reload_from_library(&library, &dev_windows) {
             Ok(reloaded) => reloaded,
             Err(error) => {
                 eprintln!("tilo: reload rejected; keeping the last good app\n{error}");
@@ -3345,7 +3345,7 @@ impl AppHandler {
             .collect();
         super::reload_dev_locale_catalogs_from(std::path::Path::new("locales"));
         self.app.needs_sync = true;
-        let count = windows.len();
+        let count = dev_windows.len();
         for (_, window) in &windows {
             window.request_redraw();
         }
@@ -3412,7 +3412,7 @@ impl AppHandler {
                 .is_some_and(|window| window.id() == window_id)
         {
             let state = self.physical_input_trace.as_ref().and_then(|_| {
-                self.slot_bar
+                self.part_bar
                     .with_search_evidence(self.app.native_input_snapshot())
             });
             self.physical_input_trace
@@ -3432,7 +3432,7 @@ impl AppHandler {
         if let Some(input) = physical_input {
             let mut row = crate::physical_input_trace::Trace::effect(
                 input,
-                self.slot_bar
+                self.part_bar
                     .with_search_evidence(self.app.native_input_snapshot()),
             );
             let modifiers = self.app.input.modifiers.state();
@@ -3566,7 +3566,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }),
                 );
                 let before = self
-                    .slot_bar
+                    .part_bar
                     .with_search_evidence(self.app.native_input_snapshot());
                 self.native_input_ids.push(packet.id);
                 // Pen steps carry their samples ahead of each pointer event,
@@ -3578,7 +3578,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     crate::native_scenario::log::emit_json(
                         "tilo-native-effect",
                         serde_json::json!({
-                            "id": packet.id, "before": before, "after": self.slot_bar.with_search_evidence(self.app.native_input_snapshot()),
+                            "id": packet.id, "before": before, "after": self.part_bar.with_search_evidence(self.app.native_input_snapshot()),
                         }),
                     );
                 }
@@ -3671,9 +3671,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         if let Some(adapter) = self.a11y_adapter.as_mut() {
                             let scale = window.scale_factor();
                             let app_ref: &mut App = &mut self.app;
-                            let bar = &self.slot_bar;
+                            let bar = &self.part_bar;
                             adapter.update_if_active(|| {
-                                slot_bar::window_tree_update(app_ref, bar, scale)
+                                part_bar::window_tree_update(app_ref, bar, scale)
                             });
                         }
                         window.request_redraw();
@@ -3687,14 +3687,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             req.action,
                             req.data.as_ref(),
                         ) {
-                            // The window's row of slots is no widget of the
-                            // app's: its nodes run their slots.
-                            let slot_ran = self.slot_bar.perform_accessibility(
+                            // The window's row of parts is no widget of the
+                            // app's: its nodes run their parts.
+                            let part_ran = self.part_bar.perform_accessibility(
                                 &mut self.app,
                                 req.target_node,
                                 &action,
                             );
-                            let click = if slot_ran {
+                            let click = if part_ran {
                                 None
                             } else {
                                 self.app.dispatch_a11y_action(req.target_node, &action)
@@ -4378,7 +4378,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
         // A turning waiting spinner (`crate::workspace_sync`) takes its next pose:
-        // a frame paints it and damages its slot alone, with no sync, no
+        // a frame paints it and damages its part alone, with no sync, no
         // layout and no frames between poses.
         let spinner_pose = crate::workspace_sync::next_pose();
         let spinner_due = spinner_pose.is_some_and(|at| at <= crate::time::now());
@@ -4411,7 +4411,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // its own overlay pass) asks through the motion clock.
         let widget_animation = app.root_widget.needs_animation_frame()
             || app.window_box.needs_animation_frame()
-            || self.slot_bar.needs_frame()
+            || self.part_bar.needs_frame()
             || crate::motion::frames_wanted(crate::time::now());
         let needs_frame = widget_animation
             || app
@@ -4522,8 +4522,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         .into_iter()
                         .map(|wish| format!("motion:{wish}")),
                 );
-                if self.slot_bar.needs_frame() {
-                    askers.push("slot-bar".to_owned());
+                if self.part_bar.needs_frame() {
+                    askers.push("part-bar".to_owned());
                 }
             }
             if needs_frame && !widget_animation {
@@ -4879,12 +4879,12 @@ impl AppHandler {
                 return;
             }
         }
-        let slots_took = self.slot_bar.route(&mut self.app, window, &event);
-        if self.slot_bar.take_close() {
+        let parts_took = self.part_bar.route(&mut self.app, window, &event);
+        if self.part_bar.take_close() {
             self.close_primary_window(window);
             return;
         }
-        if slots_took {
+        if parts_took {
             return;
         }
         if self.dispatch_touch_pointer_events(window, &event) {
@@ -5300,7 +5300,7 @@ impl App {
             host_commands_key: None,
             #[cfg(target_os = "linux")]
             decorations: linux_header::Decorations::Unsettled,
-            slot_bar: slot_bar::SlotBar::new(),
+            part_bar: part_bar::PartBar::new(),
             host_appearance,
             settings_store_changed,
             _settings_watch: settings_watch,

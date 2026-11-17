@@ -2168,7 +2168,7 @@ mod tests {
     }
 
     fn press(harness: &mut FrameHarness, id: &str) {
-        harness.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+        harness.press_window_part(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
     }
 
     fn press_named(harness: &mut FrameHarness, name: &str) {

@@ -96,16 +96,16 @@ view bar() {
         for part in s.bar_parts {
             if part.shown
                 and (space.wide or not part_gives_way(part, roomy))
-                and not (part.slot == .people and nobody)
+                and not (part.kind == .people and nobody)
                 and (not frames_style() or canvas_keeps(part)) {
                 ui.DragItem(
                     part,
-                    title: part_name(part.slot),
-                    group: if part.slot == .clock {
+                    title: part_name(part.kind),
+                    group: if part.kind == .clock {
                         .center
-                    } else if part.slot == .people or part.slot == .status {
+                    } else if part.kind == .people or part.kind == .status {
                         .trailing
-                    } else if part.slot == .space { .space } else { .leading },
+                    } else if part.kind == .space { .space } else { .leading },
                 ) {
                     bar_part(part)
                 }
@@ -118,7 +118,7 @@ view bar() {
 /// time, the status cluster (which on the canvas is the notices and the person, `bar_part`), a
 /// question put to the person, and the space that spreads them.
 fn canvas_keeps(part: BarPart) -> Bool {
-    part.slot == .clock or part.slot == .status or part.slot == .people or part.slot == .space
+    part.kind == .clock or part.kind == .status or part.kind == .people or part.kind == .space
 }
 
 /// Whether a part of the bar gives way on a bar narrower than a wide one: the strip and the
@@ -129,10 +129,10 @@ fn canvas_keeps(part: BarPart) -> Bool {
 /// by its width, so a part that gives way leaves no room behind; the bar's parts must never press
 /// into each other (the overview shows what gave way).
 fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
-    if part.slot == .tasks or part.slot == .agent {
+    if part.kind == .tasks or part.kind == .agent {
         return true
     }
-    return not roomy and (part.slot == .strip or part.slot == .app_menu)
+    return not roomy and (part.kind == .strip or part.kind == .app_menu)
 }
 
 /// Whether the bar is too narrow to hold its parts at their roomiest: a phone, or a short window
@@ -153,11 +153,11 @@ fn bar_is_narrow(width: Float) -> Bool {
 /// way: what a glance needs — the clock, the workspace, the connection, the charge, the
 /// notifications and the person's own face — keeps its room.
 view bar_part(part: BarPart) {
-    if part.slot == .space {
+    if part.kind == .space {
         spacer
-    } else if part.slot == .clock {
+    } else if part.kind == .clock {
         clock()
-    } else if part.slot == .menu {
+    } else if part.kind == .menu {
         row(gap: .related, align: .center) {
             ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
                 on press: session.overview()
@@ -172,15 +172,15 @@ view bar_part(part: BarPart) {
                 style_menu(viewing)
             }
         }
-    } else if part.slot == .workspace {
+    } else if part.kind == .workspace {
         workspace_menu()
-    } else if part.slot == .app_menu {
+    } else if part.kind == .app_menu {
         action_bar(layout, BarRoom.menus)
-    } else if part.slot == .strip {
+    } else if part.kind == .strip {
         if front_strip_name() != "" {
             ui.Button(front_strip_name(), icon: .chevron_right, role: .bar)
         }
-    } else if part.slot == .people {
+    } else if part.kind == .people {
         row(gap: .related, align: .center) {
             if not space.compact and not frames_style() {
                 people_button()
@@ -192,18 +192,18 @@ view bar_part(part: BarPart) {
                 }
             }
         }
-    } else if part.slot == .agent {
+    } else if part.kind == .agent {
         for a in device.agents.sessions {
             agent_chip(a)
         }
-    } else if part.slot == .status and frames_style() {
+    } else if part.kind == .status and frames_style() {
         // The canvas's bar: the notices and the person, whose menu holds the style and the
         // workspaces the canvas does not keep on its bar.
         row(gap: .related, align: .center) {
             bell()
             person_menu()
         }
-    } else if part.slot == .status {
+    } else if part.kind == .status {
         // One cluster, so its controls stand a cluster gap apart and never the tightest: a bar
         // control's press target is wider than its face (a finger's, and a mouse's), and two of
         // them at the tightest gap would share the press between them. What the device does not

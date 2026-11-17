@@ -350,7 +350,7 @@ fn a_confirmation_passes_over_the_windows_without_a_notification() {
 /// reaches it and closes it, and search opening over the shell takes it down.
 #[test]
 fn the_about_sheet_holds_the_keys_and_goes_on_escape_or_search() {
-    use crate::overlays::{Slot, Target};
+    use crate::overlays::{Part, Target};
     en();
     let (chrome, _handle) = chrome_over_a_shell();
     let overlays = chrome.overlays().clone();
@@ -370,7 +370,7 @@ fn the_about_sheet_holds_the_keys_and_goes_on_escape_or_search() {
 
     open(&mut harness);
     harness.poll_frame().unwrap();
-    assert_eq!(overlays.target(), Target::Surface(Slot::About));
+    assert_eq!(overlays.target(), Target::Surface(Part::About));
     harness.key("Escape");
     harness.poll_frame().unwrap();
     assert!(!harness.root::<DesktopChrome>().about.is_about_open());
@@ -381,10 +381,10 @@ fn the_about_sheet_holds_the_keys_and_goes_on_escape_or_search() {
     );
 
     open(&mut harness);
-    overlays.open(Slot::Search, None);
+    overlays.open(Part::Search, None);
     harness.root_mut::<DesktopChrome>().publish_overlays();
     assert!(!harness.root::<DesktopChrome>().about.is_about_open());
-    assert!(!overlays.is_open(Slot::About));
+    assert!(!overlays.is_open(Part::About));
 }
 
 /// A computer's sheet leads to its Settings pages: the one pressed opens and the sheet goes.

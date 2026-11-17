@@ -1333,7 +1333,7 @@ impl Printer<'_> {
                 let v = self.ex_at(value, col + l.len() + 2);
                 self.line(&format!("{l}: {v}"));
             }
-            UiKind::Slot { name, body, .. } => {
+            UiKind::Part { name, body, .. } => {
                 self.line(&format!("{}: {{", name.name));
                 self.level += 1;
                 for st in body {

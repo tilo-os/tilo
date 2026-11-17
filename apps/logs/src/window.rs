@@ -1270,7 +1270,7 @@ mod tests {
         assert_eq!(live_tail(), Some(true));
         app.harness().present_in_window_bar();
         app.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
                 id: "logs.live-tail".into(),
             });
         app.settle();

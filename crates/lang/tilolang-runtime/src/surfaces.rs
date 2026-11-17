@@ -37,12 +37,12 @@ const SHELL: &str = "ui.NavShell";
 const MENU_BUTTON: &str = "ui.MenuButton";
 /// A place on a canvas, whose menu is its subject's actions as a menu button's is.
 const PLACE: &str = "ui.Place";
-/// The slot a menu's commands go in.
+/// The part a menu's commands go in.
 const ITEMS: &str = "items";
 /// The control that edits a title as a page's large title.
 const TEXT_INPUT: &str = "ui.TextInput";
-/// A slot of a component, named by its `name` property.
-const SLOT: &str = "slot";
+/// A part of a component, named by its `name` property.
+const PART: &str = "part";
 /// A line of content: its children side by side, the room a `fill`ing one leaves the others.
 const ROW: &str = "row";
 /// How far apart a row's parts stand, and where a part shorter than the line stands in it.
@@ -83,7 +83,7 @@ const MULTI_SELECT: &str = "multi_select";
 const CHOSEN: &str = "chosen";
 /// The event a multi-selecting list reports its choice with.
 const SELECTION_EVENT: &str = "selected";
-/// The window slot holding what the person chose of what the window shows. It is the window's
+/// The window part holding what the person chose of what the window shows. It is the window's
 /// own reading, kept for the person looking alone ([`StateKey::runtime`], set by the host), and
 /// what the bar acts on: a selection belongs to where the person is, not to the workspace.
 const SELECTION: &str = "ui:selection";
@@ -172,7 +172,7 @@ impl Core {
             .get("content_kind")
             .and_then(Value::as_text)
             .is_some_and(|kind| kind == "list");
-        let overview = self.slot(shell, OVERVIEW)?.is_some();
+        let overview = self.part(shell, OVERVIEW)?.is_some();
         // A choice of more than one item is the window's own while it holds: the bar offers
         // what the items offer, once over all of them, and nothing of the window's own subject
         // takes its place until the choice is put away.
@@ -191,7 +191,7 @@ impl Core {
         let entry = self.declare_entry_key(shell, &acted)?;
         if overview {
             if let Some(switch) = self.view_switch(&subject, shown)? {
-                self.put_at_in_slot(shell, OVERVIEW_ACTIONS, switch)?;
+                self.put_at_in_part(shell, OVERVIEW_ACTIONS, switch)?;
             }
             self.fill_bar(
                 shell,
@@ -206,7 +206,7 @@ impl Core {
             self.put_under_title(shell, &subject, &acted, switch, placed.as_deref())?;
         } else {
             if let Some(switch) = self.view_switch(&subject, shown)? {
-                self.put_at_in_slot(shell, ACTIONS, switch)?;
+                self.put_at_in_part(shell, ACTIONS, switch)?;
             }
             self.fill_bar(
                 shell,
@@ -245,7 +245,7 @@ impl Core {
         Ok(())
     }
 
-    /// The window slot the person's choice is kept in, as the runtime reads it: their window's,
+    /// The window part the person's choice is kept in, as the runtime reads it: their window's,
     /// their own.
     fn selection_key(&self) -> Result<StateKey, RuntimeError> {
         let (window, viewer) = self.window_here()?;
@@ -398,7 +398,7 @@ impl Core {
     fn header_actions(&self, shell: usize) -> Result<Vec<String>, RuntimeError> {
         let mut ids = Vec::new();
         for name in [SIDEBAR, SIDEBAR_ACTIONS, ACTIONS, OVERVIEW_ACTIONS] {
-            if let Some(head) = self.slot(shell, name)? {
+            if let Some(head) = self.part(shell, name)? {
                 self.applied_ids(head, &mut ids)?;
             }
         }
@@ -490,14 +490,14 @@ impl Core {
         }
         for (index, action) in menu.iter().enumerate() {
             let item = Self::menu_item(action, &format!("{key}~action-{index}"));
-            self.put_in_slot(at, MENU, item)?;
+            self.put_in_part(at, MENU, item)?;
         }
         let swipeable = if placed.is_some() {
             menu.get(..direct).unwrap_or_default()
         } else {
             &menu[..]
         };
-        if kind == LIST_ITEM && self.slot(at, SWIPE)?.is_none() {
+        if kind == LIST_ITEM && self.part(at, SWIPE)?.is_none() {
             let swipe = swipeable
                 .iter()
                 .filter(|action| flag(action, AVAILABLE))
@@ -505,7 +505,7 @@ impl Core {
                 .or_else(|| menu.iter().find(|action| flag(action, AVAILABLE)));
             if let Some(action) = swipe {
                 let node = Self::swipe_action(action, &format!("{key}~swipe"));
-                self.put_in_slot(at, SWIPE, node)?;
+                self.put_in_part(at, SWIPE, node)?;
             }
         }
         Ok(())
@@ -597,7 +597,7 @@ impl Core {
             let mut published = 0u64;
             for (index, action) in acted.enumerate() {
                 let item = Self::menu_item(&action, &format!("{key}~item-{index}"));
-                self.put_in_slot(at, ITEMS, item)?;
+                self.put_in_part(at, ITEMS, item)?;
                 published = published.saturating_add(1);
             }
             self.costs.publish(published);
@@ -744,7 +744,7 @@ impl Core {
     fn fill_bar(
         &self,
         shell: usize,
-        slot: &str,
+        part: &str,
         listed: bool,
         acted: &[Value],
         entry: Option<&str>,
@@ -765,27 +765,27 @@ impl Core {
                 actions.push(action);
             }
         }
-        if listed || slot == OVERVIEW_ACTIONS {
-            self.put_in_slot(
+        if listed || part == OVERVIEW_ACTIONS {
+            self.put_in_part(
                 shell,
-                slot,
-                empty("ui.SearchButton", &format!("{key}~{slot}~search")),
+                part,
+                empty("ui.SearchButton", &format!("{key}~{part}~search")),
             )?;
         }
         for (index, action) in by_place.into_iter().flatten().enumerate() {
             let primary = flag(&action, PRIMARY);
             let node = Self::action_button(
                 &action,
-                &format!("{key}~{slot}~action-{index}"),
+                &format!("{key}~{part}~action-{index}"),
                 entry,
                 true,
             );
             // The window's main action leads the actions of its bar: it stands where a person
             // looks first, and the app's own controls follow it.
             if primary {
-                self.put_in_slot_front(shell, slot, node)?;
+                self.put_in_part_front(shell, part, node)?;
             } else {
-                self.put_in_slot(shell, slot, node)?;
+                self.put_in_part(shell, part, node)?;
             }
         }
         // What the view left unplaced stands in the bar's own "…", beside what does not fit in
@@ -793,9 +793,9 @@ impl Core {
         // nothing to tell them apart.
         for (index, action) in rest.iter().enumerate() {
             let mut node =
-                Self::action_button(action, &format!("{key}~{slot}~more-{index}"), entry, false);
+                Self::action_button(action, &format!("{key}~{part}~more-{index}"), entry, false);
             node.props.insert("in_menu".to_owned(), on_off(true));
-            self.put_in_slot(shell, slot, node)?;
+            self.put_in_part(shell, part, node)?;
         }
         self.costs
             .publish(u64::try_from(rest.len()).unwrap_or(u64::MAX));
@@ -822,7 +822,7 @@ impl Core {
     fn fill_selection_bar(
         &self,
         shell: usize,
-        slot: &str,
+        part: &str,
         acted: &[Value],
         count: usize,
     ) -> Result<(), RuntimeError> {
@@ -834,13 +834,13 @@ impl Core {
             &[("count".to_owned(), count.to_string())],
             &format!("{count} selected"),
         );
-        let mut badge = empty("ui.Badge", &format!("{key}~{slot}~selected"));
+        let mut badge = empty("ui.Badge", &format!("{key}~{part}~selected"));
         badge.props.insert("text".to_owned(), Value::text(&label));
-        self.put_in_slot(shell, slot, badge)?;
+        self.put_in_part(shell, part, badge)?;
         for (index, action) in acted.iter().enumerate() {
             let node =
-                Self::action_button(action, &format!("{key}~{slot}~action-{index}"), None, false);
-            self.put_in_slot(shell, slot, node)?;
+                Self::action_button(action, &format!("{key}~{part}~action-{index}"), None, false);
+            self.put_in_part(shell, part, node)?;
         }
         Ok(())
     }
@@ -1141,8 +1141,8 @@ impl Core {
         })
     }
 
-    /// The slot `name` of `at`, when it has one.
-    fn slot(&self, at: usize, name: &str) -> Result<Option<usize>, RuntimeError> {
+    /// The part `name` of `at`, when it has one.
+    fn part(&self, at: usize, name: &str) -> Result<Option<usize>, RuntimeError> {
         for child in self.children(at)? {
             let found = self.arena(|view| {
                 let node = view
@@ -1157,22 +1157,22 @@ impl Core {
                         .map(str::to_owned),
                 ))
             })?;
-            if found.0 == SLOT && found.1.as_deref() == Some(name) {
+            if found.0 == PART && found.1.as_deref() == Some(name) {
                 return Ok(Some(child));
             }
         }
         Ok(None)
     }
 
-    /// `node` at the end of `at`'s slot `name`, the slot made when it has none.
-    fn put_in_slot(&self, at: usize, name: &str, node: NodeBuild) -> Result<(), RuntimeError> {
+    /// `node` at the end of `at`'s part `name`, the part made when it has none.
+    fn put_in_part(&self, at: usize, name: &str, node: NodeBuild) -> Result<(), RuntimeError> {
         let child = self.push(node)?;
-        self.put_at_in_slot(at, name, child)
+        self.put_at_in_part(at, name, child)
     }
 
-    /// The node `node` at the front of `at`'s slot `name`, the slot made when it has none: the
+    /// The node `node` at the front of `at`'s part `name`, the part made when it has none: the
     /// window's main action leads the actions of its bar.
-    fn put_in_slot_front(
+    fn put_in_part_front(
         &self,
         at: usize,
         name: &str,
@@ -1180,36 +1180,36 @@ impl Core {
     ) -> Result<(), RuntimeError> {
         let child = self.push(node)?;
         let key = self.key(at)?;
-        let slot = if let Some(slot) = self.slot(at, name)? {
-            slot
+        let part = if let Some(part) = self.part(at, name)? {
+            part
         } else {
             let mut props = BTreeMap::new();
             props.insert("name".to_owned(), Value::text(name));
-            let mut slot = empty(SLOT, &format!("{key}~slot-{name}"));
-            slot.props = props;
-            let slot = self.push(slot)?;
-            self.insert(at, usize::MAX, slot)?;
-            slot
+            let mut part = empty(PART, &format!("{key}~part-{name}"));
+            part.props = props;
+            let part = self.push(part)?;
+            self.insert(at, usize::MAX, part)?;
+            part
         };
-        self.insert(slot, 0, child)
+        self.insert(part, 0, child)
     }
 
-    /// The node `child` (one of the arena's) at the end of `at`'s slot `name`, the slot made
+    /// The node `child` (one of the arena's) at the end of `at`'s part `name`, the part made
     /// when it has none.
-    fn put_at_in_slot(&self, at: usize, name: &str, child: usize) -> Result<(), RuntimeError> {
+    fn put_at_in_part(&self, at: usize, name: &str, child: usize) -> Result<(), RuntimeError> {
         let key = self.key(at)?;
-        let slot = if let Some(slot) = self.slot(at, name)? {
-            slot
+        let part = if let Some(part) = self.part(at, name)? {
+            part
         } else {
             let mut props = BTreeMap::new();
             props.insert("name".to_owned(), Value::text(name));
-            let mut slot = empty(SLOT, &format!("{key}~slot-{name}"));
-            slot.props = props;
-            let slot = self.push(slot)?;
-            self.insert(at, usize::MAX, slot)?;
-            slot
+            let mut part = empty(PART, &format!("{key}~part-{name}"));
+            part.props = props;
+            let part = self.push(part)?;
+            self.insert(at, usize::MAX, part)?;
+            part
         };
-        self.insert(slot, usize::MAX, child)
+        self.insert(part, usize::MAX, child)
     }
 
     /// One action as a menu row: what choosing it runs, in its words.

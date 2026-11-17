@@ -20,7 +20,7 @@ use page::{chosen_item, content_nodes, node_of_key};
 use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
 use tilo_render_protocol::patch::{self as wire, Answer, Lane, ToApp, ToUi, Transport, Words};
 use ui::tokens::{MotionSource, Rhythm, TextRole};
-use ui::widget::arrange::{Fit, Row, Slot, Stack};
+use ui::widget::arrange::{Fit, Part, Row, Stack};
 use ui::widget::toast::ToastKind;
 use ui::widget::{Absent, Button, ButtonRole, Element, NavPane, NavShell, Text, Widget};
 
@@ -210,10 +210,10 @@ struct Typed {
     sent: Option<Value>,
 }
 
-fn slot(element: Element, fit: Fit) -> Slot {
-    let mut slot = Slot::new(element);
-    slot.fit = fit;
-    slot
+fn part(element: Element, fit: Fit) -> Part {
+    let mut part = Part::new(element);
+    part.fit = fit;
+    part
 }
 
 /// What brings a column to the front: a click or a tap slides it in; a key, an agent's action or
@@ -342,12 +342,12 @@ impl AppWindow {
             Stack::stack()
                 .fill_width()
                 .fill_height()
-                .push_slot(slot(
+                .push_part(part(
                     Box::new(Pane::new(Box::new(Absent::new()))),
                     Fit::fill(1.0),
                 ))
-                .push_slot(slot(Box::new(Absent::new()), Fit::hug()))
-                .push_slot(slot(Box::new(Absent::new()), Fit::hug())),
+                .push_part(part(Box::new(Absent::new()), Fit::hug()))
+                .push_part(part(Box::new(Absent::new()), Fit::hug())),
         );
         window
     }
@@ -360,15 +360,15 @@ impl AppWindow {
             .fill_width()
             .fill_height()
             .gap(Rhythm::Tight)
-            .push_slot(slot(
+            .push_part(part(
                 Box::new(Pane::new(Box::new(NavShell::new()))),
                 Fit::fill(1.0),
             ))
-            .push_slot(slot(Box::new(Absent::new()), Fit::hug()))
+            .push_part(part(Box::new(Absent::new()), Fit::hug()))
             // The form of an action waiting for its arguments: out of flow, over the window.
-            .push_slot(slot(Box::new(Absent::new()), Fit::hug()));
+            .push_part(part(Box::new(Absent::new()), Fit::hug()));
         for element in beside {
-            body = body.push_slot(slot(element, Fit::hug()));
+            body = body.push_part(part(element, Fit::hug()));
         }
         let events: EventSink = Rc::default();
         let rows: Registry = Rc::default();
@@ -986,15 +986,15 @@ impl AppWindow {
         }
     }
 
-    fn set_body_slot(&mut self, index: usize, element: Element, fit: Fit) {
+    fn set_body_part(&mut self, index: usize, element: Element, fit: Fit) {
         if let Some(arranged) = self.body.as_any_mut().and_then(|any| {
             any.downcast_mut::<ui::widget::arrange::Arranged<ui::widget::arrange::FlexLayout>>()
         }) {
-            let mut slots = arranged.take_slots();
-            if let Some(target) = slots.get_mut(index) {
-                *target = slot(element, fit);
+            let mut parts = arranged.take_parts();
+            if let Some(target) = parts.get_mut(index) {
+                *target = part(element, fit);
             }
-            arranged.set_slots(slots);
+            arranged.set_parts(parts);
         }
         self.structure_dirty = true;
     }
@@ -1155,14 +1155,14 @@ impl AppWindow {
             &[("invoker", ask.invoker.as_str().into())],
         );
         let text = |id: &str, value: &str, role: TextRole| {
-            slot(
+            part(
                 Box::new(Text::new(value).with_role(role).with_id(id)),
                 Fit::hug(),
             )
         };
         let answer = |id: &str, role: ButtonRole, to: Answer| {
             let answers = Rc::clone(&self.answers);
-            slot(
+            part(
                 Box::new(
                     Button::new(id, &t(id))
                         .role(role)
@@ -1173,17 +1173,17 @@ impl AppWindow {
         };
         let choices = Row::row()
             .fill_width()
-            .push_slot(answer(
+            .push_part(answer(
                 "tilolang-ask-confirm",
                 ButtonRole::Primary,
                 Answer::Allow,
             ))
-            .push_slot(answer(
+            .push_part(answer(
                 "tilolang-ask-decline",
                 ButtonRole::Secondary,
                 Answer::Decline,
             ))
-            .push_slot(answer(
+            .push_part(answer(
                 "tilolang-ask-always",
                 ButtonRole::Plain,
                 Answer::Always,
@@ -1192,14 +1192,14 @@ impl AppWindow {
             Stack::stack()
                 .gap(Rhythm::Related)
                 .with_id("tilolang-ask")
-                .push_slot(text(
+                .push_part(text(
                     "tilolang-ask-title",
                     &t("tilolang-ask-title"),
                     TextRole::Heading,
                 ))
-                .push_slot(text("tilolang-ask-action", &ask.action, TextRole::Body))
-                .push_slot(text("tilolang-ask-by", &by, TextRole::Caption))
-                .push_slot(slot(Box::new(choices), Fit::hug())),
+                .push_part(text("tilolang-ask-action", &ask.action, TextRole::Body))
+                .push_part(text("tilolang-ask-by", &by, TextRole::Caption))
+                .push_part(part(Box::new(choices), Fit::hug())),
         )
     }
 
@@ -1209,17 +1209,17 @@ impl AppWindow {
             None => Box::new(Absent::new()),
         };
         self.ask = ask.cloned();
-        self.set_body_slot(1, bar, Fit::hug());
+        self.set_body_part(1, bar, Fit::hug());
     }
 
-    const FORM_SLOT: usize = 2;
+    const FORM_PART: usize = 2;
 
     /// Show the form `form` of an action waiting for its arguments, or none. The form the window
     /// shows already, sent again as it reads now, is reconciled in place.
     fn show_form(&mut self, form: Option<&wire::Form>) {
         let Some(form) = form else {
             if self.form.take().is_some() {
-                self.set_body_slot(Self::FORM_SLOT, Box::new(Absent::new()), Fit::hug());
+                self.set_body_part(Self::FORM_PART, Box::new(Absent::new()), Fit::hug());
             }
             return;
         };
@@ -1229,7 +1229,7 @@ impl AppWindow {
                 .body
                 .children_mut()
                 .into_iter()
-                .nth(Self::FORM_SLOT)
+                .nth(Self::FORM_PART)
                 .and_then(crate::form::sheet_of);
             if let Some(sheet) = sheet {
                 shown.update(form, sheet, &mut reconciler.borrow_mut());
@@ -1245,7 +1245,7 @@ impl AppWindow {
             sheet.set_anchor(rect_of(self.body.as_ref(), &composed_key(*lane, key)));
         }
         self.form = Some(shown);
-        self.set_body_slot(Self::FORM_SLOT, Box::new(sheet), Fit::hug());
+        self.set_body_part(Self::FORM_PART, Box::new(sheet), Fit::hug());
     }
 
     /// What the person answered in the form's own controls since the last frame. Cancel closes it
@@ -1532,7 +1532,7 @@ impl AppWindow {
             match (&mut typed.held, held) {
                 (Held::Text { now, .. }, Held::Text { now: newer, .. }) => now.clone_from(&newer),
                 (Held::Rich { now, .. }, Held::Rich { now: newer, .. }) => *now = newer,
-                (slot, newer) => *slot = newer,
+                (part, newer) => *part = newer,
             }
         }
         // What the field shows is what the person typed, until the app takes it.
@@ -2515,7 +2515,7 @@ fn shortcut_action_where(
             }
         }
     }
-    for child in crate::shell::slot_children(node, "content") {
+    for child in crate::shell::part_children(node, "content") {
         if let Some(found) = declared_within(child, pressed) {
             return Some(found);
         }

@@ -49,6 +49,8 @@ the graph may make it.
   devices. One setting of the person's; the Displays pane edits it.
 - **Layout**: a workspace's strips, window groups and tabs. Workspace data, shared by its members.
 - **Strip**, **window group**, **tab**: the parts of a layout.
+- **Part**: a region of a shell surface or of a described component where content goes. A person
+  may bind a shell part to a view an app publishes.
 - **View**: how the shell shows a layout (strips, canvas, others a shell adds).
 - **Shell**: the UI around windows (bar, overview, notifications) and the process that runs it.
 - **Desktop widget**: a card on the shell's background (calendar, music).

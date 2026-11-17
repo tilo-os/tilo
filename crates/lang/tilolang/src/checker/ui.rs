@@ -13,17 +13,17 @@ use crate::resolve::{CKind, Callable, TypeInfo};
 use crate::types::Ty;
 
 impl Checker<'_> {
-    /// Lowers the `state` declarations at the top of a view body: each reads its slot, or its default
-    /// while the slot is empty, into a local of its name. Returns the rest of the body.
+    /// Lowers the `state` declarations at the top of a view body: each reads its part, or its default
+    /// while the part is empty, into a local of its name. Returns the rest of the body.
     pub(super) fn view_state(&mut self, view: &str, body: &[UiStmt]) -> Vec<UiStmt> {
-        self.state_slots(view, body, None)
+        self.state_parts(view, body, None)
     }
 
     /// [`Self::view_state`], in a frame that runs over a live view — an `on show` handler reads the state
     /// the view holds. Such a frame has no view around it, so `live` names the view's parameters: a
     /// default that reads one is the render's to compute, and the frame starts the state at a value of its
     /// type instead.
-    fn state_slots(
+    fn state_parts(
         &mut self,
         view: &str,
         body: &[UiStmt],
@@ -51,7 +51,7 @@ impl Checker<'_> {
                 (Some(e), _) => self.expr_as(e, &info.ty),
                 (None, _) => self.zero_of(&info.ty, d.name.span),
             };
-            // The slot's value, or the default while it is empty; scalars travel boxed.
+            // The part's value, or the default while it is empty; scalars travel boxed.
             let args = vec![Ex::str(&info.id), Self::handle_of(fallback)];
             let value = if info.ty.is_scalar() {
                 let boxed = Ty::Option(Box::new(info.ty.clone()));
@@ -212,9 +212,9 @@ impl Checker<'_> {
         self.st.ns.clone_from(&outer.ns);
         self.st.types.clone_from(&outer.types);
         self.at = self.outer_at;
-        // The state the view declares, read from its slots: this frame has the item and no view around it,
+        // The state the view declares, read from its parts: this frame has the item and no view around it,
         // so a default that reads one of the view's parameters is not its to compute.
-        self.state_slots(name, body, Some(params));
+        self.state_parts(name, body, Some(params));
         if !ty.is_error() {
             let act = self.expr_as(action, &Ty::Action);
             self.emit(Stmt::Return(Some(act)));
@@ -349,12 +349,12 @@ impl Checker<'_> {
                     let _ = self.expr(label, None);
                     let _ = self.expr(value, None);
                 }
-                UiKind::Slot { name, .. } => {
+                UiKind::Part { name, .. } => {
                     self.err(
                         "E063",
                         name.span,
                         format!(
-                            "a slot `{}: {{ }}` stands in the block of a `ui.*` component",
+                            "a part `{}: {{ }}` stands in the block of a `ui.*` component",
                             name.name
                         ),
                     );
@@ -707,7 +707,7 @@ impl Checker<'_> {
     }
 
     /// The statements of a block, as children of `n`; `parts` when they are parts of the component `n` is
-    /// (a named slot's).
+    /// (a named part's).
     pub(super) fn child_block_of(
         &mut self,
         prim: &'static str,

@@ -119,14 +119,14 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
         .expect(&SemanticExpectation::named("themes-nav").enabled(true))
         .unwrap();
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        .press_window_part(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
     assert_eq!(
         bar(&mut app).sidebar,
         Some(false),
         "the toggle hid the list"
     );
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        .press_window_part(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
     assert_eq!(bar(&mut app).sidebar, Some(true), "and shows it again");
     app.harness()
         .expect(&SemanticExpectation::named("themes-nav").enabled(true))

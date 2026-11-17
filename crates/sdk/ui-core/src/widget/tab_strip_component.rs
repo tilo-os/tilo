@@ -19,7 +19,7 @@ use crate::icons::Icon;
 use crate::presence::user_color;
 use crate::widget::{TabBar, TabDescriptor, TabHolder, TabMark};
 
-crate::component::part_slot!(TabItemProps);
+crate::component::part_type!(TabItemProps);
 
 /// One tab of a frame: the resource it shows, and what its pill says.
 #[derive(Component, Default, Clone)]
@@ -45,7 +45,7 @@ pub struct TabItemProps {
     pub busy: bool,
     /// Who else has this resource open now, drawn on the pill: their faces, from the
     /// resource's lenses.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub presence: Vec<PresenceFaceProps>,
 }
 
@@ -66,7 +66,7 @@ pub struct PresenceFaceProps {
     pub name: Option<String>,
 }
 
-crate::component::part_slot!(PresenceFaceProps);
+crate::component::part_type!(PresenceFaceProps);
 
 impl TabItemProps {
     /// The pill as the strip takes it: its title, and the glyph its type names.
@@ -114,7 +114,7 @@ pub struct TabStripProps {
     #[component(key)]
     pub key: String,
     /// The tabs, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub tabs: Vec<TabItemProps>,
     /// The resource whose tab shows: the tab in front.
     #[component(positional)]

@@ -20,7 +20,7 @@ fn the_add_feed_field_takes_typed_text() {
     harness.present_in_window_bar();
     harness.relayout();
     // Add subscription is the window bar's.
-    harness.press_window_slot(ToolbarEvent::Action {
+    harness.press_window_part(ToolbarEvent::Action {
         id: "feeds.add".into(),
     });
     harness.relayout();

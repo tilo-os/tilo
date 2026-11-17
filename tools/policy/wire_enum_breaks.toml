@@ -344,7 +344,6 @@ enum = "SettingsChange"
 reason = "the retired variant is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
 
 [[break]]
-[[break]]
 file = "crates/lang/tilolang/src/pred.rs"
 enum = "Lit"
 reason = "the language's type for who acted is the shared `Actor`, and a literal holds that typed actor; stored formats change with the code and nothing written before is read"

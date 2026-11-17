@@ -1,9 +1,9 @@
 //! [`DisclosureRow`] as a described component.
 
-use crate::component::{Component, Described, Event, Person, SlotViews, Value};
+use crate::component::{Component, Described, Event, PartViews, Person, Value};
 use crate::icons::Icon;
 use crate::tokens::Rhythm;
-use crate::widget::arrange::{Arranged, FlexLayout, Slot, Stack};
+use crate::widget::arrange::{Arranged, FlexLayout, Part, Stack};
 use crate::widget::{Element, SignalLevel};
 
 use super::{DisclosureRow, Leading};
@@ -27,11 +27,11 @@ pub struct DisclosureRowProps {
     /// How strong a radio network's signal is, before the title, for a row that is a network.
     pub signal: Option<SignalLevel>,
     /// What opens under the row, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub body: Vec<Element>,
     /// One control on the row's trailing edge, before the chevron (a device's Connect): it acts
     /// without opening the row.
-    #[component(slot)]
+    #[component(part)]
     pub trailing: Option<Element>,
     /// Whether the row is open; unless given the row keeps it.
     pub expanded: Option<bool>,
@@ -64,8 +64,8 @@ fn leading(
 impl Described for DisclosureRow {
     type Props = DisclosureRowProps;
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
-        if slot != "body" {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        if part != "body" {
             return None;
         }
         let column = self
@@ -95,7 +95,7 @@ impl Described for DisclosureRow {
                 .fill_width()
                 .gap(Rhythm::Related)
                 .with_id(format!("{key}.body")),
-            |column, view| column.push_slot(Slot::new(view)),
+            |column, view| column.push_part(Part::new(view)),
         );
         let mut row = Self::new(title, Box::new(column))
             .with_id(key)
@@ -118,7 +118,7 @@ impl Described for DisclosureRow {
     }
 
     /// Its lines take their new text in place, and a changed `expanded` opens or closes it on
-    /// the disclose motion; its body's views change through [`Self::slot_views`].
+    /// the disclose motion; its body's views change through [`Self::part_views`].
     fn set_props(&mut self, props: DisclosureRowProps) -> bool {
         let DisclosureRowProps {
             title,

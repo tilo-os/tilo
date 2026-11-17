@@ -11,7 +11,7 @@ use tilo_desktop::desktop_host::{
     WORKSPACE_SETTINGS,
 };
 use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
-use tilo_desktop::overlays::{Anchor, Slot};
+use tilo_desktop::overlays::{Anchor, Part};
 use tilo_desktop::verbs::{CHROME_RESOURCE, SHELL_RESOURCE};
 use tilo_desktop_model::WorkspaceId;
 use tilo_sheets::power::PowerEffect;
@@ -197,13 +197,13 @@ impl Shared {
             ChromeIntent::ToggleQuickSettings => {
                 // The press that closed it is still being delivered: the same press does not open
                 // it again.
-                if self.quick_settings && !self.overlays.dismissed_recently(Slot::QuickSettings) {
-                    if self.overlays.is_open(Slot::QuickSettings) {
-                        self.overlays.close(Slot::QuickSettings);
+                if self.quick_settings && !self.overlays.dismissed_recently(Part::QuickSettings) {
+                    if self.overlays.is_open(Part::QuickSettings) {
+                        self.overlays.close(Part::QuickSettings);
                     } else {
                         self.surfaces.clear_shell();
                         self.surfaces.clear_panel();
-                        self.overlays.open(Slot::QuickSettings, None);
+                        self.overlays.open(Part::QuickSettings, None);
                     }
                 }
             }
@@ -792,7 +792,7 @@ impl Shared {
 
     fn show_quick_settings(&self) {
         if self.quick_settings {
-            self.overlays.open(Slot::QuickSettings, None);
+            self.overlays.open(Part::QuickSettings, None);
         }
     }
 
@@ -818,17 +818,17 @@ impl Shared {
             .map(|at| Anchor::Beside { at, gap: CARET_GAP });
         // The surface the field stands in (the shell's search) stays up under it, and has the
         // keyboard back for the paste.
-        self.overlays.open_over(Slot::QuickSettings, anchor);
+        self.overlays.open_over(Part::QuickSettings, anchor);
         self.panel_asks.borrow_mut().push("paste");
     }
 
     /// Close the quick settings when they are up, open them otherwise.
     fn toggle_quick_settings(&self) {
         if self.quick_settings {
-            if self.overlays.is_open(Slot::QuickSettings) {
-                self.overlays.close(Slot::QuickSettings);
+            if self.overlays.is_open(Part::QuickSettings) {
+                self.overlays.close(Part::QuickSettings);
             } else {
-                self.overlays.open(Slot::QuickSettings, None);
+                self.overlays.open(Part::QuickSettings, None);
             }
         }
     }

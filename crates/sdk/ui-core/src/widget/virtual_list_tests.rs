@@ -2233,7 +2233,7 @@ fn the_way_back_is_as_wide_as_its_words_need() {
 fn page_column() -> VirtualList<VecListModel<u32, u32>> {
     use crate::tokens::Rhythm;
     use crate::widget::Text;
-    use crate::widget::arrange::{Page, Slot, Stack};
+    use crate::widget::arrange::{Page, Part, Stack};
     VirtualList::from_items(
         (0..40_u32).collect(),
         64.0,
@@ -2247,7 +2247,7 @@ fn page_column() -> VirtualList<VecListModel<u32, u32>> {
                      narrow window so the rows differ in height",
                 )));
             let row = Page::full().row_after(Rhythm::Section);
-            Box::new(row.push_slot(Slot::new(Box::new(said) as Element))) as Element
+            Box::new(row.push_part(Part::new(Box::new(said) as Element))) as Element
         },
     )
     .unwrap()

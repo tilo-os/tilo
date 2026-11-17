@@ -84,9 +84,9 @@ pub(super) struct LayoutRuntime {
     pub(super) last_layout_scale: Option<f32>,
     /// System chrome drawn over the window, which content stays clear of.
     pub(super) safe_area: crate::scale::SafeArea,
-    /// The row the runner draws the app's window-bar slots in, outside a
-    /// Tilo session, under the safe area's top (`native_runner::slot_bar`).
-    pub(super) slot_bar_inset: f64,
+    /// The row the runner draws the app's window-bar parts in, outside a
+    /// Tilo session, under the safe area's top (`native_runner::part_bar`).
+    pub(super) part_bar_inset: f64,
     /// Where the root is placed: the safe area's top-left corner.
     pub(super) content_origin: vello::kurbo::Point,
     /// How many times the taffy tree was rebuilt: a host comparing two
@@ -141,7 +141,7 @@ impl LayoutRuntime {
             last_layout_logical: None,
             last_layout_scale: None,
             safe_area: crate::scale::SafeArea::default(),
-            slot_bar_inset: 0.0,
+            part_bar_inset: 0.0,
             content_origin: vello::kurbo::Point::ORIGIN,
             rebuilds: 0,
             rebuild_described: true,

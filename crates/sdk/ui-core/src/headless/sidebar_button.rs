@@ -14,7 +14,7 @@ const BACK_BUTTON: &str = "nav-shell-back";
 
 struct BarSidebarButton {
     spot: Rect,
-    /// The shell's bar draws it as one of the app's slots, so the press lands on the bar's row.
+    /// The shell's bar draws it as one of the app's parts, so the press lands on the bar's row.
     on_the_row: bool,
     shown: bool,
 }
@@ -40,14 +40,14 @@ impl SidebarShown {
 }
 
 impl FrameHarness {
-    /// The sidebar button the window's bar shows: the shell's own slot, or — while the app's header
+    /// The sidebar button the window's bar shows: the shell's own part, or — while the app's header
     /// row is the bar — the shell's toggle in that row.
     fn bar_sidebar_button(&mut self) -> Option<BarSidebarButton> {
         let width = f64::from(self.viewport.0);
         let bar = self.painted_window_bar(width);
         let row = bar.toolbar_row();
         if let Some(shown) = row.toolbar().and_then(|toolbar| toolbar.sidebar) {
-            let spot = row.slots().sidebar;
+            let spot = row.parts().sidebar;
             return (spot.area() > 0.0).then_some(BarSidebarButton {
                 spot,
                 on_the_row: true,
@@ -86,7 +86,7 @@ impl FrameHarness {
     }
 
     /// Click the sidebar button where the window's bar, as the shell or the app's own row draws it
-    /// across the window, puts it, and hand the app what the press runs ([`Self::press_window_slot`]).
+    /// across the window, puts it, and hand the app what the press runs ([`Self::press_window_part`]).
     pub fn click_window_sidebar_button(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let width = f64::from(self.viewport.0);
@@ -197,7 +197,7 @@ impl FrameHarness {
     }
 
     /// Whether the window's bar shows the way back to the screen that holds its sidebar button: the
-    /// shell's own slot, or — while the app's header row is the bar — the shell's Back button in that
+    /// shell's own part, or — while the app's header row is the bar — the shell's Back button in that
     /// row.
     fn window_bar_shows_back(&mut self) -> bool {
         let width = f64::from(self.viewport.0);
@@ -227,7 +227,7 @@ impl FrameHarness {
             .iter()
             .any(|action| action.id == crate::widget::WINDOW_BACK)
         {
-            self.press_window_slot(crate::window_toolbar::ToolbarEvent::Back);
+            self.press_window_part(crate::window_toolbar::ToolbarEvent::Back);
             return Ok(());
         }
         let (spot, _) = self

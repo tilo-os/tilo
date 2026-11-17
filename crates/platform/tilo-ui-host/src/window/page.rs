@@ -127,7 +127,7 @@ impl AppWindow {
 
 pub(super) fn content_nodes(tree: &UiNode) -> Vec<&UiNode> {
     fn walk<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) -> bool {
-        if node.kind == crate::adapter::SLOT
+        if node.kind == crate::adapter::PART
             && matches!(node.props.get("name"), Some(Value::Text(name)) if name == "content")
         {
             out.extend(node.children.iter());
@@ -173,10 +173,10 @@ pub(super) fn shown_item_of(tree: &UiNode) -> Option<String> {
 }
 
 /// What the node of `tree` for item `item` names it: the first `title` of its row, else a tree
-/// node's `label`. What the row opens into and its menu (its slots) name other things.
+/// node's `label`. What the row opens into and its menu (its parts) name other things.
 pub(super) fn item_title(tree: &UiNode, item: &str) -> Option<String> {
     fn named(node: &UiNode) -> Option<String> {
-        if node.kind == crate::adapter::SLOT {
+        if node.kind == crate::adapter::PART {
             return None;
         }
         ["title", "label"]

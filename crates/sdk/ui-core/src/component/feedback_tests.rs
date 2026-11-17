@@ -46,7 +46,7 @@ tilo_test_env::scenario! {
             Node::new("Badge", "new", &queue).prop("count", Value::Int(3)),
         );
         assert_eq!(
-            <Vec<crate::widget::StatTileProps> as SlotType>::accepts(),
+            <Vec<crate::widget::StatTileProps> as PartType>::accepts(),
             Accepts::Component("StatTile".into())
         );
         assert!(StatGroupProps::from_source(&mut group).is_err());

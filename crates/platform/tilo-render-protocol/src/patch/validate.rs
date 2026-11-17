@@ -99,7 +99,7 @@ pub const NODE_ARGS: &[&str] = &[
 ];
 
 /// Every primitive of the language a view may send: the layouts, controls and blocks the host
-/// builds itself, and `slot`, a component's named slot. A primitive's props are the language's
+/// builds itself, and `part`, a component's named part. A primitive's props are the language's
 /// arguments, which the host reads by name, each as the type it takes, ignoring what it does
 /// not read; so what is checked of them is that the primitive is one the host builds and that
 /// every value is bounded.
@@ -131,11 +131,11 @@ pub const PRIMITIVES: &[&str] = &[
     "invocation",
     "error",
     "text",
-    SLOT,
+    PART,
 ];
 
-/// The kind of a node holding the content of a component's named slot.
-pub const SLOT: &str = "slot";
+/// The kind of a node holding the content of a component's named part.
+pub const PART: &str = "part";
 
 /// The prefix of a described component's kind: `ui.ListRow`.
 pub const COMPONENT_PREFIX: &str = "ui.";

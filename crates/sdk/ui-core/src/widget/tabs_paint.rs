@@ -312,7 +312,7 @@ impl TabBar {
             self.draw_fresh(own, transform, tr, theme, presence);
         });
         let drawn = self.paint_epoch;
-        if self.toolbar_row.take_measured() && self.strip_squeezes_slots() {
+        if self.toolbar_row.take_measured() && self.strip_squeezes_parts() {
             self.lay_out_toolbar_row();
         }
         crate::scene_parts::append(scene, &own, parts.as_ref(), None);

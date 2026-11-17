@@ -37,7 +37,7 @@ fn hosted() -> (FrameHarness, NavFeed, WindowBarLink) {
 tilo_test_env::scenario! {
     fn a_hosted_shell_shares_its_places_and_toggle_with_the_window_bar;
 
-    // A narrow window whose toolbar is the window bar's slots opens on its
+    // A narrow window whose toolbar is the window bar's parts opens on its
     // list, as one with a header row does: the list fills the window, and Back
     // from an opened item comes back to it.
     phase a_narrow_window_with_its_toolbar_in_the_bar_opens_on_its_list;
@@ -235,16 +235,16 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The shell's own buttons are the app's slots in the window's bar: the sidebar's toggle shows
+/// The shell's own buttons are the app's parts in the window's bar: the sidebar's toggle shows
 /// where the sidebar stands, and pressing it in the bar hides and shows the sidebar.
 #[test]
 fn the_link_puts_the_shells_toggle_in_the_apps_window_bar() {
     let (mut h, _, link) = hosted();
-    assert_eq!(link.slots().sidebar, Some(true), "docked and shown");
+    assert_eq!(link.parts().sidebar, Some(true), "docked and shown");
     assert!(link.event(&ToolbarEvent::ToggleSidebar));
     settle(&mut h, W, H);
     assert!(!h.root::<NavShell>().is_sidebar_open());
-    assert_eq!(link.slots().sidebar, Some(false));
+    assert_eq!(link.parts().sidebar, Some(false));
     assert!(!link.is_sidebar_open());
     assert!(!link.event(&ToolbarEvent::Action { id: "app".into() }));
     assert!(link.event(&ToolbarEvent::ToggleSidebar));
@@ -565,7 +565,7 @@ fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
     settle(&mut h, 360, 520);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::None);
     assert_eq!(
-        link.slots().sidebar,
+        link.parts().sidebar,
         None,
         "no toggle for a sidebar it does not show"
     );
@@ -580,7 +580,7 @@ fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
     assert!(
-        link.slots().sidebar.is_some(),
+        link.parts().sidebar.is_some(),
         "in the strip its list is a press away"
     );
 }

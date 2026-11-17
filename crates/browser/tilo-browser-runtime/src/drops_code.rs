@@ -39,7 +39,7 @@ pub(crate) enum DropTarget {
     /// Between the strip's windows, or anywhere on a shell with none: a window opens at `slot`,
     /// and `area` is what the page outlines (a bar in the gap, or the whole empty shell).
     Strip {
-        slot: tilo_desktop_surface::StripSlot,
+        slot: tilo_desktop_surface::StripPart,
         area: Rect,
     },
     /// Nothing there takes files, and why.

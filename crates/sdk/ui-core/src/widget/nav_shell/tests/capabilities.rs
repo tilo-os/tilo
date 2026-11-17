@@ -106,7 +106,7 @@ tilo_test_env::scenario! {
         {
             let mut shell = h.root_mut::<NavShell>();
             let views = shell
-                .slot_views("overview_actions")
+                .part_views("overview_actions")
                 .expect("the shell changes its header's actions in place");
             for index in (0..views.len()).rev() {
                 views.remove(index);

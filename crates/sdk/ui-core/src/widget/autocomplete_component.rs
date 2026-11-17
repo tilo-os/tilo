@@ -5,7 +5,7 @@ use crate::component::{Bound, Component, Described, Event, Person};
 use super::{Autocomplete, RowRole, Suggestion, SuggestionPerson};
 use crate::widget::TextInput;
 
-crate::component::part_slot!(SuggestionProps);
+crate::component::part_type!(SuggestionProps);
 
 /// A field that suggests completions under it as it is typed into: a search over a site's catalogue, a
 /// mention, a command.
@@ -16,7 +16,7 @@ pub struct AutocompleteProps {
     #[component(bind(merge = "splice"))]
     pub value: Bound<String>,
     /// The completions to offer, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub suggestions: Vec<SuggestionProps>,
     /// What to type, shown while it is empty, and what names it to assistive technology.
     pub placeholder: Option<String>,

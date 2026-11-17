@@ -343,7 +343,7 @@ fn virtual_rows(
             diff_node(was, row, &row_path, cx, out);
         }
     }
-    // What the list holds beside its rows — the slots the host fills with rows of its own, such
+    // What the list holds beside its rows — the parts the host fills with rows of its own, such
     // as an item someone removed that the person has not seen go — is no row, so no step names
     // it: it is inserted at its place among the children it shares with the rows, and taken out
     // where it no longer stands.
@@ -648,8 +648,8 @@ mod tests {
             assert!(t.find("nope").is_none());
         }
 
-        phase a_lists_slot_stands_beside_its_rows;
-        // A list whose rows are built as it is shown: what stands beside its rows — the slot a
+        phase a_lists_part_stands_beside_its_rows;
+        // A list whose rows are built as it is shown: what stands beside its rows — the part a
         // host fills with rows of its own, such as the items someone removed that the person has
         // not seen go — is no row, so it is inserted and removed as any other child, while the
         // rows are the ones its steps name.
@@ -659,10 +659,10 @@ mod tests {
                 node.kind = "ui.VirtualList".into();
                 node
             };
-            let slot = || {
-                let mut slot = node("list~slot-removed", vec![text("gone", 1)]);
-                slot.kind = "slot".into();
-                slot
+            let part = || {
+                let mut part = node("list~part-removed", vec![text("gone", 1)]);
+                part.kind = "part".into();
+                part
             };
             let mut lists = VirtualLists::new();
             lists.insert("list".into(), RowsChange::Steps(Vec::new()));
@@ -670,15 +670,15 @@ mod tests {
 
             // The item someone else removed appears beside the rows.
             let before = node("root", vec![list(vec![text("row", 1)])]);
-            let after = node("root", vec![list(vec![text("row", 1), slot()])]);
+            let after = node("root", vec![list(vec![text("row", 1), part()])]);
             let p = diff_with(&before, &after, &same, &lists);
             assert!(
                 p.contains(&Patch::Insert {
                     parent: path.clone(),
                     index: 1,
-                    node: slot(),
+                    node: part(),
                 }),
-                "the slot stands after the rows: {p:?}"
+                "the part stands after the rows: {p:?}"
             );
 
             // The person has seen it go: it leaves, with the rows as they were.
@@ -686,10 +686,10 @@ mod tests {
             assert!(
                 p.contains(&Patch::Remove {
                     parent: path,
-                    key: "list~slot-removed".into(),
+                    key: "list~part-removed".into(),
                     at: None,
                 }),
-                "the slot leaves: {p:?}"
+                "the part leaves: {p:?}"
             );
             assert!(
                 !p.iter()

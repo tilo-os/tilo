@@ -1,4 +1,4 @@
-//! Messages' controls, as slots in the window's bar ([`ui::window_toolbar`]): the shell's
+//! Messages' controls, as parts in the window's bar ([`ui::window_toolbar`]): the shell's
 //! sidebar toggle and Back; where the window is as the location (the people, the person a
 //! conversation is with, the record's open conversation, the open groups or the account
 //! setup); the conversation's route as the location's choices; and the actions: Accounts,
@@ -19,7 +19,7 @@ use crate::view::{Selection, Sources, choices};
 use crate::{CATALOG, Messages, MessagesEffect};
 
 /// What the window bar is made of: the window's state, the API its effects go through, and
-/// the shell's own slots as the shell last built laid them out.
+/// the shell's own parts as the shell last built laid them out.
 #[derive(Clone)]
 pub(crate) struct Bar {
     pub(crate) sources: Sources,
@@ -33,13 +33,13 @@ pub(crate) struct Bar {
 }
 
 impl Bar {
-    /// The window bar's slots for what the window shows now.
+    /// The window bar's parts for what the window shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = self
             .link
             .borrow()
             .as_ref()
-            .map(WindowBarLink::slots)
+            .map(WindowBarLink::parts)
             .unwrap_or_default();
         let selected = self.selection.get();
         let entry = |effect: &MessagesEffect, icon: &str, name: &str| ToolbarAction {
@@ -137,7 +137,7 @@ impl Bar {
         }
     }
 
-    /// Run what the person did in the window's bar: the shell's own slots, then the
+    /// Run what the person did in the window's bar: the shell's own parts, then the
     /// window's, each through its effect.
     fn take_events(&self) -> bool {
         let mut asked = false;
@@ -168,7 +168,7 @@ fn label(label: String) -> ToolbarLocation {
     }
 }
 
-/// The window, with its slots in the window's bar.
+/// The window, with its parts in the window's bar.
 pub(crate) struct MessagesWindow {
     pub(crate) content: Element,
     pub(crate) bar: Bar,

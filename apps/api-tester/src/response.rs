@@ -10,11 +10,11 @@ use ui::widget::{
 use crate::commands::{Cmd, Sink};
 use crate::model::{KeyValue, ResponseData, ResponseView, human_duration};
 use crate::palette::status_tone;
-use ui::widget::{Slot, SlotHandle};
+use ui::widget::{Part, PartHandle};
 
 pub(crate) struct Built {
     pub(crate) element: Element,
-    pub(crate) body: SlotHandle,
+    pub(crate) body: PartHandle,
 }
 
 pub(crate) fn empty(_sink: &Sink) -> Element {
@@ -131,11 +131,11 @@ pub(crate) fn response(
         "request",
     ));
     let summary = summary.push(Box::new(switch));
-    let (slot, handle) = Slot::new(body_view(data, view));
+    let (part, handle) = Part::new(body_view(data, view));
     let column = Column::new()
         .with_no_padding()
         .push(Box::new(summary))
-        .push(Box::new(slot));
+        .push(Box::new(part));
     Built {
         element: Box::new(column),
         body: handle,

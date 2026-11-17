@@ -36,7 +36,7 @@ impl Checker<'_> {
         body: &[UiStmt],
         parent: LocalId,
     ) -> Option<Ex> {
-        // A loop in a named slot of a component makes parts of it (the commands of a menu, the actions
+        // A loop in a named part of a component makes parts of it (the commands of a menu, the actions
         // of a header): it lowers in place.
         if self.st.ctx != Ctx::View || !passable(elem) || self.st.ui.parts {
             return Some(list);
@@ -283,7 +283,7 @@ impl Checker<'_> {
             label: None,
             entry: false,
         });
-        // View state the body uses is passed by value; `set(...)` and `bind:` still name the slot, which
+        // View state the body uses is passed by value; `set(...)` and `bind:` still name the part, which
         // is the view's, not the row's.
         let states = captures
             .iter()
@@ -707,7 +707,7 @@ fn names_in_ui(stmts: &[UiStmt], out: &mut BTreeSet<String>) {
                 names_in(label, out);
                 names_in(value, out);
             }
-            UiKind::Slot { body, .. } => names_in_ui(body, out),
+            UiKind::Part { body, .. } => names_in_ui(body, out),
             UiKind::On { action, .. } => names_in(action, out),
             UiKind::State(d) => {
                 if let Some(default) = &d.default {

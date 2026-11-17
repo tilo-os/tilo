@@ -743,7 +743,7 @@ tilo_test_env::scenario! {
             None,
             "one line: the chevron and the words share a centre"
         );
-        // A chevron riding the taller slot a finger's row takes: 10 px under the words.
+        // A chevron riding the taller row a finger takes: 10 px under the words.
         let off = chevron_off_line(chevron([24.0, 73.0, 46.0, 87.0], line))
             .expect("a chevron below its line");
         assert!((off - 10.0).abs() < 0.5, "{off}");
@@ -857,7 +857,7 @@ tilo_test_env::scenario! {
 
     phase a_group_heading_takes_one_band_and_stands_on_the_row_it_heads;
     // A group heading takes one band over its first row, and a finger's target where the window is
-    // held in the hand — never a slot or padding of its own between the heading and the row.
+    // held in the hand — never a space or padding of its own between the heading and the row.
     {
         let theme = ui::Theme::dark();
         let band = band_height(&theme);
@@ -887,11 +887,11 @@ tilo_test_env::scenario! {
                 .any(|p| p.kind == Kind::HeadingRoom && p.detail.contains("takes")),
             "a band taller than a heading band: {loose:?}"
         );
-        let slot = heading_rooms(&with(band, band + 12.0), &theme, None);
+        let room = heading_rooms(&with(band, band + 12.0), &theme, None);
         assert!(
-            slot.iter()
+            room.iter()
                 .any(|p| p.kind == Kind::HeadingRoom && p.detail.contains("heads stands")),
-            "a slot between the heading and its row: {slot:?}"
+            "a gap between the heading and its row: {room:?}"
         );
         assert!(
             heading_rooms(&with(48.0, 48.0), &theme, Some(48.0)).is_empty(),
@@ -2415,14 +2415,14 @@ tilo_test_env::scenario! {
 /// it; text that keeps its words whole (source code's soft wrap) is clipped, and caught.
 #[test]
 fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
-    use ui::widget::arrange::{Length, Slot, Stack};
+    use ui::widget::arrange::{Length, Part, Stack};
     let clipped = |mode: ui::text_render::TextWrapMode| {
         let text = ui::widget::Text::new("Donaudampfschifffahrtsgesellschaft").with_wrap_mode(mode);
-        let mut column = Slot::new(Box::new(Stack::stack().push(Box::new(text))));
+        let mut column = Part::new(Box::new(Stack::stack().push(Box::new(text))));
         column.fit.width.max = Some(Length::Rem(6.0));
         let mut h = ui::headless::FrameHarness::for_root(
             ui::State::new(),
-            Stack::stack().push_slot(column),
+            Stack::stack().push_part(column),
             (320, 200),
             ui::Theme::light(),
         );
@@ -2481,17 +2481,17 @@ fn off_pixel(root: &InspectionNode, scale: f64) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// A bar's control: `id` in `slot`, named `name`, showing `icon`, asking for `words` wide of them
+/// A bar's control: `id` in the part `part`, named `name`, showing `icon`, asking for `words` wide of them
 /// where it is a menu button (`menu`).
 fn control(
-    slot: &'static str,
+    part: &'static str,
     id: &str,
     name: &str,
     icon: Option<&str>,
     words: f64,
     menu: bool,
 ) -> ui::window_toolbar::BarControl {
-    let control = ui::window_toolbar::BarControl::new(slot, id, Rect::new(0.0, 0.0, 32.0, 28.0))
+    let control = ui::window_toolbar::BarControl::new(part, id, Rect::new(0.0, 0.0, 32.0, 28.0))
         .named(name)
         .icon(icon.map(str::to_owned))
         .words(words);

@@ -293,10 +293,10 @@ fn draw_frame_content_owning(
     {
         // The window under its bar: the palette and its scrim leave the
         // bar (the host's chrome, or outside a session the row of the
-        // window's slots) clear and live.
+        // window's parts) clear and live.
         let surface = KurboRect::new(
             0.0,
-            app.layout.safe_area.top + app.layout.slot_bar_inset,
+            app.layout.safe_area.top + app.layout.part_bar_inset,
             f64::from(width) / f64::from(scale_factor),
             f64::from(height) / f64::from(scale_factor),
         );
@@ -684,9 +684,9 @@ fn lay_out_window(
     };
     let _phase = tilo_resource::profiling::Phase::start("ui.layout");
     // The app's frame starts under the host's chrome and, outside a Tilo
-    // session, under the row of its window-bar slots.
+    // session, under the row of its window-bar parts.
     let area = crate::scale::SafeArea {
-        top: app.layout.safe_area.top + app.layout.slot_bar_inset,
+        top: app.layout.safe_area.top + app.layout.part_bar_inset,
         ..app.layout.safe_area
     };
     let (content_origin, logical) = area.content(crate::scale::logical_size(

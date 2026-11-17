@@ -1090,7 +1090,7 @@ fn text_scale_compacts_before_the_panes_collide() {
 fn the_bars_views_pick_the_pane_and_its_slots_run_the_commands() {
     let mut app = live_fixture((560, 720));
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
             id: "typst.view.preview".to_owned(),
         });
     app.settle();
@@ -1103,7 +1103,7 @@ fn the_bars_views_pick_the_pane_and_its_slots_run_the_commands() {
             .unwrap()
     );
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
             id: "typst.view.editor".to_owned(),
         });
     app.settle();
@@ -1139,7 +1139,7 @@ fn the_bars_views_pick_the_pane_and_its_slots_run_the_commands() {
             .with_widget(|surface: &mut TypstApp| surface.preview.zoom())
             .unwrap();
         app.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
                 id: "typst.zoom-in".to_owned(),
             });
         app.settle();

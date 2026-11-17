@@ -110,12 +110,12 @@ fn args(arguments: &Value) -> serde_json::Map<String, Value> {
     arguments.as_object().expect("an object").clone()
 }
 
-/// Open the surface `slot` , hanging where `anchor` says, through the same verb a view or an agent
+/// Open the surface `part` , hanging where `anchor` says, through the same verb a view or an agent
 /// invokes.
-fn open(session: &mut Session, slot: &str, anchor: Option<&str>) {
+fn open(session: &mut Session, part: &str, anchor: Option<&str>) {
     let arguments = match anchor {
-        Some(anchor) => json!({ "slot": slot, "anchor": anchor }),
-        None => json!({ "slot": slot }),
+        Some(anchor) => json!({ "part": part, "anchor": anchor }),
+        None => json!({ "part": part }),
     };
     session
         .invoke(OVERLAYS, "open-surface", &args(&arguments))
@@ -133,25 +133,25 @@ fn stack(session: &Session) -> Vec<Value> {
         .clone()
 }
 
-/// The slots of the surfaces up now, topmost first.
-fn slots(session: &Session) -> Vec<String> {
+/// The parts of the surfaces up now, topmost first.
+fn parts(session: &Session) -> Vec<String> {
     stack(session)
         .iter()
-        .map(|surface| surface["slot"].as_str().expect("a slot").to_owned())
+        .map(|surface| surface["part"].as_str().expect("a part").to_owned())
         .collect()
 }
 
-/// The one open surface of `slot` .
-fn surface(session: &Session, slot: &str) -> Value {
+/// The one open surface of `part` .
+fn surface(session: &Session, part: &str) -> Value {
     stack(session)
         .into_iter()
-        .find(|surface| surface["slot"] == json!(slot))
-        .unwrap_or_else(|| panic!("{slot} is up: {:?}", stack(session)))
+        .find(|surface| surface["part"] == json!(part))
+        .unwrap_or_else(|| panic!("{part} is up: {:?}", stack(session)))
 }
 
 /// Where the stack places a surface, as `(x, y, w, h)` .
-fn place(session: &Session, slot: &str) -> (f64, f64, f64, f64) {
-    let place = &surface(session, slot)["place"];
+fn place(session: &Session, part: &str) -> (f64, f64, f64, f64) {
+    let place = &surface(session, part)["place"];
     (
         place["x"].as_f64().expect("x"),
         place["y"].as_f64().expect("y"),
@@ -223,7 +223,7 @@ fn press(session: &mut Session, x: f64, y: f64) {
 fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
     let mut session = session();
     assert!(
-        slots(&session).is_empty(),
+        parts(&session).is_empty(),
         "nothing stands over the shell yet"
     );
     assert_eq!(
@@ -242,7 +242,7 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
         .expect("the menu opens");
     session.step(REFRESH).expect("a turn of the session");
     let menu = surface(&session, "window-menu");
-    assert_eq!(menu["slot"], json!("window-menu"));
+    assert_eq!(menu["part"], json!("window-menu"));
     assert_eq!(menu["role"], json!("popup"));
     assert_eq!(menu["anchor"], json!("at:40,50"), "where it was put");
     assert_eq!(
@@ -258,11 +258,11 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
         .invoke(
             OVERLAYS,
             "open-surface",
-            &args(&json!({ "slot": "quick-settings" })),
+            &args(&json!({ "part": "quick-settings" })),
         )
         .expect("the panel opens");
     session.step(REFRESH).expect("a turn of the session");
-    assert_eq!(slots(&session), ["quick-settings"]);
+    assert_eq!(parts(&session), ["quick-settings"]);
     assert_eq!(
         surface(&session, "quick-settings")["anchor"],
         json!("top-trailing:8")
@@ -277,11 +277,11 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
         .invoke(
             OVERLAYS,
             "close-surface",
-            &args(&json!({ "slot": "quick-settings" })),
+            &args(&json!({ "part": "quick-settings" })),
         )
         .expect("the panel closes");
     session.step(REFRESH).expect("a turn of the session");
-    assert!(slots(&session).is_empty());
+    assert!(parts(&session).is_empty());
     assert_eq!(focus(&session), "window", "and the window again");
 }
 
@@ -297,7 +297,7 @@ fn escape_closes_the_topmost_surface_that_answers_it() {
         .expect("the menu opens");
     open(&mut session, "quick-settings", None);
     assert_eq!(
-        slots(&session),
+        parts(&session),
         ["quick-settings"],
         "the panel takes the place of the menu"
     );
@@ -308,11 +308,11 @@ fn escape_closes_the_topmost_surface_that_answers_it() {
         .invoke(
             OVERLAYS,
             "close-surface",
-            &args(&json!({ "slot": "quick-settings" })),
+            &args(&json!({ "part": "quick-settings" })),
         )
         .expect("the panel closes");
     session.step(REFRESH).expect("a turn of the session");
-    assert!(slots(&session).is_empty());
+    assert!(parts(&session).is_empty());
     assert_eq!(focus(&session), "window", "and the window again");
 
     // A menu stands alone, and Escape closes it.
@@ -323,9 +323,9 @@ fn escape_closes_the_topmost_surface_that_answers_it() {
             &args(&json!({ "tab": "20", "anchor": "40,50" })),
         )
         .expect("the menu opens again");
-    assert_eq!(slots(&session), ["window-menu"]);
+    assert_eq!(parts(&session), ["window-menu"]);
     tap(&mut session, KEY_ESCAPE);
-    assert!(slots(&session).is_empty(), "the menu closed");
+    assert!(parts(&session).is_empty(), "the menu closed");
     assert_eq!(focus(&session), "window");
 }
 
@@ -386,7 +386,7 @@ fn the_shells_surface_and_the_popovers_stand_one_at_a_time() {
         .expect("the launcher opens");
     session.step(REFRESH).expect("a turn of the session");
     assert_eq!(here(&session), "launcher");
-    assert!(slots(&session).is_empty(), "the menu went down for it");
+    assert!(parts(&session).is_empty(), "the menu went down for it");
 
     // And the menu takes the launcher down.
     session
@@ -397,11 +397,11 @@ fn the_shells_surface_and_the_popovers_stand_one_at_a_time() {
         )
         .expect("the menu opens again");
     session.step(REFRESH).expect("a turn of the session");
-    assert_eq!(slots(&session), ["window-menu"]);
+    assert_eq!(parts(&session), ["window-menu"]);
     assert_eq!(here(&session), "none", "the launcher went down for it");
     tap(&mut session, KEY_ESCAPE);
     session.step(REFRESH).expect("a turn of the session");
-    assert!(slots(&session).is_empty(), "Escape closed the menu");
+    assert!(parts(&session).is_empty(), "Escape closed the menu");
     assert_eq!(focus(&session), "window");
 
     // Alt+Tab walks to the other window; Escape stays where the person was.
@@ -433,23 +433,23 @@ fn a_surface_the_desktops_own_chrome_shows_is_not_the_sessions_to_open() {
     // which say so to the same stack: the session's verb refuses them rather than putting up a
     // second one.
     let mut session = session();
-    for slot in ["emoji", "workspace-menu", "strips"] {
-        let opened = session.invoke(OVERLAYS, "open-surface", &args(&json!({ "slot": slot })));
-        assert!(opened.is_err(), "{slot} is the chrome's");
-        let closed = session.invoke(OVERLAYS, "close-surface", &args(&json!({ "slot": slot })));
-        assert!(closed.is_err(), "{slot} is the chrome's");
+    for part in ["emoji", "workspace-menu", "strips"] {
+        let opened = session.invoke(OVERLAYS, "open-surface", &args(&json!({ "part": part })));
+        assert!(opened.is_err(), "{part} is the chrome's");
+        let closed = session.invoke(OVERLAYS, "close-surface", &args(&json!({ "part": part })));
+        assert!(closed.is_err(), "{part} is the chrome's");
     }
     assert!(
         session
             .invoke(
                 OVERLAYS,
                 "open-surface",
-                &args(&json!({ "slot": "nowhere" }))
+                &args(&json!({ "part": "nowhere" }))
             )
             .is_err(),
         "and no verb opens what no surface names"
     );
-    assert!(slots(&session).is_empty());
+    assert!(parts(&session).is_empty());
 }
 
 #[test]
@@ -459,19 +459,19 @@ fn a_press_on_the_shell_closes_the_workspace_menu_the_chrome_hangs_off_its_chip(
     let mut session = session();
     let chip = (86.0, f64::from(TOPBAR_HEIGHT_PX) / 2.0);
     press(&mut session, chip.0, chip.1);
-    assert_eq!(slots(&session), ["workspace-menu"], "the chip opened it");
+    assert_eq!(parts(&session), ["workspace-menu"], "the chip opened it");
     // Its release comes up before the chrome takes its next pass, as a quick click's does.
     quick_click(&mut session, 100.0, 400.0);
     session.step(REFRESH).expect("a turn of the session");
     assert!(
-        slots(&session).is_empty(),
+        parts(&session).is_empty(),
         "the press on the shell closed it"
     );
     // And the menu it draws followed the stack: the chip opens it again rather than closing the one
     // still standing under the person's finger.
     press(&mut session, chip.0, chip.1);
     assert_eq!(
-        slots(&session),
+        parts(&session),
         ["workspace-menu"],
         "the chip opens it again"
     );
@@ -534,7 +534,7 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
             .invoke(
                 OVERLAYS,
                 "open-surface",
-                &args(&json!({ "slot": "quick-settings", "anchor": "nowhere" })),
+                &args(&json!({ "part": "quick-settings", "anchor": "nowhere" })),
             )
             .is_err(),
         "no such place"
@@ -640,7 +640,7 @@ fn a_press_outside_the_popover_closes_it_and_one_inside_it_does_not() {
         !session.quick_settings_open(),
         "the press outside closed it"
     );
-    assert!(slots(&session).is_empty());
+    assert!(parts(&session).is_empty());
     assert_eq!(focus(&session), "window");
 }
 

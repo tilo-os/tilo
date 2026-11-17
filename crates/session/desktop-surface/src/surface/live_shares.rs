@@ -70,7 +70,7 @@ impl DesktopSurface {
                     // What the window says it shows (a note's title) names the share better than
                     // its tab, which may name the app.
                     let location = self
-                        .window_slots
+                        .window_parts
                         .toolbar(tab.id)
                         .and_then(|toolbar| toolbar.location.as_ref());
                     let title = location
@@ -94,7 +94,7 @@ impl DesktopSurface {
         };
         window_share::publish_windows(windows.clone());
         host::offer(
-            &mut self.window_slots,
+            &mut self.window_parts,
             &windows,
             &window_share::shared(),
             &mut self.live_shares.offered,
@@ -148,7 +148,7 @@ impl DesktopSurface {
 
     /// Hand the sharing app what the windows' menus asked of it. Whether anything was asked.
     pub(super) fn take_window_share_asks(&mut self) -> bool {
-        let chosen = self.window_slots.take_host_actions();
+        let chosen = self.window_parts.take_host_actions();
         let asks = host::asks(chosen, &self.live_shares.windows, &window_share::shared());
         let asked = !asks.is_empty();
         for ask in asks {

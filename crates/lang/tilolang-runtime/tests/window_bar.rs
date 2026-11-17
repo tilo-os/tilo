@@ -138,14 +138,14 @@ mod cases {
             .to_owned()
     }
 
-    /// The children of the slot `name` of `node`, in order.
-    fn slot<'a>(node: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
+    /// The children of the part `name` of `node`, in order.
+    fn part<'a>(node: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
         node.children
             .iter()
             .filter(|child| {
-                child.kind == "slot" && child.props.get("name") == Some(&Value::text(name))
+                child.kind == "part" && child.props.get("name") == Some(&Value::text(name))
             })
-            .flat_map(|slot| slot.children.iter())
+            .flat_map(|part| part.children.iter())
             .collect()
     }
 
@@ -198,10 +198,10 @@ mod cases {
             "it is the window's primary"
         );
         // The bar the host filled is the one over the window's columns, not a row of the
-        // view's: the shell holds the button, in the slot its content's actions go in.
+        // view's: the shell holds the button, in the part its content's actions go in.
         let shell = of_kind(tree, "ui.NavShell")[0];
         assert!(
-            slot(shell, "actions")
+            part(shell, "actions")
                 .iter()
                 .any(|node| node.key == new_task[0].key),
             "the primary stands in the window's bar:\n{}",
@@ -222,14 +222,14 @@ mod cases {
         // The row the view drew says what a task is; the host put what can be done with it on
         // the row itself.
         let row = &of_kind(tree, "ui.ListItem")[0];
-        let menu = slot(row, "menu");
+        let menu = part(row, "menu");
         assert!(
             !menu.is_empty() && menu.iter().all(|item| item.kind == "ui.MenuItem"),
             "the row's menu holds one row per action on it:\n{}",
             dump(tree)
         );
         assert!(
-            slot(row, "swipe")
+            part(row, "swipe")
                 .iter()
                 .all(|node| node.kind == "ui.SwipeAction"),
             "the row swipes its actions too:\n{}",
@@ -254,7 +254,7 @@ mod cases {
         let window = w.window_at("home", &root, "is:inbox");
         let tree = window.tree();
         let rows = of_kind(tree, "ui.ListItem");
-        let first: Vec<String> = slot(rows[0], "menu")
+        let first: Vec<String> = part(rows[0], "menu")
             .iter()
             .map(|item| text_of(item, "label"))
             .collect();
@@ -266,7 +266,7 @@ mod cases {
         // The row with one over it: the actions its view placed, after the command the view
         // puts on every row itself.
         let row = rows[1];
-        let menu = slot(row, "menu");
+        let menu = part(row, "menu");
         let labels: Vec<String> = menu.iter().map(|item| text_of(item, "label")).collect();
         assert_eq!(
             labels.first().map(String::as_str),
@@ -296,7 +296,7 @@ mod cases {
             dump(tree)
         );
         // The swipe a row offers is one it placed: Delete, the destructive action it names.
-        let swipe = slot(row, "swipe");
+        let swipe = part(row, "swipe");
         assert_eq!(
             swipe.first().map(|node| text_of(node, "label")).as_deref(),
             Some("Delete"),
@@ -324,7 +324,7 @@ mod cases {
         let window = w.window("home", &root);
         let tree = window.tree();
         let shell = of_kind(tree, "ui.NavShell")[0];
-        let bar = slot(shell, "actions");
+        let bar = part(shell, "actions");
         let (drawn, overflow): (Vec<&UiNode>, Vec<&UiNode>) = bar
             .iter()
             .filter(|node| node.kind == "ui.Button")
@@ -416,7 +416,7 @@ mod cases {
             dump(tree)
         );
         let row = of_kind(tree, "ui.ListItem")[0];
-        let labels: Vec<String> = slot(row, "menu")
+        let labels: Vec<String> = part(row, "menu")
             .iter()
             .map(|item| text_of(item, "label"))
             .collect();
@@ -529,7 +529,7 @@ view note_page(n: Note) {
             .into_iter()
             .next()
             .expect("the window's bar");
-        let archive = slot(shell, "actions")
+        let archive = part(shell, "actions")
             .into_iter()
             .filter(|child| child.props.get("label") == Some(&Value::text("Archive")))
             .count();
@@ -690,7 +690,7 @@ view shelf(s: Shelf) {
             let window = w.window("shelf", &root);
             let tree = window.tree();
             let shell = of_kind(tree, "ui.NavShell")[0];
-            let bar: Vec<&UiNode> = slot(shell, "actions")
+            let bar: Vec<&UiNode> = part(shell, "actions")
                 .into_iter()
                 .filter(|node| node.kind == "ui.Button")
                 .collect();

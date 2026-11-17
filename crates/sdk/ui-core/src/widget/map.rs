@@ -32,7 +32,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::component::{Component, Described, Event, ResourceId, SlotType, SlotViews, Source};
+use crate::component::{Component, Described, Event, PartType, PartViews, ResourceId, Source};
 use crate::gesture::{GesturePhase, TouchGestureArena, TouchGestureEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -150,7 +150,7 @@ pub struct MapProps {
     /// colour of the window the map is in.
     pub ground: bool,
     /// The pins, in the order the map draws them (the last on top).
-    #[component(slot(default))]
+    #[component(part(default))]
     pub pins: Vec<MapPinProps>,
     /// A resource was dragged onto the map and let go: carries the resource the drag carried,
     /// as its address, and where it was let go — its canvas x, then its canvas y. The view
@@ -232,21 +232,21 @@ pub struct MapPinProps {
     #[component(data)]
     pub item: Option<String>,
     /// What it shows.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub body: Vec<Element>,
 }
 
-impl SlotType for Vec<MapPinProps> {
+impl PartType for Vec<MapPinProps> {
     const MANY: bool = true;
 
     fn accepts() -> crate::component::Accepts {
         crate::component::Accepts::Component(MapPinProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
+    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
         let mut out = Vec::new();
         let mut failed: Option<String> = None;
-        source.components(slot, &mut |child| match MapPinProps::from_source(child) {
+        source.components(part, &mut |child| match MapPinProps::from_source(child) {
             Ok(pin) => {
                 out.push(pin);
                 Ok(())
@@ -1173,27 +1173,27 @@ impl Described for Map {
         true
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
         self.editing = None;
-        (slot == "pins").then_some(self as &mut dyn SlotViews)
+        (part == "pins").then_some(self as &mut dyn PartViews)
     }
 
     /// The view one pin shows, to change in place: a change inside a place (its handle, its
     /// menu, what its resource's view says) patches that view where it stands, and the map —
     /// its camera, a drag under way, every other place — stays as it is.
-    fn part_views(&mut self, slot: &str, key: &str, of: &str) -> Option<&mut dyn SlotViews> {
-        if slot != "pins" || of != "body" {
+    fn item_views(&mut self, part: &str, key: &str, of: &str) -> Option<&mut dyn PartViews> {
+        if part != "pins" || of != "body" {
             return None;
         }
         self.editing = Some(self.pins.iter().position(|(held, _, _)| held == key)?);
-        Some(self as &mut dyn SlotViews)
+        Some(self as &mut dyn PartViews)
     }
 }
 
 /// The pins of a map: one view each. Once the map is built the widgets live in its region, so a
 /// change here reaches the region's children; before that, in the map's own store. Either way
 /// the pins' keys and places stay in `self.pins`, which the next layout lays out afresh.
-impl SlotViews for Map {
+impl PartViews for Map {
     fn len(&self) -> usize {
         if self.editing.is_some() {
             return 1;
@@ -1246,8 +1246,8 @@ impl SlotViews for Map {
         );
         if let Some(region) = self.region_mut() {
             region.insert_child(at, view);
-        } else if let Some((_, _, slot)) = self.pins.get_mut(at) {
-            *slot = view;
+        } else if let Some((_, _, part)) = self.pins.get_mut(at) {
+            *part = view;
         }
         self.stand_pins();
     }
@@ -1292,10 +1292,10 @@ impl SlotViews for Map {
 impl Map {
     /// Stand `view` in the pin at `index`: in the region once it is built, else in the pin.
     fn put_pin_view(&mut self, index: usize, view: Element) {
-        if let Some(slot) = self.region_mut().and_then(|region| region.child_mut(index)) {
-            *slot = view;
-        } else if let Some((_, _, slot)) = self.pins.get_mut(index) {
-            *slot = view;
+        if let Some(part) = self.region_mut().and_then(|region| region.child_mut(index)) {
+            *part = view;
+        } else if let Some((_, _, part)) = self.pins.get_mut(index) {
+            *part = view;
         }
     }
 }

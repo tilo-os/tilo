@@ -146,9 +146,9 @@ fn a_slide_at_its_level_changes_where_it_stands_and_a_deeper_one_is_built_again(
         "it leaves its motion under the key its view gave it, so the slide built in its place \
          takes it up"
     );
-    let slot = slide.slot_views(PAGE_SLOT).expect("the page is a slot");
-    assert_eq!(slot.len(), 1);
-    slot.replace(0, Box::new(Text::new("Second").with_id("next")));
+    let part = slide.part_views(PAGE_PART).expect("the page is a part");
+    assert_eq!(part.len(), 1);
+    part.replace(0, Box::new(Text::new("Second").with_id("next")));
     assert!(slide.needs_redraw(), "the page it shows changed");
     assert!(
         slide.set_props(props(0, "First")),

@@ -71,7 +71,7 @@ fn until_stored(
 /// that follows.
 fn press_bar(app: &mut TestApp<FirewallShell>, id: &str) {
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
     app.settle();
 }
 

@@ -260,7 +260,7 @@ impl FrameHarness {
             })
             .collect();
         layers.sort_by(|a, b| a.path.cmp(&b.path));
-        layers.extend(self.slot_row_composition());
+        layers.extend(self.part_row_composition());
         let focus = self.focused.and_then(|focused| {
             walk.node_widgets
                 .get(&focused)
@@ -280,8 +280,8 @@ impl FrameHarness {
     /// shows for a widget that declares nothing of its own
     /// ([`crate::composition::Own::Painted`]). `None` when no laid-out widget has that path.
     pub fn paint_composed(&mut self, path: &str, scale: f64) -> Option<(Scene, [f64; 4])> {
-        if path == super::slot_row::WINDOW_SLOTS {
-            return self.paint_slot_row(scale);
+        if path == super::part_row::WINDOW_PARTS {
+            return self.paint_part_row(scale);
         }
         let (widget_path, part) = match path.split_once('#') {
             Some((widget, _)) => (widget, Some(self.composed_rect(path)?)),

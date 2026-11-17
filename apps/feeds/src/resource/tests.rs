@@ -484,7 +484,7 @@ fn an_undoable_remove_runs_at_once_with_undo() {
         .expect("the window's bar offers Undo beside its notice");
     assert_eq!(undo.name, "Undo");
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: undo.id });
+        .press_window_part(ui::window_toolbar::ToolbarEvent::Action { id: undo.id });
     app.settle();
 
     let library = app.state();

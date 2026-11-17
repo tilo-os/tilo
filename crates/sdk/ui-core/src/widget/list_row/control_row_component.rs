@@ -8,7 +8,7 @@ use crate::widget::{ControlRow, Element, Row};
 #[component(name = "ControlRow", role = "ListItem", label = "label")]
 pub struct ControlRowProps {
     /// What the row holds, in order: its thumbnail, its name, and the controls its item has.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub children: Vec<Element>,
     /// Its spoken name.
     pub label: Option<String>,
@@ -51,8 +51,8 @@ impl Described for ControlRow {
         true
     }
 
-    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
-        if slot != "children" {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn crate::component::PartViews> {
+        if part != "children" {
             return None;
         }
         Some(self.content_mut())

@@ -1,4 +1,4 @@
-//! Where each slot of a window bar's row stands: the fold order that
+//! Where each part of a window bar's row stands: the fold order that
 //! decides what stays in the row and what goes into the overflow menu,
 //! the location's forms, and what the views and labels measure.
 
@@ -10,7 +10,7 @@ use super::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Slot {
+pub(crate) enum Part {
     Sidebar,
     Back,
     Forward,
@@ -26,7 +26,7 @@ pub(crate) enum Slot {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Slots {
+pub(crate) struct Parts {
     pub sidebar: Rect,
     pub back: Rect,
     pub forward: Rect,
@@ -281,8 +281,8 @@ impl Kept {
     }
 }
 
-impl Slots {
-    /// Lay `toolbar`'s slots out across `row`, centred on its centre line:
+impl Parts {
+    /// Lay `toolbar`'s parts out across `row`, centred on its centre line:
     /// navigation and the leading actions leading, the views and the
     /// actions trailing, the location filling between. At most
     /// [`crate::window_toolbar::MAX_ACTIONS`] actions stand in the row;
@@ -292,7 +292,7 @@ impl Slots {
     /// declared actions past that many and those declared for the menu, and
     /// the view switcher folds into the views menu. Where that leaves the
     /// location narrower than [`MIN_LOCATION_PX`], the rest goes into the
-    /// overflow menu in [`Slots::yielding`]'s order, so the location stays
+    /// overflow menu in [`Parts::yielding`]'s order, so the location stays
     /// in the row, elided. One action never goes into the menu alone: the
     /// menu's button would take its place and hide it. The window's main
     /// action ([`crate::window_toolbar::ToolbarAction::primary`]) stays in
@@ -345,7 +345,7 @@ impl Slots {
             .iter()
             .chain(action_labels)
             .any(|width| *width > CONTROL_PX);
-        let mut slots = if form == 0 && names && icons.folds_nothing(toolbar) {
+        let mut parts = if form == 0 && names && icons.folds_nothing(toolbar) {
             let labelled = Self::arranged(toolbar, row, views, shown, (labels, action_labels));
             if labelled.folds_as(&icons) {
                 Self {
@@ -358,8 +358,8 @@ impl Slots {
         } else {
             icons
         };
-        let spare = (slots.location.width() - (forms.width(form) + forms.chrome)).max(0.0);
-        if !slots.actions_labelled {
+        let spare = (parts.location.width() - (forms.width(form) + forms.chrome)).max(0.0);
+        if !parts.actions_labelled {
             let mut extra = 0.0;
             let mut kept = vec![0.0; action_labels.len()];
             for (index, action) in toolbar.actions.iter().enumerate() {
@@ -376,19 +376,19 @@ impl Slots {
                 let needed = words - CONTROL_PX;
                 if extra + needed <= spare {
                     extra += needed;
-                    if let Some(slot) = kept.get_mut(index) {
-                        *slot = words;
+                    if let Some(part) = kept.get_mut(index) {
+                        *part = words;
                     }
                 }
             }
             if extra > 0.0 {
                 let labelled = Self::arranged(toolbar, row, views, shown, (&[], &kept));
-                if labelled.folds_as(&slots) {
-                    slots = labelled;
+                if labelled.folds_as(&parts) {
+                    parts = labelled;
                 }
             }
         }
-        if !slots.labelled
+        if !parts.labelled
             && let Some(index) = toolbar.leading.iter().position(|action| action.primary)
             && let Some(words) = labels
                 .get(index)
@@ -397,12 +397,12 @@ impl Slots {
             && spare + CONTROL_PX >= words
         {
             let mut kept = vec![0.0; labels.len()];
-            if let Some(slot) = kept.get_mut(index) {
-                *slot = words;
+            if let Some(part) = kept.get_mut(index) {
+                *part = words;
             }
             let labelled = Self::arranged(toolbar, row, views, shown, (&kept, &[]));
-            if labelled.folds_as(&slots) {
-                slots = labelled;
+            if labelled.folds_as(&parts) {
+                parts = labelled;
             }
         }
         // A row too narrow for the words keeps the window's main action and puts the rest
@@ -413,7 +413,7 @@ impl Slots {
                 .row_actions()
                 .min(crate::window_toolbar::MAX_ACTIONS),
         );
-        if !slots.actions_labelled && slots.actions.len() > floor && floor > 0 {
+        if !parts.actions_labelled && parts.actions.len() > floor && floor > 0 {
             // The main action keeps its words where the row has width for them once the rest
             // are behind the API: a glyph with width to spare is a glyph nobody can
             // name. Every other action goes behind the API unnamed, as before.
@@ -430,37 +430,37 @@ impl Slots {
                 below =
                     Self::arranged_below(toolbar, row, views, shown, (&[], &labels), floor, false);
             }
-            slots = below;
+            parts = below;
         }
-        slots.settle(form, labels, action_labels, notice, forms);
+        parts.settle(form, labels, action_labels, notice, forms);
         let extra: f64 = action_labels
             .iter()
-            .take(slots.actions.len())
+            .take(parts.actions.len())
             .map(|words| (words - CONTROL_PX).max(0.0))
             .sum();
-        if !slots.actions_labelled
+        if !parts.actions_labelled
             && extra > 0.0
-            && extra <= slots.spare
-            && !slots.views_in_location()
+            && extra <= parts.spare
+            && !parts.views_in_location()
         {
             let moved = |rect: Rect| Rect::new(rect.x0 - extra, rect.y0, rect.x1 - extra, rect.y1);
-            let mut x1 = slots.actions.iter().map(|rect| rect.x1).fold(0.0, f64::max);
-            for (rect, words) in slots.actions.iter_mut().zip(action_labels).rev() {
+            let mut x1 = parts.actions.iter().map(|rect| rect.x1).fold(0.0, f64::max);
+            for (rect, words) in parts.actions.iter_mut().zip(action_labels).rev() {
                 *rect = Rect::new(x1 - CONTROL_PX.max(*words), rect.y0, x1, rect.y1);
                 x1 = rect.x0 - CONTROL_GAP;
             }
-            for rect in &mut slots.views {
+            for rect in &mut parts.views {
                 *rect = moved(*rect);
             }
-            if slots.views_menu.area() > 0.0 {
-                slots.views_menu = moved(slots.views_menu);
+            if parts.views_menu.area() > 0.0 {
+                parts.views_menu = moved(parts.views_menu);
             }
-            slots.location.x1 -= extra;
-            slots.actions_labelled = true;
+            parts.location.x1 -= extra;
+            parts.actions_labelled = true;
             let notice = forms.notice(toolbar, leftover);
-            slots.settle(form, labels, action_labels, notice, forms);
+            parts.settle(form, labels, action_labels, notice, forms);
         }
-        slots
+        parts
     }
 
     fn settle(
@@ -521,8 +521,8 @@ impl Slots {
     }
 
     pub(super) fn folds_as(&self, other: &Self) -> bool {
-        let shown = |slots: &Self| -> Vec<bool> {
-            slots.leading.iter().map(|rect| rect.area() > 0.0).collect()
+        let shown = |parts: &Self| -> Vec<bool> {
+            parts.leading.iter().map(|rect| rect.area() > 0.0).collect()
         };
         shown(self) == shown(other)
             && (self.sidebar.area() > 0.0) == (other.sidebar.area() > 0.0)
@@ -593,7 +593,7 @@ impl Slots {
         for &place in &places {
             let mut inline = row_actions.min(most).max(floor).min(row_actions);
             loop {
-                let slots = Self::with_inline(
+                let parts = Self::with_inline(
                     toolbar,
                     row,
                     Kept { inline, ..all },
@@ -601,14 +601,14 @@ impl Slots {
                     (labels, action_labels),
                 );
                 let leftover = if toolbar.location.is_some() {
-                    slots.location.width() >= COMFORTABLE_LOCATION_PX.max(least)
+                    parts.location.width() >= COMFORTABLE_LOCATION_PX.max(least)
                 } else {
-                    slots.fits(row)
+                    parts.fits(row)
                 };
                 let placed =
-                    !matches!(place, ViewsPlace::InLocation(_)) || slots.views_menu.area() > 0.0;
+                    !matches!(place, ViewsPlace::InLocation(_)) || parts.views_menu.area() > 0.0;
                 if leftover && placed && !lone(inline, place) {
-                    return slots;
+                    return parts;
                 }
                 if inline <= floor {
                     break;
@@ -630,7 +630,7 @@ impl Slots {
             } else {
                 kept.inline
             };
-            let slots = Self::with_inline(
+            let parts = Self::with_inline(
                 toolbar,
                 row,
                 Kept { inline, ..kept },
@@ -638,16 +638,16 @@ impl Slots {
                 (labels, action_labels),
             );
             let located = match place {
-                ViewsPlace::InLocation(least) => slots.location.width() >= least,
+                ViewsPlace::InLocation(least) => parts.location.width() >= least,
                 _ => {
                     toolbar.location.is_none()
-                        || (slots.location.area() > 0.0 && slots.location.width() >= least)
+                        || (parts.location.area() > 0.0 && parts.location.width() >= least)
                 }
             };
-            if slots.fits(row) && located {
-                return slots;
+            if parts.fits(row) && located {
+                return parts;
             }
-            last = slots;
+            last = parts;
         }
         last
     }
@@ -703,25 +703,25 @@ impl Slots {
         place: ViewsPlace,
         (labels, action_labels): (&[f64], &[f64]),
     ) -> Self {
-        let mut slots = Self::default();
+        let mut parts = Self::default();
         let y0 = row.center().y - CONTROL_PX / 2.0;
         let square = |x0: f64| Rect::new(x0, y0, x0 + CONTROL_PX, y0 + CONTROL_PX);
         let mut x0 = row.x0;
         let mut folded = false;
         if toolbar.sidebar.is_some() {
             if kept.sidebar {
-                slots.sidebar = square(x0);
-                x0 = slots.sidebar.x1 + SECTION_GAP;
+                parts.sidebar = square(x0);
+                x0 = parts.sidebar.x1 + SECTION_GAP;
             } else {
                 folded = true;
             }
         }
         if toolbar.navigation.is_some() {
-            slots.back = square(x0);
-            x0 = slots.back.x1;
+            parts.back = square(x0);
+            x0 = parts.back.x1;
             if kept.forward {
-                slots.forward = square(x0 + CONTROL_GAP);
-                x0 = slots.forward.x1;
+                parts.forward = square(x0 + CONTROL_GAP);
+                x0 = parts.forward.x1;
             } else {
                 folded = true;
             }
@@ -733,10 +733,10 @@ impl Slots {
                 let mut rect = square(x0);
                 rect.x1 = rect.x1.max(x0 + labels.get(index).copied().unwrap_or(0.0));
                 x0 = rect.x1 + CONTROL_GAP;
-                slots.leading.push(rect);
+                parts.leading.push(rect);
                 any = true;
             } else {
-                slots.leading.push(Rect::ZERO);
+                parts.leading.push(Rect::ZERO);
                 folded = true;
             }
         }
@@ -750,8 +750,8 @@ impl Slots {
             || folded
             || (toolbar.views.is_some() && place == ViewsPlace::Overflow);
         if in_menu {
-            slots.overflow = Rect::new(x1 - CONTROL_PX, y0, x1, y0 + CONTROL_PX);
-            x1 = slots.overflow.x0 - CONTROL_GAP;
+            parts.overflow = Rect::new(x1 - CONTROL_PX, y0, x1, y0 + CONTROL_PX);
+            x1 = parts.overflow.x0 - CONTROL_GAP;
             trailing = true;
         }
         let mut actions = Vec::with_capacity(inline);
@@ -763,8 +763,8 @@ impl Slots {
             trailing = true;
         }
         actions.reverse();
-        slots.actions_labelled = action_labels.iter().take(inline).any(|width| *width > 0.0);
-        slots.actions = actions;
+        parts.actions_labelled = action_labels.iter().take(inline).any(|width| *width > 0.0);
+        parts.actions = actions;
         if trailing {
             x1 = x1 + CONTROL_GAP - SECTION_GAP;
         }
@@ -780,25 +780,25 @@ impl Slots {
                     x1,
                     row.center().y + height / 2.0,
                 );
-                slots.views = equal_segments(strip, choices);
+                parts.views = equal_segments(strip, choices);
                 x1 = strip.x0 - SECTION_GAP;
             }
             ViewsPlace::Menu(width) if choices > 0 => {
-                slots.views_menu = Rect::new(x1 - width, y0, x1, y0 + CONTROL_PX);
-                x1 = slots.views_menu.x0 - SECTION_GAP;
+                parts.views_menu = Rect::new(x1 - width, y0, x1, y0 + CONTROL_PX);
+                x1 = parts.views_menu.x0 - SECTION_GAP;
             }
             _ => {}
         }
         if toolbar.location.is_some() && x1 - x0 >= MIN_LOCATION_PX {
-            slots.location = Rect::new(x0, y0, x1, y0 + CONTROL_PX);
+            parts.location = Rect::new(x0, y0, x1, y0 + CONTROL_PX);
         }
         if let ViewsPlace::InLocation(least) = place
             && choices > 0
-            && slots.location.width() >= least
+            && parts.location.width() >= least
         {
-            slots.views_menu = slots.location;
+            parts.views_menu = parts.location;
         }
-        slots
+        parts
     }
 
     pub(super) fn fits(&self, row: Rect) -> bool {
@@ -818,7 +818,7 @@ impl Slots {
             .all(|rect| rect.x0 >= lead)
     }
 
-    /// Whether the slots could not keep the width they need across `row`: a button standing on
+    /// Whether the parts could not keep the width they need across `row`: a button standing on
     /// another's place, a location `toolbar` declared with nowhere to stand, or a location with
     /// shorter forms cut short in the one it shows. Where the bar itself took that width (its
     /// strip's "+" ahead of the row), it asks before it keeps it.
@@ -868,60 +868,60 @@ impl Slots {
         }
     }
 
-    pub(super) fn hit(&self, p: Point) -> Option<Slot> {
+    pub(super) fn hit(&self, p: Point) -> Option<Part> {
         self.hit_where(p, |_| Some(Vec2::ZERO))
     }
 
-    /// The slot at `p` with each slot drawn `offset` from where it is laid
-    /// out (a slot gliding to its new place); a slot whose offset is `None`
+    /// The part at `p` with each part drawn `offset` from where it is laid
+    /// out (a part gliding to its new place); a part whose offset is `None`
     /// is not looked at.
     pub(super) fn hit_where(
         &self,
         p: Point,
-        offset: impl Fn(&Slot) -> Option<Vec2>,
-    ) -> Option<Slot> {
-        let at = |slot: Slot, rect: &Rect| {
-            offset(&slot)
+        offset: impl Fn(&Part) -> Option<Vec2>,
+    ) -> Option<Part> {
+        let at = |part: Part, rect: &Rect| {
+            offset(&part)
                 .is_some_and(|offset| (*rect + offset).contains(p))
-                .then_some(slot)
+                .then_some(part)
         };
-        at(Slot::Sidebar, &self.sidebar)
-            .or_else(|| at(Slot::Back, &self.back))
-            .or_else(|| at(Slot::Forward, &self.forward))
+        at(Part::Sidebar, &self.sidebar)
+            .or_else(|| at(Part::Back, &self.back))
+            .or_else(|| at(Part::Forward, &self.forward))
             .or_else(|| {
                 self.leading
                     .iter()
                     .enumerate()
-                    .find_map(|(i, rect)| at(Slot::Leading(i), rect))
+                    .find_map(|(i, rect)| at(Part::Leading(i), rect))
             })
             .or_else(|| {
                 self.views
                     .iter()
                     .enumerate()
-                    .find_map(|(i, rect)| at(Slot::View(i), rect))
+                    .find_map(|(i, rect)| at(Part::View(i), rect))
             })
-            .or_else(|| at(Slot::ViewsMenu, &self.views_menu))
+            .or_else(|| at(Part::ViewsMenu, &self.views_menu))
             .or_else(|| {
                 self.actions
                     .iter()
                     .enumerate()
-                    .find_map(|(i, rect)| at(Slot::Action(i), rect))
+                    .find_map(|(i, rect)| at(Part::Action(i), rect))
             })
             .or_else(|| {
                 self.notice
                     .iter()
                     .enumerate()
-                    .find_map(|(i, rect)| at(Slot::Notice(i), rect))
+                    .find_map(|(i, rect)| at(Part::Notice(i), rect))
             })
-            .or_else(|| at(Slot::Overflow, &self.overflow))
+            .or_else(|| at(Part::Overflow, &self.overflow))
             .or_else(|| {
                 self.reactions
                     .iter()
                     .enumerate()
-                    .find_map(|(i, rect)| at(Slot::Reaction(i), rect))
+                    .find_map(|(i, rect)| at(Part::Reaction(i), rect))
             })
-            .or_else(|| at(Slot::ReactionAdd, &self.reaction_add))
-            .or_else(|| at(Slot::Location, &self.location))
+            .or_else(|| at(Part::ReactionAdd, &self.reaction_add))
+            .or_else(|| at(Part::Location, &self.location))
     }
 }
 

@@ -328,7 +328,7 @@ fn the_readers_commands_are_the_window_bars_and_run_from_it() {
     }
 
     // Reading settings opens its panel from the bar.
-    Framed::harness_mut(&mut mounted).press_window_slot(ToolbarEvent::Action {
+    Framed::harness_mut(&mut mounted).press_window_part(ToolbarEvent::Action {
         id: bar_action("Reading settings").id,
     });
     settle(&mut mounted);
@@ -344,7 +344,7 @@ fn the_readers_commands_are_the_window_bars_and_run_from_it() {
     } else {
         "Star article"
     };
-    Framed::harness_mut(&mut mounted).press_window_slot(ToolbarEvent::Action {
+    Framed::harness_mut(&mut mounted).press_window_part(ToolbarEvent::Action {
         id: bar_action(star).id,
     });
     settle(&mut mounted);
@@ -1492,7 +1492,7 @@ fn the_collapse_button_collapses_and_expands_the_sidebar() {
         "the window bar offers Hide sidebar"
     );
     host.harness()
-        .press_window_slot(ToolbarEvent::ToggleSidebar);
+        .press_window_part(ToolbarEvent::ToggleSidebar);
     pump_frames(&mut host);
     assert!(
         sidebar_width(&mut host) < 0.5,
@@ -1504,7 +1504,7 @@ fn the_collapse_button_collapses_and_expands_the_sidebar() {
         "the window bar offers Show sidebar"
     );
     host.harness()
-        .press_window_slot(ToolbarEvent::ToggleSidebar);
+        .press_window_part(ToolbarEvent::ToggleSidebar);
     pump_frames(&mut host);
     assert!(
         (sidebar_width(&mut host) - open).abs() < 0.5,
@@ -1521,7 +1521,7 @@ fn the_sidebar_shortcut_collapses_and_expands_the_sidebar() {
     let open = sidebar_width(&mut host);
     assert!(open > 0.0);
     host.harness()
-        .press_window_slot(ToolbarEvent::ToggleSidebar);
+        .press_window_part(ToolbarEvent::ToggleSidebar);
     pump_frames(&mut host);
     // The sidebar's shortcut is Command+Shift+L: Cmd on macOS, Ctrl elsewhere.
     host.harness()
@@ -1557,7 +1557,7 @@ fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
             "the bar offers Show sidebar {width} wide"
         );
         Framed::harness_mut(&mut mounted)
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+            .press_window_part(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
         settle(&mut mounted);
         assert!(
             mounted.shell().is_sidebar_open(),
@@ -1575,7 +1575,7 @@ fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
                 .any(|action| action.id == ui::widget::WINDOW_BACK),
             "one leading control, the way back {width} wide: {bar:?}"
         );
-        Framed::harness_mut(&mut mounted).press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+        Framed::harness_mut(&mut mounted).press_window_part(ui::window_toolbar::ToolbarEvent::Back);
         settle(&mut mounted);
         assert!(
             !mounted.shell().is_sidebar_open(),

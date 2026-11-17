@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
             Node::new("Badge", "n", &queue).prop("count", Value::Int(1)),
         );
         assert_eq!(
-            <Vec<crate::widget::SegmentProps> as SlotType>::accepts(),
+            <Vec<crate::widget::SegmentProps> as PartType>::accepts(),
             Accepts::Component("Segment".into())
         );
         assert!(ToggleGroupProps::from_source(&mut node).is_err());

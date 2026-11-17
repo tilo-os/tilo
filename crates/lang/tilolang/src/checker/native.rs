@@ -492,7 +492,7 @@ impl Checker<'_> {
         n
     }
 
-    /// A row's `avatar:`: an Actor, or an Option of one, as the row's `avatar` slot holding a
+    /// A row's `avatar:`: an Actor, or an Option of one, as the row's `avatar` part holding a
     /// `ui.Avatar`. At `.none`, a row that names an `icon:` shows the item as its avatar; one that
     /// names none shows no avatar.
     fn avatar_arg(
@@ -521,12 +521,12 @@ impl Checker<'_> {
         let tmp = self.fresh(ty.clone());
         self.emit(Stmt::Set(tmp, v));
         let row = Ex::local(n, Ty::View);
-        let slot_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar"));
-        let slot = self.new_node("slot", slot_key);
-        let slot_ex = Ex::local(slot, Ty::View);
+        let part_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar"));
+        let part = self.new_node("part", part_key);
+        let part_ex = Ex::local(part, Ty::View);
         self.emit(host(
             Imp::UiPropH,
-            vec![slot_ex.clone(), Ex::str("name"), Ex::str("avatar")],
+            vec![part_ex.clone(), Ex::str("name"), Ex::str("avatar")],
         ));
         let avatar_kind = crate::toolkit::kind("Avatar");
         self.push_sink();
@@ -543,9 +543,9 @@ impl Checker<'_> {
         ));
         self.emit(host(
             Imp::UiChild,
-            vec![slot_ex.clone(), Ex::local(who, Ty::View)],
+            vec![part_ex.clone(), Ex::local(who, Ty::View)],
         ));
-        self.emit(host(Imp::UiChild, vec![row.clone(), slot_ex.clone()]));
+        self.emit(host(Imp::UiChild, vec![row.clone(), part_ex.clone()]));
         let some = self.pop_sink();
         if !optional {
             for s in some {
@@ -570,9 +570,9 @@ impl Checker<'_> {
             self.icon_value(glyph, "glyph", icon);
             self.emit(host(
                 Imp::UiChild,
-                vec![slot_ex.clone(), Ex::local(glyph, Ty::View)],
+                vec![part_ex.clone(), Ex::local(glyph, Ty::View)],
             ));
-            self.emit(host(Imp::UiChild, vec![row, slot_ex]));
+            self.emit(host(Imp::UiChild, vec![row, part_ex]));
         }
         let none = self.pop_sink();
         let test = Ex::host(Imp::IsSome, vec![Ex::local(tmp, ty)], Ty::Bool);

@@ -1,4 +1,4 @@
-//! [`CardGrid`] as a described component: cards as parts in a slot, each a card of a resource with what
+//! [`CardGrid`] as a described component: cards as the parts a grid holds, each a card of a resource with what
 //! it shows, and pressing one reported with the resource it stands for.
 
 use crate::component::{Component, Described, Event, ResourceId};
@@ -26,14 +26,14 @@ pub struct CardGridCardProps {
     /// Whether it is the selected one among its peers.
     pub selected: bool,
     /// What the card shows, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub body: Vec<Element>,
     /// The card was pressed: open what it stands for.
     #[component(event)]
     pub activate: Event,
 }
 
-crate::component::part_slot!(CardGridCardProps);
+crate::component::part_type!(CardGridCardProps);
 
 /// Cards in equal, aligned columns: the apps of a store, the devices of a network, the paragraphs of a
 /// review.
@@ -45,7 +45,7 @@ pub struct CardGridProps {
     /// How wide a card is at least before the grid drops a column: small, regular or wide objects.
     pub card_width: Option<CardWidth>,
     /// The cards, in order.
-    #[component(slot(default))]
+    #[component(part(default))]
     pub cards: Vec<CardGridCardProps>,
 }
 
@@ -70,7 +70,7 @@ fn card_of(props: CardGridCardProps) -> (String, Element) {
             .fill_width()
             .gap(crate::tokens::Rhythm::Related)
             .with_id(format!("{key}.body")),
-        |column, part| column.push_slot(crate::widget::arrange::Slot::new(part)),
+        |column, part| column.push_part(crate::widget::arrange::Part::new(part)),
     );
     let mut card = Card::new(Box::new(column)).selected(selected);
     if !activate.is_none() {

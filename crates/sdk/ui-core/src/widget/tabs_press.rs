@@ -27,10 +27,10 @@ impl TabBar {
             }
             (ElementState::Pressed, MouseButton::Left) => {
                 self.on_left_press(ctx.handled);
-                // A press on one of the app's own slots is a press on the
+                // A press on one of the app's own parts is a press on the
                 // app: the bar does not take the keyboard from it, so
                 // Escape or what is typed next still reaches the app.
-                if *ctx.handled && !self.toolbar_row.pressing_app_slot() {
+                if *ctx.handled && !self.toolbar_row.pressing_app_part() {
                     *ctx.focus_target = Some(ctx.node_id);
                 }
             }

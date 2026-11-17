@@ -18,7 +18,7 @@ use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::arrange::{Align, Distribute, Grid, Row as FlexRow, Stack as FlexStack};
 
-use crate::component::SlotViews;
+use crate::component::PartViews;
 use crate::widget::DrawChild;
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
@@ -302,7 +302,7 @@ impl DragRun {
         self.keys.iter().position(|keys| keys.key == key)
     }
 
-    /// Change the view of the item at `index`, in [`SlotViews`]' own terms.
+    /// Change the view of the item at `index`, in [`PartViews`]' own terms.
     pub(crate) fn edit_item(&mut self, index: Option<usize>) {
         self.editing = index;
     }
@@ -368,7 +368,7 @@ impl DragRun {
         let Some(row) = self.item_row_mut(index) else {
             return;
         };
-        <crate::widget::arrange::Row as SlotViews>::replace(row, 0, view);
+        <crate::widget::arrange::Row as PartViews>::replace(row, 0, view);
         self.dirty = true;
     }
 
@@ -1132,7 +1132,7 @@ impl Widget for DragRun {
     }
 }
 
-impl SlotViews for DragRun {
+impl PartViews for DragRun {
     fn len(&self) -> usize {
         usize::from(self.editing.is_some())
     }
