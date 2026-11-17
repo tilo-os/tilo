@@ -1389,7 +1389,7 @@ impl Service {
                 let Ok(mut stream) = stream else {
                     continue;
                 };
-                if !crate::supervisor::same_user(&stream) {
+                if !crate::peer::same_user(&stream) {
                     continue;
                 }
                 let service = Arc::clone(&service);
@@ -1677,7 +1677,7 @@ fn accept_loop(listener: &UnixListener, service: &Arc<Service>) {
         let Ok(stream) = stream else {
             continue;
         };
-        if !crate::supervisor::same_user(&stream) {
+        if !crate::peer::same_user(&stream) {
             continue;
         }
         let service = Arc::clone(service);

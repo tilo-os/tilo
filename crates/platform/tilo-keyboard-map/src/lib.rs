@@ -109,11 +109,11 @@ fn valid_name(name: &str, empty: bool) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "native"))]
 #[path = "linux.rs"]
 mod backend;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", feature = "native")))]
 mod backend {
     use super::{Error, Key};
     pub(super) fn is_installed(_layout: &str) -> Result<bool, Error> {
@@ -131,7 +131,7 @@ mod backend {
 }
 
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "native"))]
 mod tests {
     use super::*;
 

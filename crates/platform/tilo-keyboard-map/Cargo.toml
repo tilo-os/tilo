@@ -8,6 +8,12 @@ repository.workspace = true
 homepage.workspace = true
 description = "Bounded physical key and symbol observations from installed native keyboard metadata."
 
+[features]
+# Read the layouts installed on this device, through libxkbcommon. A build without it answers
+# `Unsupported`, as one on a system with no provider does.
+default = ["native"]
+native = ["dep:xkbcommon"]
+
 [dependencies]
 ui = { package = "tilo-app", version = "0.1.0", path = "../../sdk/tilo-app" }
 vello.workspace = true
@@ -17,7 +23,7 @@ winit.workspace = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-xkbcommon = "0.8"
+xkbcommon = { version = "0.8", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native workspace feature unification must never reach a web bundle.

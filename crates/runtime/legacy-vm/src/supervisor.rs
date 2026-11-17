@@ -25,6 +25,7 @@ use crate::domain::{
 use crate::grants::{Grants, HostShare};
 use crate::lifecycle::{Action, Lifecycle, Phase};
 use crate::memory::actual_mib;
+use crate::peer::same_user;
 use crate::transport::{VsockBackend, hybrid_link, vhost_device_vsock_argv};
 use crate::{image, virtiofs};
 
@@ -608,31 +609,6 @@ fn accept_loop(listener: &UnixListener, requests: &mpsc::Sender<(ControlRequest,
             return;
         }
     }
-}
-
-/// The socket lives in the user's private runtime directory; checking the
-/// peer anyway costs nothing.
-pub(crate) fn same_user(stream: &UnixStream) -> bool {
-    use std::os::fd::AsRawFd as _;
-    let mut credentials = libc::ucred {
-        pid: 0,
-        uid: u32::MAX,
-        gid: 0,
-    };
-    let Ok(mut length) = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()) else {
-        return false;
-    };
-    // SAFETY: both pointers name initialised storage of `length` bytes.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::from_mut(&mut credentials).cast(),
-            std::ptr::from_mut(&mut length),
-        )
-    };
-    result == 0 && credentials.uid == rustix::process::getuid().as_raw()
 }
 
 fn wait_for_socket(socket: &Path, daemon: &mut Child) -> bool {

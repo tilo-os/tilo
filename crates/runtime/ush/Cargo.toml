@@ -70,8 +70,9 @@ tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # record's NetHost grants, and nftables that admit only what it answered.
 tilo-egress = { path = "../egress" }
 # Installed legacy apps become commands in every guest (`LegacyLaunch`);
-# a hosted workspace's programs run in its own VM (`hosted_vm`).
-legacy-vm = { path = "../legacy-vm" }
+# a hosted workspace's programs run in its own VM (`hosted_vm`). It reads the guest's
+# records and lifecycle, never the supervisor that serves the VMs.
+legacy-vm = { path = "../legacy-vm", default-features = false }
 legacy-agent-protocol = { path = "../legacy-agent-protocol" }
 
 anyhow.workspace = true
